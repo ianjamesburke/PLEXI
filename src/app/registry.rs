@@ -1185,7 +1185,24 @@ pub(crate) fn resolve_workspace_root_with_channel(
     start: &Path,
     channel_dir: &str,
 ) -> Option<PathBuf> {
-    resolve_workspace_root_stopping_at(start, channel_dir, &workspace_walk_stops())
+    try_resolve_workspace_root_with_channel(start, channel_dir)
+        .map_err(report_workspace_walk_error)
+        .ok()
+        .flatten()
+}
+
+/// Resolve a workspace without treating failed home discovery as "no workspace".
+/// Write commands propagate this error before choosing a destination.
+pub(crate) fn try_resolve_workspace_root_with_channel(
+    start: &Path,
+    channel_dir: &str,
+) -> Result<Option<PathBuf>, String> {
+    let stops = workspace_walk_stops()?;
+    Ok(resolve_workspace_root_stopping_at(
+        start,
+        channel_dir,
+        &stops,
+    ))
 }
 
 /// Directories that are never a workspace root.
@@ -1195,9 +1212,9 @@ pub(crate) fn resolve_workspace_root_with_channel(
 /// real login home still contains `~/.plexi-<channel>` from the installed
 /// binary. That profile directory is not a workspace. Stopping only at the
 /// overridden `$HOME` made the login home look like one.
-pub(crate) fn workspace_walk_stops() -> Vec<PathBuf> {
+pub(crate) fn workspace_walk_stops() -> Result<Vec<PathBuf>, String> {
     let mut stops = Vec::new();
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = effective_home_dir() {
         stops.push(home);
     }
     if let Some(login) = effective_login_home() {
@@ -1205,10 +1222,33 @@ pub(crate) fn workspace_walk_stops() -> Vec<PathBuf> {
             stops.push(login);
         }
     }
-    stops
+    if stops.is_empty() {
+        let error = "workspace walk refused: HOME lookup (dirs::home_dir) and login-home lookup both failed; set HOME to your home directory".to_string();
+        log::info!("{error}");
+        return Err(error);
+    }
+    Ok(stops)
+}
+
+/// Optional discovery APIs retain their shape, but surface lookup errors and
+/// return no workspace. They must never retry an unbounded walk.
+fn report_workspace_walk_error(error: String) {
+    eprintln!("error: {error}");
+}
+
+fn effective_home_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if TEST_HOME_LOOKUPS_FAIL.with(|fail| fail.get()) {
+        return None;
+    }
+    dirs::home_dir()
 }
 
 fn effective_login_home() -> Option<PathBuf> {
+    #[cfg(test)]
+    if TEST_HOME_LOOKUPS_FAIL.with(|fail| fail.get()) {
+        return None;
+    }
     #[cfg(test)]
     if let Some(login) = TEST_LOGIN_HOME.with(|c| c.borrow().clone()) {
         return Some(login);
@@ -1218,6 +1258,7 @@ fn effective_login_home() -> Option<PathBuf> {
 
 #[cfg(test)]
 thread_local! {
+    static TEST_HOME_LOOKUPS_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Per-thread login home for tests. The passwd database cannot be pointed
     /// at a temp dir, so a test that needs "`$HOME` is not the login home"
     /// names the login home here and leaves `$HOME` alone.
@@ -1244,8 +1285,37 @@ pub(crate) fn set_test_login_home(path: &Path) -> TestLoginHomeGuard {
     TestLoginHomeGuard
 }
 
+/// Inject failure of both lookup providers without changing process environment.
+#[cfg(test)]
+pub(crate) fn fail_test_home_lookups() -> impl Drop {
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            TEST_HOME_LOOKUPS_FAIL.with(|fail| fail.set(false));
+        }
+    }
+    TEST_HOME_LOOKUPS_FAIL.with(|fail| fail.set(true));
+    Guard
+}
+
+/// Bound the isolated lookup-failure child so a regression cannot hang the suite.
+#[cfg(test)]
+pub(crate) fn wait_for_home_lookup_test(mut child: std::process::Child) -> std::process::Output {
+    let deadline = std::time::Instant::now()
+        + crate::testing::load_aware_timeout(std::time::Duration::from_secs(30));
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("home lookup regression child timed out");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    child.wait_with_output().unwrap()
+}
+
 fn is_walk_stop(path: &Path, stops: &[PathBuf]) -> bool {
-    stops.iter().any(|stop| paths_same(path, stop))
+    stops.is_empty() || stops.iter().any(|stop| paths_same(path, stop))
 }
 
 fn paths_same(left: &Path, right: &Path) -> bool {
@@ -1330,7 +1400,10 @@ fn resolve_workspace_root_stopping_at(
 /// directory), stopping at `$HOME` / login home. Used by `plexi agent` lookup
 /// verbs (`list`, `show`, `spawn`).
 pub fn resolve_agent_lookup_workspace_root(start: &Path) -> Option<PathBuf> {
-    resolve_agent_lookup_workspace_root_stopping_at(start, &workspace_walk_stops())
+    let stops = workspace_walk_stops()
+        .map_err(report_workspace_walk_error)
+        .ok()?;
+    resolve_agent_lookup_workspace_root_stopping_at(start, &stops)
 }
 
 pub(crate) fn resolve_agent_lookup_workspace_root_stopping_at(
@@ -1357,7 +1430,10 @@ pub(crate) fn resolve_agent_lookup_workspace_root_stopping_at(
 /// ancestor that contains `.plexi/` (or channel dir) or `.git`, stopping at
 /// `$HOME` / login home. Used by `plexi agent create` when `--global` is not set.
 pub fn resolve_agent_create_workspace_root(start: &Path) -> Option<PathBuf> {
-    resolve_agent_create_workspace_root_stopping_at(start, &workspace_walk_stops())
+    let stops = workspace_walk_stops()
+        .map_err(report_workspace_walk_error)
+        .ok()?;
+    resolve_agent_create_workspace_root_stopping_at(start, &stops)
 }
 
 pub(crate) fn resolve_agent_create_workspace_root_stopping_at(
@@ -1414,7 +1490,9 @@ pub(crate) fn resolve_entry(
 /// to turn a bare "no WASM runtime" miss into an actionable message pointing
 /// the developer at the path-open form.
 pub(crate) fn find_dev_pack_plugin(id: &str, start: &Path) -> Option<PathBuf> {
-    let stops = workspace_walk_stops();
+    let stops = workspace_walk_stops()
+        .map_err(report_workspace_walk_error)
+        .ok()?;
     let mut current = start.to_path_buf();
     loop {
         if is_walk_stop(&current, &stops) {
@@ -1852,6 +1930,82 @@ mod tests {
             result.is_none(),
             "home dir must not be a workspace root even when .plexi exists"
         );
+    }
+
+    #[test]
+    fn missing_home_lookups_find_no_workspace() {
+        if std::env::var_os("PLEXI_1345_REGISTRY_CHILD").is_some() {
+            assert!(std::env::var_os("HOME").is_none());
+            // The child owns its logger, so concurrent tests cannot affect this count.
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            struct WalkFailureLogs(AtomicUsize);
+            impl log::Log for WalkFailureLogs {
+                fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                    true
+                }
+                fn log(&self, record: &log::Record<'_>) {
+                    if record
+                        .args()
+                        .to_string()
+                        .starts_with("workspace walk refused:")
+                    {
+                        self.0.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                fn flush(&self) {}
+            }
+            static LOGS: WalkFailureLogs = WalkFailureLogs(AtomicUsize::new(0));
+            log::set_logger(&LOGS).unwrap();
+            log::set_max_level(log::LevelFilter::Info);
+            let _failed = fail_test_home_lookups();
+            let cwd = std::env::current_dir().unwrap();
+            let error = try_resolve_workspace_root_with_channel(&cwd, &registry_config_dir())
+                .expect_err("missing home boundaries must be an error");
+            assert!(error.contains("HOME lookup"), "{error}");
+            assert!(error.contains("login-home"), "{error}");
+            assert!(error.contains("set HOME"), "{error}");
+            assert!(
+                resolve_workspace_root(&cwd).is_none(),
+                "failed home lookups must not discover an ancestor workspace"
+            );
+            assert!(resolve_agent_lookup_workspace_root(&cwd).is_none());
+            assert!(resolve_agent_create_workspace_root(&cwd).is_none());
+            assert!(find_dev_pack_plugin("anything", &cwd).is_none());
+            assert_eq!(LOGS.0.load(Ordering::Relaxed), 5, "log each failed walk once");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("project/src");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(tmp.path().join(registry_config_dir()).join("agents")).unwrap();
+        fs::create_dir_all(tmp.path().join(".plexi/agents")).unwrap();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::registry::tests::missing_home_lookups_find_no_workspace",
+                "--nocapture",
+            ])
+            .env("PLEXI_1345_REGISTRY_CHILD", "1")
+            .env_remove("HOME")
+            .env_remove("PLEXI_SOCKET")
+            .env_remove("PLEXI_CHANNEL")
+            .current_dir(&cwd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let output = wait_for_home_lookup_test(child);
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("HOME lookup"), "{stderr}");
+        assert!(stderr.contains("login-home"), "{stderr}");
+        assert!(stderr.contains("set HOME"), "{stderr}");
     }
 
     #[test]

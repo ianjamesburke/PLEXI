@@ -45,18 +45,21 @@ pub(super) fn describe_plugin_init_collision(plugin_dir: &std::path::Path, name:
 /// Where `plugin init <name>` without `--global` scaffolds when run from
 /// `cwd`: `<workspace>/<channel_dir>/plugins/<name>`, or `None` outside a
 /// workspace.
-fn plugin_init_workspace_dir(cwd: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+fn plugin_init_workspace_dir(
+    cwd: &std::path::Path,
+    name: &str,
+) -> Result<Option<std::path::PathBuf>, String> {
     let channel_dir = plugin_init_config_dir();
     // The registry's walk stops at `$HOME` and at the login home, so a
     // redirected `HOME` never makes the installed profile dir a workspace
     // (stint 1337).
-    let root = crate::app::registry::resolve_workspace_root_with_channel(cwd, &channel_dir);
+    let root = crate::app::registry::try_resolve_workspace_root_with_channel(cwd, &channel_dir)?;
     log::info!(
         "plugin_init: workspace walk from {} for {channel_dir}/ found {:?}",
         cwd.display(),
         root.as_ref().map(|r| r.display().to_string())
     );
-    root.map(|root| root.join(&channel_dir).join("plugins").join(name))
+    Ok(root.map(|root| root.join(&channel_dir).join("plugins").join(name)))
 }
 
 /// The name becomes the scaffold's `[plugin] id`, which the manifest load
@@ -121,8 +124,12 @@ pub fn plugin_init(
         crate::app::registry::plugins_dir().join(name)
     } else {
         match plugin_init_workspace_dir(&cwd, name) {
-            Some(dir) => dir,
-            None => {
+            Ok(Some(dir)) => dir,
+            Err(error) => {
+                eprintln!("error: {error}");
+                return 1;
+            }
+            Ok(None) => {
                 eprintln!(
                     "error: no workspace found (no {channel_dir}/ directory in any ancestor)."
                 );
@@ -3394,6 +3401,72 @@ mod scaffold_marketplace_tests {
 mod plugin_init_workspace_walk_tests {
     use super::{plugin_init_config_dir, plugin_init_name_error, plugin_init_workspace_dir};
 
+    #[test]
+    fn missing_home_lookups_refuse_plugin_writes() {
+        const CHILD: &str = "PLEXI_1345_CHILD";
+        if let Some(profile) = std::env::var_os(CHILD) {
+            let _profile = crate::config::set_test_profile_dir(profile.into());
+            assert!(
+                std::env::var_os("HOME").is_none(),
+                "HOME must be unset, not empty"
+            );
+            let _failed = crate::app::registry::fail_test_home_lookups();
+            assert_eq!(
+                super::plugin_init("must-not-write", "wasm", false, false, None),
+                1
+            );
+            assert_eq!(crate::cli::install::install_workspace_pack_cli(), 1);
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("project/src");
+        let profile = tmp.path().join("test-profile");
+        let install_profile = tmp.path().join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&cwd).unwrap();
+        for marker in [&profile, &install_profile] {
+            std::fs::create_dir_all(marker).unwrap();
+            std::fs::write(
+                marker.join("plugins.toml"),
+                "invalid manifest: must not be read",
+            )
+            .unwrap();
+        }
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "cli::plugin::plugin_init_workspace_walk_tests::missing_home_lookups_refuse_plugin_writes", "--nocapture"])
+            .env(CHILD, tmp.path().join("global/test-profile"))
+            .env_remove("HOME")
+            .env_remove("PLEXI_SOCKET")
+            .env_remove("PLEXI_CHANNEL")
+            .current_dir(&cwd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let output = crate::app::registry::wait_for_home_lookup_test(child);
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr.matches("set HOME").count(), 2, "{stderr}");
+        assert!(stderr.contains("login-home"), "{stderr}");
+        assert!(stderr.contains("HOME lookup"), "{stderr}");
+        for marker in [&profile, &install_profile] {
+            assert_eq!(
+                std::fs::read_dir(marker).unwrap().count(),
+                1,
+                "commands must write nothing"
+            );
+            assert_eq!(
+                std::fs::read_to_string(marker.join("plugins.toml")).unwrap(),
+                "invalid manifest: must not be read"
+            );
+        }
+    }
+
     /// Stint 1344: the name becomes the `[plugin] id`, so a name the load
     /// check would refuse is refused before anything is written.
     #[test]
@@ -3421,7 +3494,7 @@ mod plugin_init_workspace_walk_tests {
         let _login = crate::app::registry::set_test_login_home(&login_home);
 
         assert_eq!(
-            plugin_init_workspace_dir(&cwd, "myapp"),
+            plugin_init_workspace_dir(&cwd, "myapp").unwrap(),
             None,
             "the login home's profile dir is not a workspace"
         );
@@ -3440,7 +3513,7 @@ mod plugin_init_workspace_walk_tests {
         let _login = crate::app::registry::set_test_login_home(&login_home);
 
         assert_eq!(
-            plugin_init_workspace_dir(&cwd, "myapp"),
+            plugin_init_workspace_dir(&cwd, "myapp").unwrap(),
             Some(workspace.join(&channel_dir).join("plugins").join("myapp"))
         );
     }
