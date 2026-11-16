@@ -661,7 +661,7 @@ fn component_load_error(plugin_id: &str, error: wasmtime::Error) -> wasmtime::Er
         let package = host_wit_package();
         log::info!("plugin::{plugin_id}: incompatible SDK (host WIT {package}): {error:#}");
         error.context(format!(
-            "plugin '{plugin_id}' was built against an older SDK; rebuild against the current SDK (host WIT package {package})"
+            "plugin '{plugin_id}' was built against a different SDK; rebuild against the current SDK (host WIT package {package})"
         ))
     } else {
         error
@@ -976,6 +976,36 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    fn wit_snapshot_path(root: &Path, path: &Path) -> String {
+        path.strip_prefix(root)
+            .unwrap()
+            .components()
+            .map(|component| component.as_os_str().to_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    #[test]
+    fn wit_snapshot_paths_use_forward_slashes() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let path = root.join("wit").join("deps").join("nested.wit");
+        assert_eq!(wit_snapshot_path(&root, &path), "wit/deps/nested.wit");
+    }
+
+    #[test]
+    fn incompatible_sdk_message_is_version_neutral() {
+        let error = component_load_error(
+            "com.plexi.incompatible",
+            wasmtime::Error::msg("type mismatch"),
+        );
+        let message = error.to_string();
+        assert!(message.contains("a different SDK"), "{message}");
+        assert!(
+            message.contains("rebuild against the current SDK"),
+            "{message}"
+        );
+    }
+
     #[test]
     fn wit_sources_match_version_snapshot() {
         use sha2::{Digest, Sha256};
@@ -999,14 +1029,14 @@ mod tests {
                 }
             }
         }
-        sources.sort();
+        sources.sort_by_key(|path| wit_snapshot_path(&root, path));
         let actual: String = sources
             .iter()
             .map(|path| {
                 format!(
                     "{:x}  {}\n",
                     Sha256::digest(std::fs::read(path).unwrap()),
-                    path.strip_prefix(&root).unwrap().display()
+                    wit_snapshot_path(&root, path)
                 )
             })
             .collect();
@@ -1045,6 +1075,7 @@ mod tests {
         .err()
         .expect("previous record shape must be rejected");
         let message = error.to_string();
+        assert!(message.contains("a different SDK"), "{message}");
         assert!(
             message.contains("rebuild against the current SDK"),
             "{error:#}"
