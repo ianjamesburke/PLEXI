@@ -73,6 +73,10 @@ pub(crate) struct PendingNotification {
     pub tombstoned: bool,
     /// Persisted before attempting an action; prevents replay after a crash.
     pub delivery_unknown: bool,
+    /// Entered as `NotifySource::HostIntegrity`: a notice about the user's own
+    /// data. Stamped by `enqueue_notification`. It is admitted past the queue
+    /// cap and never expires on restore; only acknowledgment removes it.
+    pub host_integrity: bool,
     /// When `Some(t)`, the notification is invisible and exempt from timeout
     /// until `t` has elapsed (snooze). `None` means deliver immediately.
     pub deliver_after: Option<std::time::Instant>,
@@ -138,6 +142,7 @@ impl Default for PendingNotification {
             enqueued_at: std::time::Instant::now(),
             tombstoned: false,
             delivery_unknown: false,
+            host_integrity: false,
             deliver_after: None,
             origin_in_view: false,
         }
@@ -192,6 +197,8 @@ struct PersistedNotification {
     tombstoned: bool,
     #[serde(default)]
     delivery_unknown: bool,
+    #[serde(default)]
+    host_integrity: bool,
     // deliver_after (snooze) is session-only — not persisted.
     // image_pipe_id and response_file are session handles — not persisted.
 }
@@ -238,6 +245,7 @@ pub(crate) fn try_save_pending_notifications_to(
                 enqueued_at_secs,
                 tombstoned: n.tombstoned,
                 delivery_unknown: n.delivery_unknown,
+                host_integrity: n.host_integrity,
             }
         })
         .collect();
@@ -266,7 +274,8 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
         .into_iter()
         .filter_map(|p| {
             let age_secs = now_sys.saturating_sub(p.enqueued_at_secs);
-            if age_secs > TTL_SECS {
+            // A notice about the user's own data stays until acknowledged.
+            if age_secs > TTL_SECS && !p.host_integrity {
                 return None;
             }
             let enqueued_at = std::time::Instant::now()
@@ -302,6 +311,7 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
                 enqueued_at,
                 tombstoned: true, // source pane is gone
                 delivery_unknown: p.delivery_unknown,
+                host_integrity: p.host_integrity,
                 deliver_after: None,   // snooze is session-only
                 origin_in_view: false, // session-only, re-derived each frame
             })
@@ -662,7 +672,13 @@ impl PlexiApp {
             return false;
         }
 
-        if self.pending_notifications.len() >= MAX_PENDING_NOTIFICATIONS {
+        notification.host_integrity = source == NotifySource::HostIntegrity;
+        // The cap protects against floods from panes, views and guests. A
+        // notice about the user's own data is host-originated and rare, and
+        // rejecting it would lose it for good, so it is admitted past the cap.
+        if self.pending_notifications.len() >= MAX_PENDING_NOTIFICATIONS
+            && !notification.host_integrity
+        {
             log::info!(
                 "notify: rejected source={} title='{}' — live queue is full (limit={MAX_PENDING_NOTIFICATIONS})",
                 source.as_str(),

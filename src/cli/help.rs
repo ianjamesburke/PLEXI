@@ -47,8 +47,9 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
 
 /// The clap command tree with every release-gated surface hidden for `enabled`.
 ///
-/// Single source for help, completions, and parsing so a gated command is never
-/// advertised on a channel whose execution-time gate would refuse it. Hidden
+/// Single source for help and parsing so a gated command is never advertised
+/// on a profile whose execution-time gate would refuse it. Completions hide
+/// every experiment without reading the profile (`render_completions`). Hidden
 /// commands still parse, so the `exit_if_feature_disabled` backstop in `main`
 /// keeps producing the standard unavailable message.
 pub fn gated_command() -> clap::Command {

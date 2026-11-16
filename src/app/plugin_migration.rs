@@ -395,19 +395,8 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
     let ready = journal.join("ready");
     let done = journal.join("complete");
     if done.is_file() {
-        if old.exists() {
-            let mut failure = MigrationFailure::new(
-                OPERATION_TREE,
-                root,
-                "legacy apps/ reappeared after plugin migration; use plugins/ and schema_version = 2",
-            )
-            .plain("The old apps folder came back after your plugins were already upgraded.")
-            .file(old.clone())
-            .hint("move the packages you want into plugins/ with a schema_version = 2 manifest, then move apps/ out of the profile and relaunch.");
-            failure.unchanged = true;
-            return Err(Box::new(failure));
-        }
-        return Ok(());
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        return settle_reappeared_apps(root, &today);
     }
     if !old.exists() && !backup.exists() {
         return Ok(());
@@ -639,6 +628,191 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
         count_entries(&new),
     ));
     Ok(())
+}
+
+/// After a completed migration, `apps/` is either absent (nothing to do), a
+/// host-seeded core pack (moved aside to `apps.old-<date>[-n]`), or user
+/// content (fatal, left in place).
+fn settle_reappeared_apps(root: &Path, date: &str) -> Result<(), Box<MigrationFailure>> {
+    let (old, new) = (root.join("apps"), root.join("plugins"));
+    if let Some(packages) = reseeded_core_packages(&old, &new) {
+        return set_aside_reseeded_core(root, &old, packages, date);
+    }
+    if old.exists() || old.is_symlink() {
+        let mut failure = MigrationFailure::new(
+            OPERATION_TREE,
+            root,
+            "legacy apps/ reappeared after plugin migration; use plugins/ and schema_version = 2",
+        )
+        .plain("The old apps folder came back after your plugins were already upgraded.")
+        .file(old.clone())
+        .hint("move the packages you want into plugins/ with a schema_version = 2 manifest, then move apps/ out of the profile and relaunch.");
+        failure.unchanged = true;
+        return Err(Box::new(failure));
+    }
+    Ok(())
+}
+
+/// The stamp a 0.4 host writes into `apps/` after seeding the core pack.
+const LEGACY_CORE_STAMP: &str = ".core_build";
+
+/// How many dated names a set-aside tries before failing closed.
+const SET_ASIDE_ATTEMPTS: usize = 100;
+
+/// Set-aside notices waiting for their profile's host, keyed by the profile
+/// root that was migrated. Drained per profile by [`take_set_aside_notices`].
+static SET_ASIDE_NOTICES: std::sync::Mutex<Vec<(PathBuf, String)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Notices for `apps/` folders this process moved aside in `profile`, for its
+/// host to show once at startup. Notices for other profiles stay queued.
+pub(crate) fn take_set_aside_notices(profile: &Path) -> Vec<String> {
+    let mut queued = SET_ASIDE_NOTICES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (taken, kept) = std::mem::take(&mut *queued)
+        .into_iter()
+        .partition(|(root, _)| root == profile);
+    *queued = kept;
+    taken.into_iter().map(|(_, notice)| notice).collect()
+}
+
+fn is_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_dir())
+}
+
+/// The packages of a reappeared `apps/` when it has the shape a still-running
+/// 0.4 host seeds on its own: a real directory with the core stamp as a real
+/// file, and real package directories whose names `plugins/` already holds as
+/// real directories. `None` (stays fatal) for anything else: no stamp, a
+/// symlink anywhere at the top level or among the destinations, a name
+/// `plugins/` lacks, a non-directory entry, or an unreadable entry. Package
+/// contents are not compared: a 0.4 core package cannot be proven pristine
+/// (no 0.4 hashes, and `plugins/` copies may be newer), and the rename keeps
+/// every byte, so a user edit inside one is preserved and reported, not lost.
+fn reseeded_core_packages(old: &Path, new: &Path) -> Option<usize> {
+    if !is_real_dir(old) || !is_real_dir(new) {
+        return None;
+    }
+    let stamp = std::fs::symlink_metadata(old.join(LEGACY_CORE_STAMP)).ok()?;
+    if !stamp.file_type().is_file() {
+        return None;
+    }
+    let mut packages = 0;
+    for entry in std::fs::read_dir(old).ok()? {
+        let entry = entry.ok()?;
+        let name = entry.file_name();
+        if name == LEGACY_CORE_STAMP {
+            continue;
+        }
+        // `DirEntry::file_type` does not follow symlinks.
+        if !entry.file_type().ok()?.is_dir() || !is_real_dir(&new.join(&name)) {
+            return None;
+        }
+        packages += 1;
+    }
+    Some(packages)
+}
+
+/// Move a host-seeded `apps/` to `apps.old-<date>[-n]` beside it and report
+/// it. Nothing is deleted. The target is reserved without replacing anything:
+/// an existing name is skipped, and a target that changed between reservation
+/// and rename fails closed.
+///
+/// A legacy writer can still be running (stint 1605 stops it from writing).
+/// Whatever it adds before the rename is inside the moved directory and kept;
+/// an `apps/` it creates afterwards is classified and moved again on the next
+/// start. No extra scan narrows that window, so none is done.
+fn set_aside_reseeded_core(
+    root: &Path,
+    old: &Path,
+    packages: usize,
+    date: &str,
+) -> Result<(), Box<MigrationFailure>> {
+    let failure = |aside: &Path, error: &dyn std::fmt::Display| {
+        Box::new(
+            MigrationFailure::new(
+                OPERATION_TREE,
+                root,
+                format!(
+                    "cannot move the host-seeded legacy apps/ aside to {}: {error}",
+                    aside.display()
+                ),
+            )
+            .plain(format!(
+                "The old apps folder came back after your plugins were already upgraded, and Plexi could not move it aside: {error}"
+            ))
+            .file(old.to_path_buf())
+            .hint("quit every running Plexi, move apps/ out of the profile, then relaunch."),
+        )
+    };
+    let mut aside = None;
+    for n in 0..SET_ASIDE_ATTEMPTS {
+        let name = match n {
+            0 => format!("apps.old-{date}"),
+            n => format!("apps.old-{date}-{n}"),
+        };
+        let candidate = root.join(name);
+        match rename_dir_no_replace(old, &candidate) {
+            Ok(()) => {
+                aside = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(failure(&candidate, &error)),
+        }
+    }
+    let Some(aside) = aside else {
+        return Err(failure(
+            &root.join(format!("apps.old-{date}-{SET_ASIDE_ATTEMPTS}")),
+            &format!("{SET_ASIDE_ATTEMPTS} dated names are already taken"),
+        ));
+    };
+    record(
+        log::Level::Warn,
+        format!(
+            "plugin_migration: legacy apps/ reappeared with the core stamp and {packages} package(s) plugins/ already has; moved aside, a file edited inside may be there source={} destination={}",
+            old.display(),
+            aside.display()
+        ),
+    );
+    let notice = format!(
+        "The old apps folder came back after your plugins were upgraded, most likely re-created by an older Plexi that was still running. Plexi moved it, with its {packages} package(s), to {}. Nothing was deleted; if you edited a file inside it, copy it from there.",
+        aside.display()
+    );
+    eprintln!("{notice}");
+    SET_ASIDE_NOTICES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push((root.to_path_buf(), notice));
+    Ok(())
+}
+
+/// Rename the directory `from` to `to` only if `to` does not exist. The
+/// target is reserved with an atomic `create_dir` (`AlreadyExists` when
+/// taken); POSIX `rename` then replaces only that still-empty directory, and
+/// fails if anything appeared in it. The reservation is released on failure.
+#[cfg(unix)]
+fn rename_dir_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(to)?;
+    std::fs::rename(from, to).inspect_err(|_| {
+        if let Err(cleanup) = std::fs::remove_dir(to) {
+            log::warn!(
+                "plugin migration set-aside: cannot release {}: {cleanup}",
+                to.display()
+            );
+        }
+    })
+}
+
+/// Not unix: an existing name is skipped by the check; a directory created
+/// between the check and the rename is not reserved (unverified on Windows).
+#[cfg(not(unix))]
+fn rename_dir_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(to).is_ok() {
+        return Err(std::io::ErrorKind::AlreadyExists.into());
+    }
+    std::fs::rename(from, to)
 }
 
 /// A package that carried scaffold metadata gets it rewritten for schema 2
@@ -1647,5 +1821,162 @@ mod tests {
         assert!(root.path().join("apps").is_dir());
         assert!(root.path().join("plugins").is_dir());
         assert!(!root.path().join(MIGRATION).join("complete").exists());
+    }
+
+    /// A migrated profile (journal complete, `plugins/` holds sudoku and logs)
+    /// where a still-running 0.4 host seeded `apps/` again: the core stamp
+    /// plus the given package directories.
+    fn reseeded_profile(apps: &[&str]) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(MIGRATION)).unwrap();
+        std::fs::write(root.path().join(MIGRATION).join("complete"), "schema=2\n").unwrap();
+        for id in ["sudoku", "logs"] {
+            std::fs::create_dir_all(root.path().join("plugins").join(id)).unwrap();
+        }
+        reseed(root.path(), apps);
+        root
+    }
+
+    fn reseed(root: &Path, apps: &[&str]) {
+        for id in apps {
+            stage_legacy(root, id, "schema_version = 1\n");
+        }
+        std::fs::write(root.join("apps").join(".core_build"), "0.4.6-build").unwrap();
+    }
+
+    fn set_aside_dirs(root: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("apps.old-"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Stint 1604: a 0.4 host still running during the upgrade re-seeds the
+    /// core pack into `apps/`. It is moved aside whole, so a file the user
+    /// edited inside a same-name package is kept there, and the move is
+    /// reported at warn level with the destination and package count.
+    #[test]
+    fn plugin_rename_reseeded_core_is_moved_aside_whole_and_reported() {
+        let root = reseeded_profile(&["sudoku", "logs"]);
+        std::fs::write(root.path().join("apps/sudoku/my-work.py"), "mine").unwrap();
+        migrate(root.path()).expect("a host-seeded apps/ must not stop startup");
+        assert!(std::fs::symlink_metadata(root.path().join("apps")).is_err());
+        let aside = match set_aside_dirs(root.path()).as_slice() {
+            [name] => root.path().join(name),
+            other => panic!("expected one set-aside folder, found {other:?}"),
+        };
+        assert_eq!(
+            std::fs::read_to_string(aside.join("sudoku/my-work.py")).unwrap(),
+            "mine"
+        );
+        assert!(aside.join(".core_build").is_file());
+        assert!(root.path().join("plugins/sudoku").is_dir());
+        let traces = EARLY_TRACES.lock().unwrap().clone();
+        let destination = format!("destination={}", aside.display());
+        assert!(
+            traces.iter().any(|(level, line)| *level == log::Level::Warn
+                && line.ends_with(&destination)
+                && line.contains("2 package(s)")
+                && line.contains("a file edited inside may be there")),
+            "no warn trace naming {destination}"
+        );
+    }
+
+    /// The dated name never replaces anything: taken names get -1, then -2,
+    /// and what was already there is untouched.
+    #[test]
+    fn plugin_rename_set_aside_collisions_get_the_next_suffix() {
+        let root = reseeded_profile(&["sudoku"]);
+        let taken = root.path().join("apps.old-2026-01-02");
+        std::fs::create_dir(&taken).unwrap();
+        std::fs::write(taken.join("keep.txt"), "earlier").unwrap();
+        settle_reappeared_apps(root.path(), "2026-01-02").unwrap();
+        reseed(root.path(), &["logs"]);
+        settle_reappeared_apps(root.path(), "2026-01-02").unwrap();
+        assert_eq!(
+            set_aside_dirs(root.path()),
+            [
+                "apps.old-2026-01-02",
+                "apps.old-2026-01-02-1",
+                "apps.old-2026-01-02-2"
+            ]
+        );
+        assert_eq!(std::fs::read_dir(&taken).unwrap().count(), 1);
+        assert!(root.path().join("apps.old-2026-01-02-1/sudoku").is_dir());
+        assert!(root.path().join("apps.old-2026-01-02-2/logs").is_dir());
+    }
+
+    /// A reappeared `apps/` the host did not seed on its own stays fatal with
+    /// the original message and is left exactly where it is: a name plugins/
+    /// lacks, no stamp, or a symlink at apps/, the stamp, a package, or the
+    /// destination package.
+    #[cfg(unix)]
+    #[test]
+    fn plugin_rename_reappeared_apps_with_user_content_or_links_stays_fatal() {
+        use std::os::unix::fs::symlink;
+        let cases: Vec<(&str, Box<dyn Fn(&Path)>)> = vec![
+            (
+                "non-core name",
+                Box::new(|root: &Path| reseed(root, &["mine"])),
+            ),
+            (
+                "no stamp",
+                Box::new(|root: &Path| {
+                    std::fs::remove_file(root.join("apps/.core_build")).unwrap()
+                }),
+            ),
+            (
+                "symlinked apps/",
+                Box::new(|root: &Path| {
+                    let target = root.join("apps-real");
+                    std::fs::rename(root.join("apps"), &target).unwrap();
+                    symlink(&target, root.join("apps")).unwrap();
+                }),
+            ),
+            (
+                "symlinked stamp",
+                Box::new(|root: &Path| {
+                    let stamp = root.join("apps/.core_build");
+                    std::fs::rename(&stamp, root.join("stamp-real")).unwrap();
+                    symlink(root.join("stamp-real"), &stamp).unwrap();
+                }),
+            ),
+            (
+                "symlinked package",
+                Box::new(|root: &Path| {
+                    let package = root.join("apps/logs");
+                    std::fs::rename(&package, root.join("logs-real")).unwrap();
+                    symlink(root.join("logs-real"), &package).unwrap();
+                }),
+            ),
+            (
+                "symlinked destination",
+                Box::new(|root: &Path| {
+                    let destination = root.join("plugins/logs");
+                    std::fs::remove_dir(&destination).unwrap();
+                    symlink(root.join("apps/logs"), &destination).unwrap();
+                }),
+            ),
+        ];
+        for (case, setup) in cases {
+            let root = reseeded_profile(&["sudoku", "logs"]);
+            setup(root.path());
+            let failure = settle_reappeared_apps(root.path(), "2026-01-02").expect_err(case);
+            assert_eq!(
+                failure.reason,
+                "legacy apps/ reappeared after plugin migration; use plugins/ and schema_version = 2",
+                "{case}"
+            );
+            assert!(failure.unchanged, "{case}");
+            assert!(
+                std::fs::symlink_metadata(root.path().join("apps")).is_ok(),
+                "{case}: apps/ must stay"
+            );
+            assert!(set_aside_dirs(root.path()).is_empty(), "{case}");
+        }
     }
 }

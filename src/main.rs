@@ -118,6 +118,7 @@ fn main() -> eframe::Result {
         cli::help::print_grouped_help();
         cli::trace::exit(0);
     }
+    exit_if_profile_free(&raw_args);
     if let Some(help) = cli::help::unknown_command_help(&raw_args, &cli::help::gated_command()) {
         eprint!("{help}");
         cli::trace::exit(2);
@@ -2008,16 +2009,8 @@ fn main() -> eframe::Result {
                         }
                         ContextCmd::List => cli::trace::exit(cli::context_list_cli()),
                     },
-                    Commands::Completions { shell } => {
-                        let s = shell.as_deref().unwrap_or("zsh");
-                        let binary_name = std::env::args()
-                            .next()
-                            .as_deref()
-                            .and_then(|p| std::path::Path::new(p).file_name())
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("plexi")
-                            .to_string();
-                        cli::trace::exit(cli::completions_cli(s, &binary_name));
+                    Commands::Completions { .. } => {
+                        unreachable!("completions exit in exit_if_profile_free")
                     }
                     Commands::Cli {
                         cmd,
@@ -2316,6 +2309,42 @@ fn experiments_repair_command(args: &[String]) -> bool {
             .skip(1)
             .find(|a| !a.starts_with('-'))
             .is_some_and(|a| matches!(a.as_str(), "experiments" | "config" | "doctor"))
+}
+
+/// Help, version and shell completions describe the CLI, not the profile
+/// (stint 1604). They print and exit here, before profile initialization or
+/// plugin migration, so the installer can generate completions against a
+/// profile another Plexi is still using. Help still reads the experiment
+/// table to hide off experiments; completions read nothing.
+fn exit_if_profile_free(raw_args: &[String]) {
+    use clap::Parser;
+    let args = cli::args::normalize_config_scope_aliases(strip_profile_args(raw_args));
+    if let Ok(cli::args::Cli {
+        command: Some(cli::args::Commands::Completions { shell }),
+        ..
+    }) = cli::args::Cli::try_parse_from(&args)
+    {
+        let binary_name = raw_args
+            .first()
+            .and_then(|p| std::path::Path::new(p).file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("plexi");
+        cli::trace::exit(cli::completions_cli(
+            shell.as_deref().unwrap_or("zsh"),
+            binary_name,
+        ));
+    }
+    if let Err(error) = cli::help::gated_command().try_get_matches_from(&args) {
+        if matches!(
+            error.kind(),
+            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+        ) {
+            if let Err(print_error) = error.print() {
+                eprintln!("cli: help output failed: {print_error}");
+            }
+            cli::trace::exit(error.exit_code());
+        }
+    }
 }
 
 /// Drops `--profile` and its value so clap sees only the arguments it models.
