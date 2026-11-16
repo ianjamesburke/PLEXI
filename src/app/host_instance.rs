@@ -301,6 +301,13 @@ mod tests {
         })
     }
 
+    /// A liveness probe with half the grace, not the production 300 ms, so a
+    /// loaded runner's slow stand-in still counts as live; it still ends
+    /// inside the grace (stint 1574).
+    fn live_within_grace(profile_dir: &Path) -> impl Fn(&Path) -> bool + '_ {
+        |endpoint| crate::cli::host::host_answers(endpoint, profile_dir, EXIT_GRACE / 2)
+    }
+
     fn endpoint_in(dir: &Path) -> PathBuf {
         dir.join("notify.sock")
     }
@@ -344,7 +351,7 @@ mod tests {
                     .read_line(&mut line)
                     .unwrap();
                 let request: serde_json::Value = serde_json::from_str(&line).unwrap();
-                let file = PathBuf::from(request["response_file"].as_str().unwrap());
+                let file = request["response_file"].as_str().unwrap();
                 let reply = match request.get("root").and_then(|r| r.as_str()) {
                     Some(root) => {
                         roots.push(PathBuf::from(root));
@@ -355,8 +362,12 @@ mod tests {
                     }
                     None => serde_json::json!([]),
                 };
-                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-                std::fs::write(&file, reply.to_string()).unwrap();
+                // The host's own write: atomic, so the launch never reads a
+                // half-written reply (stint 1574).
+                assert!(
+                    crate::rpc::write_response(file, reply.to_string().as_bytes()),
+                    "the stand-in host could not answer"
+                );
             }
             roots
         })
@@ -374,14 +385,24 @@ mod tests {
         let host = answering_host(&endpoint, 1, None);
 
         let started = std::time::Instant::now();
-        let launch = claim(profile.path(), &endpoint, None);
+        let launch = claim_or_hand_off_with(
+            profile.path(),
+            &endpoint,
+            None,
+            EXIT_GRACE,
+            &live_within_grace(profile.path()),
+            &|_, _| panic!("a launch without a path forwards nothing"),
+        );
         let elapsed = started.elapsed();
         let Ok(Launch::HandedOff(line)) = launch else {
             panic!("a live host must take the launch");
         };
+        // Any wait on the lock lasts at least the whole grace (the lock stays
+        // held), and the probe ends within half of it, so finishing inside the
+        // grace proves it was skipped without racing the clock (stint 1574).
         assert!(
-            elapsed < Duration::from_millis(100),
-            "a live host must be reported at once, took {elapsed:?}"
+            elapsed < EXIT_GRACE,
+            "a live host must be reported without waiting the {EXIT_GRACE:?} exit grace, took {elapsed:?}"
         );
         assert!(line.contains("already running on this profile"), "{line}");
         assert!(
@@ -491,10 +512,25 @@ mod tests {
         let first = claim_host(profile.path(), &endpoint).expect("the first launch is the host");
         let host = answering_host(&endpoint, 2, None);
 
-        let Ok(Launch::HandedOff(line)) = claim(profile.path(), &endpoint, Some(&root)) else {
+        let launch = claim_or_hand_off_with(
+            profile.path(),
+            &endpoint,
+            Some(&root),
+            EXIT_GRACE,
+            &live_within_grace(profile.path()),
+            &|endpoint, root| {
+                crate::cli::host::forward_focus_context(
+                    endpoint,
+                    profile.path(),
+                    root,
+                    FORWARD_TIMEOUT,
+                )
+            },
+        );
+        let Ok(Launch::HandedOff(line)) = launch else {
             panic!("a live host must take the launch's path");
         };
-        assert_eq!(host.join().unwrap(), [root.clone()]);
+        assert_eq!(host.join().unwrap(), std::slice::from_ref(&root));
         assert_eq!(
             line,
             format!("Opened {} in the running Plexi.", root.display())
@@ -512,20 +548,17 @@ mod tests {
         let endpoint = endpoint_in(profile.path());
         let first = claim_host(profile.path(), &endpoint).expect("the first launch is the host");
         let host = answering_host(&endpoint, 2, Some("context refused"));
-        let exiting = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(300));
-            drop(first);
-        });
+        // The old host exits once it has refused the path, not after a timer,
+        // so a slow launch still meets it holding the lock (stint 1574).
+        let first = std::cell::RefCell::new(Some(first));
         let sock = endpoint.clone();
 
         let launch = claim_or_hand_off_with(
             profile.path(),
             &endpoint,
             Some(project.path()),
-            Duration::from_secs(3),
-            &|endpoint| {
-                crate::cli::host::host_answers(endpoint, profile.path(), LIVE_PROBE_TIMEOUT)
-            },
+            EXIT_GRACE,
+            &live_within_grace(profile.path()),
             &|endpoint, root| {
                 let result = crate::cli::host::forward_focus_context(
                     endpoint,
@@ -534,6 +567,7 @@ mod tests {
                     FORWARD_TIMEOUT,
                 );
                 let _ = std::fs::remove_file(&sock);
+                drop(first.borrow_mut().take());
                 result
             },
         );
@@ -542,7 +576,6 @@ mod tests {
             "a refused hand-off must fall back to the lock"
         );
         host.join().unwrap();
-        exiting.join().unwrap();
     }
 
     /// Guard (passes before stint 1543 too): a held lock whose host never
