@@ -18,7 +18,6 @@ id = "kraken"
 name = "Kraken"
 version = "0.1.0"
 description = "Track market prices from the Kraken public ticker API."
-watch = true
 
 [plugin.capabilities]
 capabilities = ["timer", "net.http"]

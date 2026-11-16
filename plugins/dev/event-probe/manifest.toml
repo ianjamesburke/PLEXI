@@ -7,7 +7,6 @@ id = "event-probe"
 name = "Event Probe"
 version = "0.1.0"
 description = "POC: declares one event stream and emits ticks for subscription testing"
-watch = true
 
 [plugin.capabilities]
 capabilities = []

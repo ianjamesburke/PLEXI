@@ -13,7 +13,6 @@ id = "node-click-probe"
 name = "Node Click Probe"
 version = "0.1.0"
 description = "POC: HostHarness node-targeted click fixture (stint 0414) — a bare Button whose node_id (from `plexi pane state`) is the only input; a passing click proves the AppRequest::ClickPaneNode primitive end to end."
-watch = true
 
 [plugin.capabilities]
 capabilities = []

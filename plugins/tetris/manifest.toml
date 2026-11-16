@@ -18,7 +18,6 @@ id = "tetris"
 name = "Tetris"
 version = "0.1.0"
 description = "Classic Tetris driven by the continuous WASM frame clock."
-watch = true
 
 [plugin.capabilities]
 capabilities = []
