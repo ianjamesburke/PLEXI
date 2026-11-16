@@ -4361,11 +4361,15 @@ mod tests {
             .unwrap_or_else(|_| std::env::temp_dir().join("plexi-scenes"))
     }
 
-    /// Replay the real scene prefix with a cold picker and a deliberately
-    /// delayed index result, as on a contended release worker.
+    /// Replay opening and undo in the real scenes with a cold picker and a
+    /// deliberately delayed index result, as on a contended release worker.
     #[test]
     fn notes_scenes_wait_for_background_index() {
-        for name in ["notes-trash-undo.toml", "ui-layout-matrix.toml"] {
+        for name in [
+            "one-kit-toast.toml",
+            "notes-trash-undo.toml",
+            "ui-layout-matrix.toml",
+        ] {
             let scene: Scene =
                 toml::from_str(&std::fs::read_to_string(scenes_dir().join(name)).unwrap()).unwrap();
             let out = tempfile::tempdir().unwrap();
@@ -4379,8 +4383,10 @@ mod tests {
                 seeded_approval: None,
             };
             let mut worker = None;
+            let mut after_undo = false;
+            let mut checked_labels = 0;
             for step in &scene.steps {
-                if matches!(step, Step::Key { key } if key.value == "cmd+o") {
+                if after_undo || matches!(step, Step::Key { key } if key.value == "cmd+o") {
                     let (tx, rx) = std::sync::mpsc::channel();
                     let built = runner.h.with_app_mut(|app| {
                         app.finish_notes_index_refresh_for_test();
@@ -4410,13 +4416,25 @@ mod tests {
                     }));
                 }
                 let result = runner.exec(step, &mut Vec::new());
-                if matches!(step, Step::AssertLabel { .. }) {
+                if matches!(step, Step::AssertLabel { .. }) && worker.is_some() {
                     worker.take().unwrap().join().unwrap();
                     assert!(result.is_ok(), "{name}: {result:?}");
-                    break;
+                    assert!(
+                        runner.h.with_app(|app| app.notes_index_rx.is_none()),
+                        "{name}: label assertion must wait for the index after opening or undo"
+                    );
+                    checked_labels += 1;
+                    if checked_labels == 2 {
+                        break;
+                    }
                 }
                 result.unwrap();
+                after_undo = matches!(step, Step::Key { key } if key.value == "cmd+z");
             }
+            assert_eq!(
+                checked_labels, 2,
+                "{name}: opening and undo must be covered"
+            );
         }
     }
 
