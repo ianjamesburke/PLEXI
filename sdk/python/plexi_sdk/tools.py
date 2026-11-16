@@ -22,8 +22,9 @@ tool, for every app. This module collapses that to a decorator::
 whatever effects the tool returned) or ``None`` when the event is not a tool
 call — so an app's ``update()`` never grows a per-tool arm.
 
-A tool that only reads app state passes ``read_only=True``; the Assistant runs
-those without a write-grant prompt. Raising inside a tool is reported to the
+``read_only`` is a label the Assistant shows; it grants nothing. Every plugin
+tool call goes through the permission monitor, and Plan posture withholds all
+plugin tools. Raising inside a tool is reported to the
 Assistant as that call's ``error`` — never as a crashed app.
 """
 

@@ -1150,13 +1150,24 @@ impl AssistantView {
     /// Evaluate one tool for the assistant actor against `target`, the name
     /// the grant store knows it by under `target_type`.
     ///
-    /// Plan posture denies every write tool before the grant store is
-    /// consulted at all — a plan may read, never act.
+    /// Plan posture denies before the grant store is consulted at all: a
+    /// plan may read, never act. Only a host tool's `read_only` is trusted,
+    /// because the host wrote it. A plugin connector's `read_only` is the
+    /// plugin's own claim and the host cannot check it against what the tool
+    /// does, so every plugin connector is denied in Plan (stint 1349).
     fn decide(&self, tool: &AiTool, target_type: TargetType, target: &str) -> Decision {
-        if self.settings.permissions.posture.value == settings::AssistantPermissionPosture::Plan
-            && !tool.read_only
-        {
-            return Decision::Deny;
+        if self.settings.permissions.posture.value == settings::AssistantPermissionPosture::Plan {
+            if target_type == TargetType::PluginConnector {
+                log::info!(
+                    "assistant: plan posture withholds plugin tool '{}' (declared read_only={} is not trusted)",
+                    tool.name,
+                    tool.read_only
+                );
+                return Decision::Deny;
+            }
+            if !tool.read_only {
+                return Decision::Deny;
+            }
         }
         let (actor_id, _) = self.connector_actor();
         let req = PermissionRequest::new(
@@ -1296,10 +1307,12 @@ impl AssistantView {
             flow_tx: flow_tx.clone(),
             actor_scope,
         }));
-        // Host event tools stay visible. `host.events.subscribe` is admitted
-        // by the permission monitor like every other tool. Approving that
-        // sheet records the stream grant and leaves the result here so the
-        // worker finishes without a second prompt.
+        // Host event tools pass the same host decision as the native host
+        // tools, so Plan withholds them (they are not read-only).
+        // `host.events.subscribe` is admitted by the permission monitor like
+        // every other tool. Approving that sheet records the stream grant and
+        // leaves the result here so the worker finishes without a second
+        // prompt.
         let flow_tx = flow_tx.clone();
         let prepared = Arc::clone(&self.prepared_host_calls);
         let handler: HostToolHandler = Arc::new(move |name, input_json| {
@@ -1324,7 +1337,13 @@ impl AssistantView {
                 .recv()
                 .unwrap_or_else(|_| ToolCallResult::err("host_tool_failed: assistant pane closed"))
         });
-        visible_host_tools.extend(Self::host_event_tools());
+        for tool in Self::host_event_tools() {
+            if self.host_tool_decision(&tool) == Decision::Deny {
+                log::info!("assistant: host event tool '{}' withheld (deny)", tool.name);
+                continue;
+            }
+            visible_host_tools.push(tool);
+        }
         dispatcher.add_host_tools(visible_host_tools, handler);
         dispatcher
     }
@@ -5325,7 +5344,7 @@ enabled = ["allowed.tool"]
     }
 
     #[test]
-    fn read_only_connector_auto_allowed_without_broker_grant() {
+    fn connector_tools_are_visible_without_a_grant_whatever_their_label() {
         let ws = tempfile::tempdir().unwrap();
         let app = test_plugin_with_context(ws.path(), 9200);
         let (tx, _rx) = std::sync::mpsc::channel();
@@ -5353,14 +5372,14 @@ enabled = ["allowed.tool"]
             PluginEventSender::Channel(tx),
             test_scope_origin(9200, 9200),
         );
-        // No grants seeded — read-only tool must be auto-allowed; mutating
-        // tool must remain ask-gated and visible.
+        // No grants seeded: both stay visible and ask-gated. The plugin's
+        // read_only label is not an authorization (stint 1349).
         let dispatcher = app.gated_dispatcher();
         let mut visible: Vec<String> = dispatcher.all_tools().into_iter().map(|t| t.name).collect();
         visible.sort();
         assert!(
             visible.contains(&"csv.read_range".to_string()),
-            "read-only tool must be visible without an explicit grant: {visible:?}"
+            "read_only-labelled tool must be visible (ask-gated) without a grant: {visible:?}"
         );
         assert!(
             visible.contains(&"csv.write_cell".to_string()),
@@ -5441,7 +5460,7 @@ enabled = ["allowed.tool"]
     }
 
     #[test]
-    fn plan_posture_hides_mutating_connector_despite_allow_grant_but_keeps_reads() {
+    fn plan_posture_hides_plugin_connectors_despite_allow_grant_but_keeps_host_reads() {
         let ws = tempfile::tempdir().unwrap();
         let settings_path = ws.path().join("agents/settings.toml");
         std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
@@ -5474,6 +5493,7 @@ enabled = ["allowed.tool"]
             test_scope_origin(9207, 9207),
         );
         seed_grant(&mut app, "app.csv.write_cell", Decision::Allow);
+        seed_grant(&mut app, "app.csv.read_range", Decision::Allow);
 
         let visible: HashSet<String> = app
             .gated_dispatcher()
@@ -5482,7 +5502,9 @@ enabled = ["allowed.tool"]
             .map(|tool| tool.name)
             .collect();
 
-        assert!(visible.contains("csv.read_range"));
+        // A plugin's read_only label is its own claim (stint 1349): Plan
+        // withholds both plugin tools. Host-authored read tools stay.
+        assert!(!visible.contains("csv.read_range"));
         assert!(!visible.contains("csv.write_cell"));
         assert!(visible.contains(HOST_TOOL_PANES_LIST));
         assert!(!visible.contains(HOST_TOOL_PANES_CLOSE));
@@ -5863,6 +5885,171 @@ enabled = ["allowed.tool"]
         );
 
         tool_dispatch::unregister(9100);
+    }
+
+    fn register_echo_provider_ro(pane_id: u64, name: &str, context_id: u64, read_only: bool) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tool_dispatch::register(
+            pane_id,
+            tool_dispatch::ViewInstanceKey::detached(),
+            "test-app".to_string(),
+            vec![crate::protocol::AiTool {
+                name: name.to_string(),
+                description: "probe".to_string(),
+                input_schema: serde_json::json!({"type": "object", "properties": {}}),
+                output_schema: serde_json::json!({"type": "object"}),
+                timeout_ms: Some(2_000),
+                read_only,
+            }],
+            PluginEventSender::Channel(tx),
+            test_scope_origin(context_id, pane_id),
+        );
+        std::thread::spawn(move || {
+            while let Ok(json) = rx.recv() {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) else {
+                    continue;
+                };
+                if let Some(call_id) = value.get("call_id").and_then(|c| c.as_str()) {
+                    tool_dispatch::resolve_pending(call_id, ToolCallResult::ok("{\"ok\": true}"));
+                }
+            }
+        });
+    }
+
+    /// Record a real allow-always grant for `tool` the way a user does: the
+    /// call asks, the sheet is answered Allow always, and the call runs.
+    fn grant_through_sheet(app: &mut AssistantView, tool: &str) {
+        let rx = dispatch_on_worker(Arc::new(app.gated_dispatcher()), tool);
+        pump_until(app, "permission sheet", |a| {
+            a.model.pending_permission.is_some()
+        });
+        app.resolve_permission(PermissionChoice::AllowAlways);
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("granted call completes");
+        assert!(result.error.is_none(), "granted call failed: {result:?}");
+    }
+
+    /// What admission does with one plugin tool: `"ask"` when the permission
+    /// sheet opens, `"ran"` when it executed, `"not_found"` when withheld.
+    /// `granted` seeds an allow grant for the tool first.
+    fn plugin_tool_admission(
+        context_id: u64,
+        plan: bool,
+        read_only: bool,
+        granted: bool,
+    ) -> (bool, &'static str) {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_plugin_with_context(ws.path(), context_id);
+        register_echo_provider_ro(context_id, "label.tool", context_id, read_only);
+        if granted {
+            grant_through_sheet(&mut app, "label.tool");
+        }
+        if plan {
+            app.settings.permissions.posture.value = settings::AssistantPermissionPosture::Plan;
+        }
+        let dispatcher = Arc::new(app.gated_dispatcher());
+        let visible = dispatcher
+            .all_tools()
+            .iter()
+            .any(|t| t.name == "label.tool");
+        let rx = dispatch_on_worker(dispatcher, "label.tool");
+        let start = std::time::Instant::now();
+        let outcome = loop {
+            app.pump_turn_io();
+            if app.model.pending_permission.is_some() {
+                break "ask";
+            }
+            if let Ok(result) = rx.try_recv() {
+                let Some(error) = result.error else {
+                    break "ran";
+                };
+                assert!(
+                    error.contains("tool_not_found"),
+                    "unexpected result: {error}"
+                );
+                break "not_found";
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(5),
+                "neither a prompt nor a result"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        tool_dispatch::unregister(context_id);
+        (visible, outcome)
+    }
+
+    /// Plan posture may read, never act. A plugin's own `read_only` label is
+    /// not evidence of that, so it must not get a plugin tool past Plan.
+    #[test]
+    fn plan_posture_withholds_plugin_tools_whatever_their_read_only_label() {
+        assert_eq!(
+            plugin_tool_admission(9311, true, true, false),
+            (false, "not_found")
+        );
+        assert_eq!(
+            plugin_tool_admission(9310, true, false, false),
+            (false, "not_found")
+        );
+    }
+
+    /// An allow grant does not get a falsely read_only-labelled plugin tool
+    /// past Plan either; outside Plan the same grant runs it.
+    #[test]
+    fn plan_posture_withholds_a_granted_read_only_labelled_plugin_tool() {
+        assert_eq!(
+            plugin_tool_admission(9312, true, true, true),
+            (false, "not_found")
+        );
+        assert_eq!(
+            plugin_tool_admission(9302, false, true, true),
+            (true, "ran")
+        );
+    }
+
+    /// Pins today's behaviour: outside Plan the label changes nothing, and a
+    /// plugin tool with no grant asks either way.
+    #[test]
+    fn normal_posture_asks_for_a_plugin_tool_whatever_its_read_only_label() {
+        assert_eq!(
+            plugin_tool_admission(9301, false, true, false),
+            (true, "ask")
+        );
+        assert_eq!(
+            plugin_tool_admission(9300, false, false, false),
+            (true, "ask")
+        );
+    }
+
+    /// Host tools keep their host-authored flag in Plan: every read-only host
+    /// tool stays visible and every mutating one, event tools included, is
+    /// withheld.
+    #[test]
+    fn plan_posture_offers_exactly_the_read_only_host_tools() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_plugin_with_context(ws.path(), 9320);
+        app.settings.permissions.posture.value = settings::AssistantPermissionPosture::Plan;
+        let visible: HashSet<String> = app
+            .gated_dispatcher()
+            .all_tools()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        let host: Vec<AiTool> = AssistantView::host_tools()
+            .into_iter()
+            .chain(AssistantView::host_event_tools())
+            .collect();
+        assert!(host.iter().any(|t| t.read_only) && host.iter().any(|t| !t.read_only));
+        for tool in host {
+            assert_eq!(
+                visible.contains(&tool.name),
+                tool.read_only,
+                "{} (read_only={}) in Plan: {visible:?}",
+                tool.name,
+                tool.read_only
+            );
+        }
     }
 
     #[test]
