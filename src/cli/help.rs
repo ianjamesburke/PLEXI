@@ -133,7 +133,19 @@ pub fn decode_matches(
     enabled: impl Fn(ReleaseFeature) -> bool,
 ) -> Result<(Cli, Option<ReleaseFeature>), clap::Error> {
     use clap::FromArgMatches;
-    let blocked = blocked_feature(&matches, enabled);
+    // These commands round-trip to the host, whose cached experiment set is
+    // authoritative. Keep hiding them in help, but do not second-guess the
+    // running host using this CLI process's freshly loaded configuration.
+    let host_agent_route = matches.subcommand().is_some_and(|(name, args)| {
+        name == "agent"
+            && matches!(
+                args.subcommand_name(),
+                Some("start" | "spawn" | "open" | "reopen")
+            )
+    });
+    let blocked = blocked_feature(&matches, |feature| {
+        (host_agent_route && feature == ReleaseFeature::AgentMesh) || enabled(feature)
+    });
     let cli = Cli::from_arg_matches_mut(&mut matches)?;
     Ok((cli, blocked))
 }
@@ -651,11 +663,6 @@ mod tests {
                 ReleaseFeature::Marketplace,
             ),
             (&["plexi", "routine", "list"], ReleaseFeature::Routines),
-            (&["plexi", "agent", "start", "x"], ReleaseFeature::AgentMesh),
-            (
-                &["plexi", "agent", "spawn", "x", "--task", "y"],
-                ReleaseFeature::AgentMesh,
-            ),
             (
                 &["plexi", "agent", "fleet", "dismiss", "1"],
                 ReleaseFeature::AgentMesh,
@@ -668,6 +675,18 @@ mod tests {
         for (args, feature) in cases {
             assert_eq!(blocked(args, &[]), Some(*feature), "{args:?}");
             assert_eq!(blocked(args, &[*feature]), None, "{args:?} with it on");
+        }
+    }
+
+    #[test]
+    fn agent_mesh_gate_cli_defers_host_routes_to_the_host() {
+        for args in [
+            vec!["plexi", "agent", "start", "x"],
+            vec!["plexi", "agent", "spawn", "x", "--task", "y"],
+            vec!["plexi", "agent", "open", "x"],
+            vec!["plexi", "agent", "reopen", "session"],
+        ] {
+            assert_eq!(blocked(&args, &[]), None, "{args:?}");
         }
     }
 

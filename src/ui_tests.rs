@@ -5202,6 +5202,8 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
     #[test]
     fn screenshot_visual_escalation_panes_and_portals() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
         let mut h = PlexiUiHarness::new_sized_ppp(1440.0, 900.0, 2.0);
         let dir = tempfile::tempdir().expect("tempdir");
         h.step();

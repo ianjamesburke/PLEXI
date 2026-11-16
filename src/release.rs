@@ -100,12 +100,30 @@ pub fn feature_enabled(feature: ReleaseFeature) -> bool {
     #[cfg(test)]
     {
         return crate::config::test_profile_dir_override().is_some()
-            && crate::config::load_global_experiments().is_ok_and(|s| s.contains(&feature));
+            && feature_enabled_with_startup(feature, || {
+                crate::config::load_global_experiments().is_ok_and(|s| s.contains(&feature))
+            });
     }
     #[cfg(not(test))]
-    load_experiments()
-        .as_ref()
-        .is_ok_and(|set| set.contains(&feature))
+    feature_enabled_with_startup(feature, || {
+        load_experiments()
+            .as_ref()
+            .is_ok_and(|set| set.contains(&feature))
+    })
+}
+
+// Keep startup-only and live gates on the same decision path in production and tests.
+fn feature_enabled_with_startup(feature: ReleaseFeature, startup: impl FnOnce() -> bool) -> bool {
+    if feature == ReleaseFeature::AgentMesh {
+        return match crate::config::load_global_experiments() {
+            Ok(enabled) => enabled.contains(&feature),
+            Err(error) => {
+                log::warn!("release_gate: could not read current experiments: {error}");
+                false
+            }
+        };
+    }
+    startup()
 }
 
 pub fn log_feature_blocked(feature: ReleaseFeature) {
@@ -142,6 +160,20 @@ mod tests {
         Some("alpha"),
         Some("pr-2259"),
     ];
+
+    #[test]
+    fn agent_mesh_gate_ignores_stale_startup_config() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let path = profile.path().join("config.toml");
+        for (enabled, startup_enabled) in [(false, true), (true, false), (false, true)] {
+            std::fs::write(&path, format!("[experiments]\nagent_mesh = {enabled}\n")).unwrap();
+            assert_eq!(
+                feature_enabled_with_startup(ReleaseFeature::AgentMesh, || startup_enabled),
+                enabled
+            );
+        }
+    }
 
     #[test]
     fn every_experiment_is_off_by_default_on_every_channel() {

@@ -6,6 +6,11 @@ mod tests {
 
     fn scripted_fixture() -> (HostHarness, std::path::PathBuf) {
         let mut h = HostHarness::new();
+        std::fs::write(
+            h.profile_dir().join("config.toml"),
+            "[experiments]\nagent_mesh = true\n",
+        )
+        .unwrap();
         h.add_test_pane();
         let workspace = h.workspace_root();
         let dir = workspace
@@ -246,6 +251,11 @@ mod tests {
     #[test]
     fn global_team_run_defaults_output_under_profile_sessions() {
         let mut h = HostHarness::new();
+        std::fs::write(
+            h.profile_dir().join("config.toml"),
+            "[experiments]\nagent_mesh = true\n",
+        )
+        .unwrap();
         h.add_test_pane();
         let profile = h.profile_dir().to_path_buf();
         let global_teams = profile.join("teams");
@@ -279,6 +289,11 @@ mod tests {
     #[test]
     fn team_run_keeps_execution_cwd_separate_from_channel_state() {
         let mut h = HostHarness::new();
+        std::fs::write(
+            h.profile_dir().join("config.toml"),
+            "[experiments]\nagent_mesh = true\n",
+        )
+        .unwrap();
         h.add_test_pane();
         let workspace = h.workspace_root();
         let reply = workspace.join("reply.json");
@@ -299,6 +314,11 @@ mod tests {
     #[test]
     fn human_pane_can_run_global_team_from_live_cwd() {
         let mut h = HostHarness::new();
+        std::fs::write(
+            h.profile_dir().join("config.toml"),
+            "[experiments]\nagent_mesh = true\n",
+        )
+        .unwrap();
         let caller = h.add_focused_terminal();
         let profile = h.profile_dir().to_path_buf();
         let teams = profile.join("teams");
@@ -326,6 +346,11 @@ mod tests {
     #[test]
     fn agent_cannot_gain_team_authority_by_changing_directory() {
         let mut h = HostHarness::new();
+        std::fs::write(
+            h.profile_dir().join("config.toml"),
+            "[experiments]\nagent_mesh = true\n",
+        )
+        .unwrap();
         let caller = h.add_focused_terminal();
         h.app.windows[0]
             .panes
@@ -383,6 +408,11 @@ mod tests {
     #[test]
     fn team_run_collects_three_agent_done_results_while_hidden_and_records_trace() {
         let mut h = HostHarness::new();
+        std::fs::write(
+            h.profile_dir().join("config.toml"),
+            "[experiments]\nagent_mesh = true\n",
+        )
+        .unwrap();
         h.add_test_pane();
         let workspace = h.workspace_root();
         let dir = workspace
@@ -519,6 +549,7 @@ impl PlexiApp {
         payload: &Value,
         response_file: &str,
     ) -> Result<(), String> {
+        super::agent_open::admit_agent_mesh_route("team_run")?;
         // Keep execution, optional definition lookup, and persistent state as
         // distinct bindings. In particular, a config directory must not become
         // the authority or cwd merely because it supplied a team definition.

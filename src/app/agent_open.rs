@@ -15,6 +15,21 @@ use super::PlexiApp;
 use crate::spatial::tiling::PaneId;
 use crate::workspace::AgentHistoryRecord;
 
+/// Host-owned admission for every entry to the agent mesh, including palette
+/// paths that do not arrive over IPC. Keep the experiment decision here so
+/// clients and the host use the same current global configuration.
+pub(crate) fn admit_agent_mesh_route(request: &str) -> Result<(), String> {
+    let feature = crate::release::ReleaseFeature::AgentMesh;
+    if crate::release::feature_enabled(feature) {
+        return Ok(());
+    }
+    log::info!(
+        "release_gate: denied request={request} experiment={}",
+        feature.key()
+    );
+    Err(crate::release::feature_unavailable_text(feature))
+}
+
 /// What `agent open` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentOpenOutcome {
@@ -77,7 +92,10 @@ impl PlexiApp {
                     outcome.as_str(),
                     outcome.pane_id()
                 ),
-                Err(error) => log::warn!("palette: agent open {} failed: {error}", open.name),
+                Err(error) => {
+                    log::warn!("palette: agent open {} failed: {error}", open.name);
+                    self.notify_command_refused(&format!("agent open {}", open.name), &error);
+                }
             }
         }
     }
@@ -93,6 +111,7 @@ impl PlexiApp {
         caller: Option<u64>,
         peer_ancestry: Option<&[u32]>,
     ) -> Result<AgentOpenOutcome, String> {
+        admit_agent_mesh_route("AgentOpen")?;
         if let Some(pane_id) = self.running_named_agent_pane(name) {
             // A standby pane is focused and left in Standby: it resumes only
             // on Enter or `pane send` (src/cli/AGENTS.md, owner rule).
