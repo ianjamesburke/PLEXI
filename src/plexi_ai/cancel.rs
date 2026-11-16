@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 /// Cooperative cancellation handle for an in-flight turn.
@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// [`cancel`]: CancelToken::cancel_with_reason
 #[derive(Debug, Clone)]
 pub struct CancelToken {
-    cancelled: Arc<AtomicBool>,
+    state: Arc<AtomicU8>,
     turn_id: Arc<str>,
 }
 
@@ -31,7 +31,7 @@ impl CancelToken {
 
     pub(crate) fn for_turn(turn_id: impl Into<Arc<str>>) -> Self {
         Self {
-            cancelled: Arc::new(AtomicBool::new(false)),
+            state: Arc::new(AtomicU8::new(0)),
             turn_id: turn_id.into(),
         }
     }
@@ -43,17 +43,30 @@ impl CancelToken {
     }
 
     pub(crate) fn cancel_with_reason(&self, reason: &str) {
-        self.cancelled.store(true, Ordering::Release);
-        log::info!("turn cancelled turn_id={} reason={reason}", self.turn_id);
+        // Bit 0 rejects stale work; bit 1 records worker completion. Keep
+        // rejecting stale work after completion, but only log a live cancel.
+        if self.state.fetch_or(1, Ordering::AcqRel) == 0 {
+            log::info!("turn cancelled turn_id={} reason={reason}", self.turn_id);
+        }
+    }
+
+    pub(crate) fn mark_finished(&self) {
+        self.state.fetch_or(2, Ordering::AcqRel);
+    }
+
+    pub(crate) fn finished() -> Self {
+        let token = Self::new();
+        token.mark_finished();
+        token
     }
 
     /// True once any clone of this token has been cancelled.
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.state.load(Ordering::Acquire) & 1 != 0
     }
 
     pub(crate) fn same_turn(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.cancelled, &other.cancelled)
+        Arc::ptr_eq(&self.state, &other.state)
     }
 
     /// A queued request must not keep its worker alive after the owner cancels.

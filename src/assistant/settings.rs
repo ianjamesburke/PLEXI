@@ -2,8 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::protocol::ModelTier;
 use crate::broker::Decision;
+use crate::protocol::ModelTier;
 
 /// One Assistant settings layer, in increasing precedence order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,6 +337,10 @@ pub struct SettingsLoader {
 }
 
 impl SettingsLoader {
+    pub(crate) fn watch_paths(&self) -> [&Path; 3] {
+        [&self.user_path, &self.workspace_path, &self.local_path]
+    }
+
     pub fn new(profile_dir: &Path, workspace_root: &Path) -> Self {
         let workspace_agents_dir = workspace_root
             .join(crate::config::workspace_channel_dir())

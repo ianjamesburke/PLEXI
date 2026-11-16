@@ -227,20 +227,29 @@ fn turn_lifecycle_agent_reload_cancels_dispatchers() {
 
 #[test]
 fn turn_lifecycle_executed_tool_retains_cancelled_transcript_row() {
-    check_executed_tool_transcript(false, false);
+    check_executed_tool_transcript(false, false, false);
 }
 
 #[test]
 fn turn_lifecycle_cancel_during_execution_retains_transcript_row() {
-    check_executed_tool_transcript(true, false);
+    check_executed_tool_transcript(true, false, false);
 }
 
 #[test]
 fn turn_lifecycle_late_completion_does_not_enter_next_conversation() {
-    check_executed_tool_transcript(true, true);
+    check_executed_tool_transcript(true, true, false);
 }
 
-fn check_executed_tool_transcript(cancel_in_handler: bool, switch_conversation: bool) {
+#[test]
+fn turn_lifecycle_completed_before_cancel_screenshot() {
+    check_executed_tool_transcript(false, false, true);
+}
+
+fn check_executed_tool_transcript(
+    cancel_in_handler: bool,
+    switch_conversation: bool,
+    screenshot: bool,
+) {
     let ws = tempfile::tempdir().unwrap();
     let mut app = test_app(ws.path());
     app.model.streaming.in_flight = true;
@@ -289,9 +298,35 @@ fn check_executed_tool_transcript(cancel_in_handler: bool, switch_conversation: 
         app.model
             .turns
             .iter()
-            .any(|row| row.text.contains(HOST_TOOL_PANES_LIST) && row.text.contains("cancelled")),
+            .any(|row| row.text.contains(HOST_TOOL_PANES_LIST)
+                && row.text.contains(if cancel_in_handler {
+                    "cancelled"
+                } else {
+                    "completed before cancel"
+                })),
         "executed tool vanished (cancel_in_handler={cancel_in_handler})"
     );
+    if !cancel_in_handler {
+        let row = app
+            .model
+            .turns
+            .iter()
+            .find(|row| row.text.contains(HOST_TOOL_PANES_LIST))
+            .unwrap();
+        assert_eq!(row.status, Some(model::ToolStatus::Succeeded));
+        assert!(!row.text.contains("cancelled:"));
+        if !screenshot {
+            return;
+        }
+        let mut h = crate::ui_tests::PlexiUiHarness::new_sized(1000.0, 720.0);
+        h.step();
+        h.open_assistant_built(app, ws.path().to_path_buf());
+        h.run_steps(3);
+        // Keep pixels in this worktree: the implementer may only put logs in /tmp.
+        std::fs::create_dir_all("target/1597-evidence").unwrap();
+        h.save_screenshot("target/1597-evidence/completed-before-cancel.png")
+            .unwrap();
+    }
 }
 
 #[test]
@@ -387,4 +422,172 @@ fn turn_lifecycle_plan_cancels_isolated_approval_and_allows_next_request() {
         a.side_in_flight.is_none()
     });
     tool_dispatch::unregister(1578003);
+}
+
+#[test]
+fn turn_lifecycle_settings_watch_cancels_without_command() {
+    let logs = crate::testing::test_log::capture();
+    let ws = tempfile::tempdir().unwrap();
+    let mut app = test_app(ws.path());
+    let wake: Arc<dyn crate::app::ui_mailbox::UiWake> =
+        Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+    app.service_external(&wake);
+    app.model.streaming.in_flight = true;
+    let dispatcher = app.gated_dispatcher();
+    let path = ws.path().join("agents/settings.toml");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, "[permissions]\ndefault_posture = \"plan\"\n").unwrap();
+    let deadline = std::time::Instant::now()
+        + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+    while !app.turn_cancel.is_cancelled() && std::time::Instant::now() < deadline {
+        app.service_external(&wake);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        app.turn_cancel.is_cancelled(),
+        "disk change must cancel without a command: {:?}",
+        logs.lines()
+    );
+    assert_eq!(
+        dispatcher
+            .dispatch_call("watched".into(), HOST_TOOL_PANES_LIST, "{}".into())
+            .error_code
+            .as_deref(),
+        Some("cancelled")
+    );
+}
+
+#[test]
+fn turn_lifecycle_completed_turn_replacement_and_drop_are_quiet() {
+    let ws = tempfile::tempdir().unwrap();
+    let mut app = test_app(ws.path());
+    app.model.composer = "first".into();
+    let effects = app.model.submit();
+    app.execute_effects(effects);
+    wait_for_turn(&mut app);
+    let logs = crate::testing::test_log::capture();
+    app.model.composer = "second".into();
+    let effects = app.model.submit();
+    app.execute_effects(effects);
+    wait_for_turn(&mut app);
+    drop(app);
+    assert!(
+        !logs
+            .lines()
+            .iter()
+            .any(|line| line.contains("turn cancelled")),
+        "{:?}",
+        logs.lines()
+    );
+}
+
+#[test]
+fn turn_lifecycle_live_cancel_logs_once_with_identity() {
+    let logs = crate::testing::test_log::capture();
+    let token = CancelToken::for_turn("1597-live");
+    token.cancel_with_reason("test live cancellation");
+    token.cancel_with_reason("second cancel");
+    let lines: Vec<_> = logs
+        .lines()
+        .into_iter()
+        .filter(|line| line.contains("turn cancelled"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("turn_id=1597-live reason=test live cancellation"));
+}
+
+#[test]
+fn turn_lifecycle_cancel_after_committed_allow_returns_cancelled() {
+    struct CommitThenCancel {
+        monitor: Arc<crate::broker::gate::PermissionMonitor>,
+        cancel: CancelToken,
+    }
+    impl tool_dispatch::PermissionPresenter for CommitThenCancel {
+        fn present(
+            &self,
+            pending: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<crate::broker::gate::ApprovalChoice, String> {
+            let choice = crate::broker::gate::ApprovalChoice::Once;
+            self.monitor.approve_pending(pending, choice)?;
+            self.cancel.cancel();
+            Ok(choice)
+        }
+    }
+    let ws = tempfile::tempdir().unwrap();
+    let app = test_app(ws.path());
+    let mut dispatcher = app.gated_dispatcher();
+    dispatcher.set_presenter(Arc::new(CommitThenCancel {
+        monitor: app.monitor.clone(),
+        cancel: app.turn_cancel.clone(),
+    }));
+    dispatcher.add_host_tools(Vec::new(), Arc::new(|_, _| panic!("cancelled tool ran")));
+    let logs = crate::testing::test_log::capture();
+    let result = dispatcher.dispatch_call("late-allow".into(), HOST_TOOL_PANES_LIST, "{}".into());
+    assert_eq!(
+        result.error_code.as_deref(),
+        Some("cancelled"),
+        "{result:?}"
+    );
+    assert!(
+        !logs
+            .records()
+            .iter()
+            .any(|(level, _)| *level == log::Level::Error),
+        "{:?}",
+        logs.lines()
+    );
+}
+
+#[test]
+fn turn_lifecycle_settings_watch_hidden_host_all_scopes() {
+    let logs = crate::testing::test_log::capture();
+    for scope in ["user", "workspace", "local"] {
+        let mut h = crate::testing::HostHarness::new();
+        let pane = h.add_assistant_pane();
+        let (path, cancel, dispatcher) = {
+            let app = h.assistant_mut(pane);
+            app.model.streaming.in_flight = true;
+            let path = if scope == "user" {
+                app.profile_dir.join("agents/settings.toml")
+            } else {
+                app.workspace_root
+                    .join(crate::config::workspace_channel_dir())
+                    .join("agents")
+                    .join(if scope == "local" {
+                        "settings.local.toml"
+                    } else {
+                        "settings.toml"
+                    })
+            };
+            (path, app.turn_cancel.clone(), app.gated_dispatcher())
+        };
+        h.hidden_frame();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let temp = path.with_extension("new");
+        std::fs::write(&temp, "[permissions]\ndefault_posture = \"plan\"\n").unwrap();
+        std::fs::rename(temp, path).unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while !cancel.is_cancelled() && std::time::Instant::now() < deadline {
+            h.hidden_frame();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            cancel.is_cancelled(),
+            "{scope} must reload on a hidden logic pass: {:?}",
+            logs.lines()
+        );
+        assert_eq!(
+            dispatcher
+                .dispatch_call("hidden-watch".into(), HOST_TOOL_PANES_LIST, "{}".into())
+                .error_code
+                .as_deref(),
+            Some("cancelled")
+        );
+    }
 }

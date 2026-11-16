@@ -1081,11 +1081,31 @@ impl ToolDispatcher {
                 // Waiting desktop presenters observe a decision already committed by
                 // the banner. Do not submit it a second time: the monitor rejects
                 // duplicate decisions. Re-admission below still checks revocation.
-                let choice = if self.cancel.is_cancelled() {
-                    crate::broker::gate::ApprovalChoice::Deny
-                } else {
-                    choice
-                };
+                if self.cancel.is_cancelled() {
+                    // A desktop Allow may already be committed. Cancellation
+                    // must not overwrite that decision or attempt a second one.
+                    if self
+                        .monitor
+                        .approval_resolution(pending_request_id)
+                        .is_none()
+                    {
+                        if let Err(error) = self.monitor.approve_pending(
+                            pending_request_id,
+                            crate::broker::gate::ApprovalChoice::Deny,
+                        ) {
+                            // A concurrent decision can win between observation
+                            // and cleanup. Only an unresolved cleanup is a fault.
+                            if self
+                                .monitor
+                                .approval_resolution(pending_request_id)
+                                .is_none()
+                            {
+                                log::warn!("tool_dispatch: cancelled approval cleanup: {error}");
+                            }
+                        }
+                    }
+                    return ToolCallResult::coded("cancelled", &call_id, Some(pending_request_id));
+                }
                 let decided =
                     if self.monitor.approval_resolution(pending_request_id) == Some(choice) {
                         Ok(())
