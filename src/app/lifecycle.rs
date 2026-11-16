@@ -297,10 +297,6 @@ impl PlexiApp {
         );
     }
 
-    /// Handle a single pane-IPC `HostRequest`. Shared by the socket drain above
-    /// and the PGAP forwarding path (`ViewCommand::ForwardPaneRequest`, stint
-    /// 0013/0014) so capability-gated plugin requests take the identical host
-    /// code path as CLI requests arriving over PLEXI_SOCKET.
     /// Run one `AgentSpawn` request and return its JSON reply. Shared by the IPC
     /// arm and `agent open` (stint 1396), so a started named agent is launched
     /// exactly as `plexi agent start` launches it.
@@ -484,6 +480,10 @@ impl PlexiApp {
         payload
     }
 
+    /// Handle a single pane-IPC `HostRequest`. Shared by the socket drain above
+    /// and the PGAP forwarding path (`ViewCommand::ForwardPaneRequest`, stint
+    /// 0013/0014) so capability-gated plugin requests take the identical host
+    /// code path as CLI requests arriving over PLEXI_SOCKET.
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::HostRequest) {
         match &cmd {
             crate::protocol::HostRequest::SubmitAssistantTurn {

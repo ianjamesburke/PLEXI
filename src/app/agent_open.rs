@@ -162,9 +162,10 @@ impl PlexiApp {
     }
 
     /// Owner call 2: which closed run is `name`'s last chat. The newest
-    /// non-ephemeral record of this agent, on its current `harness`, with a
-    /// session id the harness can still resume, run in the same workspace as
-    /// `cwd`. Anything else starts a new chat; the reason is logged.
+    /// non-ephemeral record of this agent run in the same workspace as `cwd`,
+    /// on its current `harness`, with a session the harness can still resume.
+    /// Newer records that fail a check are skipped, each with its reason logged;
+    /// none left starts a new chat.
     pub(crate) fn last_named_agent_chat(
         &self,
         name: &str,
@@ -172,39 +173,45 @@ impl PlexiApp {
         cwd: &Path,
     ) -> Option<AgentHistoryRecord> {
         let workspace = agent_chat_workspace(cwd);
+        let adapter = crate::cli::agent::harness_adapter(harness);
         let history = self.fleet_history.borrow();
-        let newest = history.iter().rev().find(|r| {
-            r.config_name.as_deref() == Some(name)
-                && !r.ephemeral
-                && agent_chat_workspace(&r.cwd) == workspace
-        })?;
-        let skip = |reason: &str| {
+        let found = history
+            .iter()
+            .rev()
+            .filter(|r| {
+                r.config_name.as_deref() == Some(name)
+                    && !r.ephemeral
+                    && agent_chat_workspace(&r.cwd) == workspace
+            })
+            .find(|r| {
+                let skip = |reason: &str| {
+                    log::info!(
+                        "agent_open: name={name} not resuming run_id={}: {reason}",
+                        r.run_id
+                    );
+                    false
+                };
+                if r.harness != harness {
+                    return skip(&format!("ran on {}, agent now uses {harness}", r.harness));
+                }
+                let Some(session_id) = r.session_id.as_deref().filter(|s| !s.trim().is_empty())
+                else {
+                    return skip("no session id was captured");
+                };
+                let Some(adapter) = adapter else {
+                    return skip("unknown harness");
+                };
+                adapter.harness.session_exists(session_id)
+                    || skip("the harness has no saved session for it")
+            })
+            .cloned();
+        if found.is_none() {
             log::info!(
-                "agent_open: name={name} not resuming run_id={}: {reason}",
-                newest.run_id
+                "agent_open: name={name} has no resumable chat in {}",
+                workspace.display()
             );
-            None
-        };
-        if newest.harness != harness {
-            return skip(&format!(
-                "harness changed from {} to {harness}",
-                newest.harness
-            ));
         }
-        let Some(session_id) = newest
-            .session_id
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-        else {
-            return skip("no session id was captured");
-        };
-        let Some(adapter) = crate::cli::agent::harness_adapter(harness) else {
-            return skip("unknown harness");
-        };
-        if !adapter.harness.session_exists(session_id) {
-            return skip("the harness has no saved session for it");
-        }
-        Some(newest.clone())
+        found
     }
 
     /// Owner call 3: where a resumed or started pane opens. Beside the calling

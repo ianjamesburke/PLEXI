@@ -20929,6 +20929,14 @@ fn named_agent_resumes_last_chat_when_stopped() {
         let mut history = h.app.fleet_history.borrow_mut();
         history.push(researcher_history_record(&fx.proj_dir, "sess-old", "pi"));
         history.push(researcher_history_record(&fx.proj_dir, "sess-new", "pi"));
+        // Newer, but not a resumable chat on the agent's current harness: the
+        // ruling (ledger row 104) picks the newest record that is.
+        history.push(researcher_history_record(
+            &fx.proj_dir,
+            "sess-claude",
+            "claude",
+        ));
+        history.push(researcher_history_record(&fx.proj_dir, "sess-gone", "pi"));
     }
 
     let outcome = h
@@ -20944,7 +20952,10 @@ fn named_agent_resumes_last_chat_when_stopped() {
     else {
         panic!("expected a resumed chat, got {outcome:?}");
     };
-    assert_eq!(session_id, "sess-new", "the newest record is the last chat");
+    assert_eq!(
+        session_id, "sess-new",
+        "the newest resumable record on the current harness is the last chat"
+    );
     let t = h
         .app
         .windows
