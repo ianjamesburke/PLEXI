@@ -8,9 +8,12 @@
 //! host, is outside the group and survives.
 
 use crate::{Error, IoContext, Result};
-use std::io::{Read, Seek};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+
+/// The most read back from each output stream. A descendant that outlives
+/// the child may keep writing; the read stops here instead of following it.
+pub const CAPTURE_LIMIT: u64 = 1024 * 1024;
 
 pub struct Finished {
     pub status: ExitStatus,
@@ -44,14 +47,20 @@ pub fn run(mut command: Command, what: &str, limit: Duration) -> Result<Finished
         }
         if Instant::now() >= deadline {
             #[cfg(unix)]
-            // SAFETY: the child is unreaped, so its pid is still its group id.
-            unsafe {
-                libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+            {
+                // SAFETY: the child is unreaped, so its pid is still its group id.
+                let killed = unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
+                let error = std::io::Error::last_os_error();
+                if killed != 0 && error.raw_os_error() != Some(libc::ESRCH) {
+                    log::warn!("distribution: kill process group of {what} failed: {error}");
+                }
             }
             // Windows kills only the child here; capture through files means
             // a surviving descendant cannot block the caller.
             #[cfg(windows)]
-            let _ = child.kill();
+            if let Err(error) = child.kill() {
+                log::warn!("distribution: kill {what} failed: {error}");
+            }
             let reaped = child.wait();
             log::warn!(
                 "distribution: {what} exceeded {}s; killed, reaped={reaped:?}",
@@ -64,18 +73,40 @@ pub fn run(mut command: Command, what: &str, limit: Duration) -> Result<Finished
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    let read = |mut file: std::fs::File, which: &str| -> Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        file.rewind()
-            .and_then(|()| file.read_to_end(&mut bytes))
-            .context(format!("read {which} of {what}"))?;
-        Ok(bytes)
+    let read = |file: std::fs::File, which: &str| {
+        read_capped(&file, CAPTURE_LIMIT).context(format!("read {which} of {what}"))
     };
     Ok(Finished {
         status,
         stdout: read(stdout, "output")?,
         stderr: read(stderr, "errors")?,
     })
+}
+
+/// Read up to `cap` bytes from offset 0 with positioned reads, which never
+/// use or move the descriptor's shared file offset.
+fn read_capped(file: &std::fs::File, cap: u64) -> std::io::Result<Vec<u8>> {
+    #[cfg(unix)]
+    use std::os::unix::fs::FileExt;
+    #[cfg(windows)]
+    use std::os::windows::fs::FileExt;
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 64 * 1024];
+    while (bytes.len() as u64) < cap {
+        let want = chunk.len().min((cap - bytes.len() as u64) as usize);
+        let offset = bytes.len() as u64;
+        #[cfg(unix)]
+        let got = file.read_at(&mut chunk[..want], offset);
+        #[cfg(windows)]
+        let got = file.seek_read(&mut chunk[..want], offset);
+        match got {
+            Ok(0) => break,
+            Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(bytes)
 }
 
 #[cfg(all(test, unix))]
@@ -119,6 +150,33 @@ mod tests {
         let pid = pid_in(&sleeper);
         // SAFETY: test cleanup of a process this test started.
         unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    }
+
+    /// A descendant that keeps writing after the child exits neither holds
+    /// the run nor grows the capture past the cap.
+    #[test]
+    fn a_descendant_that_keeps_writing_is_capped() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = dir.path().join("writer");
+        let started = Instant::now();
+        let finished = run(
+            sh(&format!(
+                "yes plexi-bounded-capture & echo $! > '{}'; sleep 0.3",
+                writer.display()
+            )),
+            "test child",
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+        let pid = pid_in(&writer);
+        // SAFETY: test cleanup of a process this test started.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
+        assert!(finished.status.success());
+        assert!(!finished.stdout.is_empty());
+        assert!(finished.stdout.len() as u64 <= CAPTURE_LIMIT);
+        assert!(finished.stdout.starts_with(b"plexi-bounded-capture\n"));
     }
 
     /// A hung child and its descendants are killed at the limit and reaped.

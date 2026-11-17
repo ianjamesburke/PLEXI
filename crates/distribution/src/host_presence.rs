@@ -190,12 +190,26 @@ fn endpoint_presence(endpoint: &Path, deadline: Instant) -> Presence {
                 events: libc::POLLOUT,
                 revents: 0,
             };
-            let wait = deadline.saturating_duration_since(Instant::now());
-            let wait_ms = libc::c_int::try_from(wait.as_millis()).unwrap_or(libc::c_int::MAX);
-            // SAFETY: one valid pollfd.
-            let ready = unsafe { libc::poll(&mut poll, 1, wait_ms) };
-            if ready <= 0 {
-                return running_on_endpoint();
+            loop {
+                let wait = deadline.saturating_duration_since(Instant::now());
+                let wait_ms = libc::c_int::try_from(wait.as_millis()).unwrap_or(libc::c_int::MAX);
+                // SAFETY: one valid pollfd.
+                let ready = unsafe { libc::poll(&mut poll, 1, wait_ms) };
+                if ready > 0 {
+                    break;
+                }
+                // Still pending at the deadline: only a live listener does that.
+                if ready == 0 {
+                    return running_on_endpoint();
+                }
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::EINTR) && Instant::now() < deadline {
+                    continue;
+                }
+                if error.raw_os_error() == Some(libc::EINTR) {
+                    return running_on_endpoint();
+                }
+                return unknown("poll connect to", error);
             }
             let mut so_error: libc::c_int = 0;
             let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
