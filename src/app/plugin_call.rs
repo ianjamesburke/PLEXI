@@ -918,60 +918,84 @@ impl PlexiApp {
             .unwrap_or_else(|| actor_id.to_string())
     }
 
-    /// Surface the one recovery action for a host seal key that startup could
-    /// not read without prompting. This is deliberately separate from a tool
-    /// approval: it reloads or rotates the host seal and never grants a plugin
-    /// capability.
-    pub(crate) fn draw_keychain_recovery_banner(&mut self, ctx: &egui::Context) {
-        let Ok(monitor) =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-        else {
-            return;
-        };
-        let Some(item) = monitor
+    /// The open Keychain Needs you record, if any. Reads the process-cached
+    /// monitor, so a frame never opens a profile store to find nothing.
+    pub(crate) fn open_keychain_recovery(&self) -> Option<crate::broker::gate::NeedsYouRecord> {
+        crate::broker::gate::PermissionMonitor::loaded(&crate::config::config_dir())?
             .open_needs_you()
             .into_iter()
             .find(|item| item.kind == crate::broker::gate::NeedsYouKind::Keychain)
-        else {
+    }
+
+    /// Surface the one recovery action for a host seal key that startup could
+    /// not read without prompting. This is deliberately separate from a tool
+    /// approval: it reloads or rotates the host seal and never grants a plugin
+    /// capability. It owns the keyboard as [`crate::app::FocusKind::KeychainRecovery`]
+    /// and is consent-guarded (stint 1498): Continue, which lets macOS prompt,
+    /// counts only once armed; Not now counts at once.
+    pub(crate) fn draw_keychain_recovery_dialog(&mut self, ctx: &egui::Context) {
+        use crate::ui::button::ButtonKind;
+        use crate::ui::dialog::{ActionModal, DialogAction, DialogShortcut};
+        let Some(item) = self.open_keychain_recovery() else {
             return;
         };
-
-        let mut choice = None;
-        crate::ui::overlay::ModalShell::centered("keychain_recovery")
-            .title("Keychain access needed")
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -crate::ui::style::SPACE_MD))
-            .scrim(false)
-            .click_away(false)
-            .show(ctx, &self.colors, |ui| {
+        let now = std::time::Instant::now();
+        let request = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            item.id.hash(&mut hasher);
+            hasher.finish()
+        };
+        self.keychain_recovery_guard
+            .present(request, ctx.cumulative_pass_nr(), now);
+        let input = self
+            .keychain_recovery_guard
+            .input(now, self.synthetic_input_frame);
+        if !input.armed {
+            ctx.request_repaint_after(self.keychain_recovery_guard.remaining(now));
+        }
+        let colors = self.colors;
+        let actions = [
+            DialogAction::new("continue", "Continue", ButtonKind::Primary).shortcut(
+                DialogShortcut::new(&["Enter"], egui::Modifiers::NONE, egui::Key::Enter),
+            ),
+            DialogAction::new("not_now", "Not now", ButtonKind::Secondary)
+                .refuses()
+                .shortcut(DialogShortcut::new(
+                    &["Esc"],
+                    egui::Modifiers::NONE,
+                    egui::Key::Escape,
+                )),
+        ];
+        let response = ActionModal::new("keychain_recovery", "Keychain access needed", &actions)
+            .consent_input(input)
+            .show(ctx, &colors, |ui| {
                 crate::ui::typography::body_strong(
                     ui,
                     "Saved permissions are unavailable.",
-                    &self.colors,
+                    &colors,
                 );
                 crate::ui::typography::body(
                     ui,
                     "Continue lets macOS ask for access to Plexi’s saved permission key. If it remains unavailable, Plexi safely replaces that key and resets only permissions it can no longer verify.",
-                    &self.colors,
+                    &colors,
                 );
-                ui.add_space(crate::ui::style::SPACE_MD);
-                ui.horizontal_wrapped(|ui| {
-                    if ui.add(crate::ui::button::KitButton::new("Continue", &self.colors).kind(crate::ui::button::ButtonKind::Primary))
-                    .clicked_by(egui::PointerButton::Primary)
-                    {
-                        choice = Some(true);
-                    }
-                    if ui.add(crate::ui::button::KitButton::new("Not now", &self.colors).kind(crate::ui::button::ButtonKind::Secondary))
-                    .clicked_by(egui::PointerButton::Primary)
-                    {
-                        choice = Some(false);
-                    }
-                });
             });
 
-        let Some(approve) = choice else {
-            return;
+        let approve = match response.selected {
+            Some("continue") => true,
+            Some("not_now") => false,
+            _ if response.dismissed => false,
+            _ => return,
         };
         let _ = self.resolve_from_desktop(&item.id, approve, "keychain recovery");
+    }
+
+    pub(crate) fn keychain_recovery_handle_key(
+        &mut self,
+        _input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     /// Resolve a Needs-you record from a desktop click or key. Synthetic

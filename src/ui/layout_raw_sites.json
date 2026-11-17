@@ -14,9 +14,6 @@
       "draw_card_gallery | painter.text(": 3,
       "draw_card_gallery | painter.text(plan.captions[i][0], Align2::LEFT_TOP, note.join(\"\"), note_font.clone(), colors.text_dim);": 1
     },
-    "src/app/plugin_call.rs": {
-      "draw_keychain_recovery_banner | ui.horizontal_wrapped(|ui| {": 1
-    },
     "src/app/zoom.rs": {
       "draw_tree_atlas_canvas | painter.text(": 2,
       "draw_tree_atlas_canvas | let resp = ui.interact(": 1,

@@ -1,8 +1,9 @@
 //! Consent dialogs take a decision only from a fresh, real key press or click
 //! made after the arm delay (stint 1498): injected input, input in the frame
 //! the prompt appears, and OS key repeat decide nothing. One shared guard,
-//! `consent_input_admitted`, serves the permission banner and all three
-//! dialogs: event consent, the capability prompt and raw WASM review. The
+//! `consent_input_admitted`, serves the permission banner and the dialogs:
+//! event consent, the capability prompt, raw WASM review and keychain
+//! recovery (stint 1560). The
 //! capability prompt's checks live with its pane in `host::wasm_pane::tests`,
 //! which has a loadable test plugin.
 
@@ -482,4 +483,102 @@ fn screenshot_event_consent_button_row() {
     assert!(rows.iter().all(|(_, hit)| hit.top() == rows[0].1.top()));
     assert!(rows[0].1.left() > rows[1].1.left() && rows[1].1.left() > rows[2].1.left());
     drop(connection);
+}
+
+/// File the keychain recovery record startup files when it could not read
+/// the seal key. Tests run against the in-memory host-key store.
+fn file_keychain_recovery() -> (
+    std::sync::Arc<crate::broker::gate::PermissionMonitor>,
+    String,
+) {
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    let id = monitor
+        .file_needs_you(crate::broker::gate::NeedsYouFile {
+            kind: crate::broker::gate::NeedsYouKind::Keychain,
+            actor: "host".to_string(),
+            resource: "permission-mac".to_string(),
+            summary: crate::broker::gate::KEYCHAIN_ACCESS_SUMMARY.to_string(),
+            expires_at: None,
+            run_tag: Some("keychain:permission-mac".to_string()),
+        })
+        .expect("file keychain recovery");
+    (monitor, id)
+}
+
+fn keychain_resolution(
+    monitor: &crate::broker::gate::PermissionMonitor,
+    id: &str,
+) -> Option<crate::broker::gate::NeedsYouResolution> {
+    monitor
+        .get_needs_you(id)
+        .and_then(|record| record.resolution)
+}
+
+/// Stint 1560: the keychain recovery dialog owns the keyboard while its
+/// record is open, so Esc reaches "Not now" over a focused terminal and the
+/// key never reaches the PTY.
+#[test]
+fn keychain_recovery_esc_defers_over_a_focused_terminal() {
+    use crate::app::input_owner::InputOwner;
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(term));
+    h.terminal_backend(term).enable_input_tap();
+    let (monitor, id) = file_keychain_recovery();
+    h.run_frames(2);
+    assert_eq!(
+        h.app.focus_stack.last(),
+        Some(&crate::app::FocusKind::KeychainRecovery)
+    );
+
+    tap(&mut h, Key::Escape);
+    h.run_frames(1);
+    assert_eq!(
+        keychain_resolution(&monitor, &id),
+        Some(crate::broker::gate::NeedsYouResolution::Denied)
+    );
+    assert!(
+        h.terminal_backend(term).take_input_tap().is_empty(),
+        "Esc reached the terminal"
+    );
+    assert!(!h
+        .app
+        .focus_stack
+        .contains(&crate::app::FocusKind::KeychainRecovery));
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(term));
+}
+
+/// Stint 1560: Enter continues only from a fresh, real press after the arm
+/// delay, so typing through the dialog's arrival never asks macOS.
+#[test]
+fn keychain_recovery_enter_continues_only_once_armed() {
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+    h.terminal_backend(term).enable_input_tap();
+    let (monitor, id) = file_keychain_recovery();
+    h.run_frames(2);
+
+    hold(&mut h, Key::Enter);
+    assert_eq!(
+        keychain_resolution(&monitor, &id),
+        None,
+        "Enter before arming"
+    );
+    h.app.keychain_recovery_guard.backdate(ARM_DELAY);
+    repeat_then_release(&mut h, Key::Enter);
+    assert_eq!(keychain_resolution(&monitor, &id), None, "a key repeat");
+    inject_key(&mut h, term, Key::Enter);
+    assert_eq!(keychain_resolution(&monitor, &id), None, "an injected key");
+
+    tap(&mut h, Key::Enter);
+    h.run_frames(1);
+    assert_eq!(
+        keychain_resolution(&monitor, &id),
+        Some(crate::broker::gate::NeedsYouResolution::Approved)
+    );
+    assert!(
+        h.terminal_backend(term).take_input_tap().is_empty(),
+        "Enter reached the terminal"
+    );
 }
