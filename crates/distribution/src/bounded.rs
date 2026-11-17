@@ -23,17 +23,22 @@ pub struct Finished {
 
 /// Run `command`, named `what` in errors, for at most `limit`.
 pub fn run(mut command: Command, what: &str, limit: Duration) -> Result<Finished> {
-    let stdout = tempfile::tempfile().context(format!("create output file for {what}"))?;
-    let stderr = tempfile::tempfile().context(format!("create error file for {what}"))?;
+    // Named so the read-back opens its own handle: a positioned read on the
+    // child's handle would share (on Windows, move) the writer's offset.
+    let stdout =
+        tempfile::NamedTempFile::new().context(format!("create output file for {what}"))?;
+    let stderr = tempfile::NamedTempFile::new().context(format!("create error file for {what}"))?;
     command
         .stdin(Stdio::null())
         .stdout(
             stdout
+                .as_file()
                 .try_clone()
                 .context(format!("share output file for {what}"))?,
         )
         .stderr(
             stderr
+                .as_file()
                 .try_clone()
                 .context(format!("share error file for {what}"))?,
         );
@@ -73,8 +78,8 @@ pub fn run(mut command: Command, what: &str, limit: Duration) -> Result<Finished
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    let read = |file: std::fs::File, which: &str| {
-        read_capped(&file, CAPTURE_LIMIT).context(format!("read {which} of {what}"))
+    let read = |file: tempfile::NamedTempFile, which: &str| {
+        read_capped(file.path(), CAPTURE_LIMIT).context(format!("read {which} of {what}"))
     };
     Ok(Finished {
         status,
@@ -83,13 +88,14 @@ pub fn run(mut command: Command, what: &str, limit: Duration) -> Result<Finished
     })
 }
 
-/// Read up to `cap` bytes from offset 0 with positioned reads, which never
-/// use or move the descriptor's shared file offset.
-fn read_capped(file: &std::fs::File, cap: u64) -> std::io::Result<Vec<u8>> {
+/// Read up to `cap` bytes of `path` from offset 0 through a handle of its
+/// own, so the read never shares an offset with a process still writing.
+fn read_capped(path: &std::path::Path, cap: u64) -> std::io::Result<Vec<u8>> {
     #[cfg(unix)]
     use std::os::unix::fs::FileExt;
     #[cfg(windows)]
     use std::os::windows::fs::FileExt;
+    let file = std::fs::File::open(path)?;
     let mut bytes = Vec::new();
     let mut chunk = [0u8; 64 * 1024];
     while (bytes.len() as u64) < cap {
@@ -107,6 +113,25 @@ fn read_capped(file: &std::fs::File, cap: u64) -> std::io::Result<Vec<u8>> {
         }
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+    use std::io::Write;
+
+    /// The read stops at the cap and leaves the writer's offset alone, so a
+    /// later write lands after, not over, what was already written. Runs on
+    /// every platform; unrun on Windows so far.
+    #[test]
+    fn a_capped_read_never_moves_the_writers_offset() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut writer = file.as_file().try_clone().unwrap();
+        writer.write_all(b"0123456789").unwrap();
+        assert_eq!(read_capped(file.path(), 4).unwrap(), b"0123");
+        writer.write_all(b"ab").unwrap();
+        assert_eq!(read_capped(file.path(), 100).unwrap(), b"0123456789ab");
+    }
 }
 
 #[cfg(all(test, unix))]
