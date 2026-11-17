@@ -128,9 +128,10 @@ pub(crate) enum Launch {
 
 /// Become the host for the profile at `profile_dir`, whose socket is
 /// `endpoint`, or hand the launch to a live host (stint 1543). A host counts
-/// as live only if it answers a round trip; with a path (`forward`), only if
-/// it also opens that path. Any failure falls back to waiting on the lock, so
-/// a host that is quitting is replaced, never reported as running. Never
+/// as live only if it answers a round trip and acknowledges the launch: open
+/// the path (`forward`) when present, otherwise show the running window. Any
+/// failure falls back to waiting on the lock, so a host that is quitting is
+/// replaced, never reported as running. Never
 /// removes or binds the socket while another process holds the lock.
 pub(crate) fn claim(
     profile_dir: &Path,
@@ -144,7 +145,7 @@ pub(crate) fn claim(
         EXIT_GRACE,
         &|endpoint| crate::cli::host::host_answers(endpoint, profile_dir, LIVE_PROBE_TIMEOUT),
         &|endpoint, root| {
-            crate::cli::host::forward_focus_context(endpoint, profile_dir, root, FORWARD_TIMEOUT)
+            crate::cli::host::forward_host_launch(endpoint, profile_dir, root, FORWARD_TIMEOUT)
         },
     )
 }
@@ -155,7 +156,7 @@ fn claim_or_hand_off_with(
     forward: Option<&Path>,
     grace: Duration,
     live: &dyn Fn(&Path) -> bool,
-    open: &dyn Fn(&Path, &Path) -> Result<(), String>,
+    open: &impl Fn(&Path, Option<&Path>) -> Result<(), String>,
 ) -> Result<Launch, Refusal> {
     let refusal = match claim_within(profile_dir, endpoint, grace, live) {
         Ok(instance) => return Ok(Launch::Host(instance)),
@@ -165,8 +166,8 @@ fn claim_or_hand_off_with(
         return Err(refusal);
     };
     let handed = match forward {
-        None => Ok(refusal.to_string()),
-        Some(root) => open(endpoint, root)
+        None => open(endpoint, None).map(|()| refusal.to_string()),
+        Some(root) => open(endpoint, Some(root))
             .map(|()| format!("Opened {} in the running Plexi.", root.display())),
     };
     match handed {
@@ -315,7 +316,7 @@ mod tests {
     /// A stand-in host on `endpoint` that answers the next `count` requests
     /// the way the real one does: `[]` to the readiness round trip, and to
     /// `focus_context` either a context or `focus_error`. Returns the roots it
-    /// was asked to open.
+    /// was asked to open. No-root launches must use `show_host`.
     #[cfg(unix)]
     fn answering_host(
         endpoint: &Path,
@@ -360,7 +361,14 @@ mod tests {
                             None => serde_json::json!({ "context_id": 1, "root": root }),
                         }
                     }
-                    None => serde_json::json!([]),
+                    None => match request["type"].as_str().unwrap() {
+                        "list_panes" => serde_json::json!([]),
+                        "show_host" => match focus_error {
+                            Some(error) => serde_json::json!({ "error": error }),
+                            None => serde_json::json!({ "ok": true }),
+                        },
+                        other => panic!("unexpected request: {other}"),
+                    },
                 };
                 // The host's own write: atomic, so the launch never reads a
                 // half-written reply (stint 1574).
@@ -373,6 +381,67 @@ mod tests {
         })
     }
 
+    /// Window restoration must be serviced even when eframe skips App::ui.
+    #[test]
+    fn a_show_request_restores_the_window_during_hidden_logic() {
+        let mut h = crate::testing::HostHarness::new();
+        let reply_dir = tempfile::tempdir().unwrap();
+        let reply = reply_dir.path().join("show.json");
+        let request = serde_json::from_value(serde_json::json!({
+            "type": "show_host", "response_file": reply,
+        }))
+        .expect("show request wire format");
+        h.inject_ipc(request);
+        let ctx = h.app.ctx.clone();
+        let mut input = egui::RawInput::default();
+        let viewport = input.viewports.entry(egui::ViewportId::ROOT).or_default();
+        viewport.occluded = Some(true);
+        viewport.minimized = Some(true);
+        let output = ctx.run_ui(input, |ui| {
+            eframe::App::logic(&mut h.app, ui.ctx(), &mut eframe::Frame::_new_kittest());
+        });
+        let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(
+            commands.contains(&egui::ViewportCommand::Visible(true)),
+            "{commands:?}"
+        );
+        assert!(
+            commands.contains(&egui::ViewportCommand::Minimized(false)),
+            "{commands:?}"
+        );
+        assert!(
+            commands.contains(&egui::ViewportCommand::Focus),
+            "{commands:?}"
+        );
+        let response: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+        assert_eq!(response["ok"], true);
+    }
+
+    /// A no-root relaunch must ask the live host to show its window.
+    #[test]
+    fn a_no_root_launch_requests_the_live_window() {
+        let profile = tempfile::tempdir().unwrap();
+        let endpoint = endpoint_in(profile.path());
+        let _first = claim_host(profile.path(), &endpoint).expect("first host");
+        let sent = std::cell::Cell::new(false);
+        let launch = claim_or_hand_off_with(
+            profile.path(),
+            &endpoint,
+            None,
+            Duration::ZERO,
+            &|_| true,
+            &|target, root| {
+                assert_eq!(target, endpoint);
+                assert!(root.is_none());
+                sent.set(true);
+                Ok(())
+            },
+        );
+        assert!(matches!(launch, Ok(Launch::HandedOff(_))));
+        assert!(sent.get(), "a no-root relaunch must send a show request");
+    }
+
     /// Stint 1543 (and 1459): a second launch on a profile whose host holds
     /// the lock and answers a round trip is told so at once, without spending
     /// the exit grace, and never touches the socket.
@@ -382,7 +451,7 @@ mod tests {
         let profile = tempfile::tempdir().unwrap();
         let endpoint = endpoint_in(profile.path());
         let first = claim_host(profile.path(), &endpoint).expect("the first launch is the host");
-        let host = answering_host(&endpoint, 1, None);
+        let host = answering_host(&endpoint, 2, None);
 
         let started = std::time::Instant::now();
         let launch = claim_or_hand_off_with(
@@ -391,7 +460,15 @@ mod tests {
             None,
             EXIT_GRACE,
             &live_within_grace(profile.path()),
-            &|_, _| panic!("a launch without a path forwards nothing"),
+            &|endpoint, root| {
+                assert!(root.is_none());
+                crate::cli::host::forward_host_launch(
+                    endpoint,
+                    profile.path(),
+                    root,
+                    FORWARD_TIMEOUT,
+                )
+            },
         );
         let elapsed = started.elapsed();
         let Ok(Launch::HandedOff(line)) = launch else {
@@ -519,7 +596,7 @@ mod tests {
             EXIT_GRACE,
             &live_within_grace(profile.path()),
             &|endpoint, root| {
-                crate::cli::host::forward_focus_context(
+                crate::cli::host::forward_host_launch(
                     endpoint,
                     profile.path(),
                     root,
@@ -543,39 +620,42 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_failed_hand_off_falls_back_to_waiting_on_the_lock() {
-        let profile = tempfile::tempdir().unwrap();
-        let project = tempfile::tempdir().unwrap();
-        let endpoint = endpoint_in(profile.path());
-        let first = claim_host(profile.path(), &endpoint).expect("the first launch is the host");
-        let host = answering_host(&endpoint, 2, Some("context refused"));
-        // The old host exits once it has refused the path, not after a timer,
-        // so a slow launch still meets it holding the lock (stint 1574).
-        let first = std::cell::RefCell::new(Some(first));
-        let sock = endpoint.clone();
+        for with_root in [false, true] {
+            let profile = tempfile::tempdir().unwrap();
+            let project = tempfile::tempdir().unwrap();
+            let endpoint = endpoint_in(profile.path());
+            let first =
+                claim_host(profile.path(), &endpoint).expect("the first launch is the host");
+            let host = answering_host(&endpoint, 2, Some("context refused"));
+            // The old host exits once it has refused the path, not after a timer,
+            // so a slow launch still meets it holding the lock (stint 1574).
+            let first = std::cell::RefCell::new(Some(first));
+            let sock = endpoint.clone();
 
-        let launch = claim_or_hand_off_with(
-            profile.path(),
-            &endpoint,
-            Some(project.path()),
-            EXIT_GRACE,
-            &live_within_grace(profile.path()),
-            &|endpoint, root| {
-                let result = crate::cli::host::forward_focus_context(
-                    endpoint,
-                    profile.path(),
-                    root,
-                    FORWARD_TIMEOUT,
-                );
-                let _ = std::fs::remove_file(&sock);
-                drop(first.borrow_mut().take());
-                result
-            },
-        );
-        assert!(
-            matches!(launch, Ok(Launch::Host(_))),
-            "a refused hand-off must fall back to the lock"
-        );
-        host.join().unwrap();
+            let launch = claim_or_hand_off_with(
+                profile.path(),
+                &endpoint,
+                with_root.then_some(project.path()),
+                EXIT_GRACE,
+                &live_within_grace(profile.path()),
+                &|endpoint, root| {
+                    let result = crate::cli::host::forward_host_launch(
+                        endpoint,
+                        profile.path(),
+                        root,
+                        FORWARD_TIMEOUT,
+                    );
+                    let _ = std::fs::remove_file(&sock);
+                    drop(first.borrow_mut().take());
+                    result
+                },
+            );
+            assert!(
+                matches!(launch, Ok(Launch::Host(_))),
+                "a refused hand-off must fall back to the lock"
+            );
+            host.join().unwrap();
+        }
     }
 
     /// Guard (passes before stint 1543 too): a held lock whose host never

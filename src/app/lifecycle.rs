@@ -2098,6 +2098,11 @@ impl PlexiApp {
                 );
                 write_json_response(response_file, reply);
             }
+            crate::protocol::HostRequest::ShowHost { response_file } => {
+                self.show_host_window(&self.ctx);
+                log::info!("host_startup: handled show_host request: restored the running window");
+                write_json_response(response_file, serde_json::json!({"ok": true}));
+            }
             crate::protocol::HostRequest::ReloadConfig { response_file } => {
                 log::info!("config_reload: CLI requested reload");
                 self.reload_config();

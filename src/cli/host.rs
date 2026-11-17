@@ -375,31 +375,48 @@ pub(crate) fn host_answers(socket_path: &Path, profile_dir: &Path, timeout: Dura
     query_ready_status(socket_path, profile_dir, Instant::now() + timeout).is_some()
 }
 
-/// Ask the host at exactly `socket_path` to open (or focus) the context at
-/// `root`, and wait up to `timeout` for its answer. Errors name the cause.
-pub(crate) fn forward_focus_context(
+/// Ask exactly this host to open a context or show its window for a no-root
+/// relaunch, and wait up to `timeout` for its answer. Errors name the cause.
+pub(crate) fn forward_host_launch(
     socket_path: &Path,
     profile_dir: &Path,
-    root: &Path,
+    root: Option<&Path>,
     timeout: Duration,
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     let response_file = crate::rpc::response_file_in(profile_dir, "launch-open", "json");
-    let request = crate::protocol::HostRequest::FocusContext {
-        root: root.to_path_buf(),
-        response_file: Some(response_file.clone()),
+    let request = match root {
+        Some(root) => crate::protocol::HostRequest::FocusContext {
+            root: root.to_path_buf(),
+            response_file: Some(response_file.clone()),
+        },
+        None => crate::protocol::HostRequest::ShowHost {
+            response_file: response_file.clone(),
+        },
     };
     let line = serde_json::to_string(&request)
         .map(|json| format!("{json}\n"))
-        .map_err(|e| format!("encode focus_context: {e}"))?;
+        .map_err(|e| format!("encode launch request: {e}"))?;
     super::send_line_to_socket(socket_path, line.as_bytes(), timeout)
         .map_err(|e| format!("send to {}: {e:?}", socket_path.display()))?;
+    log::info!(
+        "host_startup: sent {} request to live host at {}",
+        if root.is_some() {
+            "focus_context"
+        } else {
+            "show_host"
+        },
+        socket_path.display()
+    );
     let remaining = deadline.saturating_duration_since(Instant::now());
     let content = crate::rpc::poll_string(&response_file, Some(remaining))
         .map_err(|e| format!("no answer from {}: {e}", socket_path.display()))?;
     match serde_json::from_str::<serde_json::Value>(&content) {
         Ok(reply) => match reply.get("error").and_then(|e| e.as_str()) {
             Some(error) => Err(error.to_string()),
+            None if root.is_none() && reply.get("ok").and_then(|v| v.as_bool()) != Some(true) => {
+                Err("live host did not acknowledge show_host".to_string())
+            }
             None => Ok(()),
         },
         Err(e) => Err(format!("unreadable answer: {e}")),
