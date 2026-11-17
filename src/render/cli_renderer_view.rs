@@ -1154,6 +1154,7 @@ mod tests {
                     let rctx = ViewRenderContext {
                         colors: &colors,
                         pane_id: 1,
+                        synthetic_input: false,
                     };
                     app.ui(ui, &rctx, None);
                 });
@@ -1254,6 +1255,7 @@ mod tests {
                 let rctx = ViewRenderContext {
                     colors: &colors,
                     pane_id: 1,
+                    synthetic_input: false,
                 };
                 app.ui(ui, &rctx, None);
             });

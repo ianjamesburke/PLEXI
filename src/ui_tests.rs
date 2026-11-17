@@ -4905,6 +4905,275 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         );
     }
 
+    // ── Explorer dialogs on the kit (stint 1557) ───────────────────────────────
+
+    /// An Explorer over a fresh directory holding one uniquely named file
+    /// (unique so a copy left in the real Trash is never mistaken for this
+    /// run's), with that file selected. Returns the harness, the directory,
+    /// the file and the Explorer's pane id.
+    fn explorer_with_one_file(
+        width: f32,
+        height: f32,
+    ) -> (
+        PlexiUiHarness,
+        tempfile::TempDir,
+        std::path::PathBuf,
+        crate::spatial::tiling::PaneId,
+    ) {
+        explorer_with_one_file_after(width, height, |_| {})
+    }
+
+    /// [`explorer_with_one_file`], running `before` on the harness before the
+    /// Explorer opens.
+    fn explorer_with_one_file_after(
+        width: f32,
+        height: f32,
+        before: impl FnOnce(&mut PlexiUiHarness),
+    ) -> (
+        PlexiUiHarness,
+        tempfile::TempDir,
+        std::path::PathBuf,
+        crate::spatial::tiling::PaneId,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join(format!(
+            "plexi-1557-{}.txt",
+            crate::platform::clock::now_nanos()
+        ));
+        std::fs::write(&file, b"contents").expect("write fixture");
+        let mut h = PlexiUiHarness::new_sized(width, height);
+        before(&mut h);
+        h.open_file_browser(dir.path().to_path_buf());
+        h.run_steps(3);
+        let pane = h.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .iter()
+                .find_map(|(id, p)| p.as_view().map(|_| *id))
+                .expect("the Explorer pane")
+        });
+        (h, dir, file, pane)
+    }
+
+    fn open_explorer_trash(h: &mut PlexiUiHarness) {
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Backspace);
+        h.run_steps(3);
+        assert!(
+            h.harness().query_by_label("Cancel").is_some(),
+            "Cmd+Backspace opens Move to Trash"
+        );
+    }
+
+    fn open_explorer_rename(h: &mut PlexiUiHarness) {
+        h.harness().key_press(egui::Key::F2);
+        h.run_steps(3);
+        assert!(
+            h.harness().query_by_label("Cancel").is_some(),
+            "F2 opens Rename"
+        );
+    }
+
+    /// Remove `file`'s copy from the real Trash after a test trashed it.
+    fn clear_from_trash(file: &std::path::Path) {
+        #[cfg(target_os = "macos")]
+        if let (Some(home), Some(name)) = (dirs::home_dir(), file.file_name()) {
+            let _ = std::fs::remove_file(home.join(".Trash").join(name));
+        }
+    }
+
+    /// Stint 1557: Move to Trash is destructive, so it takes only a fresh,
+    /// real Enter: not an Enter held from before the dialog, an injected Enter
+    /// or click, or Shift+Enter. A fresh Enter trashes and closes the dialog.
+    #[test]
+    fn explorer_trash_takes_only_a_fresh_real_enter() {
+        // Enter goes down before the Explorer opens (in the Explorer it would
+        // open the file), so the dialog sees only its repeats.
+        let (mut h, _dir, file, _pane) = explorer_with_one_file_after(900.0, 600.0, |h| {
+            h.harness().key_down(egui::Key::Enter);
+            h.run_steps(1);
+        });
+        let open = |h: &mut PlexiUiHarness| h.harness().query_by_label("Cancel").is_some();
+        open_explorer_trash(&mut h);
+        for _ in 0..3 {
+            h.harness().key_down(egui::Key::Enter);
+            h.step();
+        }
+        h.run_steps(2);
+        assert!(file.exists(), "a held Enter trashed the file");
+        assert!(open(&mut h), "a held Enter closed the dialog");
+        h.harness().key_up(egui::Key::Enter);
+        h.run_steps(1);
+        injected(&mut h, |h| h.harness().key_press(egui::Key::Enter));
+        assert!(file.exists(), "an injected Enter trashed the file");
+        injected(&mut h, |h| {
+            h.harness()
+                .query_all_by_label("Move to Trash")
+                .last()
+                .expect("the Move to Trash button")
+                .click()
+        });
+        assert!(file.exists(), "an injected click trashed the file");
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Enter);
+        h.run_steps(3);
+        assert!(file.exists(), "Shift+Enter trashed the file");
+        assert!(open(&mut h));
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(!file.exists(), "a fresh real Enter trashes the file");
+        assert!(!open(&mut h), "the dialog closes once the file is trashed");
+        clear_from_trash(&file);
+    }
+
+    /// Stint 1557: Esc and Cancel close Move to Trash and keep the file.
+    #[test]
+    fn explorer_trash_esc_and_cancel_keep_the_file() {
+        let (mut h, _dir, file, _pane) = explorer_with_one_file(900.0, 600.0);
+        for by_button in [false, true] {
+            open_explorer_trash(&mut h);
+            if by_button {
+                h.harness().get_by_label("Cancel").click();
+            } else {
+                h.harness().key_press(egui::Key::Escape);
+            }
+            h.run_steps(3);
+            assert!(
+                h.harness().query_by_label("Cancel").is_none(),
+                "by_button={by_button}: the dialog closes"
+            );
+            assert!(file.exists(), "by_button={by_button}: the file stays");
+        }
+    }
+
+    /// The label of the focused dialog button. A dialog's title can repeat
+    /// its action's label ("Move to Trash", "Rename"), so only buttons count.
+    fn focused_button(h: &mut PlexiUiHarness, labels: &[&str]) -> Option<String> {
+        let focused = h.with_app(|app| {
+            app.ctx
+                .memory(|m| m.focused())
+                .and_then(|id| app.ctx.read_response(id))
+                .map(|r| r.rect)
+        })?;
+        labels
+            .iter()
+            .find(|label| {
+                h.harness()
+                    .query_all_by(|node| {
+                        node.role() == egui::accesskit::Role::Button
+                            && node.label().as_deref() == Some(**label)
+                    })
+                    .any(|node| node.rect().intersects(focused))
+            })
+            .map(|label| label.to_string())
+    }
+
+    /// Stints 1493, 1505, 1514 on Move to Trash: Tab enters at Cancel (the
+    /// safe action), steps to Move to Trash and wraps both ways; Enter on the
+    /// focused Cancel cancels.
+    #[test]
+    fn explorer_trash_tab_enters_at_cancel_and_wraps() {
+        let labels = ["Cancel", "Move to Trash"];
+        let (mut h, _dir, file, _pane) = explorer_with_one_file(900.0, 600.0);
+        open_explorer_trash(&mut h);
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            tab(&mut h, false);
+            seen.push(focused_button(&mut h, &labels));
+        }
+        assert_eq!(
+            seen,
+            ["Cancel", "Move to Trash", "Cancel"].map(|l| Some(l.to_string())),
+            "Tab enters at Cancel and wraps"
+        );
+        tab(&mut h, true);
+        assert_eq!(
+            focused_button(&mut h, &labels).as_deref(),
+            Some("Move to Trash"),
+            "Shift+Tab from Cancel wraps to Move to Trash"
+        );
+        tab(&mut h, true);
+        assert_eq!(focused_button(&mut h, &labels).as_deref(), Some("Cancel"));
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(
+            file.exists(),
+            "Enter on the focused Cancel trashed the file"
+        );
+        assert!(h.harness().query_by_label("Cancel").is_none());
+    }
+
+    /// Stint 1557 on Rename: the field takes focus on open; Tab walks Rename,
+    /// Cancel, and wraps to the field; Enter on the focused Cancel cancels.
+    #[test]
+    fn explorer_rename_tab_walks_field_then_buttons() {
+        let (mut h, dir, file, pane) = explorer_with_one_file(900.0, 600.0);
+        open_explorer_rename(&mut h);
+        let field = egui::Id::new(("file_browser_rename_input", pane));
+        let focused = |h: &mut PlexiUiHarness| h.with_app(|app| app.ctx.memory(|m| m.focused()));
+        assert_eq!(focused(&mut h), Some(field), "the field takes focus");
+        let labels = ["Rename", "Cancel"];
+        tab(&mut h, false);
+        assert_eq!(focused_button(&mut h, &labels).as_deref(), Some("Rename"));
+        tab(&mut h, false);
+        assert_eq!(focused_button(&mut h, &labels).as_deref(), Some("Cancel"));
+        tab(&mut h, false);
+        assert_eq!(focused(&mut h), Some(field), "Tab wraps back to the field");
+        tab(&mut h, true);
+        assert_eq!(focused_button(&mut h, &labels).as_deref(), Some("Cancel"));
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(h.harness().query_by_label("Cancel").is_none());
+        assert!(
+            file.exists(),
+            "Enter on the focused Cancel renamed the file"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    /// Stint 1557: the Rename button commits the typed name; Esc cancels.
+    #[test]
+    fn explorer_rename_button_commits_and_esc_cancels() {
+        let (mut h, dir, file, _pane) = explorer_with_one_file(900.0, 600.0);
+        open_explorer_rename(&mut h);
+        h.harness().key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(h.harness().query_by_label("Cancel").is_none());
+        assert!(file.exists(), "Esc kept the name");
+        open_explorer_rename(&mut h);
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text("renamed.txt".to_string()));
+        h.step();
+        h.harness()
+            .query_all_by_label("Rename")
+            .last()
+            .expect("the Rename button")
+            .click();
+        h.run_steps(3);
+        assert!(!file.exists(), "the Rename button renamed the file");
+        assert!(dir.path().join("renamed.txt").exists());
+    }
+
+    /// Visual review (stint 1557): Move to Trash and Rename are `ActionModal`s
+    /// ("Cancel Esc" with "Move to Trash ↵" / "Rename ↵"), at a roomy and a
+    /// narrow window. Reviewed against "Unsaved changes".
+    #[test]
+    fn screenshot_explorer_dialogs() {
+        for (width, tag) in [(900.0, "wide"), (360.0, "narrow")] {
+            let (mut h, _dir, _file, _pane) = explorer_with_one_file(width, 560.0);
+            open_explorer_trash(&mut h);
+            h.save_screenshot(&evidence_png!(format!("_trash_{tag}")))
+                .expect("trash screenshot");
+            h.harness().key_press(egui::Key::Escape);
+            h.run_steps(3);
+            open_explorer_rename(&mut h);
+            h.save_screenshot(&evidence_png!(format!("_rename_{tag}")))
+                .expect("rename screenshot");
+        }
+    }
+
     /// Stint 0788: a pane's `plexi secret get` shows on the desktop banner
     /// with the secret and its workspace, so the person knows what Allow once
     /// releases.

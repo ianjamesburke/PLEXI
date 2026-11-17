@@ -1790,6 +1790,13 @@ impl FileBrowserView {
         Ok(target)
     }
 
+    /// Move to Trash or Rename is open. While one is, the dialog owns the
+    /// pane's keys and focus: the search bar and palette register no text
+    /// surface, so the focus reconciler cannot hand focus behind the dialog.
+    fn dialog_open(&self) -> bool {
+        self.pending_operation.is_some() || self.rename_path.is_some()
+    }
+
     fn open_rename_modal(&mut self) {
         let Some(entry) = self.selected_entry().cloned() else {
             return;
@@ -3058,120 +3065,90 @@ impl FileBrowserView {
         }
     }
 
-    fn draw_pending_operation_modal(&mut self, ctx: &egui::Context, colors: &Colors) {
-        let Some(operation) = self.pending_operation.clone() else {
+    /// Move to Trash on the shared dialog kit: "Cancel Esc" and "Move to Trash
+    /// ↵". Trash is destructive, so only a fresh, real Enter runs it: never a
+    /// held (repeating) Enter or an injected key or click (stint 1513). Tab
+    /// stays inside the dialog and enters at Cancel (stints 1493, 1505).
+    fn draw_pending_operation_modal(
+        &mut self,
+        ctx: &egui::Context,
+        colors: &Colors,
+        pane_key: u64,
+        synthetic_input: bool,
+    ) {
+        use crate::ui::button::ButtonKind;
+        use crate::ui::dialog::{ActionModal, DialogAction, DialogShortcut};
+        use egui::{Key, Modifiers};
+        let Some(PendingFileOperation::MoveToTrash { paths }) = self.pending_operation.as_ref()
+        else {
             return;
         };
-        let PendingFileOperation::MoveToTrash { paths } = operation;
         let count = paths.len();
-        let response = ModalShell::centered("file_browser_confirm_file_operation")
-            .title("Move to Trash")
-            .escape(true)
+        let actions = [
+            DialogAction::new("trash", "Move to Trash", ButtonKind::Danger)
+                .destructive()
+                .shortcut(DialogShortcut::new(&["Enter"], Modifiers::NONE, Key::Enter)),
+            DialogAction::new("cancel", "Cancel", ButtonKind::Secondary)
+                .refuses()
+                .shortcut(DialogShortcut::new(&["Esc"], Modifiers::NONE, Key::Escape)),
+        ];
+        let question = format!(
+            "Move {count} selected item{} to the Trash?",
+            if count == 1 { "" } else { "s" }
+        );
+        let response = ActionModal::new("file_browser_move_to_trash", "Move to Trash", &actions)
+            .focus_surface(crate::ui::focus::SurfaceKey::Pane(pane_key))
+            .width(style::MODAL_WIDTH_SM)
+            .destructive_input(synthetic_input)
             .show(ctx, colors, |ui| {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Move {count} selected item{} to the Trash?",
-                        if count == 1 { "" } else { "s" }
-                    ))
-                    .size(style::TEXT_BODY)
-                    .color(colors.text_primary),
-                );
-                ui.add_space(style::SPACE_MD);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            crate::ui::button::KitButton::new("Cancel", colors)
-                                .kind(crate::ui::button::ButtonKind::Secondary)
-                                .min_width(style::BUTTON_MIN_W_MODAL),
-                        )
-                        .clicked()
-                    {
-                        self.cancel_pending_operation();
-                    }
-                    if ui
-                        .add(
-                            crate::ui::button::KitButton::new("Move to Trash", colors)
-                                .kind(crate::ui::button::ButtonKind::Danger)
-                                .min_width(style::BUTTON_MIN_W_MODAL),
-                        )
-                        .clicked()
-                    {
-                        if let Err(err) = self.confirm_pending_operation() {
-                            self.error = Some(err);
-                        }
-                    }
-                });
-                ui.add_space(style::SPACE_MD);
-                let hints = [
-                    HintGroup::new(&["Enter"], "confirm"),
-                    HintGroup::new(&["Esc"], "cancel"),
-                ];
-                HintBar::new(&hints).show(ui, colors);
+                crate::ui::typography::modal_body(ui, &question, colors);
             });
-        if response.dismissed {
-            self.cancel_pending_operation();
+        match response.selected {
+            Some("trash") => {
+                if let Err(err) = self.confirm_pending_operation() {
+                    self.error = Some(err);
+                }
+            }
+            Some("cancel") => self.cancel_pending_operation(),
+            _ if response.dismissed => self.cancel_pending_operation(),
+            _ => {}
         }
     }
 
+    /// Rename on the shared field dialog (stint 1559): "Cancel Esc" and
+    /// "Rename ↵" under the name field, which selects all on open.
     fn draw_rename_modal(&mut self, ctx: &egui::Context, colors: &Colors, pane_key: u64) {
+        use crate::ui::button::ButtonKind;
+        use crate::ui::dialog::{ActionModal, DialogAction, DialogField, DialogShortcut};
+        use egui::{Key, Modifiers};
         if self.rename_path.is_none() {
             return;
         }
-        let response = ModalShell::centered("file_browser_rename")
-            .title("Rename")
-            .escape(true)
-            .show(ctx, colors, |ui| {
-                let text_response = TextField::singleline(
+        let actions = [
+            DialogAction::new("rename", "Rename", ButtonKind::Primary)
+                .shortcut(DialogShortcut::new(&["Enter"], Modifiers::NONE, Key::Enter)),
+            DialogAction::new("cancel", "Cancel", ButtonKind::Secondary)
+                .refuses()
+                .shortcut(DialogShortcut::new(&["Esc"], Modifiers::NONE, Key::Escape)),
+        ];
+        let response = ActionModal::new("file_browser_rename", "Rename", &actions)
+            .width(style::MODAL_WIDTH_SM)
+            .show_field(
+                ctx,
+                colors,
+                DialogField::singleline(
                     egui::Id::new(("file_browser_rename_input", pane_key)),
                     "",
-                )
-                .select_all_on_open(self.rename_session)
-                .log_name("file_browser_rename")
-                .show(ui, &mut self.rename_buffer, colors);
-                let submitted = text_response.lost_focus()
-                    && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                // Claim the rename field while the modal is open (stint 0429):
-                // the reconciler grants it while this pane owns input and
-                // surrenders it if ownership moves elsewhere.
-                crate::ui::focus::claim_text_surface(
-                    ctx,
                     crate::ui::focus::SurfaceKey::Pane(pane_key),
-                    text_response.id,
-                );
-                if submitted {
-                    self.confirm_rename_modal();
-                }
-                ui.add_space(style::SPACE_MD);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            crate::ui::button::KitButton::new("Cancel", colors)
-                                .kind(crate::ui::button::ButtonKind::Secondary)
-                                .min_width(style::BUTTON_MIN_W_MODAL),
-                        )
-                        .clicked()
-                    {
-                        self.cancel_rename_modal();
-                    }
-                    if ui
-                        .add(
-                            crate::ui::button::KitButton::new("Rename", colors)
-                                .min_width(style::BUTTON_MIN_W_MODAL),
-                        )
-                        .clicked()
-                    {
-                        self.confirm_rename_modal();
-                    }
-                });
-                ui.add_space(style::SPACE_MD);
-                let hints = [
-                    HintGroup::new(&["Enter"], "rename"),
-                    HintGroup::new(&["Esc"], "cancel"),
-                ];
-                HintBar::new(&hints).show(ui, colors);
-            });
-        if response.dismissed {
-            self.cancel_rename_modal();
+                    self.rename_session,
+                    &mut self.rename_buffer,
+                ),
+            );
+        match response.selected {
+            Some("rename") => self.confirm_rename_modal(),
+            Some("cancel") => self.cancel_rename_modal(),
+            _ if response.dismissed => self.cancel_rename_modal(),
+            _ => {}
         }
     }
 
@@ -3524,7 +3501,7 @@ impl FileBrowserView {
         });
         if self.in_search {
             bar = bar.status(hit_count, scanning);
-            if self.rename_path.is_none() {
+            if !self.dialog_open() {
                 bar = bar.surface(crate::ui::focus::SurfaceKey::Pane(pane_id));
             }
         }
@@ -3574,7 +3551,7 @@ impl FileBrowserView {
                 ui.horizontal(|ui| {
                     crate::ui::badge::badge(ui, "ACTION", colors.accent, colors);
 
-                    if self.rename_path.is_none() {
+                    if !self.dialog_open() {
                         crate::ui::focus::register_default_text_surface(
                             ui.ctx(),
                             crate::ui::focus::SurfaceKey::Pane(pane_id),
@@ -4141,7 +4118,7 @@ impl View for FileBrowserView {
             });
 
         self.draw_quick_look_modal(ui.ctx(), colors);
-        self.draw_pending_operation_modal(ui.ctx(), colors);
+        self.draw_pending_operation_modal(ui.ctx(), colors, ctx.pane_id, ctx.synthetic_input);
         self.draw_rename_modal(ui.ctx(), colors, ctx.pane_id);
     }
 
@@ -4160,34 +4137,19 @@ impl View for FileBrowserView {
         let action = classify_key(input, self.in_search || self.in_palette);
         log::debug!("file_browser: handle_key mode={mode:?} action={action:?}");
 
-        if self.pending_operation.is_some() {
-            match action {
-                Some(FileBrowserAction::Escape) => {
-                    self.cancel_pending_operation();
-                    return KeyDisposition::Consumed;
-                }
-                Some(FileBrowserAction::Activate) => {
-                    if let Err(err) = self.confirm_pending_operation() {
-                        self.error = Some(err);
-                    }
-                    return KeyDisposition::Consumed;
-                }
-                _ => return KeyDisposition::Consumed,
+        // An open Move to Trash or Rename dialog is an `ActionModal`: it owns
+        // Enter and Tab when it draws, behind its destructive-input guard, so
+        // those keys stay in the buffer for it. Escape is the one exception:
+        // egui drops the field's focus on Escape before the dialog draws, and
+        // the host then hands that Escape here and consumes it, so this is
+        // where the dialog's Cancel runs from the keyboard.
+        if self.dialog_open() {
+            if action == Some(FileBrowserAction::Escape) {
+                self.cancel_pending_operation();
+                self.cancel_rename_modal();
+                return KeyDisposition::Consumed;
             }
-        }
-
-        if self.rename_path.is_some() {
-            match action {
-                Some(FileBrowserAction::Escape) => {
-                    self.cancel_rename_modal();
-                    return KeyDisposition::Consumed;
-                }
-                Some(FileBrowserAction::Activate) => {
-                    self.confirm_rename_modal();
-                    return KeyDisposition::Consumed;
-                }
-                _ => return KeyDisposition::Consumed,
-            }
+            return KeyDisposition::Passthrough;
         }
 
         if self.quick_look_open {
@@ -4516,13 +4478,11 @@ impl View for FileBrowserView {
     }
 
     fn keyboard_capture(&self) -> bool {
-        self.quick_look_open || self.pending_operation.is_some() || self.rename_path.is_some()
+        self.quick_look_open || self.dialog_open()
     }
 
     fn submit_on_focused_text_input_enter(&self) -> bool {
-        (self.in_search || self.in_palette)
-            && self.rename_path.is_none()
-            && self.pending_operation.is_none()
+        (self.in_search || self.in_palette) && !self.dialog_open()
     }
 
     fn wants_close(&self) -> bool {
@@ -7601,6 +7561,7 @@ mod tests {
                     let render_ctx = ViewRenderContext {
                         colors: &colors,
                         pane_id: 1,
+                        synthetic_input: false,
                     };
                     app.ui(ui, &render_ctx, None);
                 });
@@ -8269,6 +8230,7 @@ mod tests {
             let render_ctx = ViewRenderContext {
                 pane_id: 100,
                 colors: &colors,
+                synthetic_input: false,
             };
             app.ui(ui, &render_ctx, None);
         });
@@ -8405,6 +8367,7 @@ mod tests {
             let render_ctx = ViewRenderContext {
                 pane_id: 200,
                 colors: &colors,
+                synthetic_input: false,
             };
             app.ui(ui, &render_ctx, None);
         });

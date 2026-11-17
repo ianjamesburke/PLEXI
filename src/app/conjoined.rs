@@ -179,7 +179,15 @@ impl PlexiApp {
                             false,
                         );
                     } else if let Some(app) = pane.as_view_mut() {
-                        crate::render::view_pane::render(ui, app, &self.colors, false, None, &root);
+                        crate::render::view_pane::render(
+                            ui,
+                            app,
+                            &self.colors,
+                            false,
+                            None,
+                            &root,
+                            self.synthetic_input_frame,
+                        );
                     }
                 }
             },

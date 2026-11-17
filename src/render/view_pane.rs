@@ -36,6 +36,7 @@ pub fn render(
     suppress_overtake: bool,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
     context_root: &std::path::Path,
+    synthetic_input: bool,
 ) {
     // Refresh before the plugin pumps its bridge messages: a persist handled in
     // this frame must resolve against this frame's context root.
@@ -147,6 +148,7 @@ pub fn render(
     let ctx = ViewRenderContext {
         colors,
         pane_id: view_pane.id,
+        synthetic_input,
     };
     let content_rect = ui.available_rect_before_wrap();
     let mut content_ui = ui.new_child(egui::UiBuilder::new().max_rect(content_rect));

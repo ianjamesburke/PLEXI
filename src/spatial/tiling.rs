@@ -503,6 +503,8 @@ pub struct PlexiBehavior<'a> {
     /// so state-scope resolution follows `plexi context set-root` at call
     /// time (stint 0652).
     pub context_root: PathBuf,
+    /// This frame carries injected input; see `ViewRenderContext::synthetic_input`.
+    pub synthetic_input_frame: bool,
     /// Opacity applied to unfocused panes when ghost mode is active.
     /// `None` = no dimming. Values below 1.0 dim all non-focused panes.
     pub unfocused_opacity: Option<f32>,
@@ -750,6 +752,7 @@ impl PlexiBehavior<'_> {
                     has_tabs,
                     pending_click,
                     &self.context_root,
+                    self.synthetic_input_frame,
                 );
             });
         } else if let Some(terminal) = pane.as_terminal_mut() {

@@ -16,6 +16,11 @@ pub struct ViewRenderContext<'a> {
     /// text surfaces against `SurfaceKey::Pane(pane_id)` so the post-frame
     /// focus reconciler can project host input ownership onto egui focus.
     pub pane_id: u64,
+    /// True when this frame carries injected input (pane IPC keys, host-key
+    /// IPC, scheduled pointer frames), never desktop input. A view that draws
+    /// a destructive dialog passes it to `ActionModal::destructive_input`
+    /// (stint 1513) so an injected key or click cannot run that action.
+    pub synthetic_input: bool,
 }
 
 /// Commands a plugin can issue back to the system.
