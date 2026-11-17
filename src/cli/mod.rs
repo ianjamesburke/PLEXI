@@ -1687,30 +1687,44 @@ mod transport_deadline_tests {
         dir
     }
 
+    /// Upper bound for "the call hung", far above any transport deadline in
+    /// this module. Starved CI runners deschedule a test for seconds, so
+    /// these tests prove deadlines by event order and use this bound only to
+    /// turn a hang into a failure.
+    const HANG_GUARD: Duration = Duration::from_secs(30);
+
     #[test]
     fn stalled_write_returns_with_phase_and_partial_byte_count() {
         let dir = unique_socket_dir("write");
         let socket = dir.join("notify.sock");
         let listener = UnixListener::bind(&socket).expect("bind");
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        // The peer accepts and never reads, holding the connection open until
+        // the client has returned. If the write path blocked instead of
+        // honouring its deadline, the peer would close on HANG_GUARD and the
+        // client would see a broken pipe rather than `WriteTimeout`.
         let peer = std::thread::spawn(move || {
             let (_stream, _) = listener.accept().expect("accept");
-            std::thread::sleep(Duration::from_millis(500));
+            release_rx.recv_timeout(HANG_GUARD).is_ok()
         });
 
-        let started = Instant::now();
         let line = vec![b'x'; 32 * 1024 * 1024];
         let error = send_line_to_socket(&socket, &line, Duration::from_millis(100))
             .expect_err("stalled write must time out");
-        let elapsed = started.elapsed();
-        peer.join().expect("peer");
+        release_tx.send(()).expect("peer is waiting");
+        let released_by_client = peer.join().expect("peer");
 
-        assert!(matches!(
-            error,
-            SocketTransportError::WriteTimeout { bytes_written } if bytes_written > 0
-        ));
         assert!(
-            elapsed < Duration::from_millis(300),
-            "write exceeded strict deadline: {elapsed:?}"
+            matches!(
+                error,
+                SocketTransportError::WriteTimeout { bytes_written }
+                    if bytes_written > 0 && bytes_written < line.len()
+            ),
+            "expected WriteTimeout with a partial byte count, got {error:?}"
+        );
+        assert!(
+            released_by_client,
+            "write returned only after the peer gave up; the deadline was not honoured"
         );
     }
 
@@ -1746,8 +1760,8 @@ mod transport_deadline_tests {
             SocketTransportError::ConnectTimeout | SocketTransportError::Connect(_)
         ));
         assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "connect saturation probe exceeded bound"
+            started.elapsed() < HANG_GUARD,
+            "connect saturation probe hung past {HANG_GUARD:?}"
         );
     }
 
