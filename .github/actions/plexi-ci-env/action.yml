@@ -28,13 +28,6 @@ inputs:
     description: '"true" when the job invokes a justfile recipe.'
     required: false
     default: 'false'
-  uv:
-    description: >
-      "true" when the job runs the host test suite. The 0.4.4 plugin migration
-      converts plugin source with `uv run --offline --python 3.12`
-      (src/app/plugin_migration.rs), so its tests need uv and a local 3.12.
-    required: false
-    default: 'false'
 
 runs:
   using: composite
@@ -116,18 +109,3 @@ runs:
       # fetch failure is attributed here rather than inside a test binary.
       shell: bash
       run: bash scripts/fetch-cpython-bundle.sh
-
-    # Hosted runners ship no uv. Same pinned action as sdk-typecheck.yml. Its
-    # own cache stays off so it adds nothing to the Actions cache.
-    - name: Install uv
-      if: inputs.uv == 'true'
-      uses: astral-sh/setup-uv@v8.2.0
-      with:
-        enable-cache: false
-
-    # The migration runs uv with --offline, so the interpreter must already be
-    # installed; fetch it here, where a network failure names this step.
-    - name: Install Python 3.12 for uv
-      if: inputs.uv == 'true'
-      shell: bash
-      run: uv python install 3.12

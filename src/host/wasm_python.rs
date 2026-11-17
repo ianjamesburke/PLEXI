@@ -22,7 +22,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use wasmtime::{Engine as WasmtimeEngine, Linker, Module, Store};
+use wasmtime::{
+    Engine as WasmtimeEngine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder,
+    UpdateDeadline,
+};
 use wasmtime_wasi::cli::{IsTerminal, StdinStream, StdoutStream};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
@@ -521,10 +524,34 @@ fn cached_cpython_module(path: &Path) -> Result<(WasmtimeEngine, Module), String
     if let Some(cached) = cache.get(&key) {
         return Ok(cached.clone());
     }
-    let engine = super::wasm_engine::create_engine().map_err(|error| error.to_string())?;
+    let engine =
+        super::wasm_engine::create_interruptible_engine().map_err(|error| error.to_string())?;
     let module = Module::from_file(&engine, path).map_err(|error| error.to_string())?;
     cache.insert(key, (engine.clone(), module.clone()));
     Ok((engine, module))
+}
+
+/// Long-lived guests on the CPython engine run without a time limit. They still
+/// need a deadline (the engine checks epochs), and they extend it whenever a
+/// script run's watchdog advances the shared epoch.
+fn run_without_time_limit<T>(store: &mut Store<T>) {
+    store.set_epoch_deadline(1);
+    store.epoch_deadline_callback(|_| Ok(UpdateDeadline::Continue(1)));
+}
+
+/// Resource bounds for one bundled-CPython script run (stint 1413).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ScriptLimits {
+    /// Largest linear memory the guest may grow to. A refused growth surfaces
+    /// in the guest as a CPython `MemoryError`.
+    pub(crate) memory_bytes: usize,
+    /// Wall-clock time from instantiation until the guest is interrupted.
+    pub(crate) time: std::time::Duration,
+}
+
+struct ScriptState {
+    wasi: WasiP1Ctx,
+    limits: StoreLimits,
 }
 
 /// A finished one-shot script run in the bundled CPython.
@@ -545,11 +572,13 @@ pub(crate) enum ScriptError {
 /// Run `python -S -B -c <script> <args>` in the bundled CPython WASI module.
 /// The guest sees only the read-only stdlib and the one writable `mount`
 /// directory at `guest_dir`; it has no environment, network, or other files.
+/// It runs within `limits`; exceeding the time limit is a `Sandbox` error.
 pub(crate) fn run_bundled_script(
     script: &str,
     args: &[&str],
     mount: &Path,
     guest_dir: &str,
+    limits: ScriptLimits,
 ) -> Result<ScriptRun, ScriptError> {
     let bundle = resolve_default_cpython_bundle()
         .map_err(|error| ScriptError::Interpreter(error.to_string()))?;
@@ -563,8 +592,8 @@ pub(crate) fn run_bundled_script(
     })?;
     let compiled_in = compile_begin.elapsed();
     let sandbox = |error: wasmtime::Error| ScriptError::Sandbox(error.to_string());
-    let mut linker = Linker::<WasiP1Ctx>::new(&engine);
-    p1::add_to_linker_sync(&mut linker, |ctx| ctx).map_err(sandbox)?;
+    let mut linker = Linker::<ScriptState>::new(&engine);
+    p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi).map_err(sandbox)?;
     let stdout = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(1 << 20);
     let stderr = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(1 << 20);
     let mut argv = vec!["python", "-S", "-B", "-c", script];
@@ -584,17 +613,58 @@ pub(crate) fn run_bundled_script(
         .map_err(sandbox)?
         .preopened_dir(mount, guest_dir, DirPerms::all(), FilePerms::all())
         .map_err(sandbox)?;
-    let mut store = Store::new(&engine, builder.build_p1());
-    let instance = linker
-        .instantiate(&mut store, &module)
-        .map_err(|error| ScriptError::Interpreter(error.to_string()))?;
-    let start = instance
-        .get_typed_func::<(), ()>(&mut store, "_start")
-        .map_err(|error| ScriptError::Interpreter(error.to_string()))?;
-    let exit_code = match start.call(&mut store, ()) {
+    let mut store = Store::new(
+        &engine,
+        ScriptState {
+            wasi: builder.build_p1(),
+            limits: StoreLimitsBuilder::new()
+                .memory_size(limits.memory_bytes)
+                .build(),
+        },
+    );
+    store.limiter(|state| &mut state.limits);
+    // The engine is shared with long-lived plugin guests, so this store
+    // decides from its own deadline whether an epoch tick ends it; the
+    // watchdog ticks once, at or after that deadline.
+    let deadline = std::time::Instant::now() + limits.time;
+    store.set_epoch_deadline(1);
+    store.epoch_deadline_callback(move |_| {
+        Ok(if std::time::Instant::now() >= deadline {
+            UpdateDeadline::Interrupt
+        } else {
+            UpdateDeadline::Continue(1)
+        })
+    });
+    let (finished, wait) = std::sync::mpsc::channel::<()>();
+    let ticker = engine.clone();
+    let watchdog = std::thread::Builder::new()
+        .name("plexi-cpython-script-watchdog".to_string())
+        .spawn(move || {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = wait.recv_timeout(remaining) {
+                ticker.increment_epoch();
+            }
+        })
+        .map_err(|error| ScriptError::Sandbox(format!("cannot start script watchdog: {error}")))?;
+    let outcome = run_script_start(&linker, &mut store, &module);
+    drop(finished);
+    if watchdog.join().is_err() {
+        log::error!("python_compat: script watchdog thread panicked");
+    }
+    let exit_code = match outcome? {
         Ok(()) => 0,
         Err(error) => match error.downcast_ref::<wasmtime_wasi::I32Exit>() {
             Some(exit) => exit.0,
+            None if error.downcast_ref::<wasmtime::Trap>() == Some(&wasmtime::Trap::Interrupt) => {
+                log::info!(
+                    "python_compat: script interrupted at its {:?} time limit",
+                    limits.time
+                );
+                return Err(ScriptError::Sandbox(format!(
+                    "script exceeded its {} second time limit",
+                    limits.time.as_secs()
+                )));
+            }
             None => return Err(ScriptError::Sandbox(format!("{error:#}"))),
         },
     };
@@ -604,6 +674,22 @@ pub(crate) fn run_bundled_script(
         stderr: String::from_utf8_lossy(&stderr.contents()).into_owned(),
         compiled_in,
     })
+}
+
+/// Instantiate and call `_start`. The outer error means the module never
+/// started; the inner result is the guest's own exit.
+fn run_script_start(
+    linker: &Linker<ScriptState>,
+    store: &mut Store<ScriptState>,
+    module: &Module,
+) -> Result<wasmtime::Result<()>, ScriptError> {
+    let instance = linker
+        .instantiate(&mut *store, module)
+        .map_err(|error| ScriptError::Interpreter(error.to_string()))?;
+    let start = instance
+        .get_typed_func::<(), ()>(&mut *store, "_start")
+        .map_err(|error| ScriptError::Interpreter(error.to_string()))?;
+    Ok(start.call(store, ()))
 }
 
 #[derive(Debug, Error)]
@@ -972,6 +1058,7 @@ impl WasmPythonRuntime {
                     .preopened_dir(&plugin_dir, "/app", DirPerms::READ, FilePerms::READ)
                     .map_err(|e| e.to_string())?;
                 let mut store = Store::new(&engine, builder.build_p1());
+                run_without_time_limit(&mut store);
                 let instance = linker
                     .instantiate(&mut store, &module)
                     .map_err(|e| e.to_string())?;
@@ -11407,6 +11494,7 @@ mod tests {
                 "print('cpython-in-wasmtime')".to_string(),
             ]);
         let mut store = Store::new(&engine, builder.build_p1());
+        run_without_time_limit(&mut store);
         let instance = linker
             .instantiate(&mut store, &module)
             .expect("instantiate CPython WASI");

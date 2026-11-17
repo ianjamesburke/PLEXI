@@ -1,7 +1,19 @@
 //! Process-wide Wasmtime trap policy shared by core modules and components.
 
 pub(super) fn create_engine() -> wasmtime::Result<wasmtime::Engine> {
+    engine_from(wasmtime::Config::new())
+}
+
+/// An engine whose guests check the epoch, so a store can bound wall-clock
+/// time (`Store::epoch_deadline_callback`). Every store on it must set a
+/// deadline before running guest code, or the guest traps immediately.
+pub(super) fn create_interruptible_engine() -> wasmtime::Result<wasmtime::Engine> {
     let mut config = wasmtime::Config::new();
+    config.epoch_interruption(true);
+    engine_from(config)
+}
+
+fn engine_from(mut config: wasmtime::Config) -> wasmtime::Result<wasmtime::Engine> {
     config.wasm_component_model(true);
     // Wasmtime 43's Mach receiver aborts on a caught signal interrupting its
     // wait (https://github.com/bytecodealliance/wasmtime/issues/14393). Plexi

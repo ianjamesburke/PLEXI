@@ -94,7 +94,6 @@ jobs:
         with:
           cache-key: test
           cpython-bundle: 'true'
-          uv: 'true'
 
       - name: Build host and tests
         # Closed-stdout regression drives the real CLI, never a libtest child.
@@ -205,7 +204,6 @@ jobs:
         with:
           cache-key: linux-host
           cpython-bundle: 'true'
-          uv: 'true'
       - name: Build and test host
         run: |
           python3 scripts/cargo-channel-inputs.py build --release --bin plexi
