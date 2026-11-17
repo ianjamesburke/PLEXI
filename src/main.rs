@@ -50,6 +50,7 @@ mod ui_tests;
 mod workspace;
 
 fn main() -> eframe::Result {
+    let process_start = std::time::Instant::now();
     let raw_args: Vec<String> = std::env::args().collect();
     if let Some(message) = cli::args::retired_namespace_message(&raw_args) {
         eprintln!("error: {message}");
@@ -136,7 +137,50 @@ fn main() -> eframe::Result {
             app::startup_error::shows_window(is_host_startup(&raw_args), boot_state.is_background());
         app::startup_error::exit_on_profile_init_failure(&error, show_window)
     });
+    // Adopt an explicit workspace root from `plexi <path>` if one was given.
+    // If the path has no `.plexi/` ancestor, an adopted context path is set
+    // instead — the directory opens as a new context on first frame.
+    // Bare `plexi` continues to resolve via CWD-walk later in `PlexiApp::new`.
+    let adopted_root = match parse_workspace_path_arg(&raw_args) {
+        Ok(root) => root,
+        Err(e) => {
+            eprintln!("error: {e}");
+            cli::trace::exit(1);
+        }
+    };
+    // Merge global config with the workspace's channel-scoped config if a
+    // workspace is in scope. The `log` level needs the merged value so a
+    // project-level `[log] level = "debug"` actually takes effect.
+    let merged_config_root = adopted_root
+        .clone()
+        .or_else(crate::config::active_workspace_root);
+    let merged_config =
+        crate::config::PlexiConfig::load_with_workspace(merged_config_root.as_deref());
+    let log_config = merged_config.log.clone().unwrap_or_default();
+    // Local history pruning belongs to the cloud experiment. Log archives are
+    // always pruned.
+    let retain_local_history = crate::cloud::retention::history_pruning_enabled(
+        merged_config
+            .cloud
+            .as_ref()
+            .is_some_and(|cloud| cloud.retain_local_history()),
+    );
+    let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
+    let retention_days = log_config.retention_days.unwrap_or(30);
+    let cli_mode = !is_host_startup(&raw_args);
+    crate::platform::logging::init(log_level, retention_days, cli_mode);
+    log::info!(
+        "startup: logger ready {}ms after main entry",
+        process_start.elapsed().as_millis()
+    );
+    // Migration ran inside `lock_profile_initialization`, before the logger.
+    crate::app::plugin_migration::replay_early_traces();
+
+    // Profile seeding (example and core packs, Python plugin venvs) can take
+    // seconds on a fresh profile, so it runs after the logger is up
+    // (stint 1567). It still runs before the workspace chdir and the claim.
     if let Some(profile_init_lock) = profile_init_lock {
+        let seeding_start = std::time::Instant::now();
         let is_first_launch = crate::config::ensure_profile_initialized();
 
         if !crate::config::PlexiConfig::load()
@@ -204,24 +248,17 @@ fn main() -> eframe::Result {
             }
             // Packaged plugin definitions stay untouched in core-only mode too.
             if let Err(error) = crate::distribution::seed_profile() {
+                log::error!("package profile initialization: {error}");
                 eprintln!("package profile initialization: {error}");
                 cli::trace::exit(1);
             }
         }
+        log::info!(
+            "startup: profile initialization took {}ms first_launch={is_first_launch}",
+            seeding_start.elapsed().as_millis()
+        );
         drop(profile_init_lock);
     }
-
-    // Adopt an explicit workspace root from `plexi <path>` if one was given.
-    // If the path has no `.plexi/` ancestor, an adopted context path is set
-    // instead — the directory opens as a new context on first frame.
-    // Bare `plexi` continues to resolve via CWD-walk later in `PlexiApp::new`.
-    let adopted_root = match parse_workspace_path_arg(&raw_args) {
-        Ok(root) => root,
-        Err(e) => {
-            eprintln!("error: {e}");
-            cli::trace::exit(1);
-        }
-    };
     crate::config::set_adopted_workspace_root(adopted_root.clone());
 
     // When the user runs `plexi <path>`, treat that path as the new CWD so
@@ -237,27 +274,6 @@ fn main() -> eframe::Result {
         }
     }
 
-    // Merge global config with the workspace's channel-scoped config if a
-    // workspace is in scope. The `log` level needs the merged value so a
-    // project-level `[log] level = "debug"` actually takes effect.
-    let merged_config_root = adopted_root
-        .clone()
-        .or_else(crate::config::active_workspace_root);
-    let merged_config =
-        crate::config::PlexiConfig::load_with_workspace(merged_config_root.as_deref());
-    let log_config = merged_config.log.clone().unwrap_or_default();
-    // Local history pruning belongs to the cloud experiment. Log archives are
-    // always pruned.
-    let retain_local_history = crate::cloud::retention::history_pruning_enabled(
-        merged_config
-            .cloud
-            .as_ref()
-            .is_some_and(|cloud| cloud.retain_local_history()),
-    );
-    let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
-    let retention_days = log_config.retention_days.unwrap_or(30);
-    let cli_mode = !is_host_startup(&raw_args);
-    crate::platform::logging::init(log_level, retention_days, cli_mode);
     // One host per profile (stint 1459). Profile initialization (migration,
     // core pack seeding, under its own lock), config load and logging have
     // run by now; custody, retention, the rpc sweep, the window and the
@@ -315,7 +331,6 @@ fn main() -> eframe::Result {
             cli::trace::exit(1);
         }
     }
-    crate::app::plugin_migration::replay_early_traces();
     if !dropped_identity.is_empty() {
         log::info!("cli: dropped foreign channel identity variables {dropped_identity:?}");
     }
