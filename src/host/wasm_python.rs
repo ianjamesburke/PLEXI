@@ -4169,7 +4169,7 @@ impl LivePythonPane {
         colors: &crate::ui::theme::Colors,
         synthetic_frame: bool,
     ) {
-        let Some(prompt) = self.consent.prompts.front().cloned() else {
+        let Some(prompt) = self.pending_capability_prompt().cloned() else {
             return;
         };
         let now = std::time::Instant::now();
