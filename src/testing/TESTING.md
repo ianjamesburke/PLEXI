@@ -464,7 +464,7 @@ exactly that seed with `PLEXI_DAW_GATE_SEED=<seed>`.
 ## Conventions
 
 - Follow The Gate above for the push path and integration. The justfile exports `RUSTFLAGS="-D warnings"`, so warnings are build failures under `just test`.
-- PTY-dependent tests are tagged `#[ignore = "requires-pty"]`.
+- PTY-dependent tests are tagged `#[ignore = "requires-pty"]`. Hosted CI runs them in the `Test host PTY` step of `.github/workflows/rust-host.yml`; any other ignored test must be added to that step's skip list. The same job runs the `deps/egui_term` unit tests (`cargo test -p egui_term`).
 - Test-first for host logic: a new `HostRequest` gets a failing `HostHarness` test before implementation.
 - New host UI component or overlay → a scene in `tests/scenes/` (open → act → assert → shot).
 - Coverage: `cargo llvm-cov --bin plexi` (cargo-llvm-cov installed at `~/.cargo/bin/`).
