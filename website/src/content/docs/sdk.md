@@ -499,8 +499,13 @@ created.
 ### `HttpResponse`
 
 ```python
-HttpResponse(status: int, headers: list = list(), body: bytes = b'', error: Optional[str] = None, request_id: Optional[str] = None, tag: Optional[str] = None, truncated: bool = False)
+HttpResponse(status: int, headers: list = list(), body: bytes = b'', error: Optional[str] = None, request_id: Optional[str] = None, tag: Optional[str] = None, truncated: bool = False, refused: Optional[str] = None)
 ```
+
+The answer to an ``HttpFetch``. ``refused`` names the capability
+(``net.http``) when the host refused to send the request at all, as
+opposed to a request that was sent and failed; ``error`` then says how
+the user can allow it. Show it as a refusal, not as an empty result.
 
 ### `McpConnected`
 

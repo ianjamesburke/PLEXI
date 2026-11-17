@@ -148,8 +148,14 @@ impl PlexiApp {
                 .get_mut(&pane_id)
                 .and_then(|pane| pane.as_view_mut())
             {
-                if let crate::host::pane::ViewRuntime::Wasm(runtime) = &mut app.runtime {
-                    runtime.draw_capability_modal(ctx, &self.colors, self.synthetic_input_frame);
+                match &mut app.runtime {
+                    crate::host::pane::ViewRuntime::Wasm(runtime) => {
+                        runtime.draw_capability_modal(ctx, &self.colors, self.synthetic_input_frame)
+                    }
+                    crate::host::pane::ViewRuntime::Python(runtime) => {
+                        runtime.draw_capability_modal(ctx, &self.colors, self.synthetic_input_frame)
+                    }
+                    crate::host::pane::ViewRuntime::Builtin(_) => {}
                 }
             }
         }

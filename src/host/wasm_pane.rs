@@ -2341,16 +2341,7 @@ impl LiveWasmPane {
                     );
                 });
 
-        let decision = match response.selected {
-            Some("grant_once") => Some((true, false)),
-            Some("grant_always") => Some((true, true)),
-            Some("deny_once") => Some((false, false)),
-            Some("deny_always") => Some((false, true)),
-            _ if response.dismissed => Some((false, false)),
-            _ => None,
-        };
-
-        if let Some((granted, remember)) = decision {
+        if let Some((granted, remember)) = capability_prompt_decision(&response) {
             if remember {
                 self.inner.decide_next_capability_prompt_remembered(granted);
             } else {
@@ -2842,6 +2833,21 @@ pub(crate) fn capability_prompt_actions() -> [crate::ui::dialog::DialogAction<'s
             egui::Key::Escape,
         )),
     ]
+}
+
+/// `(granted, remember)` for the capability prompt's answer, if one was given.
+/// Shared by the WASM and Python prompts.
+pub(crate) fn capability_prompt_decision(
+    response: &crate::ui::dialog::DialogResponse<'_>,
+) -> Option<(bool, bool)> {
+    match response.selected {
+        Some("grant_once") => Some((true, false)),
+        Some("grant_always") => Some((true, true)),
+        Some("deny_once") => Some((false, false)),
+        Some("deny_always") => Some((false, true)),
+        _ if response.dismissed => Some((false, false)),
+        _ => None,
+    }
 }
 
 /// The capability prompt does not trap Tab or route Enter to a focused action

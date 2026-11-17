@@ -9220,8 +9220,14 @@ fn python_guest_cannot_put_raw_text_in_any_log_line() {
         "fs.write",
         "net.http",
     ] {
+        // Stint 1489: consent capabilities are read live from the stored row.
+        let mechanism = if matches!(effect, "fs.write" | "net.http") {
+            "python_live_row"
+        } else {
+            "python_launch_set"
+        };
         let allowed = format!(
-            "effect={effect} resource_class=capability decision=allow mechanism=python_launch_set"
+            "effect={effect} resource_class=capability decision=allow mechanism={mechanism}"
         );
         assert!(
             lines.iter().any(|line| line.contains(&allowed)),

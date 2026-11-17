@@ -3621,6 +3621,37 @@ impl PermissionMonitor {
         );
     }
 
+    /// The stored capability decision for this plugin and workspace now, with
+    /// the id of a row that carries it (what `plexi permissions allow` takes).
+    /// A running plugin calls this at each use, so a grant, revoke or reset
+    /// made while it runs applies to its next request.
+    pub fn live_capability_decision(
+        &self,
+        plugin_id: &str,
+        workspace_root: &Path,
+        capability_id: &str,
+    ) -> Option<(Decision, String)> {
+        let ws = crate::platform::path::canonical_or_self(workspace_root);
+        let now = self.now_secs();
+        let store = self.store();
+        let decision = stored_capability_decision(&store, plugin_id, &ws, capability_id, now)?;
+        let id = store
+            .records()
+            .iter()
+            .find(|record| {
+                record.actor_type == ActorType::Plugin
+                    && record.actor_id == plugin_id
+                    && record.target_type == TargetType::Capability
+                    && record.target_id == capability_id
+                    && record.workspace_root.as_deref() == Some(ws.as_path())
+                    && record.decision == decision
+                    && record.expires_at.is_none_or(|expires| now < expires)
+            })
+            .map(|record| record.grant_id.clone())
+            .unwrap_or_default();
+        Some((decision, id))
+    }
+
     /// Turn declared capabilities into gate rows and an [`PluginPermissions`] set.
     /// Non-sensitive capabilities with no stored decision are auto-granted.
     /// Sensitive capabilities stay withheld until a human grant exists.
