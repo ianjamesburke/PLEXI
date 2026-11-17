@@ -162,10 +162,9 @@ fn run(args: Args) -> Result<i32> {
         }
         Some(Action::Launch { receipt, args }) => return transaction::launch(&receipt, &args),
         Some(Action::Restart { receipt, wait_pid }) => {
-            transaction::wait_for_parent(wait_pid)?;
-            let current = transaction::read_receipt(&receipt)?
-                .ok_or_else(|| Error::Invalid("installation disappeared during restart".into()))?;
-            transaction::launch_ready(&current)?;
+            // A deferral means another host started while this one waited;
+            // that host keeps running and launch_ready has logged it.
+            transaction::restart(&receipt, wait_pid)?;
             return Ok(0);
         }
         Some(Action::Rollback { receipt }) => {
@@ -324,8 +323,21 @@ fn run(args: Args) -> Result<i32> {
         receipt.bin_dir.to_string_lossy().replace('\'', "'\\''")
     );
     if !args.install_only {
-        transaction::launch_ready(&receipt)?;
-        println!("Plexi is ready.");
+        match transaction::launch_ready(&receipt)? {
+            transaction::Launched::Ready => println!("Plexi is ready."),
+            transaction::Launched::Deferred(host) => {
+                let pid = host
+                    .pid
+                    .map(|pid| format!(" (pid {pid})"))
+                    .unwrap_or_default();
+                log::info!("distribution: printed quit notice for running host{pid}");
+                println!(
+                    "{name} is running{pid}. Quit {name}, then reopen it to run {}.",
+                    receipt.active.tag,
+                    name = transaction::display_name(&receipt.channel),
+                );
+            }
+        }
     }
     Ok(0)
 }

@@ -4356,6 +4356,7 @@ dependencies = [
  "clap",
  "dirs",
  "flate2",
+ "libc",
  "log",
  "semver",
  "serde",

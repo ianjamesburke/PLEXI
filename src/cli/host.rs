@@ -22,6 +22,7 @@
 mod windows_launch;
 
 use crate::platform::ipc::{self, IpcStream};
+use plexi_distribution::host_presence::endpoint_in;
 use serde::Deserialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -720,7 +721,7 @@ pub fn host_start_cli(
     }
 
     let (channel, bundle_path, binary_path) = resolve_channel_paths();
-    let socket_path = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
+    let socket_path = endpoint_in(&host_config_dir(channel.as_deref()));
     log::info!(
         "host_start: socket={socket_path:?} pane_count={}",
         specs.len()
@@ -997,7 +998,7 @@ fn shutdown_complete(pid: Option<u32>, socket_path: &Path) -> bool {
 /// Uninstall must not delete a profile while a host can still write to it.
 pub(crate) fn stop_for_uninstall() -> Result<(), String> {
     let channel = crate::config::build_channel();
-    let socket = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
+    let socket = endpoint_in(&host_config_dir(channel.as_deref()));
     let pid = running_build_info()
         .as_ref()
         .and_then(reported_pid)
@@ -1100,7 +1101,7 @@ fn restart_coordinator_command(
 
 pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
     let channel = crate::config::build_channel();
-    let socket = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
+    let socket = endpoint_in(&host_config_dir(channel.as_deref()));
     let pane = std::env::var("PLEXI_PANE_ID").ok();
     let source = std::env::var_os("PLEXI_SOCKET").map(PathBuf::from);
     let own_host = restart_closes_caller(pane.as_deref(), source.as_deref(), &socket);
@@ -1344,7 +1345,7 @@ impl StopOutcome {
 }
 
 pub(crate) fn host_stop_in(profile: &Path, channel: Option<String>) -> StopOutcome {
-    let socket_path = ipc::endpoint_in(profile);
+    let socket_path = endpoint_in(profile);
     let pid = running_build_info()
         .as_ref()
         .and_then(reported_pid)
@@ -1664,7 +1665,7 @@ fn reported_pid(info: &serde_json::Value) -> Option<u32> {
 pub(crate) fn running_build_info() -> Option<serde_json::Value> {
     let channel = crate::config::build_channel();
     let profile = host_config_dir(channel.as_deref());
-    let socket = ipc::endpoint_in(&profile);
+    let socket = endpoint_in(&profile);
     let response_file = crate::rpc::response_file_in(&profile, "host-build", "json");
     let request = crate::protocol::HostRequest::GetBuildInfo {
         response_file: response_file.clone(),
@@ -1767,7 +1768,7 @@ pub(crate) fn plugin_mode_core_only() -> bool {
 /// `plexi host status [--json]` — ready/not-ready, pane count, pid, socket path.
 pub fn host_status_cli(json: bool) -> i32 {
     let channel = crate::config::build_channel();
-    let socket_path = ipc::endpoint_in(&host_config_dir(channel.as_deref()));
+    let socket_path = endpoint_in(&host_config_dir(channel.as_deref()));
     let pane_count = query_ready_status(
         &socket_path,
         &host_config_dir(channel.as_deref()),
@@ -1832,7 +1833,7 @@ pub fn host_status_cli(json: bool) -> i32 {
 pub fn host_log_cli(source: &str, message: &str) -> i32 {
     let channel = crate::config::build_channel();
     let profile_dir = host_config_dir(channel.as_deref());
-    let socket_path = ipc::endpoint_in(&profile_dir);
+    let socket_path = endpoint_in(&profile_dir);
     let response_file = crate::rpc::response_file_in(&profile_dir, "host-log-response", "json");
     log::info!(
         "host_log:cli: channel={channel:?} source={source} message_chars={}",
@@ -2250,7 +2251,7 @@ mod tests {
     /// not reaped, which still reads as a live pid.
     #[cfg(unix)]
     fn spawn_silent_host(profile: &Path, detached: bool) -> (u32, Option<std::process::Child>) {
-        let socket = crate::platform::ipc::endpoint_in(profile);
+        let socket = endpoint_in(profile);
         let script = "import socket,sys,os\n\
 s=socket.socket(socket.AF_UNIX);s.bind(sys.argv[1]);s.listen(4)\n\
 print('ready', os.getpid(), flush=True)\n\

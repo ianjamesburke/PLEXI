@@ -951,16 +951,6 @@ fn install_checked(
     Ok(receipt)
 }
 
-/// Profile directory name for a release channel. Stable and main use
-/// `.plexi`; every other channel uses `.plexi-<channel>`, the same names as
-/// `channel_suffix_from_basename` in the host config.
-fn channel_profile_dir_name(channel: &str) -> String {
-    match channel {
-        "stable" | "main" => ".plexi".to_string(),
-        other => format!(".plexi-{other}"),
-    }
-}
-
 fn installed_tag_text(tag: &str, build_id: &str) -> String {
     if tag.is_empty() {
         build_id.to_string()
@@ -972,7 +962,7 @@ fn installed_tag_text(tag: &str, build_id: &str) -> String {
 /// Record the package that just activated. This marker is not executable identity.
 fn write_installed_tag(home: &Path, channel: &str, tag: &str) -> Result<()> {
     let path = home
-        .join(channel_profile_dir_name(channel))
+        .join(crate::host_presence::profile_dir_name(channel))
         .join("installed_tag");
     atomic_write(&path, tag.as_bytes())?;
     log::info!(
@@ -1638,30 +1628,123 @@ fn running_identity_matches(response: &serde_json::Value, build_id: &str, commit
             == Some(commit)
 }
 
-pub fn launch_ready(receipt: &Receipt) -> Result<()> {
-    let mut command = Command::new(receipt.active.executable());
-    if let Some(home) = dirs::home_dir() {
-        command.current_dir(home);
+/// A host that was running when the install tried to launch.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RunningHost {
+    pub pid: Option<u32>,
+}
+
+/// What `launch_ready` did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Launched {
+    /// The installed build is the verified running host.
+    Ready,
+    /// Another host was running. No build was run against its profile; the
+    /// installed build starts on the next launch after that host exits.
+    Deferred(RunningHost),
+}
+
+/// Time limits for `launch_ready_in`.
+pub struct LaunchLimits {
+    /// The endpoint connect of the host-presence probe.
+    pub probe: Duration,
+    /// `host start`: its own 90s readiness wait plus profile initialization
+    /// and seeding, which run before that wait begins.
+    pub start: Duration,
+    /// `host status --json`.
+    pub status: Duration,
+}
+
+const LAUNCH_LIMITS: LaunchLimits = LaunchLimits {
+    probe: Duration::from_secs(2),
+    start: Duration::from_secs(300),
+    status: Duration::from_secs(30),
+};
+
+/// The profile the installed channel's host uses.
+fn channel_profile_dir(channel: &str) -> Result<PathBuf> {
+    let home =
+        dirs::home_dir().ok_or_else(|| Error::Invalid("cannot resolve home directory".into()))?;
+    Ok(home.join(crate::host_presence::profile_dir_name(channel)))
+}
+
+/// Start the installed build as the running host, unless a host is already
+/// running on its profile (stint 1605).
+pub fn launch_ready(receipt: &Receipt) -> Result<Launched> {
+    launch_ready_in(
+        receipt,
+        &channel_profile_dir(&receipt.channel)?,
+        &LAUNCH_LIMITS,
+    )
+}
+
+/// `launch_ready` against an explicit profile. A running host is never
+/// stopped and no build is run to ask about it; when the probe cannot tell,
+/// nothing is started.
+pub fn launch_ready_in(
+    receipt: &Receipt,
+    profile_dir: &Path,
+    limits: &LaunchLimits,
+) -> Result<Launched> {
+    use crate::host_presence::{Presence, probe};
+    let name = display_name(&receipt.channel);
+    match probe(profile_dir, Instant::now() + limits.probe) {
+        Presence::Running { pid, evidence } => {
+            log::info!(
+                "distribution: running host found ({evidence:?}, pid={pid:?}) on {}; deferring start of build={}",
+                profile_dir.display(),
+                receipt.active.build_id
+            );
+            return Ok(Launched::Deferred(RunningHost { pid }));
+        }
+        Presence::Unknown(reason) => {
+            log::warn!(
+                "distribution: cannot tell whether a host is running on {}: {reason}",
+                profile_dir.display()
+            );
+            return Err(Error::Invalid(format!(
+                "cannot tell whether {name} is running ({reason}); nothing was started. Quit {name} if it is open, then open it again"
+            )));
+        }
+        Presence::NotRunning => log::info!(
+            "distribution: no running host on {}; starting build={}",
+            profile_dir.display(),
+            receipt.active.build_id
+        ),
     }
+    let package = Package::load(&receipt.active.path)?;
+    let start_hint = format!("run {} host start", receipt.active.executable().display());
+    let host_command = |args: &[&str]| {
+        let mut command = Command::new(receipt.active.executable());
+        if let Some(home) = dirs::home_dir() {
+            command.current_dir(home);
+        }
+        command.args(args);
+        clean_environment(&mut command);
+        command
+    };
     // `host start` defaults to 15s. A cold Windows install missed that and
     // the package gate reported the host as not ready. The e2e scripts use 90s.
-    command.args(["host", "start", "--timeout-secs", "90"]);
-    clean_environment(&mut command);
-    let status = command.status().context("start installed host")?;
-    if !status.success() {
-        return Err(Error::Invalid(
-            "installed host did not report ready; run the printed absolute host start command"
-                .into(),
-        ));
+    let started = crate::bounded::run(
+        host_command(&["host", "start", "--timeout-secs", "90"]),
+        "installed host start",
+        limits.start,
+    )
+    .map_err(|error| Error::Invalid(format!("{error}; {start_hint}")))?;
+    if !started.status.success() {
+        return Err(Error::Invalid(format!(
+            "installed host did not report ready: {}; {start_hint}",
+            String::from_utf8_lossy(&started.stderr).trim()
+        )));
     }
     // An already-running older host also reports ready; require its identity.
-    let package = Package::load(&receipt.active.path)?;
-    let mut query = Command::new(receipt.active.executable());
-    query.args(["host", "status", "--json"]);
-    clean_environment(&mut query);
-    let output = query.output().context("query running host identity")?;
-    let response: serde_json::Value = if output.status.success() {
-        serde_json::from_slice(&output.stdout).unwrap_or_default()
+    let status = crate::bounded::run(
+        host_command(&["host", "status", "--json"]),
+        "running host identity query",
+        limits.status,
+    )?;
+    let response: serde_json::Value = if status.status.success() {
+        serde_json::from_slice(&status.stdout).unwrap_or_default()
     } else {
         serde_json::Value::Null
     };
@@ -1684,7 +1767,29 @@ pub fn launch_ready(receipt: &Receipt) -> Result<()> {
         receipt.active.build_id,
         package.manifest.source_commit
     );
-    Ok(())
+    Ok(Launched::Ready)
+}
+
+/// The update restart: wait for the old host `wait_pid` to exit, then launch
+/// the installed generation, which defers if another host started meanwhile.
+pub fn restart(root: &Path, wait_pid: u32) -> Result<Launched> {
+    restart_in(root, wait_pid, None, &LAUNCH_LIMITS)
+}
+
+fn restart_in(
+    root: &Path,
+    wait_pid: u32,
+    profile_dir: Option<&Path>,
+    limits: &LaunchLimits,
+) -> Result<Launched> {
+    wait_for_parent(wait_pid)?;
+    let receipt = read_receipt(root)?
+        .ok_or_else(|| Error::Invalid("installation disappeared during restart".into()))?;
+    let profile_dir = match profile_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => channel_profile_dir(&receipt.channel)?,
+    };
+    launch_ready_in(&receipt, &profile_dir, limits)
 }
 
 pub fn wait_for_parent(pid: u32) -> Result<()> {
@@ -1699,12 +1804,15 @@ pub fn wait_for_parent(pid: u32) -> Result<()> {
 }
 #[cfg(unix)]
 pub fn process_alive(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if pid <= 0 {
+        return false;
+    }
+    // SAFETY: signal 0 only checks that the process exists.
+    let signalled = unsafe { libc::kill(pid, 0) } == 0;
+    signalled || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 #[cfg(windows)]
 pub fn process_alive(pid: u32) -> bool {
@@ -1943,9 +2051,6 @@ mod tests {
             installed_tag_text("v0.1.0-alpha.2", "build-9"),
             "v0.1.0-alpha.2"
         );
-        assert_eq!(channel_profile_dir_name("beta"), ".plexi-beta");
-        assert_eq!(channel_profile_dir_name("main"), ".plexi");
-        assert_eq!(channel_profile_dir_name("pr-12"), ".plexi-pr-12");
     }
 
     #[test]
@@ -2286,6 +2391,185 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    /// A generation whose executable is a shell script that appends each
+    /// invocation's arguments to `<root>/<name>.calls`. `host start` runs
+    /// `start` (shell); `host status --json` reports this build as the
+    /// running host; anything else fails.
+    #[cfg(unix)]
+    fn fake_generation(root: &Path, name: &str, start: &str) -> Generation {
+        use std::os::unix::fs::PermissionsExt;
+        let path = root.join("generations").join(name);
+        fs::create_dir_all(&path).unwrap();
+        let executable = path.join("plexi");
+        let calls = root.join(format!("{name}.calls"));
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\ncase \"$*\" in\n'host start --timeout-secs 90') {start} ;;\n'host status --json') echo '{{\"ready\":true,\"running\":{{\"build_id\":\"{name}\",\"source_commit\":\"{name}\"}}}}' ;;\n*) exit 1 ;;\nesac\n",
+                calls = calls.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let manifest = serde_json::json!({
+            "schema": 1, "version": "1.0.0", "tag": format!("{name}-tag"),
+            "build_id": name, "source_commit": name, "channel": "stable",
+            "platform": "test", "executable": "plexi", "resources": "resources",
+            "files": {},
+        });
+        fs::write(path.join("package.json"), manifest.to_string()).unwrap();
+        Generation {
+            path,
+            build_id: name.into(),
+            tag: format!("{name}-tag"),
+            executable: "plexi".into(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn calls(root: &Path, name: &str) -> Vec<String> {
+        fs::read_to_string(root.join(format!("{name}.calls")))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[cfg(unix)]
+    fn test_limits(start: Duration) -> LaunchLimits {
+        LaunchLimits {
+            probe: Duration::from_secs(2),
+            start,
+            status: Duration::from_secs(10),
+        }
+    }
+
+    /// A receipt with fake active `c` and previous `b` generations, and an
+    /// empty profile directory beside them.
+    #[cfg(unix)]
+    fn launch_fixture(start: &str) -> (tempfile::TempDir, Receipt, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let canonical = root.path().canonicalize().unwrap();
+        let mut receipt = fixture_receipt(&canonical);
+        receipt.active = fake_generation(&canonical, "c", start);
+        receipt.previous = Some(fake_generation(&canonical, "b", "exit 0"));
+        let profile = canonical.join("profile");
+        fs::create_dir_all(&profile).unwrap();
+        (root, receipt, profile)
+    }
+
+    /// Hold the host-instance lock the way a running host does.
+    fn hold_host_lock(profile: &Path, pid: u32) -> File {
+        let path = profile.join(crate::host_presence::LOCK_FILE);
+        fs::write(&path, format!("{pid}\n")).unwrap();
+        let file = File::options().read(true).write(true).open(&path).unwrap();
+        file.try_lock().unwrap();
+        file
+    }
+
+    /// Stint 1605 (Codex R1.1): over a running host no generation is run,
+    /// not the installed one and not the previous one.
+    #[cfg(unix)]
+    #[test]
+    fn a_running_host_defers_without_running_any_generation() {
+        let (_root, receipt, profile) = launch_fixture("exit 0");
+        let _host = hold_host_lock(&profile, 4242);
+        assert_eq!(
+            launch_ready_in(&receipt, &profile, &test_limits(Duration::from_secs(10))).unwrap(),
+            Launched::Deferred(RunningHost { pid: Some(4242) })
+        );
+        assert!(calls(&receipt.root, "c").is_empty());
+        assert!(calls(&receipt.root, "b").is_empty());
+    }
+
+    /// Codex R1.2: a probe that cannot tell refuses; nothing is started.
+    #[cfg(unix)]
+    #[test]
+    fn an_unknown_presence_refuses_and_starts_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_root, receipt, profile) = launch_fixture("exit 0");
+        let lock = profile.join(crate::host_presence::LOCK_FILE);
+        fs::write(&lock, "").unwrap();
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o000)).unwrap();
+        let result = launch_ready_in(&receipt, &profile, &test_limits(Duration::from_secs(10)));
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o644)).unwrap();
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("nothing was started"), "{error}");
+        assert!(calls(&receipt.root, "c").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn with_no_running_host_the_installed_build_is_started_and_verified() {
+        let (_root, receipt, profile) = launch_fixture("exit 0");
+        assert_eq!(
+            launch_ready_in(&receipt, &profile, &test_limits(Duration::from_secs(10))).unwrap(),
+            Launched::Ready
+        );
+        assert_eq!(
+            calls(&receipt.root, "c"),
+            ["host start --timeout-secs 90", "host status --json"]
+        );
+        assert!(calls(&receipt.root, "b").is_empty());
+    }
+
+    /// Codex R2.2/R2.5: a hung `host start` and its descendant are killed at
+    /// the limit and the launch fails instead of hanging.
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_host_start_and_its_descendant_are_stopped_at_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let (child, sleeper) = (dir.path().join("child"), dir.path().join("sleeper"));
+        let (_root, receipt, profile) = launch_fixture(&format!(
+            "echo $$ > '{}'; sleep 600 & echo $! > '{}'; wait",
+            child.display(),
+            sleeper.display()
+        ));
+        let started = Instant::now();
+        let error = launch_ready_in(&receipt, &profile, &test_limits(Duration::from_millis(500)))
+            .unwrap_err()
+            .to_string();
+        assert!(started.elapsed() < Duration::from_secs(10), "{error}");
+        assert!(error.contains("did not finish within"), "{error}");
+        assert!(error.contains("host start"), "{error}");
+        let pid =
+            |path: &Path| -> u32 { fs::read_to_string(path).unwrap().trim().parse().unwrap() };
+        let (child, sleeper) = (pid(&child), pid(&sleeper));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process_alive(sleeper) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!process_alive(child), "host start {child} survived");
+        assert!(!process_alive(sleeper), "descendant {sleeper} survived");
+        assert_eq!(calls(&receipt.root, "c"), ["host start --timeout-secs 90"]);
+    }
+
+    /// The update restart waits for the old host, then defers if another
+    /// host took the profile meanwhile; nothing is run against it.
+    #[cfg(unix)]
+    #[test]
+    fn the_restart_path_defers_to_a_host_that_started_while_it_waited() {
+        let (_root, receipt, profile) = launch_fixture("exit 0");
+        write_json(&receipt.root.join(RECEIPT), &receipt).unwrap();
+        let mut old_host = Command::new("/bin/sleep").arg("0.3").spawn().unwrap();
+        let old_pid = old_host.id();
+        let reaper = std::thread::spawn(move || old_host.wait());
+        let _new_host = hold_host_lock(&profile, 5151);
+        let launched = restart_in(
+            &receipt.root,
+            old_pid,
+            Some(&profile),
+            &test_limits(Duration::from_secs(10)),
+        )
+        .unwrap();
+        reaper.join().unwrap().unwrap();
+        assert_eq!(
+            launched,
+            Launched::Deferred(RunningHost { pid: Some(5151) })
+        );
+        assert!(calls(&receipt.root, "c").is_empty());
     }
 
     fn fixture_receipt(root: &Path) -> Receipt {

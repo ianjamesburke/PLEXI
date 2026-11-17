@@ -1,3 +1,4 @@
+use plexi_distribution::host_presence::endpoint_in;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -786,7 +787,7 @@ mod reply_error_tests {
 
 #[cfg(test)]
 mod socket_resolution_tests {
-    use super::{command_socket_available_from, resolve_command_socket_from, NO_COMMAND_SOCKET};
+    use super::{command_socket_available_from, resolve_command_socket_from, NO_COMMAND_SOCKET, endpoint_in};
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
 
@@ -811,9 +812,7 @@ mod socket_resolution_tests {
 
         assert_eq!(
             actual,
-            Some(crate::platform::ipc::endpoint_in(Path::new(
-                "/Users/test/.plexi-pr-2765"
-            )))
+            Some(endpoint_in(Path::new("/Users/test/.plexi-pr-2765")))
         );
     }
 
@@ -828,9 +827,7 @@ mod socket_resolution_tests {
 
         assert_eq!(
             actual,
-            Some(crate::platform::ipc::endpoint_in(Path::new(
-                "/Users/test/.plexi-alpha"
-            )))
+            Some(endpoint_in(Path::new("/Users/test/.plexi-alpha")))
         );
     }
 
@@ -857,9 +854,7 @@ mod socket_resolution_tests {
 
         assert_eq!(
             actual,
-            Some(crate::platform::ipc::endpoint_in(Path::new(
-                "/Users/test/.plexi-alpha"
-            )))
+            Some(endpoint_in(Path::new("/Users/test/.plexi-alpha")))
         );
     }
 
@@ -931,12 +926,7 @@ mod socket_resolution_tests {
             home,
         );
         assert_eq!(shim_profile_dir, ".plexi-pr-2765");
-        assert_eq!(
-            shim_socket,
-            Some(crate::platform::ipc::endpoint_in(
-                &home.join(".plexi-pr-2765")
-            ))
-        );
+        assert_eq!(shim_socket, Some(endpoint_in(&home.join(".plexi-pr-2765"))));
 
         // (2) Explicit `--socket` overrides the shim's channel and ambient env.
         let explicit_socket = Path::new("/tmp/custom-override.sock");
@@ -994,9 +984,7 @@ fn resolve_command_socket_from(
     // self-binds to its own profile endpoint and ignores an ambient
     // PLEXI_SOCKET stamped by whichever host spawned the pane.
     if let Some(channel) = binary_channel {
-        return Some(crate::platform::ipc::endpoint_in(
-            &home_dir.join(format!(".plexi-{channel}")),
-        ));
+        return Some(endpoint_in(&home_dir.join(format!(".plexi-{channel}"))));
     }
     ambient_socket.map(std::path::PathBuf::from)
 }
