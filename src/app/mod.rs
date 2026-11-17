@@ -4168,7 +4168,6 @@ impl eframe::App for PlexiApp {
                 self.sync_capability_modal_focus();
                 self.sync_event_consent_focus();
                 self.sync_raw_wasm_review_focus();
-                self.sync_keychain_recovery_focus();
                 self.sync_unsaved_changes_focus();
                 disposition
             } // end else (non-preempted path)
@@ -4455,6 +4454,7 @@ impl eframe::App for PlexiApp {
         self.render_panels(ui, focused_terminal_input);
         self.observe_terminal_resize_commits();
         self.draw_attention_queue_and_decision_overlay(ctx);
+        self.draw_keychain_recovery_dialog(ctx);
 
         // Detect genuine pane focus transitions, and periodically bank long
         // same-pane sessions so Stats has live data without keystroke tracking.

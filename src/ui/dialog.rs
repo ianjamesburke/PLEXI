@@ -219,6 +219,8 @@ pub(crate) struct ActionModal<'a> {
     /// Set for a dialog with destructive actions (stint 1513); see
     /// [`Self::destructive_input`].
     destructive_input: Option<crate::app::approval_keyboard::ConsentInput>,
+    /// See [`Self::banner`].
+    banner: bool,
 }
 
 /// Memory slot holding the egui ids of a modal's actions from last frame, so
@@ -238,7 +240,16 @@ impl<'a> ActionModal<'a> {
             focus_surface: None,
             consent_input: None,
             destructive_input: None,
+            banner: false,
         }
+    }
+
+    /// A non-blocking dialog (stint 1560): it sits at the bottom of the
+    /// window with no scrim, so the workspace stays usable and a click
+    /// outside never dismisses it.
+    pub(crate) fn banner(mut self) -> Self {
+        self.banner = true;
+        self
     }
 
     /// Keep Tab inside this modal's actions while `key` owns input (stint
@@ -410,6 +421,13 @@ impl<'a> ActionModal<'a> {
                 .anchor(
                     egui::Align2::CENTER_TOP,
                     egui::vec2(0.0, style::FIELD_MODAL_TOP),
+                )
+                .scrim(false);
+        } else if self.banner {
+            shell = shell
+                .anchor(
+                    egui::Align2::CENTER_BOTTOM,
+                    egui::vec2(0.0, -style::SPACE_MD),
                 )
                 .scrim(false);
         }

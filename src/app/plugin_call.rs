@@ -930,20 +930,23 @@ impl PlexiApp {
     /// Surface the one recovery action for a host seal key that startup could
     /// not read without prompting. This is deliberately separate from a tool
     /// approval: it reloads or rotates the host seal and never grants a plugin
-    /// capability. It owns the keyboard as [`crate::app::FocusKind::KeychainRecovery`]
-    /// and is consent-guarded (stint 1498): Continue, which lets macOS prompt,
-    /// counts only once armed; Not now counts at once.
+    /// capability. It stays a non-blocking banner (stint 1560): Enter and Esc
+    /// reach it only while nothing owns input, so it shows its key chips only
+    /// then. It is consent-guarded (stint 1498): Continue, which lets macOS
+    /// prompt, counts only once armed, and the guard re-arms whenever the keys
+    /// go live, so Enter typed into a pane never carries over; Not now counts
+    /// at once.
     pub(crate) fn draw_keychain_recovery_dialog(&mut self, ctx: &egui::Context) {
-        use crate::ui::button::ButtonKind;
-        use crate::ui::dialog::{ActionModal, DialogAction, DialogShortcut};
+        use crate::ui::dialog::ActionModal;
         let Some(item) = self.open_keychain_recovery() else {
             return;
         };
+        let keys_live = self.host_input_owner() == crate::app::input_owner::InputOwner::Nobody;
         let now = std::time::Instant::now();
         let request = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            item.id.hash(&mut hasher);
+            (&item.id, keys_live).hash(&mut hasher);
             hasher.finish()
         };
         self.keychain_recovery_guard
@@ -955,19 +958,9 @@ impl PlexiApp {
             ctx.request_repaint_after(self.keychain_recovery_guard.remaining(now));
         }
         let colors = self.colors;
-        let actions = [
-            DialogAction::new("continue", "Continue", ButtonKind::Primary).shortcut(
-                DialogShortcut::new(&["Enter"], egui::Modifiers::NONE, egui::Key::Enter),
-            ),
-            DialogAction::new("not_now", "Not now", ButtonKind::Secondary)
-                .refuses()
-                .shortcut(DialogShortcut::new(
-                    &["Esc"],
-                    egui::Modifiers::NONE,
-                    egui::Key::Escape,
-                )),
-        ];
+        let actions = keychain_recovery_actions(keys_live);
         let response = ActionModal::new("keychain_recovery", "Keychain access needed", &actions)
+            .banner()
             .consent_input(input)
             .show(ctx, &colors, |ui| {
                 crate::ui::typography::body_strong(
@@ -985,17 +978,9 @@ impl PlexiApp {
         let approve = match response.selected {
             Some("continue") => true,
             Some("not_now") => false,
-            _ if response.dismissed => false,
             _ => return,
         };
         let _ = self.resolve_from_desktop(&item.id, approve, "keychain recovery");
-    }
-
-    pub(crate) fn keychain_recovery_handle_key(
-        &mut self,
-        _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::view_trait::KeyDisposition {
-        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     /// Resolve a Needs-you record from a desktop click or key. Synthetic
@@ -1181,6 +1166,33 @@ impl PlexiApp {
         }
         true
     }
+}
+
+/// The keychain recovery banner's buttons (stint 1560). The Enter and Esc
+/// shortcuts, and their chips, exist only while `keys_live`: when a pane or
+/// overlay owns input the keys never reach the banner, so it advertises none.
+pub(crate) fn keychain_recovery_actions(
+    keys_live: bool,
+) -> [crate::ui::dialog::DialogAction<'static>; 2] {
+    use crate::ui::button::ButtonKind;
+    use crate::ui::dialog::{DialogAction, DialogShortcut};
+    let continue_ = DialogAction::new("continue", "Continue", ButtonKind::Primary);
+    let not_now = DialogAction::new("not_now", "Not now", ButtonKind::Secondary).refuses();
+    if !keys_live {
+        return [continue_, not_now];
+    }
+    [
+        continue_.shortcut(DialogShortcut::new(
+            &["Enter"],
+            egui::Modifiers::NONE,
+            egui::Key::Enter,
+        )),
+        not_now.shortcut(DialogShortcut::new(
+            &["Esc"],
+            egui::Modifiers::NONE,
+            egui::Key::Escape,
+        )),
+    ]
 }
 
 #[cfg(test)]

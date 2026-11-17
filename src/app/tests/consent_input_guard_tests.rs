@@ -515,22 +515,59 @@ fn keychain_resolution(
         .and_then(|record| record.resolution)
 }
 
-/// Stint 1560: the keychain recovery dialog owns the keyboard while its
-/// record is open, so Esc reaches "Not now" over a focused terminal and the
-/// key never reaches the PTY.
+/// Stint 1560: the banner advertises Enter and Esc only while the keys can
+/// reach it, that is while nothing owns input.
 #[test]
-fn keychain_recovery_esc_defers_over_a_focused_terminal() {
+fn keychain_recovery_shows_key_chips_only_while_keys_are_live() {
+    let live = crate::app::plugin_call::keychain_recovery_actions(true);
+    assert!(live.iter().all(|action| action.shortcut.is_some()));
+    let owned = crate::app::plugin_call::keychain_recovery_actions(false);
+    assert!(owned.iter().all(|action| action.shortcut.is_none()));
+}
+
+/// Stint 1560: with a terminal focused the banner stays non-blocking. Esc and
+/// Enter go to the terminal and decide nothing.
+#[test]
+fn keychain_recovery_leaves_keys_to_a_focused_terminal() {
     use crate::app::input_owner::InputOwner;
     let mut h = HostHarness::new();
     let term = h.add_focused_terminal();
-    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(term));
     h.terminal_backend(term).enable_input_tap();
     let (monitor, id) = file_keychain_recovery();
     h.run_frames(2);
-    assert_eq!(
-        h.app.focus_stack.last(),
-        Some(&crate::app::FocusKind::KeychainRecovery)
+    h.app.keychain_recovery_guard.backdate(ARM_DELAY);
+    h.run_frames(1);
+    h.render_png(crate::ui_tests::evidence_png!())
+        .expect("render keychain banner over a focused terminal");
+
+    tap(&mut h, Key::Escape);
+    tap(&mut h, Key::Enter);
+    h.run_frames(1);
+    assert_eq!(keychain_resolution(&monitor, &id), None);
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(term));
+    assert!(
+        !h.terminal_backend(term).take_input_tap().is_empty(),
+        "the terminal kept its keys"
     );
+}
+
+/// Unfocus every pane so nothing owns input and the banner's keys go live.
+fn release_input(h: &mut HostHarness) {
+    h.app.windows[0].focused_pane = None;
+    h.run_frames(1);
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Nobody
+    );
+}
+
+/// Stint 1560: with nothing owning input, Esc defers at once.
+#[test]
+fn keychain_recovery_esc_defers_when_nothing_owns_input() {
+    let mut h = HostHarness::new();
+    h.add_focused_terminal();
+    let (monitor, id) = file_keychain_recovery();
+    release_input(&mut h);
 
     tap(&mut h, Key::Escape);
     h.run_frames(1);
@@ -538,47 +575,35 @@ fn keychain_recovery_esc_defers_over_a_focused_terminal() {
         keychain_resolution(&monitor, &id),
         Some(crate::broker::gate::NeedsYouResolution::Denied)
     );
-    assert!(
-        h.terminal_backend(term).take_input_tap().is_empty(),
-        "Esc reached the terminal"
-    );
-    assert!(!h
-        .app
-        .focus_stack
-        .contains(&crate::app::FocusKind::KeychainRecovery));
-    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(term));
 }
 
-/// Stint 1560: Enter continues only from a fresh, real press after the arm
-/// delay, so typing through the dialog's arrival never asks macOS.
+/// Stint 1560: Enter continues only from a fresh, real press made after the
+/// arm delay, and the delay restarts when the keys go live, so `ls⏎` typed
+/// into a terminal as focus leaves it never asks macOS.
 #[test]
 fn keychain_recovery_enter_continues_only_once_armed() {
     let mut h = HostHarness::new();
-    let term = h.add_focused_terminal();
-    h.terminal_backend(term).enable_input_tap();
+    h.add_focused_terminal();
     let (monitor, id) = file_keychain_recovery();
     h.run_frames(2);
+    // The banner has been up long enough while the terminal owned the keys.
+    h.app.keychain_recovery_guard.backdate(ARM_DELAY);
+    release_input(&mut h);
 
     hold(&mut h, Key::Enter);
     assert_eq!(
         keychain_resolution(&monitor, &id),
         None,
-        "Enter before arming"
+        "Enter right after the keys went live"
     );
     h.app.keychain_recovery_guard.backdate(ARM_DELAY);
     repeat_then_release(&mut h, Key::Enter);
     assert_eq!(keychain_resolution(&monitor, &id), None, "a key repeat");
-    inject_key(&mut h, term, Key::Enter);
-    assert_eq!(keychain_resolution(&monitor, &id), None, "an injected key");
 
     tap(&mut h, Key::Enter);
     h.run_frames(1);
     assert_eq!(
         keychain_resolution(&monitor, &id),
         Some(crate::broker::gate::NeedsYouResolution::Approved)
-    );
-    assert!(
-        h.terminal_backend(term).take_input_tap().is_empty(),
-        "Enter reached the terminal"
     );
 }

@@ -81,10 +81,6 @@ pub(crate) enum FocusKind {
     /// Pre-launch review for raw `.wasm` path opens. Promoted before the pane is
     /// spawned so link-time host imports are remembered before wasmtime links.
     RawWasmReview,
-    /// Keychain recovery dialog. Promoted while the host's Keychain Needs you
-    /// record is open, so Enter and Esc decide it instead of reaching the
-    /// focused pane (stint 1560).
-    KeychainRecovery,
     /// Notes picker overlay: lists workspace notes sorted by mtime, opens selected in focused text-editor.
     NotesPicker,
     Changelog,
@@ -110,7 +106,6 @@ impl FocusKind {
             Self::CapabilityModal => "CapabilityModal",
             Self::EventConsent => "EventConsent",
             Self::RawWasmReview => "RawWasmReview",
-            Self::KeychainRecovery => "KeychainRecovery",
             Self::NotesPicker => "NotesPicker",
             Self::Changelog => "Changelog",
             Self::Shortcuts => "Shortcuts",
@@ -135,7 +130,6 @@ impl FocusKind {
             Self::CapabilityModal => &CapabilityModalOwner,
             Self::EventConsent => &EventConsentOwner,
             Self::RawWasmReview => &RawWasmReviewOwner,
-            Self::KeychainRecovery => &KeychainRecoveryOwner,
             Self::NotesPicker => &NotesPickerOwner,
             Self::Changelog => &ChangelogOwner,
             Self::Shortcuts => &ShortcutsOwner,
@@ -225,7 +219,6 @@ focus_owner_tokens! {
     CapabilityModal => CapabilityModalOwner { key: capability_modal_handle_key, draw: draw_capability_modal },
     EventConsent => EventConsentOwner { key: event_consent_handle_key, draw: draw_event_consent_modal },
     RawWasmReview => RawWasmReviewOwner { key: raw_wasm_review_handle_key, draw: draw_raw_wasm_review_modal },
-    KeychainRecovery => KeychainRecoveryOwner { key: keychain_recovery_handle_key, draw: draw_keychain_recovery_dialog },
 }
 
 /// Notes picker — its handler drives selection but never claims the key, so the
@@ -1532,11 +1525,6 @@ impl PlexiApp {
     pub(crate) fn sync_raw_wasm_review_focus(&mut self) {
         let should_own = !self.pending_raw_wasm_launches.is_empty();
         self.reconcile_promoted_focus_layer(FocusKind::RawWasmReview, should_own);
-    }
-
-    pub(crate) fn sync_keychain_recovery_focus(&mut self) {
-        let should_own = self.open_keychain_recovery().is_some();
-        self.reconcile_promoted_focus_layer(FocusKind::KeychainRecovery, should_own);
     }
 
     /// Returns true when the focused view pane has at least one pending prompt.
