@@ -185,6 +185,48 @@ pub(crate) fn take_clicked() -> Vec<u64> {
     }
 }
 
+/// Let the launched process transfer activation authority before host IPC.
+/// Selector probing keeps this safe on macOS versions before 14.
+pub(crate) fn yield_activation_to_host(pid: u32) -> bool {
+    #[cfg(target_os = "macos")]
+    if !cfg!(test) {
+        use objc2::runtime::NSObjectProtocol;
+        use objc2_app_kit::{NSApplication, NSRunningApplication};
+        if let (Some(mtm), Ok(pid)) = (objc2::MainThreadMarker::new(), i32::try_from(pid)) {
+            let app = NSApplication::sharedApplication(mtm);
+            if app.respondsToSelector(objc2::sel!(yieldActivationToApplication:)) {
+                if let Some(host) =
+                    NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+                {
+                    // SAFETY: the selector was checked at runtime, and both
+                    // application objects are valid on the main thread.
+                    unsafe {
+                        let _: () = objc2::msg_send![&*app, yieldActivationToApplication: &*host];
+                    }
+                    log::info!("host_startup: yielded activation to live host pid={pid}");
+                    return true;
+                }
+            }
+        }
+    }
+    log::info!("host_startup: activation yield not available for live host pid={pid}");
+    false
+}
+
+#[cfg(test)]
+mod activation_tests {
+    #[test]
+    fn activation_yield_is_skipped_without_native_side_effects_in_tests() {
+        assert!(!super::yield_activation_to_host(4242));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn activation_yield_is_unavailable_off_macos() {
+        assert!(!super::yield_activation_to_host(std::process::id()));
+    }
+}
+
 pub(crate) fn activate() {
     #[cfg(target_os = "macos")]
     if !cfg!(test) {

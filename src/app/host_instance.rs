@@ -147,8 +147,13 @@ pub(crate) fn claim(
         &|endpoint, root| {
             crate::cli::host::forward_host_launch(endpoint, profile_dir, root, FORWARD_TIMEOUT)
         },
+        &|pid| {
+            crate::platform::attention::yield_activation_to_host(pid);
+        },
     )
 }
+
+type HandOffResult = Result<(), String>;
 
 fn claim_or_hand_off_with(
     profile_dir: &Path,
@@ -156,15 +161,21 @@ fn claim_or_hand_off_with(
     forward: Option<&Path>,
     grace: Duration,
     live: &dyn Fn(&Path) -> bool,
-    open: &impl Fn(&Path, Option<&Path>) -> Result<(), String>,
+    open: &dyn Fn(&Path, Option<&Path>) -> HandOffResult,
+    yield_activation: &dyn Fn(u32),
 ) -> Result<Launch, Refusal> {
     let refusal = match claim_within(profile_dir, endpoint, grace, live) {
         Ok(instance) => return Ok(Launch::Host(instance)),
         Err(refusal) => refusal,
     };
-    let Refusal::HostLive { .. } = &refusal else {
+    let Refusal::HostLive { pid, .. } = &refusal else {
         return Err(refusal);
     };
+    if let Some(pid) = pid {
+        yield_activation(*pid);
+    } else {
+        log::info!("host_startup: activation yield not available: live host pid missing");
+    }
     let handed = match forward {
         None => open(endpoint, None).map(|()| refusal.to_string()),
         Some(root) => open(endpoint, Some(root))
@@ -268,6 +279,30 @@ fn claim_within(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activation_is_yielded_to_the_live_host_before_show_request() {
+        let profile = tempfile::tempdir().unwrap();
+        let endpoint = endpoint_in(profile.path());
+        let _host = claim_host(profile.path(), &endpoint).unwrap();
+        std::fs::write(profile.path().join(LOCK_FILE), "4242\n").unwrap();
+        let events = std::cell::RefCell::new(Vec::new());
+        let result = claim_or_hand_off_with(
+            profile.path(),
+            &endpoint,
+            None,
+            Duration::ZERO,
+            &|_| true,
+            &|_, root| {
+                assert!(root.is_none());
+                events.borrow_mut().push(("show", 4242));
+                Ok(())
+            },
+            &|pid| events.borrow_mut().push(("yield", pid)),
+        );
+        assert!(matches!(result, Ok(Launch::HandedOff(_))));
+        assert_eq!(*events.borrow(), [("yield", 4242), ("show", 4242)]);
+    }
 
     /// Critic on PR #3133: a bare launch typed inside a Plexi pane prints
     /// help as before; it never claims, waits or reports "already running".
@@ -437,6 +472,7 @@ mod tests {
                 sent.set(true);
                 Ok(())
             },
+            &|_| {},
         );
         assert!(matches!(launch, Ok(Launch::HandedOff(_))));
         assert!(sent.get(), "a no-root relaunch must send a show request");
@@ -469,6 +505,7 @@ mod tests {
                     FORWARD_TIMEOUT,
                 )
             },
+            &|_| {},
         );
         let elapsed = started.elapsed();
         let Ok(Launch::HandedOff(line)) = launch else {
@@ -565,6 +602,7 @@ mod tests {
                 live
             },
             &|_, _| unreachable!("no path"),
+            &|_| {},
         );
         assert!(
             probe_gave_up.load(std::sync::atomic::Ordering::SeqCst),
@@ -603,6 +641,7 @@ mod tests {
                     FORWARD_TIMEOUT,
                 )
             },
+            &|_| {},
         );
         let Ok(Launch::HandedOff(line)) = launch else {
             panic!("a live host must take the launch's path");
@@ -649,6 +688,7 @@ mod tests {
                     drop(first.borrow_mut().take());
                     result
                 },
+                &|_| {},
             );
             assert!(
                 matches!(launch, Ok(Launch::Host(_))),
