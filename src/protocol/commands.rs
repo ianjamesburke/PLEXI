@@ -141,6 +141,8 @@ pub fn removed_host_request(kind: &str) -> Option<&'static str> {
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostRequest {
+    /// Reveal and focus the running host window for a second app launch.
+    ShowHost { response_file: String },
     /// Rename a context through the same commit handler as the desktop editor.
     ContextRename {
         context_id: u64,

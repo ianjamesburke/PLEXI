@@ -1494,15 +1494,20 @@ impl PlexiApp {
         }
         for pane_id in crate::platform::attention::take_clicked() {
             if self.pane_navigate(pane_id) {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                crate::platform::attention::activate();
+                self.show_host_window(ctx);
                 log::info!("attention: notification click pane={pane_id}");
             } else {
                 log::warn!("attention: notification target pane={pane_id} no longer exists");
             }
         }
+    }
+
+    /// Shared restore path for explicit app launches and notification clicks.
+    pub(crate) fn show_host_window(&self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        crate::platform::attention::activate();
     }
 
     pub(crate) fn next_blocked_agent(&mut self) -> Option<u64> {

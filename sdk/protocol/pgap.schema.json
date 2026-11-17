@@ -414,6 +414,24 @@
       "oneOf": [
         {
           "additionalProperties": false,
+          "description": "Reveal and focus the running host window for a second app launch.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "show_host",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Rename a context through the same commit handler as the desktop editor.",
           "properties": {
             "context_id": {

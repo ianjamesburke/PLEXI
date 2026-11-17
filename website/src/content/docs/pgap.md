@@ -56,6 +56,14 @@ App-to-host requests — go to `route_command`.
 
 Messages the app sends to request host services.
 
+### `show_host`
+
+Reveal and focus the running host window for a second app launch.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `response_file` | `string` | yes |
+
 ### `context_rename`
 
 Rename a context through the same commit handler as the desktop editor.
