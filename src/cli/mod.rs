@@ -1700,9 +1700,9 @@ mod transport_deadline_tests {
         let listener = UnixListener::bind(&socket).expect("bind");
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         // The peer accepts and never reads, holding the connection open until
-        // the client has returned. If the write path blocked instead of
-        // honouring its deadline, the peer would close on HANG_GUARD and the
-        // client would see a broken pipe rather than `WriteTimeout`.
+        // the client has returned. A write path that blocked past its
+        // deadline returns only after the peer gives up on HANG_GUARD, which
+        // the peer's join value records.
         let peer = std::thread::spawn(move || {
             let (_stream, _) = listener.accept().expect("accept");
             release_rx.recv_timeout(HANG_GUARD).is_ok()
