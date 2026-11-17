@@ -49,7 +49,7 @@
       "minimum": "ActionModal owns bounded action rows and wrapping at the host minimum size."
     },
     {
-      "id": "src/app/plugin_call.rs::draw_keychain_recovery_banner",
+      "id": "src/app/plugin_call.rs::draw_keychain_recovery_dialog",
       "gap": "Unresolved: plugin_call has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {

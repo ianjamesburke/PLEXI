@@ -9,7 +9,6 @@ pub(crate) struct ModalShell<'a> {
     width: f32,
     anchor: Align2,
     offset: Vec2,
-    click_away: bool,
     escape: bool,
     /// Scrim darkness, 0.0..=1.0. 0.0 = no scrim (and no click-away
     /// detection); 1.0 = pure black. Default maps `style::SCRIM_ALPHA`.
@@ -27,7 +26,6 @@ impl<'a> ModalShell<'a> {
             width: style::MODAL_WIDTH_MD,
             anchor: Align2::CENTER_CENTER,
             offset: Vec2::ZERO,
-            click_away: true,
             escape: false,
             scrim_strength: f32::from(style::SCRIM_ALPHA) / 255.0,
             order: egui::Order::Foreground,
@@ -83,11 +81,6 @@ impl<'a> ModalShell<'a> {
 
     pub(crate) fn escape(mut self, enabled: bool) -> Self {
         self.escape = enabled;
-        self
-    }
-
-    pub(crate) fn click_away(mut self, enabled: bool) -> Self {
-        self.click_away = enabled;
         self
     }
 
@@ -160,8 +153,7 @@ impl<'a> ModalShell<'a> {
                         .rect_filled(screen, 0.0, Color32::from_black_alpha(alpha));
                     // Click-away only: a focusable scrim takes Tab, and
                     // Space or Enter on it would dismiss the modal (stint 1498).
-                    let clicked = ui.allocate_rect(screen, egui::Sense::CLICK).clicked();
-                    if self.click_away && clicked {
+                    if ui.allocate_rect(screen, egui::Sense::CLICK).clicked() {
                         dismissed = true;
                     }
                 });
