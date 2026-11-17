@@ -2509,7 +2509,7 @@ open(out + ".done", "w").close()
     fn plain_mode_paste_converts_newlines_to_cr_without_markers() {
         let text = "one\ntwo\r\nthree\x1b\x03\nfour";
         let o = paste_through_pty("plain", false, text);
-        assert_eq!(o.stream(), b"DELIBERATELY BROKEN (stint 1563 CI proof)");
+        assert_eq!(o.stream(), b"one\rtwo\rthree\rfour");
         assert_eq!(o.tap, o.stream());
     }
 }
