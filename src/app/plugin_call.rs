@@ -918,58 +918,67 @@ impl PlexiApp {
             .unwrap_or_else(|| actor_id.to_string())
     }
 
-    /// Surface the one recovery action for a host seal key that startup could
-    /// not read without prompting. This is deliberately separate from a tool
-    /// approval: it reloads or rotates the host seal and never grants a plugin
-    /// capability.
-    pub(crate) fn draw_keychain_recovery_banner(&mut self, ctx: &egui::Context) {
-        let Ok(monitor) =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-        else {
-            return;
-        };
-        let Some(item) = monitor
+    /// The open Keychain Needs you record, if any. Reads the process-cached
+    /// monitor, so a frame never opens a profile store to find nothing.
+    pub(crate) fn open_keychain_recovery(&self) -> Option<crate::broker::gate::NeedsYouRecord> {
+        crate::broker::gate::PermissionMonitor::loaded(&crate::config::config_dir())?
             .open_needs_you()
             .into_iter()
             .find(|item| item.kind == crate::broker::gate::NeedsYouKind::Keychain)
-        else {
+    }
+
+    /// Surface the one recovery action for a host seal key that startup could
+    /// not read without prompting. This is deliberately separate from a tool
+    /// approval: it reloads or rotates the host seal and never grants a plugin
+    /// capability. It stays a non-blocking banner (stint 1560): Enter and Esc
+    /// reach it only while nothing owns input, so it shows its key chips only
+    /// then. It is consent-guarded (stint 1498): Continue, which lets macOS
+    /// prompt, counts only once armed, and the guard re-arms whenever the keys
+    /// go live, so Enter typed into a pane never carries over; Not now counts
+    /// at once.
+    pub(crate) fn draw_keychain_recovery_dialog(&mut self, ctx: &egui::Context) {
+        use crate::ui::dialog::ActionModal;
+        let Some(item) = self.open_keychain_recovery() else {
             return;
         };
-
-        let mut choice = None;
-        crate::ui::overlay::ModalShell::centered("keychain_recovery")
-            .title("Keychain access needed")
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -crate::ui::style::SPACE_MD))
-            .scrim(false)
-            .click_away(false)
-            .show(ctx, &self.colors, |ui| {
+        let keys_live = self.host_input_owner() == crate::app::input_owner::InputOwner::Nobody;
+        let now = std::time::Instant::now();
+        let request = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            (&item.id, keys_live).hash(&mut hasher);
+            hasher.finish()
+        };
+        self.keychain_recovery_guard
+            .present(request, ctx.cumulative_pass_nr(), now);
+        let input = self
+            .keychain_recovery_guard
+            .input(now, self.synthetic_input_frame);
+        if !input.armed {
+            ctx.request_repaint_after(self.keychain_recovery_guard.remaining(now));
+        }
+        let colors = self.colors;
+        let actions = keychain_recovery_actions(keys_live);
+        let response = ActionModal::new("keychain_recovery", "Keychain access needed", &actions)
+            .banner()
+            .consent_input(input)
+            .show(ctx, &colors, |ui| {
                 crate::ui::typography::body_strong(
                     ui,
                     "Saved permissions are unavailable.",
-                    &self.colors,
+                    &colors,
                 );
                 crate::ui::typography::body(
                     ui,
                     "Continue lets macOS ask for access to Plexi’s saved permission key. If it remains unavailable, Plexi safely replaces that key and resets only permissions it can no longer verify.",
-                    &self.colors,
+                    &colors,
                 );
-                ui.add_space(crate::ui::style::SPACE_MD);
-                ui.horizontal_wrapped(|ui| {
-                    if ui.add(crate::ui::button::KitButton::new("Continue", &self.colors).kind(crate::ui::button::ButtonKind::Primary))
-                    .clicked_by(egui::PointerButton::Primary)
-                    {
-                        choice = Some(true);
-                    }
-                    if ui.add(crate::ui::button::KitButton::new("Not now", &self.colors).kind(crate::ui::button::ButtonKind::Secondary))
-                    .clicked_by(egui::PointerButton::Primary)
-                    {
-                        choice = Some(false);
-                    }
-                });
             });
 
-        let Some(approve) = choice else {
-            return;
+        let approve = match response.selected {
+            Some("continue") => true,
+            Some("not_now") => false,
+            _ => return,
         };
         let _ = self.resolve_from_desktop(&item.id, approve, "keychain recovery");
     }
@@ -1157,6 +1166,33 @@ impl PlexiApp {
         }
         true
     }
+}
+
+/// The keychain recovery banner's buttons (stint 1560). The Enter and Esc
+/// shortcuts, and their chips, exist only while `keys_live`: when a pane or
+/// overlay owns input the keys never reach the banner, so it advertises none.
+pub(crate) fn keychain_recovery_actions(
+    keys_live: bool,
+) -> [crate::ui::dialog::DialogAction<'static>; 2] {
+    use crate::ui::button::ButtonKind;
+    use crate::ui::dialog::{DialogAction, DialogShortcut};
+    let continue_ = DialogAction::new("continue", "Continue", ButtonKind::Primary);
+    let not_now = DialogAction::new("not_now", "Not now", ButtonKind::Secondary).refuses();
+    if !keys_live {
+        return [continue_, not_now];
+    }
+    [
+        continue_.shortcut(DialogShortcut::new(
+            &["Enter"],
+            egui::Modifiers::NONE,
+            egui::Key::Enter,
+        )),
+        not_now.shortcut(DialogShortcut::new(
+            &["Esc"],
+            egui::Modifiers::NONE,
+            egui::Key::Escape,
+        )),
+    ]
 }
 
 #[cfg(test)]

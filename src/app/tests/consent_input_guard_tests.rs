@@ -1,8 +1,9 @@
 //! Consent dialogs take a decision only from a fresh, real key press or click
 //! made after the arm delay (stint 1498): injected input, input in the frame
 //! the prompt appears, and OS key repeat decide nothing. One shared guard,
-//! `consent_input_admitted`, serves the permission banner and all three
-//! dialogs: event consent, the capability prompt and raw WASM review. The
+//! `consent_input_admitted`, serves the permission banner and the dialogs:
+//! event consent, the capability prompt, raw WASM review and keychain
+//! recovery (stint 1560). The
 //! capability prompt's checks live with its pane in `host::wasm_pane::tests`,
 //! which has a loadable test plugin.
 
@@ -482,4 +483,127 @@ fn screenshot_event_consent_button_row() {
     assert!(rows.iter().all(|(_, hit)| hit.top() == rows[0].1.top()));
     assert!(rows[0].1.left() > rows[1].1.left() && rows[1].1.left() > rows[2].1.left());
     drop(connection);
+}
+
+/// File the keychain recovery record startup files when it could not read
+/// the seal key. Tests run against the in-memory host-key store.
+fn file_keychain_recovery() -> (
+    std::sync::Arc<crate::broker::gate::PermissionMonitor>,
+    String,
+) {
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    let id = monitor
+        .file_needs_you(crate::broker::gate::NeedsYouFile {
+            kind: crate::broker::gate::NeedsYouKind::Keychain,
+            actor: "host".to_string(),
+            resource: "permission-mac".to_string(),
+            summary: crate::broker::gate::KEYCHAIN_ACCESS_SUMMARY.to_string(),
+            expires_at: None,
+            run_tag: Some("keychain:permission-mac".to_string()),
+        })
+        .expect("file keychain recovery");
+    (monitor, id)
+}
+
+fn keychain_resolution(
+    monitor: &crate::broker::gate::PermissionMonitor,
+    id: &str,
+) -> Option<crate::broker::gate::NeedsYouResolution> {
+    monitor
+        .get_needs_you(id)
+        .and_then(|record| record.resolution)
+}
+
+/// Stint 1560: the banner advertises Enter and Esc only while the keys can
+/// reach it, that is while nothing owns input.
+#[test]
+fn keychain_recovery_shows_key_chips_only_while_keys_are_live() {
+    let live = crate::app::plugin_call::keychain_recovery_actions(true);
+    assert!(live.iter().all(|action| action.shortcut.is_some()));
+    let owned = crate::app::plugin_call::keychain_recovery_actions(false);
+    assert!(owned.iter().all(|action| action.shortcut.is_none()));
+}
+
+/// Stint 1560: with a terminal focused the banner stays non-blocking. Esc and
+/// Enter go to the terminal and decide nothing.
+#[test]
+fn keychain_recovery_leaves_keys_to_a_focused_terminal() {
+    use crate::app::input_owner::InputOwner;
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+    h.terminal_backend(term).enable_input_tap();
+    let (monitor, id) = file_keychain_recovery();
+    h.run_frames(2);
+    h.app.keychain_recovery_guard.backdate(ARM_DELAY);
+    h.run_frames(1);
+    h.render_png(crate::ui_tests::evidence_png!())
+        .expect("render keychain banner over a focused terminal");
+
+    tap(&mut h, Key::Escape);
+    tap(&mut h, Key::Enter);
+    h.run_frames(1);
+    assert_eq!(keychain_resolution(&monitor, &id), None);
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(term));
+    assert!(
+        !h.terminal_backend(term).take_input_tap().is_empty(),
+        "the terminal kept its keys"
+    );
+}
+
+/// Unfocus every pane so nothing owns input and the banner's keys go live.
+fn release_input(h: &mut HostHarness) {
+    h.app.windows[0].focused_pane = None;
+    h.run_frames(1);
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Nobody
+    );
+}
+
+/// Stint 1560: with nothing owning input, Esc defers at once.
+#[test]
+fn keychain_recovery_esc_defers_when_nothing_owns_input() {
+    let mut h = HostHarness::new();
+    h.add_focused_terminal();
+    let (monitor, id) = file_keychain_recovery();
+    release_input(&mut h);
+
+    tap(&mut h, Key::Escape);
+    h.run_frames(1);
+    assert_eq!(
+        keychain_resolution(&monitor, &id),
+        Some(crate::broker::gate::NeedsYouResolution::Denied)
+    );
+}
+
+/// Stint 1560: Enter continues only from a fresh, real press made after the
+/// arm delay, and the delay restarts when the keys go live, so `ls⏎` typed
+/// into a terminal as focus leaves it never asks macOS.
+#[test]
+fn keychain_recovery_enter_continues_only_once_armed() {
+    let mut h = HostHarness::new();
+    h.add_focused_terminal();
+    let (monitor, id) = file_keychain_recovery();
+    h.run_frames(2);
+    // The banner has been up long enough while the terminal owned the keys.
+    h.app.keychain_recovery_guard.backdate(ARM_DELAY);
+    release_input(&mut h);
+
+    hold(&mut h, Key::Enter);
+    assert_eq!(
+        keychain_resolution(&monitor, &id),
+        None,
+        "Enter right after the keys went live"
+    );
+    h.app.keychain_recovery_guard.backdate(ARM_DELAY);
+    repeat_then_release(&mut h, Key::Enter);
+    assert_eq!(keychain_resolution(&monitor, &id), None, "a key repeat");
+
+    tap(&mut h, Key::Enter);
+    h.run_frames(1);
+    assert_eq!(
+        keychain_resolution(&monitor, &id),
+        Some(crate::broker::gate::NeedsYouResolution::Approved)
+    );
 }
