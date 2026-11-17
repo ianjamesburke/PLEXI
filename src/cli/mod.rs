@@ -1711,7 +1711,9 @@ mod transport_deadline_tests {
         let line = vec![b'x'; 32 * 1024 * 1024];
         let error = send_line_to_socket(&socket, &line, Duration::from_millis(100))
             .expect_err("stalled write must time out");
-        release_tx.send(()).expect("peer is waiting");
+        // A peer that already gave up has dropped its receiver; the join
+        // value below reports that case.
+        let _ = release_tx.send(());
         let released_by_client = peer.join().expect("peer");
 
         assert!(
