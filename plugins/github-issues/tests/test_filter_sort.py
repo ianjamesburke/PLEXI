@@ -326,3 +326,30 @@ def test_no_repo_view_renders_interactive_input_and_detail_view_uses_card():
     scroll_node = detail_node["children"][1]
     assert scroll_node["type"] == "scroll"
     assert scroll_node["child"]["type"] == "card"
+
+
+def test_host_refusal_reads_as_a_refusal_not_an_empty_list():
+    """Stint 1489: a refused fetch shows the host's refusal, which says how
+    to allow it, instead of "0 open" and "No matching issues"."""
+    import plexi_sdk as sdk
+    from plexi_sdk import _v3_state
+    from plexi_sdk.events import HttpResponse
+
+    app = _load_app_module()
+    _v3_state._state = sdk.StateSnapshot(
+        dict(app.DEFAULT_STATE, repo="plexiapp/plexi", loading=True, pending="list"), {}
+    )
+    _v3_state._in_view = False
+    refusal = "net.http was denied for this pane. Reopen github-issues to be asked again."
+    effects = app.update(HttpResponse(status=0, error=refusal, refused="net.http"))
+    data = next(effect for effect in effects if isinstance(effect, SetState)).data
+    assert data["refused"] == refusal
+    assert data["pending"] == ""
+    assert app._status(data) == "Network access refused"
+
+    _v3_state._state = sdk.StateSnapshot(data, {})
+    tree = json.dumps(app.view().to_node())
+    assert "Network access refused" in tree
+    assert refusal in tree
+    assert "No matching issues" not in tree
+    assert "0 open" not in tree

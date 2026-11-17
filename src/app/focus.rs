@@ -1535,7 +1535,9 @@ impl PlexiApp {
         match win.panes.get(&pane_id) {
             Some(crate::host::pane::Pane::View(view_pane)) => match &view_pane.runtime {
                 crate::host::pane::ViewRuntime::Builtin(_) => false,
-                crate::host::pane::ViewRuntime::Python(_) => false,
+                crate::host::pane::ViewRuntime::Python(python) => {
+                    python.has_pending_capability_prompt()
+                }
                 crate::host::pane::ViewRuntime::Wasm(wasm) => wasm.has_pending_capability_prompt(),
             },
             _ => false,

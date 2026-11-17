@@ -37,6 +37,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "selected": 0,
     "loading": False,
     "error": "",
+    "refused": "",
 }
 
 
@@ -111,6 +112,16 @@ def view():
         for pair in data["pairs"]
     ]
     label = str(price.get("label") or selected_pair or "Ticker")
+    if data["refused"]:
+        return Column(
+            [
+                SurfaceHeader("Kraken", "network access refused"),
+                Banner(data["refused"], tone="warning", title="Network access refused"),
+                Spacer(grow=True),
+                FooterKeys([("r", "retry")]),
+            ],
+            grow=True,
+        )
     detail_section: Component = (
         Banner(data["error"], tone="danger", title="Error")
         if data["error"]
@@ -195,6 +206,7 @@ def _state() -> dict:
     data["selected"] = _clamp(int(data.get("selected") or 0), len(data["pairs"]))
     data["loading"] = bool(data.get("loading"))
     data["error"] = str(data.get("error") or "")
+    data["refused"] = str(data.get("refused") or "")
     return data
 
 
@@ -205,6 +217,12 @@ def _fetch(pairs: list[str]) -> HttpFetch:
 
 
 def _handle_http(data: dict, event: HttpResponse) -> dict:
+    data["loading"] = False
+    if event.refused:
+        data["refused"] = str(event.error or f"{event.refused} was refused")
+        log.info(f"kraken: request refused capability={event.refused}")
+        return data
+    data["refused"] = ""
     if event.status < 200 or event.status >= 300:
         data["loading"] = False
         data["error"] = f"HTTP {event.status}: {_body_text(event)[:240]}"
@@ -273,6 +291,8 @@ def _price_line(pair: str, price: dict) -> str:
 def _status(data: dict) -> str:
     if data["loading"]:
         return "Loading"
+    if data["refused"]:
+        return "Network access refused"
     if data["error"]:
         return "Error"
     return f"{len(data['prices'])} prices"

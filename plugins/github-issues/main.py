@@ -46,6 +46,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "loading": False,
     "pending": "",
     "error": "",
+    "refused": "",
     "filter": "",
     "sort_mode": "created_desc",
     "view": "list",
@@ -292,6 +293,16 @@ def view():
             ],
             grow=True,
         )
+    if data["refused"]:
+        return Column(
+            [
+                SurfaceHeader("GitHub Issues", data["repo"]),
+                Banner(data["refused"], tone="warning", title="Network access refused"),
+                Spacer(grow=True),
+                FooterKeys([("r", "retry")]),
+            ],
+            grow=True,
+        )
     if data["view"] == "detail":
         return _detail_view(data)
     return _list_view(data)
@@ -306,6 +317,7 @@ def _state() -> dict:
     data["issues"] = [dict(issue) for issue in data.get("issues") or []]
     data["selected"] = max(0, int(data.get("selected") or 0))
     data["filter"] = str(data.get("filter") or "")
+    data["refused"] = str(data.get("refused") or "")
     data["sort_mode"] = (
         data.get("sort_mode") if data.get("sort_mode") in SORT_MODES else "created_desc"
     )
@@ -330,6 +342,13 @@ def _headers() -> dict:
 
 
 def _handle_http(data: dict, event: HttpResponse) -> dict:
+    if event.refused:
+        data["loading"] = False
+        data["pending"] = ""
+        data["refused"] = str(event.error or f"{event.refused} was refused")
+        log.info(f"github-issues: request refused capability={event.refused}")
+        return data
+    data["refused"] = ""
     if event.status < 200 or event.status >= 300:
         data["loading"] = False
         data["error"] = f"HTTP {event.status}: {_body_text(event)[:240]}"
@@ -560,6 +579,8 @@ def _empty_text(data: dict) -> str:
 def _status(data: dict) -> str:
     if data["loading"]:
         return "Loading"
+    if data["refused"]:
+        return "Network access refused"
     if data["error"]:
         return "Error"
     return f"{len(_visible_issues(data))} open issues"

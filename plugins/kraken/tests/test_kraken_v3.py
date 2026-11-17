@@ -78,3 +78,35 @@ def test_select_list_mouse_selection_and_refresh_subtitle():
     assert init_state["loading"] is False
     assert init_state["prices"]["XBTUSD"]["last"] == "65000.1"
 
+
+
+def test_host_refusal_reads_as_a_refusal_not_an_empty_ticker():
+    """Stint 1489: a refused fetch shows the host's refusal, which says how
+    to allow it, instead of "last -" rows and an error badge."""
+    import json
+
+    import plexi_sdk as sdk
+    from plexi_sdk import _v3_state
+    from plexi_sdk.effects import SetState
+    from plexi_sdk.events import HttpResponse
+
+    app = _load_app_module()
+    _v3_state._state = sdk.StateSnapshot(dict(app.DEFAULT_STATE, loading=True), {})
+    _v3_state._in_view = False
+    refusal = "net.http is denied for kraken. To allow it, run `plexi permissions allow cap:kraken:net.http`."
+    effects = app.update(HttpResponse(status=0, error=refusal, refused="net.http"))
+    data = next(effect for effect in effects if isinstance(effect, SetState)).data
+    assert data["refused"] == refusal
+    assert data["loading"] is False
+    assert app._status(data) == "Network access refused"
+
+    _v3_state._state = sdk.StateSnapshot(data, {})
+    tree = json.dumps(app.view().to_node())
+    assert "Network access refused" in tree
+    assert "plexi permissions allow cap:kraken:net.http" in tree
+    assert "last -" not in tree
+
+    # A later successful fetch clears the refusal.
+    ok = HttpResponse(status=200, body=b'{"error": [], "result": {}}')
+    data = next(e for e in app.update(ok) if isinstance(e, SetState)).data
+    assert data["refused"] == ""

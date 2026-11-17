@@ -709,6 +709,7 @@ class PluginRuntime:
                 if isinstance(item, (list, tuple)) and len(item) == 2:
                     headers.append((str(item[0]), str(item[1])))
         truncated = bool(ev.get("truncated", False))
+        refused = ev.get("refused")
         self._dispatch(events.HttpResponse(
             status=status,
             headers=headers,
@@ -717,6 +718,7 @@ class PluginRuntime:
             request_id=str(req_id) if req_id is not None else None,
             tag=str(tag) if tag is not None else None,
             truncated=truncated,
+            refused=str(refused) if refused else None,
         ))
 
     def _handle_mcp_message(self, ev: dict) -> None:

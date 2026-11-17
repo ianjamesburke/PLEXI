@@ -968,6 +968,96 @@ mod tests {
         });
     }
 
+    /// Stint 1489: the bundled Kraken plugin on a fresh profile asks for
+    /// `net.http` in its pane (naming the hosts), and after "Deny once" (Esc)
+    /// shows a refusal that says how to be asked again, not an empty ticker.
+    #[test]
+    fn screenshot_python_consent_prompt_then_refusal() {
+        let kraken = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/kraken");
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        apply_fixture_theme(&mut h, "plexi-dusk");
+        let pane = h.open_view_at(&kraken, &[]).expect("open kraken");
+        fn python_pane(
+            app: &mut crate::app::PlexiApp,
+            pane: PaneId,
+        ) -> Option<&mut crate::host::wasm_python::LivePythonPane> {
+            let window = app.active_window;
+            match &mut app.windows[window]
+                .panes
+                .get_mut(&pane)?
+                .as_view_mut()?
+                .runtime
+            {
+                ViewRuntime::Python(p) => Some(p),
+                _ => None,
+            }
+        }
+        let start = Instant::now();
+        while !h.with_app_mut(|app| {
+            python_pane(app, pane).is_some_and(|p| p.has_pending_capability_prompt())
+        }) {
+            assert!(
+                start.elapsed() < Duration::from_secs(60),
+                "no net.http prompt"
+            );
+            h.step();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        h.with_app_mut(|app| {
+            if let Some(p) = python_pane(app, pane) {
+                p.backdate_capability_guard(crate::app::approval_keyboard::ARM_DELAY);
+            }
+        });
+        // Arming fades the approving buttons in; let the fade finish before
+        // measuring contrast.
+        h.run_steps(20);
+        h.harness().get_by_label("Grant once");
+        h.harness().get_by_label("Hosts: api.kraken.com");
+        h.harness()
+            .get_by_label("net.http: Make outbound HTTP requests");
+        h.with_app(|app| {
+            let reports = crate::ui::layout_report::snapshot(&app.ctx);
+            let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
+            assert!(errors.is_empty(), "{errors:?}");
+        });
+        h.save_screenshot(&evidence_png!("_prompt")).unwrap();
+
+        h.harness().key_press(egui::Key::Escape);
+        // Python plugin text is painted, not in the accessibility tree, so
+        // read the plugin's semantic state.
+        let refusal = "net.http was denied for this pane. Reopen kraken to be asked again.";
+        let start = Instant::now();
+        loop {
+            let labels: Vec<String> = h.with_app_mut(|app| {
+                python_pane(app, pane)
+                    .map(|p| {
+                        p.semantic_state()
+                            .nodes
+                            .into_iter()
+                            .filter_map(|n| n.label)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            });
+            if labels.iter().any(|l| l == "Network access refused")
+                && labels.iter().any(|l| l == refusal)
+            {
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(30),
+                "no refusal shown: {labels:?}"
+            );
+            h.step();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        h.run_steps(2);
+        assert!(h.with_app_mut(|app| {
+            python_pane(app, pane).is_some_and(|p| !p.has_pending_capability_prompt())
+        }));
+        h.save_screenshot(&evidence_png!("_refused")).unwrap();
+    }
+
     /// Stint 1498: a consent prompt that has just appeared draws its approving
     /// action disabled and its refusal enabled; once armed, both are enabled.
     #[test]

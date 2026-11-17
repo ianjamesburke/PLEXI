@@ -147,6 +147,10 @@ pub(crate) enum Mech {
     PythonLaunchSet,
     /// `WasmPane`'s own `pending_capability_prompts` queue.
     WasmQueue,
+    /// `consent::consent_admission` (stint 1489): a Python consent capability
+    /// is decided at each use from the monitor's stored row, then the pane's
+    /// own answer, then a prompt in the pane (`PaneConsent`).
+    PythonConsent,
     /// `PermissionMonitor::admit*` exact evaluation.
     MonitorAdmit,
     /// `HostSubscriptionService`'s private `GrantStore` copy through
@@ -213,6 +217,7 @@ pub(crate) struct Line {
 const ROW: Mech = Mech::LaunchRow;
 const MINT: Mech = Mech::ManifestAsGrant;
 const PYSET: Mech = Mech::PythonLaunchSet;
+const PYCON: Mech = Mech::PythonConsent;
 const QUEUE: Mech = Mech::WasmQueue;
 const ADMIT: Mech = Mech::MonitorAdmit;
 const SUBS: Mech = Mech::SubscriptionStore;
@@ -223,6 +228,7 @@ const REMINT: &str = "ask: the manifest must not re-mint an allow after revoke o
 const MANIFEST_MINT: &str = "ask: a manifest declaration must not mint an allow";
 const PY_NO_ASK: &str = "ask (waiting_for_approval): Python has no consent path and hard-denies";
 const RUNTIME_QUEUE: &str = "ask through a broker pending request, not the WasmPane queue";
+const PY_QUEUE: &str = "ask through a broker pending request, not the LivePythonPane prompt queue";
 const SUBS_STORE: &str =
     "same result decided by PermissionMonitor, not the subscription store copy";
 
@@ -243,6 +249,18 @@ const PY_NON_SENSITIVE: [Cell; 10] = [
 const PY_SENSITIVE: [Cell; 10] = [
     deny(PYSET), admit(ROW), admit(ROW).cut(ONCE_REPLAY), admit(ROW), admit(ROW).cut(STALE_SESSION),
     admit(ROW), deny(ROW), deny(PYSET).cut(PY_NO_ASK), deny(PYSET).cut(PY_NO_ASK), deny(PYSET).cut(PY_NO_ASK),
+];
+
+// Python consent capability (`net.http`, `fs.write`; stint 1489). Decided at
+// each use: undeclared refuses; a stored row decides; otherwise the pane asks.
+// Stint 1489 flipped revoked, expired and manifest-only from deny (no consent
+// path) to ask; every other cell kept its outcome and moved to the live read.
+// CUTOVER: once-used and stale session admit (the stored-row read ignores
+// duration); the ask comes from the pane's own queue, not a broker pending request.
+#[rustfmt::skip]
+const PY_CONSENT: [Cell; 10] = [
+    deny(PYCON), admit(PYCON), admit(PYCON).cut(ONCE_REPLAY), admit(PYCON), admit(PYCON).cut(STALE_SESSION),
+    admit(PYCON), deny(PYCON), ask(PYCON).cut(PY_QUEUE), ask(PYCON).cut(PY_QUEUE), ask(PYCON).cut(PY_QUEUE),
 ];
 
 // `notify` is a raw WASM id, not a `Capability`, so it can never enter the
@@ -325,8 +343,8 @@ use Runtime as R;
 pub(crate) const TABLE: &[Line] = &[
     // ── Python plugin (LivePythonPane) ───────────────────────────────────────
     line(R::Python, F::FsRead, &["fs.read", "fs.pick"], PY_NON_SENSITIVE),
-    line(R::Python, F::FsWrite, &["fs.write"], PY_SENSITIVE),
-    line(R::Python, F::Network, &["net.http"], PY_SENSITIVE),
+    line(R::Python, F::FsWrite, &["fs.write"], PY_CONSENT),
+    line(R::Python, F::Network, &["net.http"], PY_CONSENT),
     na(R::Python, F::Secrets, "secrets.get is declarable but LivePythonPane has no secret effect; nothing reaches admission"),
     line(R::Python, F::CliExec, &["cli.operations"], PY_CLI_OPERATION),
     na(R::Python, F::Ai, "LivePythonPane has no ai.query or llm effect handler"),
@@ -403,7 +421,10 @@ pub(crate) const PYTHON_UNPROBED: &[(&str, &str)] = &[
         "secrets.get",
         "no Python effect (Secrets line is not-applicable)",
     ),
-    ("ai.query", "no Python effect (Ai line is not-applicable)"),
+    (
+        "ai.query",
+        "no Python effect (Ai line is not-applicable); its RequestCapability consent is pinned by consent_tests",
+    ),
     (
         "gpu.render",
         "not consulted through LivePythonPane::has_capability",
