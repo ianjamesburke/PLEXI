@@ -5,13 +5,11 @@
 //! before relaunching) hands over without help. A second launch on a profile
 //! with a live host is refused before it opens a window or touches the
 //! socket, whichever path launched it.
+use plexi_distribution::host_presence::LOCK_FILE;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-
-/// The lock file, in the profile directory.
-pub(crate) const LOCK_FILE: &str = "host.lock";
 
 /// Exit status of a launch refused because a host already runs.
 pub(crate) const ALREADY_RUNNING_EXIT: i32 = 3;
@@ -328,6 +326,32 @@ mod tests {
             endpoint: PathBuf::from("/p/notify.sock")
         }
         .is_another_host());
+    }
+
+    /// The installer's outside view (stint 1605) sees a claimed host as
+    /// running by its lock, with its pid. Fails if either side changes the
+    /// lock file, the lock mode or the profile layout.
+    #[test]
+    fn a_claimed_host_is_running_to_the_installers_presence_probe() {
+        use plexi_distribution::host_presence::{Evidence, Presence, probe};
+        let profile = tempfile::tempdir().unwrap();
+        let endpoint = endpoint_in(profile.path());
+        let _host = claim_host(profile.path(), &endpoint).unwrap();
+        let expected_pid = if cfg!(windows) {
+            None
+        } else {
+            Some(std::process::id())
+        };
+        assert_eq!(
+            probe(
+                profile.path(),
+                std::time::Instant::now() + Duration::from_secs(2)
+            ),
+            Presence::Running {
+                pid: expected_pid,
+                evidence: Evidence::Lock
+            }
+        );
     }
 
     /// Become the host, for a test that needs one holding the lock.

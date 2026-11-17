@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -56,6 +57,27 @@ fn main() {
             Some("bash") => println!("_{name}() {{ echo {build}; }}\\ncomplete -F _{name} {name}"),
             Some("fish") => println!("complete -c {name} -a {build}"),
             _ => std::process::exit(1),
+        }
+        return;
+    }
+    // Host commands for the launch tests (stint 1605). The fake records each
+    // one, so a test can prove which build ran and that none ran at all.
+    if env::args().nth(1).as_deref() == Some("host") {
+        let build = ''' + json.dumps(build) + ''';
+        let args: Vec<String> = env::args().skip(1).collect();
+        if let Ok(calls) = env::var("DISTRIBUTION_TEST_CALLS") {
+            use std::io::Write;
+            let mut file = fs::OpenOptions::new().create(true).append(true).open(calls).unwrap();
+            writeln!(file, "{build} {}", args.join(" ")).unwrap();
+        }
+        let started = env::var("DISTRIBUTION_TEST_STARTED").ok().map(PathBuf::from);
+        match args.get(1).map(String::as_str) {
+            Some("start") => { if let Some(path) = &started { fs::write(path, build).unwrap(); } }
+            Some("status") => match started.and_then(|p| fs::read_to_string(p).ok()) {
+                Some(b) => println!("{{\\"ready\\":true,\\"pid\\":1,\\"running\\":{{\\"build_id\\":\\"{b}\\",\\"source_commit\\":\\"{b}\\"}}}}"),
+                None => println!("{{\\"ready\\":false,\\"pid\\":null}}"),
+            },
+            _ => std::process::exit(2),
         }
         return;
     }
@@ -263,6 +285,89 @@ def main(args):
         install(old)
         assert active() == 'old'
         print('PASS: scoped uninstall and reinstall retain user data and other channels')
+        if os.name != 'nt':
+            # Stint 1605: an install that launches never runs any build while a
+            # host holds the profile, never stops that host, and the next
+            # launch after it exits runs the staged build. A short HOME keeps
+            # the endpoint inside the Unix socket path limit.
+            beta_old = package(root, installer, args.platform, 'beta', 'old')
+            beta_new = package(root, installer, args.platform, 'beta', 'new')
+            short_home = Path(tempfile.mkdtemp(prefix='p1605-', dir='/tmp'))
+            cleanup.callback(shutil.rmtree, short_home, True)
+            profile = short_home / '.plexi-beta'
+            profile.mkdir()
+            calls, started = root / 'beta-calls', root / 'beta-started'
+            launch_env = env | {'HOME': str(short_home), 'DISTRIBUTION_TEST_CALLS': str(calls), 'DISTRIBUTION_TEST_STARTED': str(started)}
+            stand_in_source = '''
+import fcntl, os, socket, sys, time
+mode, profile, ready = sys.argv[1:]
+if mode == 'lock':
+    lock = open(os.path.join(profile, 'host.lock'), 'a+')
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    lock.truncate(0); lock.write(f'{os.getpid()}\\n'); lock.flush()
+else:
+    listener = socket.socket(socket.AF_UNIX)
+    listener.bind(os.path.join(profile, 'notify.sock'))
+    listener.listen(1)
+open(ready, 'w').close()
+time.sleep(600)
+'''
+            def stand_in(mode):
+                ready = root / f'stand-in-{mode}-ready'
+                ready.unlink(missing_ok=True)
+                host = subprocess.Popen([sys.executable, '-c', stand_in_source, mode, str(profile), str(ready)])
+                cleanup.callback(lambda: (host.kill(), host.wait(timeout=10)))
+                deadline = time.monotonic() + 10
+                while not ready.exists():
+                    if time.monotonic() > deadline: raise TimeoutError('stand-in host')
+                    time.sleep(.05)
+                return host
+            def stop(host):
+                host.kill(); host.wait(timeout=10)
+            def launch_install(path, host=None):
+                for marker in (calls, started):
+                    marker.unlink(missing_ok=True)
+                result = run([installer, '--package', path, '--channel', 'beta', '--applications-dir', apps], launch_env)
+                if host is not None:
+                    assert host.poll() is None, 'the installer stopped the running host'
+                recorded = calls.read_text().splitlines() if calls.exists() else []
+                assert not any('stop' in call for call in recorded), recorded
+                return recorded, result.stdout
+            ready_build = lambda build: [f'{build} host start --timeout-secs 90', f'{build} host status --json']
+            host = stand_in('lock')
+            recorded, out = launch_install(beta_old, host)
+            assert recorded == [], recorded
+            assert f'Plexi Beta is running (pid {host.pid}). Quit Plexi Beta, then reopen it to run v1.0.0.' in out, out
+            assert 'Plexi is ready.' not in out, out
+            print('PASS: first install over a lock-holding host runs no build and defers')
+            stop(host)
+            recorded, out = launch_install(beta_old)
+            assert recorded == ready_build('old'), recorded
+            assert 'Plexi is ready.' in out, out
+            print('PASS: first install with no running host starts it and reports ready')
+            host = stand_in('lock')
+            recorded, out = launch_install(beta_new, host)
+            assert recorded == [], recorded
+            assert 'Quit Plexi Beta, then reopen it to run v1.1.0.' in out, out
+            print('PASS: upgrade over a running host runs no build, old or new, and defers')
+            stop(host)
+            calls.unlink(missing_ok=True)
+            run([root / 'command bin/plexi-beta', 'host', 'start'], launch_env)
+            assert calls.read_text().splitlines() == ['new host start'], calls.read_text()
+            assert started.read_text() == 'new'
+            print('PASS: the next launch after the host exits runs the staged build')
+            host = stand_in('listen')
+            recorded, out = launch_install(beta_new, host)
+            assert recorded == [], recorded
+            assert 'Plexi Beta is running. Quit Plexi Beta, then reopen it to run v1.1.0.' in out, out
+            print('PASS: a pre-lock host found only on its endpoint defers the launch')
+            stop(host)
+            recorded, out = launch_install(beta_new)
+            assert recorded == ready_build('new'), recorded
+            assert 'Plexi is ready.' in out, out
+            assert (profile / 'notify.sock').exists(), 'the installer removed the stale endpoint'
+            print('PASS: a stale endpoint reads as no host, is kept, and the new build starts')
+            run([installer, 'remove', '--receipt', root / 'custom install/beta'], env)
         # Exercise real HTTP, archive and checksum handling from the public bootstrap.
         server_root = root / 'server'
         tag_dir = server_root / 'download/v1.1.0'

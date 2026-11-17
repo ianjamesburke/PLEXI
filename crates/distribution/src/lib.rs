@@ -1,4 +1,6 @@
 //! Package validation and channel-scoped installation shared by every installer.
+pub mod bounded;
+pub mod host_presence;
 pub mod package;
 pub mod release;
 pub mod strays;

@@ -35,47 +35,7 @@ pub fn endpoint() -> String {
 /// On Windows a pipe name survives a `PathBuf` round-trip unchanged — it is
 /// only ever handed back to `CreateFileW`, never to the filesystem.
 pub fn endpoint_path() -> PathBuf {
-    endpoint_in(&crate::config::config_dir())
-}
-
-/// The endpoint belonging to a specific channel, named by its profile
-/// directory (`~/.plexi`, `~/.plexi-alpha`, `~/.plexi-pr-1604`, ...).
-///
-/// Commands that target another channel — `plexi host stop`, the spawn gate,
-/// `--socket` resolution — know the profile dir, not the endpoint. On Unix the
-/// endpoint lives inside that dir; on Windows it does not exist on disk at all,
-/// so the channel is recovered from the dir's basename and turned into a pipe
-/// name. Keeping both derivations here is what stops the two from drifting.
-pub fn endpoint_in(profile_dir: &Path) -> PathBuf {
-    #[cfg(unix)]
-    {
-        profile_dir.join("notify.sock")
-    }
-    #[cfg(windows)]
-    {
-        PathBuf::from(pipe_name_for_channel(channel_from_profile_dir(profile_dir)))
-    }
-}
-
-/// `~/.plexi-alpha` → `Some("alpha")`; bare `~/.plexi` → `None`.
-#[cfg(windows)]
-fn channel_from_profile_dir(profile_dir: &Path) -> Option<&str> {
-    profile_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.strip_prefix(".plexi-"))
-        .filter(|channel| !channel.is_empty())
-}
-
-/// `\\.\pipe\plexi` for the stable channel, `\\.\pipe\plexi-<channel>`
-/// otherwise — mirroring the `~/.plexi` vs `~/.plexi-<channel>` profile-dir
-/// split so each channel is an isolated instance here too.
-#[cfg(windows)]
-pub fn pipe_name_for_channel(channel: Option<&str>) -> String {
-    match channel {
-        Some(channel) if !channel.is_empty() => format!(r"\\.\pipe\plexi-{channel}"),
-        _ => r"\\.\pipe\plexi".to_string(),
-    }
+    plexi_distribution::host_presence::endpoint_in(&crate::config::config_dir())
 }
 
 #[cfg(unix)]
@@ -560,33 +520,9 @@ mod tests {
     /// a drift here sends the CLI to one address and the host to another.
     #[test]
     fn endpoint_path_matches_endpoint_in_for_the_running_channel() {
-        assert_eq!(endpoint_path(), endpoint_in(&crate::config::config_dir()));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn profile_dir_basename_picks_the_pipe() {
         assert_eq!(
-            endpoint_in(Path::new(r"C:\Users\ian\.plexi-alpha")),
-            PathBuf::from(r"\\.\pipe\plexi-alpha")
-        );
-        assert_eq!(
-            endpoint_in(Path::new(r"C:\Users\ian\.plexi")),
-            PathBuf::from(r"\\.\pipe\plexi")
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn pipe_name_is_channel_scoped() {
-        assert_eq!(pipe_name_for_channel(None), r"\\.\pipe\plexi");
-        assert_eq!(
-            pipe_name_for_channel(Some("alpha")),
-            r"\\.\pipe\plexi-alpha"
-        );
-        assert_eq!(
-            pipe_name_for_channel(Some("pr-1604")),
-            r"\\.\pipe\plexi-pr-1604"
+            endpoint_path(),
+            plexi_distribution::host_presence::endpoint_in(&crate::config::config_dir())
         );
     }
 
