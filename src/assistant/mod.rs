@@ -7599,6 +7599,7 @@ enabled = ["allowed.tool"]
                 let render_ctx = ViewRenderContext {
                     colors: &colors,
                     pane_id: 1,
+                    synthetic_input: false,
                 };
                 View::ui(&mut app, ui, &render_ctx, None);
             });

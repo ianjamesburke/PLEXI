@@ -3958,6 +3958,7 @@ mod tests {
                     &ViewRenderContext {
                         colors: &colors,
                         pane_id: 1,
+                        synthetic_input: false,
                     },
                     None,
                 );
