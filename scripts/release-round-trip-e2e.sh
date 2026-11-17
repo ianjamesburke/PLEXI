@@ -122,6 +122,8 @@ cp "$REPO/cliff.toml" cliff.toml
 for s in release-version.sh promote.sh release-tag.sh gen-doc-safe.sh cargo-with-lease.sh; do
     cp "$REPO/scripts/$s" "scripts/$s"
 done
+# Release evidence is a GitHub workflow run (gh); the fixture has no GitHub, so it is stubbed as verified.
+printf '#!/usr/bin/env python3\nprint("release evidence: fixture stub")\n' > scripts/release-evidence.py
 git add -A && git commit -q -m "chore: seed fixture"
 git tag v0.1.0
 git remote add origin "$ORIGIN"
@@ -198,6 +200,9 @@ eq "$(origin_ref refs/heads/main)" "$(git -C "$MAIN" rev-parse HEAD)" "promote b
 eq "$(git -C "$BETA" rev-parse HEAD)" "$RELEASE_COMMIT" "beta worktree synced"
 eq "$(origin_tags)" "$tags_before" "promote created or pushed a tag"
 refuses "unknown target" bash scripts/promote.sh sideways
+# Bump's local v0.1.1 now sits on origin/beta but is unpublished: re-promoting
+# must not mistake it for a released version and ask about a missing bump.
+bash scripts/promote.sh beta </dev/null >/dev/null || die "promote after a bump asked about a missing bump (local-only tag counted as released)"
 
 step "release guards: dirty, drifted, and wrong-branch trees are refused"
 touch "$BETA/stray" && git -C "$BETA" add stray
@@ -236,6 +241,12 @@ eq "$(origin_ref "refs/tags/$STABLE_TAG^{commit}")" "$RELEASE_COMMIT" "stable ta
 git tag -d "$STABLE_TAG" >/dev/null && git -C "$MAIN" tag "$STABLE_TAG" "$(git -C "$MAIN" rev-parse HEAD~1)"
 refuses "already identifies another commit" bash scripts/release-tag.sh main
 git -C "$MAIN" tag -d "$STABLE_TAG" >/dev/null && git fetch -q origin "refs/tags/$STABLE_TAG:refs/tags/$STABLE_TAG"
+
+step "promote with no bump since a published stable tag warns"
+# Origin is the authority on what is released: drop the local copy of the tag.
+git tag -d "$STABLE_TAG" >/dev/null
+refuses "matches the last stable tag (v0.1.1)" bash scripts/promote.sh beta
+git fetch -q origin "refs/tags/$STABLE_TAG:refs/tags/$STABLE_TAG"
 
 step "tag set and ordering on origin"
 expected="v0.1.0 $ALPHA_TAG $BETA_TAG $STABLE_TAG "

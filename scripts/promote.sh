@@ -24,15 +24,13 @@ check_version_bumped() {
     current=$(grep '^version' "$tree/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
     local base
     base=$(echo "$current" | sed 's/-.*//')
-    local last_stable
-    last_stable=$(git -C "$tree" tag --sort=-v:refname \
-        | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-        | { while IFS= read -r tag; do
-              git -C "$tree" merge-base --is-ancestor "$tag" origin/main 2>/dev/null \
-                || git -C "$tree" merge-base --is-ancestor "$tag" origin/beta 2>/dev/null \
-                && echo "$tag" && break
-            done; } \
-        | head -1 | sed 's/^v//')
+    # Released means published on origin. `just bump` creates the next tag
+    # locally without pushing it, so local tags would compare the bump to itself.
+    local remote_tags last_stable
+    remote_tags=$(git -C "$tree" ls-remote --tags --refs origin 'refs/tags/v*') \
+        || die "could not list tags on origin (git ls-remote) to check for a version bump"
+    last_stable=$(sed -n 's|.*refs/tags/v\([0-9]*\.[0-9]*\.[0-9]*\)$|\1|p' <<<"$remote_tags" \
+        | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
     if [[ -n "$last_stable" && "$base" == "$last_stable" ]]; then
         echo ""
         echo "WARNING: Cargo.toml version ($current) matches the last stable tag (v$last_stable)."
