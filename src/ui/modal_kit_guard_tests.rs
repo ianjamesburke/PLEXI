@@ -44,11 +44,6 @@ const SHEETS: &[(&str, &str)] = &[
         "host_ui_gallery",
         "a developer specimen sheet that draws every kit control on purpose",
     ),
-    (
-        "host_ui_gallery_text_modal",
-        "stale gallery demo of the pre-kit text-entry look (field plus HintBar); \
-         to be replaced by an ActionModal field dialog, not a pattern to copy",
-    ),
 ];
 
 /// Names a body may not mention: a dialog's own buttons or key hints.
