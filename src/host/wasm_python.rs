@@ -4975,7 +4975,8 @@ impl LivePythonPane {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let replies = self.with_cli_service(|service, _, _| service.cancel(&request_id));
+        let replies =
+            self.with_cli_service(|service, who, env| service.cancel(who, env, &request_id));
         for reply in replies {
             self.send_to_runtime(&reply);
         }
@@ -5740,7 +5741,11 @@ impl LivePythonPane {
         drop(old_runtime);
         // The restarted guest knows none of these request ids: kill what is
         // running and forget what is waiting for approval.
-        self.cli_ops = crate::host::cli_ops::service::CliOpService::default();
+        // Every entry that leaves the service retires its ask, so an empty
+        // service owns no open ask.
+        if self.cli_ops.has_work() {
+            self.with_cli_service(|service, who, env| service.retire(who, env));
+        }
         self.retire_consent_asks();
         if let Some(held) = &mut self.mcp_held {
             // The held line survives hot reload, but its arming identity was

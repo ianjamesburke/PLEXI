@@ -324,7 +324,7 @@ impl CliOpService {
 
     /// Cancel one request. A parked request fails now; a running one is killed
     /// and replies `cancelled` from [`Self::poll`].
-    pub fn cancel(&mut self, request_id: &str) -> Vec<Value> {
+    pub fn cancel(&mut self, who: &PaneIdentity, env: &Env<'_>, request_id: &str) -> Vec<Value> {
         let Some(index) = self.entries.iter().position(|e| e.request_id == request_id) else {
             log::info!(
                 "cli_ops: cancel for unknown request={request_id} ignored",
@@ -339,19 +339,59 @@ impl CliOpService {
             }
             Stage::Parked { .. } => {
                 let entry = self.entries.remove(index);
-                vec![failure(
+                let reply = failure(
                     &entry.request_id,
                     &entry.operation_id,
                     code::CANCELLED,
                     "cancelled before approval",
-                )]
+                );
+                self.retire_asks(who, env, vec![entry], "cancelled");
+                vec![reply]
             }
         }
+    }
+
+    /// Forget every request: the guest that issued them is gone (its runtime
+    /// was relaunched). Running operations are killed with their entries, and
+    /// every parked ask is retired.
+    pub fn retire(&mut self, who: &PaneIdentity, env: &Env<'_>) {
+        let entries = std::mem::take(&mut self.entries);
+        self.retire_asks(who, env, entries, "runtime relaunched");
+    }
+
+    /// The one exit for entries whose request will never be decided (cancel,
+    /// approval timeout, relaunch): retire each parked entry's broker ask, so
+    /// no entry leaves an approvable ask behind. An ask another remaining
+    /// entry still waits on stays open: the broker files one ask for identical
+    /// requests from one pane.
+    fn retire_asks(&self, who: &PaneIdentity, env: &Env<'_>, left: Vec<Entry>, reason: &str) {
+        let mut ids: Vec<String> = Vec::new();
+        for entry in left {
+            if let Stage::Parked { pending_id, .. } = entry.stage {
+                let shared = self.entries.iter().any(|other| {
+                    matches!(&other.stage, Stage::Parked { pending_id: id, .. } if *id == pending_id)
+                });
+                if !shared && !ids.contains(&pending_id) {
+                    ids.push(pending_id);
+                }
+            }
+        }
+        if ids.is_empty() {
+            return;
+        }
+        log::info!(
+            "cli_ops: plugin={} pane={} retired {} operation ask(s): {reason}",
+            who.plugin_id,
+            who.pane_id,
+            ids.len()
+        );
+        env.monitor.retire_pending_asks(&ids);
     }
 
     /// Advance parked and running requests. Safe to call every pass.
     pub fn poll(&mut self, who: &PaneIdentity, env: &Env<'_>) -> Vec<Value> {
         let mut replies = Vec::new();
+        let mut timed_out = Vec::new();
         let mut index = 0;
         while index < self.entries.len() {
             let finished = match &self.entries[index].stage {
@@ -391,12 +431,15 @@ impl CliOpService {
                     code::DENIED,
                     "the approval was denied",
                 )),
-                Resolved::TimedOut => replies.push(failure(
-                    &entry.request_id,
-                    &entry.operation_id,
-                    code::APPROVAL_TIMEOUT,
-                    "no decision was made in time",
-                )),
+                Resolved::TimedOut => {
+                    replies.push(failure(
+                        &entry.request_id,
+                        &entry.operation_id,
+                        code::APPROVAL_TIMEOUT,
+                        "no decision was made in time",
+                    ));
+                    timed_out.push(entry);
+                }
                 Resolved::Decided => {
                     // The decision changes grants, not facts: re-derive every
                     // binding from the package and executable as they are now,
@@ -425,6 +468,7 @@ impl CliOpService {
                 }
             }
         }
+        self.retire_asks(who, env, timed_out, "approval timed out");
         replies
     }
 

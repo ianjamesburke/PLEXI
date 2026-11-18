@@ -308,7 +308,11 @@ impl Rig {
         vec![self.bin.parent().unwrap().to_path_buf()]
     }
 
-    fn submit_raw(&mut self, message: Value) -> Vec<Value> {
+    /// Run `f` with this rig's host-owned service environment.
+    fn with_env<R>(
+        &mut self,
+        f: impl FnOnce(&mut CliOpService, &PaneIdentity, &Env<'_>) -> R,
+    ) -> R {
         let search = self.search();
         let w = wake();
         let message_text = if self.enabled {
@@ -325,7 +329,11 @@ impl Rig {
             experiment_message: message_text,
             approval_timeout: self.approval_timeout,
         };
-        self.service.submit(&self.who, &env, &message)
+        f(&mut self.service, &self.who, &env)
+    }
+
+    fn submit_raw(&mut self, message: Value) -> Vec<Value> {
+        self.with_env(|service, who, env| service.submit(who, env, &message))
     }
 
     fn submit(&mut self, request: &str, operation: &str, values: Value) -> Vec<Value> {
@@ -338,18 +346,32 @@ impl Rig {
     }
 
     fn poll(&mut self) -> Vec<Value> {
-        let search = self.search();
-        let w = wake();
-        let env = Env {
-            monitor: &self.monitor,
-            search_dirs: &search,
-            seal_base: &self.seal_base,
-            wake: &w,
-            enabled: self.enabled,
-            experiment_message: "",
-            approval_timeout: self.approval_timeout,
-        };
-        self.service.poll(&self.who, &env)
+        self.with_env(|service, who, env| service.poll(who, env))
+    }
+
+    fn cancel(&mut self, request: &str) -> Vec<Value> {
+        self.with_env(|service, who, env| service.cancel(who, env, request))
+    }
+
+    /// What a runtime relaunch does to the pane's service.
+    fn retire(&mut self) {
+        self.with_env(|service, who, env| service.retire(who, env));
+    }
+
+    /// The asked operation is no longer approvable: its ask is gone, it is
+    /// closed as retired, and approving it fails.
+    fn assert_retired(&self, id: &str) {
+        assert!(self.monitor.show_pending(id).is_none(), "ask {id} is gone");
+        assert_eq!(
+            self.monitor.get_needs_you(id).and_then(|r| r.resolution),
+            Some(crate::broker::gate::NeedsYouResolution::Retired)
+        );
+        assert!(
+            self.monitor
+                .approve_pending(id, ApprovalChoice::Once)
+                .is_err(),
+            "a retired ask cannot be approved"
+        );
     }
 
     /// Poll until `n` replies arrived.
@@ -503,8 +525,8 @@ fn concurrency_is_capped_per_plugin() {
     assert_eq!(code_of(&busy[0]), "busy");
     assert_eq!(busy[0]["request_id"], "c");
     // Free the running program so the test leaves nothing behind.
-    rig.service.cancel("a");
-    rig.service.cancel("b");
+    rig.cancel("a");
+    rig.cancel("b");
 }
 
 #[test]
@@ -514,25 +536,74 @@ fn cancel_kills_a_running_operation_and_fails_a_parked_one() {
         .submit("run", "fixture.long", json!({"ms": 20000}))
         .is_empty());
     rig.decide(ApprovalChoice::Session);
-    assert!(rig.service.cancel("nope").is_empty());
+    assert!(rig.cancel("nope").is_empty());
     // `run` is parked until the decision lands in a poll.
     let _ = rig.poll();
-    assert!(rig.service.cancel("run").is_empty());
+    assert!(rig.cancel("run").is_empty());
     let reply = rig.replies(1).remove(0);
     assert_eq!(code_of(&reply), "cancelled");
 
     assert!(rig
         .submit("wait", "fixture.echo", json!({"word": "x"}))
         .is_empty());
-    let cancelled = rig.service.cancel("wait");
+    let asked = rig.pending()[0].pending_request_id.clone();
+    let cancelled = rig.cancel("wait");
     assert_eq!(code_of(&cancelled[0]), "cancelled");
     let before = rig.launches().len();
-    rig.decide(ApprovalChoice::Once);
+    // Stint 1622: cancelling retires the ask, so nothing is left to approve.
+    rig.assert_retired(&asked);
     assert!(
         rig.poll().is_empty(),
         "a cancelled request must not resurrect"
     );
     assert_eq!(rig.launches().len(), before);
+}
+
+/// Stint 1622: cancelling one of two identical requests keeps the ask they
+/// share open for the other; the other still runs once approved.
+#[test]
+fn cancelling_one_of_two_identical_requests_keeps_their_shared_ask() {
+    let mut rig = Rig::new();
+    for request in ["one", "two"] {
+        assert!(rig
+            .submit(request, "fixture.echo", json!({"word": "same"}))
+            .is_empty());
+    }
+    let pending = rig.pending();
+    assert_eq!(pending.len(), 1, "identical requests share one ask");
+    let shared = pending[0].pending_request_id.clone();
+    assert_eq!(code_of(&rig.cancel("one")[0]), "cancelled");
+    assert!(rig.monitor.show_pending(&shared).is_some(), "still open");
+    rig.decide(ApprovalChoice::Once);
+    let reply = rig.replies(1).remove(0);
+    assert_eq!(reply["request_id"], "two", "{reply}");
+    assert_eq!(reply["ok"], true, "{reply}");
+}
+
+/// Stint 1622: a relaunch retires every parked ask; approving one afterwards
+/// fails and launches nothing.
+#[test]
+fn retire_retires_every_parked_ask() {
+    let mut rig = Rig::new();
+    assert!(rig
+        .submit("a", "fixture.echo", json!({"word": "a"}))
+        .is_empty());
+    assert!(rig
+        .submit("b", "fixture.echo", json!({"word": "b"}))
+        .is_empty());
+    let asks: Vec<String> = rig
+        .pending()
+        .into_iter()
+        .map(|p| p.pending_request_id)
+        .collect();
+    assert_eq!(asks.len(), 2);
+    rig.retire();
+    assert!(!rig.service.has_work());
+    for ask in &asks {
+        rig.assert_retired(ask);
+    }
+    assert!(rig.poll().is_empty());
+    rig.assert_not_launched();
 }
 
 #[test]
@@ -571,9 +642,12 @@ fn an_unanswered_approval_times_out_without_launching() {
     assert!(rig
         .submit("slow", "fixture.echo", json!({"word": "x"}))
         .is_empty());
+    let asked = rig.pending()[0].pending_request_id.clone();
     std::thread::sleep(Duration::from_millis(80));
     let reply = rig.replies(1).remove(0);
     assert_eq!(code_of(&reply), "approval_timeout");
+    // Stint 1622: the ask times out with the request.
+    rig.assert_retired(&asked);
     rig.assert_not_launched();
 }
 

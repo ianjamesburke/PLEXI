@@ -3068,13 +3068,14 @@ impl PermissionMonitor {
                 return;
             }
         };
+        let mut gone = Vec::new();
         match super::needs_you_store::load(&host, &profile) {
             super::needs_you_store::LoadedQueue::Empty => {
                 log::info!("needs_you: no persisted queue in {}", profile.display());
             }
             super::needs_you_store::LoadedQueue::Items(items) => {
                 let count = items.len();
-                self.install_restored(items);
+                gone = self.install_restored(items);
                 log::info!(
                     "needs_you: restored {count} open items from {}",
                     profile.display()
@@ -3107,6 +3108,17 @@ impl PermissionMonitor {
             }
         }
         self.restore_continuations(&host, &profile);
+        if !gone.is_empty() {
+            log::info!(
+                "needs_you: retiring {} restored plugin ask(s) whose guest ended with the previous host",
+                gone.len()
+            );
+            // Not under `needs_resolve`/`decision_lock`: the restore runs
+            // before the monitor is shared or under the Keychain resolution
+            // that holds `needs_resolve`, and these asks never got a pending
+            // row, so no decision can race their retirement.
+            self.retire_approvals_locked(gone);
+        }
     }
 
     fn restore_continuations(&self, host: &super::custody::HostProcess, profile: &Path) {
@@ -3170,7 +3182,13 @@ impl PermissionMonitor {
         }
     }
 
-    fn install_restored(&self, items: Vec<super::needs_you_store::RestoredItem>) {
+    /// Install a restored queue. Returns the approval asks whose requester
+    /// is gone: a plugin ask bound to a pane from an earlier host session
+    /// (its guest ran in that host and ended with it, stint 1622). Those get
+    /// no pending row, so they can never be approved, even when their
+    /// retirement was not saved before the restart.
+    fn install_restored(&self, items: Vec<super::needs_you_store::RestoredItem>) -> Vec<String> {
+        let mut gone = Vec::new();
         let mut pending = self
             .pending
             .lock()
@@ -3185,13 +3203,20 @@ impl PermissionMonitor {
             .unwrap_or_else(|error| error.into_inner());
         for item in items {
             if let (NeedsYouKind::ApprovalClick, Some(row)) = (item.kind, item.pending.clone()) {
-                pending.push(Pending {
-                    id: item.id.clone(),
-                    binding: row.binding,
-                    tool: row.tool,
-                    input_summary: row.input_summary,
-                    created_at: item.created_at,
-                });
+                if row.binding.actor_type == ActorType::Plugin
+                    && row.binding.instance_id.is_some()
+                    && item.origin_session != self.session_id
+                {
+                    gone.push(item.id.clone());
+                } else {
+                    pending.push(Pending {
+                        id: item.id.clone(),
+                        binding: row.binding,
+                        tool: row.tool,
+                        input_summary: row.input_summary,
+                        created_at: item.created_at,
+                    });
+                }
             }
             origins.insert(item.id.clone(), item.origin_session.clone());
             needs.insert(
@@ -3211,6 +3236,7 @@ impl PermissionMonitor {
                 },
             );
         }
+        gone
     }
 
     fn file_integrity(&self, reason: &str) {
@@ -6589,6 +6615,63 @@ mod tests {
             monitor.mutate_entry(&grant.id, "revoke", &human_caller()),
             PermissionMutation::Applied { .. }
         ));
+    }
+
+    /// Stint 1622: a plugin ask retired while the queue cannot be saved is
+    /// still on disk, but its guest ended with that host, so a reopened
+    /// monitor closes it as retired and nothing can approve it. An agent ask
+    /// in the same file is restored open.
+    #[test]
+    fn a_retired_plugin_ask_whose_save_failed_is_not_approvable_after_restart() {
+        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        seal_profile_grant(dir.path(), ws.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let ask = pending_of(plugin_capability_admit(
+            &monitor,
+            ws.path(),
+            4,
+            r#"{"host_scope":"api.example","request":"fp-a"}"#,
+        ));
+        let Admission::Required {
+            pending_request_id: agent_ask,
+        } = admit_of(&monitor, &binding("ignored"), r#"{"game_id":"game-1"}"#)
+        else {
+            panic!("the agent call asks");
+        };
+        let queue =
+            crate::broker::needs_you_store::host_private_dir(dir.path()).join("needs-you.json");
+        let saved = std::fs::read(&queue).unwrap();
+        {
+            let _unsealable =
+                crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
+            monitor.retire_pending_asks(std::slice::from_ref(&ask));
+        }
+        assert_eq!(
+            std::fs::read(&queue).unwrap(),
+            saved,
+            "the retirement was not saved"
+        );
+        assert!(monitor.approve_pending(&ask, ApprovalChoice::Once).is_err());
+        drop(monitor);
+
+        let reopened = PermissionMonitor::open_profile(dir.path()).unwrap();
+        assert!(reopened.show_pending(&ask).is_none(), "no pending row");
+        assert_eq!(
+            reopened.get_needs_you(&ask).and_then(|row| row.resolution),
+            Some(NeedsYouResolution::Retired)
+        );
+        assert!(
+            reopened
+                .approve_pending(&ask, ApprovalChoice::Always)
+                .is_err(),
+            "a retired ask cannot be approved after restart"
+        );
+        assert!(
+            reopened.show_pending(&agent_ask).is_some(),
+            "an agent ask is restored open"
+        );
     }
 
     /// Stint 1489: closing a pane retires its plugin asks.

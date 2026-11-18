@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
+use crate::broker::gate::{ApprovalChoice, NeedsYouResolution, PermissionMonitor};
 use crate::host::cli_ops::fixture;
 use crate::host::pane::{Pane, ViewRuntime};
 use crate::release::ReleaseFeature;
@@ -100,7 +100,7 @@ default = true
 "#;
 
 struct E2e {
-    _root: tempfile::TempDir,
+    root: tempfile::TempDir,
     plugin_dir: PathBuf,
     workspace: PathBuf,
     _search: crate::host::cli_ops::TestSearchDirsGuard,
@@ -124,7 +124,7 @@ impl E2e {
             enabled.then(|| crate::release::set_test_experiments(&[ReleaseFeature::CliOperations]));
         Self {
             h: HostHarness::new(),
-            _root: root,
+            root,
             plugin_dir,
             workspace,
             _search: search,
@@ -133,11 +133,31 @@ impl E2e {
     }
 
     fn launch(&mut self, plan: &str) -> u64 {
+        let dir = self.plugin_dir.clone();
+        self.launch_from(&dir, plan)
+    }
+
+    /// A second plugin with the same operations under another id.
+    fn other_plugin(&self, id: &str) -> PathBuf {
+        let dir = self.root.path().join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("manifest.toml"),
+            MANIFEST
+                .replace("id = \"cliop-e2e\"", &format!("id = \"{id}\""))
+                .replace("cliop-e2e.main", &format!("{id}.main")),
+        )
+        .unwrap();
+        std::fs::write(dir.join("main.py"), MAIN_PY).unwrap();
+        dir
+    }
+
+    fn launch_from(&mut self, plugin_dir: &std::path::Path, plan: &str) -> u64 {
         let before = self.h.state().open_panes;
         self.h
             .app
             .launch_view_by_path_with_layout(
-                &self.plugin_dir.to_string_lossy(),
+                &plugin_dir.to_string_lossy(),
                 None,
                 Some(self.workspace.clone()),
                 &[plan.to_string()],
@@ -373,4 +393,64 @@ fn revocation_of_a_remembered_operation_survives_a_restart() {
         1,
         "revoked consent launched nothing new"
     );
+}
+
+/// Stint 1622. Relaunching a plugin's runtime (hot reload) retires the CLI
+/// operation asks its old guest made: the ask is gone, approving it fails and
+/// nothing runs. Asks from another pane and another plugin stay open.
+#[test]
+fn relaunch_retires_the_old_guests_cli_operation_asks() {
+    let mut e2e = E2e::new(true);
+    let pane = e2e.launch(ECHO_PLAN);
+    let old = e2e.wait_for_approval(pane, false);
+    let sibling = e2e.launch(ECHO_PLAN);
+    let other_dir = e2e.other_plugin("cliop-e2e-other");
+    let other = e2e.launch_from(&other_dir, ECHO_PLAN);
+    let ask_of = |pane: u64| {
+        E2e::pending()
+            .into_iter()
+            .find(|p| p.instance_id == Some(pane))
+            .map(|p| p.pending_request_id)
+    };
+    e2e.until(
+        pane,
+        false,
+        "asks from the sibling and the other plugin",
+        |_, _| ask_of(sibling).is_some() && ask_of(other).is_some(),
+    );
+    let sibling_ask = ask_of(sibling).unwrap();
+    let other_ask = ask_of(other).unwrap();
+
+    assert!(e2e.h.app.reload_view_pane(pane, "test"), "relaunch");
+
+    let monitor = E2e::monitor();
+    assert!(monitor.show_pending(&old).is_none(), "the old ask is gone");
+    assert_eq!(
+        monitor.get_needs_you(&old).and_then(|r| r.resolution),
+        Some(NeedsYouResolution::Retired)
+    );
+    assert!(
+        monitor.approve_pending(&old, ApprovalChoice::Once).is_err(),
+        "a retired ask cannot be approved"
+    );
+    // The new guest asks again under a new id; the old approval ran nothing.
+    e2e.until(pane, false, "the new guest's own ask", |_, _| {
+        ask_of(pane).is_some_and(|id| id != old)
+    });
+    e2e.h.run_frames(10);
+    assert!(
+        e2e.launches().is_empty(),
+        "the old guest's request never ran"
+    );
+    for (who, id) in [("sibling pane", &sibling_ask), ("other plugin", &other_ask)] {
+        assert!(
+            monitor.show_pending(id).is_some(),
+            "{who}'s ask is untouched"
+        );
+        assert_eq!(
+            monitor.get_needs_you(id).and_then(|r| r.resolution),
+            None,
+            "{who}'s ask is still open"
+        );
+    }
 }
