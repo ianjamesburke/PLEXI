@@ -25,7 +25,7 @@ slot lock, and still own independent installed affected-behavior validation.
 ## Hosted Rust verification
 
 `RUN_CONFIG.toml` `[ci].rust_host = "after_alpha"` defers the Rust host workflow
-until nightly verification after Alpha landing. Workers publish `pr:done` after
+until the alpha release build after landing. Workers publish `pr:done` after
 their required local gates; neither worker nor head waits or polls for hosted
 Rust tests, Clippy or Linux. Independent testers still validate the exact PR head.
 The phase-aware gates and evidence schema live in [TESTING.md](../../../src/testing/TESTING.md#the-gate). Aggregate batch records use relevant scoped tests plus release build, Clippy and independent installed affected-behavior verification. Outside aggregate mode apply the testing skill’s install-skip rules. Full-suite evidence is required only for the final combined candidate. Never label deferred checks as passed.

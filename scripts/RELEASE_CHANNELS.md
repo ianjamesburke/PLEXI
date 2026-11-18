@@ -68,69 +68,36 @@ The contextual bare command and channel-scoped launchers are defined in
 The package requirements, unsigned policy and publication gates live in
 [Distribution contract](DISTRIBUTION.md).
 
-| Lane | Tag scheme | Branch tagged from |
-|---|---|---|
-| Alpha | `vX.Y.Z-alpha.N` | `alpha` |
-| Beta | `vX.Y.Z-beta.N` | `alpha` |
-| Stable | `vX.Y.Z` | `main` |
+Every push to `alpha`, `beta` or `main` publishes that branch's next release
+when it has commits since its last one (`.github/workflows/release.yml`, tag
+chosen by `scripts/release-next-tag.sh`). Apple Silicon only. A newer push to
+the same branch cancels a build still running.
 
-The base `X.Y.Z` is the current `Cargo.toml` version. Prerelease tags do **not**
-bump `Cargo.toml` or touch the changelog — they pin a commit on `alpha` for
-testing the next version. The stable bump (`just bump`) sets the base version and
-regenerates the changelog.
+| Branch | Tag |
+|---|---|
+| `alpha` | `vX.Y.Z-alpha.N` |
+| `beta` | `vX.Y.Z-beta.N` |
+| `main` | `vX.Y.Z` |
 
-Alpha tags are cut nightly by `.github/workflows/nightly.yml` when `alpha` has
-commits since the last alpha tag (`scripts/nightly-alpha-tag.sh` picks the next
-`N`); beta and stable stay manual. Pushes to `alpha` run the Rust host
-workflow only to build, lint and save the caches pull requests restore; they
-run no tests.
-
-SemVer ordering: `vX.Y.Z-alpha.1 < alpha.2 < beta.1 < beta.2 < vX.Y.Z`.
-The Python SDK publishes only on stable tags; prerelease tags skip
-`publish-sdk.yml`.
+`X.Y.Z` is `Cargo.toml`'s version. Once `vX.Y.Z` is released, alpha and beta
+count on the next patch, because SemVer ranks `X.Y.Z-alpha.N` below `X.Y.Z`
+and the updater only offers newer versions. `main` fails the release when it
+has commits but `vX.Y.Z` already exists: bump first. The Python SDK publishes
+on stable tags only.
 
 ### Cutting a release
 
-Preview unreleased commits without committing anything:
-
 ```sh
-just changelog
+just changelog       # preview unreleased commits
+just bump            # on alpha: version + CHANGELOG commit (minor|major optional); push it
+just promote beta    # fast-forward beta to origin/alpha; CI publishes vX.Y.Z-beta.N
+just promote main    # fast-forward main to origin/beta; CI publishes vX.Y.Z
 ```
 
-`just promote` moves code between branches; `just release` cuts and publishes
-the tag. They're deliberately separate: moving code to beta or main is
-reversible and local, publishing a tag is not — other machines on that
-channel auto-update to it. Never bundled into one command.
-
-Standard release batch:
-
-```sh
-just bump                          # bump Cargo.toml, write CHANGELOG, commit + tag locally
-just promote beta                  # alpha→beta
-just release beta                  # publish vX.Y.Z-beta.N binary release, trigger CI
-just promote main                  # beta→main
-just release main                  # publish vX.Y.Z binary release, trigger CI
-```
-
-Promote code only and stop there (test locally before publishing):
-
-```sh
-just promote beta                  # alpha→beta, no tag
-just promote main                  # beta→main, no tag
-```
-
-Add `install` to `promote` to build and install that channel after promoting:
-
-```sh
-just promote beta install
-just promote main install
-```
+The full host suite with PTY tests runs on demand via the `Rust host`
+workflow (`workflow_dispatch`).
 
 ## Channel Update Policy
 
 Release selection, channel acceptance, immutable identity and rollback are
 defined in [Distribution contract](DISTRIBUTION.md).
-
-## Round-trip acceptance
-
-The bump, promote and release flow above is exercised end to end, without publishing, by `scripts/release-round-trip-e2e.sh` (CI: `release-round-trip.yml`). Contract: `scripts/AGENTS.md`.

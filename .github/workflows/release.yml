@@ -1,9 +1,13 @@
 name: Build and publish Plexi release
+
+# Every push to alpha, beta or main publishes that branch's next release when
+# it has new commits (scripts/release-next-tag.sh): alpha -> vX.Y.Z-alpha.N,
+# beta -> vX.Y.Z-beta.N, main -> vX.Y.Z. main fails when it has commits but no
+# version bump. A newer push to the same branch cancels a run still building.
+# Dispatch republishes an existing tag or runs the verify/signing checks.
 on:
   push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
-      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+    branches: [alpha, beta, main]
   workflow_dispatch:
     inputs:
       tag:
@@ -24,8 +28,25 @@ on:
         default: false
 concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 jobs:
+  next-tag:
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Compute the release tag
+        id: tag
+        run: |
+          tag=$(bash scripts/release-next-tag.sh '${{ github.ref_name }}' '${{ github.sha }}')
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "${tag:-no new commits since the last ${{ github.ref_name }} release; nothing to publish}"
   signing:
     if: ${{ inputs.signing_only }}
     runs-on: macos-15
@@ -64,37 +85,27 @@ jobs:
         run: |
           bash scripts/setup-release-signing.sh --cleanup
   packages:
-    if: ${{ !inputs.signing_only }}
+    needs: next-tag
+    if: ${{ !cancelled() && !inputs.signing_only && (github.event_name == 'workflow_dispatch' || needs.next-tag.outputs.tag != '') }}
     uses: ./.github/workflows/distribution.yml
     with:
-      ref: ${{ inputs.tag || github.ref }}
-      tag: ${{ inputs.verify_only && (inputs.verify_stable && 'v0.0.0' || 'v0.0.0-alpha.0') || inputs.tag || github.ref_name }}
+      ref: ${{ inputs.tag || github.sha }}
+      tag: ${{ inputs.verify_only && (inputs.verify_stable && 'v0.0.0' || 'v0.0.0-alpha.0') || inputs.tag || needs.next-tag.outputs.tag }}
     secrets:
       PLEXI_RELEASE_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
       PLEXI_RELEASE_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
       PLEXI_RELEASE_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
-  verify-evidence:
-    name: verify-only evidence ${{ inputs.tag }}
-    if: ${{ inputs.verify_only && !inputs.signing_only }}
-    needs: packages
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require the dispatch source to equal the run commit
-        env:
-          SOURCE: ${{ inputs.tag }}
-          HEAD: ${{ github.sha }}
-        run: test "$SOURCE" = "$HEAD"
   publish:
-    if: ${{ !inputs.verify_only && !inputs.signing_only }}
-    needs: packages
+    needs: [next-tag, packages]
+    if: ${{ !cancelled() && needs.packages.result == 'success' && !inputs.verify_only && !inputs.signing_only }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.tag || github.ref }}
-          persist-credentials: false
+          ref: ${{ inputs.tag || github.sha }}
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
@@ -104,5 +115,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ inputs.tag || github.ref_name }}
-        run: bash scripts/publish-release.sh "$TAG" dist
+          TAG: ${{ inputs.tag || needs.next-tag.outputs.tag }}
+        run: |
+          # Tag only after the packages passed, so a failed or cancelled build
+          # never burns a release number.
+          if [[ '${{ github.event_name }}' == push ]]; then
+            git tag "$TAG" '${{ github.sha }}'
+            git push origin "refs/tags/$TAG"
+          fi
+          bash scripts/publish-release.sh "$TAG" dist
+          # Tags pushed with GITHUB_TOKEN trigger no workflow, so dispatch the
+          # SDK publish; it runs on stable tags only.
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            gh workflow run publish-sdk.yml --ref "$TAG"
+          fi

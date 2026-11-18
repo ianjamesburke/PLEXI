@@ -119,8 +119,8 @@ global_paths() {
 # since the merge base is also changed by the PR, and neither side touched a
 # global path. GitHub's squash of a behind PR applies the PR onto current alpha
 # (a three-way merge), so disjoint paths cannot revert alpha's commits. Renames
-# count as both paths. Remaining semantic conflicts surface in the nightly
-# host test run.
+# count as both paths. Remaining semantic conflicts surface in the alpha
+# release build's host tests.
 assert_disjoint_from_alpha() {
     local REVIEWED_HEAD="$1" MERGE_BASE PR_FILES ALPHA_FILES OVERLAP GENERATED GLOBAL
     MERGE_BASE=$(git merge-base --all origin/alpha "$REVIEWED_HEAD")

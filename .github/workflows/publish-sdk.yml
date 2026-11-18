@@ -1,11 +1,8 @@
 name: Publish SDK to PyPI
 
+# Dispatched by release.yml's publish job with --ref <tag>.
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
-      - 'v[0-9]+.[0-9]+.[0-9]+-*'
 
 jobs:
   publish:

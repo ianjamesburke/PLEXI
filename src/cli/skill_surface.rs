@@ -3,9 +3,9 @@
 //! alpha carries the last released version number between releases — so this
 //! gate checks the documented *surface* itself: every subcommand path and every
 //! `--flag` named inside the skill's fenced code blocks must exist on the
-//! compiled CLI. `scripts/promote.sh` runs this module in the beta tree before
-//! beta→main, so a release cannot ship a skill documenting commands its binary
-//! does not have.
+//! compiled CLI. Every release build runs it (`cargo test --bin plexi` in
+//! `.github/workflows/distribution.yml`), so a release cannot ship a skill
+//! documenting commands its binary does not have.
 
 use crate::release::ReleaseFeature;
 use clap::CommandFactory;

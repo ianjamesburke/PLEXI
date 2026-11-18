@@ -6,8 +6,7 @@ dist="${2:?artifact directory required}"
 assets=()
 alpha_only=false
 [[ "$tag" != *-alpha.* ]] || alpha_only=true
-platforms=(macos-arm64 linux-x64)
-if [[ "$alpha_only" == false ]]; then platforms+=(windows-x64 macos-x64); fi
+platforms=(macos-arm64)
 for platform in "${platforms[@]}"; do
   ext=tar.gz; exe=''
   if [[ "$platform" == windows-* ]]; then ext=zip; exe=.exe; fi

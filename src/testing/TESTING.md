@@ -55,7 +55,7 @@ does not enforce the release warning gate.
 
 Independent validation installs the exact head and exercises the affected behavior. A scoped worker pass alone is insufficient; preserve the installed-head match, independent vendor, PASS verdict, non-deferred checks, and truthful evidence. Apply the testing skill's existing install-skip rules outside aggregate mode. Aggregate batches still require an installed-head record.
 
-The final combined candidate requires a full `cargo test --bin plexi` with stdin closed and the Plexi environment scrubbed, plus release build, Clippy, independent combined installed validation, and the final manifest gate. Scoped-only evidence must fail that final gate. A subsequent change invalidates the candidate's evidence. Hosted Rust verification remains deferred to nightly after Alpha landing; record it as deferred, never passed, and retain other PR check gates.
+The final combined candidate requires a full `cargo test --bin plexi` with stdin closed and the Plexi environment scrubbed, plus release build, Clippy, independent combined installed validation, and the final manifest gate. Scoped-only evidence must fail that final gate. A subsequent change invalidates the candidate's evidence. Hosted Rust verification is deferred to the alpha release build after landing; record it as deferred, never passed, and retain other PR check gates.
 
 Run the selector from the worktree against the actual PR base (`SCOPED_TEST_BASE=origin/feature/alpha-cleanup` for aggregate batches). It includes committed, staged, unstaged and untracked paths. Pass the filters together after libtest's `--`:
 
@@ -94,11 +94,8 @@ warnings denied, runs strict Clippy, and records the artifact digest. Run all
 other applicable scoped, script, SDK, docs and visual checks before ready status.
 A changed head/base/configuration requires reassessment and fresh matching evidence.
 Only then mark the PR ready and hand it to the independent tester.
-Each push to a pull request targeting alpha, drafts included, starts a hosted
-"Rust host" run (`.github/workflows/rust-host.yml`: macOS release build, tests
-and Clippy; skipped when `scripts/docs_gate_scope.py` classifies the diff as
-docs-only), which is advisory and never replaces the local gates, the
-`pr-candidate` stamp or the installed check.
+Pull requests start no hosted Rust build. The alpha release build after
+landing runs `cargo test --bin plexi` and Clippy (`.github/workflows/release.yml`).
 
 `just pr-candidate` and `just pr-install` use `scripts/build-cache.py`: two
 persistent, exclusively locked Cargo slots per repository under
@@ -464,7 +461,7 @@ exactly that seed with `PLEXI_DAW_GATE_SEED=<seed>`.
 ## Conventions
 
 - Follow The Gate above for the push path and integration. The justfile exports `RUSTFLAGS="-D warnings"`, so warnings are build failures under `just test`.
-- PTY-dependent tests are tagged `#[ignore = "requires-pty"]`. Hosted CI runs them in the `Test host PTY` step of `.github/workflows/rust-host.yml`; any other ignored test must be added to that step's skip list. The same job runs the `deps/egui_term` unit tests (`cargo test -p egui_term`).
+- PTY-dependent tests are tagged `#[ignore = "requires-pty"]`. The manual `Rust host` workflow (`.github/workflows/rust-host.yml`) runs them in its `Test host PTY` step; any other ignored test must be added to that step's skip list. The same job runs the `deps/egui_term` unit tests (`cargo test -p egui_term`).
 - Test-first for host logic: a new `HostRequest` gets a failing `HostHarness` test before implementation.
 - New host UI component or overlay → a scene in `tests/scenes/` (open → act → assert → shot).
 - Coverage: `cargo llvm-cov --bin plexi` (cargo-llvm-cov installed at `~/.cargo/bin/`).

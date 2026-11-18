@@ -15,29 +15,16 @@ on:
         required: false
       PLEXI_RELEASE_SIGNING_CERT_SHA1:
         required: false
-  pull_request:
-    paths:
-      - 'crates/distribution/**'
-      - 'src/**'
-      - 'scripts/*install*'
-      - 'scripts/*package*'
-      - 'scripts/test-distribution.py'
-      - 'scripts/*signing*'
-      - 'scripts/test-macos-keychain-continuity.py'
-      - 'Cargo.*'
-      - 'build.rs'
-      - 'install.sh'
-      - '.github/workflows/distribution.yml'
-      - '.github/workflows/release.yml'
 
 jobs:
   package:
     name: ${{ matrix.platform }}
     strategy:
       fail-fast: false
-      # Alpha/PR builds require Apple Silicon and opportunistically package Linux.
-      # Beta/stable try the other platforms without blocking the Mac release.
-      matrix: ${{ fromJSON(inputs.tag != '' && !contains(inputs.tag, '-alpha.') && '{"include":[{"os":"macos-15","platform":"macos-arm64","optional":false},{"os":"ubuntu-22.04","platform":"linux-x64","optional":true},{"os":"windows-latest","platform":"windows-x64","optional":true},{"os":"macos-15-intel","platform":"macos-x64","optional":true}]}' || '{"include":[{"os":"macos-15","platform":"macos-arm64","optional":false},{"os":"ubuntu-22.04","platform":"linux-x64","optional":true}]}') }}
+      # Apple Silicon only, for now. Add a platform here and in publish-release.sh.
+      matrix:
+        include:
+          - {os: macos-15, platform: macos-arm64, optional: false}
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.optional }}
     env:
@@ -87,8 +74,7 @@ jobs:
         shell: bash
         run: |
           RUSTFLAGS="-D warnings" cargo build --release --bin plexi
-      # Release tags only: pre-landing host acceptance is local; nightly.yml
-      # runs hosted Rust verification after Alpha landing.
+      # Release builds only: pre-landing host acceptance is local.
       - name: Test and lint the host
         if: inputs.tag != ''
         shell: bash

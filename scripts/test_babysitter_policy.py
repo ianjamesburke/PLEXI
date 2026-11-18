@@ -536,34 +536,19 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(policy.PolicyError):
                 policy.check_gate(self.settings, self.record, self.pr, [], self.base, "batch")
 
-    def test_rust_host_runs_on_alpha_prs_and_pushes_without_secrets_and_from_nightly(self):
+    def test_rust_host_is_manual_and_release_publishes_on_branch_push(self):
         root = SCRIPT.parent.parent
         host = (root / ".github/workflows/rust-host.yml").read_text()
-        trigger = host.split("\non:\n", 1)[1].split("\n\n", 1)[0]
-        self.assertEqual(trigger.split("\n    outputs:\n", 1)[0],
-                         "  pull_request:\n    branches: [alpha]\n"
-                         "  push:\n    branches: [alpha]\n  workflow_call:")
+        self.assertIn("\non:\n  workflow_dispatch:\n\n", host)
         self.assertIn("\npermissions:\n  contents: read\n", host)
-        for banned in ("secrets.", "secrets:", "pull_request_target", "environment:", "codesign", "notary"):
+        for banned in ("secrets.", "secrets:", "pull_request", "environment:", "codesign", "notary"):
             self.assertNotIn(banned, host)
-        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", host)
-        self.assertIn("python3 scripts/docs_gate_scope.py", host)
-        self.assertEqual(host.count("if: ${{ !cancelled() && needs.scope.outputs.build != 'false' }}"), 2)
-        self.assertIn("if: github.event_name != 'pull_request' && github.event_name != 'push'\n"
-                      "    runs-on: ubuntu-22.04", host)
-        nightly = (root / ".github/workflows/nightly.yml").read_text()
-        self.assertIn("uses: ./.github/workflows/rust-host.yml", nightly)
-        self.assertIn("schedule:", nightly)
-        # Nightly tags on the required macOS jobs only; the advisory linux job
-        # (whose timeout is a cancellation) never decides the tag.
-        self.assertIn("      required_passed:\n        value: ${{ jobs.scope.outputs.build == 'true'"
-                      " && jobs.test.outputs.passed == 'true' && jobs.clippy.outputs.passed == 'true' }}",
-                      trigger)
-        self.assertEqual(host.count("      passed: ${{ steps.passed.outputs.passed }}\n"), 2)
-        self.assertEqual(host.count("        id: passed\n        run: echo \"passed=true\" >> \"$GITHUB_OUTPUT\"\n"), 2)
-        self.assertNotIn("jobs.linux", host)
-        self.assertIn("  tag:\n    needs: host\n", nightly)
-        self.assertIn("    if: ${{ !cancelled() && needs.host.outputs.required_passed == 'true' }}\n", nightly)
+        release = (root / ".github/workflows/release.yml").read_text()
+        self.assertIn("  push:\n    branches: [alpha, beta, main]\n", release)
+        self.assertNotIn("\n    tags:\n", release)
+        self.assertFalse((root / ".github/workflows/nightly.yml").exists())
+        distribution = (root / ".github/workflows/distribution.yml").read_text()
+        self.assertNotIn("pull_request", distribution)
 
     def test_waivers_cannot_be_self_attested_to_automated_merge(self):
         record = json.loads(json.dumps(self.record))

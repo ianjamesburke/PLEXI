@@ -510,40 +510,34 @@ channel-list:
 changelog:
     git cliff --unreleased --bump --tag-pattern 'v[0-9]+\.[0-9]+\.[0-9]+$'
 
-# Bump version, generate CHANGELOG via git-cliff, commit, and tag locally. Defaults to patch.
-# Run at the end of a release batch, or immediately before promoting to beta.
-#   just bump           — patch bump
-#   just bump minor     — minor bump
-#   just bump major     — major bump
+# Bump the version on alpha and write the CHANGELOG, as one commit. Push it;
+# CI tags and publishes (scripts/RELEASE_CHANNELS.md). Defaults to patch.
+#   just bump | just bump minor | just bump major
 bump bump="patch":
     bash scripts/release-version.sh "{{bump}}"
 
-# Promote to the next channel. Code only — never tags or publishes.
-# Run `just bump` first if cutting a new version; run `just release` after,
-# once you're ready to make the promoted commit live for that channel.
-# Flags (order-independent after `to`): install
-#   just promote              — auto-detect alpha→beta or beta→main, prompt
-#   just promote beta         — promote alpha→beta
-#   just promote main         — promote beta→main
-#   just promote beta install — promote + install beta
-#   just promote main install — promote + install main
-promote to="" *flags="":
-    bash scripts/promote.sh "{{to}}" {{flags}}
+# Fast-forward beta to origin/alpha, or main to origin/beta. The push is the
+# release: CI publishes the branch's next build. Refuses a non-fast-forward.
+#   just promote beta | just promote main
+promote to:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{to}}" in
+        beta) from=alpha ;;
+        main) from=beta ;;
+        *) echo "error: just promote beta|main (got '{{to}}')" >&2; exit 1 ;;
+    esac
+    git fetch -q origin "$from" "{{to}}"
+    git push origin "refs/remotes/origin/$from:refs/heads/{{to}}"
 
 # Compare the public roadmap (website/src/lib/roadmap.json) with the stints
 # that deliver it; exit 1 on drift. Needs the `stint` CLI and the release
-# owner's .stint/. `just promote` runs it before moving code. Not for CI.
+# owner's .stint/. Not for CI.
 #   just check-roadmap                            working-tree roadmap, commits on HEAD
 #   just check-roadmap origin/alpha origin/beta   published roadmap, beta's commits
 check-roadmap roadmap_ref="" commits_ref="":
     uv run --no-project python scripts/check_roadmap.py {{ if roadmap_ref == "" { "" } else { "--roadmap-ref " + roadmap_ref } }} {{ if commits_ref == "" { "" } else { "--commits-ref " + commits_ref } }}
 
-# Cut and publish the binary release tag for a channel already
-# promoted to its target branch. Never moves code — that's `just promote`.
-#   just release beta — cut vX.Y.Z-beta.N at beta HEAD, publish, trigger CI
-#   just release main — cut/retag vX.Y.Z at main HEAD, publish, trigger CI
-release channel="":
-    bash scripts/release-tag.sh "{{channel}}"
 
 # Remove a Plexi channel and its profile dir, app bundle, and CLI binary.
 # Defaults to removing all channels plus shell integration and completions.
@@ -572,10 +566,9 @@ test-build-inputs:
 test-infra-scripts: test-build-inputs
     uv run --no-project python scripts/test_wit_snapshots.py
     uv run --no-project python scripts/test_skill_check.py
-    python3 scripts/test_release_evidence.py
+    uv run --no-project python scripts/test_release_next_tag.py
     uv run --no-project python scripts/test_docs_gate_scope.py
     uv run --no-project python scripts/test_babysitter_policy.py
-    uv run --no-project python scripts/test_nightly_alpha_tag.py
     uv run --no-project python scripts/test_pr_install_pretests.py
     uv run --no-project python scripts/test_filter_check.py
     uv run --no-project python scripts/test_run_logged.py
