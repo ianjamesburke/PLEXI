@@ -349,6 +349,30 @@ impl CliOpService {
         }
     }
 
+    /// Forget every request: the guest that issued them is gone (its runtime
+    /// was relaunched). Running operations are killed with their entries, and
+    /// each parked ask is retired in the broker, so no later approval runs a
+    /// request the new guest never made.
+    pub fn retire(&mut self, who: &PaneIdentity, env: &Env<'_>) {
+        let ids: Vec<String> = std::mem::take(&mut self.entries)
+            .into_iter()
+            .filter_map(|entry| match entry.stage {
+                Stage::Parked { pending_id, .. } => Some(pending_id),
+                Stage::Running(_) => None,
+            })
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        log::info!(
+            "cli_ops: plugin={} pane={} retired {} operation ask(s) with the replaced runtime",
+            who.plugin_id,
+            who.pane_id,
+            ids.len()
+        );
+        env.monitor.retire_pending_asks(&ids);
+    }
+
     /// Advance parked and running requests. Safe to call every pass.
     pub fn poll(&mut self, who: &PaneIdentity, env: &Env<'_>) -> Vec<Value> {
         let mut replies = Vec::new();

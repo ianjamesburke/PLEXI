@@ -5740,7 +5740,9 @@ impl LivePythonPane {
         drop(old_runtime);
         // The restarted guest knows none of these request ids: kill what is
         // running and forget what is waiting for approval.
-        self.cli_ops = crate::host::cli_ops::service::CliOpService::default();
+        if self.cli_ops.has_work() {
+            self.with_cli_service(|service, who, env| service.retire(who, env));
+        }
         self.retire_consent_asks();
         if let Some(held) = &mut self.mcp_held {
             // The held line survives hot reload, but its arming identity was
