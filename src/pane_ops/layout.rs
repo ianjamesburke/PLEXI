@@ -871,6 +871,7 @@ impl PlexiApp {
         if !window.panes.contains_key(pane_id) {
             return;
         }
+        crate::app::attention_queue::retire_requester_approvals(&[*pane_id], None);
         let window_id = window.window_id;
         if self
             .host

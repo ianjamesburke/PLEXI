@@ -1200,6 +1200,15 @@ impl PlexiApp {
                 window.panes.keys().copied().collect::<Vec<_>>()
             })
             .collect();
+        for context_id in &deleted {
+            let panes: Vec<_> = self
+                .windows
+                .iter()
+                .filter(|w| w.context_id == *context_id)
+                .flat_map(|w| w.panes.keys().copied())
+                .collect();
+            crate::app::attention_queue::retire_requester_approvals(&panes, Some(*context_id));
+        }
         for pane_id in doomed_pane_ids {
             self.reclaim_pane_worktree(pane_id);
         }
@@ -1657,6 +1666,16 @@ impl PlexiApp {
         let was_active = self.active_window == index;
         let removed_x = self.windows[index].grid_x;
         let removed_y = self.windows[index].grid_y;
+        let pane_ids: Vec<_> = self.windows[index].panes.keys().copied().collect();
+        let last_window = !self
+            .windows
+            .iter()
+            .enumerate()
+            .any(|(i, w)| i != index && w.context_id == removed_ws_id);
+        crate::app::attention_queue::retire_requester_approvals(
+            &pane_ids,
+            last_window.then_some(removed_ws_id),
+        );
 
         // Save current minimap state before deletion so it's always fresh.
         self.minimap_visible_per_context
@@ -2174,6 +2193,7 @@ impl PlexiApp {
             if let Some(idx) = self.router.position(|c| c.context_id == child_ctx_id) {
                 self.router.remove_at(idx);
             }
+            crate::app::attention_queue::retire_requester_approvals(&[], Some(child_ctx_id));
             self.context_active_window.remove(&child_ctx_id);
             self.router.retain_depth_stack(|cid| cid != child_ctx_id);
             return;
@@ -2295,6 +2315,7 @@ impl PlexiApp {
         if let Some(idx) = self.router.position(|c| c.context_id == child_ctx_id) {
             self.router.remove_at(idx);
         }
+        crate::app::attention_queue::retire_requester_approvals(&[], Some(child_ctx_id));
 
         self.context_active_window.remove(&child_ctx_id);
         self.context_active_window

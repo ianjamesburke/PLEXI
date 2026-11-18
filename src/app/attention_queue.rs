@@ -39,6 +39,12 @@ pub(crate) fn open_needs_you_items() -> Vec<crate::broker::gate::NeedsYouRecord>
     items
 }
 
+pub(crate) fn retire_requester_approvals(panes: &[u64], context: Option<u64>) {
+    if let Some(monitor) = PermissionMonitor::loaded(&crate::config::config_dir()) {
+        monitor.retire_requester_approvals(panes, context);
+    }
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -2712,6 +2718,257 @@ mod tests {
     }
     use crate::broker::gate::{NeedsYouFile, NeedsYouKind, PermissionMonitor};
     use crate::testing::HostHarness;
+
+    #[test]
+    fn closing_requester_pane_cancels_needs_you_approval() {
+        use crate::broker::gate::{Admission, AdmitRequest, ContinuationState, NeedsYouResolution};
+        use crate::broker::{ActorScope, TargetType};
+
+        let mut h = HostHarness::new();
+        let pane = h.add_test_pane();
+        let context = h.app.router.active().context_id;
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+        let principal = crate::broker::principal::Principal::agent(format!("pane:{pane}"));
+        let workspace = h.workspace_root();
+        let id = match monitor.admit(AdmitRequest {
+            call_id: "close-requester-test",
+            tool: "pane.send",
+            input_json: r#"{"pane_id":42,"operation_id":"close-requester-op"}"#,
+            principal: &principal,
+            actor_scope: ActorScope::User,
+            trust_origin: "host",
+            workspace_root: &workspace,
+            context_id: context,
+            package_id: "",
+            instance_id: 0,
+            target_type: TargetType::Capability,
+        }) {
+            Admission::Required { pending_request_id } => pending_request_id,
+            _ => panic!("expected approval"),
+        };
+        h.app.sync_attention_queue();
+        let before = h.app.attention_queue.ask_count();
+        assert!(before > 0);
+        let grants = monitor.store().records().len();
+        h.app.close_pane_by_id(pane);
+        h.app.sync_attention_queue();
+        assert_eq!(
+            monitor.get_needs_you(&id).unwrap().resolution,
+            Some(NeedsYouResolution::Retired)
+        );
+        assert_eq!(h.app.attention_queue.ask_count(), before - 1);
+        assert!(!monitor.list_needs_you().iter().any(|row| row.id == id));
+        let list_path = workspace.join("needs-you-list.json");
+        h.app
+            .observe_needs_you("list", None, None, list_path.to_str().unwrap());
+        let list: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(list_path).unwrap()).unwrap();
+        assert!(!list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == id));
+        let receipt = monitor
+            .resolve_needs_you_from(&id, true, ResolveSurface::Desktop)
+            .unwrap();
+        assert!(receipt.already);
+        assert_eq!(receipt.resolution, NeedsYouResolution::Retired);
+        assert!(monitor.approve_pending(&id, ApprovalChoice::Once).is_err());
+        assert_eq!(monitor.store().records().len(), grants);
+        assert_eq!(
+            monitor
+                .get_continuation("close-requester-op")
+                .unwrap()
+                .state,
+            ContinuationState::Canceled
+        );
+        assert_eq!(
+            monitor
+                .get_continuation(&id)
+                .unwrap()
+                .run_outcome
+                .as_deref(),
+            Some("ask_gone")
+        );
+    }
+
+    #[test]
+    fn closing_context_cancels_all_requesters_and_context_approvals() {
+        use crate::broker::gate::{Admission, AdmitRequest, NeedsYouResolution};
+        use crate::broker::{ActorScope, TargetType};
+        use crate::host::context::{Context, Window};
+
+        let mut h = HostHarness::new();
+        let survivor = h.add_test_pane();
+        let first = h.add_test_pane();
+        let second = h.add_test_pane();
+        let root = h.app.router.active().context_id;
+        h.app.set_context_columns(root, vec![vec![survivor]]);
+        let context = h.app.next_window_id;
+        h.app.next_window_id += 1;
+        let window_id = h.app.next_window_id;
+        h.app.next_window_id += 1;
+        let root_path = h.app.router.active().root.clone();
+        h.app.router.push(Context {
+            name: "Disposable".into(),
+            root: root_path.clone(),
+            description: None,
+            context_id: context,
+            parent_id: None,
+            depth: 0,
+            parked: false,
+        });
+        let panes = [first, second]
+            .into_iter()
+            .map(|id| (id, h.app.windows[0].panes.remove(&id).unwrap()))
+            .collect();
+        h.app.windows.push(Window {
+            name: String::new(),
+            path: root_path,
+            tree: egui_tiles::Tree::empty("disposable"),
+            panes,
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 0,
+            window_id,
+            context_id: context,
+        });
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+        let workspace = h.workspace_root();
+        let mut ids = Vec::new();
+        for (i, (actor, ctx)) in [
+            (first, root),
+            (second, root),
+            (survivor, context),
+            (survivor, root),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let principal = crate::broker::principal::Principal::agent(format!("pane:{actor}"));
+            let call = format!("context-close-{i}");
+            let args = format!(r#"{{"pane_id":42,"operation_id":"context-close-{i}"}}"#);
+            let Admission::Required { pending_request_id } = monitor.admit(AdmitRequest {
+                call_id: &call,
+                tool: "pane.send",
+                input_json: &args,
+                principal: &principal,
+                actor_scope: ActorScope::User,
+                trust_origin: "host",
+                workspace_root: &workspace,
+                context_id: ctx,
+                package_id: "",
+                instance_id: 0,
+                target_type: TargetType::Capability,
+            }) else {
+                panic!("expected approval")
+            };
+            ids.push(pending_request_id);
+        }
+        h.app.sync_attention_queue();
+        let before = h.app.attention_queue.ask_count();
+        let index = h.app.router.position(|c| c.context_id == context).unwrap();
+        monitor.fail_audit(true);
+        h.app.delete_context(index);
+        monitor.fail_audit(false);
+        h.app.sync_attention_queue();
+        for id in &ids[..3] {
+            assert_eq!(
+                monitor.get_needs_you(id).unwrap().resolution,
+                Some(NeedsYouResolution::Retired)
+            );
+            assert!(monitor.approve_pending(id, ApprovalChoice::Once).is_err());
+            assert_eq!(
+                monitor.get_continuation(id).unwrap().state,
+                crate::broker::gate::ContinuationState::Canceled
+            );
+        }
+        assert!(monitor.list_needs_you().iter().any(|row| row.id == ids[3]));
+        assert_eq!(h.app.attention_queue.ask_count(), before - 3);
+    }
+
+    #[test]
+    fn unpacking_context_cancels_context_approval_but_preserves_pane() {
+        use crate::broker::gate::{Admission, AdmitRequest, NeedsYouResolution};
+        use crate::broker::{ActorScope, TargetType};
+        use crate::host::context::{Context, Window};
+        use crate::host::pane::{Pane, PortalPane};
+
+        let mut h = HostHarness::new();
+        let pane = h.add_test_pane();
+        let context = h.app.next_window_id;
+        h.app.next_window_id += 1;
+        let window_id = h.app.next_window_id;
+        h.app.next_window_id += 1;
+        let parent = h.app.router.active().context_id;
+        let path = h.app.router.active().root.clone();
+        h.app.router.push(Context {
+            name: "Child".into(),
+            root: path.clone(),
+            description: None,
+            context_id: context,
+            parent_id: Some(parent),
+            depth: 1,
+            parked: false,
+        });
+        let child_pane = h.app.windows[0].panes.remove(&pane).unwrap();
+        let mut tiles = egui_tiles::Tiles::default();
+        let tile = tiles.insert_pane(pane);
+        h.app.windows.push(Window {
+            name: "Child".into(),
+            path,
+            tree: egui_tiles::Tree::new("child", tile, tiles),
+            panes: [(pane, child_pane)].into_iter().collect(),
+            focused_pane: Some(tile),
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 0,
+            window_id,
+            context_id: context,
+        });
+        let portal = pane + 1000000;
+        h.app.windows[0].panes.insert(
+            portal,
+            Pane::Portal(Box::new(PortalPane {
+                pane_id: portal,
+                target_context_id: context,
+                context_state: None,
+                reveal_after_close: false,
+            })),
+        );
+        let mut tiles = egui_tiles::Tiles::default();
+        let tile = tiles.insert_pane(portal);
+        h.app.windows[0].tree = egui_tiles::Tree::new("parent", tile, tiles);
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+        let workspace = h.workspace_root();
+        let principal = crate::broker::principal::Principal::agent(format!("pane:{pane}"));
+        let Admission::Required {
+            pending_request_id: id,
+        } = monitor.admit(AdmitRequest {
+            call_id: "unpack-test",
+            tool: "pane.send",
+            input_json: r#"{"pane_id":42,"operation_id":"unpack-test"}"#,
+            principal: &principal,
+            actor_scope: ActorScope::User,
+            trust_origin: "host",
+            workspace_root: &workspace,
+            context_id: context,
+            package_id: "",
+            instance_id: 0,
+            target_type: TargetType::Capability,
+        })
+        else {
+            panic!("expected approval")
+        };
+        h.app.dissolve_portal(context);
+        assert!(h.app.windows.iter().any(|w| w.panes.contains_key(&pane)));
+        assert_eq!(
+            monitor.get_needs_you(&id).unwrap().resolution,
+            Some(NeedsYouResolution::Retired)
+        );
+        assert!(monitor.approve_pending(&id, ApprovalChoice::Once).is_err());
+    }
 
     // ── Stint 1174: synthetic ingress can never decide a broker request ─────
 
