@@ -109,10 +109,12 @@ jobs:
       - name: Test host
         # Alpha pushes only seed the cache.
         if: github.event_name != 'push'
-        # Zero skips: the whole suite runs, including the network-fetched
+        # Every non-ignored test runs, including the network-fetched
         # CPython-WASI integration test, whose sha256-verified bundle the setup
         # action restores from the Actions cache (fetching it in its own step on
         # a miss, so a network failure is attributed to the fetch, not the test).
+        # Ignored tests are skipped here; `real_cpython_bundle_resolves_but_is_abi_blocked`
+        # is #[ignore] and not covered by the PTY step either.
         run: |
           env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
             -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
