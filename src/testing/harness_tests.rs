@@ -6227,6 +6227,7 @@ fn perf_gate_new_context_latency() {
         let output = crate::host::shell::run_login_shell_probe(
             &shell,
             &["-l", "-i", "-c", "printf '__PLEXI_SHELL_READY__\\n'"],
+            crate::host::shell::LOGIN_SHELL_PROBE_LIMIT,
         )
         .expect("login shell probe must start for latency measurement");
         let elapsed = start.elapsed();

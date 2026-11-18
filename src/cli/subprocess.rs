@@ -1,7 +1,7 @@
 //! Timeout-bounded subprocess capture, shared by every CLI-descriptor path
 //! (`--plexi` native probe, registry version detection, and the Tier-3 `--help`
-//! crawl). Centralises the "spawn, capture, kill if it hangs" logic so no
-//! descriptor path can ever block the host on a misbehaving CLI.
+//! crawl). Adapts `plexi_distribution::bounded::run` to the descriptor tiers,
+//! so no descriptor path can ever block the host on a misbehaving CLI.
 
 use std::time::Duration;
 
@@ -28,57 +28,32 @@ impl Captured {
     }
 }
 
-/// Run `bin args…`, capturing stdout/stderr, killing the child if it runs
-/// longer than `timeout`. Never blocks indefinitely.
+/// Run `bin args…` through `plexi_distribution::bounded::run`, capturing
+/// stdout/stderr. At `timeout` the child and its process group are killed and
+/// reaped. Never blocks indefinitely.
 ///
-/// Errors only on spawn failure (binary not on PATH, permission denied). A
-/// timeout is reported via `Captured::timed_out`, not as an `Err`, because the
-/// caller usually wants to fall through to the next descriptor tier rather than
-/// abort.
+/// Errors only when the child cannot run (binary not on PATH, permission
+/// denied). A timeout is a failed `Captured`, not an `Err`, because the caller
+/// usually wants to fall through to the next descriptor tier rather than abort.
 pub fn run_capture(bin: &str, args: &[&str], timeout: Duration) -> std::io::Result<Captured> {
-    use std::process::Stdio;
-    use std::sync::mpsc;
-
-    let child = std::process::Command::new(bin)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    let pid = child.id();
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
-
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(output)) => Ok(Captured {
-            success: output.status.success(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    let mut command = std::process::Command::new(bin);
+    command.args(args);
+    let what = format!("`{bin} {}`", args.join(" "));
+    match plexi_distribution::bounded::run(command, &what, timeout) {
+        Ok(finished) => Ok(Captured {
+            success: finished.status.success(),
+            stdout: String::from_utf8_lossy(&finished.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&finished.stderr).into_owned(),
         }),
-        Ok(Err(e)) => Err(e),
-        Err(_) => {
-            // Deadline exceeded — kill the child so it doesn't linger. The
-            // reader thread owns the `Child`, so we signal by pid.
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(pid as libc::pid_t, libc::SIGKILL);
-            }
-            #[cfg(not(unix))]
-            let _ = pid;
-            log::warn!(
-                "cli_subprocess: `{bin} {}` timed out after {}s — killed",
-                args.join(" "),
-                timeout.as_secs()
-            );
+        Err(plexi_distribution::Error::TimedOut { .. }) => {
+            log::warn!("cli_subprocess: {what} timed out after {timeout:?}; killed and reaped");
             Ok(Captured {
                 success: false,
                 stdout: String::new(),
                 stderr: String::new(),
             })
         }
+        Err(error) => Err(std::io::Error::other(error)),
     }
 }
 
@@ -106,6 +81,49 @@ mod tests {
             "timeout did not short-circuit: took {:?}",
             start.elapsed()
         );
+    }
+
+    /// Regression (stint 1610): at the limit the child and its descendants
+    /// are killed and the child is reaped, even while a descendant holds its
+    /// output open. Before, only the child was signalled and the reaper sat
+    /// behind the descendant's open pipe, leaving a zombie and a live sleeper.
+    #[cfg(unix)]
+    #[test]
+    fn a_timed_out_child_and_its_descendants_are_killed_and_reaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let (child_file, sleeper_file) = (dir.path().join("child"), dir.path().join("sleeper"));
+        let script = format!(
+            "echo $$ > '{}'; sleep 600 & echo $! > '{}'; wait",
+            child_file.display(),
+            sleeper_file.display()
+        );
+        let c = run_capture("/bin/sh", &["-c", &script], Duration::from_millis(500))
+            .expect("sh spawns");
+        assert!(!c.success);
+        let pid = |path: &std::path::Path| -> libc::pid_t {
+            std::fs::read_to_string(path)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap()
+        };
+        let (child, sleeper) = (pid(&child_file), pid(&sleeper_file));
+        // SAFETY: signal 0 only checks whether a pid exists; an unreaped
+        // zombie still exists.
+        let exists = |pid: libc::pid_t| unsafe { libc::kill(pid, 0) } == 0;
+        let child_left = exists(child);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while exists(sleeper) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let sleeper_left = exists(sleeper);
+        // SAFETY: test cleanup of processes this test started.
+        unsafe {
+            libc::kill(sleeper, libc::SIGKILL);
+            libc::kill(child, libc::SIGKILL);
+        }
+        assert!(!child_left, "timed-out child {child} was left unreaped");
+        assert!(!sleeper_left, "descendant {sleeper} survived the limit");
     }
 
     #[test]

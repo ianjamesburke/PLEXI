@@ -18,6 +18,11 @@ pub enum Error {
     },
     #[error("{0}")]
     Json(#[from] serde_json::Error),
+    #[error("{what} did not finish within {limit:?} and was stopped")]
+    TimedOut {
+        what: String,
+        limit: std::time::Duration,
+    },
 }
 pub type Result<T> = std::result::Result<T, Error>;
 

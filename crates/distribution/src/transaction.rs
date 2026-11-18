@@ -566,11 +566,18 @@ fn copy_package(package: &Package, destination: &Path) -> Result<()> {
     sync_tree(destination)
 }
 
+/// Limits for one-shot installer subprocesses. Each finishes within a
+/// few seconds when healthy; the limits only stop a hung one from holding the
+/// install. Copying a bundle scales with its size, so `ditto` gets longer.
+const CHECK_LIMIT: Duration = Duration::from_secs(60);
+#[cfg(target_os = "macos")]
+const COPY_BUNDLE_LIMIT: Duration = Duration::from_secs(300);
+
 fn verify_target(generation: &Generation) -> Result<()> {
     let mut command = Command::new(generation.executable());
     command.arg("--distribution-check");
     clean_environment(&mut command);
-    let output = command.output().context("verify installed runtime")?;
+    let output = crate::bounded::run(command, "installed runtime check", CHECK_LIMIT)?;
     if !output.status.success() {
         return Err(Error::Invalid(format!(
             "installed runtime check failed: {}",
@@ -629,9 +636,11 @@ fn integration_files(package: &Package, receipt: &Receipt) -> Result<Vec<(PathBu
                 let mut command = Command::new(receipt.active.executable());
                 command.args(["completions", shell]);
                 clean_environment(&mut command);
-                let output = command
-                    .output()
-                    .context(format!("generate {shell} completions"))?;
+                let output = crate::bounded::run(
+                    command,
+                    &format!("{shell} completions generation"),
+                    CHECK_LIMIT,
+                )?;
                 if !output.status.success() || output.stdout.is_empty() {
                     return Err(Error::Invalid(format!(
                         "could not generate {shell} completions for {name}: {}",
@@ -1082,11 +1091,9 @@ fn prepare_bundle_change(
 /// `ditto` keeps the code signature, extended attributes and bundle metadata.
 #[cfg(target_os = "macos")]
 fn copy_bundle(source: &Path, destination: &Path) -> Result<()> {
-    let output = Command::new("/usr/bin/ditto")
-        .arg(source)
-        .arg(destination)
-        .output()
-        .context("run ditto")?;
+    let mut command = Command::new("/usr/bin/ditto");
+    command.arg(source).arg(destination);
+    let output = crate::bounded::run(command, "ditto", COPY_BUNDLE_LIMIT)?;
     if !output.status.success() {
         return Err(Error::Invalid(format!(
             "ditto {} failed: {}",
@@ -1164,7 +1171,9 @@ fn finish_bundle_swap(swap: &BundleSwap) {
 #[cfg(target_os = "macos")]
 fn lsregister(flag: &str, path: &Path) {
     const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
-    match Command::new(LSREGISTER).arg(flag).arg(path).output() {
+    let mut command = Command::new(LSREGISTER);
+    command.arg(flag).arg(path);
+    match crate::bounded::run(command, "lsregister", CHECK_LIMIT) {
         Ok(output) if output.status.success() => {
             log::info!("distribution: lsregister {flag} {}", path.display())
         }
@@ -1862,13 +1871,13 @@ fn prepare_windows_integration(
 }
 
 #[cfg(windows)]
-fn powershell(script: &str, env: &[(&str, &std::ffi::OsStr)]) -> Result<std::process::Output> {
+fn powershell(script: &str, env: &[(&str, &std::ffi::OsStr)]) -> Result<crate::bounded::Finished> {
     let mut command = Command::new("powershell");
     command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
     for (key, value) in env {
         command.env(key, value);
     }
-    let output = command.output().context("run Windows integration")?;
+    let output = crate::bounded::run(command, "Windows integration", CHECK_LIMIT)?;
     if !output.status.success() {
         return Err(Error::Invalid(format!(
             "Windows integration failed: {}",

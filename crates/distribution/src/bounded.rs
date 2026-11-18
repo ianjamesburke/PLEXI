@@ -1,11 +1,13 @@
 //! Run a child process with a hard time limit (stint 1605).
 //!
 //! Output goes to anonymous temp files, not pipes, so nothing a descendant
-//! keeps open can block the caller. On Unix the child leads its own process
-//! group, and at the limit the whole group is killed while the child is still
-//! unreaped (so the group id cannot be reused), then the child is reaped. A
-//! process that detaches into its own session, as `host start` does for the
-//! host, is outside the group and survives.
+//! keeps open can block the caller, and stdin is `/dev/null`. On Unix the
+//! child leads a new session with no controlling terminal, so it can neither
+//! read nor write the caller's terminal; a session leader also leads its own
+//! process group. At the limit the whole group is killed while the child is
+//! still unreaped (so the group id cannot be reused), then the child is
+//! reaped. A process that detaches into its own session, as `host start` does
+//! for the host, is outside the group and survives.
 
 use crate::{Error, IoContext, Result};
 use std::process::{Command, ExitStatus, Stdio};
@@ -15,6 +17,7 @@ use std::time::{Duration, Instant};
 /// the child may keep writing; the read stops here instead of following it.
 pub const CAPTURE_LIMIT: u64 = 1024 * 1024;
 
+#[derive(Debug)]
 pub struct Finished {
     pub status: ExitStatus,
     pub stdout: Vec<u8>,
@@ -42,8 +45,18 @@ pub fn run(mut command: Command, what: &str, limit: Duration) -> Result<Finished
                 .try_clone()
                 .context(format!("share error file for {what}"))?,
         );
+    // SAFETY: between fork and exec the closure calls only setsid(), which is
+    // async-signal-safe and neither allocates nor locks.
     #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut command, || {
+            // A forked child never leads a process group, so setsid succeeds.
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     let mut child = command.spawn().context(format!("start {what}"))?;
     let deadline = Instant::now() + limit;
     let status = loop {
@@ -67,14 +80,11 @@ pub fn run(mut command: Command, what: &str, limit: Duration) -> Result<Finished
                 log::warn!("distribution: kill {what} failed: {error}");
             }
             let reaped = child.wait();
-            log::warn!(
-                "distribution: {what} exceeded {}s; killed, reaped={reaped:?}",
-                limit.as_secs()
-            );
-            return Err(Error::Invalid(format!(
-                "{what} did not finish within {}s and was stopped",
-                limit.as_secs()
-            )));
+            log::warn!("distribution: {what} exceeded {limit:?}; killed, reaped={reaped:?}");
+            return Err(Error::TimedOut {
+                what: what.to_string(),
+                limit,
+            });
         }
         std::thread::sleep(Duration::from_millis(20));
     };
@@ -151,6 +161,40 @@ mod tests {
             .trim()
             .parse()
             .unwrap()
+    }
+
+    /// The child leads a new session, so it has no controlling terminal and
+    /// leads its own process group; a login shell run here cannot touch the
+    /// caller's terminal. A descendant keeps the session and group ids after
+    /// the child exits, so they are read from it.
+    #[test]
+    fn the_child_leads_its_own_session() {
+        let finished = run(
+            sh("sleep 30 & echo $$ $!"),
+            "session probe",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&finished.stdout);
+        let pids: Vec<libc::pid_t> = text
+            .split_whitespace()
+            .map(|p| p.parse().unwrap())
+            .collect();
+        let (child, sleeper) = (pids[0], pids[1]);
+        // SAFETY: getsid and getpgid only read ids; kill cleans up a process
+        // this test started.
+        let (session, group, ours) = unsafe {
+            (
+                libc::getsid(sleeper),
+                libc::getpgid(sleeper),
+                libc::getsid(0),
+            )
+        };
+        unsafe { libc::kill(sleeper, libc::SIGKILL) };
+        assert!(finished.status.success(), "{finished:?}");
+        assert_eq!(session, child, "child leads a new session: {text}");
+        assert_eq!(group, child, "child leads its process group: {text}");
+        assert_ne!(session, ours, "child left the caller's session: {text}");
     }
 
     /// A descendant that keeps stdout open does not hold the caller: capture
