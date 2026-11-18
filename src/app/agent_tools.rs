@@ -363,8 +363,7 @@ impl PlexiApp {
                 );
             }
         }
-        self.conjoined_contexts
-            .retain(|context, _| self.router.iter().any(|c| c.context_id == *context));
+        self.prune_conjoined_contexts();
         self.agent_tool_children
             .retain(|id, _| self.windows.iter().any(|w| w.panes.contains_key(id)));
         let now = Instant::now();

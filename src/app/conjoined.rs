@@ -4,6 +4,34 @@ use crate::agent::fleet::{AgentRow, FleetFilter};
 use std::collections::HashMap;
 
 impl PlexiApp {
+    /// Drop conjoined links a saved workspace would reject: the child context
+    /// is gone, or its parent pane no longer lives in the child's parent
+    /// context (closed, moved or wrapped). The child stays an ordinary
+    /// subcontext with its panes. Runs every frame and before every save.
+    pub(crate) fn prune_conjoined_contexts(&mut self) {
+        let stale: Vec<u64> = self
+            .conjoined_contexts
+            .iter()
+            .filter(|(child, parent_pane)| {
+                let parent_context = self
+                    .router
+                    .iter()
+                    .find(|c| c.context_id == **child)
+                    .and_then(|c| c.parent_id);
+                !self.windows.iter().any(|w| {
+                    Some(w.context_id) == parent_context && w.panes.contains_key(*parent_pane)
+                })
+            })
+            .map(|(child, _)| *child)
+            .collect();
+        for child in stale {
+            let parent = self.conjoined_contexts.remove(&child);
+            log::info!(
+                "conjoined: unlinked context={child} from parent pane {parent:?}; the parent left its context"
+            );
+        }
+    }
+
     /// Lineage for the displayed tiles, resolved before the renderer borrows its window.
     pub(crate) fn pane_lineage(&self) -> HashMap<u64, String> {
         let win = &self.windows[self.active_window];

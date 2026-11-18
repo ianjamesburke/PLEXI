@@ -2372,6 +2372,7 @@ impl PlexiApp {
 
     /// Same save, but hands the cause back so the quit path can show it.
     pub(crate) fn save_workspace_result(&mut self) -> std::io::Result<()> {
+        self.prune_conjoined_contexts();
         if let Some(block) = self.workspace_save_block() {
             log::error!("workspace_save: refused; {block}");
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, block));

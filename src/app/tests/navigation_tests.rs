@@ -1829,3 +1829,14 @@ fn click_in_a_zoomed_child_while_the_conjoined_parent_has_focus_keeps_the_zoom()
         "the click keeps the zoom"
     );
 }
+
+#[test]
+fn closing_a_conjoined_parent_pane_leaves_the_workspace_saveable() {
+    let mut h = HostHarness::new();
+    let (parent, _, _) = conjoined_navigation_fixture(&mut h);
+    h.app.close_pane_by_id(parent);
+    h.hidden_frame();
+    assert!(h.app.save_workspace_now(), "closing the conjoined parent must leave the workspace saveable");
+    crate::workspace::WorkspaceFile::load_from(h.profile_dir())
+        .expect("workspace saved after the conjoined parent closed must validate");
+}
