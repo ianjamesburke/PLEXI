@@ -147,9 +147,8 @@ pub(crate) enum Mech {
     PythonLaunchSet,
     /// `WasmPane`'s own `pending_capability_prompts` queue.
     WasmQueue,
-    /// `consent::consent_admission` (stint 1489): a Python consent capability
-    /// is decided at each use from the monitor's stored row, then the pane's
-    /// own answer, then a prompt in the pane (`PaneConsent`).
+    /// `consent::gate`'s pre-checks (stint 1489): a Python consent capability
+    /// the manifest does not declare is refused before the broker is asked.
     PythonConsent,
     /// `PermissionMonitor::admit*` exact evaluation.
     MonitorAdmit,
@@ -228,7 +227,6 @@ const REMINT: &str = "ask: the manifest must not re-mint an allow after revoke o
 const MANIFEST_MINT: &str = "ask: a manifest declaration must not mint an allow";
 const PY_NO_ASK: &str = "ask (waiting_for_approval): Python has no consent path and hard-denies";
 const RUNTIME_QUEUE: &str = "ask through a broker pending request, not the WasmPane queue";
-const PY_QUEUE: &str = "ask through a broker pending request, not the LivePythonPane prompt queue";
 const SUBS_STORE: &str =
     "same result decided by PermissionMonitor, not the subscription store copy";
 
@@ -251,16 +249,15 @@ const PY_SENSITIVE: [Cell; 10] = [
     admit(ROW), deny(ROW), deny(PYSET).cut(PY_NO_ASK), deny(PYSET).cut(PY_NO_ASK), deny(PYSET).cut(PY_NO_ASK),
 ];
 
-// Python consent capability (`net.http`, `fs.write`; stint 1489). Decided at
-// each use: undeclared refuses; a stored row decides; otherwise the pane asks.
-// Stint 1489 flipped revoked, expired and manifest-only from deny (no consent
-// path) to ask; every other cell kept its outcome and moved to the live read.
-// CUTOVER: once-used and stale session admit (the stored-row read ignores
-// duration); the ask comes from the pane's own queue, not a broker pending request.
+// Python consent capability (`net.http`, `fs.write`; stint 1489). Undeclared
+// is refused by the pane's gate; every declared use is an exact broker
+// request (`admit_plugin_capability`), so a once grant is spent, a stale
+// session grant does not answer, and revoked, expired and manifest-only ask
+// through a broker pending request. Matches the design.
 #[rustfmt::skip]
 const PY_CONSENT: [Cell; 10] = [
-    deny(PYCON), admit(PYCON), admit(PYCON).cut(ONCE_REPLAY), admit(PYCON), admit(PYCON).cut(STALE_SESSION),
-    admit(PYCON), deny(PYCON), ask(PYCON).cut(PY_QUEUE), ask(PYCON).cut(PY_QUEUE), ask(PYCON).cut(PY_QUEUE),
+    deny(PYCON), admit(ADMIT), ask(ADMIT), admit(ADMIT), ask(ADMIT),
+    admit(ADMIT), deny(ADMIT), ask(ADMIT), ask(ADMIT), ask(ADMIT),
 ];
 
 // `notify` is a raw WASM id, not a `Capability`, so it can never enter the
@@ -1084,8 +1081,10 @@ fn cutover_cells_are_enumerated() {
     for row in &rows {
         println!("{row}");
     }
-    // 81 matrix cells plus the two `InstallYes` probes (stint 1291).
-    assert_eq!(rows.len(), 83);
+    // 71 matrix cells plus the two `InstallYes` probes (stint 1291). Stint
+    // 1489 moved the Python FsWrite and Network lines to broker admission,
+    // which removed their 10 cutover cells.
+    assert_eq!(rows.len(), 73);
 }
 
 /// Stint 1291 `InstallYes` probe: install each package with `--yes` through

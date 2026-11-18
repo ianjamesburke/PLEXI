@@ -2836,7 +2836,8 @@ pub(crate) fn capability_prompt_actions() -> [crate::ui::dialog::DialogAction<'s
 }
 
 /// `(granted, remember)` for the capability prompt's answer, if one was given.
-/// Shared by the WASM and Python prompts.
+/// The WASM prompt uses it directly; the Python prompt through
+/// [`capability_prompt_choice`].
 pub(crate) fn capability_prompt_decision(
     response: &crate::ui::dialog::DialogResponse<'_>,
 ) -> Option<(bool, bool)> {
@@ -2848,6 +2849,20 @@ pub(crate) fn capability_prompt_decision(
         _ if response.dismissed => Some((false, false)),
         _ => None,
     }
+}
+
+/// The broker choice for the Python capability prompt's answer (stint
+/// 1489). Dismissing it denies this one request.
+pub(crate) fn capability_prompt_choice(
+    response: &crate::ui::dialog::DialogResponse<'_>,
+) -> Option<crate::broker::gate::ApprovalChoice> {
+    use crate::broker::gate::ApprovalChoice;
+    capability_prompt_decision(response).map(|decision| match decision {
+        (true, false) => ApprovalChoice::Once,
+        (true, true) => ApprovalChoice::Always,
+        (false, false) => ApprovalChoice::Deny,
+        (false, true) => ApprovalChoice::DenyAlways,
+    })
 }
 
 /// The capability prompt does not trap Tab or route Enter to a focused action

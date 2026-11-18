@@ -9179,12 +9179,22 @@ fn python_guest_cannot_put_raw_text_in_any_log_line() {
                 .expect("test profile monitor");
         let mut store = monitor.store();
         for capability in declared {
-            store.record(crate::broker::GrantRecord::plugin_capability(
-                "hostile-messages-probe",
-                tmp.path(),
-                crate::app::permissions::Capability::try_from(capability).expect(capability),
-                crate::broker::Decision::Allow,
-            ));
+            // Consent capabilities are exact broker grants (stint 1489).
+            store.record(if matches!(capability, "fs.write" | "net.http") {
+                crate::host::wasm_python::remembered_consent_grant(
+                    "hostile-messages-probe",
+                    tmp.path(),
+                    capability,
+                    &[],
+                )
+            } else {
+                crate::broker::GrantRecord::plugin_capability(
+                    "hostile-messages-probe",
+                    tmp.path(),
+                    crate::app::permissions::Capability::try_from(capability).expect(capability),
+                    crate::broker::Decision::Allow,
+                )
+            });
         }
         store.save();
     }
@@ -9218,9 +9228,9 @@ fn python_guest_cannot_put_raw_text_in_any_log_line() {
         "fs.write",
         "net.http",
     ] {
-        // Stint 1489: consent capabilities are read live from the stored row.
+        // Stint 1489: consent capabilities are exact broker requests.
         let mechanism = if matches!(effect, "fs.write" | "net.http") {
-            "python_live_row"
+            "grant_store"
         } else {
             "python_launch_set"
         };
@@ -15562,17 +15572,22 @@ fn loopback_http_server() -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize
     (port, hits)
 }
 
-fn launch_http_probe(h: &mut HostHarness, dir: &std::path::Path, grant: bool) -> PaneId {
-    if grant {
-        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-            .expect("permission monitor")
-            .grant_capability_id(
-                "http-fetch-probe",
-                dir,
-                "net.http",
-                crate::broker::Decision::Allow,
-                crate::broker::GrantSource::User,
-            );
+/// Launch the probe with `net.http` already allowed for `allowed_hosts` (the
+/// manifest's list), the grant "Always allow" stores (stint 1489).
+fn launch_http_probe(h: &mut HostHarness, dir: &std::path::Path, allowed_hosts: &[&str]) -> PaneId {
+    {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .expect("permission monitor");
+        let hosts: Vec<String> = allowed_hosts.iter().map(|host| host.to_string()).collect();
+        let mut store = monitor.store();
+        store.record(crate::host::wasm_python::remembered_consent_grant(
+            "http-fetch-probe",
+            dir,
+            "net.http",
+            &hosts,
+        ));
+        store.save();
     }
     h.app
         .launch_view_by_path_with_layout_no_review_modal(&dir.to_string_lossy(), None, None, &[])
@@ -15613,7 +15628,7 @@ fn python_http_fetch_reaches_an_allowed_loopback_server_and_returns_the_body() {
         &format!("http://127.0.0.1:{port}/hello"),
     );
     let mut h = HostHarness::new();
-    let pane = launch_http_probe(&mut h, dir.path(), true);
+    let pane = launch_http_probe(&mut h, dir.path(), &["127.0.0.1"]);
     assert_eq!(
         wait_for_http_outcome(&mut h, pane),
         "http:200:hello-from-loopback"
@@ -15633,7 +15648,7 @@ fn python_http_fetch_to_a_host_outside_allowed_hosts_is_refused_without_a_reques
         &format!("http://127.0.0.1:{port}/hello"),
     );
     let mut h = HostHarness::new();
-    let pane = launch_http_probe(&mut h, dir.path(), true);
+    let pane = launch_http_probe(&mut h, dir.path(), &["api.example.invalid"]);
     let outcome = wait_for_http_outcome(&mut h, pane);
     assert!(
         outcome.starts_with("http:error:") && outcome.contains("allowed_hosts"),

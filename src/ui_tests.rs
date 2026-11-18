@@ -1025,7 +1025,7 @@ mod tests {
         h.harness().key_press(egui::Key::Escape);
         // Python plugin text is painted, not in the accessibility tree, so
         // read the plugin's semantic state.
-        let refusal = "net.http was denied for this pane. Reopen kraken to be asked again.";
+        let refusal = "net.http was denied for this request. kraken asks again next time.";
         let start = Instant::now();
         loop {
             let labels: Vec<String> = h.with_app_mut(|app| {

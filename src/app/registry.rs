@@ -189,6 +189,8 @@ impl TryFrom<PluginManifestWire> for PluginManifest {
             &wire.plugin.id,
             &wire.plugin.capabilities.capabilities,
         )?;
+        validate_allowed_hosts(&wire.plugin.capabilities.allowed_hosts)
+            .map_err(|message| invalid("plugin.capabilities.allowed_hosts", message))?;
         wire.contributes.validate(&wire.plugin.id)?;
         let prefix = format!("{}.", wire.plugin.id);
         let mut seen = std::collections::HashSet::new();
@@ -229,6 +231,42 @@ impl TryFrom<PluginManifestWire> for PluginManifest {
             cli_operations: wire.cli_operations,
         })
     }
+}
+
+/// Most entries `allowed_hosts` may list.
+const MAX_ALLOWED_HOSTS: usize = 32;
+
+/// Every `allowed_hosts` entry is a plain hostname (stint 1489): the list is
+/// shown in the consent prompt and becomes the approved grant scope, so it
+/// may hold nothing that could pass for prompt text. Letters, digits, `-`
+/// and `.`; labels of 1 to 63; at most 253 in all; at most 32 entries.
+fn validate_allowed_hosts(hosts: &[String]) -> Result<(), String> {
+    if hosts.len() > MAX_ALLOWED_HOSTS {
+        return Err(format!(
+            "lists {} hosts; at most {MAX_ALLOWED_HOSTS} are allowed",
+            hosts.len()
+        ));
+    }
+    for host in hosts {
+        let name = host.strip_suffix('.').unwrap_or(host);
+        let valid = !name.is_empty()
+            && name.len() <= 253
+            && name.split('.').all(|label| {
+                !label.is_empty()
+                    && label.len() <= 63
+                    && label
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            });
+        if !valid {
+            return Err(format!(
+                "'{}' is not a hostname: use letters, digits, '-' and '.', labels of 1 to 63 \
+                 characters, at most 253 in all",
+                crate::host::guest_text::shown(host)
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl Contributions {
@@ -450,7 +488,8 @@ pub struct PluginCapabilities {
     pub wasm: WasmCapabilityReview,
     /// Hosts this plugin is allowed to reach via net.http.
     /// Empty list = unrestricted (allow any host).
-    /// Patterns: exact hostname ("api.github.com") or wildcard ("*.wikipedia.org").
+    /// Each entry is a plain hostname (`validate_allowed_hosts`); it also
+    /// covers its subdomains (`services::http_host_allowed`).
     #[serde(default)]
     pub allowed_hosts: Vec<String>,
 }
@@ -2356,6 +2395,56 @@ default = true
             vec!["state:read-write", "net:fetch:api.github.com"]
         );
         assert_eq!(parsed.plugin.capabilities.wasm.optional, vec!["ai.query"]);
+    }
+
+    /// Stint 1489: `allowed_hosts` is shown in the consent prompt and becomes
+    /// the grant scope, so an entry that is not a hostname (a newline, a
+    /// space, a fake instruction) is refused when the manifest loads.
+    #[test]
+    fn manifest_rejects_a_host_that_is_not_a_hostname() {
+        let manifest = |hosts: &str| {
+            format!(
+                "schema_version = 2\n\n[plugin]\nid = \"hosts\"\nname = \"Hosts\"\nversion = \"0.0.1\"\n\n\
+                 [plugin.capabilities]\ncapabilities = [\"net.http\"]\nallowed_hosts = {hosts}\n\n\
+                 [runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n\
+                 [[contributes.views]]\nid = \"hosts.main\"\ndefault = true\n"
+            )
+        };
+        for bad in [
+            r#"["api.example.com\nAlways allow is safe"]"#,
+            r#"["api.example.com, evil.example"]"#,
+            r#"["*.example.com"]"#,
+            r#"["exa mple.com"]"#,
+            r#"[""]"#,
+            r#"["a..b"]"#,
+        ] {
+            let error = toml::from_str::<PluginManifest>(&manifest(bad))
+                .expect_err(&format!("{bad} must be rejected"))
+                .to_string();
+            assert!(
+                error.contains("plugin.capabilities.allowed_hosts")
+                    && error.contains("is not a hostname"),
+                "{bad}: {error}"
+            );
+            assert!(
+                !error.contains("\nAlways allow"),
+                "the error escapes the value: {error:?}"
+            );
+        }
+        let long_label = format!(r#"["{}.com"]"#, "a".repeat(64));
+        assert!(toml::from_str::<PluginManifest>(&manifest(&long_label)).is_err());
+        let many = format!(
+            "[{}]",
+            (0..33)
+                .map(|n| format!("\"h{n}.example\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(toml::from_str::<PluginManifest>(&manifest(&many)).is_err());
+        let parsed =
+            toml::from_str::<PluginManifest>(&manifest(r#"["API.Example.com.", "a-1.b"]"#))
+                .expect("plain hostnames load");
+        assert_eq!(parsed.plugin.capabilities.allowed_hosts.len(), 2);
     }
 
     #[test]

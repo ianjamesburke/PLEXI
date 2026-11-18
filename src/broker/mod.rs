@@ -372,6 +372,15 @@ impl GrantRecord {
         }
     }
 
+    /// A remembered plugin capability decision: it covers every pane of the
+    /// plugin in its workspace, for its resource only (stint 1489).
+    pub fn plugin_wide(&self) -> bool {
+        self.actor_type == ActorType::Plugin
+            && self.target_type == TargetType::Capability
+            && self.binding_schema >= 1
+            && self.duration == GrantDuration::Always
+    }
+
     /// True when this record answers the given request.
     ///
     /// A missing workspace is never a wildcard. Schema-0 rows answer only
@@ -413,9 +422,12 @@ impl GrantRecord {
                 return true;
             }
             // Legacy capability rows stay containment-only. They are not translated.
+            // A legacy row answers an exact request only to deny it: it names no
+            // resource, so an allow would cover every resource (stint 1489).
             return !toolish
                 && self.target_type == TargetType::Capability
-                && req.target_type == TargetType::Capability;
+                && req.target_type == TargetType::Capability
+                && (req.binding_schema < 1 || self.decision == Decision::Deny);
         }
         if self.resource_scope != req.resource_scope || self.resource_id != req.resource_id {
             return false;
@@ -425,8 +437,9 @@ impl GrantRecord {
         }
         // A CLI operation grant is bound to package content and the operation
         // binding, not to the pane that asked: a remembered grant must survive a
-        // restart that reassigns pane and context ids.
-        let pane_bound = self.target_type != TargetType::CliOperation;
+        // restart that reassigns pane and context ids. A remembered plugin
+        // capability decision is plugin-wide in the same way (stint 1489).
+        let pane_bound = self.target_type != TargetType::CliOperation && !self.plugin_wide();
         if self.package_id != req.package_id
             || (pane_bound
                 && (self.instance_id != req.instance_id || self.context_id != req.context_id))
@@ -1381,6 +1394,102 @@ mod tests {
 
     fn agent_request() -> PermissionRequest {
         PermissionRequest::exact(&agent_binding())
+    }
+
+    /// A Python consent request (stint 1489): plugin actor, exact capability.
+    fn plugin_capability_binding(resource: &str) -> ExactBinding {
+        ExactBinding {
+            actor_type: ActorType::Plugin,
+            actor_id: "probe".to_string(),
+            actor_scope: ActorScope::User,
+            trust_origin: "host".to_string(),
+            workspace_root: PathBuf::from("/grant-ws"),
+            target_type: TargetType::Capability,
+            target_id: "net.http".to_string(),
+            resource_scope: ResourceScope::Workspace,
+            resource_id: Some(resource.to_string()),
+            args_fingerprint: "fp-request".to_string(),
+            session_id: None,
+            package_id: String::new(),
+            instance_id: Some(4),
+            context_id: Some(9),
+            call_id: "pycap_1".to_string(),
+            operation_id: String::new(),
+        }
+    }
+
+    /// Stint 1489: a legacy (schema-0) capability allow names no resource, so
+    /// it never answers an exact request; a legacy deny still does.
+    #[test]
+    fn schema0_allow_never_answers_an_exact_request() {
+        let request = PermissionRequest::exact(&plugin_capability_binding("api.example"));
+        let legacy = |decision| {
+            GrantRecord::capability_id(
+                "probe",
+                Path::new("/grant-ws"),
+                "net.http",
+                decision,
+                GrantSource::User,
+            )
+        };
+        assert!(!legacy(Decision::Allow).matches(&request, 0));
+        assert!(legacy(Decision::Deny).matches(&request, 0));
+        let mut store = GrantStore::default();
+        store.record(legacy(Decision::Allow));
+        assert_eq!(store.evaluate_at(&request, None, 0), Decision::Ask);
+        let coarse = PermissionRequest::plugin_capability(
+            "probe",
+            Path::new("/grant-ws"),
+            crate::app::permissions::Capability::NetHttp,
+        );
+        assert!(
+            legacy(Decision::Allow).matches(&coarse, 0),
+            "coarse containment checks keep reading legacy rows"
+        );
+    }
+
+    /// Stint 1489: a remembered plugin capability decision covers every pane
+    /// and context of the plugin, but only its own resource (the host list).
+    /// A once or session grant stays bound to its pane.
+    #[test]
+    fn plugin_wide_always_ignores_pane_and_context_but_not_resource() {
+        let mut stored = plugin_capability_binding("api.example");
+        stored.instance_id = None;
+        stored.context_id = None;
+        let always = GrantRecord::from_binding(
+            &stored,
+            Decision::Allow,
+            GrantDuration::Always,
+            GrantSource::User,
+            "grant-always",
+        );
+        assert!(always.plugin_wide());
+        let mut other_pane = plugin_capability_binding("api.example");
+        other_pane.instance_id = Some(11);
+        other_pane.context_id = Some(12);
+        assert!(always.matches(&PermissionRequest::exact(&other_pane), 0));
+        assert!(!always.matches(
+            &PermissionRequest::exact(&plugin_capability_binding("api.example,evil.example")),
+            0
+        ));
+        assert!(!always.matches(
+            &PermissionRequest::exact(&plugin_capability_binding("*")),
+            0
+        ));
+
+        let once = GrantRecord::from_binding(
+            &plugin_capability_binding("api.example"),
+            Decision::Allow,
+            GrantDuration::Once,
+            GrantSource::Session,
+            "grant-once",
+        );
+        assert!(!once.plugin_wide());
+        assert!(once.matches(
+            &PermissionRequest::exact(&plugin_capability_binding("api.example")),
+            0
+        ));
+        assert!(!once.matches(&PermissionRequest::exact(&other_pane), 0));
     }
 
     #[test]

@@ -1028,6 +1028,15 @@ impl PermissionMonitor {
         self.admit_inner(req, None, Some(disclosure))
     }
 
+    /// Admit one use of a plugin consent capability (`net.http`, `fs.write`,
+    /// `ai.query`; stint 1489). `disclosure` is the prompt text, so the
+    /// Permissions plugin shows the words the pane shows. Display only.
+    pub fn admit_plugin_capability(&self, req: AdmitRequest<'_>, disclosure: &str) -> Admission {
+        debug_assert!(req.principal.actor_type() == ActorType::Plugin);
+        debug_assert!(req.target_type == TargetType::Capability);
+        self.admit_inner(req, None, Some(disclosure))
+    }
+
     fn admit_inner(
         &self,
         req: AdmitRequest<'_>,
@@ -1306,6 +1315,9 @@ impl PermissionMonitor {
                 close_decision,
                 &grant_id,
             );
+            if choice == ApprovalChoice::DenyAlways && is_plugin_capability(&pending.binding) {
+                self.settle_covered_pendings(&grant_id, choice);
+            }
             self.note_retire_due("ask denied");
             return Ok(());
         }
@@ -1325,8 +1337,13 @@ impl PermissionMonitor {
                 unreachable!("deny returned above")
             }
         };
+        let plugin_capability = is_plugin_capability(&pending.binding);
         let mut binding = pending.binding.clone();
         binding.session_id = session_id.clone();
+        if plugin_capability && choice == ApprovalChoice::Always {
+            binding.instance_id = None;
+            binding.context_id = None;
+        }
         let grant_id = format!("grant_{}", uuid::Uuid::new_v4());
         let mut record = GrantRecord::from_binding(
             &binding,
@@ -1342,9 +1359,11 @@ impl PermissionMonitor {
         record.expires_at = expires_at;
         // A remembered CLI operation grant ignores argument bytes but never the
         // operation binding: values stay constrained by the definition's types.
+        // A plugin's "Grant once" covers the one request it was shown for.
         record.args_unbound = choice == ApprovalChoice::AllowTool
             || (binding.target_type == TargetType::Capability
-                && !(binding.target_id == "pane.send" && choice == ApprovalChoice::Once))
+                && !(choice == ApprovalChoice::Once
+                    && (binding.target_id == "pane.send" || plugin_capability)))
             || (binding.target_type == TargetType::CliOperation
                 && matches!(choice, ApprovalChoice::Session | ApprovalChoice::Always));
         self.store().record(record);
@@ -1417,8 +1436,87 @@ impl PermissionMonitor {
             "approved",
             &grant_id,
         );
+        if plugin_capability && choice != ApprovalChoice::Once {
+            self.settle_covered_pendings(&grant_id, choice);
+        }
         self.note_retire_due("ask approved");
         Ok(())
+    }
+
+    /// After a standing plugin capability decision is stored, end every other
+    /// waiting plugin capability ask it already answers, in any pane, so no
+    /// stale prompt is left to click (stint 1489). Each settled ask records
+    /// `choice` as its resolution, closes its Needs-you item with the covering
+    /// grant, and is audited.
+    fn settle_covered_pendings(&self, grant_id: &str, choice: ApprovalChoice) {
+        let now = self.now_secs();
+        let waiting: Vec<Pending> = self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|row| is_plugin_capability(&row.binding))
+            .cloned()
+            .collect();
+        let covered: Vec<(Pending, Decision)> = {
+            let store = self.store();
+            waiting
+                .into_iter()
+                .filter_map(|row| {
+                    let request = PermissionRequest::exact(&row.binding);
+                    match store.evaluate_at(&request, None, now) {
+                        Decision::Ask => None,
+                        decided => Some((row, decided)),
+                    }
+                })
+                .collect()
+        };
+        for (row, decision) in covered {
+            let settled = if decision == Decision::Deny {
+                ApprovalChoice::DenyAlways
+            } else {
+                choice
+            };
+            self.pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|pending| pending.id != row.id);
+            self.resolutions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(row.id.clone(), settled);
+            let (kind, label, resolution) = if decision == Decision::Deny {
+                ("deny", "deny_always", NeedsYouResolution::Denied)
+            } else {
+                ("grant", "covered", NeedsYouResolution::Approved)
+            };
+            let _ = self.audit_with(
+                &AuditFact {
+                    kind: kind.to_string(),
+                    actor: row.binding.actor_id.clone(),
+                    call_id: row.binding.call_id.clone(),
+                    grant_id: grant_id.to_string(),
+                    resource_id: row.binding.resource_id.clone().unwrap_or_default(),
+                    args_fingerprint: row.binding.args_fingerprint.clone(),
+                    operation_id: String::new(),
+                    decision: label.to_string(),
+                    revision_before: String::new(),
+                    revision_after: String::new(),
+                },
+                serde_json::json!({
+                    "context_id": row.binding.context_id,
+                    "pending_request_id": row.id,
+                    "choice": label,
+                }),
+            );
+            let _ = self.close_needs_you(&row.id, resolution, label, grant_id);
+            log::info!(
+                "permission_monitor: settled pending {} by standing {} {grant_id}",
+                row.id,
+                decision.as_str()
+            );
+        }
+        self.persist_queue();
     }
 
     /// File an agent question or a blocked run. Gate approvals are filed by admission.
@@ -1750,6 +1848,11 @@ impl PermissionMonitor {
                         .strip_prefix("pane:")
                         .and_then(|s| s.parse::<u64>().ok())
                         .is_some_and(|id| pane_ids.contains(&id))
+                        || row
+                            .details
+                            .as_ref()
+                            .and_then(|d| d.pane_id)
+                            .is_some_and(|id| pane_ids.contains(&id))
                         || context_id.is_some_and(|id| {
                             row.details.as_ref().and_then(|d| d.context_id) == Some(id)
                         }))
@@ -2264,11 +2367,21 @@ impl PermissionMonitor {
                 .or_else(|| Some(pending.binding.call_id.clone())),
             session_id: pending.binding.session_id.clone(),
             context_id: pending.binding.context_id,
-            pane_id: pending
-                .binding
-                .actor_id
-                .strip_prefix("pane:")
-                .and_then(|s| s.parse::<u64>().ok()),
+            // A plugin's ask belongs to the pane that made it, so closing the
+            // pane retires it (stint 1489).
+            pane_id: if pending.binding.actor_type == ActorType::Plugin
+                && matches!(
+                    pending.binding.target_type,
+                    TargetType::Capability | TargetType::CliOperation
+                ) {
+                pending.binding.instance_id
+            } else {
+                pending
+                    .binding
+                    .actor_id
+                    .strip_prefix("pane:")
+                    .and_then(|s| s.parse::<u64>().ok())
+            },
             expected_revision: None,
             ..Default::default()
         };
@@ -3621,37 +3734,6 @@ impl PermissionMonitor {
         );
     }
 
-    /// The stored capability decision for this plugin and workspace now, with
-    /// the id of a row that carries it (what `plexi permissions allow` takes).
-    /// A running plugin calls this at each use, so a grant, revoke or reset
-    /// made while it runs applies to its next request.
-    pub fn live_capability_decision(
-        &self,
-        plugin_id: &str,
-        workspace_root: &Path,
-        capability_id: &str,
-    ) -> Option<(Decision, String)> {
-        let ws = crate::platform::path::canonical_or_self(workspace_root);
-        let now = self.now_secs();
-        let store = self.store();
-        let decision = stored_capability_decision(&store, plugin_id, &ws, capability_id, now)?;
-        let id = store
-            .records()
-            .iter()
-            .find(|record| {
-                record.actor_type == ActorType::Plugin
-                    && record.actor_id == plugin_id
-                    && record.target_type == TargetType::Capability
-                    && record.target_id == capability_id
-                    && record.workspace_root.as_deref() == Some(ws.as_path())
-                    && record.decision == decision
-                    && record.expires_at.is_none_or(|expires| now < expires)
-            })
-            .map(|record| record.grant_id.clone())
-            .unwrap_or_default();
-        Some((decision, id))
-    }
-
     /// Turn declared capabilities into gate rows and an [`PluginPermissions`] set.
     /// Non-sensitive capabilities with no stored decision are auto-granted.
     /// Sensitive capabilities stay withheld until a human grant exists.
@@ -4089,6 +4171,11 @@ impl PermissionMonitor {
             GrantSource::User,
             &grant_id,
         );
+        if is_plugin_capability(binding) {
+            // Plugin-wide, like a remembered allow (stint 1489).
+            record.instance_id = None;
+            record.context_id = None;
+        }
         record.tool_scoped = true;
         record.expires_at = expires_at;
         record.session_id = None;
@@ -4767,6 +4854,12 @@ fn pending_view(row: &Pending) -> PendingView {
     }
 }
 
+/// A plugin asking for a capability by exact request (stint 1489). Its
+/// remembered decisions are plugin-wide and settle sibling asks.
+fn is_plugin_capability(binding: &ExactBinding) -> bool {
+    binding.actor_type == ActorType::Plugin && binding.target_type == TargetType::Capability
+}
+
 fn same_pending(row: &Pending, binding: &ExactBinding) -> bool {
     row.binding.actor_id == binding.actor_id
         && row.binding.actor_type == binding.actor_type
@@ -4837,6 +4930,16 @@ pub(crate) fn resource_of(tool: &str, input_json: &str) -> (ResourceScope, Optio
             .and_then(|item| item.as_str())
             .map(str::to_string);
         return (ResourceScope::PackageIdentity, binding);
+    }
+    if tool == crate::app::permissions::Capability::NetHttp.as_str() {
+        // The approved host list (stint 1489); a different list is a
+        // different resource and asks again.
+        let scope = parsed
+            .as_ref()
+            .and_then(|value| value.get("host_scope"))
+            .and_then(|item| item.as_str())
+            .map(str::to_string);
+        return (ResourceScope::Workspace, scope);
     }
     let place_key = match tool {
         "secret.read" => Some("folder"),
@@ -6169,6 +6272,182 @@ mod tests {
         assert_eq!(again.resolution, NeedsYouResolution::Approved);
         assert_eq!(needs_you_decisions(&monitor, "approved"), 1);
         assert_eq!(needs_you_decisions(&monitor, "denied"), 0);
+    }
+
+    /// One Python consent request (stint 1489) from `pane` for `request`.
+    fn plugin_capability_admit(
+        monitor: &PermissionMonitor,
+        ws: &Path,
+        pane: u64,
+        input: &str,
+    ) -> Admission {
+        monitor.admit_plugin_capability(
+            AdmitRequest {
+                call_id: "pycap_test",
+                tool: "net.http",
+                input_json: input,
+                principal: &crate::broker::principal::Principal::plugin_in_pane("probe", pane),
+                actor_scope: ActorScope::User,
+                trust_origin: "host",
+                workspace_root: ws,
+                context_id: pane + 100,
+                package_id: "",
+                instance_id: pane,
+                target_type: TargetType::Capability,
+            },
+            "probe requests: net.http",
+        )
+    }
+
+    fn pending_of(admission: Admission) -> String {
+        match admission {
+            Admission::Required { pending_request_id } => pending_request_id,
+            Admission::Proceed { .. } => panic!("expected an ask, got Proceed"),
+            Admission::Denied { code } => panic!("expected an ask, got Denied({code})"),
+        }
+    }
+
+    /// Stint 1489: "Grant once" from a plugin covers the one request it was
+    /// shown for, in its pane, and is spent by the first admission.
+    #[test]
+    fn plugin_once_grant_is_bound_to_the_request_and_consumed() {
+        let monitor = PermissionMonitor::ephemeral();
+        let ws = tempfile::tempdir().unwrap();
+        let shown = r#"{"host_scope":"api.example","request":"fp-a"}"#;
+        let other = r#"{"host_scope":"api.example","request":"fp-b"}"#;
+        let pending = pending_of(plugin_capability_admit(&monitor, ws.path(), 4, shown));
+        monitor
+            .approve_pending(&pending, ApprovalChoice::Once)
+            .unwrap();
+        assert!(
+            matches!(
+                plugin_capability_admit(&monitor, ws.path(), 4, other),
+                Admission::Required { .. }
+            ),
+            "a different request is not covered"
+        );
+        assert!(
+            matches!(
+                plugin_capability_admit(&monitor, ws.path(), 5, shown),
+                Admission::Required { .. }
+            ),
+            "another pane is not covered"
+        );
+        let Admission::Proceed { grant_id, .. } =
+            plugin_capability_admit(&monitor, ws.path(), 4, shown)
+        else {
+            panic!("the shown request proceeds");
+        };
+        monitor.consume_once(&grant_id, None);
+        assert!(
+            matches!(
+                plugin_capability_admit(&monitor, ws.path(), 4, shown),
+                Admission::Required { .. }
+            ),
+            "the once grant is spent"
+        );
+    }
+
+    /// Stint 1489: "Always allow" in one pane settles every waiting ask it
+    /// answers in other panes (same host list), records the resolution and
+    /// closes their Needs-you items; an ask for another host list keeps
+    /// waiting. "Always deny" settles its siblings as denied.
+    #[test]
+    fn standing_decision_settles_covered_pendings() {
+        let monitor = PermissionMonitor::ephemeral();
+        let ws = tempfile::tempdir().unwrap();
+        let input = |scope: &str, request: &str| {
+            format!(r#"{{"host_scope":"{scope}","request":"{request}"}}"#)
+        };
+        let a = pending_of(plugin_capability_admit(
+            &monitor,
+            ws.path(),
+            4,
+            &input("api.example", "fp-a"),
+        ));
+        let b = pending_of(plugin_capability_admit(
+            &monitor,
+            ws.path(),
+            5,
+            &input("api.example", "fp-b"),
+        ));
+        let wider = pending_of(plugin_capability_admit(
+            &monitor,
+            ws.path(),
+            6,
+            &input("*", "fp-a"),
+        ));
+        assert_eq!(
+            monitor
+                .get_needs_you(&a)
+                .and_then(|item| item.details)
+                .and_then(|d| d.pane_id),
+            Some(4),
+            "a plugin ask belongs to its pane"
+        );
+
+        monitor.approve_pending(&a, ApprovalChoice::Always).unwrap();
+        assert!(
+            monitor.show_pending(&b).is_none(),
+            "the covered ask is settled"
+        );
+        assert_eq!(
+            monitor.approval_resolution(&b),
+            Some(ApprovalChoice::Always)
+        );
+        assert_eq!(
+            monitor.get_needs_you(&b).and_then(|item| item.resolution),
+            Some(NeedsYouResolution::Approved)
+        );
+        assert!(
+            monitor.show_pending(&wider).is_some(),
+            "another host list still asks"
+        );
+        assert!(matches!(
+            plugin_capability_admit(&monitor, ws.path(), 5, &input("api.example", "fp-b")),
+            Admission::Proceed { .. }
+        ));
+
+        let c = pending_of(plugin_capability_admit(
+            &monitor,
+            ws.path(),
+            7,
+            &input("*", "fp-c"),
+        ));
+        monitor
+            .approve_pending(&wider, ApprovalChoice::DenyAlways)
+            .unwrap();
+        assert_eq!(
+            monitor.approval_resolution(&c),
+            Some(ApprovalChoice::DenyAlways)
+        );
+        assert_eq!(
+            monitor.get_needs_you(&c).and_then(|item| item.resolution),
+            Some(NeedsYouResolution::Denied)
+        );
+        assert!(matches!(
+            plugin_capability_admit(&monitor, ws.path(), 8, &input("*", "fp-d")),
+            Admission::Denied { .. }
+        ));
+    }
+
+    /// Stint 1489: closing a pane retires its plugin asks.
+    #[test]
+    fn retiring_a_pane_retires_its_plugin_capability_asks() {
+        let monitor = PermissionMonitor::ephemeral();
+        let ws = tempfile::tempdir().unwrap();
+        let ask = pending_of(plugin_capability_admit(
+            &monitor,
+            ws.path(),
+            4,
+            r#"{"host_scope":"api.example","request":"fp-a"}"#,
+        ));
+        monitor.retire_requester_approvals(&[4], None);
+        assert!(monitor.show_pending(&ask).is_none());
+        assert_eq!(
+            monitor.approval_resolution(&ask),
+            Some(ApprovalChoice::Deny)
+        );
     }
 
     #[test]

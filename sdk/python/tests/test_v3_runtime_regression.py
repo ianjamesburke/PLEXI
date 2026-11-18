@@ -674,13 +674,13 @@ class TestEventDispatch:
             _init_app(proc)
             _send_event(proc, {
                 "type": "http_response", "request_id": "r1",
-                "error": "net.http was denied for this pane.", "refused": "net.http",
+                "error": "net.http was denied for this request.", "refused": "net.http",
             })
             _send_event(proc, {
                 "type": "http_response", "request_id": "r2", "error": "connection refused",
             })
             trees = json.dumps(_find_events(_render(proc), "component_tree"))
-            assert "refused=net.http status=0 error=net.http was denied for this pane." in trees, trees
+            assert "refused=net.http status=0 error=net.http was denied for this request." in trees, trees
             assert "refused=None status=0 error=connection refused" in trees, trees
         finally:
             proc.kill()

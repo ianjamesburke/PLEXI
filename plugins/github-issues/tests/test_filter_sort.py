@@ -340,7 +340,7 @@ def test_host_refusal_reads_as_a_refusal_not_an_empty_list():
         dict(app.DEFAULT_STATE, repo="plexiapp/plexi", loading=True, pending="list"), {}
     )
     _v3_state._in_view = False
-    refusal = "net.http was denied for this pane. Reopen github-issues to be asked again."
+    refusal = "net.http was denied for this request. github-issues asks again next time."
     effects = app.update(HttpResponse(status=0, error=refusal, refused="net.http"))
     data = next(effect for effect in effects if isinstance(effect, SetState)).data
     assert data["refused"] == refusal
