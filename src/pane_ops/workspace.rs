@@ -1308,6 +1308,9 @@ impl PlexiApp {
         }
         self.context_active_window
             .retain(|context_id, _| !deleted.contains(context_id));
+        for &ctx_id in &deleted {
+            self.host.remove_strip(ctx_id);
+        }
 
         // 5b. Emit ContextRemoved AFTER the router mutation above, not
         // before: `RegistryViews::invalidate` (stint 0724 Phase B) decides
@@ -2195,6 +2198,7 @@ impl PlexiApp {
             }
             crate::app::attention_queue::retire_requester_approvals(&[], Some(child_ctx_id));
             self.context_active_window.remove(&child_ctx_id);
+            self.host.remove_strip(child_ctx_id);
             self.router.retain_depth_stack(|cid| cid != child_ctx_id);
             return;
         };
@@ -2320,6 +2324,7 @@ impl PlexiApp {
         self.context_active_window.remove(&child_ctx_id);
         self.context_active_window
             .insert(parent_ctx_id, parent_window_id);
+        self.host.remove_strip(child_ctx_id);
 
         let before_depth = self.router.depth_stack.len();
         self.router.retain_depth_stack(|cid| cid != child_ctx_id);

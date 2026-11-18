@@ -806,3 +806,97 @@ fn wrap_leaves_parent_and_child_windows_settled() {
     h.assert_window_settled(child, "wrap child window");
     h.assert_window_settled(0, "wrap parent window");
 }
+
+/// Dissolving a wrapped subcontext must leave no trace of the child boundary:
+/// the panes read as direct members of the parent everywhere, and the saved
+/// workspace stays valid.
+#[test]
+fn dissolve_wrapped_subcontext_elevates_panes_with_no_child_remnants() {
+    let mut h = HostHarness::new();
+    let [a, b, c, d] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b], a, None));
+    let child = h
+        .app
+        .router
+        .iter()
+        .find(|ctx| ctx.parent_id == Some(parent))
+        .expect("wrap creates a child context")
+        .context_id;
+    h.app.active_window = h
+        .app
+        .windows
+        .iter()
+        .position(|w| w.context_id == parent)
+        .expect("parent window");
+    assert!(h.app.context_has_portal(child), "dissolve precondition");
+
+    h.app.dissolve_portal(child);
+    h.run_frames(2);
+
+    assert!(
+        h.app.router.iter().all(|ctx| ctx.context_id != child),
+        "child context must leave the router"
+    );
+    assert!(
+        h.app.host.strip(child).is_none(),
+        "dissolved child context must not keep an authoritative strip"
+    );
+    assert!(
+        h.app.host.strip_layout(child).is_none(),
+        "dissolved child context must not keep a published strip layout"
+    );
+    let parent_panes: std::collections::HashSet<u64> = h
+        .app
+        .strip_for_context(parent)
+        .columns
+        .iter()
+        .flat_map(|col| col.panes.iter().copied())
+        .collect();
+    assert_eq!(
+        parent_panes,
+        [a, b, c, d].into_iter().collect(),
+        "all four panes must read as direct members of the parent strip"
+    );
+    assert!(
+        h.app.save_workspace_now(),
+        "dissolve must leave the workspace saveable"
+    );
+    let saved = crate::workspace::WorkspaceFile::load_from(h.profile_dir())
+        .expect("workspace saved after dissolve must validate");
+    assert!(
+        saved.strips.contains_key(&parent) && !saved.strips.contains_key(&child),
+        "saved strips must match live contexts"
+    );
+    assert_eq!(saved.strips.len(), saved.contexts.len());
+}
+
+/// Deleting a subcontext (and its descendants) must drop their strips too, or
+/// the host keeps listing panes under contexts that no longer exist.
+#[test]
+fn delete_wrapped_subcontext_removes_its_strip_and_layout() {
+    let mut h = HostHarness::new();
+    let [a, b, _c, _d] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b], a, None));
+    let child_idx = h
+        .app
+        .router
+        .position(|ctx| ctx.parent_id == Some(parent))
+        .expect("wrap creates a child context");
+    let child = h.app.router.get(child_idx).context_id;
+    assert!(
+        h.app.host.strip(child).is_some(),
+        "setup: child has a strip"
+    );
+
+    h.app.delete_context(child_idx);
+    h.run_frames(2);
+
+    assert!(h.app.host.strip(child).is_none());
+    assert!(h.app.host.strip_layout(child).is_none());
+    assert!(h.app.save_workspace_now());
+    let saved = crate::workspace::WorkspaceFile::load_from(h.profile_dir())
+        .expect("workspace saved after delete must validate");
+    assert_eq!(saved.strips.len(), saved.contexts.len());
+}
