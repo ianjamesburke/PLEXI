@@ -1733,6 +1733,63 @@ impl PermissionMonitor {
         withdrawn
     }
 
+    /// Retire approvals owned by a removed pane or context without granting them.
+    pub(crate) fn retire_requester_approvals(&self, pane_ids: &[u64], context_id: Option<u64>) {
+        let _resolve = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
+        let _decision = self.decision_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let ids: Vec<String> = self
+            .needs_you
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|row| {
+                row.resolution.is_none()
+                    && row.kind == NeedsYouKind::ApprovalClick
+                    && (row
+                        .actor
+                        .strip_prefix("pane:")
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .is_some_and(|id| pane_ids.contains(&id))
+                        || context_id.is_some_and(|id| {
+                            row.details.as_ref().and_then(|d| d.context_id) == Some(id)
+                        }))
+            })
+            .map(|row| row.id.clone())
+            .collect();
+        for id in ids {
+            if !self.close_needs_you_as(
+                &id,
+                NeedsYouResolution::Retired,
+                "retired:requester_gone",
+                "",
+                Some("host"),
+            ) {
+                log::error!("needs_you: cancellation audit failed for {id} reason=requester_gone; failing closed");
+                self.dismiss_without_audit(&id, NeedsYouResolution::Retired);
+            }
+            self.update_continuation_on_needs_you(
+                &id,
+                NeedsYouResolution::Retired,
+                None,
+                RunOutcome::AskGone,
+            );
+            self.pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|row| row.id != id);
+            self.resolutions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id.clone(), ApprovalChoice::Deny);
+            self.run_outcomes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id.clone(), RunOutcome::AskGone);
+            self.persist_queue();
+            log::info!("needs_you: cancelled {id} reason=requester_gone");
+        }
+    }
+
     /// Return one `NeedsYouRecord` (open or resolved) by id.
     pub fn get_needs_you(&self, id: &str) -> Option<NeedsYouRecord> {
         self.expire_needs_you();
