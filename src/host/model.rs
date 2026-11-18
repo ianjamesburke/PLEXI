@@ -380,6 +380,14 @@ impl HostModel {
         self.strips.insert(context_id, strip);
     }
 
+    /// Forget the authoritative strip and published layout of a context that no
+    /// longer exists, so nothing still lists its panes as members of it.
+    pub fn remove_strip(&mut self, context_id: u64) {
+        self.strips.remove(&context_id);
+        self.strip_layouts.remove(&context_id);
+        log::info!("strip: removed strip and layout for context={context_id}");
+    }
+
     /// Return the latest presentation snapshot for `context_id`.
     pub fn strip_layout(&self, context_id: u64) -> Option<&crate::strip::StripLayout> {
         self.strip_layouts

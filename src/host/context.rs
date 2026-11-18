@@ -544,6 +544,11 @@ pub(crate) fn replace_child(container: &mut Container, old: TileId, new: TileId)
             if let Some(pos) = tabs.children.iter().position(|&c| c == old) {
                 tabs.children[pos] = new;
             }
+            // The replaced tile is about to be removed; a Tabs container must
+            // never keep it as its active tab.
+            if tabs.active == Some(old) {
+                tabs.active = Some(new);
+            }
         }
         Container::Grid(_) => {
             container.remove_child(old);

@@ -438,66 +438,48 @@ fn bracket_shortcuts_cycle_tabs_without_using_focus_history() {
     assert_eq!(h.app.windows[0].focused_pane, Some(ta));
 }
 
+/// Unpacking moves the panes themselves: same runtimes, same layout order.
 #[test]
-fn closing_last_sibling_reveals_child_without_moving_panes() {
+fn closing_last_sibling_unpacks_child_preserving_pane_identity_and_order() {
     let mut h = HostHarness::new();
     let [a, b, c, outside] = grid(&mut h);
     let parent = h.app.router.active().context_id;
     assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
     let child = h.app.router.active().context_id;
-    let before = h.app.strip_for_context(child).columns;
+    let before: Vec<u64> = h
+        .app
+        .strip_for_context(child)
+        .columns
+        .iter()
+        .flat_map(|col| col.panes.clone())
+        .collect();
     let origin = h.app.origin_for_pane(a).unwrap();
-    let resource = crate::host::scope::Scope::Pane {
-        pane_id: a,
-        context_id: child,
+    let runtime_of = |h: &HostHarness, ctx: u64| {
+        let window = h.app.windows.iter().find(|w| w.context_id == ctx).unwrap();
+        &window.panes[&a].as_view().unwrap().runtime as *const _ as *const ()
     };
-    let grant = crate::host::scope::CrossContextGrant {
-        granting_context_id: child,
-        grantee_context_id: parent,
-        reason: "test".into(),
-    };
-    let before_reach = crate::host::scope::evaluate_reach(&resource, parent, Some(&grant));
-    let child_window = h
-        .app
-        .windows
-        .iter()
-        .find(|w| w.context_id == child)
-        .unwrap();
-    let runtime = &child_window.panes[&a].as_view().unwrap().runtime as *const _ as *const ();
+    let runtime = runtime_of(&h, child);
     assert!(h.app.zoom_out_of_context());
-    assert_eq!(h.app.router.active().context_id, parent);
     h.app.close_pane_by_id(outside);
-    assert_eq!(
-        h.app.router.active().context_id,
-        child,
-        "closing the last sibling should reveal the child"
-    );
-    assert_eq!(h.app.strip_for_context(child).columns, before);
-    let child_window = h
+
+    assert_eq!(h.app.router.active().context_id, parent);
+    assert!(h.app.router.iter().all(|ctx| ctx.context_id != child));
+    let after: Vec<u64> = h
         .app
-        .windows
+        .strip_for_context(parent)
+        .columns
         .iter()
-        .find(|w| w.context_id == child)
-        .unwrap();
-    assert!([a, b, c]
-        .iter()
-        .all(|id| child_window.panes.contains_key(id)));
-    assert_eq!(h.app.origin_for_pane(a), Some(origin));
-    assert_eq!(
-        crate::host::scope::evaluate_reach(&resource, parent, Some(&grant)),
-        before_reach
-    );
-    assert_eq!(
-        &child_window.panes[&a].as_view().unwrap().runtime as *const _ as *const (),
-        runtime
-    );
-    h.app.close_pane_by_id(b);
-    assert_eq!(h.app.router.active().context_id, child);
-    assert!(h.app.origin_for_pane(a).is_some());
+        .flat_map(|col| col.panes.clone())
+        .collect();
+    assert_eq!(after, before, "unpacking must keep the child's layout order");
+    assert_eq!(runtime_of(&h, parent), runtime, "panes move, never respawn");
+    assert_eq!(h.app.origin_for_pane(a).map(|o| o.pane_id), Some(origin.pane_id));
 }
 
+/// Closing the last sibling inside a child unpacks the grandchild into it and
+/// leaves the user in that child.
 #[test]
-fn close_reveal_preserves_background_focus_and_skips_redundant_ancestor() {
+fn closing_last_sibling_in_child_unpacks_grandchild_into_child() {
     let mut h = HostHarness::new();
     let [a, b, c, _outside] = grid(&mut h);
     let root = h.app.router.active().context_id;
@@ -505,33 +487,19 @@ fn close_reveal_preserves_background_focus_and_skips_redundant_ancestor() {
     let child = h.app.router.active().context_id;
     assert!(h.app.wrap_panes_to_subcontext(&[a, b], a, None));
     let grandchild = h.app.router.active().context_id;
-    let before_window = h.app.active_window;
     h.app.close_pane_by_id(c);
-    assert_eq!(h.app.router.active().context_id, grandchild);
-    assert_eq!(
-        h.app.active_window, before_window,
-        "background close must not steal focus"
-    );
+
+    assert_eq!(h.app.router.active().context_id, child);
+    assert!(h.app.router.iter().all(|ctx| ctx.context_id != grandchild));
+    let page = h.app.windows.iter().find(|w| w.context_id == child).unwrap();
+    assert!([a, b].iter().all(|id| page.panes.contains_key(id)));
+    assert!(page.panes.values().all(|p| p.as_portal().is_none()));
     assert!(h.app.zoom_out_of_context());
-    assert_eq!(
-        h.app.router.active().context_id,
-        root,
-        "back should skip the redundant child"
-    );
-    assert!(h
-        .app
-        .router
-        .iter()
-        .any(|ctx| ctx.context_id == child && ctx.parent_id == Some(root)));
-    assert!(h
-        .app
-        .router
-        .iter()
-        .any(|ctx| ctx.context_id == grandchild && ctx.parent_id == Some(child)));
+    assert_eq!(h.app.router.active().context_id, root);
 }
 
 #[test]
-fn close_reveal_survives_workspace_restore() {
+fn unpack_after_close_survives_workspace_restore() {
     let mut h = HostHarness::new();
     let [a, b, c, outside] = grid(&mut h);
     let parent = h.app.router.active().context_id;
@@ -540,22 +508,20 @@ fn close_reveal_survives_workspace_restore() {
     assert!(h.app.zoom_out_of_context());
     h.app.close_pane_by_id(outside);
     assert!(h.app.save_workspace_now());
-    let mut restored = HostHarness::from_profile_dir(h.profile_dir().to_path_buf());
-    let parent_idx = restored
+    let restored = HostHarness::from_profile_dir(h.profile_dir().to_path_buf());
+    assert!(restored.app.router.iter().all(|ctx| ctx.context_id != child));
+    let page = restored
         .app
-        .router
-        .position(|ctx| ctx.context_id == parent)
+        .windows
+        .iter()
+        .find(|w| w.context_id == parent)
         .unwrap();
-    restored.app.switch_workspace(parent_idx);
-    assert_eq!(restored.app.router.active().context_id, child);
-    assert!(
-        !restored.app.zoom_out_of_context(),
-        "no meaningful ancestor remains"
-    );
+    assert!([a, b, c].iter().all(|id| page.panes.contains_key(id)));
+    assert!(page.panes.values().all(|p| p.as_portal().is_none()));
 }
 
 #[test]
-fn close_reveal_respects_other_pages_and_missing_targets() {
+fn close_unpack_respects_other_pages_and_missing_targets() {
     let mut h = HostHarness::new();
     let [a, b, c, outside] = grid(&mut h);
     let parent = h.app.router.active().context_id;
@@ -585,6 +551,10 @@ fn close_reveal_respects_other_pages_and_missing_targets() {
         parent,
         "a second page is meaningful"
     );
+    assert!(
+        h.app.router.iter().any(|ctx| ctx.parent_id == Some(parent)),
+        "the subcontext survives while the parent has another page"
+    );
     h.app.windows.pop();
     let portal = h
         .app
@@ -597,21 +567,26 @@ fn close_reveal_respects_other_pages_and_missing_targets() {
         .find_map(|p| p.as_portal_mut())
         .unwrap();
     portal.target_context_id = u64::MAX;
-    h.app.reveal_sole_portal_after_close(parent);
-    assert_eq!(
-        h.app.router.active().context_id,
-        parent,
-        "missing targets cannot be revealed"
+    h.app.dissolve_sole_portal_after_close(parent);
+    assert!(
+        h.app
+            .windows
+            .iter()
+            .find(|w| w.context_id == parent)
+            .unwrap()
+            .panes
+            .values()
+            .any(|p| p.as_portal().is_some()),
+        "a missing target cannot be unpacked"
     );
 }
 
 #[test]
-fn close_reveal_via_focused_close_preserves_child_page() {
+fn close_unpack_via_focused_close_moves_child_panes_to_parent() {
     let mut h = HostHarness::new();
     let [a, b, c, outside] = grid(&mut h);
     let parent = h.app.router.active().context_id;
     assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
-    let child = h.app.router.active().context_id;
     assert!(h.app.zoom_out_of_context());
     let index = h
         .app
@@ -622,47 +597,17 @@ fn close_reveal_via_focused_close_preserves_child_page() {
     let tile = h.app.windows[index].tree.tiles.find_pane(&outside).unwrap();
     h.app.windows[index].navigate_to(tile);
     h.app.execute_close_pane();
-    assert_eq!(h.app.router.active().context_id, child);
+    assert_eq!(h.app.router.active().context_id, parent);
     assert!([a, b, c]
         .iter()
         .all(|id| h.app.windows[h.app.active_window].panes.contains_key(id)));
 }
 
 #[test]
-fn close_reveal_focus_history_skips_redundant_portal() {
+fn close_unpack_chooses_populated_child_page_over_remembered_empty_page() {
     let mut h = HostHarness::new();
     let [a, b, c, outside] = grid(&mut h);
     let parent = h.app.router.active().context_id;
-    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
-    let child = h.app.router.active().context_id;
-    assert!(h.app.zoom_out_of_context());
-    h.app.close_pane_by_id(outside);
-    let page = h
-        .app
-        .windows
-        .iter()
-        .find(|w| w.context_id == parent)
-        .unwrap();
-    let tile = page
-        .tree
-        .root
-        .and_then(|root| page.find_first_pane_in(root))
-        .unwrap();
-    let entry = (page.window_id, tile);
-    h.app.pane_focus_history.clear();
-    h.app.pane_focus_history.push(entry);
-    h.app.step_focus_history_back();
-    assert_eq!(h.app.router.active().context_id, child);
-    h.app.pane_focus_future.clear();
-    h.app.pane_focus_future.push(entry);
-    h.app.step_focus_history_forward();
-    assert_eq!(h.app.router.active().context_id, child);
-}
-
-#[test]
-fn close_reveal_chooses_populated_child_page_over_remembered_empty_page() {
-    let mut h = HostHarness::new();
-    let [a, b, c, outside] = grid(&mut h);
     assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
     let child = h.app.router.active().context_id;
     let child_path = h.app.windows[h.app.active_window].path.clone();
@@ -682,17 +627,16 @@ fn close_reveal_chooses_populated_child_page_over_remembered_empty_page() {
     assert!(h.app.zoom_out_of_context());
     h.app.context_active_window.insert(child, empty_window);
     h.app.close_pane_by_id(outside);
-    assert_eq!(h.app.router.active().context_id, child);
+    assert_eq!(h.app.router.active().context_id, parent);
     assert!(h.app.windows[h.app.active_window].panes.contains_key(&a));
 }
 
 #[test]
-fn close_reveal_when_last_sibling_page_is_removed() {
+fn close_unpack_when_last_sibling_page_is_removed() {
     let mut h = HostHarness::new();
     let [a, b, c, outside] = grid(&mut h);
     let parent = h.app.router.active().context_id;
     assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
-    let child = h.app.router.active().context_id;
     assert!(h.app.zoom_out_of_context());
     let parent_page = h
         .app
@@ -734,42 +678,10 @@ fn close_reveal_when_last_sibling_page_is_removed() {
         context_id: parent,
     });
     h.app.close_pane_by_id(outside);
-    assert_eq!(h.app.router.active().context_id, child);
+    assert_eq!(h.app.router.active().context_id, parent);
     assert!(h.app.windows.iter().all(|w| w.window_id != 987_654_323));
-}
-
-#[test]
-fn close_reveal_direct_portal_focus_stays_in_child() {
-    let mut h = HostHarness::new();
-    let [a, b, c, outside] = grid(&mut h);
-    let parent = h.app.router.active().context_id;
-    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
-    let child = h.app.router.active().context_id;
-    assert!(h.app.zoom_out_of_context());
-    h.app.close_pane_by_id(outside);
-    let portal = h
-        .app
-        .windows
-        .iter()
-        .find(|w| w.context_id == parent)
-        .unwrap()
-        .panes
-        .iter()
-        .find_map(|(&id, pane)| pane.as_portal().map(|_| id))
-        .unwrap();
-    assert!(h.app.pane_navigate(portal));
-    assert_eq!(
-        h.app.router.active().context_id,
-        child,
-        "pane navigation must not expose the redundant portal"
-    );
-    assert!(h.app.focus_pane_in_strip(portal));
-    assert_eq!(
-        h.app.router.active().context_id,
-        child,
-        "strip focus must not expose the redundant portal"
-    );
-    assert_eq!(h.app.origin_for_pane(a).unwrap().context_id, child);
+    let page = h.app.windows.iter().find(|w| w.context_id == parent).unwrap();
+    assert!([a, b, c].iter().all(|id| page.panes.contains_key(id)));
 }
 
 #[test]
@@ -805,4 +717,142 @@ fn wrap_leaves_parent_and_child_windows_settled() {
     assert_ne!(child, 0, "wrap enters the child window");
     h.assert_window_settled(child, "wrap child window");
     h.assert_window_settled(0, "wrap parent window");
+}
+
+/// Dissolving a wrapped subcontext must leave no trace of the child boundary:
+/// the panes read as direct members of the parent everywhere, and the saved
+/// workspace stays valid.
+#[test]
+fn dissolve_wrapped_subcontext_elevates_panes_with_no_child_remnants() {
+    let mut h = HostHarness::new();
+    let [a, b, c, d] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b], a, None));
+    let child = h
+        .app
+        .router
+        .iter()
+        .find(|ctx| ctx.parent_id == Some(parent))
+        .expect("wrap creates a child context")
+        .context_id;
+    h.app.active_window = h
+        .app
+        .windows
+        .iter()
+        .position(|w| w.context_id == parent)
+        .expect("parent window");
+    assert!(h.app.context_has_portal(child), "dissolve precondition");
+
+    h.app.dissolve_portal(child);
+    h.run_frames(2);
+
+    assert!(
+        h.app.router.iter().all(|ctx| ctx.context_id != child),
+        "child context must leave the router"
+    );
+    assert!(
+        h.app.host.strip(child).is_none(),
+        "dissolved child context must not keep an authoritative strip"
+    );
+    assert!(
+        h.app.host.strip_layout(child).is_none(),
+        "dissolved child context must not keep a published strip layout"
+    );
+    let parent_panes: std::collections::HashSet<u64> = h
+        .app
+        .strip_for_context(parent)
+        .columns
+        .iter()
+        .flat_map(|col| col.panes.iter().copied())
+        .collect();
+    assert_eq!(
+        parent_panes,
+        [a, b, c, d].into_iter().collect(),
+        "all four panes must read as direct members of the parent strip"
+    );
+    assert!(
+        h.app.save_workspace_now(),
+        "dissolve must leave the workspace saveable"
+    );
+    let saved = crate::workspace::WorkspaceFile::load_from(h.profile_dir())
+        .expect("workspace saved after dissolve must validate");
+    assert!(
+        saved.strips.contains_key(&parent) && !saved.strips.contains_key(&child),
+        "saved strips must match live contexts"
+    );
+    assert_eq!(saved.strips.len(), saved.contexts.len());
+}
+
+/// Deleting a subcontext (and its descendants) must drop their strips too, or
+/// the host keeps listing panes under contexts that no longer exist.
+#[test]
+fn delete_wrapped_subcontext_removes_its_strip_and_layout() {
+    let mut h = HostHarness::new();
+    let [a, b, _c, _d] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b], a, None));
+    let child_idx = h
+        .app
+        .router
+        .position(|ctx| ctx.parent_id == Some(parent))
+        .expect("wrap creates a child context");
+    let child = h.app.router.get(child_idx).context_id;
+    assert!(
+        h.app.host.strip(child).is_some(),
+        "setup: child has a strip"
+    );
+
+    h.app.delete_context(child_idx);
+    h.run_frames(2);
+
+    assert!(h.app.host.strip(child).is_none());
+    assert!(h.app.host.strip_layout(child).is_none());
+    assert!(h.app.save_workspace_now());
+    let saved = crate::workspace::WorkspaceFile::load_from(h.profile_dir())
+        .expect("workspace saved after delete must validate");
+    assert_eq!(saved.strips.len(), saved.contexts.len());
+}
+
+/// Closing the last non-portal pane of a parent must unpack its sole subcontext
+/// into the parent: no child context, no portal, no revealed stand-in.
+#[test]
+fn closing_last_parent_pane_unpacks_sole_subcontext_into_parent() {
+    let mut h = HostHarness::new();
+    let [a, b, c, outside] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let child = h.app.router.active().context_id;
+    assert_ne!(child, parent);
+    assert!(h.app.zoom_out_of_context());
+
+    h.app.close_pane_by_id(outside);
+    h.run_frames(2);
+
+    assert_eq!(
+        h.app.router.active().context_id,
+        parent,
+        "the parent stays active after the unpack"
+    );
+    assert!(
+        h.app.router.iter().all(|ctx| ctx.context_id != child),
+        "the subcontext must be gone, not kept as a child"
+    );
+    assert!(h.app.host.strip(child).is_none());
+    let page = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id == parent)
+        .expect("parent window");
+    assert!(
+        [a, b, c].iter().all(|id| page.panes.contains_key(id)),
+        "the subcontext panes must now belong to the parent"
+    );
+    assert!(
+        page.panes.values().all(|p| p.as_portal().is_none()),
+        "no portal may remain"
+    );
+    assert!(h.app.save_workspace_now());
+    crate::workspace::WorkspaceFile::load_from(h.profile_dir())
+        .expect("workspace saved after the unpack must validate");
 }

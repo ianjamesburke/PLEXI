@@ -160,7 +160,6 @@ impl PlexiApp {
                 pane_id: portal_id,
                 target_context_id: context_id,
                 context_state: None,
-                reveal_after_close: false,
             })),
         );
         let keep = parent.panes.keys().copied().collect();
