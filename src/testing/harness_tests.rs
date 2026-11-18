@@ -19160,6 +19160,40 @@ mod tiled_navigation_frame_tests {
 }
 
 #[test]
+fn notes_picker_tab_filters_current_project_and_restores_all() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.app.open_notes_picker();
+    let mk = |title: &str, label: Option<&str>, seconds| crate::notes::NotePickerEntry {
+        path: std::path::PathBuf::from(format!("/test/{title}.md")),
+        title: title.to_string(), preview: String::new(), search_text: title.to_string(),
+        tier_label: label.map(str::to_string),
+        modified: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds)),
+    };
+    h.app.notes_picker_entries = vec![mk("project", None, 1), mk("global", Some("global"), 2), mk("nested", Some("nested"), 3)];
+    let root = std::path::Path::new("/test/project");
+    let global = std::path::Path::new("/test/global-notes");
+    let chip = |entry| crate::overlays::notes_picker::notes_picker_chip_label(entry, root, global);
+    assert_eq!(chip(&h.app.notes_picker_entries[0]), "project");
+    assert_eq!(chip(&h.app.notes_picker_entries[1]), "global");
+    assert_eq!(chip(&h.app.notes_picker_entries[2]), "nested");
+    assert_eq!(h.app.notes_picker_filtered(), [2, 1, 0]);
+    h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+    assert!(h.app.notes_picker_current_project_only);
+    assert_eq!(h.app.notes_picker_filtered(), [0]);
+    h.app.notes_picker_query = "global".into();
+    assert!(h.app.notes_picker_filtered().is_empty());
+    h.frame(egui::RawInput { events: vec![egui::Event::Key {
+        key: egui::Key::Tab, physical_key: None, pressed: false,
+        repeat: false, modifiers: egui::Modifiers::NONE,
+    }], ..Default::default() });
+    h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+    assert!(!h.app.notes_picker_current_project_only);
+    assert_eq!(h.app.notes_picker_filtered(), [1]);
+}
+
+#[test]
 fn notes_picker_invocation_shortcut_toggles_and_preserves_notes() {
     use crate::app::input_owner::{InputOwner, OverlaySurface};
     use crate::app::FocusKind;
@@ -19246,6 +19280,7 @@ fn notes_picker_copy_closes_and_restores_pane_input_owner() {
         search_text: "harness note".to_string(),
         path: note_path.clone(),
         tier_label: None,
+        modified: None,
     }];
     h.app.notes_picker_selected = 0;
     h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
@@ -19303,6 +19338,7 @@ fn notes_picker_delete_immediately_removes_index_entry_and_cmd_z_restores() {
         search_text: "note".into(),
         path: path.clone(),
         tier_label: None,
+        modified: None,
     }];
     h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
     h.run_frames(1);
@@ -19326,6 +19362,7 @@ fn notes_delete_fixture(h: &mut HostHarness, dir: &std::path::Path) -> std::path
         search_text: "note".into(),
         path: path.clone(),
         tier_label: None,
+        modified: None,
     }];
     h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
     h.run_frames(2);
@@ -19345,6 +19382,7 @@ fn notes_picker_dirty_editor_refuses_delete_and_cut() {
         search_text: "gate".into(),
         path: path.clone(),
         tier_label: None,
+        modified: None,
     }];
     h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
     h.run_frames(2);
@@ -19650,6 +19688,7 @@ fn notes_picker_toast_undo_restores_original_bytes_and_position() {
             search_text: "other".into(),
             path: other.clone(),
             tier_label: None,
+            modified: None,
         },
     );
     h.app.notes_picker_selected = 1;
@@ -19739,6 +19778,7 @@ fn notes_picker_keyboard_selection_stays_visible_and_wheel_does_not_snap() {
             search_text: format!("note {i:02}"),
             path: std::path::PathBuf::from(format!("/tmp/harness-note-{i}.md")),
             tier_label: None,
+            modified: None,
         })
         .collect();
     h.app.notes_picker_selected = 0;

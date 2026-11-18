@@ -1294,6 +1294,7 @@ mod tests {
                         preview: body.lines().next().unwrap_or("").to_string(),
                         search_text: format!("{title} {body}").to_lowercase(),
                         tier_label: label.map(|s| s.to_string()),
+                        modified: None,
                     }
                 })
                 .collect();
@@ -2608,6 +2609,7 @@ mod tests {
                 preview: "First line of the note".to_string(),
                 search_text: "first line of the note".to_string(),
                 tier_label: None,
+                modified: None,
             }];
             app.notes_picker_selected = 0;
             app.notes_picker_last_drawn_selected = None;
@@ -5943,6 +5945,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     preview: preview.to_string(),
                     search_text: title.to_lowercase(),
                     tier_label: label.map(|s| s.to_string()),
+                    modified: None,
                 };
             app.notes_picker_entries = vec![
                 mk(
@@ -6000,6 +6003,50 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         println!("Screenshot saved to {out}");
     }
 
+    /// Visual review surface for the single recency pile (stint 1615): project and
+    /// global notes interleaved newest first with project labels, then Tab narrows
+    /// to the current project.
+    #[test]
+    fn screenshot_notes_picker_recency_pile() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 640.0);
+        h.step();
+        add_focused_pane(&mut h);
+        h.step();
+
+        h.with_app_mut(|app| {
+            app.open_notes_picker();
+            let now = std::time::SystemTime::now();
+            let mk = |title: &str, preview: &str, label: Option<&str>, mins_ago: u64| {
+                let path = std::env::temp_dir().join(format!("plexi-recency-pile-{title}.md"));
+                let _ = std::fs::write(&path, format!("# {title}\n\n{preview}\n"));
+                crate::notes::NotePickerEntry {
+                    path,
+                    title: title.to_string(),
+                    preview: preview.to_string(),
+                    search_text: title.to_lowercase(),
+                    tier_label: label.map(|s| s.to_string()),
+                    modified: Some(now - std::time::Duration::from_secs(mins_ago * 60)),
+                }
+            };
+            app.notes_picker_entries = vec![
+                mk("release checklist", "tag, changelog, notarize, publish", Some("global"), 90),
+                mk("north star: what v1 has to prove", "one workspace you never leave", None, 5),
+                mk("ask Sam about the staging cert", "expires 2026-08-03", Some("global"), 30),
+                mk("pricing notes", "seat-based vs usage, land on seats", None, 600),
+                mk("wasm wire format decisions", "postcard over JSON", Some("crates/runtime"), 12),
+                mk("onboarding copy pass", "cut the second paragraph", Some("website"), 2000),
+            ];
+            app.notes_picker_selected = 0;
+        });
+        h.run_steps(2);
+        h.save_screenshot(&evidence_png!("_all")).expect("render failed");
+
+        h.harness().key_press(egui::Key::Tab);
+        h.run_steps(2);
+        h.with_app(|app| assert_eq!(app.notes_picker_filtered().len(), 2));
+        h.save_screenshot(&evidence_png!("_project")).expect("render failed");
+    }
+
     /// Notes picker overlay: open → step → still visible and renders.
     #[test]
     fn notes_picker_overlay_smoke() {
@@ -6017,6 +6064,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 preview: format!("{name} preview"),
                 search_text: name.to_lowercase(),
                 tier_label: label.map(|s| s.to_string()),
+                modified: None,
             };
             app.notes_picker_entries =
                 vec![mk("context-note", None), mk("global-note", Some("global"))];
@@ -6031,13 +6079,21 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 .focus_stack
                 .contains(&crate::app::FocusKind::NotesPicker));
         });
-        // ListRow titles are painted as galleys (not accessible labels); assert on
-        // the tier section headers, which are real ui.label widgets. "Notes"
-        // appears exactly once — the modal title. The primary tier gets no header
-        // of its own, so it never duplicates the title.
+        // The modal title appears once and no tier header is emitted.
         let notes_labels = h.harness().get_all_by_label("Notes").count();
         assert_eq!(notes_labels, 1, "the modal title, with no duplicate header");
-        h.harness().get_by_label("global");
+        assert!(h.harness().query_by_label("global").is_none(), "no tier headers");
+        h.harness().get_by_label("All notes · Tab: current project");
+        h.harness().key_press(egui::Key::Tab);
+        h.run_steps(2);
+        h.harness().get_by_label("Current project · Tab: all notes");
+        h.with_app(|app| {
+            assert_eq!(app.notes_picker_filtered().len(), 1);
+            assert_eq!(app.notes_picker_entries[app.notes_picker_filtered()[0]].title, "context-note");
+        });
+        h.harness().key_press(egui::Key::Tab);
+        h.run_steps(2);
+        h.with_app(|app| assert_eq!(app.notes_picker_filtered().len(), 2));
         h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
@@ -11027,6 +11083,7 @@ open(out + ".done", "w").close()
                         preview: String::new(),
                         search_text: String::new(),
                         tier_label: None,
+                        modified: None,
                     }];
                     app.push_focus_layer(crate::app::FocusKind::NotesPicker);
                     assert!(app.notes_picker_delete_entry(0));
@@ -11079,6 +11136,7 @@ open(out + ".done", "w").close()
                     preview: String::new(),
                     search_text: String::new(),
                     tier_label: None,
+                    modified: None,
                 }];
                 app.push_focus_layer(crate::app::FocusKind::NotesPicker);
                 assert!(app.notes_picker_delete_entry(0));
@@ -11205,6 +11263,7 @@ open(out + ".done", "w").close()
                         preview: "Review the release checklist.".into(),
                         search_text: "meeting".into(),
                         tier_label: None,
+                        modified: None,
                     },
                     crate::notes::NotePickerEntry {
                         path: kept.clone(),
@@ -11212,6 +11271,7 @@ open(out + ".done", "w").close()
                         preview: "Finish the review.".into(),
                         search_text: "plans".into(),
                         tier_label: None,
+                        modified: None,
                     },
                 ];
                 app.push_focus_layer(crate::app::FocusKind::NotesPicker);
@@ -12095,6 +12155,7 @@ open(out + ".done", "w").close()
                     preview: "Deterministic row for palette scrolling".to_string(),
                     search_text: format!("palette note {idx:02} deterministic row"),
                     tier_label: None,
+                    modified: None,
                 })
                 .collect();
             app.show_command_palette = true;

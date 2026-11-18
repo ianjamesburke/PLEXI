@@ -212,9 +212,12 @@ pub(crate) struct NotePickerEntry {
     /// Lowercased haystack for fuzzy search: title + file name + body.
     pub search_text: String,
     /// Which tier this note came from, for the disambiguating chip. `None` for
-    /// the primary tier, which needs no chip; otherwise a nested tier's path
-    /// relative to the anchoring root, or `"global"`.
+    /// the primary tier, otherwise a nested tier's path relative to the
+    /// anchoring root, or `"global"`.
     pub tier_label: Option<String>,
+    /// Modification time captured by the background indexer.
+    #[serde(default)]
+    pub modified: Option<std::time::SystemTime>,
 }
 
 impl NotePickerEntry {
@@ -246,6 +249,10 @@ impl NotePickerEntry {
             preview: first_line,
             search_text,
             tier_label: None,
+            modified: path.metadata().and_then(|m| m.modified()).map_err(|error| {
+                log::warn!("notes_picker: could not read modification time for {path:?}: {error}");
+                error
+            }).ok(),
         })
     }
 
