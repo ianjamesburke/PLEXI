@@ -3769,6 +3769,60 @@ impl PermissionMonitor {
         );
     }
 
+    /// Store a remembered plugin-wide allow for a plugin consent capability,
+    /// the same record "Always allow" on its ask stores (stint 1489): exact,
+    /// bound to `resource_id` (the `net.http` host scope), 30 days. Scenes and
+    /// tests use it to start with the capability granted. A save
+    /// failure removes the record and is returned.
+    #[cfg(test)]
+    pub fn remember_plugin_capability(
+        &self,
+        plugin_id: &str,
+        workspace_root: &Path,
+        capability_id: &str,
+        resource_id: Option<String>,
+    ) -> Result<String, String> {
+        let binding = ExactBinding {
+            actor_type: ActorType::Plugin,
+            actor_id: plugin_id.to_string(),
+            actor_scope: ActorScope::User,
+            trust_origin: "host".to_string(),
+            workspace_root: workspace_root.to_path_buf(),
+            target_type: TargetType::Capability,
+            target_id: capability_id.to_string(),
+            resource_scope: ResourceScope::Workspace,
+            resource_id,
+            args_fingerprint: String::new(),
+            session_id: None,
+            package_id: String::new(),
+            instance_id: None,
+            context_id: None,
+            call_id: String::new(),
+            operation_id: String::new(),
+        };
+        let grant_id = format!("grant_{}", uuid::Uuid::new_v4());
+        let mut record = GrantRecord::from_binding(
+            &binding,
+            Decision::Allow,
+            GrantDuration::Always,
+            GrantSource::User,
+            &grant_id,
+        );
+        record.args_unbound = true;
+        record.expires_at = Some(self.now_secs() + ALWAYS_TTL_SECS);
+        self.store().record(record);
+        if let Err(error) = self.save_durable() {
+            self.store()
+                .records_mut()
+                .retain(|row| row.grant_id != grant_id);
+            let message = grant_not_saved(&error);
+            log::error!("permission_monitor: {message}");
+            return Err(message);
+        }
+        log::info!("permission_monitor: remembered {capability_id} for {plugin_id} as {grant_id}");
+        Ok(grant_id)
+    }
+
     /// Turn declared capabilities into gate rows and an [`PluginPermissions`] set.
     /// Non-sensitive capabilities with no stored decision are auto-granted.
     /// Sensitive capabilities stay withheld until a human grant exists.

@@ -1641,9 +1641,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                 tree: tree_a,
                 panes: vec![crate::workspace::SavedPane {
                     id: 41,
-                    kind: crate::workspace::SavedPaneKind::Portal {
-                        context_id: 20,
-                    },
+                    kind: crate::workspace::SavedPaneKind::Portal { context_id: 20 },
                     cwd: root_a.path().to_path_buf(),
                     name: None,
                     plugin_id: None,
@@ -9177,26 +9175,30 @@ fn python_guest_cannot_put_raw_text_in_any_log_line() {
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .expect("test profile monitor");
-        let mut store = monitor.store();
         for capability in declared {
             // Consent capabilities are exact broker grants (stint 1489).
-            store.record(if matches!(capability, "fs.write" | "net.http") {
-                crate::host::wasm_python::remembered_consent_grant(
-                    "hostile-messages-probe",
-                    tmp.path(),
-                    capability,
-                    &[],
-                )
-            } else {
-                crate::broker::GrantRecord::plugin_capability(
-                    "hostile-messages-probe",
-                    tmp.path(),
-                    crate::app::permissions::Capability::try_from(capability).expect(capability),
-                    crate::broker::Decision::Allow,
-                )
-            });
+            if let Some(resource) =
+                crate::host::wasm_python::consent_grant_resource(capability, &[])
+            {
+                monitor
+                    .remember_plugin_capability(
+                        "hostile-messages-probe",
+                        tmp.path(),
+                        capability,
+                        resource,
+                    )
+                    .expect("remember consent grant");
+                continue;
+            }
+            let mut store = monitor.store();
+            store.record(crate::broker::GrantRecord::plugin_capability(
+                "hostile-messages-probe",
+                tmp.path(),
+                crate::app::permissions::Capability::try_from(capability).expect(capability),
+                crate::broker::Decision::Allow,
+            ));
+            store.save();
         }
-        store.save();
     }
     let pane_id = launch_guest_text_fixture(&mut h, tmp.path());
     let start = std::time::Instant::now();
@@ -14640,9 +14642,7 @@ mod agent_state_restoration_tests {
                         },
                         SavedPane {
                             id: 11,
-                            kind: SavedPaneKind::Portal {
-                                context_id: 2,
-                            },
+                            kind: SavedPaneKind::Portal { context_id: 2 },
                             cwd: PathBuf::new(),
                             name: None,
                             plugin_id: None,
@@ -14655,9 +14655,7 @@ mod agent_state_restoration_tests {
                         },
                         SavedPane {
                             id: 12,
-                            kind: SavedPaneKind::Portal {
-                                context_id: 3,
-                            },
+                            kind: SavedPaneKind::Portal { context_id: 3 },
                             cwd: PathBuf::new(),
                             name: None,
                             plugin_id: None,
@@ -15580,14 +15578,15 @@ fn launch_http_probe(h: &mut HostHarness, dir: &std::path::Path, allowed_hosts: 
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .expect("permission monitor");
         let hosts: Vec<String> = allowed_hosts.iter().map(|host| host.to_string()).collect();
-        let mut store = monitor.store();
-        store.record(crate::host::wasm_python::remembered_consent_grant(
-            "http-fetch-probe",
-            dir,
-            "net.http",
-            &hosts,
-        ));
-        store.save();
+        monitor
+            .remember_plugin_capability(
+                "http-fetch-probe",
+                dir,
+                "net.http",
+                crate::host::wasm_python::consent_grant_resource("net.http", &hosts)
+                    .expect("net.http is a consent capability"),
+            )
+            .expect("remember net.http");
     }
     h.app
         .launch_view_by_path_with_layout_no_review_modal(&dir.to_string_lossy(), None, None, &[])

@@ -2909,13 +2909,30 @@ fn preapprove_process_scene_grants(plugin_dir: &Path, grants: &[String]) -> Resu
                 manifest.plugin.id
             ));
         }
-        monitor.grant_capability_id(
-            &manifest.plugin.id,
-            plugin_dir,
+        // A Python consent capability is admitted per use by an exact
+        // broker grant, the one "Always allow" stores (stint 1489).
+        match crate::host::wasm_python::consent_grant_resource(
             capability_id,
-            crate::broker::Decision::Allow,
-            crate::broker::GrantSource::User,
-        );
+            &manifest.plugin.capabilities.allowed_hosts,
+        ) {
+            Some(resource_id) => {
+                monitor
+                    .remember_plugin_capability(
+                        &manifest.plugin.id,
+                        plugin_dir,
+                        capability_id,
+                        resource_id,
+                    )
+                    .map_err(|error| format!("grant {capability_id:?}: {error}"))?;
+            }
+            None => monitor.grant_capability_id(
+                &manifest.plugin.id,
+                plugin_dir,
+                capability_id,
+                crate::broker::Decision::Allow,
+                crate::broker::GrantSource::User,
+            ),
+        }
     }
     log::info!(
         "scene: preapproved process grants plugin={} grants={grants:?}",

@@ -8069,44 +8069,18 @@ mod fatal_error;
 #[path = "wasm_python/consent.rs"]
 mod consent;
 
-/// A remembered "Always allow" for a Python consent capability, shaped as
-/// `approve_pending` stores it (plugin-wide, bound to the host scope), for
-/// tests that start with the capability already granted.
+/// Whether a Python plugin is asked for `capability` at each use, and the
+/// resource its remembered grant binds (the `net.http` host scope from the
+/// manifest's `allowed_hosts`). `None` for a launch-set capability.
 #[cfg(test)]
-pub(crate) fn remembered_consent_grant(
-    plugin_id: &str,
-    workspace_root: &Path,
+pub(crate) fn consent_grant_resource(
     capability: &str,
     allowed_hosts: &[String],
-) -> crate::broker::GrantRecord {
-    let binding = crate::broker::ExactBinding {
-        actor_type: crate::broker::ActorType::Plugin,
-        actor_id: plugin_id.to_string(),
-        actor_scope: crate::broker::ActorScope::User,
-        trust_origin: "host".to_string(),
-        workspace_root: workspace_root.to_path_buf(),
-        target_type: crate::broker::TargetType::Capability,
-        target_id: capability.to_string(),
-        resource_scope: crate::broker::ResourceScope::Workspace,
-        resource_id: (capability == crate::app::permissions::Capability::NetHttp.as_str())
-            .then(|| consent::host_scope(allowed_hosts)),
-        args_fingerprint: String::new(),
-        session_id: None,
-        package_id: String::new(),
-        instance_id: None,
-        context_id: None,
-        call_id: String::new(),
-        operation_id: String::new(),
-    };
-    let mut record = crate::broker::GrantRecord::from_binding(
-        &binding,
-        crate::broker::Decision::Allow,
-        crate::broker::GrantDuration::Always,
-        crate::broker::GrantSource::User,
-        &format!("grant_{}", uuid::Uuid::new_v4()),
-    );
-    record.args_unbound = true;
-    record
+) -> Option<Option<String>> {
+    consent::is_consent_capability(capability).then(|| {
+        (capability == crate::app::permissions::Capability::NetHttp.as_str())
+            .then(|| consent::host_scope(allowed_hosts))
+    })
 }
 
 #[cfg(test)]
