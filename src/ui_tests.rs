@@ -11589,6 +11589,203 @@ open(out + ".done", "w").close()
         h.with_app(|app| assert_eq!(app.fleet_focused_pane(), Some(ids[1])));
     }
 
+    /// Stint 1621 fixture: an ordinary pane plus an agent pane titled
+    /// "plexi-pm" in the active context, and an agent pane titled
+    /// "night-shift" alone in a second, inactive context. Returns
+    /// `(active_agent_pane, inactive_agent_pane, inactive_context_id)`.
+    fn seed_palette_agent_panes(h: &mut PlexiUiHarness) -> (u64, u64, u64) {
+        add_focused_pane(h);
+        let root = h.workspace.path().to_path_buf();
+        h.with_app_mut(|app| {
+            let agent_pane = |app: &mut crate::app::PlexiApp, name: &str| {
+                let pane_id = app.host.alloc_pane_id();
+                let pane = Pane::View(Box::new(ViewPane {
+                    pip_status: None,
+                    id: pane_id,
+                    runtime: ViewRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserView::new(root.clone()),
+                    )),
+                    workspace_root: root.clone(),
+                    permissions: PluginPermissions::builtin(),
+                    manifest_id: "terminal".to_string(),
+                    name: name.to_string(),
+                    pane_group: None,
+                    linked_pane_id: None,
+                    overlay_replaced: None,
+                    agent: Some(crate::protocol::PaneAgentState {
+                        pane_id,
+                        state: crate::protocol::AgentState::Working,
+                        agent: "claude-code".to_string(),
+                        detail: None,
+                        session_id: None,
+                    }),
+                    slots: std::collections::HashMap::new(),
+                    semantic_state: Default::default(),
+                }));
+                (pane_id, pane)
+            };
+
+            let (active_id, active_pane) = agent_pane(app, "plexi-pm");
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(active_id, active_pane);
+            let agent_tile = win.tree.tiles.insert_pane(active_id);
+            let first_tile = win.tree.root.expect("fixture pane is the root");
+            let root_tile = win
+                .tree
+                .tiles
+                .insert_horizontal_tile(vec![first_tile, agent_tile]);
+            win.tree.root = Some(root_tile);
+            win.focused_pane = Some(first_tile);
+
+            let ctx_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.router.push(crate::host::context::Context {
+                name: "night-ctx".to_string().into(),
+                root: root.clone(),
+                description: None,
+                context_id: ctx_id,
+                parent_id: None,
+                depth: 0,
+                parked: false,
+            });
+            let (inactive_id, inactive_pane) = agent_pane(app, "night-shift");
+            let mut tiles = egui_tiles::Tiles::default();
+            let tile = tiles.insert_pane(inactive_id);
+            let window_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.windows.push(Window {
+                name: "night-ctx".to_string(),
+                path: root.clone(),
+                tree: egui_tiles::Tree::new("night-ctx", tile, tiles),
+                panes: std::collections::HashMap::from([(inactive_id, inactive_pane)]),
+                focused_pane: Some(tile),
+                zoomed_pane: None,
+                grid_x: 1,
+                grid_y: 0,
+                window_id,
+                context_id: ctx_id,
+            });
+            app.context_active_window.insert(ctx_id, window_id);
+            (active_id, inactive_id, ctx_id)
+        })
+    }
+
+    /// Every palette result's selection key for `query`, in display order,
+    /// read by walking the selection down the list.
+    fn palette_result_keys(h: &mut PlexiUiHarness, query: &str) -> Vec<String> {
+        h.with_app_mut(|app| {
+            app.show_command_palette = true;
+            app.palette_query = query.to_string();
+            app.palette_selected = 0;
+            app.palette_selected_key = None;
+            app.sync_command_palette_focus();
+        });
+        h.run_steps(2);
+        let mut keys: Vec<String> = Vec::new();
+        while let Some(key) = h.with_app(|app| app.palette_selected_key.clone()) {
+            if keys.last() == Some(&key) {
+                break;
+            }
+            assert!(keys.len() < 500, "palette walk did not terminate");
+            keys.push(key);
+            h.harness().key_press(egui::Key::ArrowDown);
+            h.step();
+        }
+        keys
+    }
+
+    fn keys_for_pane(keys: &[String], pane_id: u64) -> Vec<&String> {
+        keys.iter()
+            .filter(|key| key.rsplit(':').next() == Some(pane_id.to_string().as_str()))
+            .collect()
+    }
+
+    /// Stint 1621: with default config (`agents.palette_agent_results` unset,
+    /// so no agent rows), an agent pane is still an ordinary pane row,
+    /// findable by its name in both the active-context unpack and the
+    /// inactive-context search pierce.
+    #[test]
+    fn palette_finds_agent_pane_by_name_with_default_config() {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+        let (active_id, inactive_id, inactive_ctx) = seed_palette_agent_panes(&mut h);
+        assert_eq!(
+            h.with_app(|app| app
+                .config
+                .agents
+                .as_ref()
+                .and_then(|a| a.palette_agent_results)),
+            None,
+            "the harness runs default agents config"
+        );
+
+        let keys = palette_result_keys(&mut h, "");
+        assert_eq!(
+            keys_for_pane(&keys, active_id),
+            vec![&format!(
+                "context:{}:{}:{active_id}",
+                h.with_app(|app| app.router.active().context_id),
+                h.with_app(|app| app.windows[app.active_window].window_id)
+            )],
+            "active-context unpack lists the agent pane as a pane row: {keys:?}"
+        );
+
+        let keys = palette_result_keys(&mut h, "plexi-pm");
+        assert_eq!(keys_for_pane(&keys, active_id).len(), 1, "{keys:?}");
+
+        let keys = palette_result_keys(&mut h, "night-shift");
+        let hits = keys_for_pane(&keys, inactive_id);
+        assert_eq!(hits.len(), 1, "inactive agent pane found by name: {keys:?}");
+        assert!(
+            hits[0].starts_with(&format!("context:{inactive_ctx}:")),
+            "as a pane row in its own context: {hits:?}"
+        );
+        for query in ["plexi-pm", "night-shift"] {
+            palette_result_keys(&mut h, query);
+            h.with_app_mut(|app| {
+                app.palette_selected = 0;
+                app.palette_selected_key = None;
+            });
+            h.run_steps(3);
+            h.save_screenshot(&evidence_png!(format!("_{query}")))
+                .expect("render failed");
+        }
+    }
+
+    /// Stint 1621: with `agents.palette_agent_results = true`, an agent pane
+    /// is listed exactly once, as its Agent row, never also as a pane row.
+    #[test]
+    fn palette_lists_agent_pane_once_when_agent_rows_enabled() {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+        h.with_app_mut(|app| {
+            app.config
+                .agents
+                .get_or_insert_with(Default::default)
+                .palette_agent_results = Some(true)
+        });
+        let (active_id, inactive_id, _) = seed_palette_agent_panes(&mut h);
+
+        for (query, pane_id) in [
+            ("", active_id),
+            ("plexi-pm", active_id),
+            ("night-shift", inactive_id),
+        ] {
+            let keys = palette_result_keys(&mut h, query);
+            let hits = keys_for_pane(&keys, pane_id);
+            assert_eq!(hits.len(), 1, "query {query:?}: exactly one row: {keys:?}");
+            assert!(
+                hits[0].starts_with("agent:"),
+                "query {query:?}: the agent row: {hits:?}"
+            );
+        }
+        palette_result_keys(&mut h, "plexi-pm");
+        h.with_app_mut(|app| {
+            app.palette_selected = 0;
+            app.palette_selected_key = None;
+        });
+        h.run_steps(3);
+        h.save_screenshot(&evidence_png!()).expect("render failed");
+    }
+
     /// Visual review surface for stint 0565: the palette rendering an agent
     /// fleet spread across two contexts, including a stint-0568-style squad
     /// whose three panes share one title. Empty query shows the whole fleet;
