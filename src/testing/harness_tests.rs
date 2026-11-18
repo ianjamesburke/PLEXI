@@ -1292,6 +1292,11 @@ fn pane_state_raises_stale_claim_only_when_a_window_is_given_and_exceeded() {
     h.run_frames(1);
     assert_eq!(read_json_response(&slot_response)["ok"], true);
 
+    // Keep the live PTY's receiver alive but stop draining it during these
+    // queries, so late shell output cannot overwrite the controlled timestamp.
+    let (_isolated_tx, isolated_rx) = std::sync::mpsc::channel();
+    let _live_pty_rx = std::mem::replace(&mut h.app.pty_event_rx, isolated_rx);
+
     // Back-date the last observed PTY output well past any reasonable
     // window, without touching the claim.
     h.app.windows[0]
@@ -1300,6 +1305,12 @@ fn pane_state_raises_stale_claim_only_when_a_window_is_given_and_exceeded() {
         .and_then(|pane| pane.as_terminal_mut())
         .expect("terminal pane")
         .last_pty_output_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(600));
+
+    // Model output arriving after the back-date, regardless of shell timing.
+    h.app
+        .pty_event_tx
+        .send((pane_id, egui_term::PtyEvent::Wakeup))
+        .expect("queue PTY wakeup");
 
     let no_window_response = temp_response(tmp.path(), "pane-liveness-stale-no-window");
     h.inject_ipc(HostRequest::GetPaneState {
