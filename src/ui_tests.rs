@@ -6003,6 +6003,50 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         println!("Screenshot saved to {out}");
     }
 
+    /// Visual review surface for the single recency pile (stint 1615): project and
+    /// global notes interleaved newest first with project labels, then Tab narrows
+    /// to the current project.
+    #[test]
+    fn screenshot_notes_picker_recency_pile() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 640.0);
+        h.step();
+        add_focused_pane(&mut h);
+        h.step();
+
+        h.with_app_mut(|app| {
+            app.open_notes_picker();
+            let now = std::time::SystemTime::now();
+            let mk = |title: &str, preview: &str, label: Option<&str>, mins_ago: u64| {
+                let path = std::env::temp_dir().join(format!("plexi-recency-pile-{title}.md"));
+                let _ = std::fs::write(&path, format!("# {title}\n\n{preview}\n"));
+                crate::notes::NotePickerEntry {
+                    path,
+                    title: title.to_string(),
+                    preview: preview.to_string(),
+                    search_text: title.to_lowercase(),
+                    tier_label: label.map(|s| s.to_string()),
+                    modified: Some(now - std::time::Duration::from_secs(mins_ago * 60)),
+                }
+            };
+            app.notes_picker_entries = vec![
+                mk("release checklist", "tag, changelog, notarize, publish", Some("global"), 90),
+                mk("north star: what v1 has to prove", "one workspace you never leave", None, 5),
+                mk("ask Sam about the staging cert", "expires 2026-08-03", Some("global"), 30),
+                mk("pricing notes", "seat-based vs usage, land on seats", None, 600),
+                mk("wasm wire format decisions", "postcard over JSON", Some("crates/runtime"), 12),
+                mk("onboarding copy pass", "cut the second paragraph", Some("website"), 2000),
+            ];
+            app.notes_picker_selected = 0;
+        });
+        h.run_steps(2);
+        h.save_screenshot(&evidence_png!("_all")).expect("render failed");
+
+        h.harness().key_press(egui::Key::Tab);
+        h.run_steps(2);
+        h.with_app(|app| assert_eq!(app.notes_picker_filtered().len(), 2));
+        h.save_screenshot(&evidence_png!("_project")).expect("render failed");
+    }
+
     /// Notes picker overlay: open → step → still visible and renders.
     #[test]
     fn notes_picker_overlay_smoke() {
