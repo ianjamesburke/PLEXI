@@ -1874,6 +1874,40 @@ pub enum HostRequest {
     },
 }
 
+impl HostRequest {
+    /// Requests the host attributes to the sender's socket peer identity.
+    /// For these the host writes `PEER_IDENTITY_ACK` once it has read the
+    /// peer, and a fire-and-forget CLI waits for it before disconnecting:
+    /// after disconnect the peer pid is unreadable (`src/app/mod.rs`).
+    pub fn consumes_peer_identity(&self) -> bool {
+        matches!(
+            self,
+            Self::Notify { .. }
+                | Self::DismissNotification { .. }
+                | Self::AgentCall { .. }
+                | Self::AgentMessage { .. }
+                | Self::CallPluginTool { .. }
+                | Self::ListPluginTools { .. }
+                | Self::PaneSecretGet { .. }
+                | Self::PaneSecretList { .. }
+                | Self::NeedsYouApi { .. }
+                | Self::ResourceLease { .. }
+                | Self::SpawnPane { .. }
+                | Self::SetAgentState { .. }
+                | Self::AgentDone { .. }
+                | Self::AgentAsk { .. }
+                | Self::Permissions { .. }
+                | Self::CallerContext { .. }
+                | Self::AgentSpawn { .. }
+                | Self::AgentOpen { .. }
+                | Self::AgentWait { .. }
+                | Self::PaneMessageSend { .. }
+                | Self::SendToPane { .. }
+                | Self::AgentsApi { .. }
+        )
+    }
+}
+
 /// Who caused a plugin state change (`HostRequest::EmitEvent`).
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

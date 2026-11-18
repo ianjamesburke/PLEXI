@@ -839,16 +839,19 @@ pub(crate) fn handle_socket_line_in(
     }
     match serde_json::from_str::<crate::protocol::HostRequest>(line) {
         Ok(mut cmd) => {
-            // Fire-and-forget wakes can disconnect before peer lookup. Keep
-            // missing-identity diagnostics for requests that use identity.
-            if peer_ancestry.is_none() && !matches!(cmd, crate::protocol::HostRequest::Wake) {
+            let consumes_identity = cmd.consumes_peer_identity();
+            if consumes_identity && peer_ancestry.is_none() {
                 log::warn!("pane_ipc: request arrived without a verified socket peer identity");
             }
-            let needs_identity_ack = matches!(
-                cmd,
-                crate::protocol::HostRequest::Notify { .. }
-                    | crate::protocol::HostRequest::DismissNotification { .. }
-            );
+            // A request with a reply token holds its connection open until the
+            // reply, so its peer stays readable; the rest are fire-and-forget
+            // and wait for this ack before disconnecting.
+            let needs_identity_ack = consumes_identity
+                && (matches!(
+                    cmd,
+                    crate::protocol::HostRequest::Notify { .. }
+                        | crate::protocol::HostRequest::DismissNotification { .. }
+                ) || crate::rpc::extract_response_file_token(line).is_none());
             match &mut cmd {
                 crate::protocol::HostRequest::Notify { peer_pid: p, .. }
                 | crate::protocol::HostRequest::DismissNotification { peer_pid: p, .. } => {

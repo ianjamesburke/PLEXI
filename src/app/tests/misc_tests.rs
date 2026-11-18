@@ -1826,3 +1826,72 @@ fn file_browser_explicit_directory_artifact_keeps_requested_root() {
         );
     }
 }
+
+fn fire_and_forget_set_agent_state() -> String {
+    serde_json::to_string(&crate::protocol::HostRequest::SetAgentState {
+        peer_ancestry: None,
+        pane_id: 1,
+        state: crate::protocol::AgentState::Working,
+        agent: "test-agent".into(),
+        detail: None,
+        session_id: None,
+        event: None,
+        blocked_reason: None,
+    })
+    .unwrap()
+}
+
+/// Repro for the beta-log `pane_ipc` missing-identity warning: a CLI that
+/// writes and disconnects before the host's accept loop runs leaves no peer
+/// pid to read, so the request carries no verified sender.
+#[cfg(target_os = "macos")]
+#[test]
+fn peer_pid_is_lost_when_the_client_disconnects_before_accept() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    {
+        let mut client = std::os::unix::net::UnixStream::connect(&path).unwrap();
+        std::io::Write::write_all(&mut client, b"{}\n").unwrap();
+    }
+    let (server, _) = listener.accept().unwrap();
+    assert!(resolve_socket_peer_pid(&server).is_none());
+}
+
+#[test]
+fn host_acks_fire_and_forget_requests_that_consume_peer_identity() {
+    let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
+        egui::Context::default(),
+    ));
+    let (mailbox, _rx) = crate::app::ui_mailbox::UiMailbox::channel(wake, "test");
+    let profile = tempfile::tempdir().unwrap();
+    let mut acked = Vec::new();
+    handle_socket_line_in(profile.path(), &fire_and_forget_set_agent_state(), &mailbox, None, &mut acked);
+    assert_eq!(acked, PEER_IDENTITY_ACK);
+    let mut silent = Vec::new();
+    handle_socket_line_in(profile.path(), r#"{"type":"wake"}"#, &mailbox, None, &mut silent);
+    assert!(silent.is_empty(), "requests that ignore identity get no ack");
+}
+
+/// The client holds the connection until the host acks, so the accept loop
+/// can read its pid even when it runs late.
+#[cfg(unix)]
+#[test]
+fn client_waits_for_the_identity_ack_so_a_late_accept_still_sees_its_pid() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let server = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let (mut stream, _) = listener.accept().unwrap();
+        let pid = resolve_socket_peer_pid(&stream);
+        std::io::Write::write_all(&mut stream, PEER_IDENTITY_ACK).unwrap();
+        pid
+    });
+    let line = format!("{}\n", fire_and_forget_set_agent_state());
+    let mut client = std::os::unix::net::UnixStream::connect(&path).unwrap();
+    std::io::Write::write_all(&mut client, line.as_bytes()).unwrap();
+    crate::cli::await_peer_identity_ack(&mut client, &line);
+    drop(client);
+    assert!(server.join().unwrap().is_some());
+}

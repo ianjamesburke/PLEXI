@@ -1568,6 +1568,24 @@ fn send_line_to_socket(
     Ok(stream)
 }
 
+/// Hold a fire-and-forget connection until the host acks that it read our
+/// peer identity (`PEER_IDENTITY_ACK` in `src/app/mod.rs`). Disconnecting
+/// first leaves the host no pid to attribute the request to. Requests that
+/// ignore identity, or carry a reply token, get no ack and return at once.
+/// A missed ack is logged, not fatal: the request was already delivered.
+pub(crate) fn await_peer_identity_ack(stream: &mut crate::platform::ipc::IpcStream, line: &str) {
+    let consumes = serde_json::from_str::<crate::protocol::HostRequest>(line.trim())
+        .is_ok_and(|request| request.consumes_peer_identity());
+    if !consumes || crate::rpc::extract_response_file_token(line).is_some() {
+        return;
+    }
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+    let mut ack = [0u8; 1];
+    if let Err(error) = std::io::Read::read_exact(stream, &mut ack) {
+        log::warn!("cli: peer identity ack not received: {error}");
+    }
+}
+
 pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
     match send_to_socket_connected(payload) {
         Ok(_) => 0,
@@ -1578,11 +1596,13 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
 pub(super) fn try_send_to_socket_quiet(payload: serde_json::Value) {
     if let Some(socket_path) = resolve_command_socket() {
         let line = format!("{payload}\n");
-        let _ = send_line_to_socket(
+        if let Ok(mut stream) = send_line_to_socket(
             &socket_path,
             line.as_bytes(),
             std::time::Duration::from_millis(250),
-        );
+        ) {
+            await_peer_identity_ack(&mut stream, &line);
+        }
     }
 }
 
@@ -1599,12 +1619,13 @@ fn send_to_socket_connected(
     let line = format!("{}\n", payload);
     let started = std::time::Instant::now();
     match send_line_to_socket(&socket_path, line.as_bytes(), SOCKET_TRANSPORT_DEADLINE) {
-        Ok(stream) => {
+        Ok(mut stream) => {
             log::info!(
                 "cli: socket transport complete path={socket_path:?} bytes={} elapsed_ms={}",
                 line.len(),
                 started.elapsed().as_millis()
             );
+            await_peer_identity_ack(&mut stream, &line);
             Ok(stream)
         }
         Err(SocketTransportError::Connect(e))
