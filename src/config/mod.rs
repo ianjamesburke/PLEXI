@@ -1640,23 +1640,65 @@ impl From<String> for ProfileInitError {
     }
 }
 
+// Fresh-profile seeding took 1.8–3.6 seconds in stint 1567 (PR #3226).
+const PROFILE_INITIALIZATION_LOCK_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(120);
+const PROFILE_INITIALIZATION_WAIT_NOTICE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Fresh profiles need no writable files. Re-check after acquiring the lock:
 /// another process may have completed initialization while we waited.
 pub fn lock_profile_initialization() -> Result<Option<std::fs::File>, ProfileInitError> {
+    lock_profile_initialization_with_timeout(PROFILE_INITIALIZATION_LOCK_TIMEOUT)
+}
+
+fn lock_profile_initialization_with_timeout(
+    timeout: std::time::Duration,
+) -> Result<Option<std::fs::File>, ProfileInitError> {
     if !profile_initialization_needed()? {
         return Ok(None);
     }
     let dir = config_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let path = dir.join("initialization.lock");
     let lock = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(dir.join("initialization.lock"))
-        .map_err(|e| format!("open profile initialization lock: {e}"))?;
-    lock.lock()
-        .map_err(|e| format!("lock profile initialization: {e}"))?;
+        .open(&path)
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    let start = std::time::Instant::now();
+    let mut notified = false;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                let elapsed = start.elapsed();
+                if elapsed >= timeout {
+                    return Err(format!(
+                        "timed out waiting for profile initialization lock {}; another Plexi process is initializing this profile; wait for it to finish, then retry",
+                        path.display()
+                    ).into());
+                }
+                if !notified && elapsed >= PROFILE_INITIALIZATION_WAIT_NOTICE {
+                    eprintln!(
+                        "Waiting for another Plexi process to initialize this profile ({}).",
+                        path.display()
+                    );
+                    notified = true;
+                }
+                let mut remaining = timeout.saturating_sub(elapsed);
+                if !notified {
+                    remaining =
+                        remaining.min(PROFILE_INITIALIZATION_WAIT_NOTICE.saturating_sub(elapsed));
+                }
+                std::thread::sleep(remaining.min(std::time::Duration::from_millis(50)));
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(format!("lock {}: {error}", path.display()).into());
+            }
+        }
+    }
     if !profile_initialization_needed()? {
         return Ok(None);
     }
@@ -4342,6 +4384,40 @@ mod test_isolation_tests {
 
 #[cfg(test)]
 mod distribution_profile_tests {
+    #[test]
+    fn initialization_lock_times_out_with_path_and_retry() {
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("initialization.lock");
+        let held = std::fs::File::create(&path).unwrap();
+        held.lock().unwrap();
+        let profile = dir.path().to_path_buf();
+        let (send, receive) = std::sync::mpsc::channel();
+        let start = Instant::now();
+        let worker = std::thread::spawn(move || {
+            let _guard = super::set_test_profile_dir(profile);
+            send.send(
+                super::lock_profile_initialization_with_timeout(Duration::from_millis(200))
+                    .map_err(|e| e.to_string()),
+            )
+            .unwrap();
+        });
+        let result = receive.recv_timeout(Duration::from_secs(1));
+        drop(held);
+        worker.join().unwrap();
+        let error = result
+            .expect("initialization lock wait exceeded its limit")
+            .unwrap_err();
+        assert!(start.elapsed() >= Duration::from_millis(200));
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(
+            error.contains("another Plexi process is initializing this profile"),
+            "{error}"
+        );
+        assert!(error.contains("retry"), "{error}");
+    }
+
     #[test]
     fn initialized_read_only_profile_never_opens_initialization_lock() {
         let dir = tempfile::tempdir().unwrap();
