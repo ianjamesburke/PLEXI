@@ -1,23 +1,21 @@
 name: Rust host
 
-# Hosted host build and test, advisory only. Two triggers:
-# - pull_request to alpha, drafts included (stint 1377): parallel build capacity
-#   so draft PRs need not queue on one Mac. Never a merge gate: local gates, the
-#   pr-candidate stamp and the independent installed tester decide merges
-#   (src/testing/TESTING.md). The `scope` job skips docs-only PRs with the same
-#   classifier the local gate uses (scripts/docs_gate_scope.py), failing closed.
-#   The Linux observer stays nightly-only.
-# - push to alpha (stint 1389): seeds the alpha-ref caches every PR restores
-#   (PR runs never save, see plexi-ci-env). It builds and lints but does not
-#   run the tests: per-push host verification stays retired (stint 0799).
-# - workflow_call from nightly.yml: post-landing full verification.
+# Hosted host build and test, advisory only. Never run on pull requests: local
+# gates, the pr-candidate stamp and the independent installed tester decide
+# merges (src/testing/TESTING.md), and the hosted macOS pool queues for longer
+# than a merge is worth waiting. Triggers:
+# - push to alpha (stint 1389): seeds the alpha-ref caches the nightly restores
+#   (see plexi-ci-env). It builds and lints but does not run the tests:
+#   per-push host verification stays retired (stint 0799).
+# - workflow_call from nightly.yml: post-landing full verification, the only
+#   place the full suite and the Linux observer run.
+# - workflow_dispatch: run the full suite on a chosen ref by hand.
 # Reads repository contents only: no secrets, no signing identity.
 
 on:
-  pull_request:
-    branches: [alpha]
   push:
     branches: [alpha]
+  workflow_dispatch:
   workflow_call:
     outputs:
       # nightly.yml tags on this, never on the run result: a linux timeout
@@ -27,12 +25,11 @@ on:
       required_passed:
         value: ${{ jobs.scope.outputs.build == 'true' && jobs.test.outputs.passed == 'true' && jobs.clippy.outputs.passed == 'true' }}
 
-# Pull requests group on refs/pull/<n>/merge, so a push cancels that PR's
-# superseded run and no other. Alpha runs queue instead: cancelling would let a
-# steady merge rate stop every seeding run before its cache saves.
+# Alpha runs queue instead of cancelling: cancelling would let a steady merge
+# rate stop every seeding run before its cache saves.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
