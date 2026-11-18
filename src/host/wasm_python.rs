@@ -11554,7 +11554,11 @@ mod tests {
                 egui::CentralPanel::default().show_inside(ui, |ui| {
                     runtime.ui(
                         ui,
-                        &crate::app::view_trait::ViewRenderContext { colors, pane_id: 1 },
+                        &crate::app::view_trait::ViewRenderContext {
+                            colors,
+                            pane_id: 1,
+                            synthetic_input: false,
+                        },
                         None,
                     );
                 });

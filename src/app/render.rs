@@ -785,6 +785,7 @@ impl PlexiApp {
                     hovered_files,
                     workspace_root,
                     context_root: active_context_root,
+                    synthetic_input_frame: self.synthetic_input_frame,
                     unfocused_opacity,
                     portal_info,
                     owner_pane,
