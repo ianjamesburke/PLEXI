@@ -104,18 +104,44 @@ jobs:
         run: |
           python3 scripts/cargo-channel-inputs.py build --release --bin plexi
           python3 scripts/cargo-channel-inputs.py test --bin plexi --no-run
+          python3 scripts/cargo-channel-inputs.py test -p egui_term --no-run
 
       - name: Test host
         # Alpha pushes only seed the cache.
         if: github.event_name != 'push'
-        # Zero skips: the whole suite runs, including the network-fetched
+        # Every non-ignored test runs, including the network-fetched
         # CPython-WASI integration test, whose sha256-verified bundle the setup
         # action restores from the Actions cache (fetching it in its own step on
         # a miss, so a network failure is attributed to the fetch, not the test).
+        # Ignored tests are skipped here; `real_cpython_bundle_resolves_but_is_abi_blocked`
+        # is #[ignore] and not covered by the PTY step either.
         run: |
           env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
             -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
             python3 scripts/cargo-channel-inputs.py test --bin plexi
+
+      - name: Test host PTY
+        if: github.event_name != 'push'
+        # The `#[ignore = "requires-pty"]` tests (stint 1563). The runner can
+        # open PTYs and spawn shells, so they run here. Every other ignored
+        # test is skipped by name: the perf gates need a quiet machine,
+        # scene_single takes PLEXI_SCENE, the logger test needs an isolated
+        # process, and the CPython bundle test needs a local bundle. A new
+        # ignored test not on this list runs here and fails loudly.
+        run: |
+          env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
+            -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
+            python3 scripts/cargo-channel-inputs.py test --bin plexi -- --ignored \
+              --skip perf_gate_ \
+              --skip scenes::tests::scene_single \
+              --skip app::registry::manifest_contract::tests::schema2_rejections_emit_info_with_plugin_field_and_reason \
+              --skip host::wasm_python::tests::real_cpython_bundle_resolves_but_is_abi_blocked
+
+      - name: Test egui_term
+        if: github.event_name != 'push'
+        # deps/egui_term is a path dependency, not a workspace member, so
+        # `--bin plexi` never runs its unit tests (stint 1563).
+        run: python3 scripts/cargo-channel-inputs.py test -p egui_term
 
       - name: Record pass
         id: passed
