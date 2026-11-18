@@ -1294,6 +1294,7 @@ mod tests {
                         preview: body.lines().next().unwrap_or("").to_string(),
                         search_text: format!("{title} {body}").to_lowercase(),
                         tier_label: label.map(|s| s.to_string()),
+                        modified: None,
                     }
                 })
                 .collect();
@@ -2608,6 +2609,7 @@ mod tests {
                 preview: "First line of the note".to_string(),
                 search_text: "first line of the note".to_string(),
                 tier_label: None,
+                modified: None,
             }];
             app.notes_picker_selected = 0;
             app.notes_picker_last_drawn_selected = None;
@@ -5943,6 +5945,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     preview: preview.to_string(),
                     search_text: title.to_lowercase(),
                     tier_label: label.map(|s| s.to_string()),
+                    modified: None,
                 };
             app.notes_picker_entries = vec![
                 mk(
@@ -6017,6 +6020,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 preview: format!("{name} preview"),
                 search_text: name.to_lowercase(),
                 tier_label: label.map(|s| s.to_string()),
+                modified: None,
             };
             app.notes_picker_entries =
                 vec![mk("context-note", None), mk("global-note", Some("global"))];
@@ -6031,13 +6035,21 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 .focus_stack
                 .contains(&crate::app::FocusKind::NotesPicker));
         });
-        // ListRow titles are painted as galleys (not accessible labels); assert on
-        // the tier section headers, which are real ui.label widgets. "Notes"
-        // appears exactly once — the modal title. The primary tier gets no header
-        // of its own, so it never duplicates the title.
+        // The modal title appears once and no tier header is emitted.
         let notes_labels = h.harness().get_all_by_label("Notes").count();
         assert_eq!(notes_labels, 1, "the modal title, with no duplicate header");
-        h.harness().get_by_label("global");
+        assert!(h.harness().query_by_label("global").is_none(), "no tier headers");
+        h.harness().get_by_label("All notes · Tab: current project");
+        h.harness().key_press(egui::Key::Tab);
+        h.run_steps(2);
+        h.harness().get_by_label("Current project · Tab: all notes");
+        h.with_app(|app| {
+            assert_eq!(app.notes_picker_filtered().len(), 1);
+            assert_eq!(app.notes_picker_entries[app.notes_picker_filtered()[0]].title, "context-note");
+        });
+        h.harness().key_press(egui::Key::Tab);
+        h.run_steps(2);
+        h.with_app(|app| assert_eq!(app.notes_picker_filtered().len(), 2));
         h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
@@ -11027,6 +11039,7 @@ open(out + ".done", "w").close()
                         preview: String::new(),
                         search_text: String::new(),
                         tier_label: None,
+                        modified: None,
                     }];
                     app.push_focus_layer(crate::app::FocusKind::NotesPicker);
                     assert!(app.notes_picker_delete_entry(0));
@@ -11079,6 +11092,7 @@ open(out + ".done", "w").close()
                     preview: String::new(),
                     search_text: String::new(),
                     tier_label: None,
+                    modified: None,
                 }];
                 app.push_focus_layer(crate::app::FocusKind::NotesPicker);
                 assert!(app.notes_picker_delete_entry(0));
@@ -11205,6 +11219,7 @@ open(out + ".done", "w").close()
                         preview: "Review the release checklist.".into(),
                         search_text: "meeting".into(),
                         tier_label: None,
+                        modified: None,
                     },
                     crate::notes::NotePickerEntry {
                         path: kept.clone(),
@@ -11212,6 +11227,7 @@ open(out + ".done", "w").close()
                         preview: "Finish the review.".into(),
                         search_text: "plans".into(),
                         tier_label: None,
+                        modified: None,
                     },
                 ];
                 app.push_focus_layer(crate::app::FocusKind::NotesPicker);
@@ -12095,6 +12111,7 @@ open(out + ".done", "w").close()
                     preview: "Deterministic row for palette scrolling".to_string(),
                     search_text: format!("palette note {idx:02} deterministic row"),
                     tier_label: None,
+                    modified: None,
                 })
                 .collect();
             app.show_command_palette = true;

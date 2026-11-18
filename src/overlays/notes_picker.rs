@@ -1,8 +1,7 @@
 //! Notes picker overlay (Cmd+O).
 //!
-//! Two halves: on the left a search field over one navigable list grouped by
-//! notes tier (the active context's own tier first, then each tier nested below
-//! its root, then the global tier); on the right a wrapped, scrollable preview
+//! Two halves: on the left a search field over one navigable list of visible
+//! notes; on the right a wrapped, scrollable preview
 //! of the selected note's full content. Keys:
 //!   arrows / ⌘J ⌘K — navigate         ↵ — open in focused pane
 //!   ⌘S — open in new pane              type — fuzzy-find (title, file name, body)
@@ -25,6 +24,20 @@ use crate::ui::{
     overlay::ModalShell,
     text_field::TextField,
 };
+
+pub(crate) fn notes_picker_chip_label<'a>(
+    entry: &'a crate::notes::NotePickerEntry,
+    root: &'a std::path::Path,
+    global_notes: &std::path::Path,
+) -> &'a str {
+    entry.tier_label.as_deref().unwrap_or_else(|| {
+        if crate::notes::context_notes_dir(root) == global_notes {
+            "global"
+        } else {
+            root.file_name().and_then(|name| name.to_str()).unwrap_or("project")
+        }
+    })
+}
 
 /// Recoverable destination returned by the platform trash operation. Shared
 /// with the cut worker thread, so implementations are `Send + Sync`.
@@ -298,17 +311,32 @@ impl PlexiApp {
     /// Indices into `notes_picker_entries` matching the current query, ranked:
     /// title substring, then title fuzzy, then full-text fuzzy, with
     /// [`crate::search::score_candidate`] breaking ties within each tier.
-    /// Empty query returns every entry in stored order (by tier, then by mtime).
+    /// Empty queries sort all visible tiers by modification time.
     pub(crate) fn notes_picker_filtered(&self) -> Vec<usize> {
         let query = self.notes_picker_query.trim().to_lowercase();
+        let visible = |entry: &crate::notes::NotePickerEntry| {
+            !self.notes_picker_current_project_only || entry.tier_label.is_none()
+        };
         if query.is_empty() {
-            return (0..self.notes_picker_entries.len()).collect();
+            let mut indices: Vec<_> = self
+                .notes_picker_entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| visible(entry))
+                .map(|(i, _)| i)
+                .collect();
+            indices.sort_by(|&a, &b| {
+                self.notes_picker_entries[b].modified.cmp(&self.notes_picker_entries[a].modified)
+                    .then_with(|| a.cmp(&b))
+            });
+            return indices;
         }
         let now = std::time::SystemTime::now();
         let mut ranked: Vec<(u8, i64, usize)> = self
             .notes_picker_entries
             .iter()
             .enumerate()
+            .filter(|(_, entry)| visible(entry))
             .filter_map(|(i, e)| {
                 let title = e.title.to_lowercase();
                 let candidate =
@@ -949,10 +977,13 @@ impl PlexiApp {
             Delete(egui::Key),
             Undo,
             OpenNew,
+            ToggleProject,
         }
 
         let action = if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
             Some(PickerKey::Escape)
+        } else if input.consume_key_no_repeat(egui::Modifiers::NONE, egui::Key::Tab) {
+            Some(PickerKey::ToggleProject)
         } else if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
             Some(PickerKey::Enter)
         } else if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
@@ -1011,6 +1042,16 @@ impl PlexiApp {
                         self.notes_picker_selected
                     );
                 }
+            }
+            Some(PickerKey::ToggleProject) => {
+                self.notes_picker_current_project_only = !self.notes_picker_current_project_only;
+                self.notes_picker_selected = 0;
+                self.notes_picker_last_drawn_selected = None;
+                self.claimed_host_key_releases.insert(egui::Key::Tab);
+                log::info!(
+                    "notes_picker: current_project_only={}",
+                    self.notes_picker_current_project_only
+                );
             }
             Some(PickerKey::Enter) => self.notes_picker_open_selected(),
             Some(PickerKey::Delete(key)) => {
@@ -1142,6 +1183,15 @@ impl PlexiApp {
                     ))
                     .log_name("notes_picker_search")
                     .show(ui, &mut query, &colors);
+                ui.label(
+                    egui::RichText::new(if self.notes_picker_current_project_only {
+                        "Current project · Tab: all notes"
+                    } else {
+                        "All notes · Tab: current project"
+                    })
+                    .size(style::TEXT_CAPTION)
+                    .color(colors.text_dim),
+                );
                 ui.add_space(style::SPACE_SM);
 
                 if total == 0 {
@@ -1183,9 +1233,6 @@ impl PlexiApp {
                         .layout(egui::Layout::top_down(egui::Align::Min));
                     ui.scope_builder(list_half, |ui| {
                         ui.set_width(list_width);
-                        // Tier headers: entries arrive grouped by tier, so a header is
-                        // emitted whenever the tier label changes from the previous row.
-                        let mut current_tier: Option<Option<String>> = None;
                         egui::ScrollArea::vertical()
                             // animated(false): required by scroll_row_into_view — see src/ui/list.rs.
                             .animated(false)
@@ -1196,33 +1243,15 @@ impl PlexiApp {
                                 ui.spacing_mut().item_spacing.y = style::SPACE_SM;
                                 for (row, &entry_idx) in filtered.iter().enumerate() {
                                     let entry = &self.notes_picker_entries[entry_idx];
-                                    // Header per tier group. The primary tier gets none —
-                                    // the modal title already names it, and `None` means
-                                    // "needs no disambiguation" by construction. Rolled-up
-                                    // tiers and the global tier each get one.
-                                    if current_tier.as_ref() != Some(&entry.tier_label) {
-                                        current_tier = Some(entry.tier_label.clone());
-                                        if let Some(label) = entry.tier_label.as_deref() {
-                                            ui.add_space(style::SPACE_XS);
-                                            ui.label(
-                                                egui::RichText::new(label)
-                                                    .size(style::TEXT_CAPTION)
-                                                    .color(colors.text_dim),
-                                            );
-                                            ui.add_space(style::SPACE_XS);
-                                        }
-                                    }
-
                                     let is_selected = row == selected;
                                     let secondary = if entry.preview == entry.title {
                                         String::new()
                                     } else {
                                         entry.preview.chars().take(50).collect()
                                     };
-                                    // Notes rolled up from a nested tier, or from the
-                                    // global tier, carry where they came from so a root
-                                    // "master view" stays legible.
-                                    let chip: &str = entry.tier_label.as_deref().unwrap_or("note");
+                                    let chip = notes_picker_chip_label(
+                                        entry, &self.router.active().root, &crate::notes::global_notes_dir(),
+                                    );
                                     let row_response = ListRow::new(&entry.title)
                                         .metadata_chips(std::slice::from_ref(&chip))
                                         .secondary(&secondary)
@@ -1390,6 +1419,7 @@ mod tests {
             search_text: preview.to_lowercase(),
             path,
             tier_label: None,
+            modified: None,
         }
     }
 
@@ -2188,6 +2218,43 @@ mod tests {
     }
 
     #[test]
+    fn notes_picker_empty_query_orders_across_tiers_by_recency() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        let global = dir.path().join("global");
+        let primary = crate::notes::context_notes_dir(&root);
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&global).unwrap();
+        for (path, seconds) in [(primary.join("old.md"), 10), (global.join("new.md"), 20)] {
+            std::fs::write(
+                &path,
+                path.file_stem().unwrap().to_string_lossy().as_bytes(),
+            )
+            .unwrap();
+            let file = std::fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+                .unwrap();
+        }
+        let snapshot = crate::notes::build_notes_index(&crate::notes::NotesDiscovery {
+            active_root: Some(root),
+            known_roots: vec![],
+            global_notes: global,
+            home: None,
+            cached_tiers: vec![],
+        });
+        let ctx = egui::Context::default();
+        let (mut app, _) =
+            PlexiApp::new_for_test(ctx, crate::platform::logging::FrameTick::default());
+        app.notes_picker_entries = snapshot.entries;
+        let titles: Vec<_> = app
+            .notes_picker_filtered()
+            .iter()
+            .map(|&i| app.notes_picker_entries[i].title.as_str())
+            .collect();
+        assert_eq!(titles, ["new", "old"]);
+    }
+
+    #[test]
     fn notes_picker_filter_ranks_title_matches_first() {
         let ctx = egui::Context::default();
         let frame_tick = crate::platform::logging::FrameTick::default();
@@ -2199,6 +2266,7 @@ mod tests {
             preview: body.to_string(),
             search_text: format!("{title} {body}").to_lowercase(),
             tier_label: None,
+            modified: None,
         };
         app.notes_picker_entries = vec![
             mk("groceries", "milk and eggs"),
