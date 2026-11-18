@@ -415,6 +415,7 @@ pub struct PlexiApp {
     pub(crate) notes_picker_entries: Vec<crate::notes::NotePickerEntry>,
     /// Notes picker: currently highlighted index into the filtered view.
     pub(crate) notes_picker_selected: usize,
+    pub(crate) notes_picker_current_project_only: bool,
     /// Notes picker: selection rendered in the previous frame, used to keep
     /// keyboard navigation visible when input is handled before drawing.
     pub(crate) notes_picker_last_drawn_selected: Option<usize>,
@@ -1893,6 +1894,7 @@ impl PlexiApp {
                     quick_note_ctx: QuickNoteCtx::default(),
                     notes_picker_entries: Vec::new(),
                     notes_picker_selected: 0,
+                    notes_picker_current_project_only: false,
                     notes_picker_last_drawn_selected: None,
                     notes_picker_query: String::new(),
                     notes_picker_preview: None,
@@ -2189,6 +2191,7 @@ impl PlexiApp {
             quick_note_ctx: QuickNoteCtx::default(),
             notes_picker_entries: Vec::new(),
             notes_picker_selected: 0,
+            notes_picker_current_project_only: false,
             notes_picker_last_drawn_selected: None,
             notes_picker_query: String::new(),
             notes_picker_preview: None,
@@ -3183,6 +3186,7 @@ impl PlexiApp {
             quick_note_ctx: QuickNoteCtx::default(),
             notes_picker_entries: Vec::new(),
             notes_picker_selected: 0,
+            notes_picker_current_project_only: false,
             notes_picker_last_drawn_selected: None,
             notes_picker_query: String::new(),
             notes_picker_preview: None,
@@ -5151,6 +5155,7 @@ impl PlexiApp {
             return;
         }
         let started = std::time::Instant::now();
+        self.notes_picker_current_project_only = false;
         log::info!("notes_picker: Cmd+O — opening picker");
         self.ensure_notes_index_loaded();
 

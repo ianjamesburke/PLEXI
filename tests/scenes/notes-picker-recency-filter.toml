@@ -1,0 +1,35 @@
+# Exercise the picker filter with an isolated quick-captured note.
+size = [900.0, 640.0]
+
+[[steps]]
+key = { target = "host", value = "cmd+0" }
+
+[[steps]]
+text = { target = "host", value = "Project planning note" }
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+key = { target = "host", value = "cmd+o" }
+
+[[steps]]
+wait_notes_index = 5.0
+
+[[steps]]
+assert_label = { target = "host", label = "All notes · Tab: current project" }
+
+[[steps]]
+key = { target = "host", value = "tab" }
+
+[[steps]]
+assert_label = { target = "host", label = "Current project · Tab: all notes" }
+
+[[steps]]
+shot = "notes-picker-project-filter.png"
+
+[[steps]]
+key = { target = "host", value = "tab" }
+
+[[steps]]
+assert_label = { target = "host", label = "All notes · Tab: current project" }
