@@ -2171,41 +2171,27 @@ mod tests {
     #[cfg(unix)]
     fn capture_lines_since_reports_alternate_screen_in_place_redraw() {
         use super::settings::BackendSettings;
-        use super::{BackendCommand, TerminalBackend};
+        use super::TerminalBackend;
         use std::sync::mpsc;
-        use std::time::{Duration, Instant};
-
-        fn wait_for(backend: &TerminalBackend, needle: &str) {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                if backend
-                    .capture_lines(200)
-                    .iter()
-                    .any(|line| line.contains(needle))
-                {
-                    return;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "timed out waiting for {needle:?} in alternate-screen pane"
-                );
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
 
         let ctx = egui::Context::default();
         let (tx, _rx) = mpsc::channel();
         let settings = BackendSettings {
-            shell: "/bin/sh".to_string(),
+            shell: "/bin/sleep".to_string(),
+            args: vec!["3600".to_string()],
             ..Default::default()
         };
-        let mut backend =
+        let backend =
             TerminalBackend::new(1, ctx, tx, settings).expect("spawn backend");
-
-        backend.process_command(BackendCommand::Write(
-            b"stty -echo; printf '\\033[?1049h\\033[Hframe-one\\nstatus-one'; read _; printf '\\033[Hframe-two\\nstatus-two'; read _; printf '\\033[2;1Hstatus-three'; read _; printf '\\033[1;1Hframe-four\\033[3;1Hstatus-four'; read _; printf '\\033[Hframe-five'; read _; printf '\\033[Hframe-six'; sleep 5\n".to_vec(),
-        ));
-        wait_for(&backend, "status-one");
+        let mut parser: alacritty_terminal::vte::ansi::Processor<
+            alacritty_terminal::vte::ansi::StdSyncHandler,
+        > = alacritty_terminal::vte::ansi::Processor::new();
+        // Apply each complete frame under the terminal lock. The idle child
+        // produces no PTY output that could race a capture or echo markers.
+        let mut paint = |bytes: &[u8]| {
+            parser.advance(&mut *backend.term.lock(), bytes);
+        };
+        paint(b"\x1b[?1049h\x1b[Hframe-one\r\nstatus-one");
         let (_initial, cursor, missed) = backend.capture_lines_since(0);
         assert!(!missed);
         assert!(cursor > 0, "initial alternate-screen frame needs a cursor");
@@ -2213,8 +2199,7 @@ mod tests {
         // A TUI paints the next frame at the same coordinates and leaves the
         // terminal cursor on the same row. No shell-pane linefeed accounting
         // signal changes, but the visible content is entirely new.
-        backend.process_command(BackendCommand::Write(b"\n".to_vec()));
-        wait_for(&backend, "status-two");
+        paint(b"\x1b[Hframe-two\r\nstatus-two");
 
         let (lines, new_cursor, missed) = backend.capture_lines_since(cursor);
         assert!(!missed, "in-place redraw must not look like lost history");
@@ -2231,8 +2216,7 @@ mod tests {
         // The returned redraw cursor must itself round-trip. A later repaint
         // that changes only one status row returns only that row, rather than
         // the whole alternate screen or another empty delta.
-        backend.process_command(BackendCommand::Write(b"\n".to_vec()));
-        wait_for(&backend, "status-three");
+        paint(b"\x1b[2;1Hstatus-three");
         let (next_lines, final_cursor, missed) =
             backend.capture_lines_since(new_cursor);
         assert!(!missed);
@@ -2245,8 +2229,7 @@ mod tests {
 
         // A redraw can also leave the cursor on a different row. That cursor
         // motion must not suppress the changed-grid delta.
-        backend.process_command(BackendCommand::Write(b"\n".to_vec()));
-        wait_for(&backend, "status-four");
+        paint(b"\x1b[1;1Hframe-four\x1b[3;1Hstatus-four");
         let (moved_lines, moved_cursor, missed) =
             backend.capture_lines_since(final_cursor);
         assert!(!missed);
@@ -2261,11 +2244,9 @@ mod tests {
         // before this cursor is polled. Alternate-screen history cannot
         // reconstruct those intermediate frames, so return the current full
         // frame with `missed=true` rather than a silent partial delta.
-        backend.process_command(BackendCommand::Write(b"\n".to_vec()));
-        wait_for(&backend, "frame-five");
+        paint(b"\x1b[Hframe-five");
         let _ = backend.capture_lines_with_cursor(200);
-        backend.process_command(BackendCommand::Write(b"\n".to_vec()));
-        wait_for(&backend, "frame-six");
+        paint(b"\x1b[Hframe-six");
         let _ = backend.capture_lines_with_cursor(200);
         let (stale_lines, stale_new_cursor, missed) =
             backend.capture_lines_since(moved_cursor);
