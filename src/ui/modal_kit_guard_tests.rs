@@ -421,7 +421,7 @@ fn guard_fails_for_a_shell_it_cannot_follow() {
         "{bad:?}"
     );
     assert!(
-        bad[1].contains("\"rename\") is not a registered sheet"),
+        bad[1].contains("ModalShell \"rename\" is not a registered sheet"),
         "{bad:?}"
     );
     assert!(bad[2].contains("not an inline closure"), "{bad:?}");
