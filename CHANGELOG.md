@@ -1,6 +1,16 @@
 # Changelog
 
 Newest releases appear first.
+## [0.5.3] — 2026-11-18
+
+### Changes
+- fix(context): unpack a sole subcontext when its parent's last pane closes; drop dead strips (#3238)
+- fix(config): bound the profile initialization lock wait (#3235)
+- Plugin migration guest runs within memory and time limits; staging keeps directory times; CI drops uv (#3227)
+- fix(attention): retire approvals when their requester pane or context disappears (#3233)
+- fix(cli): read the host pid from host.lock instead of lsof (#3232)
+- Keychain access dialog on the shared dialog kit (#3230)
+- fix(install): defer the new host while an older one runs (#3225)
 ## [0.5.2] — 2026-11-17
 
 ### Changes
