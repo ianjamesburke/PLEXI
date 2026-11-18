@@ -30,20 +30,15 @@ impl<'a> DialogShortcut<'a> {
         self
     }
 
-    /// A guarded action (stints 1498, 1513) takes only a fresh press: an OS
-    /// key repeat is consumed without counting. `exact` also refuses extra
-    /// modifiers (Shift+Q is not Q).
-    fn pressed_fresh(&self, ctx: &egui::Context, exact: bool) -> bool {
+    /// A guarded action (stints 1498, 1513, 1489) takes only a fresh press
+    /// with exact modifiers (Shift+Q is not Q): an OS key repeat is consumed
+    /// without counting.
+    fn pressed_fresh(&self, ctx: &egui::Context) -> bool {
         let repeat_only = ctx.input(|i| {
             let mut matching = i.events.iter().filter(|event| {
                 matches!(event,
                     egui::Event::Key { key, pressed: true, modifiers, .. }
-                        if *key == self.key
-                            && if exact {
-                                modifiers.matches_exact(self.modifiers)
-                            } else {
-                                modifiers.matches_logically(self.modifiers)
-                            }
+                        if *key == self.key && modifiers.matches_exact(self.modifiers)
                 )
             });
             let mut any = false;
@@ -53,15 +48,11 @@ impl<'a> DialogShortcut<'a> {
             });
             any && all_repeat
         });
-        let pressed = if exact {
-            Self {
-                exact: true,
-                ..*self
-            }
-            .pressed(ctx)
-        } else {
-            self.pressed(ctx)
-        };
+        let pressed = Self {
+            exact: true,
+            ..*self
+        }
+        .pressed(ctx);
         pressed && !repeat_only
     }
 
@@ -333,10 +324,11 @@ impl<'a> ActionModal<'a> {
         let guarded_destructive =
             |action: &DialogAction<'_>| action.destructive && self.destructive_input.is_some();
         let press = |action: &DialogAction<'_>, shortcut: &DialogShortcut<'_>| {
-            if guarded_destructive(action) {
-                shortcut.pressed_fresh(ctx, true)
-            } else if self.consent_input.is_some() {
-                shortcut.pressed_fresh(ctx, false)
+            // A consent dialog matches modifiers exactly: Shift+Enter
+            // ("Always allow") must never be taken by Enter ("Grant once"),
+            // which `matches_logically` would allow (stint 1489).
+            if guarded_destructive(action) || self.consent_input.is_some() {
+                shortcut.pressed_fresh(ctx)
             } else {
                 shortcut.pressed(ctx)
             }
@@ -403,7 +395,7 @@ impl<'a> ActionModal<'a> {
                     .iter()
                     .any(|action| action.id == default && guarded_destructive(action));
                 let pressed = if default_guarded {
-                    enter.pressed_fresh(ctx, true)
+                    enter.pressed_fresh(ctx)
                 } else {
                     enter.pressed(ctx)
                 };

@@ -791,7 +791,11 @@ pub struct PythonLaunchConfig {
     pub module_name: String,
     pub launch_args: Vec<String>,
     pub workspace_root: PathBuf,
+    /// The launch set: capabilities granted when the pane launched.
     pub capabilities: Vec<String>,
+    /// What the manifest declares. A consent capability (`consent.rs`) must
+    /// be declared here before the pane may ask for it.
+    pub declared_capabilities: Vec<String>,
     pub allowed_hosts: Vec<String>,
     pub theme: std::collections::HashMap<String, String>,
     /// Validated `[state] scopes` from the manifest. Ordered; the first entry
@@ -859,6 +863,7 @@ impl PythonLaunchConfig {
             module_name,
             launch_args: Vec::new(),
             workspace_root: plugin_dir.to_path_buf(),
+            declared_capabilities: manifest.plugin.capabilities.capabilities.clone(),
             capabilities: manifest.plugin.capabilities.capabilities,
             allowed_hosts: manifest.plugin.capabilities.allowed_hosts,
             theme: crate::ui::theme::colors_from_config(
@@ -1600,6 +1605,9 @@ pub struct LivePythonPane {
     /// Host-established `(pane_id, context_id)` from `set_pipe_owner`. Used only
     /// to route approval prompts; no grant binds to it.
     pane_owner: Option<(u64, u64)>,
+    /// In-pane consent for sensitive capabilities (stint 1489).
+    consent: consent::PaneConsent,
+    capability_guard: crate::app::approval_keyboard::ConsentGuard,
 }
 
 #[derive(Debug, Clone)]
@@ -3221,6 +3229,8 @@ impl LivePythonPane {
             ),
             cli_ops: crate::host::cli_ops::service::CliOpService::default(),
             pane_owner: None,
+            consent: consent::PaneConsent::for_profile(),
+            capability_guard: Default::default(),
         })
     }
 
@@ -3608,6 +3618,7 @@ impl LivePythonPane {
     }
 
     fn drain_runtime(&mut self) {
+        self.poll_consent();
         self.poll_cli_operations();
         while let Ok((request_id, response)) = self.http_rx.try_recv() {
             self.send_to_runtime(&json!({
@@ -3985,18 +3996,325 @@ impl LivePythonPane {
     }
 
     /// The principal is this pane's plugin and the host-stamped pane owner
-    /// (`set_pipe_owner`), the same identity `cli_identity` uses.
+    /// (`set_pipe_owner`), the same identity `cli_identity` uses. Launch-set
+    /// capabilities only: a consent capability (`consent.rs`) is admitted by
+    /// `consent_gate` at each use, never by the launch snapshot.
     fn has_capability(&self, capability: &str) -> bool {
+        if consent::is_consent_capability(capability) {
+            return false;
+        }
         launch_set_admits(
-            &crate::broker::principal::Principal::plugin_in_pane(
-                self.plugin_id.as_str(),
-                self.pane_owner.map_or(0, |(pane, _)| pane),
-            ),
+            &self.principal(),
             &self.config.capabilities,
             capability,
             &self.launch_admissions,
             std::time::Instant::now(),
         )
+    }
+
+    fn principal(&self) -> crate::broker::principal::Principal {
+        crate::broker::principal::Principal::plugin_in_pane(
+            self.plugin_id.as_str(),
+            self.pane_owner.map_or(0, |(pane, _)| pane),
+        )
+    }
+
+    /// Gate one guest request for a consent capability through the broker.
+    /// `Some` runs the effect now. `None` means the request waits on an ask
+    /// (polled by `poll_consent`) or was refused and already answered.
+    fn consent_gate(&mut self, capability: &str, message: &Value) -> Option<consent::Admitted> {
+        let call_id = format!("pycap_{}", uuid::Uuid::new_v4().simple());
+        match self.consent_decide(capability, message, &call_id) {
+            consent::Gate::Admitted(admitted) => Some(admitted),
+            consent::Gate::Waiting(pending_id) => {
+                log::info!(
+                    "plugin::{}: {capability} waits for consent pending={pending_id}",
+                    self.plugin_id
+                );
+                self.consent.waiting.push(consent::Waiting {
+                    pending_id,
+                    prompt_seq: crate::app::approval_keyboard::next_consent_request_id(),
+                    capability: capability.to_string(),
+                    message: message.clone(),
+                    call_id,
+                });
+                self.request_repaint();
+                None
+            }
+            consent::Gate::Refused(refusal) => {
+                self.refuse_consent(capability, message, &refusal);
+                None
+            }
+        }
+    }
+
+    fn consent_decide(&self, capability: &str, message: &Value, call_id: &str) -> consent::Gate {
+        consent::gate(
+            self.consent.monitor.as_deref(),
+            &consent::Request {
+                plugin_id: &self.plugin_id,
+                owner: self.pane_owner,
+                workspace_root: &self.config.workspace_root,
+                declared: &self.config.declared_capabilities,
+                allowed_hosts: &self.config.allowed_hosts,
+                capability,
+                message,
+                call_id,
+                waiting: self.consent.waiting.len(),
+            },
+        )
+    }
+
+    /// Answer a refused consent request in the shape its message expects.
+    fn refuse_consent(&mut self, capability: &str, message: &Value, refusal: &consent::Refusal) {
+        let text = consent::refusal_text(&self.plugin_id, capability, refusal);
+        log::info!("plugin::{}: {capability} refused: {text}", self.plugin_id);
+        let reply = match message.get("type").and_then(Value::as_str) {
+            Some("http_request") => json!({
+                "type": "http_response",
+                "request_id": message.get("request_id").cloned().unwrap_or(Value::Null),
+                "error": text,
+                "refused": capability,
+            }),
+            Some("file_write") => json!({"type": "file_write_result", "error": text}),
+            _ => json!({"type": "capability_decision", "capability": capability, "granted": false}),
+        };
+        self.send_to_runtime(&reply);
+    }
+
+    /// Run an admitted consent request's effect.
+    fn run_consented(&mut self, message: &Value, admitted: &consent::Admitted) {
+        match message.get("type").and_then(Value::as_str) {
+            Some("http_request") => self.run_http_request(message, admitted),
+            Some("file_write") => self.run_file_write(message, admitted),
+            _ => {
+                let capability = message
+                    .get("capability")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                self.send_to_runtime(
+                    &json!({"type": "capability_decision", "capability": capability, "granted": true}),
+                );
+            }
+        }
+    }
+
+    /// Settle waiting asks the broker has decided. A denial refuses that
+    /// request and never re-admits it; an allow only wakes the request, which
+    /// is admitted again so the grant store decides. An ask that is required
+    /// again keeps waiting under its new pending id.
+    fn poll_consent(&mut self) {
+        let Some(monitor) = self.consent.monitor.clone() else {
+            return;
+        };
+        let mut index = 0;
+        while index < self.consent.waiting.len() {
+            let pending_id = self.consent.waiting[index].pending_id.clone();
+            let resolution = monitor.approval_resolution(&pending_id);
+            let still_pending = resolution.is_none() && monitor.show_pending(&pending_id).is_some();
+            if still_pending {
+                index += 1;
+                continue;
+            }
+            let entry = self.consent.waiting.remove(index);
+            if self
+                .consent
+                .last_error
+                .as_ref()
+                .is_some_and(|(id, _)| *id == pending_id)
+            {
+                self.consent.last_error = None;
+            }
+            let refused = match resolution {
+                Some(
+                    crate::broker::gate::ApprovalChoice::Deny
+                    | crate::broker::gate::ApprovalChoice::DenyAlways,
+                )
+                // Gone with no decision: fail closed.
+                | None => true,
+                Some(_) => false,
+            };
+            if refused {
+                let refusal = consent::refuse_denied(&consent::Request {
+                    plugin_id: &self.plugin_id,
+                    owner: self.pane_owner,
+                    workspace_root: &self.config.workspace_root,
+                    declared: &self.config.declared_capabilities,
+                    allowed_hosts: &self.config.allowed_hosts,
+                    capability: &entry.capability,
+                    message: &entry.message,
+                    call_id: &entry.call_id,
+                    waiting: self.consent.waiting.len(),
+                });
+                self.refuse_consent(&entry.capability, &entry.message, &refusal);
+                continue;
+            }
+            match self.consent_decide(&entry.capability, &entry.message, &entry.call_id) {
+                consent::Gate::Admitted(admitted) => {
+                    log::info!(
+                        "plugin::{}: {} admitted after consent pending={pending_id}",
+                        self.plugin_id,
+                        entry.capability
+                    );
+                    self.run_consented(&entry.message, &admitted);
+                }
+                consent::Gate::Waiting(next) => {
+                    self.consent.waiting.insert(
+                        index,
+                        consent::Waiting {
+                            pending_id: next,
+                            prompt_seq: crate::app::approval_keyboard::next_consent_request_id(),
+                            ..entry
+                        },
+                    );
+                    index += 1;
+                }
+                consent::Gate::Refused(refusal) => {
+                    self.refuse_consent(&entry.capability, &entry.message, &refusal);
+                }
+            }
+        }
+        if self.consent.waiting.is_empty() {
+            self.consent.last_error = None;
+        }
+    }
+
+    /// Drop every consent request this pane waits on and retire its broker
+    /// asks, so no later decision runs a request for a guest that is gone.
+    fn retire_consent_asks(&mut self) {
+        let waiting = std::mem::take(&mut self.consent.waiting);
+        self.consent.last_error = None;
+        if waiting.is_empty() {
+            return;
+        }
+        let ids: Vec<String> = waiting.into_iter().map(|entry| entry.pending_id).collect();
+        log::info!(
+            "plugin::{}: retired {} consent ask(s) with the replaced runtime",
+            self.plugin_id,
+            ids.len()
+        );
+        if let Some(monitor) = self.consent.monitor.as_deref() {
+            monitor.retire_pending_asks(&ids);
+        }
+    }
+
+    /// The ask this pane's prompt shows: its prompt sequence number and the
+    /// broker pending row it renders.
+    pub fn pending_capability_prompt(&self) -> Option<(u64, crate::broker::gate::PendingView)> {
+        self.consent
+            .prompt()
+            .map(|(waiting, view)| (waiting.prompt_seq, view))
+    }
+
+    pub fn has_pending_capability_prompt(&self) -> bool {
+        self.consent.prompt().is_some()
+    }
+
+    /// Settle the shown ask through the broker. Only `approve_pending`
+    /// changes authority, and only for this pending id. A decision that
+    /// cannot be saved keeps the prompt open with the error.
+    fn decide_capability_prompt(
+        &mut self,
+        view: &crate::broker::gate::PendingView,
+        choice: crate::broker::gate::ApprovalChoice,
+    ) {
+        let Some(monitor) = self.consent.monitor.clone() else {
+            return;
+        };
+        let pending_id = view.pending_request_id.clone();
+        let capability = view.tool.clone();
+        match monitor.approve_pending(&pending_id, choice) {
+            Ok(()) => {
+                self.consent.last_error = None;
+                let granted = !matches!(
+                    choice,
+                    crate::broker::gate::ApprovalChoice::Deny
+                        | crate::broker::gate::ApprovalChoice::DenyAlways
+                );
+                log::info!(
+                    "plugin::{}: consent decision pending={pending_id} capability={capability} choice={choice:?}",
+                    self.plugin_id
+                );
+                crate::host::event_log::emit_scoped(
+                    crate::host::event_log::HostEvent::PermissionDecision {
+                        plugin_id: self.plugin_id.clone(),
+                        capability,
+                        granted,
+                        timestamp: crate::host::event_log::now_timestamp(),
+                    },
+                    Some(self.config.workspace_root.as_path()),
+                );
+            }
+            Err(error) => {
+                log::warn!(
+                    "plugin::{}: consent decision pending={pending_id} choice={choice:?} not saved: {error}",
+                    self.plugin_id
+                );
+                self.consent.last_error = Some((pending_id, error));
+            }
+        }
+        self.request_repaint();
+    }
+
+    /// Ask the host to paint this pane soon (the prompt appeared or closed).
+    fn request_repaint(&self) {
+        if let Some((context, viewport)) = self
+            .repaint
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            context.request_repaint_of(*viewport);
+        }
+    }
+
+    /// The in-pane consent prompt for the first waiting ask. Shown while this
+    /// pane is focused; `FocusKind::CapabilityModal` owns the keyboard.
+    pub fn draw_capability_modal(
+        &mut self,
+        ctx: &egui::Context,
+        colors: &crate::ui::theme::Colors,
+        synthetic_frame: bool,
+    ) {
+        let Some((prompt_seq, view)) = self.pending_capability_prompt() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        self.capability_guard
+            .present(prompt_seq, ctx.cumulative_pass_nr(), now);
+        let input = self.capability_guard.input(now, synthetic_frame);
+        if !input.armed {
+            ctx.request_repaint_after(self.capability_guard.remaining(now));
+        }
+        let mut lines = consent::prompt_lines(&view);
+        if let Some((_, error)) = self
+            .consent
+            .last_error
+            .as_ref()
+            .filter(|(id, _)| *id == view.pending_request_id)
+        {
+            lines.push(format!(
+                "Your choice was not saved: {}",
+                guest_text::shown(error)
+            ));
+        }
+        let actions = super::wasm_pane::capability_prompt_actions();
+        let response = super::wasm_pane::capability_prompt_modal(&actions)
+            .consent_input(input)
+            .show(ctx, colors, |ui| {
+                for line in &lines {
+                    crate::ui::typography::caption(ui, line.clone(), colors);
+                }
+            });
+        if let Some(choice) = super::wasm_pane::capability_prompt_choice(&response) {
+            self.decide_capability_prompt(&view, choice);
+            ctx.request_repaint();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backdate_capability_guard(&mut self, ago: std::time::Duration) {
+        self.capability_guard.backdate(ago);
     }
 
     fn workspace_path(&self, raw: &str, for_write: bool) -> Result<PathBuf, String> {
@@ -4163,28 +4481,33 @@ impl LivePythonPane {
     }
 
     fn handle_file_write(&mut self, message: &Value) {
-        let result = if !self.has_capability("fs.write") {
-            Err("missing capability fs.write".to_string())
-        } else {
-            message
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "missing path".to_string())
-                .and_then(|path| self.workspace_path(path, true))
-                .and_then(|path| {
-                    decode_file_write_content(message).and_then(|bytes| {
-                        log::info!(
-                            "plugin::{}: file_write {} ({} bytes, binary={})",
-                            self.plugin_id,
-                            guest_text::shown(&path.display().to_string()),
-                            bytes.len(),
-                            message.get("content_b64").is_some()
-                        );
-                        std::fs::write(&path, bytes)
-                            .map_err(|error| format!("write {}: {error}", path.display()))
-                    })
+        if let Some(admitted) = self.consent_gate(
+            crate::app::permissions::Capability::FsWrite.as_str(),
+            message,
+        ) {
+            self.run_file_write(message, &admitted);
+        }
+    }
+
+    fn run_file_write(&mut self, message: &Value, _admitted: &consent::Admitted) {
+        let result: Result<(), String> = message
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "missing path".to_string())
+            .and_then(|path| self.workspace_path(path, true))
+            .and_then(|path| {
+                decode_file_write_content(message).and_then(|bytes| {
+                    log::info!(
+                        "plugin::{}: file_write {} ({} bytes, binary={})",
+                        self.plugin_id,
+                        guest_text::shown(&path.display().to_string()),
+                        bytes.len(),
+                        message.get("content_b64").is_some()
+                    );
+                    std::fs::write(&path, bytes)
+                        .map_err(|error| format!("write {}: {error}", path.display()))
                 })
-        };
+            });
         let response = match result {
             Ok(()) => json!({"type": "file_write_result"}),
             Err(error) => json!({"type": "file_write_result", "error": error}),
@@ -4306,15 +4629,20 @@ impl LivePythonPane {
     }
 
     fn handle_http_request(&mut self, message: &Value) {
+        if let Some(admitted) = self.consent_gate(
+            crate::app::permissions::Capability::NetHttp.as_str(),
+            message,
+        ) {
+            self.run_http_request(message, &admitted);
+        }
+    }
+
+    fn run_http_request(&mut self, message: &Value, _admitted: &consent::Admitted) {
         let request_id = message
             .get("request_id")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        if !self.has_capability("net.http") {
-            self.send_to_runtime(&json!({"type": "http_response", "request_id": request_id, "error": "missing capability net.http"}));
-            return;
-        }
         let method = message
             .get("method")
             .and_then(Value::as_str)
@@ -4670,6 +4998,13 @@ impl LivePythonPane {
             .get("capability")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        if consent::is_consent_capability(capability) {
+            let capability = capability.to_string();
+            if let Some(admitted) = self.consent_gate(&capability, message) {
+                self.run_consented(message, &admitted);
+            }
+            return;
+        }
         let granted = self.has_capability(capability);
         self.send_to_runtime(
             &json!({"type": "capability_decision", "capability": capability, "granted": granted}),
@@ -5406,6 +5741,7 @@ impl LivePythonPane {
         // The restarted guest knows none of these request ids: kill what is
         // running and forget what is waiting for approval.
         self.cli_ops = crate::host::cli_ops::service::CliOpService::default();
+        self.retire_consent_asks();
         if let Some(held) = &mut self.mcp_held {
             // The held line survives hot reload, but its arming identity was
             // owned by the stdin just closed by `old_runtime`'s drop. The old
@@ -7730,9 +8066,30 @@ mod wire_contract_tests;
 #[path = "wasm_python/fatal_error.rs"]
 mod fatal_error;
 
+#[path = "wasm_python/consent.rs"]
+mod consent;
+
+/// Whether a Python plugin is asked for `capability` at each use, and the
+/// resource its remembered grant binds (the `net.http` host scope from the
+/// manifest's `allowed_hosts`). `None` for a launch-set capability.
+#[cfg(test)]
+pub(crate) fn consent_grant_resource(
+    capability: &str,
+    allowed_hosts: &[String],
+) -> Option<Option<String>> {
+    consent::is_consent_capability(capability).then(|| {
+        (capability == crate::app::permissions::Capability::NetHttp.as_str())
+            .then(|| consent::host_scope(allowed_hosts))
+    })
+}
+
 #[cfg(test)]
 #[path = "wasm_python/fatal_error_tests.rs"]
 mod fatal_error_tests;
+
+#[cfg(test)]
+#[path = "wasm_python/consent_tests.rs"]
+mod consent_tests;
 
 #[cfg(test)]
 mod tests {
@@ -7962,6 +8319,7 @@ mod tests {
             launch_args: Vec::new(),
             workspace_root: workspace_root.to_path_buf(),
             capabilities: Vec::new(),
+            declared_capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
             theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
                 .to_theme_map(),
@@ -10556,6 +10914,7 @@ mod tests {
             launch_args: Vec::new(),
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
+            declared_capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
             theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
                 .to_theme_map(),
@@ -10616,6 +10975,7 @@ mod tests {
             launch_args: Vec::new(),
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
+            declared_capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
             theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
                 .to_theme_map(),
@@ -10655,6 +11015,7 @@ mod tests {
             launch_args: Vec::new(),
             workspace_root: plugin_dir.to_path_buf(),
             capabilities: Vec::new(),
+            declared_capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
             state_scopes: vec![crate::host::state_scope::StateScope::Context],
             state_format: format,
@@ -11110,6 +11471,7 @@ mod tests {
             launch_args: Vec::new(),
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
+            declared_capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
             theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
                 .to_theme_map(),
@@ -11237,6 +11599,7 @@ mod tests {
             launch_args: Vec::new(),
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
+            declared_capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
             theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
                 .to_theme_map(),
@@ -11342,6 +11705,7 @@ mod tests {
             launch_args: Vec::new(),
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
+            declared_capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
             theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
                 .to_theme_map(),
@@ -11387,6 +11751,7 @@ mod tests {
             launch_args: Vec::new(),
             workspace_root: app.path().to_path_buf(),
             capabilities: Vec::new(),
+            declared_capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
             theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
                 .to_theme_map(),
@@ -11602,7 +11967,10 @@ default = true
         let source = resolve_cpython_bundle(dir.path().join("wasm-bundles"), BuildKind::Source)
             .unwrap_err()
             .to_string();
-        assert!(source.contains("fix: run just fetch-cpython-bundle"), "{source}");
+        assert!(
+            source.contains("fix: run just fetch-cpython-bundle"),
+            "{source}"
+        );
         assert!(!source.contains("reinstall"), "{source}");
     }
 
@@ -11622,7 +11990,8 @@ default = true
         std::fs::create_dir_all(bundle.parent().expect("bundle parent")).expect("bundle dir");
         std::fs::write(&bundle, b"not-python").expect("bundle");
 
-        let err = resolve_cpython_bundle(dir.path().to_path_buf(), BuildKind::Packaged).unwrap_err();
+        let err =
+            resolve_cpython_bundle(dir.path().to_path_buf(), BuildKind::Packaged).unwrap_err();
 
         assert!(matches!(
             err,
@@ -11946,7 +12315,7 @@ default = true
             } else {
                 std::collections::HashSet::new()
             };
-            if family != Family::CliExec {
+            if family != Family::CliExec && !consent::is_consent_capability(id) {
                 matrix::seed_plugin_capability(&monitor, PLUGIN, ws, id, state);
             }
             let permissions = monitor.materialize_plugin_permissions(
@@ -11955,6 +12324,39 @@ default = true
                 &declared,
                 Vec::new(),
             );
+            if consent::is_consent_capability(id) {
+                // What `LivePythonPane::consent_gate` decides at use: the
+                // pre-checks, then the broker's exact admission (stint 1489).
+                let declared: Vec<String> = declared
+                    .iter()
+                    .map(|cap| cap.as_str().to_string())
+                    .collect();
+                let message = json!({"type": "http_request", "url": "https://api.test/x"});
+                let hosts = vec!["api.test".to_string()];
+                let request = consent::Request {
+                    plugin_id: PLUGIN,
+                    owner: Some((4, 9)),
+                    workspace_root: ws,
+                    declared: &declared,
+                    allowed_hosts: &hosts,
+                    capability: id,
+                    message: &message,
+                    call_id: "pycap_matrix",
+                    waiting: 0,
+                };
+                if !matrix::plugin_declares(state) {
+                    let outcome = match consent::gate(Some(&monitor), &request) {
+                        consent::Gate::Refused(_) => Outcome::Deny,
+                        consent::Gate::Waiting(_) => Outcome::Ask,
+                        consent::Gate::Admitted(_) => Outcome::Admit,
+                    };
+                    return (outcome, Mech::PythonConsent);
+                }
+                let outcome = matrix::drive_exact(&monitor, state, id, &|_posture| {
+                    consent::admit_request(&monitor, &request, 4, 9)
+                });
+                return (outcome, Mech::MonitorAdmit);
+            }
             let launch_set: Vec<String> = permissions
                 .capabilities
                 .iter()
@@ -12071,8 +12473,14 @@ default = true
         assert!(gate_log_contains(&format!(
             "admission: principal=plugin/{plugin_id} effect=fs.read resource_class=capability decision=allow mechanism=python_launch_set"
         )));
+        // A consent capability is decided by the gate, which refuses an
+        // undeclared one before asking the broker (stint 1489).
+        assert!(matches!(
+            pane.consent_decide("net.http", &json!({"type": "http_request"}), "pycap_trace"),
+            consent::Gate::Refused(consent::Refusal::Undeclared)
+        ));
         assert!(gate_log_contains(&format!(
-            "admission: principal=plugin/{plugin_id} effect=net.http resource_class=capability decision=deny mechanism=python_launch_set"
+            "admission: principal=plugin/{plugin_id} effect=net.http resource_class=capability decision=deny mechanism=python_undeclared"
         )));
         // A guest-chosen capability string cannot forge a second trace line.
         let forged = format!("fs.write\nadmission: principal=user/local effect=forged-{plugin_id}");

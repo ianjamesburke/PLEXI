@@ -55,6 +55,7 @@ pub(crate) fn python_launch_config_from_parts(
         launch_args: Vec::new(),
         workspace_root: plugin_dir.to_path_buf(),
         capabilities: capabilities.to_vec(),
+        declared_capabilities: capabilities.to_vec(),
         allowed_hosts: allowed_hosts.to_vec(),
         theme: crate::ui::theme::colors_from_config(
             &crate::config::PlexiConfig::load_with_workspace(

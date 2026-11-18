@@ -154,6 +154,10 @@ class FilePickCancelled:
 
 @dataclass
 class HttpResponse:
+    """The answer to an ``HttpFetch``. ``refused`` names the capability
+    (``net.http``) when the host refused to send the request at all, as
+    opposed to a request that was sent and failed; ``error`` then says how
+    the user can allow it. Show it as a refusal, not as an empty result."""
     status: int
     headers: list = field(default_factory=list)
     body: bytes = b""
@@ -161,6 +165,7 @@ class HttpResponse:
     request_id: Optional[str] = None
     tag: Optional[str] = None
     truncated: bool = False
+    refused: Optional[str] = None
 
     def text(self, encoding: str = "utf-8", errors: str = "replace") -> str:
         """Decode ``body`` as text (default UTF-8 with replacement)."""

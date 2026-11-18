@@ -24,6 +24,7 @@ fn launch_config(plugin_dir: &Path) -> PythonLaunchConfig {
         launch_args: Vec::new(),
         workspace_root: plugin_dir.to_path_buf(),
         capabilities: Vec::new(),
+        declared_capabilities: Vec::new(),
         allowed_hosts: Vec::new(),
         theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
             .to_theme_map(),

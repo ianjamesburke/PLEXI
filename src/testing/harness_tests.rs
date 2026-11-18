@@ -1641,9 +1641,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                 tree: tree_a,
                 panes: vec![crate::workspace::SavedPane {
                     id: 41,
-                    kind: crate::workspace::SavedPaneKind::Portal {
-                        context_id: 20,
-                    },
+                    kind: crate::workspace::SavedPaneKind::Portal { context_id: 20 },
                     cwd: root_a.path().to_path_buf(),
                     name: None,
                     plugin_id: None,
@@ -9177,16 +9175,30 @@ fn python_guest_cannot_put_raw_text_in_any_log_line() {
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .expect("test profile monitor");
-        let mut store = monitor.store();
         for capability in declared {
+            // Consent capabilities are exact broker grants (stint 1489).
+            if let Some(resource) =
+                crate::host::wasm_python::consent_grant_resource(capability, &[])
+            {
+                monitor
+                    .remember_plugin_capability(
+                        "hostile-messages-probe",
+                        tmp.path(),
+                        capability,
+                        resource,
+                    )
+                    .expect("remember consent grant");
+                continue;
+            }
+            let mut store = monitor.store();
             store.record(crate::broker::GrantRecord::plugin_capability(
                 "hostile-messages-probe",
                 tmp.path(),
                 crate::app::permissions::Capability::try_from(capability).expect(capability),
                 crate::broker::Decision::Allow,
             ));
+            store.save();
         }
-        store.save();
     }
     let pane_id = launch_guest_text_fixture(&mut h, tmp.path());
     let start = std::time::Instant::now();
@@ -9218,8 +9230,14 @@ fn python_guest_cannot_put_raw_text_in_any_log_line() {
         "fs.write",
         "net.http",
     ] {
+        // Stint 1489: consent capabilities are exact broker requests.
+        let mechanism = if matches!(effect, "fs.write" | "net.http") {
+            "grant_store"
+        } else {
+            "python_launch_set"
+        };
         let allowed = format!(
-            "effect={effect} resource_class=capability decision=allow mechanism=python_launch_set"
+            "effect={effect} resource_class=capability decision=allow mechanism={mechanism}"
         );
         assert!(
             lines.iter().any(|line| line.contains(&allowed)),
@@ -14624,9 +14642,7 @@ mod agent_state_restoration_tests {
                         },
                         SavedPane {
                             id: 11,
-                            kind: SavedPaneKind::Portal {
-                                context_id: 2,
-                            },
+                            kind: SavedPaneKind::Portal { context_id: 2 },
                             cwd: PathBuf::new(),
                             name: None,
                             plugin_id: None,
@@ -14639,9 +14655,7 @@ mod agent_state_restoration_tests {
                         },
                         SavedPane {
                             id: 12,
-                            kind: SavedPaneKind::Portal {
-                                context_id: 3,
-                            },
+                            kind: SavedPaneKind::Portal { context_id: 3 },
                             cwd: PathBuf::new(),
                             name: None,
                             plugin_id: None,
@@ -15556,17 +15570,23 @@ fn loopback_http_server() -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize
     (port, hits)
 }
 
-fn launch_http_probe(h: &mut HostHarness, dir: &std::path::Path, grant: bool) -> PaneId {
-    if grant {
-        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-            .expect("permission monitor")
-            .grant_capability_id(
+/// Launch the probe with `net.http` already allowed for `allowed_hosts` (the
+/// manifest's list), the grant "Always allow" stores (stint 1489).
+fn launch_http_probe(h: &mut HostHarness, dir: &std::path::Path, allowed_hosts: &[&str]) -> PaneId {
+    {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .expect("permission monitor");
+        let hosts: Vec<String> = allowed_hosts.iter().map(|host| host.to_string()).collect();
+        monitor
+            .remember_plugin_capability(
                 "http-fetch-probe",
                 dir,
                 "net.http",
-                crate::broker::Decision::Allow,
-                crate::broker::GrantSource::User,
-            );
+                crate::host::wasm_python::consent_grant_resource("net.http", &hosts)
+                    .expect("net.http is a consent capability"),
+            )
+            .expect("remember net.http");
     }
     h.app
         .launch_view_by_path_with_layout_no_review_modal(&dir.to_string_lossy(), None, None, &[])
@@ -15607,7 +15627,7 @@ fn python_http_fetch_reaches_an_allowed_loopback_server_and_returns_the_body() {
         &format!("http://127.0.0.1:{port}/hello"),
     );
     let mut h = HostHarness::new();
-    let pane = launch_http_probe(&mut h, dir.path(), true);
+    let pane = launch_http_probe(&mut h, dir.path(), &["127.0.0.1"]);
     assert_eq!(
         wait_for_http_outcome(&mut h, pane),
         "http:200:hello-from-loopback"
@@ -15627,7 +15647,7 @@ fn python_http_fetch_to_a_host_outside_allowed_hosts_is_refused_without_a_reques
         &format!("http://127.0.0.1:{port}/hello"),
     );
     let mut h = HostHarness::new();
-    let pane = launch_http_probe(&mut h, dir.path(), true);
+    let pane = launch_http_probe(&mut h, dir.path(), &["api.example.invalid"]);
     let outcome = wait_for_http_outcome(&mut h, pane);
     assert!(
         outcome.starts_with("http:error:") && outcome.contains("allowed_hosts"),

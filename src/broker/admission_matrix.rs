@@ -147,6 +147,9 @@ pub(crate) enum Mech {
     PythonLaunchSet,
     /// `WasmPane`'s own `pending_capability_prompts` queue.
     WasmQueue,
+    /// `consent::gate`'s pre-checks (stint 1489): a Python consent capability
+    /// the manifest does not declare is refused before the broker is asked.
+    PythonConsent,
     /// `PermissionMonitor::admit*` exact evaluation.
     MonitorAdmit,
     /// `HostSubscriptionService`'s private `GrantStore` copy through
@@ -213,6 +216,7 @@ pub(crate) struct Line {
 const ROW: Mech = Mech::LaunchRow;
 const MINT: Mech = Mech::ManifestAsGrant;
 const PYSET: Mech = Mech::PythonLaunchSet;
+const PYCON: Mech = Mech::PythonConsent;
 const QUEUE: Mech = Mech::WasmQueue;
 const ADMIT: Mech = Mech::MonitorAdmit;
 const SUBS: Mech = Mech::SubscriptionStore;
@@ -243,6 +247,17 @@ const PY_NON_SENSITIVE: [Cell; 10] = [
 const PY_SENSITIVE: [Cell; 10] = [
     deny(PYSET), admit(ROW), admit(ROW).cut(ONCE_REPLAY), admit(ROW), admit(ROW).cut(STALE_SESSION),
     admit(ROW), deny(ROW), deny(PYSET).cut(PY_NO_ASK), deny(PYSET).cut(PY_NO_ASK), deny(PYSET).cut(PY_NO_ASK),
+];
+
+// Python consent capability (`net.http`, `fs.write`; stint 1489). Undeclared
+// is refused by the pane's gate; every declared use is an exact broker
+// request (`admit_plugin_capability`), so a once grant is spent, a stale
+// session grant does not answer, and revoked, expired and manifest-only ask
+// through a broker pending request. Matches the design.
+#[rustfmt::skip]
+const PY_CONSENT: [Cell; 10] = [
+    deny(PYCON), admit(ADMIT), ask(ADMIT), admit(ADMIT), ask(ADMIT),
+    admit(ADMIT), deny(ADMIT), ask(ADMIT), ask(ADMIT), ask(ADMIT),
 ];
 
 // `notify` is a raw WASM id, not a `Capability`, so it can never enter the
@@ -325,8 +340,8 @@ use Runtime as R;
 pub(crate) const TABLE: &[Line] = &[
     // ── Python plugin (LivePythonPane) ───────────────────────────────────────
     line(R::Python, F::FsRead, &["fs.read", "fs.pick"], PY_NON_SENSITIVE),
-    line(R::Python, F::FsWrite, &["fs.write"], PY_SENSITIVE),
-    line(R::Python, F::Network, &["net.http"], PY_SENSITIVE),
+    line(R::Python, F::FsWrite, &["fs.write"], PY_CONSENT),
+    line(R::Python, F::Network, &["net.http"], PY_CONSENT),
     na(R::Python, F::Secrets, "secrets.get is declarable but LivePythonPane has no secret effect; nothing reaches admission"),
     line(R::Python, F::CliExec, &["cli.operations"], PY_CLI_OPERATION),
     na(R::Python, F::Ai, "LivePythonPane has no ai.query or llm effect handler"),
@@ -403,7 +418,10 @@ pub(crate) const PYTHON_UNPROBED: &[(&str, &str)] = &[
         "secrets.get",
         "no Python effect (Secrets line is not-applicable)",
     ),
-    ("ai.query", "no Python effect (Ai line is not-applicable)"),
+    (
+        "ai.query",
+        "no Python effect (Ai line is not-applicable); its RequestCapability consent is pinned by consent_tests",
+    ),
     (
         "gpu.render",
         "not consulted through LivePythonPane::has_capability",
@@ -574,7 +592,10 @@ pub(crate) fn seed_plugin_capability(
     let grant_id = record.grant_id.clone();
     monitor.store().record(record);
     if state == GrantState::Revoked {
-        assert!(monitor.revoke_grant_id(&grant_id), "revoke {grant_id}");
+        assert!(
+            monitor.revoke_grant_id(&grant_id).expect("revoke saved"),
+            "revoke {grant_id}"
+        );
     }
 }
 
@@ -657,7 +678,10 @@ pub(crate) fn drive_exact(
             let Admission::Proceed { grant_id, .. } = admit(None) else {
                 panic!("{tool}: a remembered grant must proceed before it is revoked");
             };
-            assert!(monitor.revoke_grant_id(&grant_id), "{tool}: revoke");
+            assert!(
+                monitor.revoke_grant_id(&grant_id).expect("revoke saved"),
+                "{tool}: revoke"
+            );
         }
         GrantState::Expired => {
             approve(ApprovalChoice::Always);
@@ -1011,7 +1035,7 @@ fn subscription_store_copy_misses_a_monitor_revocation() {
         evaluate_stream(&service_copy, None, Runtime::Agent, ws.path()),
         Decision::Allow
     );
-    assert!(monitor.revoke_grant_id(&grant_id));
+    assert!(monitor.revoke_grant_id(&grant_id).expect("revoke saved"));
     // CUTOVER: expected to change to ask.
     assert_eq!(
         evaluate_stream(&service_copy, None, Runtime::Agent, ws.path()),
@@ -1063,8 +1087,10 @@ fn cutover_cells_are_enumerated() {
     for row in &rows {
         println!("{row}");
     }
-    // 81 matrix cells plus the two `InstallYes` probes (stint 1291).
-    assert_eq!(rows.len(), 83);
+    // 71 matrix cells plus the two `InstallYes` probes (stint 1291). Stint
+    // 1489 moved the Python FsWrite and Network lines to broker admission,
+    // which removed their 10 cutover cells.
+    assert_eq!(rows.len(), 73);
 }
 
 /// Stint 1291 `InstallYes` probe: install each package with `--yes` through
