@@ -355,7 +355,7 @@ fn always_allow_is_bound_to_the_host_list() {
     for (hosts, shown) in [
         (
             &["127.0.0.1", "localhost"][..],
-            "Hosts: 127.0.0.1, localhost",
+            "Hosts: 127.0.0.1, localhost and their subdomains",
         ),
         (&[][..], "Hosts: any host (the manifest lists none)"),
     ] {
@@ -691,6 +691,10 @@ fn prompt_lines_escape_untrusted_text() {
     assert_eq!(lines[0], "probe\\nAlways allow is safe requests:");
     assert_eq!(lines[1], "net.http: Make outbound HTTP requests");
     assert!(lines[2].starts_with("Hosts: a.example, b.example\\u{202e}\\ninjected"));
+    assert!(
+        lines[2].ends_with(" and their subdomains"),
+        "the prompt discloses that listed hosts cover their subdomains: {lines:?}"
+    );
     assert!(lines
         .last()
         .unwrap()
@@ -703,4 +707,91 @@ fn prompt_lines_escape_untrusted_text() {
     ]);
     assert_eq!(scope, "a.example,b.example");
     assert_eq!(consent::host_scope(&[]), "*");
+}
+
+/// Codex round 2, finding 3. A pane that already waits on `MAX_PARKED` asks
+/// is refused before the broker is asked: no ask is filed that nothing waits
+/// on.
+#[test]
+fn a_full_pane_files_no_ask_nothing_waits_on() {
+    let (port, server) = loopback_server();
+    let dir = tempfile::tempdir().expect("plugin dir");
+    write_probe(dir.path(), "net.http", &["127.0.0.1"], "SetTitle(\"idle\")");
+    let mut h = HostHarness::new();
+    let pane = launch(&mut h, dir.path());
+    wait_until(&mut h, "the pane owner", |h| {
+        python(h, pane).pane_owner.is_some()
+    });
+    for n in 0..consent::MAX_PARKED {
+        guest_fetch(&mut h, pane, port, &format!("/{n}"));
+    }
+    assert_eq!(
+        python(&mut h, pane).consent.waiting.len(),
+        consent::MAX_PARKED
+    );
+    let asks = |h: &mut HostHarness| {
+        let _ = h;
+        monitor()
+            .list_pending()
+            .into_iter()
+            .filter(|view| view.actor_id == PLUGIN)
+            .count()
+    };
+    assert_eq!(asks(&mut h), consent::MAX_PARKED);
+    guest_fetch(&mut h, pane, port, "/over");
+    assert_eq!(
+        asks(&mut h),
+        consent::MAX_PARKED,
+        "the refused request filed no ask"
+    );
+    assert_eq!(
+        crate::app::attention_queue::open_needs_you_items()
+            .iter()
+            .filter(|item| item.actor == PLUGIN)
+            .count(),
+        consent::MAX_PARKED
+    );
+    assert_eq!(
+        python(&mut h, pane).consent.waiting.len(),
+        consent::MAX_PARKED
+    );
+    assert!(hits(&server).is_empty());
+}
+
+/// Codex round 2, finding 4. Replacing the pane's runtime (hot reload)
+/// retires the asks the old guest made; no later decision runs the old
+/// guest's request.
+#[test]
+fn relaunch_retires_the_old_guests_asks() {
+    let (port, server) = loopback_server();
+    let dir = tempfile::tempdir().expect("plugin dir");
+    write_probe(dir.path(), "net.http", &["127.0.0.1"], "SetTitle(\"idle\")");
+    let mut h = HostHarness::new();
+    let pane = launch(&mut h, dir.path());
+    wait_until(&mut h, "the pane owner", |h| {
+        python(h, pane).pane_owner.is_some()
+    });
+    guest_fetch(&mut h, pane, port, "/old");
+    let old = wait_for_prompt(&mut h, pane, "net.http");
+
+    python(&mut h, pane).relaunch().expect("relaunch");
+    assert!(python(&mut h, pane).consent.waiting.is_empty());
+    assert!(
+        monitor().show_pending(&old).is_none(),
+        "the old ask is gone"
+    );
+    assert_eq!(
+        monitor()
+            .get_needs_you(&old)
+            .and_then(|record| record.resolution),
+        Some(NeedsYouResolution::Retired)
+    );
+    assert!(monitor()
+        .approve_pending(&old, ApprovalChoice::Always)
+        .is_err());
+    h.run_frames(10);
+    assert!(
+        hits(&server).is_empty(),
+        "the old guest's request never ran"
+    );
 }

@@ -415,7 +415,10 @@ fn run_ingress(ingress: Ingress) {
         .find(|record| record.actor_id == actor && record.decision == Decision::Allow)
         .map(|record| record.grant_id.clone());
     if let Some(grant_id) = grant_id {
-        assert!(mon.revoke_grant_id(&grant_id), "revoke {grant_id}");
+        assert!(
+            mon.revoke_grant_id(&grant_id).expect("revoke saved"),
+            "revoke {grant_id}"
+        );
     }
     refuse_without_commit(
         &mut h,
@@ -887,7 +890,7 @@ fn all_dispatchers_require_monitor() {
         GrantSource::User,
         "grant-probe",
     ));
-    assert!(mon.revoke_grant_id("grant-probe"));
+    assert!(mon.revoke_grant_id("grant-probe").expect("revoke saved"));
     let refused = agent.dispatch_call("probe-1".to_string(), "probe.ping", args.to_string());
     assert_eq!(refused.error_code.as_deref(), Some("permission_required"));
 

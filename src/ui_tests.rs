@@ -1009,17 +1009,28 @@ mod tests {
             }
         });
         // Arming fades the approving buttons in; let the fade finish before
-        // measuring contrast.
-        h.run_steps(20);
+        // measuring contrast. Under load the fade can outlast a fixed step
+        // count, so step until the report is clean or the deadline passes.
+        let start = Instant::now();
+        loop {
+            h.run_steps(5);
+            let errors: Vec<String> = h.with_app(|app| {
+                crate::ui::layout_report::snapshot(&app.ctx)
+                    .iter()
+                    .flat_map(|r| r.violations())
+                    .collect()
+            });
+            if errors.is_empty() {
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(10), "{errors:?}");
+            std::thread::sleep(Duration::from_millis(25));
+        }
         h.harness().get_by_label("Grant once");
-        h.harness().get_by_label("Hosts: api.kraken.com");
+        h.harness()
+            .get_by_label("Hosts: api.kraken.com and their subdomains");
         h.harness()
             .get_by_label("net.http: Make outbound HTTP requests");
-        h.with_app(|app| {
-            let reports = crate::ui::layout_report::snapshot(&app.ctx);
-            let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
-            assert!(errors.is_empty(), "{errors:?}");
-        });
         h.save_screenshot(&evidence_png!("_prompt")).unwrap();
 
         h.harness().key_press(egui::Key::Escape);

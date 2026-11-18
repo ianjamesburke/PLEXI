@@ -4010,6 +4010,81 @@ mod tests {
         assert_eq!(checked, 9 * matrix::STATES.len());
     }
 
+    /// Stint 1489 (Codex round 2, finding 1): a Python plugin's exact
+    /// `ai.query` grants (a spent "Grant once", or a plugin-wide "Always
+    /// allow") answer only exact Python requests. A WASM pane launched with
+    /// the same plugin id and workspace gets no AI capability from them: its
+    /// request asks.
+    #[test]
+    fn python_exact_grants_never_become_wasm_launch_capabilities() {
+        use crate::broker::gate::{Admission, AdmitRequest, ApprovalChoice, PermissionMonitor};
+        use crate::broker::{ActorScope, TargetType};
+
+        const PLUGIN: &str = "shared.plugin";
+        let ws = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::ephemeral();
+        let admit = || {
+            monitor.admit_plugin_capability(
+                AdmitRequest {
+                    call_id: "pycap_ai",
+                    tool: "ai.query",
+                    input_json: r#"{"request":"fp-ai"}"#,
+                    principal: &crate::broker::principal::Principal::plugin_in_pane(PLUGIN, 4),
+                    actor_scope: ActorScope::User,
+                    trust_origin: "host",
+                    workspace_root: ws.path(),
+                    context_id: 9,
+                    package_id: "",
+                    instance_id: 4,
+                    target_type: TargetType::Capability,
+                },
+                "shared.plugin requests: ai.query",
+            )
+        };
+        let wasm_asks = |monitor: &PermissionMonitor| {
+            let (granted, blocked) = monitor.materialize_wasm_sets(
+                &crate::broker::principal::PluginInstance::new(PLUGIN, None),
+                ws.path(),
+                &HashSet::from(["ai.query".to_string()]),
+            );
+            let mut p = pane(0.0).with_remembered_capabilities(
+                ws.path().to_path_buf(),
+                PermissionStore::default(),
+                granted,
+                blocked,
+            );
+            p.exec(request_capability("ai.query"), 0);
+            p.has_pending_capability_prompt()
+        };
+
+        let Admission::Required { pending_request_id } = admit() else {
+            panic!("the first Python request asks");
+        };
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::Once)
+            .unwrap();
+        let Admission::Proceed { grant_id, .. } = admit() else {
+            panic!("the granted request proceeds");
+        };
+        monitor.consume_once(&grant_id, None);
+        assert!(
+            wasm_asks(&monitor),
+            "a spent Python once grant admits no WASM AI effect"
+        );
+
+        let Admission::Required { pending_request_id } = admit() else {
+            panic!("the spent grant asks again");
+        };
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::Always)
+            .unwrap();
+        assert!(matches!(admit(), Admission::Proceed { .. }));
+        assert!(
+            wasm_asks(&monitor),
+            "a Python always grant is not a WASM launch capability"
+        );
+    }
+
     /// Stint 1238 characterisation: the dual-authority write in
     /// `decide_next_capability_prompt_inner`. A remembered decision lands in
     /// three places (the pane's session set, `PermissionStore`, and
@@ -4058,7 +4133,7 @@ mod tests {
             .iter()
             .any(|record| record.grant_id == grant_id && record.decision == Decision::Allow));
 
-        assert!(monitor.revoke_grant_id(&grant_id));
+        assert!(monitor.revoke_grant_id(&grant_id).expect("revoke saved"));
         // CUTOVER: expected to change to ask. The live pane keeps its session
         // grant after the monitor revoked it.
         p.exec(request_capability(cap), 0);

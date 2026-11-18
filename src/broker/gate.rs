@@ -1859,6 +1859,33 @@ impl PermissionMonitor {
             })
             .map(|row| row.id.clone())
             .collect();
+        self.retire_approvals_locked(ids);
+    }
+
+    /// Retire these open approval asks without granting them: their requester
+    /// is gone (a Python pane's runtime was replaced, stint 1489).
+    pub(crate) fn retire_pending_asks(&self, ids: &[String]) {
+        let _resolve = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
+        let _decision = self.decision_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let open: Vec<String> = self
+            .needs_you
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|row| {
+                row.resolution.is_none()
+                    && row.kind == NeedsYouKind::ApprovalClick
+                    && ids.contains(&row.id)
+            })
+            .map(|row| row.id.clone())
+            .collect();
+        self.retire_approvals_locked(open);
+    }
+
+    /// Close each ask as retired, cancel its continuation, drop its pending
+    /// row and record a deny resolution. Callers hold the resolve and
+    /// decision locks.
+    fn retire_approvals_locked(&self, ids: Vec<String>) {
         for id in ids {
             if !self.close_needs_you_as(
                 &id,
@@ -3630,50 +3657,58 @@ impl PermissionMonitor {
     /// Revoke under the admission lock so a commit that has not entered yet
     /// observes the removal. `revoke` and `reset` on the permissions monitor
     /// call this. It does not grant.
-    pub fn revoke_grant_id(&self, grant_id: &str) -> bool {
+    pub fn revoke_grant_id(&self, grant_id: &str) -> Result<bool, String> {
         let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
         self.revoke_locked(grant_id)
     }
 
     #[cfg(test)]
-    pub fn revoke_while_held(&self, _hold: &std::sync::MutexGuard<'_, ()>, grant_id: &str) -> bool {
+    pub fn revoke_while_held(
+        &self,
+        _hold: &std::sync::MutexGuard<'_, ()>,
+        grant_id: &str,
+    ) -> Result<bool, String> {
         self.revoke_locked(grant_id)
     }
 
-    fn revoke_locked(&self, grant_id: &str) -> bool {
+    /// `Ok(true)` when the grant was removed and the removal saved. A removal
+    /// that cannot be saved is put back and returned as an error: memory must
+    /// never claim a revoke the disk does not hold (stint 1489).
+    fn revoke_locked(&self, grant_id: &str) -> Result<bool, String> {
         self.epoch.fetch_add(1, Ordering::SeqCst);
-        let mut store = self.store();
-        let before = store.records().len();
-        let actor = store
-            .records()
-            .iter()
-            .find(|record| record.grant_id == grant_id)
-            .map(|record| record.actor_id.clone())
-            .unwrap_or_default();
-        store
-            .records_mut()
-            .retain(|record| record.grant_id != grant_id);
-        let removed = store.records().len() != before;
-        drop(store);
-        if removed {
-            if let Err(error) = self.save_durable() {
-                log::error!("permission_monitor: revoke of {grant_id} was not saved: {error}");
-            }
-            let _ = self.audit_locked(&AuditFact {
-                kind: "revoke".to_string(),
-                actor,
-                call_id: String::new(),
-                grant_id: grant_id.to_string(),
-                resource_id: String::new(),
-                args_fingerprint: String::new(),
-                operation_id: String::new(),
-                decision: "revoked".to_string(),
-                revision_before: String::new(),
-                revision_after: String::new(),
-            });
-            log::info!("permission_monitor: revoked {grant_id}");
+        let removed: Vec<GrantRecord> = {
+            let mut store = self.store();
+            let (removed, kept): (Vec<GrantRecord>, Vec<GrantRecord>) =
+                std::mem::take(store.records_mut())
+                    .into_iter()
+                    .partition(|record| record.grant_id == grant_id);
+            *store.records_mut() = kept;
+            removed
+        };
+        let Some(actor) = removed.first().map(|record| record.actor_id.clone()) else {
+            return Ok(false);
+        };
+        if let Err(error) = self.save_durable() {
+            self.store().records_mut().extend(removed);
+            let message =
+                format!("revoke of {grant_id} was not saved: {error}. The grant still stands.");
+            log::error!("permission_monitor: {message}");
+            return Err(message);
         }
-        removed
+        let _ = self.audit_locked(&AuditFact {
+            kind: "revoke".to_string(),
+            actor,
+            call_id: String::new(),
+            grant_id: grant_id.to_string(),
+            resource_id: String::new(),
+            args_fingerprint: String::new(),
+            operation_id: String::new(),
+            decision: "revoked".to_string(),
+            revision_before: String::new(),
+            revision_after: String::new(),
+        });
+        log::info!("permission_monitor: revoked {grant_id}");
+        Ok(true)
     }
 
     /// Live inventory: durable grants and denies, session and one-shot grants
@@ -3854,6 +3889,7 @@ impl PermissionMonitor {
                         && record.workspace_root.as_deref() == Some(ws.as_path())
                         && !declared_set.contains(record.target_id.as_str())
                         && record.expires_at.is_none_or(|expires| now < expires)
+                        && (record.binding_schema < 1 || record.decision == Decision::Deny)
                 })
                 .map(|record| (record.target_id.clone(), record.decision))
                 .collect();
@@ -4017,15 +4053,26 @@ impl PermissionMonitor {
                 error: "a denial is cleared with reset, not revoke".to_string(),
             };
         }
-        if self.revoke_grant_id(id) {
-            self.note_retire_due("entry removed");
-            PermissionMutation::Applied {
-                entry_id: id.to_string(),
+        self.removal_outcome(id)
+    }
+
+    /// Remove a stored entry for `revoke` or `reset`, reporting a removal that
+    /// could not be saved as rejected.
+    fn removal_outcome(&self, id: &str) -> PermissionMutation {
+        match self.revoke_grant_id(id) {
+            Ok(true) => {
+                self.note_retire_due("entry removed");
+                PermissionMutation::Applied {
+                    entry_id: id.to_string(),
+                }
             }
-        } else {
-            PermissionMutation::Missing {
+            Ok(false) => PermissionMutation::Missing {
                 entry_id: id.to_string(),
-            }
+            },
+            Err(error) => PermissionMutation::Rejected {
+                entry_id: id.to_string(),
+                error,
+            },
         }
     }
 
@@ -4041,16 +4088,7 @@ impl PermissionMonitor {
                 error: "reset only clears a stored denial".to_string(),
             };
         }
-        if self.revoke_grant_id(id) {
-            self.note_retire_due("entry removed");
-            PermissionMutation::Applied {
-                entry_id: id.to_string(),
-            }
-        } else {
-            PermissionMutation::Missing {
-                entry_id: id.to_string(),
-            }
-        }
+        self.removal_outcome(id)
     }
 
     fn allow_entry(&self, id: &str) -> PermissionMutation {
@@ -4647,6 +4685,12 @@ fn stored_capability_decision(
             continue;
         }
         if record.expires_at.is_some_and(|expires| now >= expires) {
+            continue;
+        }
+        // An exact allow (once, fingerprint, pane or resource bound) answers
+        // only its own requests through `admit`; it never becomes a launch-set
+        // capability (stint 1489). An exact denial still withholds.
+        if record.binding_schema >= 1 && record.decision != Decision::Deny {
             continue;
         }
         match record.decision {
@@ -6203,7 +6247,9 @@ mod tests {
             worker.note_use("agent:chess", "c", "g1", &fp_for_worker, "game-1", "op-1")
         });
         thread::sleep(Duration::from_millis(40));
-        assert!(monitor.revoke_while_held(&hold, "g1"));
+        assert!(monitor
+            .revoke_while_held(&hold, "g1")
+            .expect("revoke saved"));
         drop(hold);
         let result = handle.join().unwrap();
         assert!(
@@ -6428,6 +6474,66 @@ mod tests {
         assert!(matches!(
             plugin_capability_admit(&monitor, ws.path(), 8, &input("*", "fp-d")),
             Admission::Denied { .. }
+        ));
+    }
+
+    /// Stint 1489 (Codex round 2, finding 2): a revoke whose removal cannot
+    /// be saved is rejected, and the grant still stands in memory and on disk.
+    #[test]
+    fn a_revoke_that_cannot_be_saved_is_rejected_and_the_grant_stands() {
+        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        seal_profile_grant(dir.path(), ws.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let pending = pending_of(plugin_capability_admit(
+            &monitor,
+            ws.path(),
+            4,
+            r#"{"host_scope":"api.example","request":"fp-a"}"#,
+        ));
+        monitor
+            .approve_pending(&pending, ApprovalChoice::Always)
+            .unwrap();
+        let grant = monitor
+            .list_entries()
+            .into_iter()
+            .find(|entry| entry.kind == "allow" && entry.actor_id == "probe")
+            .expect("the always grant");
+        let saved = std::fs::read(dir.path().join("grants.toml")).unwrap();
+
+        {
+            let _unsealable =
+                crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
+            let outcome = monitor.mutate_entry(&grant.id, "revoke", &human_caller());
+            assert!(
+                matches!(&outcome, PermissionMutation::Rejected { error, .. } if error.contains("not saved")),
+                "{outcome:?}"
+            );
+        }
+        assert!(
+            monitor
+                .list_entries()
+                .iter()
+                .any(|entry| entry.id == grant.id),
+            "memory does not claim a revoke the disk does not hold"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("grants.toml")).unwrap(),
+            saved
+        );
+        assert!(matches!(
+            plugin_capability_admit(
+                &monitor,
+                ws.path(),
+                5,
+                r#"{"host_scope":"api.example","request":"fp-b"}"#
+            ),
+            Admission::Proceed { .. }
+        ));
+        assert!(matches!(
+            monitor.mutate_entry(&grant.id, "revoke", &human_caller()),
+            PermissionMutation::Applied { .. }
         ));
     }
 

@@ -592,7 +592,10 @@ pub(crate) fn seed_plugin_capability(
     let grant_id = record.grant_id.clone();
     monitor.store().record(record);
     if state == GrantState::Revoked {
-        assert!(monitor.revoke_grant_id(&grant_id), "revoke {grant_id}");
+        assert!(
+            monitor.revoke_grant_id(&grant_id).expect("revoke saved"),
+            "revoke {grant_id}"
+        );
     }
 }
 
@@ -675,7 +678,10 @@ pub(crate) fn drive_exact(
             let Admission::Proceed { grant_id, .. } = admit(None) else {
                 panic!("{tool}: a remembered grant must proceed before it is revoked");
             };
-            assert!(monitor.revoke_grant_id(&grant_id), "{tool}: revoke");
+            assert!(
+                monitor.revoke_grant_id(&grant_id).expect("revoke saved"),
+                "{tool}: revoke"
+            );
         }
         GrantState::Expired => {
             approve(ApprovalChoice::Always);
@@ -1029,7 +1035,7 @@ fn subscription_store_copy_misses_a_monitor_revocation() {
         evaluate_stream(&service_copy, None, Runtime::Agent, ws.path()),
         Decision::Allow
     );
-    assert!(monitor.revoke_grant_id(&grant_id));
+    assert!(monitor.revoke_grant_id(&grant_id).expect("revoke saved"));
     // CUTOVER: expected to change to ask.
     assert_eq!(
         evaluate_stream(&service_copy, None, Runtime::Agent, ws.path()),

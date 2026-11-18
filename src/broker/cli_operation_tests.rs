@@ -198,7 +198,7 @@ fn revoked_grant_asks_again() {
         .approve_pending(&id, ApprovalChoice::Session)
         .unwrap();
     let grant = proceeds(call.admit(&monitor));
-    assert!(monitor.revoke_grant_id(&grant));
+    assert!(monitor.revoke_grant_id(&grant).expect("revoke saved"));
     pending(call.admit(&monitor));
 }
 

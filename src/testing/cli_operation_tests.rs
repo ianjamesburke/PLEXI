@@ -354,7 +354,9 @@ fn revocation_of_a_remembered_operation_survives_a_restart() {
         .into_iter()
         .find(|row| row.tool == "cli.op.read" && row.kind == "allow")
         .expect("the remembered grant is in the Permissions inventory");
-    assert!(E2e::monitor().revoke_grant_id(&grant.id));
+    assert!(E2e::monitor()
+        .revoke_grant_id(&grant.id)
+        .expect("revoke saved"));
     // Restart: the process cache is dropped and the sealed store reloaded.
     let monitor = PermissionMonitor::reload_for_test(&crate::config::config_dir());
     assert!(

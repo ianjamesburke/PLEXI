@@ -214,6 +214,11 @@ pub(crate) fn gate(monitor: Option<&PermissionMonitor>, request: &Request<'_>) -
     let Some((pane_id, context_id)) = request.owner else {
         return refuse(Refusal::NoPane);
     };
+    // Checked before the broker is asked, so a full pane files no ask that
+    // nothing waits on.
+    if request.waiting >= MAX_PARKED {
+        return refuse(Refusal::Backlog);
+    }
     let admission = admit_request(monitor, request, pane_id, context_id);
     match admission {
         Admission::Proceed {
@@ -236,12 +241,7 @@ pub(crate) fn gate(monitor: Option<&PermissionMonitor>, request: &Request<'_>) -
             monitor.consume_once(&grant_id, None);
             Gate::Admitted(Admitted { _private: () })
         }
-        Admission::Required { pending_request_id } => {
-            if request.waiting >= MAX_PARKED {
-                return refuse(Refusal::Backlog);
-            }
-            Gate::Waiting(pending_request_id)
-        }
+        Admission::Required { pending_request_id } => Gate::Waiting(pending_request_id),
         Admission::Denied { .. } => Gate::Refused(Refusal::Stored {
             entry_id: deny_entry_id(monitor, request),
         }),
@@ -375,7 +375,8 @@ fn describe(plugin_id: &str, capability: &str, host_scope: Option<&str>) -> Vec<
         }
         Some(scope) => {
             let hosts: Vec<String> = scope.split(',').map(guest_text::shown).collect();
-            lines.push(format!("Hosts: {}", hosts.join(", ")));
+            // `http_host_allowed` also admits each host's subdomains.
+            lines.push(format!("Hosts: {} and their subdomains", hosts.join(", ")));
             lines.push(format!(
                 "Always allow saves this for {days} days, for {plugin} in this workspace and these hosts only."
             ));

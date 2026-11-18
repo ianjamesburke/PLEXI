@@ -878,7 +878,10 @@ fn remembered_consent_is_rechecked_on_every_call_and_revocation_blocks() {
         .into_iter()
         .find(|e| e.tool == "cli.op.read" && e.kind == "allow")
         .expect("remembered grant is listed in the Permissions inventory");
-    assert!(rig.monitor.revoke_grant_id(&entry.id));
+    assert!(rig
+        .monitor
+        .revoke_grant_id(&entry.id)
+        .expect("revoke saved"));
     assert!(rig
         .submit("c", "fixture.echo", json!({"word": "three"}))
         .is_empty());

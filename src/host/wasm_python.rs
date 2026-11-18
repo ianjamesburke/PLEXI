@@ -4179,6 +4179,25 @@ impl LivePythonPane {
         }
     }
 
+    /// Drop every consent request this pane waits on and retire its broker
+    /// asks, so no later decision runs a request for a guest that is gone.
+    fn retire_consent_asks(&mut self) {
+        let waiting = std::mem::take(&mut self.consent.waiting);
+        self.consent.last_error = None;
+        if waiting.is_empty() {
+            return;
+        }
+        let ids: Vec<String> = waiting.into_iter().map(|entry| entry.pending_id).collect();
+        log::info!(
+            "plugin::{}: retired {} consent ask(s) with the replaced runtime",
+            self.plugin_id,
+            ids.len()
+        );
+        if let Some(monitor) = self.consent.monitor.as_deref() {
+            monitor.retire_pending_asks(&ids);
+        }
+    }
+
     /// The ask this pane's prompt shows: its prompt sequence number and the
     /// broker pending row it renders.
     pub fn pending_capability_prompt(&self) -> Option<(u64, crate::broker::gate::PendingView)> {
@@ -5722,6 +5741,7 @@ impl LivePythonPane {
         // The restarted guest knows none of these request ids: kill what is
         // running and forget what is waiting for approval.
         self.cli_ops = crate::host::cli_ops::service::CliOpService::default();
+        self.retire_consent_asks();
         if let Some(held) = &mut self.mcp_held {
             // The held line survives hot reload, but its arming identity was
             // owned by the stdin just closed by `old_runtime`'s drop. The old
