@@ -96,6 +96,8 @@ taffy = "0.5"
 # Single-app package artifact `.plexipkg` (stint 0015): gzipped tar + sha256 manifest.
 tar = "0.4"
 flate2 = "1"
+# Copies file and directory times when staging the plugin migration (stint 1413).
+filetime = "0.2"
 sha2 = "0.10"
 wasmtime = "43.0.2"
 wasmtime-wasi = "43.0.2"

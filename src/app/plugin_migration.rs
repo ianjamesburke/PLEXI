@@ -6,6 +6,14 @@ use std::path::{Path, PathBuf};
 const MIGRATION: &str = "migration-plugin-v2";
 const OPERATION_TREE: &str = "plugin migration v2";
 const OPERATION_PACK: &str = "plugin pack migration v2";
+/// Bounds for the source converter guest. It parses one file at a time, so
+/// memory scales with the largest source file, not the profile; the time limit
+/// bounds how long a stuck guest holds the profile lock before a window opens.
+const SOURCE_MIGRATION_LIMITS: crate::host::wasm_python::ScriptLimits =
+    crate::host::wasm_python::ScriptLimits {
+        memory_bytes: 512 << 20,
+        time: std::time::Duration::from_secs(120),
+    };
 /// `generated_by` stamped into a migrated package's regenerated scaffold metadata.
 const SCAFFOLD_GENERATED_BY: &str = "plexi plugin migration v2";
 
@@ -313,7 +321,8 @@ fn count_entries(dir: &Path) -> usize {
 
 /// Stage a package tree for conversion as the 0.4 converter did: symlinks are
 /// copied as links and never followed, `.venv` and `__pycache__` are skipped at
-/// every depth, and file modes and modification times are kept.
+/// every depth, and file and directory modes, access and modification times
+/// are kept.
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir(to)?;
     for entry in std::fs::read_dir(from)? {
@@ -330,8 +339,7 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
             copy_tree(&source, &target)?;
         } else if kind.is_file() {
             std::fs::copy(&source, &target)?;
-            let modified = std::fs::metadata(&source)?.modified()?;
-            std::fs::File::open(&target)?.set_modified(modified)?;
+            copy_times(&source, &target)?;
         } else {
             return Err(std::io::Error::other(format!(
                 "cannot migrate special file {}",
@@ -339,7 +347,18 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
             )));
         }
     }
-    std::fs::set_permissions(to, std::fs::metadata(from)?.permissions())
+    std::fs::set_permissions(to, std::fs::metadata(from)?.permissions())?;
+    // Last: creating the children above updated the directory's own times.
+    copy_times(from, to)
+}
+
+fn copy_times(source: &Path, target: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::metadata(source)?;
+    filetime::set_file_times(
+        target,
+        filetime::FileTime::from_last_access_time(&metadata),
+        filetime::FileTime::from_last_modification_time(&metadata),
+    )
 }
 
 #[cfg(unix)]
@@ -451,6 +470,7 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
                 &["/staged"],
                 &staged,
                 "/staged",
+                SOURCE_MIGRATION_LIMITS,
             )
             .map_err(|error| match error {
                 ScriptError::Interpreter(detail) => MigrationFailure::new(
@@ -1127,6 +1147,40 @@ pub(crate) fn migrate_launch_root(path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// Staging keeps file and directory modification times, as the 0.4
+    /// converter's `shutil.copytree` did (stint 1413).
+    #[test]
+    fn copy_tree_preserves_file_and_directory_modification_times() {
+        let root = tempfile::tempdir().unwrap();
+        let from = root.path().join("apps");
+        std::fs::create_dir_all(from.join("notes/pkg")).unwrap();
+        std::fs::write(from.join("notes/pkg/main.py"), "").unwrap();
+        let past = |secs| filetime::FileTime::from_unix_time(secs, 0);
+        for (relative, secs) in [
+            ("notes/pkg/main.py", 1_600_000_000),
+            ("notes/pkg", 1_600_000_100),
+            ("notes", 1_600_000_200),
+            ("", 1_600_000_300),
+        ] {
+            filetime::set_file_mtime(from.join(relative), past(secs)).unwrap();
+        }
+        let to = root.path().join("staged");
+        copy_tree(&from, &to).unwrap();
+        for (relative, secs) in [
+            ("notes/pkg/main.py", 1_600_000_000),
+            ("notes/pkg", 1_600_000_100),
+            ("notes", 1_600_000_200),
+            ("", 1_600_000_300),
+        ] {
+            let metadata = std::fs::metadata(to.join(relative)).unwrap();
+            assert_eq!(
+                filetime::FileTime::from_last_modification_time(&metadata),
+                past(secs),
+                "modification time of staged/{relative}"
+            );
+        }
+    }
+
     #[test]
     fn plugin_rename_restore_migrates_inactive_workspace_but_not_source_apps() {
         let workspace = tempfile::tempdir().unwrap();
@@ -1452,6 +1506,7 @@ mod tests {
             &["/staged"],
             staged.path(),
             "/staged",
+            SOURCE_MIGRATION_LIMITS,
         );
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
         let run = run.unwrap_or_else(|_| panic!("sandbox did not start"));
@@ -1482,11 +1537,70 @@ mod tests {
             ],
             staged.path(),
             "/staged",
+            SOURCE_MIGRATION_LIMITS,
         )
         .unwrap_or_else(|_| panic!("sandbox did not start"));
         assert_eq!(run.exit_code, 0, "{}", run.stderr);
         assert_eq!(run.stdout.matches("denied").count(), 4, "{}", run.stdout);
         assert!(!outside.path().join("new.txt").exists());
+    }
+
+    /// A guest that never finishes is interrupted at its time limit instead
+    /// of holding the profile lock forever (stint 1413).
+    #[test]
+    fn source_migration_guest_is_interrupted_at_its_time_limit() {
+        let staged = tempfile::tempdir().unwrap();
+        let began = std::time::Instant::now();
+        let error = crate::host::wasm_python::run_bundled_script(
+            "while True:\n    pass\n",
+            &[],
+            staged.path(),
+            "/staged",
+            crate::host::wasm_python::ScriptLimits {
+                time: std::time::Duration::from_secs(1),
+                ..SOURCE_MIGRATION_LIMITS
+            },
+        )
+        .err()
+        .expect("an endless guest must not finish");
+        match error {
+            ScriptError::Sandbox(detail) => {
+                assert!(detail.contains("1 second time limit"), "{detail}")
+            }
+            ScriptError::Interpreter(detail) => panic!("interpreter failed to start: {detail}"),
+        }
+        assert!(
+            began.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "interrupt took {:?}",
+            began.elapsed()
+        );
+    }
+
+    /// A guest cannot grow its memory past the limit; CPython reports the
+    /// refused growth as a MemoryError and exits non-zero (stint 1413).
+    #[test]
+    fn source_migration_guest_cannot_exceed_its_memory_limit() {
+        let staged = tempfile::tempdir().unwrap();
+        let limits = crate::host::wasm_python::ScriptLimits {
+            memory_bytes: 64 << 20,
+            ..SOURCE_MIGRATION_LIMITS
+        };
+        let run = |script| {
+            crate::host::wasm_python::run_bundled_script(
+                script,
+                &[],
+                staged.path(),
+                "/staged",
+                limits,
+            )
+            .unwrap_or_else(|_| panic!("sandbox did not start"))
+        };
+        let within = run("bytearray(8 << 20)\n");
+        assert_eq!(within.exit_code, 0, "{}", within.stderr);
+        let beyond = run("bytearray(128 << 20)\n");
+        assert_ne!(beyond.exit_code, 0, "{}", beyond.stdout);
+        assert!(beyond.stderr.contains("MemoryError"), "{}", beyond.stderr);
     }
 
     const LEGACY_WITH_INERT_KEYS: &str = "schema_version = 1\nextra_note = 'x'\n[app]\nid = 'logs'\nname = 'Logs'\ntype = 'app'\nentry = 'main.py'\nmouse_tracking = true\n[runtime]\npython_compat = true\n[launch]\non_launch = 'focus'\n";
