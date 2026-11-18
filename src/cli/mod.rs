@@ -2057,10 +2057,11 @@ pub use plugin_check::plugin_check_cli;
 pub use routine::{routine_add, routine_list, routine_remove, routine_run, routine_set_enabled};
 #[cfg(test)]
 pub(crate) use run::format_list_commands_for_root;
-pub(crate) use run::retired_step_error;
+pub(crate) use run::{
+    completed_steps_report, failed_step_report, prepare_step, retired_step_error,
+};
 pub use run::{
-    parse_step, run_command, run_list_commands, run_steps_with, substitute_step_args, ParsedStep,
-    StepRunReport,
+    parse_step, run_command, run_list_commands, substitute_step_args, ParsedStep, StepRunReport,
 };
 #[cfg(test)]
 pub use run::{run_command_for_root, run_command_for_root_from_pane};

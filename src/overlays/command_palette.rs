@@ -1,5 +1,6 @@
 use egui::RichText;
 
+use super::user_command_run::{spawn_shell_step, HostStepOutcome, UserCommandRun};
 use crate::app::PlexiApp;
 use crate::ui::{
     hints::{HintBar, HintGroup},
@@ -590,8 +591,9 @@ enum PaletteAction {
 
 /// Saved command execution is serviced by logic, preserving step order and
 /// failure handling while keeping admission I/O out of UI dispatch.
+#[derive(Clone)]
 pub(crate) struct PendingUserCommand {
-    name: String,
+    pub(super) name: String,
     palette_scope: Option<crate::cli::UserCommandScope>,
     palette_root: Option<std::path::PathBuf>,
     context_root: std::path::PathBuf,
@@ -2242,8 +2244,8 @@ impl PlexiApp {
                 .or_else(|| crate::cli::resolve_commands_workspace_root(&command.context_root))
                 .or_else(crate::config::adopted_workspace_root)
                 .or_else(|| Some(command.context_root.clone()));
-            let report = self.run_user_command_at(&command, workspace_root);
-            if report.is_none() && command.palette_scope.is_some() {
+            let started = self.run_user_command_at(&command, workspace_root);
+            if !started && command.palette_scope.is_some() {
                 let initial_cmd = format!("plexi run {}", shell_single_quote(&command.name));
                 self.dispatch_single_line_user_command(
                     &command,
@@ -2268,7 +2270,7 @@ impl PlexiApp {
         })
     }
 
-    fn user_command_focused_pane(&self, command: &PendingUserCommand) -> Option<u64> {
+    pub(super) fn user_command_focused_pane(&self, command: &PendingUserCommand) -> Option<u64> {
         let window = &self.windows[self.user_command_window(command)?];
         let tile = window
             .focused_pane
@@ -2279,14 +2281,16 @@ impl PlexiApp {
         }
     }
 
+    /// Start the saved command `command` names. Returns `false` when no such
+    /// command resolves or its invoking window is gone.
     fn run_user_command_at(
         &mut self,
         command: &PendingUserCommand,
         ws_root: Option<std::path::PathBuf>,
-    ) -> Option<crate::cli::StepRunReport> {
+    ) -> bool {
         let name = command.name.as_str();
         let invoker_pane_id = command.caller;
-        let cmd = crate::cli::resolve_user_commands(ws_root.as_deref())
+        let Some(cmd) = crate::cli::resolve_user_commands(ws_root.as_deref())
             .into_iter()
             .find(|c| c.name == name)
             .or_else(|| {
@@ -2294,27 +2298,25 @@ impl PlexiApp {
                     .iter()
                     .find(|c| c.name == name)
                     .cloned()
-            })?;
+            })
+        else {
+            return false;
+        };
         // One check for every saved-command form, shared with `plexi run`:
         // a retired short form is refused before anything runs.
         let refused = cmd
             .steps
             .iter()
             .chain(cmd.run.iter())
-            .find_map(|step| crate::cli::retired_step_error(step).map(|reason| (step, reason)));
-        if let Some((step, reason)) = refused {
+            .find_map(|step| crate::cli::retired_step_error(step));
+        if let Some(reason) = refused {
             log::warn!("palette: refused retired command '{name}'");
             self.notify_command_refused(name, &reason);
-            return Some(crate::cli::StepRunReport {
-                exit_code: 2,
-                total_steps: 1,
-                completed_steps: 0,
-                failed_step_index: Some(1),
-                failed_step: Some(step.clone()),
-                error_message: Some(reason),
-            });
+            return true;
         }
-        let window = self.user_command_window(command)?;
+        let Some(window) = self.user_command_window(command) else {
+            return false;
+        };
         self.windows[window].clear_zoom();
         let steps: Vec<String> = if !cmd.steps.is_empty() {
             cmd.steps.clone()
@@ -2336,32 +2338,9 @@ impl PlexiApp {
                     cmd.split,
                     ws_root.clone(),
                 );
-                if !cmd.on_load.is_empty() {
-                    let on_load_report = crate::cli::run_steps_with(
-                        &cmd.on_load,
-                        &[],
-                        |_step_num, rendered, parsed| {
-                            self.execute_host_step(
-                                command,
-                                rendered,
-                                parsed,
-                                ws_root.as_deref(),
-                                focused,
-                            )
-                        },
-                    );
-                    self.mark_workspace_dirty();
-                    return Some(on_load_report);
-                }
                 self.mark_workspace_dirty();
-                return Some(crate::cli::StepRunReport {
-                    exit_code: 0,
-                    total_steps: 1,
-                    completed_steps: 1,
-                    failed_step_index: None,
-                    failed_step: None,
-                    error_message: None,
-                });
+                self.start_on_load_run(command, ws_root, cmd.on_load, focused);
+                return true;
             }
         } else {
             let shell_cmd = format!("plexi run {}", shell_single_quote(name));
@@ -2371,29 +2350,9 @@ impl PlexiApp {
                 cmd.split,
                 ws_root.clone(),
             );
-            if !cmd.on_load.is_empty() {
-                let on_load_report =
-                    crate::cli::run_steps_with(&cmd.on_load, &[], |_step_num, rendered, parsed| {
-                        self.execute_host_step(
-                            command,
-                            rendered,
-                            parsed,
-                            ws_root.as_deref(),
-                            focused,
-                        )
-                    });
-                self.mark_workspace_dirty();
-                return Some(on_load_report);
-            }
             self.mark_workspace_dirty();
-            return Some(crate::cli::StepRunReport {
-                exit_code: 0,
-                total_steps: 1,
-                completed_steps: 1,
-                failed_step_index: None,
-                failed_step: None,
-                error_message: None,
-            });
+            self.start_on_load_run(command, ws_root, cmd.on_load, focused);
+            return true;
         };
 
         log::info!(
@@ -2403,26 +2362,34 @@ impl PlexiApp {
             ws_root,
             invoker_pane_id
         );
-        let report = crate::cli::run_steps_with(&steps, &[], |_step_num, rendered, parsed| {
-            self.execute_host_step(
-                command,
-                rendered,
-                parsed,
-                ws_root.as_deref(),
-                invoker_pane_id,
-            )
-        });
-        if !cmd.on_load.is_empty() && report.exit_code == 0 {
-            let focused = self.user_command_focused_pane(command);
-            let on_load_report =
-                crate::cli::run_steps_with(&cmd.on_load, &[], |_step_num, rendered, parsed| {
-                    self.execute_host_step(command, rendered, parsed, ws_root.as_deref(), focused)
-                });
-            self.mark_workspace_dirty();
-            return Some(on_load_report);
+        self.start_user_command_run(UserCommandRun::new(
+            command.clone(),
+            ws_root,
+            steps,
+            invoker_pane_id,
+            cmd.on_load,
+        ));
+        true
+    }
+
+    /// Run a single-line command's `on_load` steps against the pane it ran in.
+    fn start_on_load_run(
+        &mut self,
+        command: &PendingUserCommand,
+        ws_root: Option<std::path::PathBuf>,
+        on_load: Vec<String>,
+        pane: Option<u64>,
+    ) {
+        if on_load.is_empty() {
+            return;
         }
-        self.mark_workspace_dirty();
-        Some(report)
+        self.start_user_command_run(UserCommandRun::new(
+            command.clone(),
+            ws_root,
+            on_load,
+            pane,
+            Vec::new(),
+        ));
     }
 
     fn dispatch_single_line_user_command(
@@ -2518,44 +2485,37 @@ impl PlexiApp {
         }
     }
 
-    fn execute_host_step(
+    pub(super) fn execute_host_step(
         &mut self,
         command: &PendingUserCommand,
         rendered: &str,
         parsed: &crate::cli::ParsedStep,
         ws_root: Option<&std::path::Path>,
         default_pane_id: Option<u64>,
-    ) -> i32 {
+    ) -> HostStepOutcome {
         if self.user_command_window(command).is_none() {
             self.notify_command_refused(
                 &command.name,
                 "The invoking pane, window, or context is no longer available",
             );
-            return 1;
+            return HostStepOutcome::Exited(1);
         }
         match parsed {
             crate::cli::ParsedStep::PlexiCli(argv) => {
                 self.execute_host_cli_step(command, argv, ws_root, default_pane_id)
             }
             crate::cli::ParsedStep::Shell(sh) => {
-                let mut command = std::process::Command::new("sh");
-                command.arg("-c").arg(sh);
-                if let Some(root) = ws_root {
-                    command.current_dir(root);
-                }
-                if let Some(pid) = default_pane_id {
-                    command.env("PLEXI_PANE_ID", pid.to_string());
-                }
-                match command.status() {
-                    Ok(status) => status.code().unwrap_or(1),
-                    Err(e) => {
-                        log::error!(
-                            "user_command: shell step failed command_chars={} error={e}",
-                            rendered.chars().count()
-                        );
-                        1
-                    }
-                }
+                log::info!(
+                    "user_command: shell step off logic name={} command_chars={}",
+                    command.name,
+                    rendered.chars().count()
+                );
+                spawn_shell_step(
+                    sh,
+                    ws_root,
+                    default_pane_id,
+                    std::sync::Arc::clone(&self.ui_wake),
+                )
             }
         }
     }
@@ -2589,7 +2549,7 @@ impl PlexiApp {
         argv: &[String],
         ws_root: Option<&std::path::Path>,
         default_pane_id: Option<u64>,
-    ) -> i32 {
+    ) -> HostStepOutcome {
         use crate::cli::args::{Cli, Commands, PaneCmd, ViewCmd};
         use clap::Parser;
 
@@ -2601,7 +2561,7 @@ impl PlexiApp {
                     argv.len(),
                     e.kind()
                 );
-                return 2;
+                return HostStepOutcome::Exited(2);
             }
         };
 
@@ -2668,7 +2628,7 @@ impl PlexiApp {
                     let from_id = match from {
                         Some(ref t) => match self.resolve_host_pane_target(t) {
                             Some(id) => Some(id),
-                            None => return 1,
+                            None => return HostStepOutcome::Exited(1),
                         },
                         None => None,
                     };
@@ -2704,7 +2664,7 @@ impl PlexiApp {
                             match crate::host::pane_result::parse_schema_spec(spec, base.as_deref())
                             {
                                 Ok(s) => Some(s),
-                                Err(_) => return 1,
+                                Err(_) => return HostStepOutcome::Exited(1),
                             }
                         }
                         None => None,
@@ -2737,7 +2697,7 @@ impl PlexiApp {
                     if let Ok(content) = std::fs::read_to_string(&resp_path) {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                             if val.get("error").is_some() {
-                                return 1;
+                                return HostStepOutcome::Exited(1);
                             }
                             if let Some(pid) = val.get("pane_id").and_then(|v| v.as_u64()) {
                                 created_pane_id = Some(pid);
@@ -2745,22 +2705,12 @@ impl PlexiApp {
                         }
                     }
                     if !on_load.is_empty() {
-                        let report = crate::cli::run_steps_with(
-                            &on_load,
-                            &[],
-                            |_step_num, rendered, parsed| {
-                                self.execute_host_step(
-                                    command,
-                                    rendered,
-                                    parsed,
-                                    ws_root,
-                                    created_pane_id,
-                                )
-                            },
-                        );
-                        return report.exit_code;
+                        return HostStepOutcome::Nested {
+                            steps: on_load,
+                            pane: created_pane_id,
+                        };
                     }
-                    0
+                    HostStepOutcome::Exited(0)
                 }
                 PaneCmd::Name { first, second } => {
                     let (pane_id, name) = match second {
@@ -2768,23 +2718,23 @@ impl PlexiApp {
                             let target = crate::cli::PaneTarget::from(first);
                             match self.resolve_host_pane_target(&target) {
                                 Some(id) => (Some(id), title),
-                                None => return 1,
+                                None => return HostStepOutcome::Exited(1),
                             }
                         }
                         None => (None, first),
                     };
                     let Some(pid) = pane_id.or(default_pane_id) else {
-                        return 1;
+                        return HostStepOutcome::Exited(1);
                     };
                     let exists = self.windows.iter().any(|w| w.panes.contains_key(&pid));
                     if !exists {
-                        return 1;
+                        return HostStepOutcome::Exited(1);
                     }
                     self.handle_pane_ipc_request(crate::protocol::HostRequest::SetPaneTitle {
                         pane_id: pid,
                         name,
                     });
-                    0
+                    HostStepOutcome::Exited(0)
                 }
                 PaneCmd::Focus {
                     pane_id, forward, ..
@@ -2795,30 +2745,30 @@ impl PlexiApp {
                         } else {
                             self.step_focus_history_back();
                         }
-                        return 0;
+                        return HostStepOutcome::Exited(0);
                     };
                     let Some(pane_id) = self.resolve_host_pane_target(&target) else {
-                        return 1;
+                        return HostStepOutcome::Exited(1);
                     };
                     let exists = self.windows.iter().any(|w| w.panes.contains_key(&pane_id));
                     if !exists {
-                        return 1;
+                        return HostStepOutcome::Exited(1);
                     }
                     self.handle_pane_ipc_request(crate::protocol::HostRequest::FocusPane {
                         pane_id,
                     });
-                    0
+                    HostStepOutcome::Exited(0)
                 }
                 PaneCmd::Close { pane_id } => {
                     let resolved_id = match pane_id {
                         Some(ref t) => match self.resolve_host_pane_target(t) {
                             Some(id) => Some(id),
-                            None => return 1,
+                            None => return HostStepOutcome::Exited(1),
                         },
                         None => None,
                     };
                     let Some(pid) = resolved_id.or(default_pane_id) else {
-                        return 1;
+                        return HostStepOutcome::Exited(1);
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
@@ -2829,11 +2779,11 @@ impl PlexiApp {
                     if let Ok(content) = std::fs::read_to_string(&resp_path) {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                             if val.get("error").is_some() {
-                                return 1;
+                                return HostStepOutcome::Exited(1);
                             }
                         }
                     }
-                    0
+                    HostStepOutcome::Exited(0)
                 }
                 PaneCmd::Send {
                     pane_id,
@@ -2843,7 +2793,7 @@ impl PlexiApp {
                     operation_id,
                 } => {
                     let Some(pane_id) = self.resolve_host_pane_target(&pane_id) else {
-                        return 1;
+                        return HostStepOutcome::Exited(1);
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
@@ -2860,15 +2810,15 @@ impl PlexiApp {
                     if let Ok(content) = std::fs::read_to_string(&resp_path) {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                             if val.get("error").is_some() {
-                                return 1;
+                                return HostStepOutcome::Exited(1);
                             }
                         }
                     }
-                    0
+                    HostStepOutcome::Exited(0)
                 }
                 PaneCmd::Key { pane_id, key } => {
                     let Some(pane_id) = self.resolve_host_pane_target(&pane_id) else {
-                        return 1;
+                        return HostStepOutcome::Exited(1);
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
@@ -2880,13 +2830,13 @@ impl PlexiApp {
                     if let Ok(content) = std::fs::read_to_string(&resp_path) {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                             if val.get("error").is_some() {
-                                return 1;
+                                return HostStepOutcome::Exited(1);
                             }
                         }
                     }
-                    0
+                    HostStepOutcome::Exited(0)
                 }
-                _ => 1,
+                _ => HostStepOutcome::Exited(1),
             },
             Some(Commands::Agent {
                 cmd:
@@ -2902,7 +2852,7 @@ impl PlexiApp {
                         Ok(admitted) => admitted,
                         Err(error) => {
                             self.notify_command_refused("palette agent start", &error);
-                            return 1;
+                            return HostStepOutcome::Exited(1);
                         }
                     };
                 let eff_cwd = cwd
@@ -2919,18 +2869,18 @@ impl PlexiApp {
                     default_pane_id,
                     &[],
                 ) else {
-                    return 1;
+                    return HostStepOutcome::Exited(1);
                 };
                 let Ok(req) = serde_json::from_value::<crate::protocol::HostRequest>(payload)
                 else {
-                    return 1;
+                    return HostStepOutcome::Exited(1);
                 };
                 let reply = self.agent_spawn_reply_admitted(&req, admitted);
                 if let Some(error) = reply.get("error").and_then(serde_json::Value::as_str) {
                     self.notify_command_refused("agent launch", error);
-                    return 1;
+                    return HostStepOutcome::Exited(1);
                 }
-                0
+                HostStepOutcome::Exited(0)
             }
             Some(Commands::Agent {
                 cmd: crate::cli::args::AgentCmd::Open { name, cwd },
@@ -2943,10 +2893,10 @@ impl PlexiApp {
                 // The entire saved command now runs in logic, so admission
                 // and resolution can finish before the next step executes.
                 match self.open_named_agent(&name, &eff_cwd, default_pane_id, None) {
-                    Ok(_) => 0,
+                    Ok(_) => HostStepOutcome::Exited(0),
                     Err(error) => {
                         self.notify_command_refused(&format!("agent open {name}"), &error);
-                        1
+                        HostStepOutcome::Exited(1)
                     }
                 }
             }
@@ -2966,7 +2916,7 @@ impl PlexiApp {
                         Ok(admitted) => admitted,
                         Err(error) => {
                             self.notify_command_refused("palette agent spawn", &error);
-                            return 1;
+                            return HostStepOutcome::Exited(1);
                         }
                     };
                 let eff_cwd = cwd
@@ -2988,18 +2938,18 @@ impl PlexiApp {
                     from_id,
                     &[],
                 ) else {
-                    return 1;
+                    return HostStepOutcome::Exited(1);
                 };
                 let Ok(req) = serde_json::from_value::<crate::protocol::HostRequest>(payload)
                 else {
-                    return 1;
+                    return HostStepOutcome::Exited(1);
                 };
                 let reply = self.agent_spawn_reply_admitted(&req, admitted);
                 if let Some(error) = reply.get("error").and_then(serde_json::Value::as_str) {
                     self.notify_command_refused("agent launch", error);
-                    return 1;
+                    return HostStepOutcome::Exited(1);
                 }
-                0
+                HostStepOutcome::Exited(0)
             }
             Some(Commands::View {
                 cmd:
@@ -3021,7 +2971,7 @@ impl PlexiApp {
                 let from_id = match from {
                     Some(ref t) => match self.resolve_host_pane_target(t) {
                         Some(id) => Some(id),
-                        None => return 1,
+                        None => return HostStepOutcome::Exited(1),
                     },
                     None => None,
                 };
@@ -3032,7 +2982,7 @@ impl PlexiApp {
                     Some("up") => Some("split_above".to_string()),
                     Some("tab") => Some("tab".to_string()),
                     Some("window") => Some("new_window".to_string()),
-                    Some(_) => return 1,
+                    Some(_) => return HostStepOutcome::Exited(1),
                     None => layout_from_dir(down, left, up, right, tab, window, false),
                 };
                 let (target_type_id, target_args) = if let Some(tid) = type_id {
@@ -3042,7 +2992,7 @@ impl PlexiApp {
                 } else if let Some(bin) = cli_flag {
                     ("cli-renderer".to_string(), vec![bin])
                 } else {
-                    return 1;
+                    return HostStepOutcome::Exited(1);
                 };
                 let resp_path = next_resp_path();
                 let resp_str = resp_path.to_string_lossy().into_owned();
@@ -3071,13 +3021,13 @@ impl PlexiApp {
                 if let Ok(content) = std::fs::read_to_string(&resp_path) {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                         if val.get("error").is_some() {
-                            return 1;
+                            return HostStepOutcome::Exited(1);
                         }
                     }
                 }
-                0
+                HostStepOutcome::Exited(0)
             }
-            _ => 1,
+            _ => HostStepOutcome::Exited(1),
         }
     }
 
@@ -3223,6 +3173,105 @@ mod tests {
         }));
         assert_eq!(h.app.active_window, 1);
         assert_eq!(h.app.router.active_idx(), 1);
+    }
+
+    fn stepped_command(h: &mut crate::testing::HostHarness, steps: Vec<String>) {
+        h.app.palette_commands = vec![crate::cli::ResolvedUserCommand {
+            name: "slow".into(),
+            scope: crate::cli::UserCommandScope::Workspace,
+            description: None,
+            run: None,
+            steps,
+            on_load: Vec::new(),
+            secrets: Vec::new(),
+            split: false,
+        }];
+        h.app.queue_user_command("slow", None);
+    }
+
+    /// Run frames until `done` holds, failing after `limit`.
+    fn frames_until(
+        h: &mut crate::testing::HostHarness,
+        limit: std::time::Duration,
+        mut done: impl FnMut(&crate::testing::HostHarness) -> bool,
+    ) {
+        let start = std::time::Instant::now();
+        while !done(h) {
+            assert!(
+                start.elapsed() < limit,
+                "condition not met within {limit:?}"
+            );
+            h.run_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Stint 1625: a slow shell step must not hold App::logic. Frames keep
+    /// running while it waits, and the next step starts only after it exits.
+    #[test]
+    fn slow_shell_step_does_not_block_logic() {
+        let mut h = crate::testing::HostHarness::new();
+        let pane = h.add_test_pane();
+        h.focus_pane(pane);
+        let dir = tempfile::tempdir().unwrap();
+        let release = dir.path().join("release");
+        let second = dir.path().join("second");
+        // Waits for the test to release it; gives up (exit 1) after ~5s so a
+        // blocking host fails the timing assertion instead of hanging.
+        let wait = format!(
+            "i=0; while [ ! -e '{r}' ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done; [ -e '{r}' ]",
+            r = release.display()
+        );
+        stepped_command(
+            &mut h,
+            vec![wait, format!("printf ok > '{}'", second.display())],
+        );
+        let start = std::time::Instant::now();
+        h.run_frames(1);
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(1500),
+            "logic frame blocked on the shell step for {:?}",
+            start.elapsed()
+        );
+        h.run_frames(5);
+        assert!(!second.exists(), "step 2 started before step 1 exited");
+        std::fs::write(&release, "").unwrap();
+        frames_until(&mut h, std::time::Duration::from_secs(5), |_| {
+            second.exists()
+        });
+    }
+
+    /// Off-thread shell steps keep the saved-command contract: steps run in
+    /// order, a nested `pane new --on-load` finishes before the next step, and
+    /// the first failure stops the command.
+    #[test]
+    fn host_steps_keep_order_and_stop_at_failure() {
+        let mut h = crate::testing::HostHarness::new();
+        let pane = h.add_test_pane();
+        h.focus_pane(pane);
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let append = |tag: &str| format!("printf {tag} >> '{}'", log.display());
+        stepped_command(
+            &mut h,
+            vec![
+                format!("sleep 0.3; {}", append("a")),
+                format!(
+                    "pane new --right --on-load \"sleep 0.2; {}\" --on-load \"{}\"",
+                    append("b"),
+                    append("c")
+                ),
+                append("d"),
+                "exit 3".into(),
+                append("e"),
+            ],
+        );
+        h.run_frames(1);
+        assert_eq!(h.app.user_command_runs.len(), 1, "run parks on step 1");
+        frames_until(&mut h, std::time::Duration::from_secs(10), |h| {
+            h.app.user_command_runs.is_empty()
+        });
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "abcd");
     }
 
     #[test]

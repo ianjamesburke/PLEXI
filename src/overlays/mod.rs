@@ -11,6 +11,7 @@ pub(crate) mod quick_note;
 pub(crate) mod setup;
 pub(crate) mod toolbar;
 pub(crate) mod ui_gallery;
+pub(crate) mod user_command_run;
 
 use crate::app::PlexiApp;
 

@@ -102,6 +102,7 @@ impl PlexiApp {
             self.handle_pane_ipc_request(cmd);
         }
         self.drain_pending_user_commands();
+        self.drain_user_command_runs();
         self.drain_event_subscribe_channel();
     }
 
