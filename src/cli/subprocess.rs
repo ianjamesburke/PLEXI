@@ -32,8 +32,9 @@ impl Captured {
 /// stdout/stderr. At `timeout` the child and its process group are killed and
 /// reaped. Never blocks indefinitely.
 ///
-/// Errors only when the child cannot run (binary not on PATH, permission
-/// denied). A timeout is a failed `Captured`, not an `Err`, because the caller
+/// Errors when the child cannot run (binary not on PATH, permission denied)
+/// or could not be stopped at the limit and may still be running. A timeout
+/// that was stopped is a failed `Captured`, not an `Err`, because the caller
 /// usually wants to fall through to the next descriptor tier rather than abort.
 pub fn run_capture(bin: &str, args: &[&str], timeout: Duration) -> std::io::Result<Captured> {
     let mut command = std::process::Command::new(bin);

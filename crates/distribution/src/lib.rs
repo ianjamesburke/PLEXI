@@ -23,6 +23,14 @@ pub enum Error {
         what: String,
         limit: std::time::Duration,
     },
+    #[error("{what} did not finish within {limit:?} and could not be stopped ({cause}); it may still be running")]
+    NotStopped {
+        what: String,
+        limit: std::time::Duration,
+        cause: String,
+    },
+    #[error("{what} wrote more than {limit} bytes; its output was cut and is incomplete")]
+    OutputTruncated { what: String, limit: u64 },
 }
 pub type Result<T> = std::result::Result<T, Error>;
 

@@ -1,6 +1,7 @@
 use crate::cli::registry as cli_registry;
+use crate::cli::subprocess::run_capture;
 use std::collections::BTreeSet;
-use std::process::Command;
+use std::time::Duration;
 
 /// Indirection so the watch path can be tested without spawning real
 /// processes.
@@ -17,13 +18,17 @@ pub trait CliInspector {
 
 pub struct RealInspector;
 
+/// Each inspection runs through `run_capture`; a CLI that hangs on `--version`
+/// or `--help` is stopped here and reads as not answering.
+const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 impl CliInspector for RealInspector {
     fn which(&self, name: &str) -> Option<String> {
-        let out = Command::new("which").arg(name).output().ok()?;
-        if !out.status.success() {
+        let out = run_capture("which", &[name], INSPECT_TIMEOUT).ok()?;
+        if !out.success {
             return None;
         }
-        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let path = out.stdout.trim().to_string();
         if path.is_empty() {
             None
         } else {
@@ -31,24 +36,17 @@ impl CliInspector for RealInspector {
         }
     }
     fn version(&self, name: &str) -> Option<String> {
-        let out = Command::new(name).arg("--version").output().ok()?;
-        if !out.status.success() {
+        let out = run_capture(name, &["--version"], INSPECT_TIMEOUT).ok()?;
+        if !out.success {
             return None;
         }
-        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        Some(out.stdout.trim().to_string())
     }
     fn help(&self, name: &str) -> String {
-        match Command::new(name).arg("--help").output() {
-            Ok(out) => {
-                let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
-                if s.is_empty() {
-                    // Some CLIs (e.g. cargo) print --help to stderr.
-                    s = String::from_utf8_lossy(&out.stderr).into_owned();
-                }
-                s
-            }
-            Err(_) => String::new(),
-        }
+        // Some CLIs (e.g. cargo) print --help to stderr; `help_text` takes it.
+        run_capture(name, &["--help"], INSPECT_TIMEOUT)
+            .map(|out| out.help_text())
+            .unwrap_or_default()
     }
 }
 
@@ -307,6 +305,26 @@ impl CliInspector for MockInspector {
 #[cfg(test)]
 mod registry_watch_tests {
     use super::*;
+
+    /// Stint 1610: a CLI that hangs on `--version` is stopped at the
+    /// inspection limit instead of holding the watch.
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_cli_is_stopped_at_the_inspection_limit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cli = dir.path().join("hung-cli");
+        std::fs::write(&cli, "#!/bin/sh\nexec sleep 60\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        let version = RealInspector.version(cli.to_str().unwrap());
+        let elapsed = started.elapsed();
+        assert_eq!(version, None);
+        assert!(
+            elapsed < INSPECT_TIMEOUT + Duration::from_secs(10),
+            "{elapsed:?}"
+        );
+    }
 
     #[test]
     fn watch_reports_not_installed_for_missing_binary() {

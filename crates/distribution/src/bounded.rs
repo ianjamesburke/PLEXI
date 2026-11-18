@@ -7,7 +7,10 @@
 //! process group. At the limit the whole group is killed while the child is
 //! still unreaped (so the group id cannot be reused), then the child is
 //! reaped. A process that detaches into its own session, as `host start` does
-//! for the host, is outside the group and survives.
+//! for the host, is outside the group and survives. If the kill fails and the
+//! child does not exit, the run still returns, with an error saying the child
+//! may still be running. Output past `CAPTURE_LIMIT` is cut and the cut is
+//! reported, so a caller that keeps the output can refuse an incomplete one.
 
 use crate::{Error, IoContext, Result};
 use std::process::{Command, ExitStatus, Stdio};
@@ -17,11 +20,33 @@ use std::time::{Duration, Instant};
 /// the child may keep writing; the read stops here instead of following it.
 pub const CAPTURE_LIMIT: u64 = 1024 * 1024;
 
+/// How long a killed child gets to be reaped before the run gives up on it.
+const REAP_LIMIT: Duration = Duration::from_secs(5);
+
 #[derive(Debug)]
 pub struct Finished {
     pub status: ExitStatus,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
+    /// More than `CAPTURE_LIMIT` bytes were written to stdout; `stdout` holds
+    /// only the first `CAPTURE_LIMIT`.
+    pub stdout_truncated: bool,
+    /// As `stdout_truncated`, for stderr.
+    pub stderr_truncated: bool,
+}
+
+impl Finished {
+    /// The whole of stdout, or `Error::OutputTruncated` when it was cut. For
+    /// callers that keep the output, such as an installed file.
+    pub fn complete_stdout(&self, what: &str) -> Result<&[u8]> {
+        if self.stdout_truncated {
+            return Err(Error::OutputTruncated {
+                what: what.to_string(),
+                limit: CAPTURE_LIMIT,
+            });
+        }
+        Ok(&self.stdout)
+    }
 }
 
 /// Run `command`, named `what` in errors, for at most `limit`.
@@ -64,52 +89,112 @@ pub fn run(mut command: Command, what: &str, limit: Duration) -> Result<Finished
             break status;
         }
         if Instant::now() >= deadline {
-            #[cfg(unix)]
-            {
-                // SAFETY: the child is unreaped, so its pid is still its group id.
-                let killed = unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
-                let error = std::io::Error::last_os_error();
-                if killed != 0 && error.raw_os_error() != Some(libc::ESRCH) {
-                    log::warn!("distribution: kill process group of {what} failed: {error}");
-                }
-            }
-            // Windows kills only the child here; capture through files means
-            // a surviving descendant cannot block the caller.
-            #[cfg(windows)]
-            if let Err(error) = child.kill() {
-                log::warn!("distribution: kill {what} failed: {error}");
-            }
-            let reaped = child.wait();
-            log::warn!("distribution: {what} exceeded {limit:?}; killed, reaped={reaped:?}");
-            return Err(Error::TimedOut {
-                what: what.to_string(),
-                limit,
-            });
+            return Err(stop(child, what, limit, kill_tree, REAP_LIMIT));
         }
         std::thread::sleep(Duration::from_millis(20));
     };
     let read = |file: tempfile::NamedTempFile, which: &str| {
         read_capped(file.path(), CAPTURE_LIMIT).context(format!("read {which} of {what}"))
     };
+    let (stdout, stdout_truncated) = read(stdout, "output")?;
+    let (stderr, stderr_truncated) = read(stderr, "errors")?;
+    if stdout_truncated || stderr_truncated {
+        log::warn!(
+            "distribution: {what} wrote more than {CAPTURE_LIMIT} bytes; capture cut (stdout={stdout_truncated} stderr={stderr_truncated})"
+        );
+    }
     Ok(Finished {
         status,
-        stdout: read(stdout, "output")?,
-        stderr: read(stderr, "errors")?,
+        stdout,
+        stderr,
+        stdout_truncated,
+        stderr_truncated,
     })
+}
+
+/// Kill the child's whole process group. The child is unreaped, so its pid is
+/// still its group id. A group already gone is not a failure.
+#[cfg(unix)]
+fn kill_tree(child: &mut std::process::Child) -> std::io::Result<()> {
+    // SAFETY: killpg only sends a signal; the pid names an unreaped child.
+    if unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) } == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(()),
+        _ => Err(error),
+    }
+}
+
+/// Windows kills only the child here; capture through files means a
+/// surviving descendant cannot block the caller.
+#[cfg(windows)]
+fn kill_tree(child: &mut std::process::Child) -> std::io::Result<()> {
+    child.kill()
+}
+
+/// Stop a child that ran past `limit`: kill it with `kill`, then reap it,
+/// waiting at most `reap_limit` so a failed kill never holds the caller.
+fn stop(
+    mut child: std::process::Child,
+    what: &str,
+    limit: Duration,
+    kill: fn(&mut std::process::Child) -> std::io::Result<()>,
+    reap_limit: Duration,
+) -> Error {
+    let killed = kill(&mut child);
+    let reap_deadline = Instant::now() + reap_limit;
+    let reaped = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() < reap_deadline => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            Ok(None) => break Err(format!("still running {reap_limit:?} after the kill")),
+            Err(error) => break Err(format!("wait failed: {error}")),
+        }
+    };
+    match (killed, reaped) {
+        (_, Ok(status)) => {
+            log::warn!("distribution: {what} exceeded {limit:?}; killed and reaped ({status})");
+            Error::TimedOut {
+                what: what.to_string(),
+                limit,
+            }
+        }
+        (killed, Err(reap)) => {
+            let cause = match killed {
+                Ok(()) => reap,
+                Err(error) => format!("kill failed: {error}; {reap}"),
+            };
+            log::error!(
+                "distribution: {what} exceeded {limit:?} and could not be stopped: {cause}"
+            );
+            Error::NotStopped {
+                what: what.to_string(),
+                limit,
+                cause,
+            }
+        }
+    }
 }
 
 /// Read up to `cap` bytes of `path` from offset 0 through a handle of its
 /// own, so the read never shares an offset with a process still writing.
-fn read_capped(path: &std::path::Path, cap: u64) -> std::io::Result<Vec<u8>> {
+/// The flag is true when the file held more than `cap` bytes.
+fn read_capped(path: &std::path::Path, cap: u64) -> std::io::Result<(Vec<u8>, bool)> {
     #[cfg(unix)]
     use std::os::unix::fs::FileExt;
     #[cfg(windows)]
     use std::os::windows::fs::FileExt;
     let file = std::fs::File::open(path)?;
+    // One byte past the cap tells a cut capture from one that fits exactly.
+    let probe = cap + 1;
     let mut bytes = Vec::new();
     let mut chunk = [0u8; 64 * 1024];
-    while (bytes.len() as u64) < cap {
-        let want = chunk.len().min((cap - bytes.len() as u64) as usize);
+    while (bytes.len() as u64) < probe {
+        let want = chunk.len().min((probe - bytes.len() as u64) as usize);
         let offset = bytes.len() as u64;
         #[cfg(unix)]
         let got = file.read_at(&mut chunk[..want], offset);
@@ -122,7 +207,9 @@ fn read_capped(path: &std::path::Path, cap: u64) -> std::io::Result<Vec<u8>> {
             Err(error) => return Err(error),
         }
     }
-    Ok(bytes)
+    let truncated = bytes.len() as u64 > cap;
+    bytes.truncate(cap as usize);
+    Ok((bytes, truncated))
 }
 
 #[cfg(test)]
@@ -138,9 +225,39 @@ mod capture_tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         let mut writer = file.as_file().try_clone().unwrap();
         writer.write_all(b"0123456789").unwrap();
-        assert_eq!(read_capped(file.path(), 4).unwrap(), b"0123");
+        assert_eq!(
+            read_capped(file.path(), 4).unwrap(),
+            (b"0123".to_vec(), true)
+        );
         writer.write_all(b"ab").unwrap();
-        assert_eq!(read_capped(file.path(), 100).unwrap(), b"0123456789ab");
+        assert_eq!(
+            read_capped(file.path(), 100).unwrap(),
+            (b"0123456789ab".to_vec(), false)
+        );
+    }
+
+    /// A capture that fits exactly is complete; one byte more is reported as
+    /// cut, and `complete_stdout` refuses it (stint 1610).
+    #[test]
+    fn a_cut_capture_is_reported_and_refused() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), b"0123").unwrap();
+        assert_eq!(
+            read_capped(file.path(), 4).unwrap(),
+            (b"0123".to_vec(), false)
+        );
+        std::fs::write(file.path(), b"01234").unwrap();
+        let (stdout, stdout_truncated) = read_capped(file.path(), 4).unwrap();
+        assert!(stdout_truncated);
+        let finished = Finished {
+            status: ExitStatus::default(),
+            stdout,
+            stderr: Vec::new(),
+            stdout_truncated,
+            stderr_truncated: false,
+        };
+        let error = finished.complete_stdout("completions").unwrap_err();
+        assert!(matches!(error, Error::OutputTruncated { .. }), "{error}");
     }
 }
 
@@ -244,8 +361,38 @@ mod tests {
         assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
         assert!(finished.status.success());
         assert!(!finished.stdout.is_empty());
-        assert!(finished.stdout.len() as u64 <= CAPTURE_LIMIT);
+        assert_eq!(finished.stdout.len() as u64, CAPTURE_LIMIT);
+        assert!(finished.stdout_truncated);
         assert!(finished.stdout.starts_with(b"plexi-bounded-capture\n"));
+    }
+
+    /// A child the kill cannot stop does not hold the run: the reap gives up
+    /// at its own bound and the error says the child may still be running
+    /// (stint 1610). The kill is stubbed to fail, as a real one rarely does.
+    #[test]
+    fn a_failed_kill_returns_instead_of_waiting_forever() {
+        let child = sh("sleep 600").spawn().unwrap();
+        let pid = child.id();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let refuse = |_: &mut std::process::Child| Err(std::io::Error::other("refused"));
+            let error = stop(
+                child,
+                "test child",
+                Duration::from_millis(1),
+                refuse,
+                Duration::from_millis(300),
+            );
+            let _ = tx.send(error);
+        });
+        let error = rx.recv_timeout(Duration::from_secs(10));
+        // SAFETY: test cleanup of a process this test started.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        let error = error.expect("stop returned within its reap bound");
+        let text = error.to_string();
+        assert!(matches!(error, Error::NotStopped { .. }), "{text}");
+        assert!(text.contains("refused"), "{text}");
+        assert!(text.contains("may still be running"), "{text}");
     }
 
     /// A hung child and its descendants are killed at the limit and reaped.

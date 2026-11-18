@@ -619,6 +619,24 @@ fn quote_shell(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
+/// The completion script a `completions <shell>` run printed. A failed run,
+/// an empty script or a cut capture is refused, so an incomplete script is
+/// never installed.
+fn completion_script(
+    output: &crate::bounded::Finished,
+    what: &str,
+    shell: &str,
+    name: &str,
+) -> Result<Vec<u8>> {
+    if !output.status.success() || output.stdout.is_empty() {
+        return Err(Error::Invalid(format!(
+            "could not generate {shell} completions for {name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    Ok(output.complete_stdout(what)?.to_vec())
+}
+
 fn integration_files(package: &Package, receipt: &Receipt) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     let name = release::command_name(&receipt.channel);
     let mut files = Vec::new();
@@ -636,18 +654,10 @@ fn integration_files(package: &Package, receipt: &Receipt) -> Result<Vec<(PathBu
                 let mut command = Command::new(receipt.active.executable());
                 command.args(["completions", shell]);
                 clean_environment(&mut command);
-                let output = crate::bounded::run(
-                    command,
-                    &format!("{shell} completions generation"),
-                    CHECK_LIMIT,
-                )?;
-                if !output.status.success() || output.stdout.is_empty() {
-                    return Err(Error::Invalid(format!(
-                        "could not generate {shell} completions for {name}: {}",
-                        String::from_utf8_lossy(&output.stderr)
-                    )));
-                }
-                files.push((completion_path(receipt, shell), output.stdout.clone()));
+                let what = format!("{shell} completions generation");
+                let output = crate::bounded::run(command, &what, CHECK_LIMIT)?;
+                let script = completion_script(&output, &what, shell, &name)?;
+                files.push((completion_path(receipt, shell), script.clone()));
                 for dropin in dropin_completion_paths(&name, shell) {
                     let can_own = (!dropin.exists() && !dropin.is_symlink())
                         || receipt
@@ -655,7 +665,7 @@ fn integration_files(package: &Package, receipt: &Receipt) -> Result<Vec<(PathBu
                             .iter()
                             .any(|p| p.path == dropin && p.matches().unwrap_or(false));
                     if can_own {
-                        files.push((dropin, output.stdout.clone()));
+                        files.push((dropin, script.clone()));
                     } else {
                         log::info!(
                             "distribution: skipping unowned completion drop-in {}",
@@ -2028,6 +2038,24 @@ fn windows_remove(receipt: &Receipt) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stint 1610: a completion script cut at the capture limit is refused,
+    /// never installed as if it were whole.
+    #[test]
+    fn a_cut_completion_script_is_refused() {
+        let output = |stdout_truncated| crate::bounded::Finished {
+            status: std::process::ExitStatus::default(),
+            stdout: b"#compdef plexi\n".to_vec(),
+            stderr: Vec::new(),
+            stdout_truncated,
+            stderr_truncated: false,
+        };
+        let whole = completion_script(&output(false), "zsh completions generation", "zsh", "plexi");
+        assert_eq!(whole.unwrap(), b"#compdef plexi\n");
+        let cut = completion_script(&output(true), "zsh completions generation", "zsh", "plexi")
+            .unwrap_err();
+        assert!(matches!(cut, Error::OutputTruncated { .. }), "{cut}");
+    }
 
     #[cfg(windows)]
     #[test]

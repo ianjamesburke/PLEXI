@@ -1028,16 +1028,14 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
         .or_else(|| detect_pid(&socket));
     if !shutdown_complete(pid, &socket) {
         log::info!("host_restart: waiting old_pid={pid:?}");
-        let stopped = std::process::Command::new(&exe)
-            .args(["host", "stop"])
-            .output();
+        let stopped = run_host_step(&exe, "stop", HOST_STEP_LIMIT);
         // `host stop` exits non-zero when the old host stopped unclean (an
         // unsaved workspace, say) as well as when it did not stop. Restart
         // only needs it gone: the wait below decides, and an unclean stop is
         // reported as a warning (stint 1430).
         match stopped {
             Ok(output) => {
-                if let Some(warning) = restart_stop_warning(&output) {
+                if let Some(warning) = restart_stop_warning(output.status, &output.stderr) {
                     log::warn!("host_restart: old host stop reported: {warning}");
                     eprintln!("warning: {warning}");
                 }
@@ -1066,10 +1064,7 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
     }
     // Reuse the public start handler without seed panes; capture its human output for JSON callers.
     log::info!("host_restart: starting");
-    match std::process::Command::new(&exe)
-        .args(["host", "start"])
-        .output()
-    {
+    match run_host_step(&exe, "start", HOST_STEP_LIMIT) {
         Ok(output) if output.status.success() => {
             let new_pid = running_build_info().as_ref().and_then(reported_pid);
             log::info!("host_restart: started new_pid={new_pid:?}");
@@ -1092,15 +1087,31 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
     }
 }
 
+/// `host stop` and `host start` each finish within their own deadlines
+/// (reply, shutdown and readiness waits well under this); the limit only
+/// stops a hung step from holding the restart.
+const HOST_STEP_LIMIT: Duration = Duration::from_secs(60);
+
+/// Run `exe host <step>` as a restart step, bounded by `limit`.
+fn run_host_step(
+    exe: &Path,
+    step: &str,
+    limit: Duration,
+) -> plexi_distribution::Result<plexi_distribution::bounded::Finished> {
+    let mut command = std::process::Command::new(exe);
+    command.args(["host", step]);
+    plexi_distribution::bounded::run(command, &format!("host {step}"), limit)
+}
+
 /// What a non-zero `host stop` child said, as a restart warning.
-fn restart_stop_warning(output: &std::process::Output) -> Option<String> {
-    if output.status.success() {
+fn restart_stop_warning(status: std::process::ExitStatus, stderr: &[u8]) -> Option<String> {
+    if status.success() {
         return None;
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = String::from_utf8_lossy(stderr);
     let text = stderr.trim().trim_start_matches("error: ").trim();
     Some(if text.is_empty() {
-        format!("the old host stop exited with {}", output.status)
+        format!("the old host stop exited with {status}")
     } else {
         text.to_string()
     })
@@ -1110,21 +1121,36 @@ fn restart_stop_warning(output: &std::process::Output) -> Option<String> {
 #[test]
 fn restart_reports_an_unclean_stop_as_a_warning() {
     use std::os::unix::process::ExitStatusExt;
-    let unclean = std::process::Output {
-        status: std::process::ExitStatus::from_raw(1 << 8),
-        stdout: Vec::new(),
-        stderr: b"error: Plexi host stopped, but the workspace was not saved; \
-the existing workspace file was left as it was.\n"
-            .to_vec(),
-    };
-    let warning = restart_stop_warning(&unclean).expect("an unclean stop warns");
+    let warning = restart_stop_warning(
+        std::process::ExitStatus::from_raw(1 << 8),
+        b"error: Plexi host stopped, but the workspace was not saved; \
+the existing workspace file was left as it was.\n",
+    )
+    .expect("an unclean stop warns");
     assert!(warning.starts_with("Plexi host stopped, but"), "{warning}");
-    let clean = std::process::Output {
-        status: std::process::ExitStatus::from_raw(0),
-        stdout: b"Plexi host stopped (clean shutdown).\n".to_vec(),
-        stderr: Vec::new(),
-    };
-    assert_eq!(restart_stop_warning(&clean), None);
+    assert_eq!(
+        restart_stop_warning(std::process::ExitStatus::from_raw(0), b""),
+        None
+    );
+}
+
+/// Stint 1610: a restart step that hangs is stopped at its limit and reported
+/// as an error, so `host restart` never waits on it forever.
+#[cfg(all(test, unix))]
+#[test]
+fn a_hung_restart_step_is_stopped_at_its_limit() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let exe = dir.path().join("hung-plexi");
+    std::fs::write(&exe, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let started = Instant::now();
+    let error = run_host_step(&exe, "stop", Duration::from_millis(300)).unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(10), "{error}");
+    assert!(
+        matches!(error, plexi_distribution::Error::TimedOut { .. }),
+        "{error}"
+    );
 }
 
 #[cfg(test)]

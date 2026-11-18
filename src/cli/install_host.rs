@@ -20,6 +20,7 @@ use crate::app::registry::{PluginManifest, MANIFEST_SCHEMA_VERSION};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 /// Pack file embedded into the binary. Auto-applied on every launch (core) or
 /// on first launch only (examples). Also reachable via `plexi install --pack core`.
@@ -83,65 +84,107 @@ pub trait Cloner: Send + Sync {
 /// libgit2 / `git2` crate dependency — keeps the release build slim.
 pub struct GitCloner;
 
+/// Network git steps (clone, fetch, pull) get a generous limit; local reads
+/// finish at once when healthy. The limits only stop a hung git.
+const GIT_NETWORK_LIMIT: Duration = Duration::from_secs(600);
+const GIT_LOCAL_LIMIT: Duration = Duration::from_secs(30);
+
+/// A `git` command that never prompts. It runs through the bounded runner in
+/// a session with no terminal, and every prompt route is shut: terminal
+/// prompts (`GIT_TERMINAL_PROMPT=0`), askpass helpers (an empty `GIT_ASKPASS`
+/// stops git looking further, and ssh's `SSH_ASKPASS` is cleared and refused).
+/// Credentials must come from an ssh key or agent or a credential helper.
+fn git_command(dir: Option<&Path>) -> Command {
+    let mut command = Command::new("git");
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS_REQUIRE", "never")
+        .env_remove("SSH_ASKPASS");
+    if let Some(dir) = dir {
+        command.current_dir(dir);
+    }
+    command
+}
+
+/// Run a git command bounded by `limit`; any failure, including a non-zero
+/// exit, is an error naming `what`.
+fn run_git(
+    command: Command,
+    what: &str,
+    limit: Duration,
+) -> Result<plexi_distribution::bounded::Finished, String> {
+    let output = plexi_distribution::bounded::run(command, what, limit)
+        .map_err(|error| format!("could not run {what}: {error}"))?;
+    if !output.status.success() {
+        return Err(git_failure(what, output.status, &output.stderr));
+    }
+    Ok(output)
+}
+
+/// What a failed git step said, plus how to fix it when git failed for want
+/// of credentials it was not allowed to prompt for.
+fn git_failure(what: &str, status: std::process::ExitStatus, stderr: &[u8]) -> String {
+    const AUTH_MARKERS: &[&str] = &[
+        "terminal prompts disabled",
+        "could not read Username",
+        "could not read Password",
+        "Authentication failed",
+        "Permission denied (publickey",
+        "Host key verification failed",
+        "Could not read from remote repository",
+    ];
+    let stderr = String::from_utf8_lossy(stderr);
+    let stderr = stderr.trim();
+    let mut message = format!("{what} failed ({status})");
+    if !stderr.is_empty() {
+        message.push_str(&format!(": {stderr}"));
+    }
+    if AUTH_MARKERS.iter().any(|marker| stderr.contains(marker)) {
+        message.push_str(
+            "\ngit could not authenticate and Plexi does not prompt for credentials. \
+For an ssh URL, add an ssh key for the host to your ssh agent and accept its host key \
+once with `ssh -T <host>`; for an https GitHub URL, run `gh auth login` then \
+`gh auth setup-git`. Then retry.",
+        );
+    }
+    message
+}
+
 impl Cloner for GitCloner {
     fn clone(&self, url: &str, target_dir: &Path) -> Result<(), String> {
-        let status = Command::new("git")
-            .args(["clone", "--depth", "1", url])
-            .arg(target_dir)
-            .status()
-            .map_err(|e| format!("could not run git: {e}"))?;
-        if !status.success() {
-            return Err(format!(
-                "git clone {url} failed (exit {})",
-                status.code().unwrap_or(-1)
-            ));
-        }
+        let mut command = git_command(None);
+        command.args(["clone", "--depth", "1", url]).arg(target_dir);
+        run_git(command, &format!("git clone {url}"), GIT_NETWORK_LIMIT)?;
         Ok(())
     }
 
     fn checkout(&self, repo_dir: &Path, git_ref: &str) -> Result<(), String> {
-        // For shallow clones we may need the ref fetched explicitly.
-        let _ = Command::new("git")
-            .args(["fetch", "--depth", "1", "origin", git_ref])
-            .current_dir(repo_dir)
-            .status();
-        let status = Command::new("git")
-            .args(["checkout", git_ref])
-            .current_dir(repo_dir)
-            .status()
-            .map_err(|e| format!("could not run git checkout: {e}"))?;
-        if !status.success() {
-            return Err(format!(
-                "git checkout {git_ref} failed (exit {})",
-                status.code().unwrap_or(-1)
-            ));
+        // For shallow clones we may need the ref fetched explicitly. A ref
+        // already present needs no fetch, so a failure here is not fatal;
+        // the checkout decides.
+        let mut fetch = git_command(Some(repo_dir));
+        fetch.args(["fetch", "--depth", "1", "origin", git_ref]);
+        if let Err(error) = run_git(fetch, &format!("git fetch {git_ref}"), GIT_NETWORK_LIMIT) {
+            log::info!("install_host: {error}; trying checkout of {git_ref} anyway");
         }
+        let mut checkout = git_command(Some(repo_dir));
+        checkout.args(["checkout", git_ref]);
+        run_git(
+            checkout,
+            &format!("git checkout {git_ref}"),
+            GIT_LOCAL_LIMIT,
+        )?;
         Ok(())
     }
 
     fn pull(&self, repo_dir: &Path) -> Result<(), String> {
-        let fetch = Command::new("git")
-            .args(["fetch"])
-            .current_dir(repo_dir)
-            .status()
-            .map_err(|e| format!("could not run git fetch: {e}"))?;
-        if !fetch.success() {
-            return Err(format!(
-                "git fetch failed (exit {})",
-                fetch.code().unwrap_or(-1)
-            ));
-        }
-        let pull = Command::new("git")
-            .args(["pull", "--ff-only"])
-            .current_dir(repo_dir)
-            .status()
-            .map_err(|e| format!("could not run git pull: {e}"))?;
-        if !pull.success() {
-            return Err(format!(
-                "git pull failed (exit {})",
-                pull.code().unwrap_or(-1)
-            ));
-        }
+        let mut fetch = git_command(Some(repo_dir));
+        fetch.arg("fetch");
+        run_git(fetch, "git fetch", GIT_NETWORK_LIMIT)?;
+        let mut pull = git_command(Some(repo_dir));
+        pull.args(["pull", "--ff-only"]);
+        run_git(pull, "git pull", GIT_NETWORK_LIMIT)?;
         Ok(())
     }
 }
@@ -682,14 +725,9 @@ pub fn infer_source_and_version(plugin_dir: &Path, manifest: &PluginManifest) ->
 }
 
 fn git_remote_origin_url(repo_dir: &Path) -> Option<String> {
-    let output = Command::new("git")
-        .args(["config", "--get", "remote.origin.url"])
-        .current_dir(repo_dir)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
+    let mut command = git_command(Some(repo_dir));
+    command.args(["config", "--get", "remote.origin.url"]);
+    let output = run_git(command, "git config remote.origin.url", GIT_LOCAL_LIMIT).ok()?;
     let raw = String::from_utf8(output.stdout).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -730,30 +768,20 @@ fn format_git_source_spec(url: &str) -> String {
 
 fn git_current_ref(repo_dir: &Path) -> Option<String> {
     // Prefer an exact-tag match so re-install lands on the same release.
-    let tag = Command::new("git")
-        .args(["describe", "--tags", "--exact-match"])
-        .current_dir(repo_dir)
-        .output()
-        .ok();
-    if let Some(out) = tag {
-        if out.status.success() {
-            if let Ok(s) = String::from_utf8(out.stdout) {
-                let trimmed = s.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
-                }
+    let mut tag = git_command(Some(repo_dir));
+    tag.args(["describe", "--tags", "--exact-match"]);
+    if let Ok(out) = run_git(tag, "git describe", GIT_LOCAL_LIMIT) {
+        if let Ok(s) = String::from_utf8(out.stdout) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
             }
         }
     }
     // Fall back to a short SHA — re-install still reproducible.
-    let sha = Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .current_dir(repo_dir)
-        .output()
-        .ok()?;
-    if !sha.status.success() {
-        return None;
-    }
+    let mut sha = git_command(Some(repo_dir));
+    sha.args(["rev-parse", "--short", "HEAD"]);
+    let sha = run_git(sha, "git rev-parse", GIT_LOCAL_LIMIT).ok()?;
     let s = String::from_utf8(sha.stdout).ok()?;
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -1266,6 +1294,73 @@ pub(crate) mod test_support {
 mod install_tests {
     use super::test_support::MockCloner;
     use super::*;
+
+    /// Stint 1610: plugin-source git never prompts. Every prompt route is
+    /// shut in the command it runs.
+    #[test]
+    fn git_runs_with_every_prompt_route_shut() {
+        let command = git_command(None);
+        let envs: HashMap<_, _> = command
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.map(|v| v.to_owned())))
+            .collect();
+        let env = |key: &str| envs.get(std::ffi::OsStr::new(key)).cloned();
+        assert_eq!(env("GIT_TERMINAL_PROMPT"), Some(Some("0".into())));
+        assert_eq!(env("GIT_ASKPASS"), Some(Some("".into())));
+        assert_eq!(env("SSH_ASKPASS_REQUIRE"), Some(Some("never".into())));
+        assert_eq!(env("SSH_ASKPASS"), Some(None));
+    }
+
+    /// Stint 1610: an auth failure says what failed and how to set up
+    /// credentials; other failures carry no auth advice.
+    #[cfg(unix)]
+    #[test]
+    fn a_git_auth_failure_says_how_to_set_up_credentials() {
+        use std::os::unix::process::ExitStatusExt;
+        let failed = std::process::ExitStatus::from_raw(128 << 8);
+        let auth = git_failure(
+            "git clone https://example.invalid/r.git",
+            failed,
+            b"fatal: could not read Username for 'https://example.invalid': terminal prompts disabled\n",
+        );
+        assert!(
+            auth.starts_with("git clone https://example.invalid/r.git failed"),
+            "{auth}"
+        );
+        assert!(auth.contains("gh auth login"), "{auth}");
+        assert!(auth.contains("ssh key"), "{auth}");
+        let other = git_failure(
+            "git checkout v9",
+            failed,
+            b"error: pathspec 'v9' did not match\n",
+        );
+        assert!(!other.contains("gh auth"), "{other}");
+    }
+
+    /// Stint 1610: a clone through the bounded runner still works end to end.
+    #[test]
+    fn git_cloner_clones_a_local_repository() {
+        let dir = tmp();
+        let source = dir.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        let git = |args: &[&str]| {
+            let mut command = git_command(Some(&source));
+            command.args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"]);
+            command.args(args);
+            run_git(command, "test git", GIT_LOCAL_LIMIT).unwrap();
+        };
+        git(&["init", "-q"]);
+        std::fs::write(source.join("README"), "hi").unwrap();
+        git(&["add", "README"]);
+        git(&["commit", "-q", "-m", "init"]);
+        let target = dir.path().join("clone");
+        let url = format!("file://{}", source.display());
+        GitCloner.clone(&url, &target).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(target.join("README")).unwrap(),
+            "hi"
+        );
+    }
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
