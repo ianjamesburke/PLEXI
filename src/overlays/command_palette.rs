@@ -1152,9 +1152,6 @@ impl PlexiApp {
         // Collected fresh each frame, never snapshotted at open time: agent
         // state arrives over pane IPC (`set_agent_state`) while the palette is
         // up, and the rows must show it live.
-        let all_agent_rows = palette_agent_rows(&self.windows, &context_names);
-        let agent_pane_ids: std::collections::HashSet<u64> =
-            all_agent_rows.iter().map(|r| r.pane_id).collect();
         let agent_rows = if self
             .config
             .agents
@@ -1162,7 +1159,7 @@ impl PlexiApp {
             .and_then(|a| a.palette_agent_results)
             .unwrap_or(false)
         {
-            all_agent_rows
+            palette_agent_rows(&self.windows, &context_names)
         } else {
             vec![]
         };
@@ -1170,9 +1167,12 @@ impl PlexiApp {
             self.palette_agent_count_logged = Some(agent_rows.len());
             log::info!("palette: collected {} agent panes", agent_rows.len());
         }
-        // An agent pane is represented once — by its agent row, which carries
-        // strictly more (agent name, live state, active tool) than the plain
-        // pane row would.
+        // An agent pane is represented once — by its agent row when one is
+        // emitted, which carries strictly more (agent name, live state, active
+        // tool) than the plain pane row would. With agent rows off, it stays
+        // an ordinary pane row so it is still findable by name.
+        let agent_pane_ids: std::collections::HashSet<u64> =
+            agent_rows.iter().map(|r| r.pane_id).collect();
 
         let ctx_entries: Vec<PaletteEntry> = {
             // Context-scoped unpacking: the ACTIVE context expands to one row
