@@ -63,6 +63,7 @@ use std::collections::HashMap;
 use std::sync::{atomic::AtomicU64, Arc};
 
 mod timeout;
+pub(crate) mod source_tree;
 pub(crate) mod test_log;
 pub(crate) use timeout::load_aware_timeout;
 
