@@ -385,7 +385,13 @@ impl CliOpService {
             who.pane_id,
             ids.len()
         );
-        env.monitor.retire_pending_asks(&ids);
+        if let Err(error) = env.monitor.retire_pending_asks(&ids) {
+            log::error!(
+                "cli_ops: plugin={} pane={} operation ask retirement not saved: {error}",
+                who.plugin_id,
+                who.pane_id
+            );
+        }
     }
 
     /// Advance parked and running requests. Safe to call every pass.

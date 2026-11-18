@@ -4194,7 +4194,14 @@ impl LivePythonPane {
             ids.len()
         );
         if let Some(monitor) = self.consent.monitor.as_deref() {
-            monitor.retire_pending_asks(&ids);
+            // The asks hold no authority in memory either way; the broker
+            // logs which ids a restart could restore.
+            if let Err(error) = monitor.retire_pending_asks(&ids) {
+                log::error!(
+                    "plugin::{}: consent ask retirement not saved: {error}",
+                    self.plugin_id
+                );
+            }
         }
     }
 

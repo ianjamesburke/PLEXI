@@ -9,6 +9,12 @@
 //! deleted while the tip remembers it, or carries a resolution is quarantined.
 //! Loading it never writes a grant.
 //!
+//! When the journal cannot be saved, `needs-you-closed.json` beside it names
+//! every ask the host closed in memory, so a restart cannot reopen one the
+//! stale journal still holds (stint 1624). It is not sealed: an entry can only
+//! close an ask, never open one or grant anything. The next saved journal
+//! makes it redundant, and it is removed.
+//!
 //! A legacy `<profile>/host/seal.key` is not a second custody path. When it
 //! verifies the journal, the journal is rewritten with the host key and the
 //! file is removed. When it does not, the file is removed and the journal is
@@ -18,6 +24,7 @@ use super::custody::HostProcess;
 use super::gate::{ContinuationRecord, NeedsYouDetails, NeedsYouKind};
 use super::ExactBinding;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -267,6 +274,74 @@ pub(crate) fn save(
     Ok(())
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiskClosed {
+    schema: u32,
+    closed: BTreeSet<String>,
+}
+
+/// Record the asks closed in memory while the journal could not be saved.
+pub(crate) fn save_closed(profile: &Path, ids: &BTreeSet<String>) -> Result<(), String> {
+    ensure_host_dir(profile)?;
+    let body = serde_json::to_vec(&DiskClosed {
+        schema: SCHEMA,
+        closed: ids.clone(),
+    })
+    .map_err(|error| error.to_string())?;
+    let path = closed_path(profile);
+    write_private(&path, &body)?;
+    log::info!(
+        "needs_you: recorded {} closed asks in {}",
+        ids.len(),
+        path.display()
+    );
+    Ok(())
+}
+
+/// Ids of asks a previous host closed but could not save. Empty when no
+/// list exists. An unreadable list is an error: the caller cannot tell
+/// which restored asks are closed.
+pub(crate) fn load_closed(profile: &Path) -> Result<BTreeSet<String>, String> {
+    let path = closed_path(profile);
+    if is_symlink(&path) {
+        return Err(format!("{} is a symlink", path.display()));
+    }
+    let raw = match fs::read(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(BTreeSet::new());
+        }
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    };
+    let parsed: DiskClosed = serde_json::from_slice(&raw)
+        .map_err(|error| format!("parse {}: {error}", path.display()))?;
+    if parsed.schema != SCHEMA {
+        return Err(format!(
+            "{} schema {} is not {SCHEMA}",
+            path.display(),
+            parsed.schema
+        ));
+    }
+    Ok(parsed.closed)
+}
+
+/// Drop the closed-ask list once a saved journal holds the same state.
+pub(crate) fn clear_closed(profile: &Path) -> Result<(), String> {
+    let path = closed_path(profile);
+    match fs::remove_file(&path) {
+        Ok(()) => {
+            log::info!(
+                "needs_you: removed {}; the journal is current",
+                path.display()
+            );
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("remove {}: {error}", path.display())),
+    }
+}
+
 pub(crate) fn reset_after_key_rotation(host: &HostProcess, profile: &Path) -> Result<(), String> {
     let journal = journal_path(profile);
     if journal.is_file() {
@@ -473,6 +548,10 @@ pub(crate) fn load_continuations(host: &HostProcess, profile: &Path) -> Vec<Cont
 
 fn continuations_path(profile: &Path) -> PathBuf {
     host_private_dir(profile).join("continuations.json")
+}
+
+fn closed_path(profile: &Path) -> PathBuf {
+    host_private_dir(profile).join("needs-you-closed.json")
 }
 
 fn journal_path(profile: &Path) -> PathBuf {

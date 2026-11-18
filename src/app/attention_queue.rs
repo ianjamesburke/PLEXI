@@ -41,7 +41,11 @@ pub(crate) fn open_needs_you_items() -> Vec<crate::broker::gate::NeedsYouRecord>
 
 pub(crate) fn retire_requester_approvals(panes: &[u64], context: Option<u64>) {
     if let Some(monitor) = PermissionMonitor::loaded(&crate::config::config_dir()) {
-        monitor.retire_requester_approvals(panes, context);
+        if let Err(error) = monitor.retire_requester_approvals(panes, context) {
+            log::error!(
+                "attention_queue: asks of closed panes {panes:?} context {context:?} retired in memory only: {error}"
+            );
+        }
     }
 }
 

@@ -359,6 +359,13 @@ struct PendingWiden {
     action: String,
 }
 
+/// What `install_restored` found: plugin asks to retire now, and whether any
+/// ask was installed already closed.
+struct InstalledQueue {
+    gone: Vec<String>,
+    closed: bool,
+}
+
 /// One row the Permissions plugin and `plexi permissions list` share.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PermissionEntry {
@@ -1201,7 +1208,11 @@ impl PermissionMonitor {
                 id
             }
         };
-        self.persist_queue();
+        // An unsaved new ask is lost on restart, which fails closed; the
+        // error is about earlier closures, which stay closed in memory.
+        if let Err(error) = self.persist_queue() {
+            log::error!("needs_you: filed {id}; closed asks are memory-only: {error}");
+        }
         id
     }
 
@@ -1516,7 +1527,11 @@ impl PermissionMonitor {
                 decision.as_str()
             );
         }
-        self.persist_queue();
+        // The standing decision already settled these asks in memory and the
+        // audit; nothing to undo, so surface the unsaved closure.
+        if let Err(error) = self.persist_queue() {
+            log::error!("needs_you: settled asks by standing decision are memory-only: {error}");
+        }
     }
 
     /// File an agent question or a blocked run. Gate approvals are filed by admission.
@@ -1647,7 +1662,10 @@ impl PermissionMonitor {
             });
         }
         if record.kind != NeedsYouKind::Keychain {
-            self.persist_queue();
+            // As for an ask: losing the new item fails closed.
+            if let Err(error) = self.persist_queue() {
+                log::error!("needs_you: filed {id}; closed asks are memory-only: {error}");
+            }
         }
         Ok((id, token))
     }
@@ -1832,7 +1850,11 @@ impl PermissionMonitor {
     }
 
     /// Retire approvals owned by a removed pane or context without granting them.
-    pub(crate) fn retire_requester_approvals(&self, pane_ids: &[u64], context_id: Option<u64>) {
+    pub(crate) fn retire_requester_approvals(
+        &self,
+        pane_ids: &[u64],
+        context_id: Option<u64>,
+    ) -> Result<(), String> {
         let _resolve = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
         let _decision = self.decision_lock.lock().unwrap_or_else(|e| e.into_inner());
         let ids: Vec<String> = self
@@ -1859,12 +1881,12 @@ impl PermissionMonitor {
             })
             .map(|row| row.id.clone())
             .collect();
-        self.retire_approvals_locked(ids);
+        self.retire_approvals_locked(ids)
     }
 
     /// Retire these open approval asks without granting them: their requester
     /// is gone (a Python pane's runtime was replaced, stint 1489).
-    pub(crate) fn retire_pending_asks(&self, ids: &[String]) {
+    pub(crate) fn retire_pending_asks(&self, ids: &[String]) -> Result<(), String> {
         let _resolve = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
         let _decision = self.decision_lock.lock().unwrap_or_else(|e| e.into_inner());
         let open: Vec<String> = self
@@ -1879,26 +1901,31 @@ impl PermissionMonitor {
             })
             .map(|row| row.id.clone())
             .collect();
-        self.retire_approvals_locked(open);
+        self.retire_approvals_locked(open)
     }
 
     /// Close each ask as retired, cancel its continuation, drop its pending
     /// row and record a deny resolution. Callers hold the resolve and
-    /// decision locks.
-    fn retire_approvals_locked(&self, ids: Vec<String>) {
-        for id in ids {
+    /// decision locks. In memory the asks lose approval authority whatever
+    /// the save does; `Err` says a restart could restore them.
+    fn retire_approvals_locked(&self, ids: Vec<String>) -> Result<(), String> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        for id in &ids {
+            let id = id.as_str();
             if !self.close_needs_you_as(
-                &id,
+                id,
                 NeedsYouResolution::Retired,
                 "retired:requester_gone",
                 "",
                 Some("host"),
             ) {
                 log::error!("needs_you: cancellation audit failed for {id} reason=requester_gone; failing closed");
-                self.dismiss_without_audit(&id, NeedsYouResolution::Retired);
+                self.dismiss_without_audit(id, NeedsYouResolution::Retired);
             }
             self.update_continuation_on_needs_you(
-                &id,
+                id,
                 NeedsYouResolution::Retired,
                 None,
                 RunOutcome::AskGone,
@@ -1910,14 +1937,18 @@ impl PermissionMonitor {
             self.resolutions
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(id.clone(), ApprovalChoice::Deny);
+                .insert(id.to_string(), ApprovalChoice::Deny);
             self.run_outcomes
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(id.clone(), RunOutcome::AskGone);
-            self.persist_queue();
+                .insert(id.to_string(), RunOutcome::AskGone);
             log::info!("needs_you: cancelled {id} reason=requester_gone");
         }
+        self.persist_queue().inspect_err(|error| {
+            log::error!(
+                "needs_you: retirement of {ids:?} is memory-only; a restart could restore them: {error}"
+            );
+        })
     }
 
     /// Return one `NeedsYouRecord` (open or resolved) by id.
@@ -2672,7 +2703,11 @@ impl PermissionMonitor {
         };
         self.update_continuation_on_needs_you(id, resolution, snapshot.answer.clone(), outcome);
         log::info!("needs_you: resolved {id} {decision}");
-        self.persist_queue();
+        // The decision is audited and stands in memory; unwinding it would
+        // leave an ask the human already answered approvable. Surface it.
+        if let Err(error) = self.persist_queue() {
+            log::error!("needs_you: resolution of {id} is memory-only: {error}");
+        }
         true
     }
 
@@ -3069,13 +3104,23 @@ impl PermissionMonitor {
             }
         };
         let mut gone = Vec::new();
+        let mut closed_restored = false;
         match super::needs_you_store::load(&host, &profile) {
             super::needs_you_store::LoadedQueue::Empty => {
                 log::info!("needs_you: no persisted queue in {}", profile.display());
             }
             super::needs_you_store::LoadedQueue::Items(items) => {
                 let count = items.len();
-                gone = self.install_restored(items);
+                let closed = super::needs_you_store::load_closed(&profile)
+                    .inspect_err(|error| {
+                        log::error!(
+                            "needs_you: closed-ask list unreadable; every restored approval stays closed: {error}"
+                        );
+                    })
+                    .ok();
+                let restored = self.install_restored(items, closed.as_ref());
+                gone = restored.gone;
+                closed_restored = restored.closed;
                 log::info!(
                     "needs_you: restored {count} open items from {}",
                     profile.display()
@@ -3116,8 +3161,15 @@ impl PermissionMonitor {
             // Not under `needs_resolve`/`decision_lock`: the restore runs
             // before the monitor is shared or under the Keychain resolution
             // that holds `needs_resolve`, and these asks never got a pending
-            // row, so no decision can race their retirement.
-            self.retire_approvals_locked(gone);
+            // row, so no decision can race their retirement. A failure is
+            // logged with the ids; the next restore retires them again.
+            let _ = self.retire_approvals_locked(gone);
+        } else if closed_restored {
+            // Rewrite the journal without the closed asks. On failure the
+            // closed-ask list is rewritten from memory, which names them.
+            if let Err(error) = self.persist_queue() {
+                log::error!("needs_you: closed asks restored as closed, not saved: {error}");
+            }
         }
     }
 
@@ -3182,13 +3234,20 @@ impl PermissionMonitor {
         }
     }
 
-    /// Install a restored queue. Returns the approval asks whose requester
-    /// is gone: a plugin ask bound to a pane from an earlier host session
-    /// (its guest ran in that host and ended with it, stint 1622). Those get
-    /// no pending row, so they can never be approved, even when their
-    /// retirement was not saved before the restart.
-    fn install_restored(&self, items: Vec<super::needs_you_store::RestoredItem>) -> Vec<String> {
+    /// Install a restored queue. An ask the previous host closed but could
+    /// not save (`closed` names it) is installed closed, for every requester
+    /// kind; with no readable list (`None`) every approval is, since none can
+    /// be told apart (stint 1624). `gone` lists the approval asks whose
+    /// requester is gone: a plugin ask bound to a pane from an earlier host
+    /// session (its guest ran in that host and ended with it, stint 1622).
+    /// Neither gets a pending row, so neither can be approved.
+    fn install_restored(
+        &self,
+        items: Vec<super::needs_you_store::RestoredItem>,
+        closed: Option<&std::collections::BTreeSet<String>>,
+    ) -> InstalledQueue {
         let mut gone = Vec::new();
+        let mut closed_any = false;
         let mut pending = self
             .pending
             .lock()
@@ -3202,7 +3261,18 @@ impl PermissionMonitor {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         for item in items {
-            if let (NeedsYouKind::ApprovalClick, Some(row)) = (item.kind, item.pending.clone()) {
+            let was_closed = closed.map_or(item.kind == NeedsYouKind::ApprovalClick, |ids| {
+                ids.contains(&item.id)
+            });
+            if was_closed {
+                log::info!(
+                    "needs_you: restored {} closed; the previous host closed it without saving",
+                    item.id
+                );
+                closed_any = true;
+            } else if let (NeedsYouKind::ApprovalClick, Some(row)) =
+                (item.kind, item.pending.clone())
+            {
                 if row.binding.actor_type == ActorType::Plugin
                     && row.binding.instance_id.is_some()
                     && item.origin_session != self.session_id
@@ -3230,18 +3300,23 @@ impl PermissionMonitor {
                     created_at: item.created_at,
                     expires_at: item.expires_at,
                     run_tag: item.run_tag,
-                    resolution: None,
+                    resolution: was_closed.then_some(NeedsYouResolution::Retired),
                     details: item.details,
                     answer: None,
                 },
             );
         }
-        gone
+        InstalledQueue {
+            gone,
+            closed: closed_any,
+        }
     }
 
     fn file_integrity(&self, reason: &str) {
         self.file_integrity_memory_only(reason);
-        self.persist_queue();
+        if let Err(error) = self.persist_queue() {
+            log::error!("needs_you: integrity notice filed; closed asks are memory-only: {error}");
+        }
     }
 
     pub(crate) fn file_integrity_memory_only(&self, reason: &str) {
@@ -3287,9 +3362,14 @@ impl PermissionMonitor {
         self.remember_origin(&id);
     }
 
-    fn persist_queue(&self) {
+    /// Save the open queue. `Ok` means every ask closed in memory stays
+    /// closed across a restart: the journal holds only open asks, or, when it
+    /// cannot be saved, the closed-ask list names every closed one. `Err`
+    /// means those closures are memory-only until a later save succeeds
+    /// (stint 1624).
+    fn persist_queue(&self) -> Result<(), String> {
         let Some(profile) = self.profile_dir.clone() else {
-            return;
+            return Ok(());
         };
         let pending = self
             .pending
@@ -3345,14 +3425,34 @@ impl PermissionMonitor {
                 details: record.details.clone(),
             });
         }
-        if let Err(error) = self
+        match self
             .custody()
             .and_then(|host| super::needs_you_store::save(&host, &profile, &items))
         {
-            log::error!(
-                "needs_you: persist failed for {}: {error}",
-                profile.display()
-            );
+            Ok(()) => {
+                if let Err(error) = super::needs_you_store::clear_closed(&profile) {
+                    // A stale list only names asks the saved journal no
+                    // longer holds, so it closes nothing that is open.
+                    log::error!("needs_you: closed-ask list not removed: {error}");
+                }
+                Ok(())
+            }
+            Err(error) => {
+                log::error!(
+                    "needs_you: persist failed for {}: {error}",
+                    profile.display()
+                );
+                let closed: std::collections::BTreeSet<String> = needs
+                    .values()
+                    .filter(|record| record.resolution.is_some())
+                    .map(|record| record.id.clone())
+                    .collect();
+                super::needs_you_store::save_closed(&profile, &closed).map_err(|closed_error| {
+                    format!(
+                        "queue not saved ({error}) and closed-ask list not saved ({closed_error})"
+                    )
+                })
+            }
         }
     }
 
@@ -6646,7 +6746,9 @@ mod tests {
         {
             let _unsealable =
                 crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
-            monitor.retire_pending_asks(std::slice::from_ref(&ask));
+            monitor
+                .retire_pending_asks(std::slice::from_ref(&ask))
+                .expect("the closed-ask list holds the retirement");
         }
         assert_eq!(
             std::fs::read(&queue).unwrap(),
@@ -6655,6 +6757,9 @@ mod tests {
         );
         assert!(monitor.approve_pending(&ask, ApprovalChoice::Once).is_err());
         drop(monitor);
+        // Model the closed-ask list being lost too: the session rule alone
+        // must still keep the plugin ask closed.
+        std::fs::remove_file(queue.with_file_name("needs-you-closed.json")).unwrap();
 
         let reopened = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert!(reopened.show_pending(&ask).is_none(), "no pending row");
@@ -6674,6 +6779,84 @@ mod tests {
         );
     }
 
+    /// Stint 1624: an agent ask retired while the queue cannot be saved is
+    /// still in the old journal, but a reopened monitor keeps it closed.
+    #[test]
+    fn a_retired_agent_ask_whose_save_failed_is_not_approvable_after_restart() {
+        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let Admission::Required {
+            pending_request_id: ask,
+        } = admit_of(&monitor, &binding("ignored"), r#"{"game_id":"game-1"}"#)
+        else {
+            panic!("the agent call asks");
+        };
+        let queue =
+            crate::broker::needs_you_store::host_private_dir(dir.path()).join("needs-you.json");
+        let saved = std::fs::read(&queue).unwrap();
+        {
+            let _unsealable =
+                crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
+            monitor
+                .retire_requester_approvals(&[], Some(9))
+                .expect("the closed-ask list holds the retirement");
+        }
+        assert_eq!(
+            std::fs::read(&queue).unwrap(),
+            saved,
+            "the retirement was not saved"
+        );
+        assert!(monitor.approve_pending(&ask, ApprovalChoice::Once).is_err());
+        drop(monitor);
+
+        let reopened = PermissionMonitor::open_profile(dir.path()).unwrap();
+        assert!(reopened.show_pending(&ask).is_none(), "no pending row");
+        assert_eq!(
+            reopened.get_needs_you(&ask).and_then(|row| row.resolution),
+            Some(NeedsYouResolution::Retired)
+        );
+        assert!(
+            reopened
+                .approve_pending(&ask, ApprovalChoice::Always)
+                .is_err(),
+            "a retired agent ask cannot be approved after restart"
+        );
+    }
+
+    /// Stint 1624: when neither the queue nor the closed-ask list can be
+    /// saved, retirement reports itself memory-only, and a reopened monitor
+    /// that cannot read the closed-ask list restores no approval authority.
+    #[test]
+    fn a_retirement_nothing_could_save_is_reported_memory_only_and_fails_closed() {
+        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let Admission::Required {
+            pending_request_id: ask,
+        } = admit_of(&monitor, &binding("ignored"), r#"{"game_id":"game-1"}"#)
+        else {
+            panic!("the agent call asks");
+        };
+        let host = crate::broker::needs_you_store::host_private_dir(dir.path());
+        std::fs::create_dir(host.join("needs-you-closed.json")).unwrap();
+        {
+            let _unsealable =
+                crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
+            assert!(monitor
+                .retire_pending_asks(std::slice::from_ref(&ask))
+                .is_err());
+        }
+        assert!(monitor.approve_pending(&ask, ApprovalChoice::Once).is_err());
+        drop(monitor);
+
+        let reopened = PermissionMonitor::open_profile(dir.path()).unwrap();
+        assert!(reopened.show_pending(&ask).is_none(), "no pending row");
+        assert!(reopened
+            .approve_pending(&ask, ApprovalChoice::Always)
+            .is_err());
+    }
+
     /// Stint 1489: closing a pane retires its plugin asks.
     #[test]
     fn retiring_a_pane_retires_its_plugin_capability_asks() {
@@ -6685,7 +6868,7 @@ mod tests {
             4,
             r#"{"host_scope":"api.example","request":"fp-a"}"#,
         ));
-        monitor.retire_requester_approvals(&[4], None);
+        monitor.retire_requester_approvals(&[4], None).unwrap();
         assert!(monitor.show_pending(&ask).is_none());
         assert_eq!(
             monitor.approval_resolution(&ask),
