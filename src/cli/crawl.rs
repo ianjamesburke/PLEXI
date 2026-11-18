@@ -9,13 +9,14 @@
 //! `~/.plexi-<channel>/cache/descriptors/<cli>.json`, keyed by CLI version.
 //!
 //! Safety: only `--help` is ever invoked — never the command itself. Every
-//! subprocess is timeout-bounded (`subprocess::run_capture`), the recursion is
+//! subprocess runs through `plexi_distribution::bounded::Helper`, the recursion is
 //! depth-capped, and the whole crawl is bounded by a wall-clock budget and a
 //! hard ceiling on the number of `--help` probes.
 
 use crate::app::plexi_descriptor::{
     ArgSpec, ArgType, Command, PlexiDescriptor, UiHint, ROOT_COMMAND_NAME,
 };
+use plexi_distribution::bounded::{Helper, RunError};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -45,11 +46,11 @@ pub struct CrawlResult {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CrawlError {
-    #[error("failed to spawn `{cli} --help`: {source}")]
-    SpawnFailed {
+    #[error("could not read `{cli} --help`: {source}")]
+    HelpFailed {
         cli: String,
         #[source]
-        source: std::io::Error,
+        source: RunError,
     },
     #[error("`{cli} --help` exited with non-zero status")]
     NonZeroExit { cli: String },
@@ -62,7 +63,7 @@ pub enum CrawlError {
 pub(crate) trait HelpRunner {
     /// Run `<cli> <args…>` (always a help invocation). Returns `(success, text)`
     /// where `text` is stdout, falling back to stderr when stdout is empty.
-    fn run_help_args(&self, cli: &str, args: &[&str]) -> std::io::Result<(bool, String)>;
+    fn run_help_args(&self, cli: &str, args: &[&str]) -> Result<(bool, String), RunError>;
     /// Run `<cli> --version`. Returns the first line of stdout, or `None`.
     fn run_version(&self, cli: &str) -> Option<String>;
 }
@@ -70,15 +71,34 @@ pub(crate) trait HelpRunner {
 pub struct RealRunner;
 
 impl HelpRunner for RealRunner {
-    fn run_help_args(&self, cli: &str, args: &[&str]) -> std::io::Result<(bool, String)> {
-        let captured = crate::cli::subprocess::run_capture(cli, args, HELP_TIMEOUT)?;
-        Ok((captured.success, captured.help_text()))
+    fn run_help_args(&self, cli: &str, args: &[&str]) -> Result<(bool, String), RunError> {
+        let what = format!("`{cli} {}`", args.join(" "));
+        let exited = Helper::new(cli)
+            .args(args)
+            .run_any_exit(&what, HELP_TIMEOUT)?;
+        Ok((exited.status.success(), help_text(&exited.output)))
     }
 
     fn run_version(&self, cli: &str) -> Option<String> {
-        let captured =
-            crate::cli::subprocess::run_capture(cli, &["--version"], HELP_TIMEOUT).ok()?;
-        captured.stdout.lines().next().map(|l| l.trim().to_string())
+        let exited = Helper::new(cli)
+            .arg("--version")
+            .run_any_exit(&format!("`{cli} --version`"), HELP_TIMEOUT)
+            .ok()?;
+        String::from_utf8_lossy(&exited.output.stdout)
+            .lines()
+            .next()
+            .map(|l| l.trim().to_string())
+    }
+}
+
+/// Help/usage text, preferring stdout but falling back to stderr: many CLIs
+/// print `--help` to stderr while exiting 0.
+pub(crate) fn help_text(output: &plexi_distribution::bounded::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim().is_empty() {
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    } else {
+        stdout.into_owned()
     }
 }
 
@@ -174,7 +194,7 @@ pub(crate) fn crawl_with_runner(
 
     let (success, help_text) = runner
         .run_help_args(cli_name, &["--help"])
-        .map_err(|source| CrawlError::SpawnFailed {
+        .map_err(|source| CrawlError::HelpFailed {
             cli: cli_name.to_string(),
             source,
         })?;
@@ -839,6 +859,40 @@ mod tests {
 
     /// A runner that returns canned help text keyed by the joined args, e.g.
     /// `"--help"` for the top level or `"remote --help"` for a subcommand.
+    /// Stint 1610: `--help` past the capture limit caches no descriptor;
+    /// cut help text never becomes one.
+    #[cfg(unix)]
+    #[test]
+    fn oversized_help_caches_no_descriptor() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cli = dir.path().join("noisy-cli");
+        std::fs::write(
+            &cli,
+            format!(
+                "#!/bin/sh\nprintf 'Usage: noisy\\n\\nCommands:\\n  run    Run the thing\\n'\nhead -c {} /dev/zero | tr '\\0' '\\n'\n",
+                plexi_distribution::bounded::CAPTURE_LIMIT
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cache = dir.path().join("cache");
+        let result = crawl_with_runner(cli.to_str().unwrap(), &RealRunner, &cache);
+        assert!(
+            matches!(
+                result,
+                Err(CrawlError::HelpFailed {
+                    source: RunError::OutputTooLarge { .. },
+                    ..
+                })
+            ),
+            "{:?}",
+            result.as_ref().err()
+        );
+        let cached = std::fs::read_dir(&cache).map_or(0, |entries| entries.count());
+        assert_eq!(cached, 0, "a descriptor was cached from cut help text");
+    }
+
     struct MapRunner {
         help: HashMap<String, String>,
         version: Option<String>,
@@ -858,7 +912,7 @@ mod tests {
     }
 
     impl HelpRunner for MapRunner {
-        fn run_help_args(&self, _cli: &str, args: &[&str]) -> std::io::Result<(bool, String)> {
+        fn run_help_args(&self, _cli: &str, args: &[&str]) -> Result<(bool, String), RunError> {
             let key = args.join(" ");
             match self.help.get(&key) {
                 Some(t) => Ok((true, t.clone())),

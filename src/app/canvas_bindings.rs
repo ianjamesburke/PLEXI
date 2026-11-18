@@ -614,8 +614,16 @@ pub fn open_http_url(url: &str) -> Result<(), String> {
         ));
     }
     #[cfg(target_os = "macos")]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "detached: the browser must outlive the opener"
+    )]
     let result = std::process::Command::new("open").arg(url).spawn();
     #[cfg(target_os = "linux")]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "detached: the browser must outlive the opener"
+    )]
     let result = std::process::Command::new("xdg-open").arg(url).spawn();
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let result: std::io::Result<std::process::Child> =
@@ -634,6 +642,10 @@ pub fn open_http_url(url: &str) -> Result<(), String> {
 fn shell_open(path: &str, reveal: bool) {
     #[cfg(target_os = "macos")]
     {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "detached: the opened app must outlive the opener"
+        )]
         let mut cmd = std::process::Command::new("open");
         if reveal {
             cmd.arg("-R");
@@ -659,6 +671,10 @@ fn shell_open(path: &str, reveal: bool) {
         } else {
             path.to_string()
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "detached: the opened app must outlive the opener"
+        )]
         match std::process::Command::new("xdg-open").arg(&target).spawn() {
             Ok(_) => log::debug!("OpenArtifact: spawned xdg-open for {target}"),
             Err(e) => log::error!("OpenArtifact: xdg-open failed for {target}: {e}"),

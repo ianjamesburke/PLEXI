@@ -414,6 +414,10 @@ pub fn config_check(scope: ConfigScope) -> i32 {
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "foreground: the editor owns the terminal until the user quits it"
+)]
 pub fn config_edit(scope: ConfigScope) -> i32 {
     let path = match writable_config_path(scope) {
         Ok(path) => path,

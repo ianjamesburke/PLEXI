@@ -678,6 +678,10 @@ fn spawn_plexi_subcommand(
             return 1;
         }
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "foreground: `plexi run` hands the terminal to the command and passes its exit code through"
+    )]
     let mut cmd = Command::new(exe);
     cmd.args(&argv[1..]);
     if let Some(dir) = cwd {
@@ -702,6 +706,10 @@ fn run_shell_snippet(
     cwd: Option<&std::path::Path>,
     env_vars: &[(String, String)],
 ) -> i32 {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "foreground: `plexi run` hands the terminal to the command and passes its exit code through"
+    )]
     let mut child_cmd = Command::new("sh");
     child_cmd.arg("-c").arg(snippet).arg("--");
     for arg in extra_args {
@@ -972,6 +980,10 @@ pub fn run_command_for_root_from_pane(
     let (scope, run_snippet, steps, on_load, secret_keys) = match target {
         ResolvedRunTarget::GlobalScript(script_path) => {
             log::info!("cli: running global script {:?}", script_path);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "foreground: `plexi run` hands the terminal to the command and passes its exit code through"
+            )]
             let mut child_cmd = Command::new(&script_path);
             for arg in extra_args {
                 child_cmd.arg(arg);
@@ -1152,6 +1164,10 @@ pub fn run_command_for_root_from_pane(
     // PLEXI_CONFIG_DIR lets scripts reference channel-correct paths without hardcoding ~/.plexi/.
     // Extra positional args from `plexi run <cmd> -- arg1 arg2` are passed via `sh -c '...' -- arg1 arg2`,
     // making them available as $1, $2, … inside the shell snippet.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "foreground: `plexi run` hands the terminal to the command and passes its exit code through"
+    )]
     let mut child_cmd = Command::new("sh");
     child_cmd.arg("-c").arg(&run_snippet).arg("--");
     for arg in extra_args {

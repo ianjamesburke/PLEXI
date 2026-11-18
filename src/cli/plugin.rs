@@ -391,6 +391,10 @@ pub fn plugin_test_cli(path: &str, snapshot: bool) -> i32 {
         plugin_dir.display()
     );
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "foreground: plugin tests stream to the terminal with their exit code passed through"
+    )]
     let mut cmd = std::process::Command::new("uv");
     cmd.args(&uv_args).current_dir(plugin_dir);
     cmd.env("PYTHONPATH", plugin_test_pythonpath(plugin_dir));

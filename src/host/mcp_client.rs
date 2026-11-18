@@ -491,6 +491,10 @@ impl McpConnection {
             .map(PathBuf::from)
             .unwrap_or_else(|| default_cwd.to_path_buf());
 
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "supervised: the MCP client owns the server lifetime and its limits"
+        )]
         let mut command = Command::new(&config.command);
         command
             .args(&config.args)

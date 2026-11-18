@@ -388,18 +388,19 @@ fn write_choice(kind: LinuxBackend) {
 
 #[cfg(all(target_os = "linux", not(test)))]
 fn secret_service_available() -> bool {
-    let output = match std::process::Command::new("secret-tool")
+    // A session bus can hang while activating a locked service.
+    const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+    let exited = match plexi_distribution::bounded::Helper::new("secret-tool")
         .args(["lookup", "plexi.folder.probe", "absent"])
-        .stdin(std::process::Stdio::null())
-        .output()
+        .run_any_exit("secret-tool availability probe", PROBE_LIMIT)
     {
-        Ok(output) => output,
+        Ok(exited) => exited,
         Err(err) => {
             log::info!("folder_secrets: secret-tool is not available ({err})");
             return false;
         }
     };
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = String::from_utf8_lossy(&exited.output.stderr);
     let unavailable = stderr.contains("was not provided by any .service")
         || stderr.contains("Cannot autolaunch")
         || stderr.contains("No session bus")
@@ -502,6 +503,10 @@ fn write_service_index(names: &[String]) -> Result<(), SecretError> {
 fn secret_tool(args: &[&str], stdin: Option<&[u8]>) -> Result<std::process::Output, SecretError> {
     // A session bus can hang while activating a locked service. Bound every
     // call so secrets never hold host startup or a CLI invocation indefinitely.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "baseline: secret-tool needs a stdin-capable bounded helper, stint 1610 follow-up"
+    )]
     let mut cmd = std::process::Command::new("timeout");
     cmd.arg("5s").arg("secret-tool").args(args)
         .stdin(std::process::Stdio::piped())

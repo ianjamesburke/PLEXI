@@ -1,195 +1,460 @@
-//! Run a child process with a hard time limit (stint 1605).
+//! The one way to run a helper process: bounded in time, never interactive,
+//! and never Ok with incomplete work (stints 1605, 1610).
 //!
-//! Output goes to anonymous temp files, not pipes, so nothing a descendant
-//! keeps open can block the caller, and stdin is `/dev/null`. On Unix the
-//! child leads a new session with no controlling terminal, so it can neither
-//! read nor write the caller's terminal; a session leader also leads its own
-//! process group. At the limit the whole group is killed while the child is
-//! still unreaped (so the group id cannot be reused), then the child is
-//! reaped. A process that detaches into its own session, as `host start` does
-//! for the host, is outside the group and survives. If the kill fails and the
-//! child does not exit, the run still returns, with an error saying the child
-//! may still be running. Output past `CAPTURE_LIMIT` is cut and the cut is
-//! reported, so a caller that keeps the output can refuse an incomplete one.
+//! `Helper` exposes only arguments, environment and working directory. stdin
+//! is `/dev/null` and output goes to temp files, not pipes, so nothing a
+//! descendant keeps open can block the caller. On Unix the child leads a new
+//! session with no controlling terminal, so it can neither read nor write the
+//! caller's terminal; a session leader also leads its own process group.
+//!
+//! When the child exits, its exit is observed without reaping it, its group is
+//! killed while the zombie still holds the group id, then it is reaped: a
+//! background job it started dies with it. At the limit the group is killed
+//! the same way. A process that called `setsid` itself, as the host does under
+//! `host start`, is outside the group and survives. If a kill fails, or the
+//! killed child is not reaped within `REAP_LIMIT`, the run still returns, with
+//! `RunError::NotStopped`.
+//!
+//! Output past `CAPTURE_LIMIT` is `RunError::OutputTooLarge`, never cut bytes.
+//! Windows kills only the child; descendants there are stint 1613.
 
-use crate::{Error, IoContext, Result};
-use std::process::{Command, ExitStatus, Stdio};
+use std::ffi::OsStr;
+use std::path::Path;
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-/// The most read back from each output stream. A descendant that outlives
-/// the child may keep writing; the read stops here instead of following it.
+/// The most read back from each output stream. More than this is an error.
 pub const CAPTURE_LIMIT: u64 = 1024 * 1024;
 
 /// How long a killed child gets to be reaped before the run gives up on it.
 const REAP_LIMIT: Duration = Duration::from_secs(5);
 
-#[derive(Debug)]
-pub struct Finished {
-    pub status: ExitStatus,
+/// The longest pause between exit checks. Checks start at 1 ms and back off
+/// to this, so a fast helper does not pay a fixed delay.
+const MAX_POLL: Duration = Duration::from_millis(20);
+
+/// Both output streams of a helper, each read whole.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Output {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
-    /// More than `CAPTURE_LIMIT` bytes were written to stdout; `stdout` holds
-    /// only the first `CAPTURE_LIMIT`.
-    pub stdout_truncated: bool,
-    /// As `stdout_truncated`, for stderr.
-    pub stderr_truncated: bool,
 }
 
-impl Finished {
-    /// The whole of stdout, or `Error::OutputTruncated` when it was cut. For
-    /// callers that keep the output, such as an installed file.
-    pub fn complete_stdout(&self, what: &str) -> Result<&[u8]> {
-        if self.stdout_truncated {
-            return Err(Error::OutputTruncated {
+/// A helper that exited by itself inside its limit, with any exit code.
+#[derive(Debug)]
+pub struct Exited {
+    pub status: ExitStatus,
+    pub output: Output,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RunError {
+    #[error("could not start {what}: {source}")]
+    Start {
+        what: String,
+        source: std::io::Error,
+    },
+    #[error("{what} failed ({status}){}", stderr_suffix(stderr))]
+    Failed {
+        what: String,
+        status: ExitStatus,
+        stderr: Vec<u8>,
+    },
+    #[error("{what} did not finish within {limit:?} and was stopped")]
+    TimedOut {
+        what: String,
+        limit: Duration,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    },
+    #[error("{what} could not be stopped ({cause}); it may still be running")]
+    NotStopped { what: String, cause: String },
+    #[error("{what} wrote more than {limit} bytes to {stream}; its output is incomplete")]
+    OutputTooLarge {
+        what: String,
+        stream: &'static str,
+        limit: u64,
+    },
+    #[error("{action} for {what}: {source}")]
+    Io {
+        what: String,
+        action: &'static str,
+        source: std::io::Error,
+    },
+}
+
+fn stderr_suffix(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let text = text.trim();
+    if text.is_empty() {
+        String::new()
+    } else {
+        format!(": {text}")
+    }
+}
+
+/// A helper process to run once, bounded. Built like a `Command`, but only
+/// arguments, environment and working directory can be set.
+pub struct Helper {
+    command: Command,
+}
+
+impl Helper {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "helper: the one bounded launch every helper goes through"
+    )]
+    pub fn new(program: impl AsRef<OsStr>) -> Self {
+        Self {
+            command: Command::new(program),
+        }
+    }
+
+    pub fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
+        self.command.arg(arg);
+        self
+    }
+
+    pub fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.command.args(args);
+        self
+    }
+
+    pub fn env(&mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> &mut Self {
+        self.command.env(key, value);
+        self
+    }
+
+    pub fn env_remove(&mut self, key: impl AsRef<OsStr>) -> &mut Self {
+        self.command.env_remove(key);
+        self
+    }
+
+    pub fn env_clear(&mut self) -> &mut Self {
+        self.command.env_clear();
+        self
+    }
+
+    pub fn current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
+        self.command.current_dir(dir);
+        self
+    }
+
+    /// The environment changes set so far, as `Command::get_envs` reports
+    /// them. For tests of a constructor's policy.
+    pub fn get_envs(&self) -> std::process::CommandEnvs<'_> {
+        self.command.get_envs()
+    }
+
+    /// Run to completion within `limit`. Ok only for exit 0 with both streams
+    /// read whole; a non-zero exit is `RunError::Failed`.
+    pub fn run(&mut self, what: &str, limit: Duration) -> Result<Output, RunError> {
+        let exited = self.run_any_exit(what, limit)?;
+        if !exited.status.success() {
+            return Err(RunError::Failed {
                 what: what.to_string(),
-                limit: CAPTURE_LIMIT,
+                status: exited.status,
+                stderr: exited.output.stderr,
             });
         }
-        Ok(&self.stdout)
+        Ok(exited.output)
+    }
+
+    /// As `run`, but any exit code is Ok, for callers that read the code.
+    pub fn run_any_exit(&mut self, what: &str, limit: Duration) -> Result<Exited, RunError> {
+        let io = |action: &'static str| {
+            move |source| RunError::Io {
+                what: what.to_string(),
+                action,
+                source,
+            }
+        };
+        // Named so the read-back opens its own handle: a positioned read on
+        // the child's handle would share (on Windows, move) the writer's
+        // offset.
+        let stdout = tempfile::NamedTempFile::new().map_err(io("create output file"))?;
+        let stderr = tempfile::NamedTempFile::new().map_err(io("create error file"))?;
+        self.command
+            .stdin(Stdio::null())
+            .stdout(
+                stdout
+                    .as_file()
+                    .try_clone()
+                    .map_err(io("share output file"))?,
+            )
+            .stderr(
+                stderr
+                    .as_file()
+                    .try_clone()
+                    .map_err(io("share error file"))?,
+            );
+        // SAFETY: between fork and exec the closure calls only setsid(), which
+        // is async-signal-safe and neither allocates nor locks.
+        #[cfg(unix)]
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(&mut self.command, || {
+                // A forked child never leads a process group, so setsid
+                // succeeds.
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = self.command.spawn().map_err(|source| RunError::Start {
+            what: what.to_string(),
+            source,
+        })?;
+        let deadline = Instant::now() + limit;
+        let mut pause = Duration::from_millis(1);
+        let status = loop {
+            if exited_unreaped(&mut child).map_err(io("wait"))? {
+                break finish_session(child, what)?;
+            }
+            if Instant::now() >= deadline {
+                let captured = |file: &tempfile::NamedTempFile| {
+                    read_capped(file.path(), CAPTURE_LIMIT)
+                        .map(|(bytes, _)| bytes)
+                        .unwrap_or_default()
+                };
+                return Err(stop(
+                    child,
+                    what,
+                    limit,
+                    kill_tree,
+                    REAP_LIMIT,
+                    captured(&stdout),
+                    captured(&stderr),
+                ));
+            }
+            std::thread::sleep(pause);
+            pause = (pause * 2).min(MAX_POLL);
+        };
+        let read = |file: tempfile::NamedTempFile, stream: &'static str| {
+            let (bytes, over) =
+                read_capped(file.path(), CAPTURE_LIMIT).map_err(io("read output"))?;
+            if over {
+                return Err(RunError::OutputTooLarge {
+                    what: what.to_string(),
+                    stream,
+                    limit: CAPTURE_LIMIT,
+                });
+            }
+            Ok(bytes)
+        };
+        let output = Output {
+            stdout: read(stdout, "stdout")?,
+            stderr: read(stderr, "stderr")?,
+        };
+        Ok(Exited { status, output })
     }
 }
 
-/// Run `command`, named `what` in errors, for at most `limit`.
-pub fn run(mut command: Command, what: &str, limit: Duration) -> Result<Finished> {
-    // Named so the read-back opens its own handle: a positioned read on the
-    // child's handle would share (on Windows, move) the writer's offset.
-    let stdout =
-        tempfile::NamedTempFile::new().context(format!("create output file for {what}"))?;
-    let stderr = tempfile::NamedTempFile::new().context(format!("create error file for {what}"))?;
-    command
-        .stdin(Stdio::null())
-        .stdout(
-            stdout
-                .as_file()
-                .try_clone()
-                .context(format!("share output file for {what}"))?,
+/// A `git` helper that never prompts, and the only way any module starts
+/// git. Besides the helper's missing terminal, every other prompt route is
+/// shut: terminal prompts (`GIT_TERMINAL_PROMPT=0`), askpass programs (an
+/// empty `GIT_ASKPASS` stops git looking further), and ssh's `SSH_ASKPASS`
+/// (cleared and refused). Credentials must come from an ssh key or agent or
+/// a credential helper; `git_error` says so when they are missing.
+pub fn git() -> Helper {
+    let mut helper = Helper::new("git");
+    helper
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS_REQUIRE", "never")
+        .env_remove("SSH_ASKPASS");
+    helper
+}
+
+/// A git helper's error, plus how to set up credentials when git failed for
+/// want of ones it was not allowed to prompt for.
+pub fn git_error(error: &RunError) -> String {
+    const AUTH_MARKERS: &[&str] = &[
+        "terminal prompts disabled",
+        "could not read Username",
+        "could not read Password",
+        "Authentication failed",
+        "Permission denied (publickey",
+        "Host key verification failed",
+        "Could not read from remote repository",
+    ];
+    let mut message = error.to_string();
+    if let RunError::Failed { stderr, .. } = error {
+        let stderr = String::from_utf8_lossy(stderr);
+        if AUTH_MARKERS.iter().any(|marker| stderr.contains(marker)) {
+            message.push_str(
+                "\ngit could not authenticate and Plexi does not prompt for credentials. \
+For an ssh URL, add an ssh key for the host to your ssh agent and accept its host key \
+once with `ssh -T <host>`; for an https GitHub URL, run `gh auth login` then \
+`gh auth setup-git`. Then retry.",
+            );
+        }
+    }
+    message
+}
+
+/// Whether the child has exited, without reaping it, so its pid (and group
+/// id) stay reserved until the group is killed.
+#[cfg(unix)]
+fn exited_unreaped(child: &mut Child) -> std::io::Result<bool> {
+    // SAFETY: a zeroed siginfo_t is a valid out-parameter for waitid.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: waitid writes only into `info`; WNOWAIT leaves the child
+    // unreaped, and the pid names our own unreaped child.
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id() as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
         )
-        .stderr(
-            stderr
-                .as_file()
-                .try_clone()
-                .context(format!("share error file for {what}"))?,
-        );
-    // SAFETY: between fork and exec the closure calls only setsid(), which is
-    // async-signal-safe and neither allocates nor locks.
-    #[cfg(unix)]
-    unsafe {
-        std::os::unix::process::CommandExt::pre_exec(&mut command, || {
-            // A forked child never leads a process group, so setsid succeeds.
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
+    };
+    if result == -1 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            return Ok(false);
+        }
+        return Err(error);
+    }
+    // A child that has not exited leaves si_pid zero.
+    #[cfg(target_vendor = "apple")]
+    let pid = info.si_pid;
+    // SAFETY: waitid filled `info` for a child state change.
+    #[cfg(not(target_vendor = "apple"))]
+    let pid = unsafe { info.si_pid() };
+    Ok(pid != 0)
+}
+
+#[cfg(windows)]
+fn exited_unreaped(child: &mut Child) -> std::io::Result<bool> {
+    child.try_wait().map(|status| status.is_some())
+}
+
+/// The child exited by itself: kill what is left of its group, then reap it.
+fn finish_session(mut child: Child, what: &str) -> Result<ExitStatus, RunError> {
+    let killed = kill_tree(&mut child);
+    let status = child.wait().map_err(|source| RunError::Io {
+        what: what.to_string(),
+        action: "reap",
+        source,
+    })?;
+    if let Err(error) = killed {
+        return Err(RunError::NotStopped {
+            what: what.to_string(),
+            cause: format!("it exited ({status}) but killing its process group failed: {error}"),
         });
     }
-    let mut child = command.spawn().context(format!("start {what}"))?;
-    let deadline = Instant::now() + limit;
-    let status = loop {
-        if let Some(status) = child.try_wait().context(format!("wait for {what}"))? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            return Err(stop(child, what, limit, kill_tree, REAP_LIMIT));
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    let read = |file: tempfile::NamedTempFile, which: &str| {
-        read_capped(file.path(), CAPTURE_LIMIT).context(format!("read {which} of {what}"))
-    };
-    let (stdout, stdout_truncated) = read(stdout, "output")?;
-    let (stderr, stderr_truncated) = read(stderr, "errors")?;
-    if stdout_truncated || stderr_truncated {
-        log::warn!(
-            "distribution: {what} wrote more than {CAPTURE_LIMIT} bytes; capture cut (stdout={stdout_truncated} stderr={stderr_truncated})"
-        );
-    }
-    Ok(Finished {
-        status,
-        stdout,
-        stderr,
-        stdout_truncated,
-        stderr_truncated,
-    })
+    Ok(status)
 }
 
 /// Kill the child's whole process group. The child is unreaped, so its pid is
 /// still its group id. A group already gone is not a failure.
 #[cfg(unix)]
-fn kill_tree(child: &mut std::process::Child) -> std::io::Result<()> {
+fn kill_tree(child: &mut Child) -> std::io::Result<()> {
+    let leader = child.id() as libc::pid_t;
     // SAFETY: killpg only sends a signal; the pid names an unreaped child.
-    if unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) } == 0 {
+    if unsafe { libc::killpg(leader, libc::SIGKILL) } == 0 {
         return Ok(());
     }
     let error = std::io::Error::last_os_error();
     match error.raw_os_error() {
         Some(libc::ESRCH) => Ok(()),
+        #[cfg(target_os = "macos")]
+        Some(libc::EPERM) if only_the_leader_is_left(leader) => Ok(()),
         _ => Err(error),
     }
 }
 
-/// Windows kills only the child here; capture through files means a
-/// surviving descendant cannot block the caller.
+/// macOS refuses `killpg` with EPERM when the group holds nothing but its
+/// exited, unreaped leader, which is the normal state after a helper exits
+/// by itself. Only then is EPERM an empty group; any other member means the
+/// kill truly failed.
+#[cfg(target_os = "macos")]
+fn only_the_leader_is_left(leader: libc::pid_t) -> bool {
+    let mut members = [0 as libc::pid_t; 64];
+    // SAFETY: the buffer is valid for its full byte size; the call writes at
+    // most that many bytes and returns the number of pids written.
+    let count = unsafe {
+        libc::proc_listpgrppids(
+            leader,
+            members.as_mut_ptr().cast(),
+            std::mem::size_of_val(&members) as libc::c_int,
+        )
+    };
+    count >= 1
+        && (count as usize) < members.len()
+        && members[..count as usize].iter().all(|&pid| pid == leader)
+}
+
+/// Windows kills only the child; capture through files means a surviving
+/// descendant cannot block the caller.
 #[cfg(windows)]
-fn kill_tree(child: &mut std::process::Child) -> std::io::Result<()> {
-    child.kill()
+fn kill_tree(child: &mut Child) -> std::io::Result<()> {
+    match child.try_wait() {
+        Ok(Some(_)) => Ok(()),
+        _ => child.kill(),
+    }
 }
 
 /// Stop a child that ran past `limit`: kill it with `kill`, then reap it,
-/// waiting at most `reap_limit` so a failed kill never holds the caller.
+/// waiting at most `reap_limit` so a failed kill never holds the caller. Only
+/// a kill that succeeded followed by a reap is `TimedOut`.
 fn stop(
-    mut child: std::process::Child,
+    mut child: Child,
     what: &str,
     limit: Duration,
-    kill: fn(&mut std::process::Child) -> std::io::Result<()>,
+    kill: fn(&mut Child) -> std::io::Result<()>,
     reap_limit: Duration,
-) -> Error {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+) -> RunError {
     let killed = kill(&mut child);
     let reap_deadline = Instant::now() + reap_limit;
     let reaped = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
-            Ok(None) if Instant::now() < reap_deadline => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
+            Ok(None) if Instant::now() < reap_deadline => std::thread::sleep(MAX_POLL),
             Ok(None) => break Err(format!("still running {reap_limit:?} after the kill")),
             Err(error) => break Err(format!("wait failed: {error}")),
         }
     };
-    match (killed, reaped) {
-        (_, Ok(status)) => {
+    let cause = match (killed, reaped) {
+        (Ok(()), Ok(status)) => {
             log::warn!("distribution: {what} exceeded {limit:?}; killed and reaped ({status})");
-            Error::TimedOut {
+            return RunError::TimedOut {
                 what: what.to_string(),
                 limit,
-            }
-        }
-        (killed, Err(reap)) => {
-            let cause = match killed {
-                Ok(()) => reap,
-                Err(error) => format!("kill failed: {error}; {reap}"),
+                stdout,
+                stderr,
             };
-            log::error!(
-                "distribution: {what} exceeded {limit:?} and could not be stopped: {cause}"
-            );
-            Error::NotStopped {
-                what: what.to_string(),
-                limit,
-                cause,
-            }
         }
+        (Err(error), Ok(status)) => {
+            format!("killing it failed: {error}; it then exited ({status})")
+        }
+        (Err(error), Err(reap)) => format!("killing it failed: {error}; {reap}"),
+        (Ok(()), Err(reap)) => reap,
+    };
+    log::error!("distribution: {what} exceeded {limit:?} and could not be stopped: {cause}");
+    RunError::NotStopped {
+        what: what.to_string(),
+        cause: format!("it exceeded {limit:?}; {cause}"),
     }
 }
 
 /// Read up to `cap` bytes of `path` from offset 0 through a handle of its
 /// own, so the read never shares an offset with a process still writing.
 /// The flag is true when the file held more than `cap` bytes.
-fn read_capped(path: &std::path::Path, cap: u64) -> std::io::Result<(Vec<u8>, bool)> {
+fn read_capped(path: &Path, cap: u64) -> std::io::Result<(Vec<u8>, bool)> {
     #[cfg(unix)]
     use std::os::unix::fs::FileExt;
     #[cfg(windows)]
     use std::os::windows::fs::FileExt;
     let file = std::fs::File::open(path)?;
-    // One byte past the cap tells a cut capture from one that fits exactly.
+    // One byte past the cap tells an overflow from a capture that fits.
     let probe = cap + 1;
     let mut bytes = Vec::new();
     let mut chunk = [0u8; 64 * 1024];
@@ -207,9 +472,9 @@ fn read_capped(path: &std::path::Path, cap: u64) -> std::io::Result<(Vec<u8>, bo
             Err(error) => return Err(error),
         }
     }
-    let truncated = bytes.len() as u64 > cap;
+    let over = bytes.len() as u64 > cap;
     bytes.truncate(cap as usize);
-    Ok((bytes, truncated))
+    Ok((bytes, over))
 }
 
 #[cfg(test)]
@@ -235,30 +500,6 @@ mod capture_tests {
             (b"0123456789ab".to_vec(), false)
         );
     }
-
-    /// A capture that fits exactly is complete; one byte more is reported as
-    /// cut, and `complete_stdout` refuses it (stint 1610).
-    #[test]
-    fn a_cut_capture_is_reported_and_refused() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), b"0123").unwrap();
-        assert_eq!(
-            read_capped(file.path(), 4).unwrap(),
-            (b"0123".to_vec(), false)
-        );
-        std::fs::write(file.path(), b"01234").unwrap();
-        let (stdout, stdout_truncated) = read_capped(file.path(), 4).unwrap();
-        assert!(stdout_truncated);
-        let finished = Finished {
-            status: ExitStatus::default(),
-            stdout,
-            stderr: Vec::new(),
-            stdout_truncated,
-            stderr_truncated: false,
-        };
-        let error = finished.complete_stdout("completions").unwrap_err();
-        assert!(matches!(error, Error::OutputTruncated { .. }), "{error}");
-    }
 }
 
 #[cfg(all(test, unix))]
@@ -266,13 +507,13 @@ mod tests {
     use super::*;
     use crate::transaction::process_alive;
 
-    fn sh(script: &str) -> Command {
-        let mut command = Command::new("/bin/sh");
-        command.args(["-c", script]);
-        command
+    fn sh(script: &str) -> Helper {
+        let mut helper = Helper::new("/bin/sh");
+        helper.args(["-c", script]);
+        helper
     }
 
-    fn pid_in(path: &std::path::Path) -> u32 {
+    fn pid_in(path: &Path) -> u32 {
         std::fs::read_to_string(path)
             .unwrap()
             .trim()
@@ -280,147 +521,257 @@ mod tests {
             .unwrap()
     }
 
-    /// The child leads a new session, so it has no controlling terminal and
-    /// leads its own process group; a login shell run here cannot touch the
-    /// caller's terminal. A descendant keeps the session and group ids after
-    /// the child exits, so they are read from it.
-    #[test]
-    fn the_child_leads_its_own_session() {
-        let finished = run(
-            sh("sleep 30 & echo $$ $!"),
-            "session probe",
-            Duration::from_secs(5),
-        )
-        .unwrap();
-        let text = String::from_utf8_lossy(&finished.stdout);
-        let pids: Vec<libc::pid_t> = text
-            .split_whitespace()
-            .map(|p| p.parse().unwrap())
-            .collect();
-        let (child, sleeper) = (pids[0], pids[1]);
-        // SAFETY: getsid and getpgid only read ids; kill cleans up a process
-        // this test started.
-        let (session, group, ours) = unsafe {
-            (
-                libc::getsid(sleeper),
-                libc::getpgid(sleeper),
-                libc::getsid(0),
-            )
-        };
-        unsafe { libc::kill(sleeper, libc::SIGKILL) };
-        assert!(finished.status.success(), "{finished:?}");
-        assert_eq!(session, child, "child leads a new session: {text}");
-        assert_eq!(group, child, "child leads its process group: {text}");
-        assert_ne!(session, ours, "child left the caller's session: {text}");
+    fn wait_for_file(path: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::fs::read_to_string(path).map_or(true, |s| !s.ends_with('\n')) {
+            assert!(
+                Instant::now() < deadline,
+                "{} never written",
+                path.display()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
-    /// A descendant that keeps stdout open does not hold the caller: capture
-    /// is a file, so the run returns as soon as the child exits.
+    fn dies_within(pid: u32, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        while process_alive(pid) {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        true
+    }
+
+    fn kill(pid: u32) {
+        // SAFETY: test cleanup of a process this test started.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    }
+
+    /// The child leads a new session, so it has no controlling terminal and
+    /// leads its own process group; a login shell run here cannot touch the
+    /// caller's terminal. Ids are read while the child still runs.
     #[test]
-    fn a_descendant_holding_output_does_not_block() {
+    fn the_child_leads_its_own_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("child");
+        let script = format!("echo $$ > '{}'; sleep 2", file.display());
+        let run =
+            std::thread::spawn(move || sh(&script).run("session probe", Duration::from_secs(10)));
+        wait_for_file(&file);
+        let child = pid_in(&file) as libc::pid_t;
+        // SAFETY: getsid and getpgid only read ids.
+        let (session, group, ours) =
+            unsafe { (libc::getsid(child), libc::getpgid(child), libc::getsid(0)) };
+        run.join().unwrap().unwrap();
+        assert_eq!(session, child, "child leads a new session");
+        assert_eq!(group, child, "child leads its process group");
+        assert_ne!(session, ours, "child left the caller's session");
+    }
+
+    /// Stint 1610: a background job the child started dies when the child
+    /// exits, so nothing keeps writing into the capture after the run.
+    #[test]
+    fn a_background_job_dies_with_the_child() {
         let dir = tempfile::tempdir().unwrap();
         let sleeper = dir.path().join("sleeper");
         let started = Instant::now();
-        let finished = run(
-            sh(&format!(
-                "sleep 600 & echo $! > '{}'; echo done",
-                sleeper.display()
-            )),
-            "test child",
-            Duration::from_secs(30),
-        )
+        let output = sh(&format!(
+            "sleep 600 & echo $! > '{}'; echo done",
+            sleeper.display()
+        ))
+        .run("test child", Duration::from_secs(30))
         .unwrap();
+        let sleeper = pid_in(&sleeper);
+        let died = dies_within(sleeper, Duration::from_secs(5));
+        kill(sleeper);
         assert!(started.elapsed() < Duration::from_secs(10));
-        assert!(finished.status.success());
-        assert_eq!(String::from_utf8_lossy(&finished.stdout).trim(), "done");
-        let pid = pid_in(&sleeper);
-        // SAFETY: test cleanup of a process this test started.
-        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "done");
+        assert!(died, "background job {sleeper} outlived the child");
     }
 
-    /// A descendant that keeps writing after the child exits neither holds
-    /// the run nor grows the capture past the cap.
+    /// A process that left the session by calling setsid itself, as the host
+    /// does under `host start`, survives the child's exit.
     #[test]
-    fn a_descendant_that_keeps_writing_is_capped() {
+    fn a_process_that_detached_survives_the_child() {
         let dir = tempfile::tempdir().unwrap();
-        let writer = dir.path().join("writer");
-        let started = Instant::now();
-        let finished = run(
-            sh(&format!(
-                "yes plexi-bounded-capture & echo $! > '{}'; sleep 0.3",
-                writer.display()
-            )),
-            "test child",
-            Duration::from_secs(30),
-        )
+        let daemon = dir.path().join("daemon");
+        sh(&format!(
+            "perl -MPOSIX -e 'POSIX::setsid(); sleep 600' & echo $! > '{}'; sleep 0.3",
+            daemon.display()
+        ))
+        .run("test child", Duration::from_secs(30))
         .unwrap();
-        let elapsed = started.elapsed();
-        let pid = pid_in(&writer);
-        // SAFETY: test cleanup of a process this test started.
-        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-        assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
-        assert!(finished.status.success());
-        assert!(!finished.stdout.is_empty());
-        assert_eq!(finished.stdout.len() as u64, CAPTURE_LIMIT);
-        assert!(finished.stdout_truncated);
-        assert!(finished.stdout.starts_with(b"plexi-bounded-capture\n"));
+        let daemon = pid_in(&daemon);
+        std::thread::sleep(Duration::from_millis(300));
+        let alive = process_alive(daemon);
+        kill(daemon);
+        assert!(alive, "detached process {daemon} was killed");
+    }
+
+    /// Stint 1610: output of exactly the cap is whole; one byte more is an
+    /// error, never cut bytes.
+    #[test]
+    fn output_past_the_cap_is_an_error() {
+        let fits = sh(&format!("head -c {CAPTURE_LIMIT} /dev/zero"))
+            .run("test child", Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(fits.stdout.len() as u64, CAPTURE_LIMIT);
+        let error = sh(&format!("head -c {} /dev/zero", CAPTURE_LIMIT + 1))
+            .run("test child", Duration::from_secs(30))
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                RunError::OutputTooLarge {
+                    stream: "stdout",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+    }
+
+    /// A non-zero exit is `Failed` with its stderr from `run`, and Ok with
+    /// the code from `run_any_exit`.
+    #[test]
+    fn a_failed_exit_is_an_error_unless_the_caller_reads_the_code() {
+        let error = sh("echo why >&2; exit 3")
+            .run("test child", Duration::from_secs(10))
+            .unwrap_err();
+        let text = error.to_string();
+        assert!(
+            matches!(&error, RunError::Failed { status, .. } if status.code() == Some(3)),
+            "{text}"
+        );
+        assert!(text.contains("why"), "{text}");
+        let exited = sh("echo why >&2; exit 3")
+            .run_any_exit("test child", Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(exited.status.code(), Some(3));
+        assert_eq!(exited.output.stderr, b"why\n");
+    }
+
+    /// Stint 1610: git never prompts. Every prompt route is shut.
+    #[test]
+    fn git_runs_with_every_prompt_route_shut() {
+        let helper = git();
+        let envs: std::collections::HashMap<_, _> = helper
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.map(|v| v.to_owned())))
+            .collect();
+        let env = |key: &str| envs.get(OsStr::new(key)).cloned();
+        assert_eq!(env("GIT_TERMINAL_PROMPT"), Some(Some("0".into())));
+        assert_eq!(env("GIT_ASKPASS"), Some(Some("".into())));
+        assert_eq!(env("SSH_ASKPASS_REQUIRE"), Some(Some("never".into())));
+        assert_eq!(env("SSH_ASKPASS"), Some(None));
+    }
+
+    /// Stint 1610: a git auth failure says what failed and how to set up
+    /// credentials; other failures carry no auth advice.
+    #[test]
+    fn a_git_auth_failure_says_how_to_set_up_credentials() {
+        let failure = |stderr: &str| {
+            sh(&format!("echo \"{stderr}\" >&2; exit 128"))
+                .run(
+                    "git clone https://example.invalid/r.git",
+                    Duration::from_secs(10),
+                )
+                .unwrap_err()
+        };
+        let auth = git_error(&failure(
+            "fatal: could not read Username for https://example.invalid: terminal prompts disabled",
+        ));
+        assert!(
+            auth.starts_with("git clone https://example.invalid/r.git failed"),
+            "{auth}"
+        );
+        assert!(auth.contains("gh auth login"), "{auth}");
+        assert!(auth.contains("ssh key"), "{auth}");
+        let other = git_error(&failure("error: pathspec v9 did not match"));
+        assert!(!other.contains("gh auth"), "{other}");
     }
 
     /// A child the kill cannot stop does not hold the run: the reap gives up
-    /// at its own bound and the error says the child may still be running
-    /// (stint 1610). The kill is stubbed to fail, as a real one rarely does.
+    /// at its own bound and the error says the child may still be running.
+    /// The kill is stubbed to fail, as a real one rarely does.
     #[test]
     fn a_failed_kill_returns_instead_of_waiting_forever() {
-        let child = sh("sleep 600").spawn().unwrap();
+        let child = Command::new("/bin/sh")
+            .args(["-c", "sleep 600"])
+            .spawn()
+            .unwrap();
         let pid = child.id();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let refuse = |_: &mut std::process::Child| Err(std::io::Error::other("refused"));
+            let refuse = |_: &mut Child| Err(std::io::Error::other("refused"));
             let error = stop(
                 child,
                 "test child",
                 Duration::from_millis(1),
                 refuse,
                 Duration::from_millis(300),
+                Vec::new(),
+                Vec::new(),
             );
             let _ = tx.send(error);
         });
         let error = rx.recv_timeout(Duration::from_secs(10));
-        // SAFETY: test cleanup of a process this test started.
-        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        kill(pid);
         let error = error.expect("stop returned within its reap bound");
         let text = error.to_string();
-        assert!(matches!(error, Error::NotStopped { .. }), "{text}");
+        assert!(matches!(error, RunError::NotStopped { .. }), "{text}");
         assert!(text.contains("refused"), "{text}");
         assert!(text.contains("may still be running"), "{text}");
     }
 
-    /// A hung child and its descendants are killed at the limit and reaped.
+    /// Stint 1610: a refused kill stays `NotStopped` even when the child then
+    /// exits by itself: its descendants may still be alive.
+    #[test]
+    fn a_failed_kill_is_not_stopped_even_if_the_child_then_exits() {
+        let child = Command::new("/bin/sh")
+            .args(["-c", "sleep 0.2"])
+            .spawn()
+            .unwrap();
+        let refuse = |_: &mut Child| Err(std::io::Error::other("refused"));
+        let error = stop(
+            child,
+            "test child",
+            Duration::from_millis(1),
+            refuse,
+            Duration::from_secs(5),
+            Vec::new(),
+            Vec::new(),
+        );
+        let text = error.to_string();
+        assert!(matches!(error, RunError::NotStopped { .. }), "{text}");
+        assert!(text.contains("refused"), "{text}");
+    }
+
+    /// A hung child and its descendants are killed at the limit and reaped,
+    /// and what it wrote before the hang is in the error.
     #[test]
     fn a_hung_child_and_its_descendants_are_killed_at_the_limit() {
         let dir = tempfile::tempdir().unwrap();
         let (child, sleeper) = (dir.path().join("child"), dir.path().join("sleeper"));
         let started = Instant::now();
-        let error = run(
-            sh(&format!(
-                "echo $$ > '{}'; sleep 600 & echo $! > '{}'; wait",
-                child.display(),
-                sleeper.display()
-            )),
-            "test child",
-            Duration::from_millis(500),
-        )
-        .err()
-        .unwrap()
-        .to_string();
+        let error = sh(&format!(
+            "echo $$ > '{}'; sleep 600 & echo $! > '{}'; echo partial; wait",
+            child.display(),
+            sleeper.display()
+        ))
+        .run("test child", Duration::from_millis(500))
+        .unwrap_err();
         assert!(started.elapsed() < Duration::from_secs(10), "{error}");
-        assert!(error.contains("did not finish within"), "{error}");
+        let RunError::TimedOut { stdout, .. } = &error else {
+            panic!("expected TimedOut: {error}");
+        };
+        assert_eq!(stdout, b"partial\n");
         let (child, sleeper) = (pid_in(&child), pid_in(&sleeper));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while process_alive(sleeper) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        let sleeper_died = dies_within(sleeper, Duration::from_secs(5));
+        kill(sleeper);
         assert!(!process_alive(child), "child {child} survived");
-        assert!(!process_alive(sleeper), "descendant {sleeper} survived");
+        assert!(sleeper_died, "descendant {sleeper} survived");
     }
 }

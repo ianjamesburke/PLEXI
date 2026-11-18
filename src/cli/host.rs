@@ -739,6 +739,10 @@ fn detach_from_terminal(cmd: &mut std::process::Command) {
 /// execs. The first child creates a new session, then exits after forking the
 /// process that will actually exec the coordinator.
 #[cfg(unix)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "detached: the restart coordinator must outlive this CLI"
+)]
 fn detach_restart_coordinator(cmd: &mut std::process::Command, report_fd: libc::c_int) {
     use std::os::unix::process::CommandExt as _;
     // SAFETY: this runs after fork and before exec. `setsid`, `fork`, `write`,
@@ -831,6 +835,10 @@ fn spawn_detached_host(
     binary: &Path,
     child_env: &[(String, String)],
 ) -> std::io::Result<LaunchedHost> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "detached: the host outlives the CLI that starts it"
+    )]
     let mut cmd = std::process::Command::new(binary);
     cmd.env_clear()
         .envs(child_env.iter().cloned())
@@ -963,6 +971,10 @@ fn restart_coordinator_command(
     parent_env: Vec<(String, String)>,
     channel: Option<&str>,
 ) -> std::process::Command {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "detached: the restart coordinator must outlive this CLI"
+    )]
     let mut command = std::process::Command::new(exe);
     command
         .args(["host", "restart"])
@@ -1034,8 +1046,8 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
         // only needs it gone: the wait below decides, and an unclean stop is
         // reported as a warning (stint 1430).
         match stopped {
-            Ok(output) => {
-                if let Some(warning) = restart_stop_warning(output.status, &output.stderr) {
+            Ok(exited) => {
+                if let Some(warning) = restart_stop_warning(exited.status, &exited.output.stderr) {
                     log::warn!("host_restart: old host stop reported: {warning}");
                     eprintln!("warning: {warning}");
                 }
@@ -1065,18 +1077,18 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
     // Reuse the public start handler without seed panes; capture its human output for JSON callers.
     log::info!("host_restart: starting");
     match run_host_step(&exe, "start", HOST_STEP_LIMIT) {
-        Ok(output) if output.status.success() => {
+        Ok(exited) if exited.status.success() => {
             let new_pid = running_build_info().as_ref().and_then(reported_pid);
             log::info!("host_restart: started new_pid={new_pid:?}");
             host_status_cli(json)
         }
-        Ok(output) => {
+        Ok(exited) => {
             log::error!(
                 "host_restart: start failed status={} stderr={}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
+                exited.status,
+                String::from_utf8_lossy(&exited.output.stderr).trim()
             );
-            eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+            eprintln!("{}", String::from_utf8_lossy(&exited.output.stderr));
             1
         }
         Err(error) => {
@@ -1092,15 +1104,16 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
 /// stops a hung step from holding the restart.
 const HOST_STEP_LIMIT: Duration = Duration::from_secs(60);
 
-/// Run `exe host <step>` as a restart step, bounded by `limit`.
+/// Run `exe host <step>` as a restart step, bounded by `limit`. Any exit code
+/// is Ok: the caller reads it.
 fn run_host_step(
     exe: &Path,
     step: &str,
     limit: Duration,
-) -> plexi_distribution::Result<plexi_distribution::bounded::Finished> {
-    let mut command = std::process::Command::new(exe);
-    command.args(["host", step]);
-    plexi_distribution::bounded::run(command, &format!("host {step}"), limit)
+) -> Result<plexi_distribution::bounded::Exited, plexi_distribution::bounded::RunError> {
+    plexi_distribution::bounded::Helper::new(exe)
+        .args(["host", step])
+        .run_any_exit(&format!("host {step}"), limit)
 }
 
 /// What a non-zero `host stop` child said, as a restart warning.
@@ -1148,7 +1161,7 @@ fn a_hung_restart_step_is_stopped_at_its_limit() {
     let error = run_host_step(&exe, "stop", Duration::from_millis(300)).unwrap_err();
     assert!(started.elapsed() < Duration::from_secs(10), "{error}");
     assert!(
-        matches!(error, plexi_distribution::Error::TimedOut { .. }),
+        matches!(error, plexi_distribution::bounded::RunError::TimedOut { .. }),
         "{error}"
     );
 }

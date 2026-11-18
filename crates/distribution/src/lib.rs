@@ -1,4 +1,7 @@
 //! Package validation and channel-scoped installation shared by every installer.
+// Helpers start through bounded::Helper; tests may start processes freely.
+#![deny(clippy::disallowed_methods)]
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
 pub mod bounded;
 pub mod host_presence;
 pub mod package;
@@ -18,19 +21,8 @@ pub enum Error {
     },
     #[error("{0}")]
     Json(#[from] serde_json::Error),
-    #[error("{what} did not finish within {limit:?} and was stopped")]
-    TimedOut {
-        what: String,
-        limit: std::time::Duration,
-    },
-    #[error("{what} did not finish within {limit:?} and could not be stopped ({cause}); it may still be running")]
-    NotStopped {
-        what: String,
-        limit: std::time::Duration,
-        cause: String,
-    },
-    #[error("{what} wrote more than {limit} bytes; its output was cut and is incomplete")]
-    OutputTruncated { what: String, limit: u64 },
+    #[error(transparent)]
+    Helper(#[from] bounded::RunError),
 }
 pub type Result<T> = std::result::Result<T, Error>;
 

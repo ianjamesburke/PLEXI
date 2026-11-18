@@ -60,9 +60,10 @@ pub fn completions_installed() -> bool {
             return true;
         }
         // Prefer Homebrew site-functions; fall back to ~/.zfunc
-        let brew_ok = std::process::Command::new("brew")
+        const BREW_PREFIX_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+        let brew_ok = plexi_distribution::bounded::Helper::new("brew")
             .arg("--prefix")
-            .output()
+            .run("`brew --prefix`", BREW_PREFIX_LIMIT)
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|prefix| {

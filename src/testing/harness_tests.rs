@@ -6229,9 +6229,8 @@ fn perf_gate_new_context_latency() {
             &["-l", "-i", "-c", "printf '__PLEXI_SHELL_READY__\\n'"],
             crate::host::shell::LOGIN_SHELL_PROBE_LIMIT,
         )
-        .expect("login shell probe must start for latency measurement");
+        .expect("login shell probe must exit 0 for latency measurement");
         let elapsed = start.elapsed();
-        assert!(output.status.success(), "login shell failed: {output:?}");
         assert!(String::from_utf8_lossy(&output.stdout).contains("__PLEXI_SHELL_READY__"));
         shell_startup.push(elapsed);
     }

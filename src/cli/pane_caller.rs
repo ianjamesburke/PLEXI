@@ -67,14 +67,17 @@ fn read_process_environ(pid: u32) -> Option<Vec<u8>> {
     // Same-user `ps` prints the environment on the command line. A short read
     // is treated as "not a pane" so a lookup failure cannot block a human
     // shell; the Linux path reads `/proc` directly.
-    let output = std::process::Command::new("/bin/ps")
+    const PS_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+    let output = plexi_distribution::bounded::Helper::new("/bin/ps")
         .args(["eww", "-p", &pid.to_string(), "-o", "command="])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+        .run(&format!("`ps eww -p {pid}`"), PS_LIMIT);
+    match output {
+        Ok(output) => Some(output.stdout),
+        Err(error) => {
+            log::info!("pane_caller: environment of {pid} unreadable: {error}");
+            None
+        }
     }
-    Some(output.stdout)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

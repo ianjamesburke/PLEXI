@@ -1,8 +1,10 @@
 use crate::app::registry::PluginManifest;
 use crate::host::wasm_python::PythonLaunchConfig;
 use crate::host::wasm_view::UiTree;
+use plexi_distribution::bounded::Helper;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Build a headless launch config for the live CPython-WASM runtime from an
 /// already-loaded manifest, so `plugin check`/`view render` boot the plugin exactly
@@ -1461,15 +1463,14 @@ fn run_python_type_check_with(
     if let Err(probe) = probe_mypy(python) {
         // One-time install into the plugin venv, mirroring how plugin
         // dependencies land there (`python_env::install_dependencies`).
-        let install = std::process::Command::new("uv")
+        let install = Helper::new("uv")
             .args(["pip", "install", "--python"])
             .arg(python)
             .arg("mypy")
-            .output();
-        let installed = matches!(&install, Ok(out) if out.status.success());
-        if !installed {
+            .run("`uv pip install mypy`", MYPY_INSTALL_LIMIT);
+        if let Err(error) = install {
             return Ok(TypeCheckOutcome::Unavailable(format!(
-                "mypy not importable ({probe}) and `uv pip install mypy` did not succeed"
+                "mypy not importable ({probe}) and installing it failed: {error}"
             )));
         }
         probe_mypy(python).map_err(|e| format!("mypy installed but still not importable: {e}"))?;
@@ -1480,7 +1481,7 @@ fn run_python_type_check_with(
     }
     let plugin_dir = entry_path.parent().unwrap_or_else(|| Path::new("."));
     let cache_dir = plugin_dir.join(".venv").join("mypy_cache");
-    let output = std::process::Command::new(python)
+    let exited = Helper::new(python)
         .args([
             "-m",
             "mypy",
@@ -1495,16 +1496,17 @@ fn run_python_type_check_with(
         .arg(entry_path)
         .env("MYPYPATH", pythonpath)
         .current_dir(plugin_dir)
-        .output()
-        .map_err(|e| format!("failed to run mypy via {}: {e}", python.display()))?;
+        .run_any_exit(&format!("mypy via {}", python.display()), MYPY_LIMIT)
+        .map_err(|e| e.to_string())?;
+    let output = &exited.output;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     log::info!(
         "plugin_check: mypy over {} exited {:?} ({} finding bytes)",
         entry_path.display(),
-        output.status.code(),
+        exited.status.code(),
         stdout.len()
     );
-    match output.status.code() {
+    match exited.status.code() {
         Some(0) => Ok(TypeCheckOutcome::Clean),
         Some(1) if !stdout.is_empty() => Ok(TypeCheckOutcome::Findings(stdout)),
         code => Err(format!(
@@ -1518,16 +1520,21 @@ fn run_python_type_check_with(
     }
 }
 
+/// The type-check helpers. Installing mypy may download it; a type check of
+/// a large plugin is the slowest step; the probes answer in seconds.
+const MYPY_INSTALL_LIMIT: Duration = Duration::from_secs(900);
+const MYPY_LIMIT: Duration = Duration::from_secs(300);
+const PYTHON_PROBE_LIMIT: Duration = Duration::from_secs(60);
+
 fn probe_mypy(python: &Path) -> Result<(), String> {
-    let output = std::process::Command::new(python)
+    Helper::new(python)
         .args(["-m", "mypy", "--version"])
-        .output()
-        .map_err(|e| format!("could not run {}: {e}", python.display()))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-    }
+        .run(
+            &format!("`{} -m mypy --version`", python.display()),
+            PYTHON_PROBE_LIMIT,
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 fn analyze_python_entry(
@@ -1653,21 +1660,22 @@ for node in ast.walk(tree):
 json.dump({"functions": functions, "legacy_plugin_classes": legacy_plugin_classes, "warnings": warnings, "timer_uses": timer_uses}, sys.stdout)
 "#;
 
-    let output = std::process::Command::new(python)
+    let output = Helper::new(python)
         .arg("-c")
         .arg(script)
         .arg(entry_path)
-        .output()
-        .map_err(|e| format!("could not run {} for AST analysis: {e}", python.display()))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "Python syntax or AST error in {}: {}",
-            entry_path.display(),
-            stderr.trim()
-        ));
-    }
+        .run(
+            &format!("Python AST analysis of {}", entry_path.display()),
+            PYTHON_PROBE_LIMIT,
+        )
+        .map_err(|e| match e {
+            plexi_distribution::bounded::RunError::Failed { stderr, .. } => format!(
+                "Python syntax or AST error in {}: {}",
+                entry_path.display(),
+                String::from_utf8_lossy(&stderr).trim()
+            ),
+            other => other.to_string(),
+        })?;
 
     let report: PythonAstReport = serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("could not parse AST report: {e}"))?;

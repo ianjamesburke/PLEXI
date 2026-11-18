@@ -65,7 +65,7 @@ pub fn install_cli(spec: &str, assume_yes: bool) -> i32 {
         }
     };
     let target_root = crate::app::registry::plugins_dir();
-    let cloner = crate::cli::install_host::GitCloner;
+    let cloner = crate::cli::install_host::GitCloner::default();
     match crate::cli::install_host::install_one(&cloner, &source, git_ref.as_deref(), &target_root)
     {
         Ok(outcome) => match outcome.status {
@@ -134,7 +134,7 @@ pub fn install_pack_cli(spec: &str, refresh_local: bool) -> i32 {
         eprintln!("error: create plugins dir {}: {e}", target_root.display());
         return 1;
     }
-    let cloner = crate::cli::install_host::GitCloner;
+    let cloner = crate::cli::install_host::GitCloner::default();
     let outcomes =
         crate::cli::install_host::apply_pack(&cloner, &pack, &target_root, refresh_local);
     let mut any_failed = false;
@@ -245,7 +245,7 @@ pub fn install_workspace_pack_cli() -> i32 {
     );
     println!("Applying workspace manifest {}...", plugins_toml.display());
 
-    let cloner = crate::cli::install_host::GitCloner;
+    let cloner = crate::cli::install_host::GitCloner::default();
     let outcomes = match crate::cli::install_host::apply_workspace_pack(&root, &cloner) {
         Ok(o) => o,
         Err(e) => {
@@ -348,7 +348,12 @@ pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: b
                 let stderr = log
                     .try_clone()
                     .map_err(|e| format!("clone uninstall log: {e}"))?;
-                std::process::Command::new(helper)
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "detached: the removal helper must outlive this CLI to delete its files"
+                )]
+                let mut remove = std::process::Command::new(helper);
+                remove
                     .arg("remove")
                     .arg("--receipt")
                     .arg(&receipt.root)
@@ -484,7 +489,7 @@ pub fn update_cli(maybe_id: Option<&str>) -> i32 {
         }
     };
     let global_apps_dir = crate::app::registry::plugins_dir();
-    let cloner = crate::cli::install_host::GitCloner;
+    let cloner = crate::cli::install_host::GitCloner::default();
     let targets = match resolve_update_targets(maybe_id, &cwd, &global_apps_dir) {
         Ok(targets) => targets,
         Err(e) => {

@@ -56,6 +56,10 @@ enum WtpBackend {
     TestShim,
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "baseline: unbounded helper, stint 1610 slice 2"
+)]
 fn wtp_command(backend: WtpBackend) -> Command {
     #[cfg(not(test))]
     {
@@ -335,6 +339,10 @@ fn create_worktree_with(
 
     // Check whether the local branch already exists so we know whether to pass
     // `-b` to `wtp add` and whether clean reclamation should delete the branch.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "baseline: unbounded helper, stint 1610 slice 2"
+    )]
     let branch_exists = Command::new("git")
         .arg("-C")
         .arg(&repo_root)
@@ -560,6 +568,10 @@ fn resolve_worktree_path(repo_root: &Path, branch: &str, backend: WtpBackend) ->
 }
 
 fn git_head_sha(worktree_path: &Path) -> Option<String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "baseline: unbounded helper, stint 1610 slice 2"
+    )]
     let out = Command::new("git")
         .arg("-C")
         .arg(worktree_path)
@@ -574,11 +586,19 @@ fn git_head_sha(worktree_path: &Path) -> Option<String> {
 }
 
 fn is_worktree_dirty(worktree_path: &Path) -> Result<bool, String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "baseline: unbounded helper, stint 1610 slice 2"
+    )]
     let _ = Command::new("git")
         .arg("-C")
         .arg(worktree_path)
         .args(["update-index", "-q", "--refresh"])
         .output();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "baseline: unbounded helper, stint 1610 slice 2"
+    )]
     let out = Command::new("git")
         .arg("-C")
         .arg(worktree_path)

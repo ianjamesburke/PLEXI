@@ -757,11 +757,19 @@ mod open_cli_tests {
 /// Read a line from stdin with echo disabled (for password-style input).
 pub(super) fn read_secret_from_stdin() -> io::Result<String> {
     // Disable echo via stty (avoids libc dependency).
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "foreground: stty changes the terminal the user is typing the secret into"
+    )]
     let _ = std::process::Command::new("stty").arg("-echo").status();
 
     let result = read_line_plain();
 
     // Restore echo.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "foreground: stty changes the terminal the user is typing the secret into"
+    )]
     let _ = std::process::Command::new("stty").arg("echo").status();
     // Print newline since echo was off during input.
     eprintln!();

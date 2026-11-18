@@ -2624,14 +2624,18 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
 #[cfg(target_os = "macos")]
 pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
     let candidates: &[&[&str]] = &[&["-a", "Visual Studio Code"], &["-t"], &["-a", "TextEdit"]];
+    // `open` hands the file to LaunchServices and returns; the editor is not
+    // its descendant, so the helper's session ending does not touch it.
+    const OPEN_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
     for args in candidates {
-        let ok = std::process::Command::new("open")
+        let opened = plexi_distribution::bounded::Helper::new("open")
             .args(*args)
             .arg(path)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if ok {
+            .run("`open`", OPEN_LIMIT);
+        if let Err(error) = &opened {
+            log::info!("open_file_with_fallback: `open {args:?}` failed: {error}");
+        }
+        if opened.is_ok() {
             log::info!(
                 "open_file_with_fallback: opened {} (args: {:?})",
                 path.display(),
@@ -2660,7 +2664,12 @@ pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
 #[cfg(target_os = "linux")]
 pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
     for opener in ["code", "xdg-open"] {
-        match std::process::Command::new(opener)
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "detached: the editor the opener starts must outlive it, so its session is not killed"
+        )]
+        let mut command = std::process::Command::new(opener);
+        match command
             .arg(path)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -4424,7 +4433,7 @@ mod distribution_profile_tests {
         let _guard = super::set_test_profile_dir(dir.path().to_path_buf());
         super::ensure_profile_initialized();
         crate::cli::install_host::apply_core_pack_always(
-            &crate::cli::install_host::GitCloner,
+            &crate::cli::install_host::GitCloner::default(),
             &dir.path().join("plugins"),
         );
         // A directory at the lock path makes any read-write open fail, even as root.
@@ -4452,7 +4461,7 @@ mod distribution_profile_tests {
         assert!(super::lock_profile_initialization().unwrap().is_some());
         super::ensure_profile_initialized();
         crate::cli::install_host::apply_core_pack_always(
-            &crate::cli::install_host::GitCloner,
+            &crate::cli::install_host::GitCloner::default(),
             &dir.path().join("plugins"),
         );
         assert!(super::lock_profile_initialization().unwrap().is_none());

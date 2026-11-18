@@ -1,5 +1,5 @@
 use crate::cli::registry as cli_registry;
-use crate::cli::subprocess::run_capture;
+use plexi_distribution::bounded::Helper;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
@@ -18,17 +18,17 @@ pub trait CliInspector {
 
 pub struct RealInspector;
 
-/// Each inspection runs through `run_capture`; a CLI that hangs on `--version`
-/// or `--help` is stopped here and reads as not answering.
+/// Each inspection runs through `Helper`; a CLI that hangs on `--version` or
+/// `--help` is stopped here and reads as not answering.
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl CliInspector for RealInspector {
     fn which(&self, name: &str) -> Option<String> {
-        let out = run_capture("which", &[name], INSPECT_TIMEOUT).ok()?;
-        if !out.success {
-            return None;
-        }
-        let path = out.stdout.trim().to_string();
+        let out = Helper::new("which")
+            .arg(name)
+            .run(&format!("`which {name}`"), INSPECT_TIMEOUT)
+            .ok()?;
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if path.is_empty() {
             None
         } else {
@@ -36,16 +36,18 @@ impl CliInspector for RealInspector {
         }
     }
     fn version(&self, name: &str) -> Option<String> {
-        let out = run_capture(name, &["--version"], INSPECT_TIMEOUT).ok()?;
-        if !out.success {
-            return None;
-        }
-        Some(out.stdout.trim().to_string())
+        let out = Helper::new(name)
+            .arg("--version")
+            .run(&format!("`{name} --version`"), INSPECT_TIMEOUT)
+            .ok()?;
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
     fn help(&self, name: &str) -> String {
         // Some CLIs (e.g. cargo) print --help to stderr; `help_text` takes it.
-        run_capture(name, &["--help"], INSPECT_TIMEOUT)
-            .map(|out| out.help_text())
+        Helper::new(name)
+            .arg("--help")
+            .run_any_exit(&format!("`{name} --help`"), INSPECT_TIMEOUT)
+            .map(|exited| crate::cli::crawl::help_text(&exited.output))
             .unwrap_or_default()
     }
 }

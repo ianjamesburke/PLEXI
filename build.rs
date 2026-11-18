@@ -1,6 +1,7 @@
 use sha2::{Digest, Sha256};
 use std::process::Command;
 
+#[expect(clippy::disallowed_methods, reason = "build: the build script reads git metadata once per compile")]
 fn git(args: &[&str]) -> String {
     Command::new("git").args(args).output().ok().filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
@@ -33,6 +34,7 @@ fn main() {
     let mut hash = Sha256::new();
     // Include unstaged and newly added sources: two dogfood builds from the
     // same commit must not claim to contain the same SDK or core apps.
+    #[expect(clippy::disallowed_methods, reason = "build: the build identity hashes the git file list")]
     let output = Command::new("git").args(["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).output().expect("git ls-files for build identity");
     assert!(output.status.success(), "git ls-files for build identity failed");
     let mut files: Vec<_> = output.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()).collect();

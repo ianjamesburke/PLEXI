@@ -632,7 +632,6 @@ pub mod skill_draft;
 pub mod skill_install;
 #[cfg(test)]
 mod skill_surface;
-pub mod subprocess;
 #[cfg(test)]
 pub mod test_env;
 pub mod trace;

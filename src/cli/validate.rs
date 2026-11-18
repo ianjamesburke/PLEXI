@@ -103,22 +103,29 @@ pub fn validate_cli(path: &str) -> i32 {
                 errors.push(format!("  {e}"));
             } else if entry.ends_with(".py") {
                 // Python syntax check via AST parse (no import, no SDK needed)
-                let py_check = std::process::Command::new("python3")
+                const SYNTAX_CHECK_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+                let py_check = plexi_distribution::bounded::Helper::new("python3")
                     .arg("-c")
                     .arg("import ast, sys; ast.parse(open(sys.argv[1]).read())")
                     .arg(&entry_path)
-                    .output();
+                    .run("Python syntax check", SYNTAX_CHECK_LIMIT);
+                use plexi_distribution::bounded::RunError;
                 match py_check {
-                    Ok(out) if out.status.success() => {}
-                    Ok(out) => {
-                        let stderr = String::from_utf8_lossy(&out.stderr);
+                    Ok(_) => {}
+                    Err(RunError::Failed { stderr, .. }) => {
+                        let stderr = String::from_utf8_lossy(&stderr);
                         errors.push(format!(
                             "  Python syntax error in {entry}: {}",
                             stderr.trim()
                         ));
                     }
+                    Err(RunError::Start { source, .. }) => {
+                        warnings.push(format!(
+                            "  python3 not found — skipping syntax check: {source}"
+                        ));
+                    }
                     Err(e) => {
-                        warnings.push(format!("  python3 not found — skipping syntax check: {e}"));
+                        errors.push(format!("  could not check Python syntax of {entry}: {e}"));
                     }
                 }
             }

@@ -358,6 +358,10 @@ fn quit_helper(
             "quit helper deadline elapsed",
         ));
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "baseline: unbounded helper, stint 1610 slice 2"
+    )]
     let mut child = std::process::Command::new(program)
         .args(args)
         .stdin(std::process::Stdio::null())
