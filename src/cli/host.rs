@@ -21,8 +21,10 @@
 #[cfg(windows)]
 mod windows_launch;
 
-use crate::platform::ipc::{self, IpcStream};
-use plexi_distribution::host_presence::endpoint_in;
+#[cfg(windows)]
+use crate::platform::ipc;
+use crate::platform::ipc::IpcStream;
+use plexi_distribution::host_presence::{self, endpoint_in, Presence};
 use serde::Deserialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -220,10 +222,9 @@ pub(crate) fn host_child_env(
 /// `channel`, which callers resolve once via `resolve_channel_paths()`
 /// (binary-basename-only, ignoring env).
 fn host_config_dir(channel: Option<&str>) -> PathBuf {
-    let suffix = channel.map(|c| format!("-{c}")).unwrap_or_default();
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(format!(".plexi{suffix}"))
+        .join(host_presence::profile_dir_name(channel.unwrap_or("stable")))
 }
 
 /// Resolve the canonical installed target, falling back only to this executable
@@ -247,11 +248,7 @@ fn resolve_channel_paths() -> (Option<String>, PathBuf, PathBuf) {
     (channel, bundle, binary)
 }
 
-/// Best-effort pid lookup for the process holding `notify.sock` open. No
-/// pid-file mechanism exists anywhere in this codebase (confirmed: `src/app/`
-/// and `src/config/` have no precedent), so this shells out to `lsof -t` as a
-/// diagnostic only — failure here never blocks the caller, it just means pid
-/// is reported as unknown.
+/// Best-effort PID lookup from the host lock or the Windows pipe owner.
 #[cfg(windows)]
 fn detect_pid(socket_path: &Path) -> Option<u32> {
     use std::os::windows::io::AsRawHandle;
@@ -272,32 +269,12 @@ fn detect_pid(socket_path: &Path) -> Option<u32> {
 
 #[cfg(unix)]
 fn detect_pid(socket_path: &Path) -> Option<u32> {
-    // `lsof` is not installed by default on a minimal Linux, and without a pid
-    // `host stop`'s SIGTERM fallback has nothing to signal. /proc answers the
-    // same question from the kernel with no external dependency, so try it
-    // first and keep `lsof` as the fallback.
-    #[cfg(target_os = "linux")]
-    if let Some(pid) = detect_pid_via_proc(socket_path) {
-        return Some(pid);
-    }
-    match std::process::Command::new("lsof")
-        .arg("-t")
-        .arg(socket_path)
-        .output()
-    {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .next()
-            .and_then(|l| l.trim().parse::<u32>().ok()),
-        Ok(out) => {
-            log::debug!(
-                "host: lsof found no owner for {socket_path:?} (status {:?})",
-                out.status
-            );
-            None
-        }
-        Err(e) => {
-            log::warn!("host: lsof unavailable ({e}) — pid unknown for {socket_path:?}");
+    let profile = socket_path.parent()?;
+    match host_presence::probe(profile, Instant::now() + Duration::from_millis(100)) {
+        Presence::Running { pid, .. } => pid,
+        Presence::NotRunning => None,
+        Presence::Unknown(reason) => {
+            log::warn!("host: PID lookup failed for {profile:?}: {reason}");
             None
         }
     }
@@ -308,25 +285,15 @@ pub(crate) enum RunningState {
     NotRunning,
 }
 
-/// Probe whether a host for this channel is already up. Reuses the same
-/// stale-socket cleanup idiom as `src/cli/mod.rs`'s `send_to_socket`:
-/// `ConnectionRefused` means the socket file is stale (owning process died
-/// without cleanup) — remove it and treat as not-running.
+/// Probe the endpoint without consulting the lock held by the host guard.
 pub(crate) fn probe_notify_socket(socket_path: &Path, timeout: Duration) -> RunningState {
-    // An empty transport frame only probes the connection. It uses the same
-    // bounded connect path as commands, including a saturated Unix backlog.
-    match super::send_line_to_socket(socket_path, b"", timeout) {
-        Ok(_) | Err(super::SocketTransportError::ConnectTimeout) => RunningState::Running,
-        Err(super::SocketTransportError::Connect(e))
-            if e.kind() == std::io::ErrorKind::ConnectionRefused =>
-        {
-            log::info!("host: removing stale endpoint {socket_path:?}");
-            ipc::remove_stale_endpoint(socket_path);
-            RunningState::NotRunning
-        }
-        Err(e) => {
-            log::info!("host: endpoint {socket_path:?} not reachable: {e:?}");
-            RunningState::NotRunning
+    match host_presence::endpoint_presence(socket_path, Instant::now() + timeout) {
+        Presence::Running { .. } => RunningState::Running,
+        Presence::NotRunning => RunningState::NotRunning,
+        Presence::Unknown(reason) => {
+            log::warn!("host: endpoint probe failed: {reason}");
+            // An uncertain endpoint must not permit a second host to start.
+            RunningState::Running
         }
     }
 }
@@ -591,98 +558,6 @@ fn collect_pane_specs(
         specs.push(parse_pane_flag(raw)?);
     }
     Ok(specs)
-}
-
-/// `plexi host start [--layout <file>] [--pane <spec>]... [--timeout-secs <n>] [--background]`
-///
-/// Linux pid lookup for the process holding `socket_path` open, straight from
-/// /proc — no `lsof`, no other binary.
-///
-/// Two steps, because the kernel exposes the mapping in two places:
-/// `/proc/net/unix` maps a bound socket *path* to its inode, and a process's
-/// `/proc/<pid>/fd/*` symlinks resolve to `socket:[<inode>]`. Matching the two
-/// gives the listener.
-///
-/// Best-effort, exactly like the `lsof` path it fronts: any unreadable entry
-/// (a process that exited mid-scan, another user's `/proc/<pid>/fd`) is
-/// skipped rather than failing the lookup.
-#[cfg(target_os = "linux")]
-fn detect_pid_via_proc(socket_path: &Path) -> Option<u32> {
-    let target = socket_path.to_str()?;
-    let unix_table = match std::fs::read_to_string("/proc/net/unix") {
-        Ok(table) => table,
-        Err(e) => {
-            log::warn!("host: could not read /proc/net/unix ({e}) — falling back to lsof");
-            return None;
-        }
-    };
-    // Columns: Num RefCount Protocol Flags Type St Inode Path
-    let inodes: Vec<String> = unix_table
-        .lines()
-        .filter_map(|line| unix_socket_inode(line, target).map(str::to_owned))
-        .collect();
-    if inodes.is_empty() {
-        return None;
-    }
-
-    let self_pid = std::process::id();
-    let entries = match std::fs::read_dir("/proc") {
-        Ok(entries) => entries,
-        Err(e) => {
-            log::warn!("host: could not read /proc ({e}) — pid unknown for {socket_path:?}");
-            return None;
-        }
-    };
-    for entry in entries.flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
-        else {
-            continue; // not a pid directory
-        };
-        if pid == self_pid {
-            continue; // this CLI may have the socket open too
-        }
-        let Ok(fds) = std::fs::read_dir(entry.path().join("fd")) else {
-            continue; // exited mid-scan, or another user's process
-        };
-        for fd in fds.flatten() {
-            let Ok(link) = std::fs::read_link(fd.path()) else {
-                continue;
-            };
-            let Some(link) = link.to_str() else { continue };
-            let Some(inode) = link
-                .strip_prefix("socket:[")
-                .and_then(|rest| rest.strip_suffix(']'))
-            else {
-                continue;
-            };
-            if inodes.iter().any(|i| i == inode) {
-                log::info!("host: /proc resolved pid {pid} as the owner of {socket_path:?}");
-                return Some(pid);
-            }
-        }
-    }
-    None
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn unix_socket_inode<'a>(line: &'a str, target: &str) -> Option<&'a str> {
-    let mut rest = line;
-    let mut inode = "";
-    for _ in 0..7 {
-        rest = rest.trim_start();
-        if rest.is_empty() {
-            return None;
-        }
-        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-        inode = &rest[..end];
-        rest = &rest[end..];
-    }
-    // Only the table columns are whitespace-delimited. The remaining path
-    // is verbatim and may contain repeated spaces.
-    (rest.trim_start() == target).then_some(inode)
 }
 
 /// Launches this channel's plugin bundle detached (survives the CLI process
@@ -1267,7 +1142,7 @@ fn restart_confirmation_only_for_the_callers_host() {
 
 /// `plexi host stop` — clean shutdown request over `notify.sock` first
 /// (`HostRequest::Shutdown`), falling back to `kill -TERM <pid>` (pid via
-/// `lsof -t`) if the socket doesn't confirm exit within a short timeout.
+/// host lock) if the socket does not confirm exit within a short timeout.
 pub fn host_stop_cli() -> i32 {
     let channel = crate::config::build_channel();
     let profile = host_config_dir(channel.as_deref());
@@ -2142,12 +2017,24 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
-    fn distribution_socket_inode_preserves_spaces_in_the_path() {
-        let path = "/tmp/Plexi home with  spaces/.plexi/notify.sock";
-        let line = format!("000000: 00000002 00000000 00010000 0001 01 4711 {path}");
-        assert_eq!(super::unix_socket_inode(&line, path), Some("4711"));
-        assert_eq!(super::unix_socket_inode(&line, "/tmp/Plexi"), None);
+    fn detect_pid_uses_only_a_live_host_lock() {
+        let profile = tempfile::tempdir().unwrap();
+        let endpoint = endpoint_in(profile.path());
+        assert_eq!(detect_pid(&endpoint), None, "missing lock");
+        let lock = profile
+            .path()
+            .join(plexi_distribution::host_presence::LOCK_FILE);
+        std::fs::write(&lock, "4242\n").unwrap();
+        assert_eq!(detect_pid(&endpoint), None, "stale lock");
+        let held = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .open(&lock)
+            .unwrap();
+        held.try_lock().unwrap();
+        assert_eq!(detect_pid(&endpoint), Some(4242), "live host lock");
     }
 
     #[cfg(unix)]
@@ -2252,7 +2139,10 @@ mod tests {
     #[cfg(unix)]
     fn spawn_silent_host(profile: &Path, detached: bool) -> (u32, Option<std::process::Child>) {
         let socket = endpoint_in(profile);
-        let script = "import socket,sys,os\n\
+        let script = "import fcntl,socket,sys,os\n\
+lock=open(os.path.join(os.path.dirname(sys.argv[1]), 'host.lock'), 'w')\n\
+fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n\
+lock.write(str(os.getpid()));lock.flush()\n\
 s=socket.socket(socket.AF_UNIX);s.bind(sys.argv[1]);s.listen(4)\n\
 print('ready', os.getpid(), flush=True)\n\
 held=[]\n\

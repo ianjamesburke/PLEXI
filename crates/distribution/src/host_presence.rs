@@ -123,8 +123,9 @@ fn running_on_endpoint() -> Presence {
     }
 }
 
+/// Probe only the endpoint, for callers that already hold the host lock.
 #[cfg(unix)]
-fn endpoint_presence(endpoint: &Path, deadline: Instant) -> Presence {
+pub fn endpoint_presence(endpoint: &Path, deadline: Instant) -> Presence {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::ffi::OsStrExt;
 
@@ -234,8 +235,9 @@ fn endpoint_presence(endpoint: &Path, deadline: Instant) -> Presence {
     }
 }
 
+/// Probe only the endpoint, for callers that already hold the host lock.
 #[cfg(windows)]
-fn endpoint_presence(endpoint: &Path, _deadline: Instant) -> Presence {
+pub fn endpoint_presence(endpoint: &Path, _deadline: Instant) -> Presence {
     const ERROR_PIPE_BUSY: i32 = 231;
     match std::fs::OpenOptions::new()
         .read(true)
