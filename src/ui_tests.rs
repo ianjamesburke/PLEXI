@@ -3309,7 +3309,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                         pane_id: portal,
                         target_context_id: child_ctx_id,
                         context_state: None,
-                        reveal_after_close: false,
                     })),
                 );
                 tiles.push(win.tree.tiles.insert_pane(portal));
@@ -5096,7 +5095,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     pane_id: portal_pane_id,
                     target_context_id: child_ctx_id,
                     context_state: None,
-                    reveal_after_close: false,
                 })),
             );
             let portal_tile = win.tree.tiles.insert_pane(portal_pane_id);
@@ -6137,7 +6135,6 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                             pane_id,
                             target_context_id: target,
                             context_state: None,
-                            reveal_after_close: false,
                         })),
                     );
                 }
@@ -7352,7 +7349,6 @@ open(out + ".done", "w").close()
                     pane_id: pane_id + 1_000,
                     target_context_id: 42,
                     context_state: None,
-                    reveal_after_close: false,
                 }))));
             }
             let tile_id = win
@@ -7418,7 +7414,6 @@ open(out + ".done", "w").close()
                 pane_id: view + 1_000,
                 target_context_id: 42,
                 context_state: None,
-                reveal_after_close: false,
             }))));
         });
         let bar_height = crate::render::view_pane::chrome_height(true, false);
@@ -8563,7 +8558,6 @@ open(out + ".done", "w").close()
                         pane_id: portal_pane_id,
                         target_context_id: child_ctx_id,
                         context_state: None,
-                        reveal_after_close: false,
                     })),
                 );
                 child_ctx_id
@@ -8710,7 +8704,6 @@ open(out + ".done", "w").close()
                     pane_id: extra_a,
                     target_context_id: extra_a + 10_000,
                     context_state: None,
-                    reveal_after_close: false,
                 })),
             );
             extra_panes.insert(
@@ -8719,7 +8712,6 @@ open(out + ".done", "w").close()
                     pane_id: extra_b,
                     target_context_id: extra_b + 10_000,
                     context_state: None,
-                    reveal_after_close: false,
                 })),
             );
             let mut extra_tiles = egui_tiles::Tiles::default();

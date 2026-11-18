@@ -233,8 +233,6 @@ pub enum SavedPaneKind {
     #[serde(alias = "sub_context")]
     Portal {
         context_id: u64,
-        #[serde(default)]
-        reveal_after_close: bool,
     },
 }
 
@@ -1675,7 +1673,6 @@ mod tests {
             id: 99,
             kind: SavedPaneKind::Portal {
                 context_id: 42,
-                reveal_after_close: false,
             },
             cwd: PathBuf::new(),
             name: None,
@@ -1694,7 +1691,6 @@ mod tests {
                 restored.kind,
                 SavedPaneKind::Portal {
                     context_id: 42,
-                    reveal_after_close: false
                 }
             ),
             "Portal kind must round-trip with correct context_id"
@@ -1710,7 +1706,6 @@ mod tests {
                 legacy.kind,
                 SavedPaneKind::Portal {
                     context_id: 42,
-                    reveal_after_close: false
                 }
             ),
             "legacy sub_context must deserialize to Portal"

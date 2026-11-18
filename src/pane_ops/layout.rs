@@ -850,7 +850,7 @@ impl PlexiApp {
                         self.delete_window(ctx_idx);
                     }
                 }
-                self.reveal_sole_portal_after_close(ctx_id);
+                self.dissolve_sole_portal_after_close(ctx_id);
                 // An emptied subcontext collapses entirely — delete it and,
                 // when it was active, zoom back out like Cmd+Escape.
                 self.collapse_subcontext_if_empty(ctx_id);
@@ -1084,7 +1084,7 @@ impl PlexiApp {
         }
         if closed_pane_id.is_some() {
             let context_id = self.windows[ctx_idx].context_id;
-            self.reveal_sole_portal_after_close(context_id);
+            self.dissolve_sole_portal_after_close(context_id);
         }
     }
 
@@ -2170,7 +2170,7 @@ impl PlexiApp {
                 self.delete_window(closed_window);
             }
         }
-        self.reveal_sole_portal_after_close(ctx_id);
+        self.dissolve_sole_portal_after_close(ctx_id);
         // An emptied subcontext collapses entirely — delete it and zoom back
         // out to the parent, as if Cmd+Escape had been pressed.
         self.collapse_subcontext_if_empty(ctx_id);

@@ -5108,7 +5108,6 @@ mod tests {
             pane_id: id,
             target_context_id: id + 1000,
             context_state: None,
-            reveal_after_close: false,
         }))
     }
 

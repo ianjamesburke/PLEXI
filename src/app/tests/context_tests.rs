@@ -856,7 +856,6 @@ fn delete_context_portal_resets_stale_focused_pane() {
                 pane_id: portal_pane_id,
                 target_context_id: child_id,
                 context_state: None,
-                reveal_after_close: false,
             })),
         );
     }
@@ -1598,7 +1597,6 @@ fn delete_context_collapses_empty_portal_window() {
                 pane_id: portal_pane_id,
                 target_context_id: child_id,
                 context_state: None,
-                reveal_after_close: false,
             })),
         );
         win2.focused_pane = Some(portal_tile);
@@ -1715,7 +1713,6 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
                 pane_id: portal_pane_id,
                 target_context_id: child_id,
                 context_state: None,
-                reveal_after_close: false,
             })),
         );
     }
@@ -1823,7 +1820,6 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
             pane_id: portal_pane_id,
             target_context_id: child_ctx_id,
             context_state: None,
-            reveal_after_close: false,
         })),
     );
     app.windows[0].tree =
@@ -2008,7 +2004,6 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
             pane_id: portal_pane_id,
             target_context_id: child_ctx_id,
             context_state: None,
-            reveal_after_close: false,
         })),
     );
     app.windows[0].tree = egui_tiles::Tree::new("dissolve_multi_parent", parent_root, parent_tiles);
@@ -2297,7 +2292,6 @@ fn rename_on_focused_portal_falls_through_to_subcontext() {
                 pane_id: portal_pane_id,
                 target_context_id: child_id,
                 context_state: None,
-                reveal_after_close: false,
             })),
         );
         win.focused_pane = Some(portal_tile);
@@ -2907,7 +2901,6 @@ fn context_close_offers_dissolve_only_for_portal_backed_context() {
             pane_id: portal_pane_id,
             target_context_id: child_ctx_id,
             context_state: None,
-            reveal_after_close: false,
         })),
     );
 
@@ -4441,55 +4434,6 @@ fn breadcrumb_navigation_restores_parent_chain_and_rejects_stale_source() {
     );
     assert!(!h.app.navigate_context_ancestor(source, child_id));
     assert_eq!(h.app.router.active().context_id, root);
-}
-
-#[test]
-fn breadcrumb_can_restore_revealed_parent_without_changing_reveal_flag() {
-    let mut h = crate::testing::HostHarness::new();
-    let pane = h.add_test_pane();
-    h.add_test_pane();
-    let root = h.app.router.active().context_id;
-    h.app
-        .push_pane_to_subcontext(Some("revealed child".into()), Some(pane));
-    let child_index = h
-        .app
-        .router
-        .position(|c| c.parent_id == Some(root))
-        .unwrap();
-    let child = h.app.router.get(child_index).context_id;
-    let root_window = h
-        .app
-        .windows
-        .iter()
-        .position(|w| w.context_id == root)
-        .unwrap();
-    let win = &mut h.app.windows[root_window];
-    let portal_id = *win
-        .panes
-        .iter()
-        .find(|(_, p)| p.as_portal().is_some())
-        .unwrap()
-        .0;
-    win.panes.retain(|id, _| *id == portal_id);
-    win.tree.root = win.tree.tiles.find_pane(&portal_id);
-    win.panes
-        .get_mut(&portal_id)
-        .unwrap()
-        .as_portal_mut()
-        .unwrap()
-        .reveal_after_close = true;
-    h.app.switch_workspace(child_index);
-    assert_eq!(h.app.revealed_child(root), Some(child));
-    assert!(h.app.navigate_context_ancestor(child, root));
-    assert_eq!(h.app.router.active().context_id, root);
-    assert_eq!(h.app.revealed_child(root), Some(child));
-    let root_index = h.app.router.position(|c| c.context_id == root).unwrap();
-    h.app.switch_workspace(root_index);
-    assert_eq!(
-        h.app.router.active().context_id,
-        child,
-        "ordinary navigation retains reveal behavior"
-    );
 }
 
 #[test]

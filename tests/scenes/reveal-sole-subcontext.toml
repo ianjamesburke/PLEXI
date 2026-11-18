@@ -1,4 +1,4 @@
-# A child remains a distinct context while the last sibling close reveals it.
+# Closing the last sibling of a parent unpacks its sole child into the parent.
 size = [1280.0, 800.0]
 
 [[steps]]
@@ -14,7 +14,7 @@ paste = { target = "child_files", value = "# Child plan\n\nKeep this workspace i
 open = { kind = "builtin", id = "text-editor", args = ["{tmp}/outside-review.md"], as = "outside" }
 
 [[steps]]
-paste = { target = "outside", value = "# Outside review\n\nClose this pane to reveal the child.\n" }
+paste = { target = "outside", value = "# Outside review\n\nClose this pane to unpack the child.\n" }
 
 [[steps]]
 focus = "child_files"
@@ -41,7 +41,7 @@ focus = "outside"
 assert = { target = "outside", focused = true, context_count = 2, context_pane_count = 2 }
 
 [[steps]]
-shot = "reveal-subcontext-before.png"
+shot = "unpack-subcontext-before.png"
 
 [[steps]]
 close = "outside"
@@ -50,7 +50,7 @@ close = "outside"
 run_steps = 3
 
 [[steps]]
-assert = { target = "outside", exists = false, context_count = 2 }
+assert = { target = "outside", exists = false, context_count = 1 }
 
 [[steps]]
 assert = { target = "child_files", exists = true }
@@ -59,4 +59,4 @@ assert = { target = "child_files", exists = true }
 assert = { target = "child_docs", exists = true, focused = true, context_pane_count = 2 }
 
 [[steps]]
-shot = "reveal-subcontext-after.png"
+shot = "unpack-subcontext-after.png"

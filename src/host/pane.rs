@@ -501,8 +501,6 @@ pub struct PortalPane {
     pub pane_id: PaneId,
     pub target_context_id: u64,
     pub context_state: Option<crate::host::context_state::ContextState>,
-    /// True when a close made this the sole portal in its parent.
-    pub reveal_after_close: bool,
 }
 
 impl Pane {

@@ -2934,7 +2934,6 @@ mod tests {
                 pane_id: portal,
                 target_context_id: context,
                 context_state: None,
-                reveal_after_close: false,
             })),
         );
         let mut tiles = egui_tiles::Tiles::default();
