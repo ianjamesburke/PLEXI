@@ -38,14 +38,14 @@ manually published **mirror** consumed by the `npx skills` installer
 stable release.
 
 The mirror is republished **only at stable release time, only from the release
-tree** (the tree `promote.sh` promotes beta→main, after `just bump`). By then
+tree** (the tree on `main`, after `just bump`). By then
 the surface gate has run against that tree's own binary and `plexi_version`
 equals the tagged version — so the published skill matches the released binary
 by construction. Publishing the alpha copy mid-cycle is forbidden: it would
 document unreleased surface under the released version number, which is exactly
 the failure this contract exists to prevent.
 
-Publish flow (manual; `just release main` prints this reminder):
+Publish flow (manual, after the stable release):
 
 1. From the release tree, copy `skills/plexi-cli/SKILL.md` — that single file,
    never a directory glob — into the mirror repo at
@@ -55,9 +55,9 @@ Publish flow (manual; `just release main` prints this reminder):
 
 ## Release Gate
 
-`scripts/promote.sh` runs `cargo test --bin plexi skill_surface` in the beta
-tree on the beta→main path and **fails the release** if the skill documents
-surface that binary does not have or the version stamp is off.
+Every release build runs `cargo test --bin plexi`, which includes
+`skill_surface`; a skill that documents surface the binary lacks fails the
+release.
 
 ## Content Rules
 

@@ -93,7 +93,7 @@ Every new feature must be instrumented: no new capability, command, or user-visi
 **Mandatory self-validation contract: [`src/testing/TESTING.md`](src/testing/TESTING.md).** Follow its phase-aware gates before pushing, integrating, or installing.
 - Test-first for host logic. Define done by the test, not the code. No partial merges.
 - Observable state belongs in TOML scenes; return values and invariants belong in Rust tests.
-- `linux` CI runs only in the nightly workflow (`rust-host.yml` is `workflow_call` only) and is advisory (`continue-on-error`), not a merge gate. Record Linux-only failures in the PR body; update `TRUTH.md` only when they change its current state or blockers.
+- Hosted CI is Apple Silicon only and runs no PR builds; release builds on alpha, beta and main run the host tests. The manual `Rust host` workflow runs the full suite with the PTY tests.
 - Host UI changes: visual review via harness screenshot test is mandatory before shipping.
 
 ## Panic Discipline
