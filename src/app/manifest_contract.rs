@@ -891,6 +891,51 @@ mod tests {
     }
 
     #[test]
+    fn repaired_sibling_collision_is_reported_in_both_orders() {
+        let first = GOOD.replace("sample.open", "sample.tools.open");
+        let second = GOOD
+            .replace("\"sample\"", "\"sample.tools\"")
+            .replace("sample.main", "sample.tools.main")
+            .replace("sample.open", "sample.tools.open");
+        let candidate = PluginManifest::parse(&second).unwrap();
+
+        for repair_first in [true, false] {
+            let target = tempfile::tempdir().unwrap();
+            let workspace = tempfile::tempdir().unwrap();
+            let first_dir = target.path().join("sample");
+            std::fs::create_dir_all(&first_dir).unwrap();
+            std::fs::write(first_dir.join("main.wasm"), b"fixture").unwrap();
+            std::fs::write(first_dir.join("manifest.toml"), "invalid = [").unwrap();
+            if repair_first {
+                std::fs::write(first_dir.join("manifest.toml"), &first).unwrap();
+                let error = candidate.lock_command_install(target.path()).unwrap_err();
+                let message = error.to_string();
+                for expected in ["plugin 'sample'", "plugin 'sample.tools'", "sample.tools.open"] {
+                    assert!(message.contains(expected), "{message}");
+                }
+            } else {
+                let lock = candidate.lock_command_install(target.path()).unwrap();
+                let second_dir = target.path().join("sample.tools");
+                std::fs::create_dir_all(&second_dir).unwrap();
+                std::fs::write(second_dir.join("manifest.toml"), &second).unwrap();
+                std::fs::write(second_dir.join("main.wasm"), b"fixture").unwrap();
+                drop(lock);
+                std::fs::write(first_dir.join("manifest.toml"), &first).unwrap();
+                let registry = crate::app::registry::PluginRegistry::load_with_global(
+                    workspace.path(), target.path(),
+                );
+                assert!(registry.get("sample.tools").is_some(), "the plugin installed while its sibling was broken must retain ownership");
+                let skipped = registry.skipped();
+                assert_eq!(skipped.len(), 1, "{skipped:?}");
+                let message = &skipped[0].error;
+                for expected in ["plugin 'sample'", "plugin 'sample.tools'", "sample.tools.open"] {
+                    assert!(message.contains(expected), "{message}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn schema2_names_every_later_contribution() {
         for name in [
             "panels",
