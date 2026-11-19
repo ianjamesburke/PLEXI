@@ -182,10 +182,10 @@ def test_ui_tree_serializes_text_input_and_select_list() -> None:
         "password": False,
         "autofocus": False,
     }
-    assert nodes[2]["data"]["type"] == "ListView"
-    assert nodes[2]["data"]["selected"] == 1
-    assert nodes[2]["data"]["items"] == [3, 4]
-    assert "size" not in nodes[5]["data"]
+    assert nodes[2]["data"] == {"type": "ListView", "items": [3, 5]}
+    assert [nodes[i]["data"]["selected"] for i in (3, 5)] == [False, True]
+    assert nodes[7]["data"]["text"] == "two"
+    assert "size" not in nodes[7]["data"]
 
 
 def test_text_input_handlers_default_to_its_id() -> None:

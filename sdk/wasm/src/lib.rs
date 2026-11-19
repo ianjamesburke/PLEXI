@@ -447,17 +447,60 @@ pub mod ui {
                 }),
             )
         }
-        pub fn list_view(
-            &mut self,
-            key: impl Into<String>,
-            items: impl IntoIterator<Item = u32>,
-            selected: Option<u32>,
-            on_select: Option<&str>,
-        ) -> u32 {
+        pub fn list_view(&mut self, key: impl Into<String>, items: impl IntoIterator<Item = u32>) -> u32 {
             self.push(
                 key,
                 UiNodeData::ListView(ListNode {
                     items: items.into_iter().collect(),
+                }),
+            )
+        }
+        /// A list row wrapping `child`. `on_select` is the complete action
+        /// activating the row delivers.
+        pub fn list_item(
+            &mut self,
+            key: impl Into<String>,
+            child: u32,
+            selected: bool,
+            on_select: Option<&str>,
+        ) -> u32 {
+            self.push(
+                key,
+                UiNodeData::ListItem(ListItemNode {
+                    child,
+                    selected,
+                    on_select: on_select.map(str::to_owned),
+                }),
+            )
+        }
+        /// A table: `columns` is the header, `rows` the `table_row` ids.
+        pub fn table<C: Into<String>>(
+            &mut self,
+            key: impl Into<String>,
+            columns: impl IntoIterator<Item = C>,
+            rows: impl IntoIterator<Item = u32>,
+        ) -> u32 {
+            self.push(
+                key,
+                UiNodeData::Table(TableNode {
+                    columns: columns.into_iter().map(Into::into).collect(),
+                    rows: rows.into_iter().collect(),
+                }),
+            )
+        }
+        /// One table body row. `on_select` is the complete action activating
+        /// the row delivers.
+        pub fn table_row<C: Into<String>>(
+            &mut self,
+            key: impl Into<String>,
+            cells: impl IntoIterator<Item = C>,
+            selected: bool,
+            on_select: Option<&str>,
+        ) -> u32 {
+            self.push(
+                key,
+                UiNodeData::TableRow(TableRowNode {
+                    cells: cells.into_iter().map(Into::into).collect(),
                     selected,
                     on_select: on_select.map(str::to_owned),
                 }),

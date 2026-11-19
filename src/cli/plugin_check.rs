@@ -100,6 +100,15 @@ fn indexed_node_to_json(node: &crate::host::wasm_view::IndexedNode) -> serde_jso
         UiNodeData::ProgressBar(p) => serde_json::json!({"type": "ProgressBar", "label": p.label}),
         UiNodeData::Badge(b) => serde_json::json!({"type": "Badge", "text": b.text}),
         UiNodeData::ListView(l) => serde_json::json!({"type": "ListView", "items": l.items}),
+        UiNodeData::ListItem(i) => serde_json::json!({
+            "type": "ListItem", "child": i.child, "selected": i.selected, "on_select": i.on_select
+        }),
+        UiNodeData::Table(t) => {
+            serde_json::json!({"type": "Table", "columns": t.columns, "rows": t.rows})
+        }
+        UiNodeData::TableRow(r) => serde_json::json!({
+            "type": "TableRow", "cells": r.cells, "selected": r.selected, "on_select": r.on_select
+        }),
         UiNodeData::Scroll(s) => serde_json::json!({"type": "Scroll", "child": s.child}),
         UiNodeData::Padding(p) => serde_json::json!({"type": "Padding", "child": p.child}),
         UiNodeData::Canvas(c) => serde_json::json!({
@@ -985,6 +994,9 @@ fn describe_node(node: &crate::host::wasm_view::IndexedNode) -> String {
         UiNodeData::ProgressBar(p) => ("ProgressBar", p.label.as_deref()),
         UiNodeData::Badge(b) => ("Badge", Some(b.text.as_str())),
         UiNodeData::ListView(_) => ("ListView", None),
+        UiNodeData::ListItem(_) => ("ListItem", None),
+        UiNodeData::Table(_) => ("Table", None),
+        UiNodeData::TableRow(r) => ("TableRow", r.cells.first().map(String::as_str)),
         UiNodeData::Scroll(_) => ("Scroll", None),
         UiNodeData::Padding(_) => ("Padding", None),
         UiNodeData::Canvas(_) => ("Canvas", None),
@@ -1005,23 +1017,10 @@ fn describe_node(node: &crate::host::wasm_view::IndexedNode) -> String {
     }
 }
 
-fn node_children(data: &crate::host::wasm_view::UiNodeData) -> Vec<u32> {
-    use crate::host::wasm_view::UiNodeData;
-    match data {
-        UiNodeData::Row(r) => r.children.clone(),
-        UiNodeData::Column(c) => c.children.clone(),
-        UiNodeData::ListView(l) => l.items.clone(),
-        UiNodeData::Scroll(s) => vec![s.child],
-        UiNodeData::Padding(p) => vec![p.child],
-        UiNodeData::Pinned(p) => vec![p.child],
-        _ => Vec::new(),
-    }
-}
-
 /// Turn the headless pass's painted geometry into findings an author can act
 /// on. Pure over its inputs: the renderer measured, this only judges.
 ///
-/// Nodes under a `Scroll` or `ListView` are exempt from the visibility rules,
+/// Nodes under a `Scroll`, `ListView` or `Table` are exempt from the visibility rules,
 /// since scrolling reaches them. A node the pass has no entry for is unknown
 /// and never reported. With `strict`, a Button or TextInput that cannot be
 /// reached (nothing of it visible, or too little to click) is an error; a
@@ -1044,7 +1043,12 @@ fn layout_findings(
     let mut pending: Vec<u32> = tree
         .nodes
         .iter()
-        .filter(|node| matches!(node.data, UiNodeData::Scroll(_) | UiNodeData::ListView(_)))
+        .filter(|node| {
+            matches!(
+                node.data,
+                UiNodeData::Scroll(_) | UiNodeData::ListView(_) | UiNodeData::Table(_)
+            )
+        })
         .map(|node| node.id)
         .collect();
     while let Some(id) = pending.pop() {
@@ -1052,7 +1056,7 @@ fn layout_findings(
             continue;
         }
         if let Some(node) = nodes.get(&id) {
-            pending.extend(node_children(&node.data));
+            pending.extend(crate::host::wasm_view::children(&node.data));
         }
     }
 
@@ -1138,17 +1142,17 @@ fn layout_findings(
             continue;
         }
         let placed: Vec<(&crate::host::wasm_view::IndexedNode, egui::Rect)> =
-            node_children(&parent.data)
-                .into_iter()
+            crate::host::wasm_view::children(&parent.data)
+                .iter()
                 .filter_map(|id| {
-                    let node = nodes.get(&id)?;
+                    let node = nodes.get(id)?;
                     if matches!(
                         node.data,
                         UiNodeData::Empty | UiNodeData::Space(_) | UiNodeData::Divider
                     ) {
                         return None;
                     }
-                    Some((*node, facts.get(&id)?.visible?))
+                    Some((*node, facts.get(id)?.visible?))
                 })
                 .collect();
         for (index, (first, first_rect)) in placed.iter().enumerate() {

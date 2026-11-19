@@ -417,19 +417,19 @@ def test_card_and_section_and_datatable_and_select_list_wire_encoding() -> None:
     )
     dt_tree = _encode_uitree(dt)
     dt_root = dt_tree["nodes"][dt_tree["root"]]["data"]
-    assert dt_root["type"] == "DataTable"
-    assert dt_root["columns"] == ["ID", "Name"]
-    assert dt_root["rows"] == [["1", "Alpha"], ["2", "Beta"]]
-    assert dt_root["selected"] == 1
-    assert dt_root["on_select"] == "pick_row"
+    assert dt_root == {"type": "Table", "columns": ["ID", "Name"], "rows": [1, 2]}
+    dt_rows = [dt_tree["nodes"][i]["data"] for i in dt_root["rows"]]
+    assert [r["cells"] for r in dt_rows] == [["1", "Alpha"], ["2", "Beta"]]
+    assert [r["selected"] for r in dt_rows] == [False, True]
+    assert [r["on_select"] for r in dt_rows] == ["pick_row:0", "pick_row:1"]
 
     sl = SelectList(["Alpha", Label("Beta"), {"name": "Gamma"}], selected=2, on_select="pick_item")
     sl_tree = _encode_uitree(sl)
     sl_root = sl_tree["nodes"][sl_tree["root"]]["data"]
     assert sl_root["type"] == "ListView"
-    assert sl_root["selected"] == 2
-    assert sl_root["on_select"] == "pick_item"
-    assert len(sl_root["items"]) == 3
+    sl_rows = [sl_tree["nodes"][i]["data"] for i in sl_root["items"]]
+    assert [r["selected"] for r in sl_rows] == [False, False, True]
+    assert [r["on_select"] for r in sl_rows] == ["pick_item:0", "pick_item:1", "pick_item:2"]
 
     assert move_cursor(KeyEvent("j"), 3, 0) == 1
     assert move_cursor(KeyEvent("down"), 3, 2) == 2

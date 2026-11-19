@@ -270,12 +270,10 @@ def test_app_harness_exercises_github_issues_tools_end_to_end():
         assert opened["number"] == 5
         assert opened["selected"] == 1
         trees = [c for c in h._events_seen if c.get("type") == "component_tree"]
-        list_views = [
-            n["data"]
-            for n in trees[-1]["tree"]["nodes"]
-            if n["data"].get("type") == "ListView"
-        ]
-        assert list_views and list_views[0]["selected"] == 1
+        by_id = {n["id"]: n["data"] for n in trees[-1]["tree"]["nodes"]}
+        list_views = [d for d in by_id.values() if d.get("type") == "ListView"]
+        assert list_views
+        assert [by_id[row]["selected"] for row in list_views[0]["items"]].index(True) == 1
 
 
 def test_no_repo_view_renders_interactive_input_and_detail_view_uses_card():

@@ -1276,30 +1276,20 @@ class DataTable(Component):
         self.on_select = on_select
 
     def to_node(self) -> dict:
-        header = {
-            "type": "row",
-            "children": [
-                {"type": "text", "text": str(col), "bold": True}
-                for col in self.columns
-            ],
-            "gap": 12.0,
-        }
-        body = [
-            {
-                "type": "row",
-                "children": [{"type": "text", "text": str(cell)} for cell in r],
-                "gap": 12.0,
-            }
-            for r in self.rows
-        ]
+        # Each row carries its own selection and complete action; the header
+        # is ``columns`` on the table, never a child row.
         return {
-            "type": "DataTable",
+            "type": "table",
             "columns": list(self.columns),
-            "rows": [list(r) for r in self.rows],
-            "selected": self.selected,
-            "on_select": self.on_select,
-            "children": [header, *body],
-            "gap": 4.0,
+            "rows": [
+                {
+                    "type": "table_row",
+                    "cells": list(r),
+                    "selected": i == self.selected,
+                    "on_select": f"{self.on_select}:{i}" if self.on_select else None,
+                }
+                for i, r in enumerate(self.rows)
+            ],
         }
 
 
