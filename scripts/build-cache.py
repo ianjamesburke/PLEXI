@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
 
 MARKER = "plexi-owned-build-cache-v1"
 GIB = 1024**3
@@ -20,6 +21,9 @@ DEFAULT_TOTAL_MAX_BYTES = 64 * GIB  # two warm lanes plus headroom
 # 0637), and the stamp `build-evidence.py` writes beside it.
 ARTIFACT = Path("release") / "plexi"
 KEPT = {"plexi", ".plexi-candidate.json"}
+# Per-slot record of the sources last registered in the slot (stint 1630).
+SOURCES = "sources.json"
+SOURCES_SCHEMA = 1
 
 
 def positive_bytes(name, default):
@@ -157,6 +161,146 @@ def prune_to_cap(root, cap, keep):
     return total
 
 
+# Cargo decides whether a path package (the host, crates/*, vendored deps/*) is
+# fresh by comparing source mtimes with the slot's outputs, and it records those
+# sources relative to the package root. A slot serves many worktrees, so a tree
+# whose differing file is older on disk than the slot's last build would reuse
+# another tree's artifact (PR #3245). Every Cargo call in a slot therefore first
+# registers its tree: a file whose content differs from what the slot last saw
+# is stamped "now", an unchanged file keeps the stamp of when that content first
+# arrived, and no file's mtime is ever moved back (only raised to its stamp), so
+# no other target dir can be fooled either. Unchanged crates stay cache hits.
+
+
+def tree_sources(tree):
+    """sha256 of every file Cargo can see in `tree`: tracked plus untracked,
+    unignored files (the same set build.rs hashes into the build identity)."""
+    listed = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+                            cwd=tree, capture_output=True, check=False)
+    if listed.returncode:
+        raise ValueError(f"sources: git ls-files failed in {tree}: {listed.stderr.decode(errors='replace').strip()}")
+    files = {}
+    for raw in sorted(set(listed.stdout.split(b"\0"))):
+        name = raw.decode()
+        if not name:
+            continue
+        path = tree / name
+        # A deleted tracked file, a symlink or a submodule carries no content
+        # of its own; Cargo treats a missing dependency as stale anyway.
+        if path.is_symlink() or not path.is_file():
+            continue
+        files[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return files
+
+
+def load_sources(slot):
+    path = slot / SOURCES
+    try:
+        record = json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as error:
+        print(f"build-cache: sources record unreadable at {path} ({error}); treating every file as changed",
+              flush=True)
+        return None
+    if not isinstance(record, dict) or record.get("schema") != SOURCES_SCHEMA:
+        print(f"build-cache: sources record at {path} has another schema; treating every file as changed", flush=True)
+        return None
+    return record
+
+
+def save_sources(slot, record):
+    temporary = slot / f"{SOURCES}.{os.getpid()}.tmp"
+    temporary.write_text(json.dumps(record, sort_keys=True))
+    os.replace(temporary, slot / SOURCES)
+
+
+def forget_drift(record):
+    """Drop entries whose file changed in the last registered tree after it was
+    registered: a compile in between may have read either content."""
+    tree = Path(record["tree"])
+    if not tree.is_dir():
+        return 0
+    current = tree_sources(tree)
+    drifted = [name for name, (digest, _stamp) in record["files"].items() if current.get(name) != digest]
+    for name in drifted:
+        del record["files"][name]
+    return len(drifted)
+
+
+def sync_sources(slot, tree, run):
+    """Register `tree` as the sources the next Cargo call in `slot` compiles.
+    Returns how many files were stamped as changed."""
+    tree = Path(tree).resolve()
+    with (slot / "sources.lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        record = load_sources(slot)
+        if record is not None and record["run"] != run and not record["settled"]:
+            # An earlier run ended without settling (killed): its last tree may
+            # have changed under a compile. Nothing it recorded can be trusted.
+            print(f"build-cache: sources from unsettled run {record['run']} discarded", flush=True)
+            record = None
+        if record is not None and record["run"] == run and record["tree"] != str(tree):
+            forget_drift(record)
+        known = record["files"] if record is not None else {}
+        now = time.time_ns()
+        files, changed, raised = {}, 0, 0
+        for name, digest in tree_sources(tree).items():
+            entry = known.get(name)
+            stamp = entry[1] if entry is not None and entry[0] == digest else now
+            changed += stamp == now
+            files[name] = [digest, stamp]
+            path = tree / name
+            info = path.stat()
+            if info.st_mtime_ns < stamp:
+                os.utime(path, ns=(info.st_atime_ns, stamp))
+                raised += 1
+        save_sources(slot, {"schema": SOURCES_SCHEMA, "run": run, "settled": False, "tree": str(tree),
+                            "files": files})
+    print(f"build-cache: sources tree={tree} files={len(files)} changed={changed} raised={raised} "
+          f"(changed files rebuild; unchanged files keep their stamp and stay cache hits)", flush=True)
+    return changed
+
+
+def settle_sources(slot, run):
+    """Close a slot run. A run that compiled without registering (a tree whose
+    lease wrapper predates registration) leaves outputs the record cannot
+    describe, so the record is dropped and the next tree is stamped afresh."""
+    with (slot / "sources.lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        record = load_sources(slot)
+        if record is None:
+            return
+        if record["run"] != run:
+            (slot / SOURCES).unlink()
+            print(f"build-cache: no sources registered during this run; slot record reset, the next build "
+                  f"stamps every file as changed", flush=True)
+            return
+        drifted = forget_drift(record)
+        record["settled"] = True
+        save_sources(slot, record)
+        print(f"build-cache: sources settled tree={record['tree']} drifted={drifted}", flush=True)
+
+
+def sync_from_environment():
+    """`build-cache.py sync-sources`: register the current git tree with the
+    slot named by the enclosing `build-cache.py <channel>` run."""
+    slot, run = os.environ.get("PLEXI_BUILD_CACHE_SLOT"), os.environ.get("PLEXI_BUILD_CACHE_RUN")
+    if not slot or not run:
+        raise ValueError("sync-sources runs only inside a build-cache.py slot run "
+                         "(PLEXI_BUILD_CACHE_SLOT and PLEXI_BUILD_CACHE_RUN are set by scripts/build-cache.py)")
+    slot = Path(slot)
+    marker = slot / "owner"
+    if slot.is_symlink() or not marker.is_file() or marker.read_text() != MARKER:
+        raise ValueError(f"sync-sources: {slot} is not an owned build-cache slot")
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False)
+    if top.returncode:
+        raise ValueError(f"sync-sources: Cargo in slot {slot} from {os.getcwd()}, which is not inside a git "
+                         f"work tree; its sources cannot be registered")
+    sync_sources(slot, Path(top.stdout.strip()), run)
+    return 0
+
+
 def run(channel, command):
     if not any(channel.startswith(prefix) and channel[len(prefix):].isascii() and channel[len(prefix):].isdigit() for prefix in ("pr-", "task-")):
         raise ValueError("expected pr-<number> or task-<number>")
@@ -236,14 +380,19 @@ def run(channel, command):
                     prune_to_cap(base.parent, total_cap, keep=slot)
                     require_free_space(base, floor)
                     (slot / "last-channel").write_text(owner)
+                    run_id = uuid.uuid4().hex
                     env = {**os.environ, "CARGO_TARGET_DIR": str(target),
-                           "PLEXI_BUILD_TELEMETRY": str(slot / "telemetry.jsonl")}
+                           "PLEXI_BUILD_TELEMETRY": str(slot / "telemetry.jsonl"),
+                           "PLEXI_BUILD_CACHE_SLOT": str(slot), "PLEXI_BUILD_CACHE_RUN": run_id}
                     if channel.startswith("pr-"):
                         env["PLEXI_BUILD_TEST_CHANNEL"] = channel
                     else:
                         env.pop("PLEXI_BUILD_TEST_CHANNEL", None)
                     print(f"build-cache: slot={slot} retained_bytes={total} wait_seconds={time.monotonic()-started:.3f}", flush=True)
-                    return subprocess.call(command, env=env)
+                    try:
+                        return subprocess.call(command, env=env)
+                    finally:
+                        settle_sources(slot, run_id)
                 finally:
                     lock.close()
             if time.monotonic() >= deadline:
@@ -253,6 +402,8 @@ def run(channel, command):
 
 if __name__ == "__main__":
     try:
+        if sys.argv[1:] == ["sync-sources"]:
+            sys.exit(sync_from_environment())
         sys.exit(run(sys.argv[1], sys.argv[2:]))
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"build-cache: {error}", file=sys.stderr)

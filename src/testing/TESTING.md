@@ -112,6 +112,13 @@ volume holding the pool has less than `PLEXI_BUILD_MIN_FREE_BYTES` (default
 12 GiB) free; the message names the free space, the floor and the cleanup
 recipes. These bound retained slots, not peak temporary build space.
 `PLEXI_BUILD_CACHE_ROOT` relocates the pool.
+A slot serves many worktrees, and Cargo judges a path package fresh by source
+mtime, so `scripts/cargo-with-lease.sh` registers its tree with the slot before
+every Cargo call (`build-cache.py sync-sources`): files whose content differs
+from what the slot last registered are stamped newer than its outputs, and
+unchanged files stay cache hits. Mtimes are only ever raised. A run that
+compiles without registering resets the slot's record, so the next build
+restamps every file.
 Never copy or share another lane's mutable target. For additional cache-backed
 checks use `python3 scripts/build-cache.py pr-<PR> just <check>`.
 Before a PR exists, use `python3 scripts/build-cache.py task-<stint> just

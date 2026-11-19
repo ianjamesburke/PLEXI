@@ -47,6 +47,14 @@ if [[ "${1:-}" == "--class" ]]; then
 fi
 export PLEXI_CARGO_JOB_CLASS="$job_class"
 
+# Inside a persistent build-cache slot, register this tree's sources before
+# Cargo checks freshness, so the slot never serves an artifact compiled from
+# another worktree's sources (stint 1630; contract in scripts/build-cache.py).
+# Runs before the nesting guard: a nested call may build a different tree.
+if [[ -n "${PLEXI_BUILD_CACHE_SLOT:-}" ]]; then
+  python3 "$(dirname "${BASH_SOURCE[0]}")/build-cache.py" sync-sources
+fi
+
 # Nesting guard: a wrapped command (e.g. `just pr-install`) can itself invoke
 # this wrapper. If the marker is already set, this invocation's parent holds
 # the lock — run directly instead of trying to re-acquire it, which would
