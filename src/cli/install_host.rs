@@ -67,6 +67,24 @@ enum GitRefPolicy {
     FallbackToDefaultBranch,
 }
 
+/// Why a checkout failed. Only a ref that is not there lets a pack install
+/// fall back to the default branch; anything else leaves the clone in an
+/// unknown state (a git that was cut off or could not be stopped) and fails
+/// the install.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckoutError {
+    RefUnavailable(String),
+    Fatal(String),
+}
+
+impl std::fmt::Display for CheckoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RefUnavailable(message) | Self::Fatal(message) => f.write_str(message),
+        }
+    }
+}
+
 /// Abstraction over the actual git client. Production: [`GitCloner`] (shells
 /// out to `git`). Tests: in-memory mock that just creates the target dir.
 pub trait Cloner: Send + Sync {
@@ -75,7 +93,7 @@ pub trait Cloner: Send + Sync {
     fn clone(&self, url: &str, target_dir: &Path) -> Result<(), String>;
     /// Check out a specific ref (tag, branch, or sha) inside an existing
     /// clone. Optional — `None` = leave on the default branch.
-    fn checkout(&self, repo_dir: &Path, git_ref: &str) -> Result<(), String>;
+    fn checkout(&self, repo_dir: &Path, git_ref: &str) -> Result<(), CheckoutError>;
     /// `git fetch && git pull` — used by `plexi update plugins`.
     fn pull(&self, repo_dir: &Path) -> Result<(), String>;
 }
@@ -136,6 +154,22 @@ fn fetch_or_fall_back(
     }
 }
 
+/// `git checkout` exiting non-zero means the ref is not there and the tree
+/// is untouched. A checkout cut off at its limit or not stopped may have
+/// half-written the tree, so it is fatal.
+fn checkout_outcome(
+    checked_out: Result<plexi_distribution::bounded::Output, plexi_distribution::bounded::RunError>,
+) -> Result<(), CheckoutError> {
+    use plexi_distribution::bounded::{git_error, RunError};
+    match checked_out {
+        Ok(_) => Ok(()),
+        Err(error @ RunError::Failed { .. }) => {
+            Err(CheckoutError::RefUnavailable(git_error(&error)))
+        }
+        Err(error) => Err(CheckoutError::Fatal(git_error(&error))),
+    }
+}
+
 fn git_in(dir: &Path) -> Helper {
     let mut helper = plexi_distribution::bounded::git();
     helper.current_dir(dir);
@@ -154,20 +188,18 @@ impl Cloner for GitCloner {
         Ok(())
     }
 
-    fn checkout(&self, repo_dir: &Path, git_ref: &str) -> Result<(), String> {
+    fn checkout(&self, repo_dir: &Path, git_ref: &str) -> Result<(), CheckoutError> {
         // For shallow clones we may need the ref fetched explicitly. A ref
         // already present needs no fetch, so a failure here is not fatal;
         // the checkout decides.
         let fetched = git_in(repo_dir)
             .args(["fetch", "--depth", "1", "origin", git_ref])
             .run(&format!("git fetch {git_ref}"), self.network_limit);
-        fetch_or_fall_back(fetched, git_ref)?;
-        run_git(
-            git_in(repo_dir).args(["checkout", git_ref]),
-            &format!("git checkout {git_ref}"),
-            GIT_LOCAL_LIMIT,
-        )?;
-        Ok(())
+        fetch_or_fall_back(fetched, git_ref).map_err(CheckoutError::Fatal)?;
+        let checked_out = git_in(repo_dir)
+            .args(["checkout", git_ref])
+            .run(&format!("git checkout {git_ref}"), GIT_LOCAL_LIMIT);
+        checkout_outcome(checked_out)
     }
 
     fn pull(&self, repo_dir: &Path) -> Result<(), String> {
@@ -265,12 +297,12 @@ fn install_one_git(
     }
     if let Some(r) = git_ref {
         if let Err(e) = cloner.checkout(&stage_path, r) {
-            match ref_policy {
-                GitRefPolicy::Strict => {
+            match (ref_policy, &e) {
+                (GitRefPolicy::Strict, _) | (_, CheckoutError::Fatal(_)) => {
                     cleanup(&stage_root);
-                    return Err(e);
+                    return Err(e.to_string());
                 }
-                GitRefPolicy::FallbackToDefaultBranch => {
+                (GitRefPolicy::FallbackToDefaultBranch, CheckoutError::RefUnavailable(_)) => {
                     log::warn!(
                         "install: ref '{r}' unavailable for {url}; using default branch HEAD: {e}"
                     );
@@ -1198,7 +1230,7 @@ pub(crate) mod test_support {
         /// Per-URL clone failures, queued and popped in order.
         pub failures: Mutex<Vec<String>>,
         /// Per-checkout failures, queued and popped in order.
-        pub checkout_failures: Mutex<Vec<String>>,
+        pub checkout_failures: Mutex<Vec<CheckoutError>>,
         /// Track every `clone` call for assertions.
         pub clones: Mutex<Vec<(String, PathBuf)>>,
         /// Track every checkout ref for assertions.
@@ -1229,7 +1261,16 @@ pub(crate) mod test_support {
             self.failures.lock().unwrap().push(msg.to_string());
         }
         pub fn fail_next_checkout(&self, msg: &str) {
-            self.checkout_failures.lock().unwrap().push(msg.to_string());
+            self.checkout_failures
+                .lock()
+                .unwrap()
+                .push(CheckoutError::RefUnavailable(msg.to_string()));
+        }
+        pub fn fail_next_checkout_fatally(&self, msg: &str) {
+            self.checkout_failures
+                .lock()
+                .unwrap()
+                .push(CheckoutError::Fatal(msg.to_string()));
         }
     }
 
@@ -1270,7 +1311,7 @@ pub(crate) mod test_support {
             }
             Ok(())
         }
-        fn checkout(&self, _repo_dir: &Path, git_ref: &str) -> Result<(), String> {
+        fn checkout(&self, _repo_dir: &Path, git_ref: &str) -> Result<(), CheckoutError> {
             self.checkouts.lock().unwrap().push(git_ref.to_string());
             if let Some(err) = self.checkout_failures.lock().unwrap().pop() {
                 return Err(err);
@@ -1711,6 +1752,50 @@ mod pack_tests {
         }
         let ok = outcomes.iter().find(|o| o.id == "ok").unwrap();
         assert!(matches!(ok.status, InstallStatus::Installed(_)));
+    }
+
+    /// Stint 1610: a checkout that could not be stopped fails the pack entry
+    /// instead of falling back and reporting Installed.
+    #[test]
+    fn pack_apply_fails_an_entry_whose_checkout_could_not_be_stopped() {
+        let target = tempfile::tempdir().unwrap();
+        let cloner = MockCloner::new();
+        cloner.fail_next_checkout_fatally("git fetch 0.0.1 could not be stopped");
+        let pack = pack_with(&[("stuck", "github:owner/stuck", "0.0.1")]);
+
+        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
+
+        assert!(
+            matches!(&outcomes[0].status, InstallStatus::Failed(msg) if msg.contains("could not be stopped")),
+            "got {:?}",
+            outcomes[0].status
+        );
+        assert!(!target.path().join("stuck").exists());
+    }
+
+    /// Stint 1610: only a non-zero `git checkout` is a missing ref.
+    #[test]
+    fn only_a_failed_checkout_is_a_missing_ref() {
+        use plexi_distribution::bounded::RunError;
+        let failed = RunError::Failed {
+            what: "git checkout v1".into(),
+            status: std::process::ExitStatus::default(),
+            stderr: b"error: pathspec 'v1' did not match".to_vec(),
+        };
+        assert!(matches!(
+            checkout_outcome(Err(failed)),
+            Err(CheckoutError::RefUnavailable(_))
+        ));
+        let timed_out = RunError::TimedOut {
+            what: "git checkout v1".into(),
+            limit: Duration::from_secs(1),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        assert!(matches!(
+            checkout_outcome(Err(timed_out)),
+            Err(CheckoutError::Fatal(_))
+        ));
     }
 
     #[test]

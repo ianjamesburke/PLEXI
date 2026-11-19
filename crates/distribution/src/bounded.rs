@@ -380,67 +380,116 @@ fn finish_session(mut child: Child, what: &str) -> Result<ExitStatus, RunError> 
 
 /// How long the processes left in a helper's session get to die.
 #[cfg(unix)]
-const SESSION_KILL_LIMIT: Duration = Duration::from_secs(5);
+const SESSION_KILL_LIMIT: Duration = Duration::from_secs(2);
 
-/// Kill every process in the child's session, whatever process group it moved
-/// to, and confirm none is left alive. The child leads the session, so its
-/// pid is the session id; it is unreaped, so the id cannot be reused. A
-/// process that called setsid itself has left the session and is not touched.
+/// End the child's session: kill its process group, then repeatedly kill
+/// every process group that still has a live member in the session and take
+/// a fresh inventory, until two inventories in a row find nothing. The child
+/// leads the session, so its pid is the session id; it is unreaped, so the
+/// id cannot be reused. A process that called setsid itself has left the
+/// session and is not touched.
+///
+/// macOS has no atomic "kill this session" (no cgroups, no pidfd), so this
+/// converges rather than proves. Helpers are our own tools (git, uv, python,
+/// sh), not hostile code: a descendant that deliberately moves to a new
+/// process group and races fork against exit between two inventories can
+/// still escape. That residual risk is accepted; helpers are not a sandbox.
+/// Not converging within `SESSION_KILL_LIMIT`, or an inventory that cannot
+/// be read, is an error.
 #[cfg(unix)]
 fn kill_tree(child: &mut Child) -> std::io::Result<()> {
-    let session = child.id() as libc::pid_t;
-    // SAFETY: kill only sends a signal; the pid names our unreaped child.
-    unsafe { libc::kill(session, libc::SIGKILL) };
+    end_session(child.id() as libc::pid_t, all_pids)
+}
+
+#[cfg(unix)]
+fn end_session(
+    session: libc::pid_t,
+    inventory: fn() -> std::io::Result<Vec<libc::pid_t>>,
+) -> std::io::Result<()> {
+    // SAFETY: kill and killpg only send signals; the pid names our unreaped
+    // child. macOS refuses killpg with EPERM once only the exited leader is
+    // left, which the inventory below then confirms.
+    unsafe {
+        libc::kill(session, libc::SIGKILL);
+        libc::killpg(session, libc::SIGKILL);
+    }
     let deadline = Instant::now() + SESSION_KILL_LIMIT;
+    let mut empty_in_a_row = 0;
     loop {
-        let alive = live_session_members(session)?;
+        let alive = live_session_members(session, inventory()?);
         if alive.is_empty() {
-            return Ok(());
+            empty_in_a_row += 1;
+            if empty_in_a_row == 2 {
+                return Ok(());
+            }
+        } else {
+            empty_in_a_row = 0;
+            for &pid in &alive {
+                // SAFETY: getpgid reads a group id; a group never spans
+                // sessions, so killing a member's group touches only the
+                // session. kill covers a member that changed group since.
+                unsafe {
+                    let group = libc::getpgid(pid);
+                    if group > 0 {
+                        libc::killpg(group, libc::SIGKILL);
+                    }
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
         }
         if Instant::now() >= deadline {
             return Err(std::io::Error::other(format!(
-                "processes {alive:?} in its session are still alive {SESSION_KILL_LIMIT:?} after SIGKILL"
+                "its session did not empty within {SESSION_KILL_LIMIT:?}; still alive: {alive:?}"
             )));
-        }
-        for pid in alive {
-            // SAFETY: kill only sends a signal to a member of our session.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
         }
         std::thread::sleep(Duration::from_millis(5));
     }
 }
 
-/// Live processes whose session is `session`, other than its leader. Exited
-/// processes waiting to be reaped are not alive.
+/// Live processes in `pids` whose session is `session`, other than its
+/// leader. Exited processes waiting to be reaped are not alive.
 #[cfg(unix)]
-fn live_session_members(session: libc::pid_t) -> std::io::Result<Vec<libc::pid_t>> {
-    Ok(all_pids()?
-        .into_iter()
+fn live_session_members(session: libc::pid_t, pids: Vec<libc::pid_t>) -> Vec<libc::pid_t> {
+    pids.into_iter()
         // SAFETY: getsid only reads the session id of a pid.
         .filter(|&pid| pid != session && unsafe { libc::getsid(pid) } == session)
         .filter(|&pid| !is_zombie(pid))
-        .collect())
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
 fn all_pids() -> std::io::Result<Vec<libc::pid_t>> {
-    // SAFETY: a null buffer asks only for the number of pids.
-    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
-    if count < 0 {
-        return Err(std::io::Error::last_os_error());
+    // SAFETY: proc_listallpids writes at most `size` bytes into `buffer`.
+    all_pids_with(|buffer, size| unsafe { libc::proc_listallpids(buffer, size) })
+}
+
+/// Every pid, from `list` with `proc_listallpids`'s contract: a null buffer
+/// asks for the count; otherwise it fills the buffer and returns how many
+/// pids it wrote. Apple's implementation returns 0 when enumeration fails
+/// (xnu libsyscall/wrappers/libproc/libproc.c), and there is always at
+/// least this process, so 0 or less is an error, never an empty system.
+#[cfg(target_os = "macos")]
+fn all_pids_with(
+    list: impl Fn(*mut libc::c_void, libc::c_int) -> libc::c_int,
+) -> std::io::Result<Vec<libc::pid_t>> {
+    let failed = |call: &str, result: libc::c_int| {
+        std::io::Error::other(format!(
+            "proc_listallpids {call} returned {result}: {}",
+            std::io::Error::last_os_error()
+        ))
+    };
+    let count = list(std::ptr::null_mut(), 0);
+    if count <= 0 {
+        return Err(failed("count", count));
     }
     // Room for processes started between the two calls.
     let mut pids = vec![0 as libc::pid_t; count as usize + 64];
-    // SAFETY: the buffer is valid for its full byte size; the call writes at
-    // most that many bytes and returns the number of pids written.
-    let written = unsafe {
-        libc::proc_listallpids(
-            pids.as_mut_ptr().cast(),
-            std::mem::size_of_val(pids.as_slice()) as libc::c_int,
-        )
-    };
-    if written < 0 {
-        return Err(std::io::Error::last_os_error());
+    let written = list(
+        pids.as_mut_ptr().cast(),
+        std::mem::size_of_val(pids.as_slice()) as libc::c_int,
+    );
+    if written <= 0 {
+        return Err(failed("list", written));
     }
     pids.truncate(written as usize);
     Ok(pids)
@@ -469,9 +518,14 @@ fn is_zombie(pid: libc::pid_t) -> bool {
 #[cfg(not(target_os = "macos"))]
 #[cfg(unix)]
 fn all_pids() -> std::io::Result<Vec<libc::pid_t>> {
-    Ok(std::fs::read_dir("/proc")?
+    let pids: Vec<libc::pid_t> = std::fs::read_dir("/proc")?
         .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
-        .collect())
+        .collect();
+    // There is always at least this process; none means /proc is unusable.
+    if pids.is_empty() {
+        return Err(std::io::Error::other("/proc lists no processes"));
+    }
+    Ok(pids)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -704,6 +758,58 @@ mod tests {
             died,
             "descendant {mover} in its own group outlived the child"
         );
+    }
+
+    /// Stint 1610: a descendant in a new process group that keeps forking
+    /// children which fork and exit is caught by the convergence loop.
+    #[test]
+    fn a_forking_descendant_in_a_new_group_is_caught() {
+        let dir = tempfile::tempdir().unwrap();
+        let pids = dir.path().join("pids");
+        let script = format!(
+            "perl -e 'setpgrp(0, 0); open(my $f, \">>\", \"{}\") or die; $f->autoflush(1); \
+             print $f \"$$\\n\"; while (1) {{ my $c = fork(); if (!$c) {{ my $g = fork(); \
+             if (!$g) {{ print $f \"$$\\n\"; sleep 600; exit 0 }} exit 0 }} waitpid($c, 0); \
+             select(undef, undef, undef, 0.01) }}' & sleep 0.3",
+            pids.display()
+        );
+        let result = sh(&script).run("test child", Duration::from_secs(30));
+        let listed: Vec<u32> = std::fs::read_to_string(&pids)
+            .unwrap()
+            .lines()
+            .filter_map(|line| line.trim().parse().ok())
+            .collect();
+        let survivors: Vec<u32> = listed
+            .iter()
+            .copied()
+            .filter(|&pid| !dies_within(pid, Duration::from_secs(5)))
+            .collect();
+        for &pid in &listed {
+            kill(pid);
+        }
+        assert!(listed.len() > 2, "the forker never forked: {listed:?}");
+        assert!(survivors.is_empty(), "escaped: {survivors:?} ({result:?})");
+        result.unwrap();
+    }
+
+    /// Stint 1610: an inventory that cannot be read ends nothing and is an
+    /// error, never an empty session.
+    #[test]
+    fn an_unreadable_inventory_is_an_error() {
+        fn unreadable() -> std::io::Result<Vec<libc::pid_t>> {
+            Err(std::io::Error::other("inventory failed"))
+        }
+        let error = end_session(i32::MAX, unreadable).unwrap_err();
+        assert!(error.to_string().contains("inventory failed"), "{error}");
+    }
+
+    /// Stint 1610: proc_listallpids returning 0 is a failed enumeration.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_zero_pid_count_is_an_error() {
+        assert!(all_pids_with(|_, _| 0).is_err());
+        assert!(all_pids_with(|buffer, _| if buffer.is_null() { 3 } else { 0 }).is_err());
+        assert!(all_pids_with(|_, _| -1).is_err());
     }
 
     /// Stint 1610: the limit is checked before an exit is accepted, so an
