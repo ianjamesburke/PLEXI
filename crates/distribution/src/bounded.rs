@@ -343,12 +343,13 @@ impl Helper {
     }
 }
 
-/// stdin bytes being written by their own thread. The write end is
+/// stdin bytes being written by their own thread. On Unix the write end is
 /// non-blocking and written in a poll loop that also watches `stop`, so a
 /// reader that never reads (even a descendant that left the session holding
 /// stdin) cannot pin the thread, the pipe or the bytes: once the run ends,
 /// `stop` is set and the thread exits within `INPUT_POLL`, dropping (and so
-/// zeroing) the bytes on every path.
+/// zeroing) the bytes on every path. Windows is not covered yet; see
+/// `write_until_stopped` there.
 struct Delivery {
     done: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
@@ -357,6 +358,7 @@ struct Delivery {
 
 /// The longest an input thread waits for room in the pipe before it looks at
 /// `stop` again.
+#[cfg(unix)]
 const INPUT_POLL: Duration = Duration::from_millis(10);
 
 impl Delivery {
@@ -401,7 +403,8 @@ impl Delivery {
 }
 
 impl Drop for Delivery {
-    /// However the run ended, the input thread stops writing and exits.
+    /// However the run ended, the input thread stops writing and exits (on
+    /// Unix; Windows ignores `stop`, see `write_until_stopped`).
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
     }
@@ -460,8 +463,11 @@ fn write_until_stopped(
     Ok(())
 }
 
-/// Windows pipes here are blocking; there the child is the only reader and
-/// is killed at the deadline, which breaks the pipe.
+/// Windows pipes here are blocking and `stop` is not watched. Killing the
+/// child at its deadline breaks the pipe only if nothing else holds stdin: a
+/// surviving descendant that keeps stdin open without reading (Windows kills
+/// only the child), or a kill that fails, can keep this thread and its
+/// buffer alive. Tracked by stint 1613.
 #[cfg(windows)]
 fn write_until_stopped(
     mut writer: std::io::PipeWriter,
