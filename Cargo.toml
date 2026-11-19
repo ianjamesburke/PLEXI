@@ -103,7 +103,7 @@ wasmtime = "43.0.2"
 wasmtime-wasi = "43.0.2"
 bytes = "1"
 tokio = { version = "1", features = ["io-util"] }
-sysinfo = "0.32"
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 # Clipboard reads for capability-gated WASM effects. eframe owns writes through egui.
 arboard = "3"
 # Static X25519 so the desktop private key can live in the keychain across a
