@@ -7451,7 +7451,8 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
             grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
         })),
         "Table" | "table" | "DataTable" | "data_table" => {
-            reject_pre_row_fields(value, "Table", &["children", "selected", "on_select"])?;
+            reject_pre_row_fields(value, "Table", PRE_ROW_STATE_FIELDS)?;
+            reject_pre_row_fields(value, "Table", &["children"])?;
             Ok(UiNodeData::Table(TableNode {
                 columns: string_list(value, "columns")?,
                 rows: row_ids(value, "Table")?,
@@ -7571,11 +7572,7 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
             },
         )),
         "ListView" | "list_view" | "list-view" => {
-            reject_pre_row_fields(
-                value,
-                "ListView",
-                &["selected", "selected_idx", "on_select"],
-            )?;
+            reject_pre_row_fields(value, "ListView", PRE_ROW_STATE_FIELDS)?;
             Ok(UiNodeData::ListView(ListNode {
                 items: u32_list(value, "items")?,
             }))
@@ -7881,6 +7878,11 @@ fn headers_field(value: &Value, field: &str) -> Result<Vec<(String, String)>, Wa
         ))),
     }
 }
+
+/// Every spelling the pre-0.4 decoder read row state from on a `ListView` or
+/// `DataTable` parent. A stale SDK sending any of them must fail, not decode
+/// into a list that silently drops selection.
+const PRE_ROW_STATE_FIELDS: &[&str] = &["selected", "selected_idx", "on_select", "on-select"];
 
 /// A list or table that still carries row state on itself is the pre-0.4
 /// shape: selection and the action now live on each row node. Refuse it by
@@ -13359,29 +13361,97 @@ default = true
     /// pre-0.4 shape. Decode refuses it by field name, never guesses.
     #[test]
     fn legacy_list_and_table_row_state_fails_decode_naming_the_field() {
-        for (data, field) in [
-            (
-                json!({"type": "ListView", "items": [], "selected": 0}),
-                "'selected'",
-            ),
-            (
-                json!({"type": "ListView", "items": [], "on_select": "pick"}),
-                "'on_select'",
-            ),
-            (
-                json!({"type": "DataTable", "columns": [], "rows": [["a"], ["b"]]}),
-                "'rows'",
-            ),
-            (
-                json!({"type": "Table", "columns": [], "rows": [], "children": []}),
-                "'children'",
-            ),
-        ] {
-            let err = decode_node_data(&data).expect_err("legacy shape must fail decode");
-            let message = err.to_string();
-            assert!(message.contains(field), "{message}");
-            assert!(message.contains("update plexi_sdk"), "{message}");
+        /// Every (path, field) that decoded instead of failing by name.
+        fn refusal_gap(
+            result: Result<PythonUiTree, WasmPythonError>,
+            path: &str,
+            field: &str,
+        ) -> Option<String> {
+            match result {
+                Ok(_) => Some(format!("{path}: '{field}' decoded")),
+                Err(error) => {
+                    let message = error.to_string();
+                    (!message.contains(&format!("'{field}'"))
+                        || !message.contains("update plexi_sdk"))
+                    .then(|| format!("{path}: '{field}' wrong error: {message}"))
+                }
+            }
         }
+        let base = decode_python_ui_tree_value(&json!({"root": 0, "nodes": [
+            {"id": 0, "key": "0", "data": {"type": "Column", "children": [1, 3]}},
+            {"id": 1, "key": "0/0", "data": {"type": "ListView", "items": [2]}},
+            {"id": 2, "key": "0/0/0", "data": {"type": "ListItem", "child": 4, "selected": false, "on_select": "pick:0"}},
+            {"id": 3, "key": "0/1", "data": {"type": "Table", "columns": [], "rows": []}},
+            {"id": 4, "key": "0/0/0/0", "data": {"type": "Text", "text": "a"}}
+        ]}))
+        .expect("current shape decodes");
+        let with_alias = |mut data: Value, field: &str| {
+            let value = if field.starts_with("selected") {
+                json!(0)
+            } else {
+                json!("pick")
+            };
+            data[field] = value;
+            data
+        };
+        let mut cases = Vec::new();
+        // Spelled out, not read from `PRE_ROW_STATE_FIELDS`: the spellings the
+        // pre-0.4 decoder accepted (alpha 388606fc0 `decode_node_data` and
+        // `encode_table_node_key`).
+        for field in ["selected", "selected_idx", "on_select", "on-select"] {
+            cases.push((
+                1,
+                with_alias(json!({"type": "ListView", "items": [2]}), field),
+                field,
+            ));
+            for kind in ["Table", "DataTable"] {
+                cases.push((
+                    3,
+                    with_alias(json!({"type": kind, "columns": [], "rows": []}), field),
+                    field,
+                ));
+            }
+        }
+        cases.push((
+            3,
+            json!({"type": "DataTable", "columns": [], "rows": [["a"], ["b"]]}),
+            "rows",
+        ));
+        cases.push((
+            3,
+            json!({"type": "Table", "columns": [], "rows": [], "children": []}),
+            "children",
+        ));
+        let mut gaps = Vec::new();
+        for (id, data, field) in cases {
+            let kind = data["type"].as_str().unwrap_or_default().to_string();
+            let node = json!({"id": id, "key": format!("0/{}", id / 2), "data": data});
+            let full = json!({"root": 0, "nodes": [
+                {"id": 0, "key": "0", "data": {"type": "Column", "children": [id]}},
+                node.clone()
+            ]});
+            let full = if id == 1 {
+                let mut full = full;
+                full["nodes"].as_array_mut().unwrap().extend([
+                    json!({"id": 2, "key": "0/0/0", "data": {"type": "ListItem", "child": 4, "selected": false, "on_select": "pick:0"}}),
+                    json!({"id": 4, "key": "0/0/0/0", "data": {"type": "Text", "text": "a"}}),
+                ]);
+                full
+            } else {
+                full
+            };
+            gaps.extend(refusal_gap(
+                decode_python_ui_tree_value(&full),
+                &format!("full tree {kind}"),
+                field,
+            ));
+            gaps.extend(refusal_gap(
+                apply_tree_delta(&base, &[node], None, None),
+                &format!("tree_delta {kind}"),
+                field,
+            ));
+        }
+        assert!(gaps.is_empty(), "legacy row state not refused: {gaps:#?}");
     }
 
     #[test]
