@@ -780,7 +780,7 @@ Deliver a synthetic pointer click to a view pane, in pane-pixel coordinates (ori
 
 ### `click_pane_node`
 
-Deliver a synthetic click to a view pane by node id, activating the Button/TextInput/ListView node the id names — the...
+Deliver a synthetic click to a view pane by node id, activating the Button/TextInput/list-row node the id names — the...
 
 | Field | Type | Required |
 |-------|------|----------|

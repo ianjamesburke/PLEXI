@@ -179,7 +179,10 @@ first and returns the numeric node ID used by parent nodes.
 | `row`, `column` | child node IDs |
 | `progress_bar` | value, maximum |
 | `badge` | text |
-| `list_view` | item node IDs, selected index, optional select handler ID |
+| `list_view` | `list_item` node IDs |
+| `list_item` | child node ID, selected flag, optional complete action (`"pick:0"`) |
+| `table` | column headers, `table_row` node IDs |
+| `table_row` | cells, selected flag, optional complete action |
 | `scroll` | child node ID, horizontal flag |
 | `padding` | child node ID, uniform padding |
 | `canvas` | width, height, canvas commands |

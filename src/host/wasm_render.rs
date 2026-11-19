@@ -2479,10 +2479,7 @@ fn render_list_item(
     }
     if resp.clicked() || node_click_matches(env.pending_click, node.id) {
         if let Some(action) = action {
-            log::info!(
-                "[wasm_render] list item {} activated: {action}",
-                node.id
-            );
+            log::info!("[wasm_render] list item {} activated: {action}", node.id);
             out.actions.push(action.to_string());
         }
     }
@@ -2502,10 +2499,12 @@ fn render_table(
     let colors = env.colors;
     let widest_row = rows
         .iter()
-        .filter_map(|row_id| match find_node(env.nodes, *row_id).map(|n| &n.data) {
-            Some(UiNodeData::TableRow(row)) => Some(row.cells.len()),
-            _ => None,
-        })
+        .filter_map(
+            |row_id| match find_node(env.nodes, *row_id).map(|n| &n.data) {
+                Some(UiNodeData::TableRow(row)) => Some(row.cells.len()),
+                _ => None,
+            },
+        )
         .max()
         .unwrap_or(0);
     let col_count = columns.len().max(widest_row).max(1);
@@ -2577,13 +2576,7 @@ fn paint_table_row(
         egui::vec2(row_w, style::LIST_ROW_DENSE_H),
         egui::Sense::click(),
     );
-    crate::ui::list::paint_table_row_background(
-        ui,
-        row_rect,
-        row.selected,
-        resp.hovered(),
-        colors,
-    );
+    crate::ui::list::paint_table_row_background(ui, row_rect, row.selected, resp.hovered(), colors);
     let font = egui::FontId::proportional(style::TEXT_CAPTION);
     for (col_idx, cell_text) in row.cells.iter().enumerate() {
         let left = row_rect.left() + col_idx as f32 * col_w;

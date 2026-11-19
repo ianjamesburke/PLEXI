@@ -551,10 +551,28 @@ class Column:
 
 @dataclass
 class ListView:
-    items: list             # list[UINode] — each item is a UINode, usually a Row or Text
-    selected: Optional[int] = None
-    on_select: Optional[str] = None  # handler_id — matched by UiAction event
+    items: list             # list[ListItem]
     # → ui-node-data::list-view(list-node)
+
+@dataclass
+class ListItem:              # a row describes itself; the host never derives
+    child: object           # UINode — the row's content
+    selected: bool = False
+    on_select: Optional[str] = None  # complete action, e.g. "pick:3"
+    # → ui-node-data::list-item(list-item-node)
+
+@dataclass
+class Table:
+    columns: list           # list[str] — the header; never a child row
+    rows: list              # list[TableRow] — body rows only
+    # → ui-node-data::table(table-node)
+
+@dataclass
+class TableRow:
+    cells: list             # list[str]
+    selected: bool = False
+    on_select: Optional[str] = None  # complete action, e.g. "row:0"
+    # → ui-node-data::table-row(table-row-node)
 
 @dataclass
 class Scroll:
