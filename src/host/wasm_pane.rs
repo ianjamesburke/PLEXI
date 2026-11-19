@@ -694,6 +694,28 @@ impl WasmPane {
         self.drain(now_ms)
     }
 
+    /// Hand one UI action to the guest's `update()` directly, never behind
+    /// queued inputs: a node activation (stint 1600) drains the queue,
+    /// validates its ref, then calls this with nothing in between. The
+    /// action's own follow-up effects run afterwards.
+    pub(crate) fn deliver_ui_action(
+        &mut self,
+        handler_id: String,
+        now_ms: u64,
+    ) -> wasmtime::Result<()> {
+        log::info!(
+            "wasm ui: node activation handler '{handler_id}'",
+            handler_id = guest_text::shown(&handler_id)
+        );
+        let effects = self
+            .app
+            .update(&InputEvent::UiAction(UiActionEvent { handler_id }))?;
+        for effect in effects {
+            self.exec(effect, now_ms);
+        }
+        self.drain(now_ms)
+    }
+
     pub fn has_pending_capability_prompt(&self) -> bool {
         !self.pending_capability_prompts.is_empty()
     }
@@ -1933,6 +1955,12 @@ pub struct LiveWasmPane {
     tree_seq: u64,
     /// Runtime-neutral semantics retained from the last committed guest tree.
     semantic_state: crate::host::pane::SemanticPaneState,
+    /// Launch epoch every node ref this pane mints is bound to
+    /// (`crate::host::node_ref`), so a ref never outlives its pane.
+    epoch: u128,
+    /// A text input a node activation asked to focus; claimed on the next
+    /// paint if the ref still resolves on the tree being painted.
+    focus_request: Option<crate::host::node_ref::NodeRef>,
     /// egui texture id of the guest surface, registered once into the host's
     /// shared renderer and sampled live (zero-copy). `None` until first present
     /// or when no shared device exists (headless).
@@ -1987,6 +2015,8 @@ impl LiveWasmPane {
             last_text: String::new(),
             tree_seq: 0,
             semantic_state: crate::host::pane::SemanticPaneState::empty("wasm"),
+            epoch: uuid::Uuid::new_v4().as_u128(),
+            focus_request: None,
             surface_id: None,
             surface_dims: None,
             fallback_tex: None,
@@ -2266,7 +2296,8 @@ impl LiveWasmPane {
                 {
                     self.last_text = tree.visible_text();
                 }
-                self.semantic_state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree);
+                self.semantic_state =
+                    crate::host::pane::SemanticPaneState::from_wasm_tree(&tree, self.epoch);
             }
             Err(error) => self.fail("background view", error),
         }
@@ -2298,8 +2329,105 @@ impl LiveWasmPane {
         {
             self.last_text = tree.visible_text();
         }
-        self.semantic_state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree);
+        self.semantic_state =
+            crate::host::pane::SemanticPaneState::from_wasm_tree(&tree, self.epoch);
         Ok(())
+    }
+
+    /// Resolve `reference` on the guest's current tree (`view()` is
+    /// synchronous, so this is the tree a delivery would act on).
+    pub(crate) fn resolve_node(
+        &mut self,
+        reference: &crate::host::node_ref::NodeRef,
+    ) -> Result<u32, String> {
+        let tree = self.current_tree()?;
+        crate::host::node_ref::resolve(&tree, self.epoch, reference)
+    }
+
+    fn current_tree(&mut self) -> Result<UiTree, String> {
+        if let Some(error) = &self.error {
+            return Err(format!("WASM plugin is in an error state: {error}"));
+        }
+        if self.pending_init.is_some() {
+            return Err("WASM plugin has no committed tree yet (not initialized)".to_string());
+        }
+        self.inner
+            .view()
+            .map_err(|e| format!("WASM view for node activation failed: {e}"))
+    }
+
+    /// Check and deliver a node activation in one step. Every input queued
+    /// before this request runs first, so the tree checked is the tree the
+    /// action reaches; then the action goes straight to the guest's
+    /// `update()` with nothing in between, never behind a queue.
+    pub(crate) fn activate_node(
+        &mut self,
+        reference: &crate::host::node_ref::NodeRef,
+    ) -> Result<crate::host::node_ref::Activation, crate::host::node_ref::ActivationFailure> {
+        use crate::host::node_ref::{Activation, ActivationFailure};
+        if let Some(error) = &self.error {
+            return Err(format!("WASM plugin is in an error state: {error}").into());
+        }
+        if self.pending_init.is_some() {
+            return Err("WASM plugin has no committed tree yet (not initialized)"
+                .to_string()
+                .into());
+        }
+        let now = self.guest_now_ms();
+        if let Err(error) = self.inner.tick(now) {
+            self.fail("queued work before node activation", &error);
+            return Err(format!(
+                "WASM plugin failed running work queued before the activation: {error}"
+            )
+            .into());
+        }
+        let tree = self.current_tree()?;
+        let id = crate::host::node_ref::resolve(&tree, self.epoch, reference)?;
+        let activation = crate::host::node_ref::activation(tree.root, &tree.nodes, id)?;
+        match &activation {
+            Activation::Action(action) => {
+                self.inner
+                    .deliver_ui_action(action.clone(), now)
+                    .map_err(|e| {
+                        ActivationFailure::DeliveredThenFailed(format!(
+                            "the guest's update failed: {e}"
+                        ))
+                    })?;
+                let tree = self.inner.view().map_err(|e| {
+                    ActivationFailure::DeliveredThenFailed(format!(
+                        "the WASM view after the action failed: {e}"
+                    ))
+                })?;
+                #[cfg(test)]
+                {
+                    self.last_text = tree.visible_text();
+                }
+                self.semantic_state =
+                    crate::host::pane::SemanticPaneState::from_wasm_tree(&tree, self.epoch);
+            }
+            Activation::Focus(_) => self.focus_request = Some(*reference),
+        }
+        Ok(activation)
+    }
+
+    pub(crate) fn cancel_node_focus_request(&mut self) {
+        self.focus_request = None;
+    }
+
+    /// The focus request's text input on the tree about to be painted, or
+    /// `None` (logged) when the ref no longer resolves there.
+    fn take_focus_request(&mut self, tree: &UiTree) -> Option<u32> {
+        let reference = self.focus_request.take()?;
+        match crate::host::node_ref::resolve(tree, self.epoch, &reference) {
+            Ok(id) => Some(id),
+            Err(error) => {
+                log::info!(
+                    "plugin::{}: node focus request dropped: {error}",
+                    self.spawn_name
+                );
+                None
+            }
+        }
     }
 
     pub fn complete_host_effect(&mut self, event: InputEvent) {
@@ -2414,7 +2542,8 @@ impl LiveWasmPane {
         {
             self.last_text = tree.visible_text();
         }
-        self.semantic_state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree);
+        self.semantic_state =
+            crate::host::pane::SemanticPaneState::from_wasm_tree(&tree, self.epoch);
         // Composite the guest's GPU render zero-copy: register its surface
         // texture into the host's shared egui renderer once and sample it live.
         // The guest re-renders into the same texture every frame, so the
@@ -2491,6 +2620,7 @@ impl LiveWasmPane {
             None => None,
         };
         self.tree_seq += 1;
+        let focus_node = self.take_focus_request(&tree);
         let result = super::wasm_render::render_ui_tree_with_canvas_fits(
             ui,
             &tree,
@@ -2498,6 +2628,7 @@ impl LiveWasmPane {
             surface_tid,
             None,
             pending_click,
+            focus_node,
             Some(crate::ui::focus::SurfaceKey::Pane(pane_key)),
             self.tree_seq,
         );
@@ -2510,7 +2641,7 @@ impl LiveWasmPane {
                             self.last_text = t.visible_text();
                         }
                         self.semantic_state =
-                            crate::host::pane::SemanticPaneState::from_wasm_tree(&t);
+                            crate::host::pane::SemanticPaneState::from_wasm_tree(&t, self.epoch);
                     }
                     Err(e) => {
                         self.fail("view after input", e);
@@ -2933,6 +3064,110 @@ mod tests {
         )
         .expect("load counter");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
+    }
+
+    /// Stint 1600: a WASM node activation resolves on a fresh `view()` and
+    /// runs the guest's `update()` before returning, so the next view already
+    /// shows the result; the ref read before it is stale afterwards because
+    /// the count text in its scope changed.
+    #[test]
+    fn node_activation_runs_the_guest_update_before_returning() {
+        use crate::host::node_ref::{Activation, NodeRef};
+        let mut live = LiveWasmPane::new(
+            counter_pane(),
+            "counter",
+            StateSnapshot { entries: vec![] },
+            Vec::new(),
+            PathBuf::from("/tmp/counter.wasm"),
+        );
+        let snapshot = live.pending_init.take().expect("deferred init");
+        live.inner
+            .init(&snapshot, (400.0, 300.0), 0, &[])
+            .expect("init");
+        live.background_tick();
+        let increment = live
+            .semantic_state()
+            .nodes
+            .iter()
+            .find(|n| n.label.as_deref() == Some("Increment"))
+            .and_then(|n| n.r#ref.clone())
+            .expect("Increment ref");
+        let increment = NodeRef::parse(&increment).expect("minted ref parses");
+
+        assert_eq!(
+            live.activate_node(&increment),
+            Ok(Activation::Action("increment".to_string()))
+        );
+        let tree = live.inner.view().expect("view");
+        assert!(
+            tree.visible_text().contains("Count: 1"),
+            "the guest updated before activate_node returned: {}",
+            tree.visible_text()
+        );
+        let stale = live.activate_node(&increment).expect_err("scope changed");
+        assert!(
+            matches!(&stale, crate::host::node_ref::ActivationFailure::Refused(r) if r.contains("stale")),
+            "{stale}"
+        );
+        assert!(live
+            .inner
+            .view()
+            .expect("view")
+            .visible_text()
+            .contains("Count: 1"));
+    }
+
+    /// Stint 1600 (Codex round 1, finding 2): work queued before a node
+    /// activation runs before the ref is checked. Here a queued action
+    /// changes the count text in the Increment button's scope, so the ref read
+    /// before it is refused, nothing of the refused activation is queued, and
+    /// only the earlier action ever reaches the guest.
+    #[test]
+    fn node_activation_runs_prior_queued_work_before_checking_the_ref() {
+        use crate::host::node_ref::{ActivationFailure, NodeRef};
+        let mut live = LiveWasmPane::new(
+            counter_pane(),
+            "counter",
+            StateSnapshot { entries: vec![] },
+            Vec::new(),
+            PathBuf::from("/tmp/counter.wasm"),
+        );
+        let snapshot = live.pending_init.take().expect("deferred init");
+        live.inner
+            .init(&snapshot, (400.0, 300.0), 0, &[])
+            .expect("init");
+        live.background_tick();
+        let increment = live
+            .semantic_state()
+            .nodes
+            .iter()
+            .find(|n| n.label.as_deref() == Some("Increment"))
+            .and_then(|n| n.r#ref.clone())
+            .expect("Increment ref");
+        let increment = NodeRef::parse(&increment).expect("minted ref parses");
+
+        live.inner.complete_host_effect(InputEvent::UiAction(
+            crate::host::wasm_view::bindings::plexi::platform::types::UiActionEvent {
+                handler_id: "increment".to_string(),
+            },
+        ));
+        let refused = live
+            .activate_node(&increment)
+            .expect_err("queued work changed the scope");
+        assert!(
+            matches!(&refused, ActivationFailure::Refused(r) if r.contains("stale")),
+            "{refused}"
+        );
+        assert!(
+            !live.inner.has_pending_inputs(),
+            "a refused activation is never queued"
+        );
+        live.background_tick();
+        let text = live.inner.view().expect("view").visible_text();
+        assert!(
+            text.contains("Count: 1"),
+            "only the queued action ran: {text}"
+        );
     }
 
     #[test]
@@ -4733,7 +4968,7 @@ mod tests {
         let mut p = counter_pane();
         p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
 
-        let state = crate::host::pane::SemanticPaneState::from_wasm_tree(&p.view()?);
+        let state = crate::host::pane::SemanticPaneState::from_wasm_tree(&p.view()?, 0);
 
         assert_eq!(state.runtime_kind, "wasm");
         assert!(state

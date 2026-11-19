@@ -190,16 +190,23 @@ pub fn render_ui_tree_with_surface(
     surface_key: Option<crate::ui::focus::SurfaceKey>,
     tree_seq: u64,
 ) -> RenderResult {
-    render_ui_tree_with_canvas_fits(ui, tree, colors, surface, None, None, surface_key, tree_seq)
+    render_ui_tree_with_canvas_fits(
+        ui, tree, colors, surface, None, None, None, surface_key, tree_seq,
+    )
 }
 
 #[derive(Clone, Copy)]
 struct TreeRenderEnv<'a> {
     nodes: &'a [IndexedNode],
+    /// Root of the tree being painted; activation reads parentage from it.
+    root: u32,
     colors: &'a Colors,
     surface: Option<egui::TextureId>,
     canvas_fits: Option<&'a HashMap<u32, CanvasFit>>,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
+    /// The text input a node activation asked to focus, resolved on this
+    /// tree (`crate::host::node_ref::Activation::Focus`).
+    focus_node: Option<u32>,
     surface_key: Option<crate::ui::focus::SurfaceKey>,
     tree_seq: u64,
     /// How many `Row`s enclose the node being rendered. Rows deeper than
@@ -236,6 +243,7 @@ pub fn render_ui_tree_with_canvas_fits(
     surface: Option<egui::TextureId>,
     canvas_fits: Option<&HashMap<u32, CanvasFit>>,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
+    focus_node: Option<u32>,
     surface_key: Option<crate::ui::focus::SurfaceKey>,
     tree_seq: u64,
 ) -> RenderResult {
@@ -246,6 +254,7 @@ pub fn render_ui_tree_with_canvas_fits(
         surface,
         canvas_fits,
         pending_click,
+        focus_node,
         surface_key,
         tree_seq,
         RenderResult::default(),
@@ -260,6 +269,7 @@ fn render_ui_tree_into(
     surface: Option<egui::TextureId>,
     canvas_fits: Option<&HashMap<u32, CanvasFit>>,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
+    focus_node: Option<u32>,
     surface_key: Option<crate::ui::focus::SurfaceKey>,
     tree_seq: u64,
     mut out: RenderResult,
@@ -267,10 +277,12 @@ fn render_ui_tree_into(
     let paint_start = paint_len(ui);
     let env = TreeRenderEnv {
         nodes: &tree.nodes,
+        root: tree.root,
         colors,
         surface,
         canvas_fits,
         pending_click,
+        focus_node,
         surface_key,
         tree_seq,
         row_depth: 0,
@@ -623,6 +635,7 @@ fn headless_tree_harness(
                         None,
                         None,
                         None,
+                        None,
                         0,
                         RenderResult {
                             node_paint: layout_sink.as_ref().map(|_| Vec::new()),
@@ -679,17 +692,6 @@ fn cross_align(a: Alignment) -> egui::Align {
         Alignment::Center => egui::Align::Center,
         Alignment::End => egui::Align::Max,
     }
-}
-
-/// True when `pending_click` (from `HostRequest::ClickPaneNode`/
-/// `HostHarness::inject_node_click`) targets this frame's node `id` by its
-/// arena id — the same honest match `PaneClickTarget::Pos` does by rect
-/// containment, just keyed on identity instead of geometry.
-fn node_click_matches(pending_click: Option<crate::host::pane::PendingPaneClick>, id: u32) -> bool {
-    matches!(
-        pending_click.map(|c| c.target),
-        Some(crate::host::pane::PaneClickTarget::Node(n)) if n == u64::from(id)
-    )
 }
 
 /// Maximum un-echoed `on_change` values tracked per `TextInput`. A guest that
@@ -816,7 +818,25 @@ fn reconcile_text_input_buffer(
     adopt(state)
 }
 
-fn find_node(nodes: &[IndexedNode], id: u32) -> Option<&IndexedNode> {
+/// A pointer click on node `id` means exactly what activating its ref means
+/// (`crate::host::node_ref::activation`); a click that activates nothing
+/// (a disabled button, a list without `on_select`) emits nothing.
+fn push_activation(
+    out: &mut RenderResult,
+    root: u32,
+    nodes: &[IndexedNode],
+    id: u32,
+) -> Option<String> {
+    let Ok(crate::host::node_ref::Activation::Action(action)) =
+        crate::host::node_ref::activation(root, nodes, id)
+    else {
+        return None;
+    };
+    out.actions.push(action.clone());
+    Some(action)
+}
+
+pub(crate) fn find_node(nodes: &[IndexedNode], id: u32) -> Option<&IndexedNode> {
     nodes
         .get(id as usize)
         .filter(|node| node.id == id)
@@ -1113,11 +1133,11 @@ fn render_button_node(
     id: u32,
     b: &super::wasm_view::bindings::plexi::platform::types::ButtonNode,
     min_size: egui::Vec2,
-    colors: &Colors,
     out: &mut RenderResult,
-    pending_click: Option<crate::host::pane::PendingPaneClick>,
+    env: TreeRenderEnv<'_>,
 ) {
     use crate::ui::button::{ButtonKind, KitButton};
+    let colors = env.colors;
     let kind = match b.style {
         // The SDK encodes selected state for Checkbox/Toggle/Radio/Segmented/Tabs
         // as primary vs secondary (sdk/python/plexi_sdk/ui.py); Primary is the
@@ -1127,7 +1147,6 @@ fn render_button_node(
         ButtonStyle::Danger => ButtonKind::Danger,
         ButtonStyle::Ghost => ButtonKind::Ghost,
     };
-    let synthetic_click = !b.disabled && node_click_matches(pending_click, id);
     let add_button = |ui: &mut egui::Ui| {
         ui.add_enabled(
             !b.disabled,
@@ -1157,8 +1176,8 @@ fn render_button_node(
     } else {
         add_button(ui)
     };
-    if response.clicked() || synthetic_click {
-        out.actions.push(b.on_click.clone());
+    if response.clicked() {
+        let _ = push_activation(out, env.root, env.nodes, id);
     }
 }
 
@@ -1494,9 +1513,8 @@ fn render_row_child(
                 child,
                 b,
                 egui::vec2(btn_w, KEYPAD_BUTTON_H),
-                env.colors,
                 out,
-                env.pending_click,
+                env,
             );
             return;
         }
@@ -1848,10 +1866,12 @@ fn render_node_inner(
 ) {
     let TreeRenderEnv {
         nodes,
+        root: _,
         colors,
         surface,
         canvas_fits,
         pending_click,
+        focus_node,
         surface_key,
         tree_seq,
         row_depth: _,
@@ -1905,9 +1925,8 @@ fn render_node_inner(
                 id,
                 b,
                 egui::vec2(style::BUTTON_H_MD, style::BUTTON_H_MD),
-                colors,
                 out,
-                pending_click,
+                env,
             );
         }
 
@@ -1964,12 +1983,12 @@ fn render_node_inner(
                 } else {
                     crate::ui::focus::register_text_surface(ui.ctx(), key, resp.id);
                 }
-                // Node-targeted clicks focus the field; once focused, the
+                // A node activation focuses the field; once focused, the
                 // dispatch gate (`focused_pane_text_surface`, stint 0456)
                 // routes keystrokes here instead of the plugin's KeyEvent path.
                 // The claim routes through the reconciler (stint 0429), which
                 // grants it while this pane owns input.
-                if node_click_matches(pending_click, id) {
+                if focus_node == Some(id) {
                     crate::ui::focus::claim_text_surface(ui.ctx(), key, resp.id);
                 }
             }
@@ -2197,22 +2216,17 @@ fn render_node_inner(
             // explicitly rather than via egui's internal interact_widgets.
             // Drag samples (stint 0510) arrive the same way, one per frame,
             // and map to press/move/release mouse events in canvas space.
-            let synthetic = pending_click.filter(|c| {
-                matches!(c.target, crate::host::pane::PaneClickTarget::Pos(pos) if rect.contains(pos))
-            });
-            if let Some(c) = synthetic {
-                if let crate::host::pane::PaneClickTarget::Pos(pos) = c.target {
-                    use crate::host::pane::PointerPhase;
-                    out.canvas_clicks.push(match c.phase {
-                        // `Click` keeps the pre-drag contract: one
-                        // pressed=true event, no synthetic release.
-                        PointerPhase::Click | PointerPhase::Press => {
-                            to_canvas(pos, Some(c.button), true)
-                        }
-                        PointerPhase::Move => to_canvas(pos, None, false),
-                        PointerPhase::Release => to_canvas(pos, Some(c.button), false),
-                    });
-                }
+            if let Some(c) = pending_click.filter(|c| rect.contains(c.pos)) {
+                use crate::host::pane::PointerPhase;
+                out.canvas_clicks.push(match c.phase {
+                    // `Click` keeps the pre-drag contract: one
+                    // pressed=true event, no synthetic release.
+                    PointerPhase::Click | PointerPhase::Press => {
+                        to_canvas(c.pos, Some(c.button), true)
+                    }
+                    PointerPhase::Move => to_canvas(c.pos, None, false),
+                    PointerPhase::Release => to_canvas(c.pos, Some(c.button), false),
+                });
             }
             // Real pointer interactions, through egui's own hit-testing. A
             // plain click stays a single pressed=true event (the existing plugin
@@ -2477,10 +2491,9 @@ fn render_list_item(
             ),
         );
     }
-    if resp.clicked() || node_click_matches(env.pending_click, node.id) {
-        if let Some(action) = action {
+    if resp.clicked() {
+        if let Some(action) = push_activation(out, env.root, env.nodes, node.id) {
             log::info!("[wasm_render] list item {} activated: {action}", node.id);
-            out.actions.push(action.to_string());
         }
     }
 }
@@ -2592,10 +2605,9 @@ fn paint_table_row(
         };
         crate::ui::list::paint_table_cell_text(ui, cell, cell_text.clone(), font.clone(), color);
     }
-    if resp.clicked() || node_click_matches(env.pending_click, id) {
-        if let Some(action) = row.on_select.as_deref().filter(|a| !a.is_empty()) {
+    if resp.clicked() {
+        if let Some(action) = push_activation(out, env.root, env.nodes, id) {
             log::info!("[wasm_render] table row {id} activated: {action}");
-            out.actions.push(action.to_string());
         }
     }
 }
@@ -2608,6 +2620,130 @@ mod tests {
         RowNode, SpaceNode, SurfaceHeaderNode, SurfaceNode, TextInputNode, TextNode,
     };
     use crate::host::wasm_view::{InputEvent, StateSnapshot, StateStore, SystemStats, WasmView};
+
+    /// Stint 1600: a pointer click on a node means exactly what activating
+    /// its ref means. Each case is one interactive kind, clicked by a real
+    /// pointer press and release at the center of what the node painted;
+    /// the renderer's action must equal `node_ref::activation` for it.
+    #[test]
+    fn pointer_click_on_a_node_emits_its_activation() {
+        use crate::host::node_ref::{activation, Activation};
+        let decode = |nodes: serde_json::Value| {
+            crate::host::wasm_python::decode_ui_tree(
+                &serde_json::json!({"root": 0, "nodes": nodes}).to_string(),
+            )
+            .expect("decode tree")
+        };
+        // (tree, node to click, text painted where the click lands, emits an action).
+        // A press on a list row's background is covered in `row_tests`.
+        let cases = [
+            (
+                decode(serde_json::json!([
+                    {"id": 0, "key": "0", "data": {"type": "Button", "label": "Approve", "on_click": "approve"}},
+                ])),
+                0,
+                "Approve",
+                true,
+            ),
+            (
+                decode(serde_json::json!([
+                    {"id": 0, "key": "0", "data": {"type": "Button", "label": "Off", "on_click": "off", "disabled": true}},
+                ])),
+                0,
+                "Off",
+                false,
+            ),
+            (
+                decode(serde_json::json!([
+                    {"id": 0, "key": "0", "data": {"type": "ListView", "items": [1]}},
+                    {"id": 1, "key": "0/0", "data": {"type": "ListItem", "child": 2, "selected": false, "on_select": "pick:0"}},
+                    {"id": 2, "key": "0/0/0", "data": {"type": "Button", "label": "Run", "on_click": "run"}},
+                ])),
+                2,
+                "Run",
+                true,
+            ),
+            (
+                decode(serde_json::json!([
+                    {"id": 0, "key": "0", "data": {"type": "Table", "columns": [], "rows": [1]}},
+                    {"id": 1, "key": "0/0", "data": {"type": "TableRow", "cells": ["only row"], "selected": true, "on_select": "pick_row:0"}},
+                ])),
+                1,
+                "only row",
+                true,
+            ),
+            (
+                decode(serde_json::json!([
+                    {"id": 0, "key": "0", "data": {"type": "Text", "text": "plain"}},
+                ])),
+                0,
+                "plain",
+                false,
+            ),
+        ];
+        let colors = Colors::from_config(
+            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+        );
+        let screen_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(480.0, 320.0));
+        for (tree, target, painted, emits) in cases {
+            let ctx = egui::Context::default();
+            crate::ui::theme::setup_fonts(&ctx);
+            let pass = |input: egui::RawInput| {
+                let mut out = RenderResult::default();
+                let output = ctx.run_ui(input, |ui| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show_inside(ui, |ui| {
+                            out = render_ui_tree_with_surface(ui, &tree, &colors, None, None, 0);
+                        });
+                });
+                (out, output)
+            };
+            let raw = |events| egui::RawInput {
+                screen_rect: Some(screen_rect),
+                events,
+                ..Default::default()
+            };
+            let _ = pass(raw(Vec::new()));
+            fn find_text(shape: &egui::Shape, text: &str) -> Option<egui::Rect> {
+                match shape {
+                    egui::Shape::Text(t) if t.galley.text() == text => {
+                        Some(t.galley.rect.translate(t.pos.to_vec2()))
+                    }
+                    egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| find_text(s, text)),
+                    _ => None,
+                }
+            }
+            let (_, output) = pass(raw(Vec::new()));
+            let rect = output
+                .shapes
+                .iter()
+                .find_map(|clipped| find_text(&clipped.shape, painted))
+                .unwrap_or_else(|| panic!("{painted:?} was not painted"));
+            let at = rect.center();
+            let (clicked, _) = pass(raw(vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ]));
+            let expected: Vec<String> = match activation(tree.root, &tree.nodes, target) {
+                Ok(Activation::Action(action)) => vec![action],
+                Ok(Activation::Focus(_)) | Err(_) => Vec::new(),
+            };
+            assert_eq!(expected.is_empty(), !emits, "node {target} of {:?}", tree.nodes);
+            assert_eq!(clicked.actions, expected, "node {target} of {:?}", tree.nodes);
+        }
+    }
 
     #[test]
     fn plain_text_uses_host_theme_when_egui_visuals_differ() {
@@ -5638,6 +5774,7 @@ mod tests {
                         Some(&fits),
                         None,
                         None,
+                        None,
                         0,
                     );
                 });
@@ -5676,6 +5813,7 @@ mod tests {
                         &colors,
                         None,
                         Some(&fits),
+                        None,
                         None,
                         None,
                         0,
@@ -5881,27 +6019,12 @@ mod tests {
             &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
         );
 
-        // Render and verify Card surface rect + accent text + table/list actions on click.
-        let mut table_click = RenderResult::default();
+        // Render and verify the Card surface rect; selection is activation.
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
             egui::CentralPanel::default().show_inside(ui, |ui| {
-                table_click = render_ui_tree_with_canvas_fits(
-                    ui,
-                    &tree,
-                    &colors,
-                    None,
-                    None,
-                    Some(crate::host::pane::PendingPaneClick {
-                        target: crate::host::pane::PaneClickTarget::Node(8),
-                        button: "left",
-                        phase: crate::host::pane::PointerPhase::Click,
-                    }),
-                    None,
-                    0,
-                );
+                render_ui_tree_with_surface(ui, &tree, &colors, None, None, 0);
             });
         });
-        assert_eq!(table_click.actions, vec!["select_row:0".to_string()]);
 
         let has_card_surface = output.shapes.iter().any(|clipped| match &clipped.shape {
             egui::Shape::Rect(rect) => {
@@ -5913,27 +6036,10 @@ mod tests {
             has_card_surface,
             "Card node must paint bg_active surface with border stroke"
         );
-
-        let mut list_click = RenderResult::default();
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            egui::CentralPanel::default().show_inside(ui, |ui| {
-                list_click = render_ui_tree_with_canvas_fits(
-                    ui,
-                    &tree,
-                    &colors,
-                    None,
-                    None,
-                    Some(crate::host::pane::PendingPaneClick {
-                        target: crate::host::pane::PaneClickTarget::Node(10),
-                        button: "left",
-                        phase: crate::host::pane::PointerPhase::Click,
-                    }),
-                    None,
-                    0,
-                );
-            });
-        });
-        assert_eq!(list_click.actions, vec!["select_item:0".to_string()]);
+        assert_eq!(
+            crate::host::node_ref::activation(tree.root, &tree.nodes, 10),
+            Ok(crate::host::node_ref::Activation::Action("select_item:0".to_string()))
+        );
 
         let png = render_ui_tree_to_png(&tree, 520.0, 360.0, 2.0)
             .expect("render 0816 widget tree to PNG");

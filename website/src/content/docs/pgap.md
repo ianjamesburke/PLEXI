@@ -780,12 +780,11 @@ Deliver a synthetic pointer click to a view pane, in pane-pixel coordinates (ori
 
 ### `click_pane_node`
 
-Deliver a synthetic click to a view pane by node id, activating the Button/TextInput/list-row node the id names — the...
+Activate one node of a plugin pane by the ref `plexi pane state` reports for it (`<id>.<16 hex>`, stint 1600). Sent b...
 
 | Field | Type | Required |
 |-------|------|----------|
-| `button` | `string?` | no |
-| `node_id` | `string` | yes |
+| `node_ref` | `string` | yes |
 | `pane_id` | `integer` | yes |
 | `response_file` | `string?` | no |
 

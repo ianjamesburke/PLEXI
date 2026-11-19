@@ -1009,25 +1009,19 @@ pub enum HostRequest {
         response_file: Option<String>,
     },
 
-    /// Deliver a synthetic click to a view pane by node id, activating the
-    /// Button/TextInput/list-row node the id names — the node-addressed
-    /// sibling of `ClickPane` (stint 0414). Sent by
-    /// `plexi pane click <pane_id> --node <node_id>`. `node_id` matches
-    /// `SemanticPaneNode.id`, the id `plexi pane state` reports for every
-    /// node in the pane's tree, so a caller resolves it from `pane state`
-    /// output rather than computing pixel geometry. The host validates
-    /// `node_id` against the pane's cached semantic tree and fails loudly
-    /// (no queued click) when it is absent or not an interactive role;
-    /// otherwise it resolves the node's on-screen rect during the next
-    /// render pass and delivers the same `PendingPaneClick` honest hit-test
-    /// the pixel path uses. Host writes `{"ok":true}` or `{"error":"..."}`
-    /// to `response_file` when set.
+    /// Activate one node of a plugin pane by the ref `plexi pane state`
+    /// reports for it (`<id>.<16 hex>`, stint 1600). Sent by
+    /// `plexi pane click <pane_id> --node <ref>`. The host resolves the ref on
+    /// the pane's committed tree and delivers the node's semantic activation
+    /// (a button's `on_click`, a list or table row's `on_select`, focus for a
+    /// text input) in the same step, from `App::logic`, with no paint. A ref
+    /// whose node changed since it was read is refused as stale and nothing is
+    /// delivered. An activation has no pointer button. Builtin views have no
+    /// node refs. Host writes `{"ok":true}` once the guest was handed the
+    /// action, or `{"error":"..."}`, to `response_file` when set.
     ClickPaneNode {
         pane_id: u64,
-        node_id: String,
-        /// "left" (default), "right", or "middle".
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        button: Option<String>,
+        node_ref: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
     },
@@ -1040,10 +1034,11 @@ pub enum HostRequest {
     /// parallel resolver. Sent by `plexi pane drag` and
     /// `HostHarness::inject_drag` (stint 0510). Endpoints are addressable by
     /// pane-pixel coordinates (`from`/`to`, origin at the pane's top-left) or
-    /// by semantic node id (`from_node`/`to_node`, the ids `plexi pane state`
+    /// by node ref (`from_node`/`to_node`, the refs `plexi pane state`
     /// reports; the drag targets the node rect's center). Exactly one of the
-    /// pixel/node forms must be set per endpoint; the host validates node ids
-    /// against the pane's semantic tree and fails loudly when one is absent.
+    /// pixel/node forms must be set per endpoint; the host resolves refs on
+    /// the pane's committed tree and fails loudly on a stale ref or a node
+    /// without rendered bounds.
     /// Host writes `{"ok":true}` or `{"error":"..."}` to `response_file`
     /// when set.
     DragPane {
@@ -3602,18 +3597,16 @@ mod tests {
 
     #[test]
     fn click_pane_node_command_round_trips_serde() {
-        let json = r#"{"type":"click_pane_node","pane_id":42,"node_id":"5","button":"left","response_file":"result.json"}"#;
+        let json = r#"{"type":"click_pane_node","pane_id":42,"node_ref":"5.0123456789abcdef","response_file":"result.json"}"#;
         let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
             HostRequest::ClickPaneNode {
                 pane_id,
-                node_id,
-                button,
+                node_ref,
                 response_file,
             } => {
                 assert_eq!(*pane_id, 42);
-                assert_eq!(node_id, "5");
-                assert_eq!(button.as_deref(), Some("left"));
+                assert_eq!(node_ref, "5.0123456789abcdef");
                 assert_eq!(response_file.as_deref(), Some("result.json"));
             }
             other => panic!("expected ClickPaneNode, got {other:?}"),
@@ -3624,30 +3617,21 @@ mod tests {
             "wire tag missing: {serialised}"
         );
 
-        // Optional fields: button and response_file absent → None
-        let minimal = r#"{"type":"click_pane_node","pane_id":1,"node_id":"3"}"#;
-        let cmd2: HostRequest = serde_json::from_str(minimal).expect("deserialise minimal");
-        match &cmd2 {
-            HostRequest::ClickPaneNode {
-                button,
-                response_file,
-                ..
-            } => {
-                assert!(button.is_none(), "absent button must deserialise to None");
-                assert!(
-                    response_file.is_none(),
-                    "absent response_file must deserialise to None"
-                );
-            }
+        let minimal = r#"{"type":"click_pane_node","pane_id":1,"node_ref":"3.0123456789abcdef"}"#;
+        match serde_json::from_str(minimal).expect("deserialise minimal") {
+            HostRequest::ClickPaneNode { response_file, .. } => assert!(response_file.is_none()),
             other => panic!("expected ClickPaneNode, got {other:?}"),
         }
 
-        // Required-field discipline: missing node_id must fail
-        let bad = r#"{"type":"click_pane_node","pane_id":1}"#;
-        assert!(
-            serde_json::from_str::<HostRequest>(bad).is_err(),
-            "must fail without required node_id field"
-        );
+        // Required-field discipline: a click without a ref, the pre-ref
+        // `node_id` form, and a pointer button all fail to parse.
+        for bad in [
+            r#"{"type":"click_pane_node","pane_id":1}"#,
+            r#"{"type":"click_pane_node","pane_id":1,"node_id":"3"}"#,
+            r#"{"type":"click_pane_node","pane_id":1,"node_ref":"3.0123456789abcdef","button":"left"}"#,
+        ] {
+            assert!(serde_json::from_str::<HostRequest>(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

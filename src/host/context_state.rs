@@ -373,12 +373,7 @@ mod tests {
         fn display_name(&self) -> String {
             "Test App".to_string()
         }
-        fn ui(
-            &mut self,
-            _ui: &mut egui::Ui,
-            _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-            _pending_click: Option<crate::host::pane::PendingPaneClick>,
-        ) {
+        fn ui(&mut self, _ui: &mut egui::Ui, _ctx: &crate::app::view_trait::ViewRenderContext<'_>) {
         }
         fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
             self

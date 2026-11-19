@@ -452,7 +452,6 @@ impl View for McpRendererView {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &ViewRenderContext<'_>,
-        _click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         if !self.pending.is_empty() {
             ui.ctx().request_repaint_after(Duration::from_secs(1));

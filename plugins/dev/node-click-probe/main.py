@@ -1,36 +1,57 @@
-"""Node Click Probe - HostHarness node-targeted click fixture (stint 0414).
+"""Node Click Probe - HostHarness node activation fixture (stints 0414, 1600).
 
-A single `Button` mutates state entirely through a node-targeted click
-(`AppRequest::ClickPaneNode`, `plexi pane click <pane_id> --node <node_id>`)
-— no keyboard input — so a test that only exercises node-targeted clicks
-proves the primitive end to end: resolve the button's `node_id` from
-`plexi pane state`, click it, and observe the guest's re-rendered `Text`.
+Every action arrives through a node activation
+(`AppRequest::ClickPaneNode`, `plexi pane click <pane_id> --node <ref>`), so a
+test that only activates nodes proves the primitive end to end: read a
+button's `ref` from `plexi pane state`, activate it, and observe the guest's
+re-rendered `Text`.
+
+The `s` key swaps the "Approve A" button for a "Delete B" button at the same
+place in the tree, so a ref read before the swap must be refused after it.
 """
 
 from plexi_sdk import state
 from plexi_sdk.effects import SetState, SetTitle
-from plexi_sdk.events import UiAction
+from plexi_sdk.events import KeyEvent, UiAction
 from plexi_sdk.ui import Button, Column, Text
 
 INCREMENT = "increment"
+APPROVE = "approve"
+DELETE = "delete"
 
 
 def init(_size, _args):
     return [
         SetTitle("Node Click Probe"),
-        SetState({"count": state.get("count", 0)}),
+        SetState({
+            "count": state.get("count", 0),
+            "approved": 0,
+            "deleted": 0,
+            "swapped": False,
+        }),
     ]
 
 
 def update(event):
-    if isinstance(event, UiAction) and event.handler_id == INCREMENT:
-        return [SetState({"count": state.get("count", 0) + 1})]
+    if isinstance(event, UiAction):
+        field = {INCREMENT: "count", APPROVE: "approved", DELETE: "deleted"}.get(event.handler_id)
+        if field is not None:
+            return [SetState({field: state.get(field, 0) + 1})]
+    if isinstance(event, KeyEvent) and event.pressed and event.key == "s":
+        return [SetState({"swapped": not state.get("swapped", False)})]
     return []
 
 
 def view():
     count = state.get("count", 0)
+    decision = (
+        Button("Delete B", DELETE)
+        if state.get("swapped", False)
+        else Button("Approve A", APPROVE)
+    )
     return Column([
         Text(str(count), bold=True),
         Button("Increment", INCREMENT),
+        decision,
+        Text(f"approved:{state.get('approved', 0)} deleted:{state.get('deleted', 0)}"),
     ], grow=True)

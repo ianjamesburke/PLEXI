@@ -1550,16 +1550,17 @@ fn main() -> eframe::Result {
                         } => {
                             let pane_id = resolve_pane(&pane_id);
                             cli::trace::exit(match node {
-                                Some(node_id) => {
-                                    cli::pane_click_node_cli(pane_id, &node_id, &button)
-                                }
+                                Some(node_ref) => cli::pane_click_node_cli(pane_id, &node_ref),
                                 None => match (x, y) {
-                                    (Some(x), Some(y)) => {
-                                        cli::pane_click_cli(pane_id, x, y, &button)
-                                    }
+                                    (Some(x), Some(y)) => cli::pane_click_cli(
+                                        pane_id,
+                                        x,
+                                        y,
+                                        button.as_deref().unwrap_or("left"),
+                                    ),
                                     _ => {
                                         eprintln!(
-                                                "error: pane click requires either <x> <y> or --node <node_id>"
+                                                "error: pane click requires either <x> <y> or --node <ref>"
                                             );
                                         1
                                     }

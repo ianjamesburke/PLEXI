@@ -751,7 +751,6 @@ impl View for CliRendererView {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         // Request terminal on first render
         if !self.terminal_requested && self.descriptor.is_some() {
@@ -1156,7 +1155,7 @@ mod tests {
                         pane_id: 1,
                         synthetic_input: false,
                     };
-                    app.ui(ui, &rctx, None);
+                    app.ui(ui, &rctx);
                 });
             });
         };
@@ -1257,7 +1256,7 @@ mod tests {
                     pane_id: 1,
                     synthetic_input: false,
                 };
-                app.ui(ui, &rctx, None);
+                app.ui(ui, &rctx);
             });
         });
         // Production's post-frame focus reconciler applies the form's claim

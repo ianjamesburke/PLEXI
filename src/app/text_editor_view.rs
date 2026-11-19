@@ -2533,12 +2533,7 @@ impl View for TextEditorView {
         log::info!("notes_editor: font_size reset -> {}", self.font_size);
     }
 
-    fn ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
-    ) {
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &ViewRenderContext<'_>) {
         let colors = ctx.colors;
         self.host_pane_id = Some(ctx.pane_id);
 
@@ -3960,7 +3955,6 @@ mod tests {
                         pane_id: 1,
                         synthetic_input: false,
                     },
-                    None,
                 );
             },
             app,

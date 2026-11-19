@@ -2719,16 +2719,9 @@
         },
         {
           "additionalProperties": false,
-          "description": "Deliver a synthetic click to a view pane by node id, activating the\nButton/TextInput/list-row node the id names — the node-addressed\nsibling of `ClickPane` (stint 0414). Sent by\n`plexi pane click <pane_id> --node <node_id>`. `node_id` matches\n`SemanticPaneNode.id`, the id `plexi pane state` reports for every\nnode in the pane's tree, so a caller resolves it from `pane state`\noutput rather than computing pixel geometry. The host validates\n`node_id` against the pane's cached semantic tree and fails loudly\n(no queued click) when it is absent or not an interactive role;\notherwise it resolves the node's on-screen rect during the next\nrender pass and delivers the same `PendingPaneClick` honest hit-test\nthe pixel path uses. Host writes `{\"ok\":true}` or `{\"error\":\"...\"}`\nto `response_file` when set.",
+          "description": "Activate one node of a plugin pane by the ref `plexi pane state`\nreports for it (`<id>.<16 hex>`, stint 1600). Sent by\n`plexi pane click <pane_id> --node <ref>`. The host resolves the ref on\nthe pane's committed tree and delivers the node's semantic activation\n(a button's `on_click`, a list or table row's `on_select`, focus for a\ntext input) in the same step, from `App::logic`, with no paint. A ref\nwhose node changed since it was read is refused as stale and nothing is\ndelivered. An activation has no pointer button. Builtin views have no\nnode refs. Host writes `{\"ok\":true}` once the guest was handed the\naction, or `{\"error\":\"...\"}`, to `response_file` when set.",
           "properties": {
-            "button": {
-              "description": "\"left\" (default), \"right\", or \"middle\".",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "node_id": {
+            "node_ref": {
               "type": "string"
             },
             "pane_id": {
@@ -2750,13 +2743,13 @@
           "required": [
             "type",
             "pane_id",
-            "node_id"
+            "node_ref"
           ],
           "type": "object"
         },
         {
           "additionalProperties": false,
-          "description": "Deliver a sanctioned pointer drag to a view pane: press at `from`,\n`steps` intermediate `PointerMoved` positions, release at `to` —\nspread across consecutive frames through the same production input\npaths `ClickPane` uses (raw-input merge for builtin egui panes, the\nrender-pass honest hit-test for canvas/process/WASM panes), never a\nparallel resolver. Sent by `plexi pane drag` and\n`HostHarness::inject_drag` (stint 0510). Endpoints are addressable by\npane-pixel coordinates (`from`/`to`, origin at the pane's top-left) or\nby semantic node id (`from_node`/`to_node`, the ids `plexi pane state`\nreports; the drag targets the node rect's center). Exactly one of the\npixel/node forms must be set per endpoint; the host validates node ids\nagainst the pane's semantic tree and fails loudly when one is absent.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`\nwhen set.",
+          "description": "Deliver a sanctioned pointer drag to a view pane: press at `from`,\n`steps` intermediate `PointerMoved` positions, release at `to` —\nspread across consecutive frames through the same production input\npaths `ClickPane` uses (raw-input merge for builtin egui panes, the\nrender-pass honest hit-test for canvas/process/WASM panes), never a\nparallel resolver. Sent by `plexi pane drag` and\n`HostHarness::inject_drag` (stint 0510). Endpoints are addressable by\npane-pixel coordinates (`from`/`to`, origin at the pane's top-left) or\nby node ref (`from_node`/`to_node`, the refs `plexi pane state`\nreports; the drag targets the node rect's center). Exactly one of the\npixel/node forms must be set per endpoint; the host resolves refs on\nthe pane's committed tree and fails loudly on a stale ref or a node\nwithout rendered bounds.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`\nwhen set.",
           "properties": {
             "button": {
               "description": "\"left\" (default), \"right\", or \"middle\".",

@@ -927,11 +927,11 @@ impl HostHarness {
         })
     }
 
-    /// Inject a node-addressed pointer drag: each endpoint names a
-    /// `SemanticPaneNode.id` (as reported by `plexi pane state`) whose cached
-    /// bounds center becomes that endpoint. Nodes without recorded bounds
-    /// fail loudly in the response file — currently that means builtin
-    /// (accesskit) panes; canvas/WASM trees record no per-node bounds yet.
+    /// Inject a node-addressed pointer drag: each endpoint is a node ref (as
+    /// reported by `plexi pane state`) whose cached bounds center becomes
+    /// that endpoint. A stale ref, a builtin pane (no refs) and a node without
+    /// recorded bounds (plugin trees record none yet) fail loudly in the
+    /// response file.
     pub fn inject_node_drag(
         &self,
         pane_id: PaneId,
@@ -953,27 +953,21 @@ impl HostHarness {
         })
     }
 
-    /// Inject a synthetic node-targeted click, through the real
-    /// `HostRequest::ClickPaneNode` dispatch path — the same host code
-    /// `plexi pane click <pane_id> --node <node_id>` drives. `node_id`
-    /// matches `SemanticPaneNode.id`, the id `plexi pane state` reports for
-    /// every node in the pane's tree. The host resolves the node's on-screen
-    /// rect during the next render pass and delivers the same
-    /// `PendingPaneClick` honest hit-test the pixel path uses. Call
-    /// `run_frames` afterward to let the dispatch (and, for process plugins,
-    /// the async IPC round trip to the guest) take effect. `button` is
-    /// `"left"`, `"right"`, or `"middle"`.
+    /// Activate a plugin pane node through the real
+    /// `HostRequest::ClickPaneNode` dispatch, the host code
+    /// `plexi pane click <pane_id> --node <ref>` drives. `node_ref` is the
+    /// `ref` a node carries in the pane's `semantic_state()`. The host checks
+    /// and delivers it while the request is dispatched, so the answer is in
+    /// `response_file` once the IPC queue drains; no paint is involved.
     pub fn inject_node_click(
         &self,
         pane_id: PaneId,
-        node_id: &str,
-        button: &str,
+        node_ref: &str,
         response_file: Option<String>,
     ) -> &Self {
         self.inject_ipc(HostRequest::ClickPaneNode {
             pane_id,
-            node_id: node_id.to_string(),
-            button: Some(button.to_string()),
+            node_ref: node_ref.to_string(),
             response_file,
         })
     }

@@ -2079,7 +2079,6 @@ impl crate::app::view_trait::View for KeyBurstProbe {
         &mut self,
         _ui: &mut egui::Ui,
         _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
     }
 
@@ -2136,7 +2135,6 @@ impl crate::app::view_trait::View for TextInputProbe {
         &mut self,
         ui: &mut egui::Ui,
         _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
             self.enter_rendered = true;
@@ -4462,9 +4460,15 @@ fn drag_pane_node_endpoints_fail_loudly_without_bounds() {
 
     let pane_id = h.launch_dev_view("canvas-click-probe");
 
-    // Node exists (the canvas root, arena id "0") but has no recorded bounds.
+    // The canvas root's ref resolves, but the node has no recorded bounds.
+    let root_ref = pane_semantics(&h, pane_id)
+        .nodes
+        .into_iter()
+        .find(|n| n.id == "0")
+        .and_then(|n| n.r#ref)
+        .expect("canvas root ref");
     let response_file = temp_response(tmp.path(), "drag-node-no-bounds");
-    h.inject_node_drag(pane_id, "0", "0", 4, "left", Some(response_file.clone()));
+    h.inject_node_drag(pane_id, &root_ref, &root_ref, 4, "left", Some(response_file.clone()));
     h.run_frames(1);
     let response = read_json_response(&response_file);
     let error = response["error"].as_str().unwrap_or_default();
@@ -4473,22 +4477,16 @@ fn drag_pane_node_endpoints_fail_loudly_without_bounds() {
         "expected a named no-bounds error, got {response:?}"
     );
 
-    // Node absent from the current tree entirely.
+    // A ref that names nothing in the current tree.
     let response_file = temp_response(tmp.path(), "drag-node-missing");
-    h.inject_node_drag(
-        pane_id,
-        "9999",
-        "9999",
-        4,
-        "left",
-        Some(response_file.clone()),
-    );
+    let missing = "9999.0123456789abcdef";
+    h.inject_node_drag(pane_id, missing, missing, 4, "left", Some(response_file.clone()));
     h.run_frames(1);
     let response = read_json_response(&response_file);
     let error = response["error"].as_str().unwrap_or_default();
     assert!(
-        error.contains("not found"),
-        "expected a named missing-node error, got {response:?}"
+        error.contains("stale") && error.contains("is gone"),
+        "expected a named stale-ref error, got {response:?}"
     );
 }
 
@@ -4600,7 +4598,6 @@ impl crate::app::view_trait::View for PipeTestView {
         &mut self,
         _ui: &mut egui::Ui,
         _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
     }
 
@@ -4877,131 +4874,243 @@ fn directed_pipe_id_does_not_collide_across_contexts() {
 
 /// Stint 0414: node-targeted counterpart of stint 0398's
 /// `click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform`.
-/// Drives a REAL process-view pane (`plugins/dev/node-click-probe`, a single
-/// `Button` with no other input) through the production
-/// `HostRequest::ClickPaneNode` dispatch — the exact path
-/// `plexi pane click <pane_id> --node <node_id>` uses — resolving the
-/// button's `node_id` from the pane's own semantic tree (`plexi pane state`)
-/// exactly as a tester would, never a hardcoded arena id. Proves the
-/// end-to-end contract the launch gate (stint 0413) needs: a widget can be
-/// activated by node_id and the guest's re-rendered view reflects it.
-#[test]
-fn click_pane_node_activates_button_and_mutates_guest_view() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let mut h = HostHarness::new();
-
-    let pane_id = h.launch_dev_view("node-click-probe");
-
-    let semantic_state = h.app.windows[h.app.active_window]
-        .panes
-        .get(&pane_id)
+fn pane_semantics(h: &HostHarness, pane_id: PaneId) -> crate::host::pane::SemanticPaneState {
+    h.app
+        .windows
+        .iter()
+        .find_map(|win| win.panes.get(&pane_id))
         .and_then(Pane::as_view)
         .map(|pane| pane.semantic_state())
-        .expect("view pane has a semantic tree");
+        .expect("view pane has a semantic tree")
+}
 
-    let button_id = semantic_state
+/// The `ref` `plexi pane state` reports for the node with this role and label.
+fn node_ref_of(h: &HostHarness, pane_id: PaneId, role: &str, label: &str) -> String {
+    pane_semantics(h, pane_id)
         .nodes
-        .iter()
-        .find(|n| n.role == "button" && n.label.as_deref() == Some("Increment"))
-        .map(|n| n.id.clone())
-        .expect("semantic tree exposes the Increment button by role/label");
-    let text_id = semantic_state
-        .nodes
-        .iter()
-        .find(|n| n.role == "text")
-        .map(|n| n.id.clone())
-        .expect("semantic tree exposes the count Text node");
-    assert_eq!(
-        semantic_state
-            .nodes
-            .iter()
-            .find(|n| n.id == text_id)
-            .and_then(|n| n.label.as_deref()),
-        Some("0"),
-        "count starts at 0"
-    );
+        .into_iter()
+        .find(|n| n.role == role && n.label.as_deref() == Some(label))
+        .and_then(|n| n.r#ref)
+        .unwrap_or_else(|| panic!("pane state has no {role} {label:?} with a ref"))
+}
 
-    // Fail-loud path: a node id absent from the current tree is rejected,
-    // never silently no-op'd.
-    let missing_response = temp_response(tmp.path(), "click-node-missing");
-    h.inject_node_click(pane_id, "9999", "left", Some(missing_response.clone()));
-    h.run_frames(1);
-    let missing = read_json_response(&missing_response);
-    assert!(
-        missing.get("error").is_some(),
-        "clicking an absent node_id must return a named error, not ok:true: {missing:?}"
-    );
+/// Dispatch `ClickPaneNode` through the host's IPC arm and read its answer.
+/// No frame runs: the answer must already be written when dispatch returns.
+fn activate_now(h: &mut HostHarness, pane_id: PaneId, node_ref: &str) -> serde_json::Value {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let response_file = temp_response(dir.path(), "activate");
+    h.app
+        .handle_pane_ipc_request(HostRequest::ClickPaneNode {
+            pane_id,
+            node_ref: node_ref.to_string(),
+            response_file: Some(response_file.clone()),
+        });
+    read_json_response(&response_file)
+}
 
-    // Fail-loud path: a non-interactive node (the Text node) is rejected too.
-    let non_interactive_response = temp_response(tmp.path(), "click-node-non-interactive");
-    h.inject_node_click(
-        pane_id,
-        &text_id,
-        "left",
-        Some(non_interactive_response.clone()),
-    );
-    h.run_frames(1);
-    let non_interactive = read_json_response(&non_interactive_response);
-    assert!(
-        non_interactive.get("error").is_some(),
-        "clicking a non-interactive node_id must return a named error: {non_interactive:?}"
-    );
-
-    // Happy path: click the button by node_id and observe the guest's
-    // re-rendered count. The click's egui-level effect is synchronous, but
-    // delivery to the Python subprocess and its reply round-trip the IPC
-    // pipe — poll for the plugin's re-render to reflect it.
-    let click_response = temp_response(tmp.path(), "click-node-increment");
-    h.inject_node_click(pane_id, &button_id, "left", Some(click_response.clone()));
-    h.run_frames(1);
-    let response = read_json_response(&click_response);
-    assert_eq!(
-        response["ok"], true,
-        "node click dispatch failed: {response:?}"
-    );
-
+/// Service the pane only through `ViewRuntime::background_tick` (the
+/// `App::logic` path a hidden window gets) until `done` holds.
+fn tick_view_until(
+    h: &mut HostHarness,
+    pane_id: PaneId,
+    what: &str,
+    done: impl Fn(&crate::host::pane::SemanticPaneState) -> bool,
+) {
     let start = std::time::Instant::now();
-    let mut observed_count: Option<String> = None;
     loop {
-        h.run_frames(1);
-        let state = h.app.windows[h.app.active_window]
-            .panes
-            .get(&pane_id)
-            .and_then(Pane::as_view)
-            .map(|pane| pane.semantic_state());
-        if let Some(state) = &state {
-            observed_count = state
-                .nodes
-                .iter()
-                .find(|n| n.role == "text")
-                .and_then(|n| n.label.clone());
-        }
-        if observed_count.as_deref() == Some("1") {
-            break;
+        let view = h
+            .app
+            .windows
+            .iter_mut()
+            .find_map(|win| win.panes.get_mut(&pane_id))
+            .and_then(Pane::as_view_mut)
+            .expect("view pane");
+        view.runtime.background_tick();
+        if done(&view.semantic_state()) {
+            return;
         }
         assert!(
             start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "plugin did not reflect the node-targeted click's mutation in time (last seen: {observed_count:?})"
+            "timed out waiting for {what}: {:?}",
+            view.semantic_state()
+                .nodes
+                .iter()
+                .filter_map(|n| n.label.clone())
+                .collect::<Vec<_>>()
         );
-        std::thread::sleep(std::time::Duration::from_millis(25));
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 
-/// Stint 0469: node-targeted click passthrough into a *builtin* plugin, exercising
-/// the FULL two-step workflow entirely through synthetic node clicks — the same
-/// path `plexi pane click <id> --node <id>` drives — with no real pointer input
-/// anywhere. Step 1 clicks the "View" toolbar button (opening its menu, which is
-/// what the tester's PR #2448 reject proved was a silent no-op: `ui.menu_button`
-/// only toggles open from a real click resolved inside `Context::begin_pass`, so
-/// the menu never opened and the checkbox never entered the tree). Step 2 clicks
-/// the now-exposed "Show hidden files" checkbox. Proves: `pending_click` reaches
-/// `ViewRuntime::Builtin`; a synthetic click force-opens the menu popup so its
-/// items enter the semantic tree; and `resolve_interactive_node`/
-/// `INTERACTIVE_ROLES` accept a real `checkbox` node whose id is a full `u64`
-/// egui hash (why `PaneClickTarget::Node` was widened from `u32`). Every node id
-/// is read off the live semantic tree, never fabricated.
+fn has_label(state: &crate::host::pane::SemanticPaneState, label: &str) -> bool {
+    state.nodes.iter().any(|n| n.label.as_deref() == Some(label))
+}
+
+/// Swap the probe's "Approve A" for "Delete B" through a host key event.
+fn swap_approve_for_delete(h: &mut HostHarness, pane_id: PaneId) {
+    h.inject_ipc(HostRequest::KeyPane {
+        pane_id,
+        key: "s".to_string(),
+        response_file: None,
+    });
+    let start = std::time::Instant::now();
+    while !has_label(&pane_semantics(h, pane_id), "Delete B") {
+        h.run_frames(1);
+        assert!(
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "the probe never swapped Approve A for Delete B"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Stint 1600: a node ref read from pane state activates exactly the control
+/// that was read. Drives the REAL `plugins/dev/node-click-probe` Python pane
+/// through the production `HostRequest::ClickPaneNode` arm: the answer is
+/// written before any frame runs, refusals are named errors, and the guest's
+/// re-rendered view reflects the delivered action.
 #[test]
-fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
+fn click_pane_node_activates_button_and_mutates_guest_view() {
+    let mut h = HostHarness::new();
+    let pane_id = h.launch_dev_view("node-click-probe");
+
+    let state = pane_semantics(&h, pane_id);
+    assert_eq!(state.schema_version, crate::host::pane::SEMANTIC_PANE_STATE_SCHEMA_VERSION);
+    let count = state.nodes.iter().find(|n| n.role == "text").expect("count");
+    assert_eq!(count.label.as_deref(), Some("0"), "count starts at 0");
+
+    // A bare node id is not a ref.
+    let bare = activate_now(&mut h, pane_id, &count.id);
+    assert!(
+        bare["error"].as_str().unwrap_or_default().contains("malformed node ref"),
+        "{bare:?}"
+    );
+    // A ref to a non-interactive node is refused by name.
+    let text_ref = count.r#ref.clone().expect("text node ref");
+    let text = activate_now(&mut h, pane_id, &text_ref);
+    assert!(
+        text["error"].as_str().unwrap_or_default().contains("not interactive"),
+        "{text:?}"
+    );
+
+    // The answer is written with no frame run, and the guest already holds
+    // the action: servicing it through the logic path alone shows the result.
+    let increment = node_ref_of(&h, pane_id, "button", "Increment");
+    assert_eq!(activate_now(&mut h, pane_id, &increment), serde_json::json!({"ok": true}));
+    tick_view_until(&mut h, pane_id, "count 1", |state| has_label(state, "1"));
+}
+
+/// Stint 1600, the stale-ref refusal: a ref read while the probe showed
+/// "Approve A" is refused once "Delete B" replaced it at the same place, the
+/// error names what the node is now, and the guest receives no action.
+#[test]
+fn stale_node_ref_is_refused_and_delivers_nothing() {
+    let mut h = HostHarness::new();
+    let pane_id = h.launch_dev_view("node-click-probe");
+
+    let approve = node_ref_of(&h, pane_id, "button", "Approve A");
+    swap_approve_for_delete(&mut h, pane_id);
+
+    let refused = activate_now(&mut h, pane_id, &approve);
+    let error = refused["error"].as_str().unwrap_or_default();
+    assert!(error.contains("stale"), "{refused:?}");
+    assert!(error.contains("button \"Delete B\""), "{refused:?}");
+
+    // Nothing reached the guest: give any stray action time to land.
+    let settle = std::time::Instant::now();
+    while settle.elapsed() < std::time::Duration::from_millis(750) {
+        h.run_frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        has_label(&pane_semantics(&h, pane_id), "approved:0 deleted:0"),
+        "a refused ref must deliver no action"
+    );
+
+    // Not vacuous: the fresh ref for the control now shown does deliver.
+    let delete = node_ref_of(&h, pane_id, "button", "Delete B");
+    assert_eq!(activate_now(&mut h, pane_id, &delete), serde_json::json!({"ok": true}));
+    wait_for_text_label(&mut h, pane_id, "approved:", "approved:0 deleted:1");
+}
+
+/// Stint 1600: unkeyed siblings are part of a control's meaning. When the
+/// probe's tree changes around a button (a sibling is replaced, the count
+/// text changes), every ref read before the change is refused.
+#[test]
+fn node_ref_goes_stale_when_a_sibling_changes() {
+    let mut h = HostHarness::new();
+    let pane_id = h.launch_dev_view("node-click-probe");
+
+    let increment_before = node_ref_of(&h, pane_id, "button", "Increment");
+    swap_approve_for_delete(&mut h, pane_id);
+    let refused = activate_now(&mut h, pane_id, &increment_before);
+    let error = refused["error"].as_str().unwrap_or_default();
+    assert!(error.contains("stale"), "{refused:?}");
+    assert!(error.contains("button \"Increment\""), "{refused:?}");
+}
+
+/// Stint 1600: activation is delivered from the IPC arm, never at paint, so a
+/// pane that is not painted (hidden window, inactive context) still gets it.
+/// No frame runs in this test after the pane's first render: the answer and
+/// the guest's reaction are both observed through the logic path alone.
+#[test]
+fn node_activation_reaches_a_pane_that_is_not_painted() {
+    let mut h = HostHarness::new();
+    let pane_id = h.launch_dev_view("node-click-probe");
+
+    let approve = node_ref_of(&h, pane_id, "button", "Approve A");
+    assert_eq!(activate_now(&mut h, pane_id, &approve), serde_json::json!({"ok": true}));
+    tick_view_until(&mut h, pane_id, "approved:1", |state| {
+        has_label(state, "approved:1 deleted:0")
+    });
+}
+
+/// Stint 1600: a hot reload drops the committed tree and renews the pane's
+/// epoch. A click while the tree is gone is an immediate error, never a
+/// click carried to whatever renders next; a ref read before the reload is
+/// stale after it, and a ref read after it works.
+#[test]
+fn node_activation_during_hot_reload_is_refused_and_old_refs_go_stale() {
+    let mut h = HostHarness::new();
+    let pane_id = h.launch_dev_view("node-click-probe");
+
+    let before = node_ref_of(&h, pane_id, "button", "Increment");
+    assert!(
+        h.app.reload_view_pane(pane_id, "test: activation during reload"),
+        "reload_view_pane must relaunch the Python pane"
+    );
+    let during = activate_now(&mut h, pane_id, &before);
+    assert!(
+        during["error"].as_str().unwrap_or_default().contains("no committed tree"),
+        "{during:?}"
+    );
+
+    let start = std::time::Instant::now();
+    while !has_label(&pane_semantics(&h, pane_id), "Increment") {
+        h.run_frames(1);
+        assert!(
+            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "the relaunched pane never rendered"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let after = activate_now(&mut h, pane_id, &before);
+    assert!(
+        after["error"].as_str().unwrap_or_default().contains("stale"),
+        "{after:?}"
+    );
+    let fresh = node_ref_of(&h, pane_id, "button", "Increment");
+    assert_ne!(fresh, before);
+    assert_eq!(activate_now(&mut h, pane_id, &fresh), serde_json::json!({"ok": true}));
+    wait_for_text_label(&mut h, pane_id, "1", "1");
+}
+
+/// Stint 1600: builtin views have no node refs. `--node` on one is refused
+/// with the builtin text, and a tester drives the File Explorer by position:
+/// the View menu button and then the "Show hidden files" checkbox, each at
+/// the center of the bounds its pane state reports, made pane-relative.
+#[test]
+fn builtin_pane_refuses_node_refs_and_takes_position_clicks() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
     h.app.open_builtin_view_pane(
@@ -5017,12 +5126,22 @@ fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
     let pane_id = h.state().open_panes[0];
     h.run_frames(2);
 
+    let refused = activate_now(&mut h, pane_id, "5.0123456789abcdef");
+    assert_eq!(
+        refused["error"].as_str(),
+        Some(format!(
+            "pane {pane_id} is a builtin view and has no node refs; click by position with pane click <x> <y>"
+        ))
+        .as_deref()
+    );
+    assert!(
+        pane_semantics(&h, pane_id).nodes.iter().all(|n| n.r#ref.is_none()),
+        "builtin nodes carry no ref"
+    );
+
     let read_show_hidden = |h: &mut HostHarness| -> bool {
         let win = h.app.active_window;
-        let pane = h.app.windows[win]
-            .panes
-            .get_mut(&pane_id)
-            .expect("file explorer pane exists");
+        let pane = h.app.windows[win].panes.get_mut(&pane_id).expect("pane");
         let ViewRuntime::Builtin(app) = &mut pane.as_view_mut().expect("view pane").runtime else {
             panic!("pane {pane_id} is not a builtin plugin");
         };
@@ -5031,60 +5150,44 @@ fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
             .expect("pane is a FileBrowserView")
             .show_hidden()
     };
-    let find_node = |h: &mut HostHarness, role: &str, label: &str| -> Option<String> {
-        h.app.windows[h.app.active_window]
-            .panes
-            .get(&pane_id)
-            .and_then(Pane::as_view)
-            .map(|pane| pane.semantic_state())
-            .expect("view pane has a semantic tree")
-            .nodes
-            .iter()
-            .find(|n| n.role == role && n.label.as_deref() == Some(label))
-            .map(|n| n.id.clone())
+    // AccessKit bounds are a by-product of a paint pass, and a popup's first
+    // pass is an invisible sizing pass placed elsewhere: read bounds once
+    // they hold still across a frame, as a tester re-reading pane state does.
+    let settled_bounds = |h: &mut HostHarness, role: &str, label: &str| -> [f64; 4] {
+        let read = |h: &HostHarness| {
+            pane_semantics(h, pane_id)
+                .nodes
+                .into_iter()
+                .find(|n| n.role == role && n.label.as_deref() == Some(label))
+                .and_then(|n| n.bounds)
+        };
+        for _ in 0..20 {
+            let before = read(h);
+            h.run_frames(1);
+            if let (Some(before), Some(after)) = (before, read(h)) {
+                if before == after {
+                    return after;
+                }
+            }
+        }
+        panic!("pane state never settled on a {role} {label:?} with bounds");
+    };
+    let click_at_bounds = |h: &mut HostHarness, role: &str, label: &str| {
+        let bounds = settled_bounds(h, role, label);
+        let (win, tile) = h.app.find_pane_in_any_window(pane_id).expect("pane tile");
+        let origin = h.app.windows[win].tree.tiles.rect(tile).expect("pane rect").min;
+        let x = ((bounds[0] + bounds[2]) / 2.0) as f32 - origin.x;
+        let y = ((bounds[1] + bounds[3]) / 2.0) as f32 - origin.y;
+        let response = temp_response(tmp.path(), "position-click");
+        h.inject_click(pane_id, x, y, "left", Some(response.clone()));
+        h.run_frames(2);
+        assert_eq!(read_json_response(&response)["ok"], true);
     };
 
     assert!(!read_show_hidden(&mut h), "show_hidden must start disabled");
-    assert!(
-        find_node(&mut h, "checkbox", "Show hidden files").is_none(),
-        "checkbox must NOT be in the tree before the View menu is opened"
-    );
-
-    // Step 1 (SYNTHETIC): click the "View \u{2304}" toolbar button by node id.
-    // Before the fix this was a silent no-op — the menu stayed closed and the
-    // checkbox never appeared, so `find_node` below would return None.
-    let view_id = find_node(&mut h, "button", "View \u{2304}")
-        .expect("semantic tree exposes the View menu button by role/label");
-    let view_response = temp_response(tmp.path(), "click-node-view-menu");
-    h.inject_node_click(pane_id, &view_id, "left", Some(view_response.clone()));
-    h.run_frames(2);
-    let view_result = read_json_response(&view_response);
-    assert_eq!(
-        view_result["ok"], true,
-        "View button node click dispatch failed: {view_result:?}"
-    );
-
-    // The synthetic click must have opened the menu, so the checkbox now
-    // renders inside it and enters the semantic tree.
-    let checkbox_id = find_node(&mut h, "checkbox", "Show hidden files").expect(
-        "synthetic click on the View button must open the menu and expose the \
-         Show hidden files checkbox in the semantic tree",
-    );
-
-    // Step 2 (SYNTHETIC): click the now-exposed checkbox by node id.
-    let click_response = temp_response(tmp.path(), "click-node-hidden-files");
-    h.inject_node_click(pane_id, &checkbox_id, "left", Some(click_response.clone()));
-    h.run_frames(1);
-    let response = read_json_response(&click_response);
-    assert_eq!(
-        response["ok"], true,
-        "checkbox node click dispatch failed: {response:?}"
-    );
-
-    assert!(
-        read_show_hidden(&mut h),
-        "synthetic node click on the checkbox must toggle show_hidden on"
-    );
+    click_at_bounds(&mut h, "button", "View \u{2304}");
+    click_at_bounds(&mut h, "checkbox", "Show hidden files");
+    assert!(read_show_hidden(&mut h), "a position click on the checkbox toggles it");
 }
 
 /// Stint 0426: `plexi pane key` / `HostRequest::KeyPane` targeting a real
@@ -5196,98 +5299,6 @@ fn bare_escape_closes_focused_python_wasm_pane() {
         !h.state().open_panes.contains(&pane_id),
         "bare Escape on a focused Python-WASM pane must close it (Escape→CloseView)"
     );
-}
-
-/// Stint 0426 root cause: `PlexiApp::pending_pane_clicks` is removed from its
-/// map by the render dispatcher (`tiling.rs`/`render.rs`) *before* calling
-/// `ViewRuntime::ui`, so `LivePythonPane::ui` is a queued click's only chance
-/// at delivery. It had three early-return branches (fatal error, not
-/// initialized, not `ready`) that discarded an already-dequeued click
-/// without using it and without any error — `plexi pane click --node`
-/// reported `{"ok": true}` while nothing ever happened. A hot-reload
-/// relaunch (`ViewRuntime::Python::relaunch`, triggered by file-watch or
-/// `reload_plugin_pane`) is the most realistic way to land a queued click on
-/// exactly that not-ready window: the click resolves and queues against the
-/// pane's current tree, then the pane briefly cycles through
-/// not-initialized/not-ready before its relaunched subprocess re-renders.
-///
-/// This test forces that exact race deterministically (no IPC timing
-/// dependent sleep-and-hope): queue a node click against the live tree,
-/// force a relaunch before any frame drains the queue, then confirm the
-/// click still lands once the relaunched pane is ready again. Before the
-/// fix in `LivePythonPane::ui`, this hung until timeout because the click
-/// was dropped the instant it landed on the not-ready frame.
-#[test]
-fn queued_node_click_survives_a_hot_reload_relaunch_race() {
-    let mut h = HostHarness::new();
-
-    let pane_id = h.launch_dev_view("node-click-probe");
-
-    let semantic_state = h.app.windows[h.app.active_window]
-        .panes
-        .get(&pane_id)
-        .and_then(Pane::as_view)
-        .map(|pane| pane.semantic_state())
-        .expect("view pane has a semantic tree");
-    let button_arena_id = semantic_state
-        .nodes
-        .iter()
-        .find(|n| n.role == "button" && n.label.as_deref() == Some("Increment"))
-        .map(|n| n.id.clone())
-        .and_then(|id| semantic_state.resolve_interactive_node(&id).ok())
-        .expect("Increment button resolves to an arena id");
-
-    // Queue the click directly on the pending-click map — bypassing the IPC
-    // queue (`inject_node_click`) — so the relaunch below is guaranteed to
-    // land before any frame drains it. Going through IPC would risk the
-    // same `run_frames` call both draining the queue AND rendering the
-    // still-live (pre-reload) pane, delivering the click before the race
-    // window this test exists to exercise.
-    h.app.pending_pane_clicks.insert(
-        pane_id,
-        crate::host::pane::PendingPaneClick {
-            target: crate::host::pane::PaneClickTarget::Node(button_arena_id),
-            button: "left",
-            phase: crate::host::pane::PointerPhase::Click,
-        },
-    );
-
-    // Force the exact race: relaunch before any frame drains the queued
-    // click, landing it on a not-initialized/not-ready `ui()` call.
-    assert!(
-        h.app.reload_view_pane(pane_id, "test: relaunch race"),
-        "reload_plugin_pane must find and relaunch the Python pane"
-    );
-
-    // Wait for the relaunched subprocess to become ready and render again,
-    // then confirm the carried click still activated the button.
-    let start = std::time::Instant::now();
-    let mut observed_count: Option<String> = None;
-    loop {
-        h.run_frames(1);
-        let state = h.app.windows[h.app.active_window]
-            .panes
-            .get(&pane_id)
-            .and_then(Pane::as_view)
-            .map(|pane| pane.semantic_state());
-        if let Some(state) = &state {
-            observed_count = state
-                .nodes
-                .iter()
-                .find(|n| n.role == "text")
-                .and_then(|n| n.label.clone());
-        }
-        if observed_count.as_deref() == Some("1") {
-            break;
-        }
-        assert!(
-            start.elapsed()
-                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "click queued before a hot-reload relaunch must still land once the \
-             relaunched pane is ready again (last seen count: {observed_count:?})"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
 }
 
 // -- Single-authority input ownership (stint 0429) --------------------------
@@ -6311,7 +6322,7 @@ fn focused_text_input_receives_typing_and_enter_submits() {
     frame_with_events(&mut h, vec![pressed_key(egui::Key::X)]);
     wait_for_text_label(&mut h, pane_id, "keys:", "keys:1");
 
-    // Focus the TextInput by node id, exactly as `plexi pane click --node`
+    // Focus the TextInput by its ref, exactly as `plexi pane click --node`
     // would. The claim routes through the focus reconciler at frame end.
     let input_node_id = h.app.windows[h.app.active_window]
         .panes
@@ -6323,10 +6334,10 @@ fn focused_text_input_receives_typing_and_enter_submits() {
                 .nodes
                 .iter()
                 .find(|n| n.role == "text_input")
-                .map(|n| n.id.clone())
+                .and_then(|n| n.r#ref.clone())
         })
-        .expect("semantic tree exposes the TextInput node");
-    h.inject_node_click(pane_id, &input_node_id, "left", None);
+        .expect("semantic tree exposes the TextInput node ref");
+    h.inject_node_click(pane_id, &input_node_id, None);
     h.run_frames(2);
 
     // Typing now lands in the host TextEdit: the draft round-trips through
@@ -6408,10 +6419,10 @@ fn text_input_keeps_the_draft_while_the_guest_echo_is_in_flight() {
                 .nodes
                 .iter()
                 .find(|n| n.role == "text_input")
-                .map(|n| n.id.clone())
+                .and_then(|n| n.r#ref.clone())
         })
-        .expect("semantic tree exposes the TextInput node");
-    h.inject_node_click(pane_id, &input_node_id, "left", None);
+        .expect("semantic tree exposes the TextInput node ref");
+    h.inject_node_click(pane_id, &input_node_id, None);
     h.run_frames(2);
 
     // Two keystrokes on two consecutive host frames, with no wait between —

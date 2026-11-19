@@ -26,12 +26,7 @@ impl View for LaunchFailedView {
         format!("Cannot launch {}", self.plugin_id)
     }
 
-    fn ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
-    ) {
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &ViewRenderContext<'_>) {
         let colors = ctx.colors;
         ui.vertical_centered(|ui| {
             ui.add_space(style::SPACE_XL * 2.0);

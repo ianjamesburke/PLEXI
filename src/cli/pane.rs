@@ -1315,18 +1315,17 @@ pub fn pane_click_cli(pane_id: u64, x: f32, y: f32, button: &str) -> i32 {
     )
 }
 
-/// `plexi pane click <pane_id> --node <node_id> [--button left]`
+/// `plexi pane click <pane_id> --node <ref>`
 ///
 /// Sends `click_pane_node` command to PLEXI_SOCKET. Waits for response.
-/// Returns 0 on success, 1 on error.
-pub fn pane_click_node_cli(pane_id: u64, node_id: &str, button: &str) -> i32 {
-    log::info!("pane_click_node:cli: pane_id={pane_id} node_id={node_id} button={button}");
+/// Returns 0 once the host delivered the activation, 1 on any refusal.
+pub fn pane_click_node_cli(pane_id: u64, node_ref: &str) -> i32 {
+    log::info!("pane_click_node:cli: pane_id={pane_id} node_ref={node_ref}");
     click_request(
         serde_json::json!({
             "type": "click_pane_node",
             "pane_id": pane_id,
-            "node_id": node_id,
-            "button": button,
+            "node_ref": node_ref,
         }),
         "pane-click-node-response",
         "pane_click_node:cli",
@@ -1346,7 +1345,7 @@ fn parse_pane_coords(flag: &str, value: &str) -> Result<[f32; 2], String> {
 }
 
 /// `plexi pane drag <pane_id> --from x,y --to x,y [--steps N] [--button left]`
-/// (or `--from-node`/`--to-node` with semantic node ids).
+/// (or `--from-node`/`--to-node` with node refs from `plexi pane state`).
 ///
 /// Sends `drag_pane` to PLEXI_SOCKET; the host queues a press → moves →
 /// release schedule through the production input path and acks once queued.
@@ -1371,11 +1370,11 @@ pub fn pane_drag_cli(
         }
     };
     if from.is_none() && from_node.is_none() {
-        eprintln!("error: pane drag requires --from x,y or --from-node <node_id>");
+        eprintln!("error: pane drag requires --from x,y or --from-node <ref>");
         return 2;
     }
     if to.is_none() && to_node.is_none() {
-        eprintln!("error: pane drag requires --to x,y or --to-node <node_id>");
+        eprintln!("error: pane drag requires --to x,y or --to-node <ref>");
         return 2;
     }
     log::info!(

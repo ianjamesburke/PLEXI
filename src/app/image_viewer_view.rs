@@ -89,7 +89,6 @@ impl View for ImageViewerView {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         self.load_texture(ui.ctx());
         let colors = ctx.colors;
