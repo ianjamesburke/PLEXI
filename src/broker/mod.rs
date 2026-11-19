@@ -875,6 +875,7 @@ impl GrantStore {
         let rejected = loaded.fault.is_some() || (existed && !loaded.trusted);
         let mut data = loaded.data;
         fill_capability_grant_ids(&mut data.records);
+        drop_once_grants(&mut data.records);
         let mut untrusted = Vec::new();
         if let Some(fault) = loaded.fault {
             seal::note_integrity_fault(config_dir, fault.clone());
@@ -903,6 +904,7 @@ impl GrantStore {
         }
         let mut data = parse_legacy_grant_store(&body).ok()?;
         fill_capability_grant_ids(&mut data.records);
+        drop_once_grants(&mut data.records);
         log::info!(
             "grant_store: migrated legacy unsealed grants.toml records={}",
             data.records.len()
@@ -1318,6 +1320,18 @@ fn fill_capability_grant_ids(records: &mut [GrantRecord]) {
         {
             record.grant_id = format!("cap:{}:{}", record.actor_id, record.target_id);
         }
+    }
+}
+
+/// A Once grant is session memory (ruling 140 A). An unrelated save may have
+/// written one to disk, so none is read back: a one-time consent never
+/// authorizes again after a restart (stint 1638).
+fn drop_once_grants(records: &mut Vec<GrantRecord>) {
+    let before = records.len();
+    records.retain(|record| record.duration != GrantDuration::Once);
+    let dropped = before - records.len();
+    if dropped > 0 {
+        log::info!("grant_store: dropped {dropped} once grant(s) from a previous session");
     }
 }
 

@@ -6861,6 +6861,62 @@ mod tests {
         );
     }
 
+    /// Stint 1638: a Once grant is session memory. An Always save that writes
+    /// the store while it is unspent does not carry it across a restart.
+    #[test]
+    fn a_once_grant_does_not_survive_a_restart_after_an_always_save() {
+        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        seal_profile_grant(dir.path(), ws.path());
+        let principal = crate::broker::principal::Principal::plugin("board", Some(4));
+        let admit = |monitor: &PermissionMonitor, input: &str| {
+            monitor.admit_cli_operation(
+                AdmitRequest {
+                    call_id: "call-cli",
+                    tool: "cli.op.mutate",
+                    input_json: input,
+                    principal: &principal,
+                    actor_scope: ActorScope::User,
+                    trust_origin: "host",
+                    workspace_root: ws.path(),
+                    context_id: 9,
+                    package_id: "pkg-a",
+                    instance_id: 4,
+                    target_type: TargetType::CliOperation,
+                },
+                "Board wants to run a task operation",
+            )
+        };
+        let a = r#"{"cli_operation_id":"task.set","binding":"task.set#bind-1","values":{"priority":"p1"}}"#;
+        let b = r#"{"cli_operation_id":"task.close","binding":"task.close#bind-2","values":{}}"#;
+
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let ask_a = pending_of(admit(&monitor, a));
+        monitor
+            .approve_pending(&ask_a, ApprovalChoice::Once)
+            .unwrap();
+        let ask_b = pending_of(admit(&monitor, b));
+        monitor
+            .approve_pending(&ask_b, ApprovalChoice::Always)
+            .unwrap();
+        let Admission::Proceed { grant_id, .. } = admit(&monitor, a) else {
+            panic!("the Once grant covers A in this session");
+        };
+        monitor.consume_once(&grant_id, Some("op-a"));
+        drop(monitor);
+
+        let reopened = PermissionMonitor::open_profile(dir.path()).unwrap();
+        assert!(
+            matches!(admit(&reopened, a), Admission::Required { .. }),
+            "a Once approval must not authorize again after a restart"
+        );
+        assert!(
+            matches!(admit(&reopened, b), Admission::Proceed { .. }),
+            "an Always grant still persists and matches after a restart"
+        );
+    }
+
     /// Stint 1624: a denial whose queue save failed does not come back open.
     #[test]
     fn a_denied_ask_whose_save_failed_is_not_approvable_after_restart() {
