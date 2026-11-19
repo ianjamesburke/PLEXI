@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use zeroize::Zeroizing;
 
-use super::store::SecretStore;
+use super::store::{DeleteOutcome, SecretStore};
 use crate::broker::gate::{self, Admission, AdmitRequest, PermissionMonitor};
 use crate::broker::{ActorScope, ActorType, TargetType};
 
@@ -117,6 +117,8 @@ pub fn set_folder_secret(
     Ok(folder)
 }
 
+/// One delete, forwarded. Only a confirmed deletion is success; a reported
+/// no-match and every store error are failures, and nothing is asked first.
 pub fn remove_folder_secret(
     store: &dyn SecretStore,
     name: &str,
@@ -124,17 +126,20 @@ pub fn remove_folder_secret(
 ) -> Result<(), String> {
     let folder = canonical_folder(folder)?;
     let account = account_name(&folder, name);
-    let present = store
-        .contains(&account)
-        .map_err(|err| format!("folder secret lookup failed for '{name}': {err}"))?;
-    if !present {
-        return Err(format!("secret '{name}' not found in {}", folder.display()));
-    }
-    store
+    let outcome = store
         .delete(&account)
-        .map_err(|err| format!("folder secret delete failed: {err}"))?;
-    log::info!("folder_secrets: rm name={name} folder={}", folder.display());
-    Ok(())
+        .map_err(|err| format!("folder secret delete failed for '{name}': {err}"))?;
+    log::info!(
+        "folder_secrets: rm name={name} folder={} outcome={outcome:?}",
+        folder.display()
+    );
+    match outcome {
+        DeleteOutcome::Deleted => Ok(()),
+        DeleteOutcome::NoMatchReported => Err(format!(
+            "the secret store returned no match for '{name}' in {}",
+            folder.display()
+        )),
+    }
 }
 
 pub fn list_folder_secrets(store: &dyn SecretStore) -> Vec<FolderSecretMeta> {
@@ -1142,7 +1147,7 @@ mod tests {
             fn set(&self, _: &str, _: &str) -> Result<(), super::super::store::SecretError> {
                 panic!("no write expected")
             }
-            fn delete(&self, _: &str) -> Result<(), super::super::store::SecretError> {
+            fn delete(&self, _: &str) -> Result<DeleteOutcome, super::super::store::SecretError> {
                 panic!("no delete expected")
             }
         }
@@ -1274,51 +1279,31 @@ mod tests {
     }
 }
 
-/// Stint 1626 (Codex round 2): `secret rm` reports a store that could not
-/// answer as that failure, never as "not found".
+/// Stint 1635: `secret rm` issues one delete and forwards its outcome. The
+/// store panics on any read or list, so an existence pre-check fails here.
 #[cfg(test)]
-mod lookup_failure_tests {
-    use super::super::store::{NonDestructiveStore, SecretError, SecretStore};
+mod removal_outcome_tests {
+    use super::super::store::{DeleteOnlyStore, SecretError};
     use super::*;
 
-    struct Unanswering;
-
-    impl NonDestructiveStore for Unanswering {
-        fn get(&self, _: &str) -> Option<Zeroizing<String>> {
-            None
-        }
-        fn contains(&self, _: &str) -> Result<bool, SecretError> {
-            Err(SecretError::Backend("secret-tool did not finish".into()))
-        }
-        fn add_new(&self, _: &str, _: &str) -> Result<(), SecretError> {
-            panic!("no write expected")
-        }
-        fn delete_if_value(&self, _: &str, _: &str) -> Result<(), SecretError> {
-            panic!("no delete expected")
-        }
-        fn list_with_prefix(&self, _: &str) -> Vec<String> {
-            Vec::new()
-        }
-        fn scan_accounts(&self) -> Result<Vec<String>, SecretError> {
-            Ok(Vec::new())
-        }
-    }
-
-    impl SecretStore for Unanswering {
-        fn set(&self, _: &str, _: &str) -> Result<(), SecretError> {
-            panic!("no write expected")
-        }
-        fn delete(&self, _: &str) -> Result<(), SecretError> {
-            panic!("no delete expected")
-        }
-    }
-
     #[test]
-    fn remove_reports_a_lookup_failure_not_absence() {
+    fn remove_forwards_one_delete_outcome() {
         let folder = tempfile::tempdir().unwrap();
-        let error = remove_folder_secret(&Unanswering, "TOKEN", folder.path()).unwrap_err();
-        assert!(error.contains("did not finish"), "{error}");
-        assert!(!error.contains("not found"), "{error}");
+        let deleted = DeleteOnlyStore::answering(|| Ok(DeleteOutcome::Deleted));
+        remove_folder_secret(&deleted, "TOKEN", folder.path()).unwrap();
+        assert_eq!(deleted.deletes(), 1);
+
+        let none = DeleteOnlyStore::answering(|| Ok(DeleteOutcome::NoMatchReported));
+        let error = remove_folder_secret(&none, "TOKEN", folder.path()).unwrap_err();
+        assert!(error.contains("returned no match for 'TOKEN'"), "{error}");
+        assert_eq!(none.deletes(), 1);
+
+        let failed = DeleteOnlyStore::answering(|| Err(SecretError::Authentication(-25293)));
+        let error = remove_folder_secret(&failed, "TOKEN", folder.path()).unwrap_err();
+        assert!(error.contains("delete failed for 'TOKEN'"), "{error}");
+        assert!(error.contains("-25293"), "{error}");
+        assert!(!error.contains("no match"), "{error}");
+        assert_eq!(failed.deletes(), 1);
     }
 }
 

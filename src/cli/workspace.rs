@@ -862,20 +862,22 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
     }
 }
 
-/// Delete an account only when it exists at the exact scope selected by the
-/// caller. Store backends may treat an absent delete as a successful no-op, so
-/// the read is what makes the CLI's not-found contract portable.
+/// One delete at the exact scope selected by the caller. Only a confirmed
+/// deletion is success; nothing reads the value or asks first.
 fn delete_existing_secret(
     store: &dyn crate::workspace::secrets::SecretStore,
     account: &str,
     friendly: &str,
 ) -> Result<(), String> {
-    if store.get(account).is_none() {
-        return Err(format!("secret '{friendly}' not found"));
-    }
-    store
+    match store
         .delete(account)
-        .map_err(|error| format!("keychain delete failed: {error}"))
+        .map_err(|error| format!("secret store delete failed for '{friendly}': {error}"))?
+    {
+        crate::workspace::secrets::DeleteOutcome::Deleted => Ok(()),
+        crate::workspace::secrets::DeleteOutcome::NoMatchReported => Err(format!(
+            "the secret store returned no match for '{friendly}'"
+        )),
+    }
 }
 
 /// `plexi secret delete <friendly-name>` — remove the Keychain entry.
@@ -1311,13 +1313,25 @@ mod secret_set_tests {
     use tempfile::TempDir;
 
     #[test]
-    fn secret_delete_missing_key_returns_not_found_error() {
+    fn secret_delete_missing_key_reports_no_match() {
         let store = InMemoryKeychain::new();
 
         let error = delete_existing_secret(&store, "plexi:user:missing", "missing")
             .expect_err("an absent secret must not report a successful delete");
 
-        assert_eq!(error, "secret 'missing' not found");
+        assert_eq!(error, "the secret store returned no match for 'missing'");
+    }
+
+    /// Stint 1635: `secret delete` issues one delete and reads nothing first.
+    #[test]
+    fn secret_delete_forwards_one_delete_outcome() {
+        use crate::workspace::secrets::{DeleteOnlyStore, DeleteOutcome};
+        let deleted = DeleteOnlyStore::answering(|| Ok(DeleteOutcome::Deleted));
+        delete_existing_secret(&deleted, "plexi:user:X", "X").unwrap();
+        assert_eq!(deleted.deletes(), 1);
+        let none = DeleteOnlyStore::answering(|| Ok(DeleteOutcome::NoMatchReported));
+        assert!(delete_existing_secret(&none, "plexi:user:X", "X").is_err());
+        assert_eq!(none.deletes(), 1);
     }
 
     /// Stint 1635: the CLI refuses a grant without touching any store, with

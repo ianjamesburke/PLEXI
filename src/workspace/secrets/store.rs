@@ -26,13 +26,6 @@ pub trait NonDestructiveStore: Send + Sync {
     fn get_interactive(&self, account: &str) -> Result<Option<Zeroizing<String>>, SecretError> {
         Ok(self.get(account))
     }
-    /// Whether `account` holds a value, for an explicit operation that must
-    /// tell "absent" from "could not tell" (`secret rm`, a grant). It never
-    /// raises an authentication dialog. The default is the background `get`;
-    /// a backend whose `get` hides lifecycle errors overrides it.
-    fn contains(&self, account: &str) -> Result<bool, SecretError> {
-        Ok(self.get(account).is_some())
-    }
     /// Create-only write: stores `value` **only** if `account` does not
     /// already exist, and returns [`SecretError::AlreadyExists`] if it does.
     /// Never updates — the backend itself refuses the duplicate, so the check
@@ -66,7 +59,22 @@ pub trait NonDestructiveStore: Send + Sync {
 /// these methods.
 pub trait SecretStore: NonDestructiveStore {
     fn set(&self, account: &str, value: &str) -> Result<(), SecretError>;
-    fn delete(&self, account: &str) -> Result<(), SecretError>;
+    /// One removal attempt. The backend operation that deletes reports the
+    /// outcome; no caller asks first whether the account exists. Only
+    /// [`DeleteOutcome::Deleted`] means an item was removed.
+    fn delete(&self, account: &str) -> Result<DeleteOutcome, SecretError>;
+}
+
+/// What a backend observed when asked to remove one account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    /// The backend confirmed it deleted the selected item. On macOS that is
+    /// one item; a duplicate in a later searched keychain can remain.
+    Deleted,
+    /// The backend reported no match. This is the observation, not a proof
+    /// of absence: the macOS search cursor can fold an unreadable keychain
+    /// into the same status. Never a success.
+    NoMatchReported,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -421,12 +429,12 @@ fn write_explicit_password(
 fn remove_password(
     account: &str,
     keychain: Option<&security_framework::os::macos::keychain::SecKeychain>,
-) -> Result<(), SecretError> {
+) -> Result<DeleteOutcome, SecretError> {
     let Some(keychain) = keychain else {
         use security_framework::passwords::delete_generic_password;
         return match delete_generic_password(KEYCHAIN_SERVICE, account) {
-            Ok(()) => Ok(()),
-            Err(error) if error.code() == -25300 => Ok(()),
+            Ok(()) => Ok(DeleteOutcome::Deleted),
+            Err(error) if error.code() == -25300 => Ok(DeleteOutcome::NoMatchReported),
             Err(error) => Err(explain_keychain(error)),
         };
     };
@@ -437,13 +445,13 @@ fn remove_password(
 fn remove_explicit_password(
     keychain: &security_framework::os::macos::keychain::SecKeychain,
     account: &str,
-) -> Result<(), SecretError> {
+) -> Result<DeleteOutcome, SecretError> {
     match keychain.find_generic_password(KEYCHAIN_SERVICE, account) {
         Ok((_password, item)) => {
             item.delete();
-            Ok(())
+            Ok(DeleteOutcome::Deleted)
         }
-        Err(error) if error.code() == -25300 => Ok(()),
+        Err(error) if error.code() == -25300 => Ok(DeleteOutcome::NoMatchReported),
         Err(error) => Err(explain_keychain(error)),
     }
 }
@@ -514,8 +522,9 @@ impl NonDestructiveStore for MacKeychain {
         match read_password(account, keychain.as_ref())? {
             None => Ok(()),
             Some(current) if current.as_str() == expected => {
-                remove_password(account, keychain.as_ref())?;
-                super::index::index_remove(account);
+                if remove_password(account, keychain.as_ref())? == DeleteOutcome::Deleted {
+                    super::index::index_remove(account);
+                }
                 Ok(())
             }
             Some(_) => Err(SecretError::ValueChanged(account.to_string())),
@@ -621,13 +630,15 @@ impl SecretStore for MacKeychain {
         Ok(())
     }
 
-    fn delete(&self, account: &str) -> Result<(), SecretError> {
+    fn delete(&self, account: &str) -> Result<DeleteOutcome, SecretError> {
         let _lock = keychain_call_lock();
         silence_keychain_ui()?;
         let keychain = open_explicit_keychain()?;
-        remove_password(account, keychain.as_ref())?;
-        super::index::index_remove(account);
-        Ok(())
+        let outcome = remove_password(account, keychain.as_ref())?;
+        if outcome == DeleteOutcome::Deleted {
+            super::index::index_remove(account);
+        }
+        Ok(outcome)
     }
 }
 
@@ -814,11 +825,14 @@ impl SecretStore for FileStore {
         Self::save(&map)
     }
 
-    fn delete(&self, account: &str) -> Result<(), SecretError> {
+    fn delete(&self, account: &str) -> Result<DeleteOutcome, SecretError> {
         let _guard = Self::lock();
         let mut map = Self::load()?;
-        map.remove(account);
-        Self::save(&map)
+        if map.remove(account).is_none() {
+            return Ok(DeleteOutcome::NoMatchReported);
+        }
+        Self::save(&map)?;
+        Ok(DeleteOutcome::Deleted)
     }
 }
 
@@ -1038,7 +1052,7 @@ impl SecretStore for InMemoryKeychain {
         Ok(())
     }
 
-    fn delete(&self, account: &str) -> Result<(), SecretError> {
+    fn delete(&self, account: &str) -> Result<DeleteOutcome, SecretError> {
         note_test_store_call();
         if self.delete_fails {
             return Err(SecretError::Backend(
@@ -1049,8 +1063,67 @@ impl SecretStore for InMemoryKeychain {
             .store
             .lock()
             .map_err(|e| SecretError::Backend(format!("mutex poisoned: {e}")))?;
-        g.remove(account);
-        Ok(())
+        Ok(match g.remove(account) {
+            Some(_) => DeleteOutcome::Deleted,
+            None => DeleteOutcome::NoMatchReported,
+        })
+    }
+}
+
+/// A store whose only working operation is `delete`. Every read, list,
+/// scan or write panics, so a caller that asks before it deletes fails the
+/// test. Records how many deletes it served.
+#[cfg(test)]
+pub struct DeleteOnlyStore {
+    answer: fn() -> Result<DeleteOutcome, SecretError>,
+    deletes: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+impl DeleteOnlyStore {
+    pub fn answering(answer: fn() -> Result<DeleteOutcome, SecretError>) -> Self {
+        Self {
+            answer,
+            deletes: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    pub fn deletes(&self) -> usize {
+        self.deletes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+impl NonDestructiveStore for DeleteOnlyStore {
+    fn get(&self, account: &str) -> Option<Zeroizing<String>> {
+        panic!("removal must not read {account}")
+    }
+    fn get_interactive(&self, account: &str) -> Result<Option<Zeroizing<String>>, SecretError> {
+        panic!("removal must not read {account}")
+    }
+    fn add_new(&self, account: &str, _: &str) -> Result<(), SecretError> {
+        panic!("removal must not write {account}")
+    }
+    fn delete_if_value(&self, account: &str, _: &str) -> Result<(), SecretError> {
+        panic!("removal must not guard-delete {account}")
+    }
+    fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
+        panic!("removal must not list {prefix}")
+    }
+    fn scan_accounts(&self) -> Result<Vec<String>, SecretError> {
+        panic!("removal must not scan")
+    }
+}
+
+#[cfg(test)]
+impl SecretStore for DeleteOnlyStore {
+    fn set(&self, account: &str, _: &str) -> Result<(), SecretError> {
+        panic!("removal must not write {account}")
+    }
+    fn delete(&self, _: &str) -> Result<DeleteOutcome, SecretError> {
+        self.deletes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        (self.answer)()
     }
 }
 
@@ -1278,7 +1351,7 @@ impl CredentialManager {
         Ok(())
     }
 
-    fn remove(account: &str) -> Result<(), SecretError> {
+    fn remove(account: &str) -> Result<DeleteOutcome, SecretError> {
         use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
         use windows_sys::Win32::Security::Credentials::{CredDeleteW, CRED_TYPE_GENERIC};
 
@@ -1288,15 +1361,14 @@ impl CredentialManager {
         let ok = unsafe { CredDeleteW(wide.as_ptr(), CRED_TYPE_GENERIC, 0) };
         if ok == 0 {
             let error = std::io::Error::last_os_error();
-            // Already gone — success, nothing to lose.
             if error.raw_os_error() == Some(ERROR_NOT_FOUND as i32) {
-                return Ok(());
+                return Ok(DeleteOutcome::NoMatchReported);
             }
             return Err(SecretError::Backend(format!(
                 "CredDeleteW('{target}') failed: {error}"
             )));
         }
-        Ok(())
+        Ok(DeleteOutcome::Deleted)
     }
 }
 
@@ -1358,7 +1430,7 @@ impl NonDestructiveStore for CredentialManager {
         // as the macOS path above.
         match self.get(account) {
             None => Ok(()), // already gone — nothing to lose
-            Some(current) if current.as_str() == expected => Self::remove(account),
+            Some(current) if current.as_str() == expected => Self::remove(account).map(|_| ()),
             Some(_) => Err(SecretError::ValueChanged(account.to_string())),
         }
     }
@@ -1400,7 +1472,7 @@ impl SecretStore for CredentialManager {
         Self::write(account, value)
     }
 
-    fn delete(&self, account: &str) -> Result<(), SecretError> {
+    fn delete(&self, account: &str) -> Result<DeleteOutcome, SecretError> {
         Self::remove(account)
     }
 }

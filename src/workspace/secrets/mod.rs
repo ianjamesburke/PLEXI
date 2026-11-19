@@ -48,13 +48,13 @@ mod index;
 
 #[cfg(all(target_os = "macos", not(test)))]
 pub(crate) use store::keychain_call_lock;
-pub use store::{NonDestructiveStore, SecretStore};
+pub use store::{DeleteOutcome, NonDestructiveStore, SecretStore};
 
 // Only test code outside this module names these. `SecretError` is named from
 // the macOS keychain-counting tests; every platform's tests name the in-memory
 // store. In-module callers reach both through their defining submodule.
 #[cfg(test)]
-pub use store::{take_test_store_calls, InMemoryKeychain};
+pub use store::{take_test_store_calls, DeleteOnlyStore, InMemoryKeychain};
 #[cfg(all(test, target_os = "macos"))]
 pub use store::SecretError;
 
@@ -195,7 +195,7 @@ impl SecretStore for LinuxUserStore {
         store::migrate_linux_file_store(folder_store::platform_folder_store());
         folder_store::platform_folder_store().set(account, value)
     }
-    fn delete(&self, account: &str) -> Result<(), store::SecretError> {
+    fn delete(&self, account: &str) -> Result<store::DeleteOutcome, store::SecretError> {
         store::migrate_linux_file_store(folder_store::platform_folder_store());
         folder_store::platform_folder_store().delete(account)
     }
