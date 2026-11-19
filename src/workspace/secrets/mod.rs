@@ -37,6 +37,8 @@
 mod file;
 mod folder;
 mod folder_store;
+#[cfg(any(test, target_os = "macos"))]
+mod mac_keychain;
 pub(crate) mod manager;
 mod pane_read;
 mod reconcile;

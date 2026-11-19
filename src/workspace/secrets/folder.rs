@@ -1124,7 +1124,10 @@ mod tests {
                 &self,
                 _: &str,
             ) -> Result<Option<Zeroizing<String>>, super::super::store::SecretError> {
-                Err(super::super::store::SecretError::Authentication(-25293))
+                Err(super::super::store::SecretError::Keychain {
+                    stage: super::super::store::KeychainStage::Read,
+                    status: -25293,
+                })
             }
             fn add_new(&self, _: &str, _: &str) -> Result<(), super::super::store::SecretError> {
                 panic!("no write expected")
@@ -1298,7 +1301,12 @@ mod removal_outcome_tests {
         assert!(error.contains("returned no match for 'TOKEN'"), "{error}");
         assert_eq!(none.deletes(), 1);
 
-        let failed = DeleteOnlyStore::answering(|| Err(SecretError::Authentication(-25293)));
+        let failed = DeleteOnlyStore::answering(|| {
+            Err(SecretError::Keychain {
+                stage: super::super::store::KeychainStage::Delete,
+                status: -25293,
+            })
+        });
         let error = remove_folder_secret(&failed, "TOKEN", folder.path()).unwrap_err();
         assert!(error.contains("delete failed for 'TOKEN'"), "{error}");
         assert!(error.contains("-25293"), "{error}");
@@ -1397,7 +1405,10 @@ mod approval_retry_tests {
                         reads.set(reads.get() + 1);
                         match failure {
                             None => Ok(None),
-                            Some(-25293) => Err(SecretError::Authentication(-25293)),
+                            Some(-25293) => Err(SecretError::Keychain {
+                                stage: super::super::store::KeychainStage::Read,
+                                status: -25293,
+                            }),
                             _ => Err(SecretError::Backend("test failure".into())),
                         }
                     },
