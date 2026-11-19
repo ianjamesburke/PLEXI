@@ -107,6 +107,14 @@ fn keychain_read_error(code: i32, fallback: &str) -> Result<(), SecretError> {
     }
 }
 
+#[cfg(any(test, all(target_os = "macos", not(test))))]
+fn keychain_contains_result(result: Result<bool, (i32, String)>) -> Result<bool, SecretError> {
+    match result {
+        Ok(found) => Ok(found),
+        Err((code, message)) => keychain_read_error(code, &message).map(|()| false),
+    }
+}
+
 /// `PLEXI_KEYCHAIN_PATH` is a test hook for the installed-binary e2e. It is
 /// not a user setting. Unset or empty keeps the process on the default
 /// keychain. A set path is created with `SecKeychainCreate` when missing,
@@ -450,6 +458,36 @@ fn remove_explicit_password(
 
 #[cfg(all(target_os = "macos", not(test)))]
 impl NonDestructiveStore for MacKeychain {
+    fn contains(&self, account: &str) -> Result<bool, SecretError> {
+        use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
+
+        let _lock = keychain_call_lock();
+        silence_keychain_ui()?;
+        let keychain = open_explicit_keychain()?;
+        let mut search = ItemSearchOptions::new();
+        search
+            .class(ItemClass::generic_password())
+            .service(KEYCHAIN_SERVICE)
+            .account(account)
+            .load_attributes(true)
+            .limit(Limit::One);
+        if let Some(keychain) = keychain.as_ref() {
+            search.keychains(std::slice::from_ref(keychain));
+        }
+        let result = search
+            .search()
+            .map(|items| !items.is_empty())
+            .map_err(|error| (error.code(), error.to_string()));
+        // An explicit file outside the search list may be invisible even when
+        // supplied in kSecMatchSearchList. Do not report that as absence.
+        if keychain.is_some() && matches!(&result, Err((-25300, _))) {
+            return Err(SecretError::Backend(
+                "cannot establish existence in the explicit keychain".into(),
+            ));
+        }
+        keychain_contains_result(result)
+    }
+
     fn get_interactive(&self, account: &str) -> Result<Option<Zeroizing<String>>, SecretError> {
         let _lock = keychain_call_lock();
         silence_keychain_ui()?;
@@ -1037,6 +1075,21 @@ impl SecretStore for InMemoryKeychain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keychain_contains_distinguishes_missing_from_errors() {
+        assert!(keychain_contains_result(Ok(true)).unwrap());
+        assert!(!keychain_contains_result(Ok(false)).unwrap());
+        assert!(!keychain_contains_result(Err((-25300, "missing".into()))).unwrap());
+        assert!(matches!(
+            keychain_contains_result(Err((-25308, "interaction".into()))),
+            Err(SecretError::Authentication(-25308))
+        ));
+        assert!(matches!(
+            keychain_contains_result(Err((-25294, "unavailable".into()))),
+            Err(SecretError::Backend(_))
+        ));
+    }
 
     #[test]
     fn human_secret_label_formats_user_and_workspace_scopes() {
