@@ -8,6 +8,35 @@ fn user_home_dir() -> Option<PathBuf> {
         .or_else(dirs::home_dir)
 }
 
+/// Everything shim and shell setup read from the machine: the user's home,
+/// the XDG data dir, and the managed installation receipt. Production
+/// resolves it once from the process; tests build it directly so no test
+/// mutates process-global environment.
+pub struct SetupEnv {
+    home: Option<PathBuf>,
+    receipt: Option<plexi_distribution::transaction::Receipt>,
+    #[cfg(unix)]
+    dirs: plexi_distribution::transaction::UserDirs,
+}
+
+impl SetupEnv {
+    fn from_process() -> Self {
+        let receipt = match crate::distribution::installed() {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                log::error!("cli_setup: installation receipt failed: {error}");
+                None
+            }
+        };
+        Self {
+            home: user_home_dir(),
+            receipt,
+            #[cfg(unix)]
+            dirs: plexi_distribution::transaction::UserDirs::from_env(),
+        }
+    }
+}
+
 #[cfg(unix)]
 fn quote_shell(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
@@ -90,9 +119,13 @@ pub fn completions_installed() -> bool {
         let xdg_ok = {
             #[cfg(unix)]
             {
-                plexi_distribution::transaction::dropin_completion_paths(&cli, "bash")
-                    .iter()
-                    .any(|p| p.is_file())
+                plexi_distribution::transaction::dropin_completion_paths(
+                    &cli,
+                    "bash",
+                    &plexi_distribution::transaction::UserDirs::from_env(),
+                )
+                .iter()
+                .any(|p| p.is_file())
             }
             #[cfg(not(unix))]
             {
@@ -109,9 +142,13 @@ pub fn completions_installed() -> bool {
         let xdg_ok = {
             #[cfg(unix)]
             {
-                plexi_distribution::transaction::dropin_completion_paths(&cli, "fish")
-                    .iter()
-                    .any(|p| p.is_file())
+                plexi_distribution::transaction::dropin_completion_paths(
+                    &cli,
+                    "fish",
+                    &plexi_distribution::transaction::UserDirs::from_env(),
+                )
+                .iter()
+                .any(|p| p.is_file())
             }
             #[cfg(not(unix))]
             {
@@ -240,13 +277,17 @@ pub struct CliSetupReport {
 /// `XDG_DATA_HOME/bash-completion/completions`, and managed zsh shell
 /// integration) without touching any user dotfiles (`.zshrc`/`.bashrc`/`.profile`).
 pub fn ensure_local_shim() -> Result<PathBuf, String> {
+    ensure_local_shim_in(&SetupEnv::from_process())
+}
+
+fn ensure_local_shim_in(env: &SetupEnv) -> Result<PathBuf, String> {
     let cli = cli_name();
     let _ = crate::host::shell::ensure_shell_integration();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let (launcher, script, channel) = match crate::distribution::installed() {
-            Ok(Some(receipt)) => {
+        let (launcher, script, channel) = match &env.receipt {
+            Some(receipt) => {
                 let name = plexi_distribution::release::command_name(&receipt.channel);
                 let installer = receipt.active.path.join("plexi-installer");
                 let script = format!(
@@ -257,7 +298,9 @@ pub fn ensure_local_shim() -> Result<PathBuf, String> {
                 (receipt.bin_dir.join(&name), script, receipt.channel.clone())
             }
             _ => {
-                let home = user_home_dir()
+                let home = env
+                    .home
+                    .clone()
                     .ok_or_else(|| "cannot resolve user home directory".to_string())?;
                 let exe = std::env::current_exe()
                     .map_err(|e| format!("resolve current executable: {e}"))?;
@@ -274,14 +317,17 @@ pub fn ensure_local_shim() -> Result<PathBuf, String> {
             std::fs::write(&launcher, script.as_bytes())
                 .map_err(|e| format!("write shim {}: {e}", launcher.display()))?;
             let _ = std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755));
-            log::info!("cli_setup: self-healed local shim at {}", launcher.display());
+            log::info!(
+                "cli_setup: self-healed local shim at {}",
+                launcher.display()
+            );
         }
         if !channel.starts_with("pr-") {
             let name = plexi_distribution::release::command_name(&channel);
             for shell in ["fish", "bash", "zsh"] {
-                for dropin in
-                    plexi_distribution::transaction::dropin_completion_paths(&name, shell)
-                {
+                for dropin in plexi_distribution::transaction::dropin_completion_paths(
+                    &name, shell, &env.dirs,
+                ) {
                     if !dropin.exists() && !dropin.is_symlink() {
                         if let Ok(bytes) = crate::cli::completions::render_completions(shell, &name)
                         {
@@ -298,15 +344,17 @@ pub fn ensure_local_shim() -> Result<PathBuf, String> {
     }
     #[cfg(not(unix))]
     {
-        if let Ok(Some(receipt)) = crate::distribution::installed() {
+        if let Some(receipt) = &env.receipt {
             let name = format!(
                 "{}.exe",
                 plexi_distribution::release::command_name(&receipt.channel)
             );
             return Ok(receipt.bin_dir.join(name));
         }
-        let home =
-            user_home_dir().ok_or_else(|| "cannot resolve user home directory".to_string())?;
+        let home = env
+            .home
+            .clone()
+            .ok_or_else(|| "cannot resolve user home directory".to_string())?;
         Ok(home.join(".local/bin").join(&cli))
     }
 }
@@ -314,8 +362,12 @@ pub fn ensure_local_shim() -> Result<PathBuf, String> {
 /// Explicitly set up the CLI shim, drop-in completions, and (when `modify_path`
 /// is true) shell rc files (`.zshrc`, `.bashrc`, `.profile`, `config.fish`).
 pub fn setup_external_shell(modify_path: bool) -> Result<CliSetupReport, String> {
+    setup_external_shell_in(&SetupEnv::from_process(), modify_path)
+}
+
+fn setup_external_shell_in(env: &SetupEnv, modify_path: bool) -> Result<CliSetupReport, String> {
     let cli = cli_name();
-    let shim_path = ensure_local_shim()?;
+    let shim_path = ensure_local_shim_in(env)?;
     let mut dropin_completions = Vec::new();
     #[cfg(unix)]
     {
@@ -323,9 +375,9 @@ pub fn setup_external_shell(modify_path: bool) -> Result<CliSetupReport, String>
         if !channel.starts_with("pr-") {
             let name = plexi_distribution::release::command_name(&channel);
             for shell in ["fish", "bash", "zsh"] {
-                for dropin in
-                    plexi_distribution::transaction::dropin_completion_paths(&name, shell)
-                {
+                for dropin in plexi_distribution::transaction::dropin_completion_paths(
+                    &name, shell, &env.dirs,
+                ) {
                     if let Ok(bytes) = crate::cli::completions::render_completions(shell, &name) {
                         if let Some(parent) = dropin.parent() {
                             let _ = std::fs::create_dir_all(parent);
@@ -341,7 +393,7 @@ pub fn setup_external_shell(modify_path: bool) -> Result<CliSetupReport, String>
     let mut modified_rc_files = Vec::new();
     #[cfg(unix)]
     if modify_path {
-        if let Ok(Some(receipt)) = crate::distribution::installed() {
+        if let Some(receipt) = &env.receipt {
             let updated = plexi_distribution::transaction::register_path(&receipt.root)
                 .map_err(|e| e.to_string())?;
             for edit in updated.path_edits {
@@ -350,8 +402,10 @@ pub fn setup_external_shell(modify_path: bool) -> Result<CliSetupReport, String>
                 }
             }
         } else {
-            let home =
-                user_home_dir().ok_or_else(|| "cannot resolve user home directory".to_string())?;
+            let home = env
+                .home
+                .clone()
+                .ok_or_else(|| "cannot resolve user home directory".to_string())?;
             let bin_dir = shim_path
                 .parent()
                 .map(Path::to_path_buf)
@@ -446,8 +500,7 @@ pub fn external_shell_status() -> serde_json::Value {
     let shim_exists = shim_path.is_file() || is_installed();
     let bin_dir = shim_path.parent().map(Path::to_path_buf);
     let in_path = bin_dir.as_ref().is_some_and(|dir| {
-        std::env::var_os("PATH")
-            .is_some_and(|path| std::env::split_paths(&path).any(|p| p == *dir))
+        std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|p| p == *dir))
     });
     let rc_configured = crate::distribution::installed()
         .ok()
@@ -501,32 +554,28 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn ensure_local_shim_and_explicit_setup_respect_zero_dotfile_default() {
-        let _env_lock = crate::cli::test_env::socket_env_guard();
         let tmp = tempfile::tempdir().expect("tempdir");
         let home = tmp.path().join("home");
         let xdg_data = tmp.path().join("xdg_data");
-        let dist_home = tmp.path().join("dist_home");
         let profile = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&xdg_data).unwrap();
-        std::fs::create_dir_all(&dist_home).unwrap();
         std::fs::create_dir_all(&profile).unwrap();
 
         let _profile_guard = crate::config::set_test_profile_dir(profile.clone());
         let _channel_guard = crate::config::set_test_channel("alpha");
 
-        let prev_home = std::env::var_os("HOME");
-        let prev_xdg = std::env::var_os("XDG_DATA_HOME");
-        let prev_dist = std::env::var_os("PLEXI_DISTRIBUTION_HOME");
-        // SAFETY: serialized via crate::cli::test_env::lock()
-        unsafe {
-            std::env::set_var("HOME", &home);
-            std::env::set_var("XDG_DATA_HOME", &xdg_data);
-            std::env::set_var("PLEXI_DISTRIBUTION_HOME", &dist_home);
-        }
+        let env = super::SetupEnv {
+            home: Some(home.clone()),
+            receipt: None,
+            dirs: plexi_distribution::transaction::UserDirs {
+                home: Some(home.clone()),
+                xdg_data: Some(xdg_data.clone()),
+            },
+        };
 
         // 1. Self-heal shim + drop-in completions must NOT touch .zshrc/.bashrc/.profile.
-        let shim = super::ensure_local_shim().expect("ensure_local_shim");
+        let shim = super::ensure_local_shim_in(&env).expect("ensure_local_shim");
         assert!(shim.is_file(), "local shim must be created at {shim:?}");
         assert!(
             xdg_data
@@ -548,32 +597,17 @@ mod tests {
         assert!(!home.join(".profile").exists());
 
         // 2. Explicit setup with modify_path=false keeps dotfiles untouched.
-        let report_no_rc = super::setup_external_shell(false).expect("setup without rc edits");
+        let report_no_rc =
+            super::setup_external_shell_in(&env, false).expect("setup without rc edits");
         assert!(!report_no_rc.path_modified);
         assert!(report_no_rc.modified_rc_files.is_empty());
         assert!(!home.join(".zshrc").exists());
 
         // 3. Explicit setup with modify_path=true writes the command path block to dotfiles.
-        let report_rc = super::setup_external_shell(true).expect("setup with rc edits");
+        let report_rc = super::setup_external_shell_in(&env, true).expect("setup with rc edits");
         assert!(report_rc.path_modified);
         assert!(!report_rc.modified_rc_files.is_empty());
         let zshrc = std::fs::read_to_string(home.join(".zshrc")).expect("zshrc written");
         assert!(zshrc.contains("# Plexi command path:"));
-
-        // Restore env
-        unsafe {
-            match prev_home {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-            match prev_xdg {
-                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-                None => std::env::remove_var("XDG_DATA_HOME"),
-            }
-            match prev_dist {
-                Some(v) => std::env::set_var("PLEXI_DISTRIBUTION_HOME", v),
-                None => std::env::remove_var("PLEXI_DISTRIBUTION_HOME"),
-            }
-        }
     }
 }

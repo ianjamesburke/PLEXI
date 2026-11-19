@@ -658,6 +658,8 @@ fn integration_files(package: &Package, receipt: &Receipt) -> Result<Vec<(PathBu
     let name = release::command_name(&receipt.channel);
     let mut files = Vec::new();
     #[cfg(unix)]
+    let user_dirs = UserDirs::from_env();
+    #[cfg(unix)]
     {
         let installer = package.root.join("plexi-installer");
         let script = format!(
@@ -670,7 +672,7 @@ fn integration_files(package: &Package, receipt: &Receipt) -> Result<Vec<(PathBu
             for shell in ["zsh", "bash", "fish"] {
                 let script = completion_script(&receipt.active.executable(), shell, &name)?;
                 files.push((completion_path(receipt, shell), script.clone()));
-                for dropin in dropin_completion_paths(&name, shell) {
+                for dropin in dropin_completion_paths(&name, shell, &user_dirs) {
                     let can_own = (!dropin.exists() && !dropin.is_symlink())
                         || receipt
                             .integrations
@@ -1262,12 +1264,35 @@ fn completion_path(receipt: &Receipt, shell: &str) -> PathBuf {
     receipt.root.join("completions").join(shell).join(file)
 }
 
+/// User directories that decide where drop-in completions live. Resolved
+/// once from the process environment by [`UserDirs::from_env`]; callers that
+/// must not read the environment (tests) construct it directly.
 #[cfg(unix)]
-pub fn dropin_completion_paths(name: &str, shell: &str) -> Vec<PathBuf> {
+#[derive(Debug, Clone, Default)]
+pub struct UserDirs {
+    pub home: Option<PathBuf>,
+    pub xdg_data: Option<PathBuf>,
+}
+
+#[cfg(unix)]
+impl UserDirs {
+    pub fn from_env() -> Self {
+        Self {
+            home: std::env::var_os("HOME")
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+                .or_else(dirs::home_dir),
+            xdg_data: xdg_data_dir(),
+        }
+    }
+}
+
+#[cfg(unix)]
+pub fn dropin_completion_paths(name: &str, shell: &str, dirs: &UserDirs) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     match shell {
         "fish" => {
-            if let Some(xdg) = xdg_data_dir() {
+            if let Some(xdg) = &dirs.xdg_data {
                 paths.push(
                     xdg.join("fish/vendor_completions.d")
                         .join(format!("{name}.fish")),
@@ -1275,16 +1300,12 @@ pub fn dropin_completion_paths(name: &str, shell: &str) -> Vec<PathBuf> {
             }
         }
         "bash" => {
-            if let Some(xdg) = xdg_data_dir() {
+            if let Some(xdg) = &dirs.xdg_data {
                 paths.push(xdg.join("bash-completion/completions").join(name));
             }
         }
         "zsh" => {
-            if let Some(home) = std::env::var_os("HOME")
-                .filter(|s| !s.is_empty())
-                .map(PathBuf::from)
-                .or_else(dirs::home_dir)
-            {
+            if let Some(home) = &dirs.home {
                 let zfunc = home.join(".zfunc");
                 if zfunc.is_dir() {
                     paths.push(zfunc.join(format!("_{name}")));
