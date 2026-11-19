@@ -131,10 +131,24 @@ fn run_git(
         .map_err(|error| plexi_distribution::bounded::git_error(&error))
 }
 
-/// A ref already present needs no fetch, so a fetch that failed or timed out
-/// (and was stopped) falls back to the local ref. A fetch that could not be
-/// stopped may still be writing the repository, and output that was cut is
-/// incomplete: both are fatal.
+/// Check out `git_ref` once its fetch has run.
+fn checkout_after_fetch(
+    fetched: Result<plexi_distribution::bounded::Output, plexi_distribution::bounded::RunError>,
+    repo_dir: &Path,
+    git_ref: &str,
+) -> Result<(), CheckoutError> {
+    fetch_or_fall_back(fetched, git_ref).map_err(CheckoutError::Fatal)?;
+    let checked_out = git_in(repo_dir)
+        .args(["checkout", git_ref])
+        .run(&format!("git checkout {git_ref}"), GIT_LOCAL_LIMIT);
+    checkout_outcome(checked_out)
+}
+
+/// A ref already present needs no fetch, so a fetch that exited non-zero
+/// (the remote has no such ref, or refused) falls back to the local ref.
+/// Every other failure is fatal: a fetch cut off at its limit or not stopped
+/// may have left the repository half-updated or still changing, and cut
+/// output is incomplete.
 fn fetch_or_fall_back(
     fetched: Result<plexi_distribution::bounded::Output, plexi_distribution::bounded::RunError>,
     git_ref: &str,
@@ -142,9 +156,7 @@ fn fetch_or_fall_back(
     use plexi_distribution::bounded::RunError;
     match fetched {
         Ok(_) => Ok(()),
-        Err(
-            error @ (RunError::Start { .. } | RunError::Failed { .. } | RunError::TimedOut { .. }),
-        ) => {
+        Err(error @ RunError::Failed { .. }) => {
             log::info!(
                 "install_host: {}; trying checkout of {git_ref} anyway",
                 plexi_distribution::bounded::git_error(&error)
@@ -190,17 +202,11 @@ impl Cloner for GitCloner {
     }
 
     fn checkout(&self, repo_dir: &Path, git_ref: &str) -> Result<(), CheckoutError> {
-        // For shallow clones we may need the ref fetched explicitly. A ref
-        // already present needs no fetch, so a failure here is not fatal;
-        // the checkout decides.
+        // For shallow clones we may need the ref fetched explicitly.
         let fetched = git_in(repo_dir)
             .args(["fetch", "--depth", "1", "origin", git_ref])
             .run(&format!("git fetch {git_ref}"), self.network_limit);
-        fetch_or_fall_back(fetched, git_ref).map_err(CheckoutError::Fatal)?;
-        let checked_out = git_in(repo_dir)
-            .args(["checkout", git_ref])
-            .run(&format!("git checkout {git_ref}"), GIT_LOCAL_LIMIT);
-        checkout_outcome(checked_out)
+        checkout_after_fetch(fetched, repo_dir, git_ref)
     }
 
     fn pull(&self, repo_dir: &Path) -> Result<(), String> {
@@ -1454,8 +1460,14 @@ mod install_tests {
     /// Stint 1610: a fetch that could not be stopped fails the checkout;
     /// an ordinary fetch failure falls back to the local ref.
     #[test]
-    fn an_unstopped_fetch_fails_the_checkout() {
+    fn only_a_refused_fetch_falls_back_to_the_local_ref() {
         use plexi_distribution::bounded::RunError;
+        let refused = Err(RunError::Failed {
+            what: "git fetch v1".into(),
+            status: std::process::ExitStatus::default(),
+            stderr: b"fatal: couldn't find remote ref v1".to_vec(),
+        });
+        assert!(fetch_or_fall_back(refused, "v1").is_ok());
         let unstopped = Err(RunError::NotStopped {
             what: "git fetch v1".into(),
             cause: "test".into(),
@@ -1467,7 +1479,7 @@ mod install_tests {
             stdout: Vec::new(),
             stderr: Vec::new(),
         });
-        assert!(fetch_or_fall_back(timed_out, "v1").is_ok());
+        assert!(fetch_or_fall_back(timed_out, "v1").is_err());
     }
 
     /// Stint 1610: a clone through the bounded runner still works end to end.
@@ -1838,6 +1850,44 @@ mod pack_tests {
         }
         let ok = outcomes.iter().find(|o| o.id == "ok").unwrap();
         assert!(matches!(ok.status, InstallStatus::Installed(_)));
+    }
+
+    /// Stint 1610: a pack entry whose version fetch timed out fails instead
+    /// of falling back to the default branch and reporting Installed. The
+    /// cloner clones like the mock and checks out through the production
+    /// path after a fetch that timed out.
+    #[test]
+    fn pack_apply_fails_an_entry_whose_fetch_timed_out() {
+        struct TimedOutFetch(MockCloner);
+        impl Cloner for TimedOutFetch {
+            fn clone(&self, url: &str, target_dir: &Path) -> Result<(), String> {
+                self.0.clone(url, target_dir)
+            }
+            fn checkout(&self, repo_dir: &Path, git_ref: &str) -> Result<(), CheckoutError> {
+                let timed_out = Err(plexi_distribution::bounded::RunError::TimedOut {
+                    what: format!("git fetch {git_ref}"),
+                    limit: Duration::from_secs(600),
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                });
+                checkout_after_fetch(timed_out, repo_dir, git_ref)
+            }
+            fn pull(&self, repo_dir: &Path) -> Result<(), String> {
+                self.0.pull(repo_dir)
+            }
+        }
+        let target = tempfile::tempdir().unwrap();
+        let cloner = TimedOutFetch(MockCloner::new());
+        let pack = pack_with(&[("slow", "github:owner/slow", "0.0.1")]);
+
+        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
+
+        assert!(
+            matches!(&outcomes[0].status, InstallStatus::Failed(msg) if msg.contains("did not finish within")),
+            "got {:?}",
+            outcomes[0].status
+        );
+        assert!(!target.path().join("slow").exists());
     }
 
     /// Stint 1610: a Python environment setup that could not be stopped
