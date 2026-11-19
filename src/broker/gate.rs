@@ -72,6 +72,23 @@ pub enum NeedsYouKind {
     AgentDone,
 }
 
+impl NeedsYouKind {
+    /// True when approving the item changes authority: it grants a call, a
+    /// widened permission, or a tool for a run. Such an item lives only in
+    /// the memory of the host session that filed it; a restore retires it
+    /// (stint 1624).
+    pub(crate) fn mints_authority(self) -> bool {
+        match self {
+            Self::ApprovalClick | Self::PermissionChange | Self::PermissionRequest => true,
+            Self::Question
+            | Self::BlockedRun
+            | Self::Integrity
+            | Self::Keychain
+            | Self::AgentDone => false,
+        }
+    }
+}
+
 /// Shown when saved permissions cannot load because the seal key is unreadable.
 pub(crate) const KEYCHAIN_ACCESS_SUMMARY: &str =
     "Plexi needs Keychain access to load or replace your local permission signing key (used to verify saved tool approvals and audit logs). Approve to unlock your saved permissions, or deny to start with a fresh signing key.";
@@ -357,6 +374,14 @@ pub struct NeedsYouReceipt {
 struct PendingWiden {
     entry_id: String,
     action: String,
+}
+
+/// What a restore installed: every id the journal held open, and the
+/// authority items among them, which the restore retires.
+#[derive(Default)]
+struct InstalledQueue {
+    open: std::collections::BTreeSet<String>,
+    retired: Vec<String>,
 }
 
 /// One row the Permissions plugin and `plexi permissions list` share.
@@ -1859,7 +1884,7 @@ impl PermissionMonitor {
             })
             .map(|row| row.id.clone())
             .collect();
-        self.retire_approvals_locked(ids);
+        self.retire_approvals_locked(ids, "requester_gone");
     }
 
     /// Retire these open approval asks without granting them: their requester
@@ -1879,22 +1904,28 @@ impl PermissionMonitor {
             })
             .map(|row| row.id.clone())
             .collect();
-        self.retire_approvals_locked(open);
+        self.retire_approvals_locked(open, "requester_gone");
     }
 
     /// Close each ask as retired, cancel its continuation, drop its pending
-    /// row and record a deny resolution. Callers hold the resolve and
-    /// decision locks.
-    fn retire_approvals_locked(&self, ids: Vec<String>) {
+    /// row and record a deny resolution. `reason` names why in the audit
+    /// (`retired:<reason>`). Callers hold the resolve and decision locks.
+    fn retire_approvals_locked(&self, ids: Vec<String>, reason: &str) {
+        if ids.is_empty() {
+            return;
+        }
+        let decision = format!("retired:{reason}");
         for id in ids {
             if !self.close_needs_you_as(
                 &id,
                 NeedsYouResolution::Retired,
-                "retired:requester_gone",
+                &decision,
                 "",
                 Some("host"),
             ) {
-                log::error!("needs_you: cancellation audit failed for {id} reason=requester_gone; failing closed");
+                log::error!(
+                    "needs_you: cancellation audit failed for {id} reason={reason}; failing closed"
+                );
                 self.dismiss_without_audit(&id, NeedsYouResolution::Retired);
             }
             self.update_continuation_on_needs_you(
@@ -1915,9 +1946,9 @@ impl PermissionMonitor {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(id.clone(), RunOutcome::AskGone);
-            self.persist_queue();
-            log::info!("needs_you: cancelled {id} reason=requester_gone");
+            log::info!("needs_you: cancelled {id} reason={reason}");
         }
+        self.persist_queue();
     }
 
     /// Return one `NeedsYouRecord` (open or resolved) by id.
@@ -3068,14 +3099,14 @@ impl PermissionMonitor {
                 return;
             }
         };
-        let mut gone = Vec::new();
+        let mut restored = InstalledQueue::default();
         match super::needs_you_store::load(&host, &profile) {
             super::needs_you_store::LoadedQueue::Empty => {
                 log::info!("needs_you: no persisted queue in {}", profile.display());
             }
             super::needs_you_store::LoadedQueue::Items(items) => {
                 let count = items.len();
-                gone = self.install_restored(items);
+                restored = self.install_restored(items);
                 log::info!(
                     "needs_you: restored {count} open items from {}",
                     profile.display()
@@ -3107,33 +3138,35 @@ impl PermissionMonitor {
                 }
             }
         }
-        self.restore_continuations(&host, &profile);
-        if !gone.is_empty() {
+        if !restored.retired.is_empty() {
             log::info!(
-                "needs_you: retiring {} restored plugin ask(s) whose guest ended with the previous host",
-                gone.len()
+                "needs_you: retired {} ask(s) from a previous host session",
+                restored.retired.len()
             );
             // Not under `needs_resolve`/`decision_lock`: the restore runs
             // before the monitor is shared or under the Keychain resolution
             // that holds `needs_resolve`, and these asks never got a pending
-            // row, so no decision can race their retirement.
-            self.retire_approvals_locked(gone);
+            // row, so no decision can race their retirement. It runs before
+            // the previous session's continuations load, so it changes none
+            // of them; `restore_continuations` settles those.
+            self.retire_approvals_locked(restored.retired.clone(), "host_restarted");
         }
+        self.restore_continuations(&host, &profile, &restored);
     }
 
-    fn restore_continuations(&self, host: &super::custody::HostProcess, profile: &Path) {
+    /// Load the previous session's continuations. `restored` names the ids
+    /// the journal held open and those this restore retired.
+    fn restore_continuations(
+        &self,
+        host: &super::custody::HostProcess,
+        profile: &Path,
+        restored: &InstalledQueue,
+    ) {
         let loaded = super::needs_you_store::load_continuations(host, profile);
         if loaded.is_empty() {
             return;
         }
-        let open_ids: std::collections::BTreeSet<String> = self
-            .needs_you
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
-            .filter(|row| row.resolution.is_none())
-            .map(|row| row.id.clone())
-            .collect();
+        let open_ids = &restored.open;
         let mut dirty = false;
         let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
         for mut record in loaded {
@@ -3151,6 +3184,18 @@ impl PermissionMonitor {
                     // the old process's waiter is gone, so require exact retry.
                     record.state = ContinuationState::Paused;
                     record.run_outcome = Some(RunOutcome::RetryRequired.as_str().to_string());
+                    dirty = true;
+                } else if record
+                    .needs_you_id
+                    .as_ref()
+                    .is_some_and(|ny_id| restored.retired.contains(ny_id))
+                {
+                    // Its ask was retired with the previous host.
+                    record.resolution = Some(NeedsYouResolution::Retired);
+                    record.run_outcome = Some(RunOutcome::AskGone.as_str().to_string());
+                    if record.state.is_in_flight() {
+                        record.state = ContinuationState::Canceled;
+                    }
                     dirty = true;
                 } else if record.state == ContinuationState::Paused
                     && matches!(
@@ -3182,17 +3227,13 @@ impl PermissionMonitor {
         }
     }
 
-    /// Install a restored queue. Returns the approval asks whose requester
-    /// is gone: a plugin ask bound to a pane from an earlier host session
-    /// (its guest ran in that host and ended with it, stint 1622). Those get
-    /// no pending row, so they can never be approved, even when their
-    /// retirement was not saved before the restart.
-    fn install_restored(&self, items: Vec<super::needs_you_store::RestoredItem>) -> Vec<String> {
-        let mut gone = Vec::new();
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+    /// Install a restored queue. Nothing read from disk creates a pending
+    /// row: an item whose approval changes authority is installed and listed
+    /// in `retired` for the caller to retire, whatever the journal says
+    /// (stint 1624). An id this session already holds is skipped, so a
+    /// reload never reopens what memory resolved.
+    fn install_restored(&self, items: Vec<super::needs_you_store::RestoredItem>) -> InstalledQueue {
+        let mut restored = InstalledQueue::default();
         let mut needs = self
             .needs_you
             .lock()
@@ -3202,21 +3243,12 @@ impl PermissionMonitor {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         for item in items {
-            if let (NeedsYouKind::ApprovalClick, Some(row)) = (item.kind, item.pending.clone()) {
-                if row.binding.actor_type == ActorType::Plugin
-                    && row.binding.instance_id.is_some()
-                    && item.origin_session != self.session_id
-                {
-                    gone.push(item.id.clone());
-                } else {
-                    pending.push(Pending {
-                        id: item.id.clone(),
-                        binding: row.binding,
-                        tool: row.tool,
-                        input_summary: row.input_summary,
-                        created_at: item.created_at,
-                    });
-                }
+            if needs.contains_key(&item.id) {
+                continue;
+            }
+            restored.open.insert(item.id.clone());
+            if item.kind.mints_authority() {
+                restored.retired.push(item.id.clone());
             }
             origins.insert(item.id.clone(), item.origin_session.clone());
             needs.insert(
@@ -3236,7 +3268,7 @@ impl PermissionMonitor {
                 },
             );
         }
-        gone
+        restored
     }
 
     fn file_integrity(&self, reason: &str) {
@@ -5682,10 +5714,10 @@ mod tests {
         assert_eq!(monitor.get_needs_you(&id).unwrap().resolution, None);
     }
 
-    /// Load retires an item whose entry is gone and keeps one whose entry
-    /// exists, so a load that dropped everything would fail too.
+    /// Stint 1624: load retires every widen item from disk, stale or live;
+    /// approving one changes authority, so none crosses a restart.
     #[test]
-    fn a_stale_permission_change_from_disk_is_retired_on_load() {
+    fn every_permission_change_from_disk_is_retired_on_load() {
         let dir = tempfile::tempdir().unwrap();
         let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         let (_, live) = widen_for_pending_ask(&monitor);
@@ -5707,14 +5739,21 @@ mod tests {
             .filter(|row| row.kind == NeedsYouKind::PermissionChange)
             .map(|row| row.id)
             .collect();
-        assert_eq!(open, [live], "stale {stale} retired, live item kept");
+        assert!(open.is_empty(), "{open:?}");
+        for id in [&live, &stale] {
+            assert_eq!(
+                restored.get_needs_you(id).and_then(|row| row.resolution),
+                Some(NeedsYouResolution::Retired)
+            );
+        }
     }
 
     /// The queue is restored before the grant store is (the Keychain reload
-    /// path): retirement must not run against the not-yet-loaded store. A
-    /// guard: it passes on alpha, which had no retirement.
+    /// path): the stale sweep must not run against the not-yet-loaded store.
+    /// The restored widen item is retired by the restart rule (stint 1624),
+    /// not by the sweep.
     #[test]
-    fn restoring_the_queue_against_an_empty_grant_store_retires_nothing() {
+    fn restoring_the_queue_against_an_empty_grant_store_retires_only_as_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         let Admission::Required { pending_request_id } =
@@ -5747,12 +5786,21 @@ mod tests {
             Some(host),
         );
         unloaded.restore_queue();
-        assert!(
+        assert_eq!(
             unloaded
-                .open_needs_you()
-                .iter()
-                .any(|row| row.id == needs_you_id),
-            "an item naming a stored denial must survive restoring before the grants load"
+                .get_needs_you(&needs_you_id)
+                .and_then(|row| row.resolution),
+            Some(NeedsYouResolution::Retired)
+        );
+        let decisions: Vec<String> = unloaded
+            .audit_records()
+            .into_iter()
+            .filter(|fact| fact.kind == "needs_you")
+            .map(|fact| fact.decision)
+            .collect();
+        assert!(
+            decisions.iter().all(|d| d == "retired:host_restarted"),
+            "only the restart rule closed anything: {decisions:?}"
         );
     }
 
@@ -5979,11 +6027,20 @@ mod tests {
         drop(monitor);
 
         let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
+        // Stint 1624: the old ask is gone; the exact retry is the revalidation.
+        assert_retired_at_restart(&restored, &pending_request_id);
         let record = restored.get_continuation("waiting-restart").unwrap();
         assert_eq!(record.state, ContinuationState::Paused);
         assert_eq!(record.run_outcome.as_deref(), Some("retry_required"));
+        let Admission::Required {
+            pending_request_id: renewed,
+        } = admit_of(&restored, &base, args)
+        else {
+            panic!("the exact retry asks again");
+        };
+        assert_ne!(renewed, pending_request_id);
         restored
-            .approve_pending(&pending_request_id, ApprovalChoice::Once)
+            .approve_pending(&renewed, ApprovalChoice::Once)
             .unwrap();
         assert!(matches!(
             admit_of(&restored, &base, args),
@@ -6668,10 +6725,301 @@ mod tests {
                 .is_err(),
             "a retired ask cannot be approved after restart"
         );
+        // Stint 1624: an agent ask never retired is not restored open either.
+        assert_retired_at_restart(&reopened, &agent_ask);
+    }
+
+    /// Stint 1624: what restore leaves of an authority item. "Not
+    /// approvable": no pending row, approval refused, closed as retired.
+    fn assert_retired_at_restart(monitor: &PermissionMonitor, id: &str) {
+        assert!(monitor.show_pending(id).is_none(), "{id}: no pending row");
         assert!(
-            reopened.show_pending(&agent_ask).is_some(),
-            "an agent ask is restored open"
+            monitor.approve_pending(id, ApprovalChoice::Always).is_err(),
+            "{id}: approval refused"
         );
+        assert_eq!(
+            monitor.get_needs_you(id).and_then(|row| row.resolution),
+            Some(NeedsYouResolution::Retired),
+            "{id}: closed as retired"
+        );
+    }
+
+    /// Fail every queue save, leaving audit and grants writable: the save
+    /// writes `needs-you.tmp` first, and a directory there cannot be opened.
+    fn block_queue_saves(profile: &Path) -> PathBuf {
+        let blocker =
+            crate::broker::needs_you_store::host_private_dir(profile).join("needs-you.tmp");
+        std::fs::create_dir_all(&blocker).unwrap();
+        blocker
+    }
+
+    fn queue_path(profile: &Path) -> PathBuf {
+        crate::broker::needs_you_store::host_private_dir(profile).join("needs-you.json")
+    }
+
+    /// Stint 1624, test first: an agent ask retired while the queue cannot
+    /// be saved is still open in the journal, and a reopened monitor still
+    /// restores it closed.
+    #[test]
+    fn a_retired_agent_ask_whose_save_failed_is_not_approvable_after_restart() {
+        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let Admission::Required {
+            pending_request_id: ask,
+        } = admit_of(&monitor, &binding("ignored"), r#"{"game_id":"game-1"}"#)
+        else {
+            panic!("the agent call asks");
+        };
+        let saved = std::fs::read(queue_path(dir.path())).unwrap();
+        {
+            let _unsealable =
+                crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
+            monitor.retire_requester_approvals(&[], Some(9));
+        }
+        assert_eq!(
+            std::fs::read(queue_path(dir.path())).unwrap(),
+            saved,
+            "the retirement was not saved"
+        );
+        assert!(monitor.approve_pending(&ask, ApprovalChoice::Once).is_err());
+        drop(monitor);
+
+        let reopened = PermissionMonitor::open_profile(dir.path()).unwrap();
+        assert_retired_at_restart(&reopened, &ask);
+        assert_eq!(needs_you_decisions(&reopened, "retired:host_restarted"), 1);
+    }
+
+    /// Stint 1624: no ask crosses a restart with its approve button, whoever
+    /// made it. None of these was retired or answered before the restart.
+    #[test]
+    fn no_ask_from_a_previous_session_is_approvable() {
+        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        seal_profile_grant(dir.path(), ws.path());
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let agent = pending_of(admit_of(
+            &monitor,
+            &binding("ignored"),
+            r#"{"game_id":"game-1"}"#,
+        ));
+        let send_args = r#"{"pane_id":42,"text_fingerprint":"hash","operation_id":"op-send"}"#;
+        let mut send = binding(&fingerprint_args(send_args).unwrap());
+        send.target_type = TargetType::Capability;
+        send.target_id = "pane.send".into();
+        send.call_id = "pane-send".into();
+        let pane_send = pending_of(admit_of(&monitor, &send, send_args));
+        let mut connector = binding("ignored");
+        connector.actor_type = ActorType::Plugin;
+        connector.actor_id = "probe".into();
+        let plugin_tool = pending_of(admit_of(&monitor, &connector, r#"{"game_id":"game-2"}"#));
+        let capability = pending_of(plugin_capability_admit(
+            &monitor,
+            ws.path(),
+            4,
+            r#"{"host_scope":"api.example","request":"fp-a"}"#,
+        ));
+        let cli_operation = pending_of(monitor.admit_cli_operation(
+            AdmitRequest {
+                call_id: "call-cli",
+                tool: "cli.op.mutate",
+                input_json: r#"{"cli_operation_id":"task.set","binding":"task.set#bind-1","values":{"priority":"p1"}}"#,
+                principal: &crate::broker::principal::Principal::plugin("board", Some(4)),
+                actor_scope: ActorScope::User,
+                trust_origin: "host",
+                workspace_root: ws.path(),
+                context_id: 9,
+                package_id: "pkg-a",
+                instance_id: 4,
+                target_type: TargetType::CliOperation,
+            },
+            "Board wants to run task.set",
+        ));
+        let asks = [agent, pane_send, plugin_tool, capability, cli_operation];
+        drop(monitor);
+
+        let reopened = PermissionMonitor::open_profile(dir.path()).unwrap();
+        for ask in &asks {
+            assert_retired_at_restart(&reopened, ask);
+        }
+        assert_eq!(
+            needs_you_decisions(&reopened, "retired:host_restarted"),
+            asks.len()
+        );
+    }
+
+    /// Stint 1624: a denial whose queue save failed does not come back open.
+    #[test]
+    fn a_denied_ask_whose_save_failed_is_not_approvable_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let ask = pending_of(admit_of(
+            &monitor,
+            &binding("ignored"),
+            r#"{"game_id":"game-1"}"#,
+        ));
+        let saved = std::fs::read(queue_path(dir.path())).unwrap();
+        let blocker = block_queue_saves(dir.path());
+        monitor.approve_pending(&ask, ApprovalChoice::Deny).unwrap();
+        assert_eq!(
+            std::fs::read(queue_path(dir.path())).unwrap(),
+            saved,
+            "the denial was not saved"
+        );
+        std::fs::remove_dir(&blocker).unwrap();
+        drop(monitor);
+
+        let reopened = PermissionMonitor::open_profile(dir.path()).unwrap();
+        assert_retired_at_restart(&reopened, &ask);
+    }
+
+    /// Stint 1624: putting back a journal copied while the ask was open
+    /// restores no approval.
+    #[test]
+    fn a_rolled_back_journal_restores_no_approval() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let ask = pending_of(admit_of(
+            &monitor,
+            &binding("ignored"),
+            r#"{"game_id":"game-1"}"#,
+        ));
+        let copy = std::fs::read(queue_path(dir.path())).unwrap();
+        monitor.approve_pending(&ask, ApprovalChoice::Deny).unwrap();
+        assert_ne!(std::fs::read(queue_path(dir.path())).unwrap(), copy);
+        drop(monitor);
+        std::fs::write(queue_path(dir.path()), &copy).unwrap();
+
+        let reopened = PermissionMonitor::open_profile(dir.path()).unwrap();
+        assert_retired_at_restart(&reopened, &ask);
+    }
+
+    /// Stint 1624: a start with a locked Keychain loads no queue; the unlock
+    /// restores the question and retires the ask, and the next start has
+    /// nothing approvable either.
+    #[test]
+    fn a_locked_keychain_start_then_unlock_restores_no_approval() {
+        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let ask;
+        {
+            seal_profile_grant(dir.path(), ws.path());
+            super::super::integrity::mark_clean_shutdown(dir.path());
+            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+            ask = pending_of(admit_of(
+                &monitor,
+                &binding("ignored"),
+                r#"{"game_id":"game-1"}"#,
+            ));
+            monitor
+                .file_needs_you(NeedsYouFile {
+                    kind: NeedsYouKind::Question,
+                    actor: "agent:test".to_string(),
+                    resource: "task-unlock".to_string(),
+                    summary: "Keep me across keychain prompt".to_string(),
+                    expires_at: None,
+                    run_tag: Some("q-unlock".to_string()),
+                })
+                .unwrap();
+            super::super::integrity::mark_clean_shutdown(dir.path());
+        }
+        {
+            let _denied =
+                crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
+            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+            assert!(
+                monitor.show_pending(&ask).is_none(),
+                "locked: nothing loaded"
+            );
+            let keychain_id = monitor
+                .open_needs_you()
+                .into_iter()
+                .find(|row| row.kind == NeedsYouKind::Keychain)
+                .expect("the Keychain item")
+                .id;
+            monitor
+                .resolve_needs_you(&keychain_id, true)
+                .expect("interactive unlock succeeds");
+            let open = monitor.open_needs_you();
+            assert!(
+                open.iter().any(|row| row.kind == NeedsYouKind::Question),
+                "the question is restored: {open:?}"
+            );
+            assert_retired_at_restart(&monitor, &ask);
+            super::super::integrity::mark_clean_shutdown(dir.path());
+        }
+        let reopened = PermissionMonitor::open_profile(dir.path()).unwrap();
+        assert!(reopened.show_pending(&ask).is_none());
+        assert!(reopened
+            .approve_pending(&ask, ApprovalChoice::Always)
+            .is_err());
+    }
+
+    /// Stint 1624: the Keychain reload restores the queue into a live
+    /// session; it must not reopen what this session already resolved, nor
+    /// touch what this session still holds open.
+    #[test]
+    fn a_keychain_reload_does_not_reopen_what_this_session_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let (ask, widen) = widen_for_pending_ask(&monitor);
+        let blocker = block_queue_saves(dir.path());
+        monitor
+            .resolve_needs_you_from(&widen, false, ResolveSurface::Desktop)
+            .unwrap();
+        std::fs::remove_dir(&blocker).unwrap();
+        monitor.restore_queue();
+        assert_eq!(
+            monitor.get_needs_you(&widen).and_then(|row| row.resolution),
+            Some(NeedsYouResolution::Denied)
+        );
+        assert!(
+            monitor.show_pending(&ask).is_some(),
+            "this session's own open ask keeps its pending row"
+        );
+    }
+
+    /// Stint 1624: an agent's widen request and a tool-for-this-run request
+    /// change authority when approved, so neither crosses a restart.
+    #[test]
+    fn no_widen_or_tool_request_from_a_previous_session_is_approvable() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let (_, widen) = widen_for_pending_ask(&monitor);
+        let tool_request = monitor
+            .file_needs_you(NeedsYouFile {
+                kind: NeedsYouKind::PermissionRequest,
+                actor: "agent:test".to_string(),
+                resource: "fs.write".to_string(),
+                summary: "Allow fs.write for this run".to_string(),
+                expires_at: None,
+                run_tag: Some("run-1".to_string()),
+            })
+            .unwrap();
+        drop(monitor);
+
+        let reopened = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let entries = reopened.list_entries();
+        for id in [&widen, &tool_request] {
+            assert_eq!(
+                reopened.get_needs_you(id).and_then(|row| row.resolution),
+                Some(NeedsYouResolution::Retired),
+                "{id}"
+            );
+            let approve = reopened.resolve_needs_you_from(id, true, ResolveSurface::Desktop);
+            assert!(
+                !matches!(&approve, Ok(receipt) if !receipt.already),
+                "{id}: {approve:?}"
+            );
+        }
+        assert_eq!(
+            reopened.list_entries(),
+            entries,
+            "nothing applied or minted"
+        );
+        assert_eq!(needs_you_decisions(&reopened, "retired:host_restarted"), 3);
     }
 
     /// Stint 1489: closing a pane retires its plugin asks.
@@ -7070,7 +7418,7 @@ mod tests {
     }
 
     #[test]
-    fn needs_you_survives_reload_and_reports_outcome_unknown() {
+    fn a_restart_keeps_a_blocked_run_and_retires_the_approval() {
         let dir = tempfile::tempdir().unwrap();
         let monitor = PermissionMonitor::for_profile(dir.path()).unwrap();
         let args = r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-persist"}"#;
@@ -7092,30 +7440,28 @@ mod tests {
         drop(monitor);
         let restored = PermissionMonitor::reload_for_test(dir.path());
         let open = restored.list_needs_you();
-        assert!(
-            open.iter().any(|row| row.id == pending_request_id),
-            "pending id must survive restart: {open:?}"
-        );
         assert!(open.iter().any(|row| row.id == blocked), "{open:?}");
-        let receipt = restored
-            .resolve_needs_you(&pending_request_id, true)
-            .unwrap();
-        assert!(!receipt.already);
-        assert_eq!(receipt.resolution, NeedsYouResolution::Approved);
-        assert_eq!(receipt.run_outcome, RunOutcome::OutcomeUnknown);
+        // Stint 1624: the approval does not cross the restart; its exact
+        // request asks again.
+        assert!(
+            open.iter().all(|row| row.id != pending_request_id),
+            "{open:?}"
+        );
+        assert_retired_at_restart(&restored, &pending_request_id);
         assert!(
             restored
-                .list_needs_you()
-                .iter()
-                .all(|row| row.id != pending_request_id),
-            "resolving must close the item"
+                .resolve_needs_you(&pending_request_id, true)
+                .unwrap()
+                .already
         );
-        assert_eq!(needs_you_decisions(&restored, "outcome_unknown"), 1);
         let mut retry = base.clone();
         retry.session_id = Some(restored.session_id().to_string());
         assert!(
-            matches!(admit_of(&restored, &retry, args), Admission::Proceed { .. }),
-            "the exact request is unblocked by the restored approval"
+            matches!(
+                admit_of(&restored, &retry, args),
+                Admission::Required { .. }
+            ),
+            "the exact request asks again"
         );
         let question = restored.resolve_needs_you(&blocked, true).unwrap();
         assert_eq!(question.run_outcome, RunOutcome::OutcomeUnknown);
