@@ -24,6 +24,17 @@ resources = ["sdk/python/plexi_sdk"]
 name = "plexi"
 path = "src/main.rs"
 
+[features]
+# Test-only build boundary (stint 1635). Lets the user-secret keychain
+# backend read PLEXI_TEST_KEYCHAIN_SEARCH / PLEXI_TEST_KEYCHAIN_DEFAULT so the
+# real-binary test can order several private files. Release builds never
+# enable it: `cargo test --features keychain-fixture --test macos_keychain_removal`.
+keychain-fixture = []
+
+[[test]]
+name = "macos_keychain_removal"
+required-features = ["keychain-fixture"]
+
 [dependencies]
 tempfile = "3"
 trash = "5"

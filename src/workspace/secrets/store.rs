@@ -168,45 +168,71 @@ fn keychain_error_message(stage: KeychainStage, status: i32) -> String {
     }
 }
 
-/// `PLEXI_KEYCHAIN_PATH` is a test hook for the installed-binary e2e. It is
-/// not a user setting. Unset or empty keeps the process on the user's search
-/// list. Set, it names one or more files (`:`-separated, in search order)
-/// that form the whole domain; `PLEXI_KEYCHAIN_DEFAULT_PATH` optionally names
-/// the file new items go to, which may be outside that list, and defaults to
-/// the first. Each file is created with `SecKeychainCreate` when missing,
-/// then opened and unlocked. None of those calls change the user search list
-/// or the default keychain. `PLEXI_KEYCHAIN_PASSWORD` is required with the
-/// path so unlock never prompts.
+/// Which keychains the user-secret backend uses.
+///
+/// `PLEXI_KEYCHAIN_PATH` is the installed-binary e2e hook. It is not a user
+/// setting. Set and non-empty, it names one literal file, read exactly as
+/// `broker::host_key` reads it, that is both the whole search domain and the
+/// destination for new items. Unset or empty keeps the process on the user's
+/// search list. The file is created with `SecKeychainCreate` when missing,
+/// then opened and unlocked; none of those calls change the user's search
+/// list or default keychain. `PLEXI_KEYCHAIN_PASSWORD` is required with it
+/// so unlock never prompts.
+///
+/// Only a build with the `keychain-fixture` feature (the real-binary
+/// keychain test) also reads `PLEXI_TEST_KEYCHAIN_SEARCH`, a platform path
+/// list of files in search order, and `PLEXI_TEST_KEYCHAIN_DEFAULT`, the
+/// destination for new items (default: the first). A release build never
+/// reads them; see [`fixture_selection`].
 #[cfg(any(test, target_os = "macos"))]
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum KeychainPathChoice {
-    Default,
-    Explicit {
+    SearchList,
+    File(std::path::PathBuf),
+    Fixture {
         search: Vec<std::path::PathBuf>,
         default: std::path::PathBuf,
     },
 }
 
+/// The fixture variables, read only in a `keychain-fixture` build.
 #[cfg(any(test, target_os = "macos"))]
-pub(super) fn keychain_path_override(
-    value: Option<&std::ffi::OsStr>,
-    default: Option<&std::ffi::OsStr>,
-) -> KeychainPathChoice {
-    let search: Vec<std::path::PathBuf> = value
-        .map(|raw| {
-            std::env::split_paths(raw)
-                .filter(|path| !path.as_os_str().is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
+pub(super) fn fixture_selection() -> Option<(std::ffi::OsString, Option<std::ffi::OsString>)> {
+    #[cfg(feature = "keychain-fixture")]
+    {
+        std::env::var_os("PLEXI_TEST_KEYCHAIN_SEARCH")
+            .map(|search| (search, std::env::var_os("PLEXI_TEST_KEYCHAIN_DEFAULT")))
+    }
+    #[cfg(not(feature = "keychain-fixture"))]
+    {
+        None
+    }
+}
+
+#[cfg(any(test, target_os = "macos"))]
+pub(super) fn keychain_path_choice(
+    path: Option<&std::ffi::OsStr>,
+    fixture: Option<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)>,
+) -> Result<KeychainPathChoice, &'static str> {
+    let file = path
+        .filter(|raw| !raw.is_empty())
+        .map(std::path::PathBuf::from);
+    let Some((search, default)) = fixture else {
+        return Ok(file.map_or(KeychainPathChoice::SearchList, KeychainPathChoice::File));
+    };
+    if file.is_none() {
+        return Err("PLEXI_TEST_KEYCHAIN_SEARCH requires PLEXI_KEYCHAIN_PATH, so the host seal key stays in a test file");
+    }
+    let search: Vec<std::path::PathBuf> = std::env::split_paths(search)
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect();
     let Some(first) = search.first().cloned() else {
-        return KeychainPathChoice::Default;
+        return Err("PLEXI_TEST_KEYCHAIN_SEARCH names no file");
     };
     let default = default
         .filter(|raw| !raw.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or(first);
-    KeychainPathChoice::Explicit { search, default }
+        .map_or(first, std::path::PathBuf::from);
+    Ok(KeychainPathChoice::Fixture { search, default })
 }
 
 /// `PLEXI_KEYCHAIN_PASSWORD` must be non-empty whenever the path hook is set.
@@ -333,60 +359,14 @@ impl NonDestructiveStore for MacKeychain {
             .collect()
     }
 
-    /// Attributes-only on the search list: the query asks for
-    /// `kSecReturnAttributes` and never `kSecReturnData`. An explicit test
-    /// keychain is not on the search list, so accounts the index already
-    /// names are confirmed with the reference-only selector.
+    /// Attributes-only on the search list, after turning Keychain UI off;
+    /// an explicit file confirms indexed names by reference only.
     fn scan_accounts(&self) -> Result<Vec<String>, SecretError> {
-        use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
-
         let _lock = keychain_call_lock();
-        let explicit = !matches!(
-            keychain_path_override(
-                std::env::var_os("PLEXI_KEYCHAIN_PATH").as_deref(),
-                std::env::var_os("PLEXI_KEYCHAIN_DEFAULT_PATH").as_deref(),
-            ),
-            KeychainPathChoice::Default
-        );
-        let mut accounts = Vec::new();
-        if !explicit {
-            let mut search = ItemSearchOptions::new();
-            search
-                .class(ItemClass::generic_password())
-                .service(KEYCHAIN_SERVICE)
-                .load_attributes(true)
-                .limit(Limit::All);
-            match search.search() {
-                Ok(results) => {
-                    for result in &results {
-                        match result.simplify_dict().and_then(|d| d.get("acct").cloned()) {
-                            Some(account) => accounts.push(account),
-                            None => log::warn!(
-                                "workspace_secrets::scan: keychain item under service '{KEYCHAIN_SERVICE}' \
-                                 has no account attribute; skipping"
-                            ),
-                        }
-                    }
-                }
-                // errSecItemNotFound — no Plexi secrets stored yet.
-                Err(error) if error.code() == -25300 => {}
-                Err(error) => {
-                    return Err(SecretError::Keychain {
-                        stage: KeychainStage::Select,
-                        status: error.code(),
-                    })
-                }
-            }
-        } else {
-            for account in super::index::index_read() {
-                if super::mac_keychain::selectable(
-                    &super::mac_keychain::SecurityFramework,
-                    &account,
-                )? {
-                    accounts.push(account);
-                }
-            }
-        }
+        let accounts = super::mac_keychain::scan(
+            &super::mac_keychain::SecurityFramework,
+            &super::index::index_read(),
+        )?;
         log::info!(
             "workspace_secrets::scan: found {} keychain item(s) under service '{KEYCHAIN_SERVICE}'",
             accounts.len()
@@ -922,37 +902,60 @@ mod tests {
     }
 
     #[test]
-    fn empty_keychain_path_stays_on_the_default_keychain() {
+    fn keychain_path_hook_is_one_literal_file() {
         use std::ffi::OsStr;
         use std::path::PathBuf;
         assert_eq!(
-            keychain_path_override(None, None),
-            KeychainPathChoice::Default
+            keychain_path_choice(None, None),
+            Ok(KeychainPathChoice::SearchList)
         );
         assert_eq!(
-            keychain_path_override(Some(OsStr::new("")), Some(OsStr::new("/tmp/d"))),
-            KeychainPathChoice::Default
+            keychain_path_choice(Some(OsStr::new("")), None),
+            Ok(KeychainPathChoice::SearchList)
         );
+        // Read exactly as broker::host_key reads it: never split.
+        let joined = std::env::join_paths(["/tmp/a.keychain-db", "/tmp/b.keychain-db"]).unwrap();
         assert_eq!(
-            keychain_path_override(Some(OsStr::new("/tmp/test.keychain-db")), None),
-            KeychainPathChoice::Explicit {
-                search: vec![PathBuf::from("/tmp/test.keychain-db")],
-                default: PathBuf::from("/tmp/test.keychain-db"),
-            }
-        );
-        assert_eq!(
-            keychain_path_override(
-                Some(OsStr::new("/tmp/a:/tmp/b")),
-                Some(OsStr::new("/tmp/c"))
-            ),
-            KeychainPathChoice::Explicit {
-                search: vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")],
-                default: PathBuf::from("/tmp/c"),
-            }
+            keychain_path_choice(Some(&joined), None),
+            Ok(KeychainPathChoice::File(PathBuf::from(&joined)))
         );
         assert!(explicit_keychain_password(None).is_err());
         assert!(explicit_keychain_password(Some("")).is_err());
         assert_eq!(explicit_keychain_password(Some("pw")).unwrap(), "pw");
+    }
+
+    #[test]
+    fn fixture_selection_is_ordered_and_needs_a_host_seal_file() {
+        use std::ffi::OsStr;
+        use std::path::PathBuf;
+        let search = std::env::join_paths(["/tmp/a", "/tmp/b"]).unwrap();
+        let host = Some(OsStr::new("/tmp/host"));
+        assert_eq!(
+            keychain_path_choice(host, Some((&search, Some(OsStr::new("/tmp/c"))))),
+            Ok(KeychainPathChoice::Fixture {
+                search: vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")],
+                default: PathBuf::from("/tmp/c"),
+            })
+        );
+        assert_eq!(
+            keychain_path_choice(host, Some((&search, None))),
+            Ok(KeychainPathChoice::Fixture {
+                search: vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")],
+                default: PathBuf::from("/tmp/a"),
+            })
+        );
+        assert!(keychain_path_choice(None, Some((&search, None))).is_err());
+        assert!(keychain_path_choice(host, Some((OsStr::new(""), None))).is_err());
+    }
+
+    /// A release build never reads the fixture variables.
+    #[cfg(not(feature = "keychain-fixture"))]
+    #[test]
+    fn release_build_ignores_fixture_variables() {
+        std::env::set_var("PLEXI_TEST_KEYCHAIN_SEARCH", "/tmp/t1635-fixture");
+        let selected = fixture_selection();
+        std::env::remove_var("PLEXI_TEST_KEYCHAIN_SEARCH");
+        assert_eq!(selected, None);
     }
 
     #[test]
