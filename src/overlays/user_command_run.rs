@@ -33,36 +33,92 @@ pub(crate) struct ShellStep {
     started: std::time::Instant,
 }
 
-/// Start `sh -c <script>` on a worker thread. The worker sends the exit code
-/// and wakes the host; a launch failure is logged and reported as exit 1.
+/// Start `sh -c <script>` as a helper waited for on a worker thread. The
+/// step is the user's own command and runs off `App::logic`, so it has no
+/// wall-clock limit (`Deadline::HostSession`): a long build or server step
+/// runs until it exits. It belongs to the host session instead: it is
+/// registered as a pane process group and carries the host's session
+/// marker, so quitting the host kills it and everything it started, as it
+/// does pane processes. The worker sends the exit code and wakes the host;
+/// a launch failure, a kill or a step that could not be stopped is logged
+/// and reported as a non-zero exit.
 pub(crate) fn spawn_shell_step(
     script: &str,
     cwd: Option<&Path>,
     pane_id: Option<u64>,
     wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
 ) -> HostStepOutcome {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "baseline: a user shell step runs off the loop with no limit yet, stint 1626"
-    )]
-    let mut command = std::process::Command::new("sh");
-    command.arg("-c").arg(script);
+    spawn_marked_shell_step(
+        script,
+        cwd,
+        pane_id,
+        crate::host::process_cleanup::session_marker(),
+        crate::host::process_cleanup::PaneProcessGroup::record,
+        wake,
+    )
+}
+
+fn spawn_marked_shell_step(
+    script: &str,
+    cwd: Option<&Path>,
+    pane_id: Option<u64>,
+    marker: &str,
+    register: impl FnOnce(u32) -> crate::host::process_cleanup::PaneProcessGroup,
+    wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
+) -> HostStepOutcome {
+    let command_chars = script.chars().count();
+    let mut helper = plexi_distribution::bounded::Helper::new("sh");
+    helper
+        .arg("-c")
+        .arg(script)
+        .env(crate::host::process_cleanup::SESSION_ENV, marker)
+        // No one reads a step's output; its size must not fail the step.
+        .stdout(plexi_distribution::bounded::OutputPolicy::Discard)
+        .stderr(plexi_distribution::bounded::OutputPolicy::Discard);
     if let Some(root) = cwd {
-        command.current_dir(root);
+        helper.current_dir(root);
     }
     if let Some(pid) = pane_id {
-        command.env("PLEXI_PANE_ID", pid.to_string());
+        helper.env("PLEXI_PANE_ID", pid.to_string());
     }
-    let command_chars = script.chars().count();
+    let started = match helper.start("user command shell step") {
+        Ok(started) => started,
+        Err(e) => {
+            log::error!("user_command: shell step failed command_chars={command_chars} error={e}");
+            return HostStepOutcome::Exited(1);
+        }
+    };
+    let pid = started.id();
+    log::info!("user_command: shell step started pid={pid} command_chars={command_chars}");
+    // Held until the step ends; quit cleanup stops every registered group.
+    let registration = register(pid);
     let (tx, exit) = mpsc::channel();
+    // A thread that fails to start drops `started`, which stops the step.
     let spawned = std::thread::Builder::new()
         .name("user-command-step".to_string())
         .spawn(move || {
-            let code = match command.status() {
-                Ok(status) => status.code().unwrap_or(1),
+            let waited = started.wait_for(plexi_distribution::bounded::Deadline::HostSession);
+            drop(registration);
+            let code = match waited {
+                Ok(exited) => match exited.status.code() {
+                    Some(code) => {
+                        log::info!("user_command: shell step exited pid={pid} code={code}");
+                        code
+                    }
+                    None => {
+                        #[cfg(unix)]
+                        let signal = std::os::unix::process::ExitStatusExt::signal(&exited.status);
+                        #[cfg(not(unix))]
+                        let signal: Option<i32> = None;
+                        log::info!(
+                            "user_command: shell step killed pid={pid} signal={signal:?}"
+                        );
+                        1
+                    }
+                },
                 Err(e) => {
                     log::error!(
-                        "user_command: shell step failed command_chars={command_chars} error={e}"
+                        "user_command: shell step failed pid={pid} command_chars={command_chars} error={e}"
                     );
                     1
                 }
@@ -337,5 +393,101 @@ impl PlexiApp {
                 }),
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::host::process_cleanup::PaneProcessGroup;
+    use std::time::{Duration, Instant};
+
+    fn recv(outcome: HostStepOutcome, within: Duration) -> Option<i32> {
+        let HostStepOutcome::Running(step) = outcome else {
+            panic!("the shell step did not start");
+        };
+        step.exit.recv_timeout(within).ok()
+    }
+
+    fn wake() -> std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> {
+        std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new())
+    }
+
+    /// Stint 1626: host quit cleanup finds a running shell step by the host's
+    /// session marker and kills it with what it started; the step then
+    /// reports failure instead of running on after the host.
+    #[test]
+    fn host_quit_cleanup_kills_a_running_shell_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let (step_pid, sleeper) = (dir.path().join("step"), dir.path().join("sleeper"));
+        let marker = uuid::Uuid::new_v4().to_string();
+        let script = format!(
+            "echo $$ > '{}'; sleep 600 & echo $! > '{}'; wait",
+            step_pid.display(),
+            sleeper.display()
+        );
+        let outcome = spawn_marked_shell_step(
+            &script,
+            None,
+            None,
+            &marker,
+            |pid| PaneProcessGroup::record_for(pid, &marker),
+            wake(),
+        );
+        let read_pid = |path: &Path| -> i32 {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Ok(text) = std::fs::read_to_string(path) {
+                    if let Ok(pid) = text.trim().parse() {
+                        return pid;
+                    }
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "{} never written",
+                    path.display()
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let (step_pid, sleeper) = (read_pid(&step_pid), read_pid(&sleeper));
+        crate::host::process_cleanup::stop_pane_processes_for_marker(
+            &marker,
+            Duration::from_millis(200),
+        );
+        let code = recv(outcome, Duration::from_secs(10));
+        // SAFETY: kill(pid, 0) only probes; SIGKILL cleans up test processes.
+        let alive = |pid: i32| unsafe { libc::kill(pid, 0) } == 0;
+        let gone_by = Instant::now() + Duration::from_secs(3);
+        while (alive(step_pid) || alive(sleeper)) && Instant::now() < gone_by {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let survivors: Vec<i32> = [step_pid, sleeper]
+            .into_iter()
+            .filter(|&p| alive(p))
+            .collect();
+        for &pid in &survivors {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        assert!(survivors.is_empty(), "outlived host quit: {survivors:?}");
+        assert!(matches!(code, Some(c) if c != 0), "step reported {code:?}");
+    }
+
+    /// A step's exit code, its working directory and pane id reach the run.
+    #[test]
+    fn a_shell_step_reports_its_exit_code_in_its_cwd() {
+        let marker = uuid::Uuid::new_v4().to_string();
+        let dir = tempfile::tempdir().unwrap();
+        let script = "test \"$PLEXI_PANE_ID\" = 7 && test -f here && exit 3";
+        std::fs::write(dir.path().join("here"), "").unwrap();
+        let outcome = spawn_marked_shell_step(
+            script,
+            Some(dir.path()),
+            Some(7),
+            &marker,
+            |pid| PaneProcessGroup::record_for(pid, &marker),
+            wake(),
+        );
+        assert_eq!(recv(outcome, Duration::from_secs(10)), Some(3));
     }
 }

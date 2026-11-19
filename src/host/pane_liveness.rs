@@ -70,26 +70,31 @@ pub(crate) fn pid_is_alive(pid: u32) -> bool {
     }
 }
 
+/// How long `pgrep -P` gets before the inventory is reported empty. The
+/// liveness RPC is served on the host loop, so a hung pgrep must not hold it.
+const PGREP_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Direct children of `pid`, via `pgrep -P` — never `proc_listchildpids`,
 /// which returns `EFAULT` on macOS 23.x/Sonoma (root `AGENTS.md` Traps).
-/// `pgrep` exits 1 with empty stdout when there are no children; that is
-/// not a failure, just an empty inventory.
 fn child_pids_via_pgrep(pid: u32) -> Vec<u32> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "baseline: unbounded helper, stint 1610 slice 2"
-    )]
-    let output = std::process::Command::new("pgrep")
+    child_pids_with("pgrep", pid, PGREP_LIMIT)
+}
+
+/// `pgrep` exits 1 with empty stdout when there are no children; that is
+/// not a failure, just an empty inventory. A read-only probe, so any error
+/// degrades to an empty inventory.
+fn child_pids_with(pgrep: &str, pid: u32, limit: std::time::Duration) -> Vec<u32> {
+    let run = plexi_distribution::bounded::Helper::new(pgrep)
         .arg("-P")
         .arg(pid.to_string())
-        .output();
-    match output {
-        Ok(out) => String::from_utf8_lossy(&out.stdout)
+        .run_any_exit("pgrep -P", limit);
+    match run {
+        Ok(exited) => String::from_utf8_lossy(&exited.output.stdout)
             .lines()
             .filter_map(|line| line.trim().parse::<u32>().ok())
             .collect(),
         Err(error) => {
-            log::warn!("pane_liveness: pgrep -P {pid} failed to spawn: {error}");
+            log::warn!("pane_liveness: pgrep -P {pid} failed: {error}");
             Vec::new()
         }
     }
@@ -259,6 +264,44 @@ pub fn compute(pane: &Pane, stale_after_secs: Option<u64>) -> serde_json::Value 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stint 1626: a pgrep that hangs is stopped at its limit and the
+    /// inventory comes back empty, instead of holding the host loop.
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_pgrep_returns_an_empty_inventory_at_its_limit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("pgrep");
+        std::fs::write(&fake, "#!/bin/sh\nsleep 5\necho 4242\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        let pids = child_pids_with(
+            fake.to_str().unwrap(),
+            std::process::id(),
+            std::time::Duration::from_millis(300),
+        );
+        assert!(pids.is_empty(), "{pids:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(4),
+            "hung pgrep held the caller for {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The real pgrep still lists a direct child.
+    #[cfg(unix)]
+    #[test]
+    fn pgrep_lists_a_direct_child() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pids = child_pids_via_pgrep(std::process::id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(pids.contains(&child.id()), "{pids:?} lacks {}", child.id());
+    }
 
     #[test]
     fn stale_claim_absent_without_a_window() {

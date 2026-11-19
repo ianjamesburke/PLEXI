@@ -9,10 +9,10 @@
 //! pair against a human-observed terminal. `host.terminals.*` remains only
 //! for genuinely user-facing terminal work.
 
-use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+use plexi_distribution::bounded::{Helper, Output, RunError};
 
 use crate::platform::text;
 
@@ -23,13 +23,6 @@ pub(crate) const MAX_BUILD_TIMEOUT_MS: u64 = 300_000;
 /// Per-stream capture cap. Longer output keeps the head and tail with an
 /// elision marker, the shape a model can still reason about.
 const MAX_STREAM_CHARS: usize = 16_384;
-
-/// How long to wait for the stream readers after the child is reaped. A
-/// grandchild that inherited the pipes (e.g. a python validator spawned by
-/// `plexi plugin check`) can hold them open past the child's death; the drain
-/// bound guarantees `run_build_command` always returns so the broker worker
-/// blocked on the tool reply can never wedge.
-const STREAM_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Result of one embedded build command.
 #[derive(Debug)]
@@ -66,12 +59,12 @@ pub(crate) fn validate_build_args(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Run `exe args…` from `cwd` with no visible surface: stdin closed, both
-/// output streams captured on reader threads (so a chatty command can never
-/// deadlock the pipe), and a hard kill once `timeout` elapses. On Unix the
-/// child gets its own process group so the timeout kill reaches grandchildren
-/// (uv/python spawned by `plexi plugin check`) — killing only the direct child
-/// would leave them running and holding the pipes open.
+/// Run `exe args…` from `cwd` with no visible surface, as a bounded helper:
+/// stdin closed, both streams captured whole, and the child's whole session
+/// (uv/python spawned by `plexi plugin check`) killed when it exits or at
+/// `timeout`. A timeout is reported to the model with what was written so
+/// far; a run that could not be stopped, or whose output is incomplete, is
+/// an error.
 pub(crate) fn run_build_command(
     exe: &Path,
     args: &[String],
@@ -79,78 +72,25 @@ pub(crate) fn run_build_command(
     timeout: Duration,
 ) -> Result<BuildCommandOutput, String> {
     let started = Instant::now();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "baseline: unbounded helper, stint 1610 slice 2"
-    )]
-    let mut command = Command::new(exe);
-    command
+    let what = format!("plexi {}", args.join(" "));
+    let run = Helper::new(exe)
         .args(args)
         .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let mut child = command.spawn().map_err(|error| {
-        format!(
-            "spawn_failed: {} {}: {error}",
-            exe.display(),
-            args.join(" ")
-        )
-    })?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "spawn_failed: child stdout was not piped".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "spawn_failed: child stderr was not piped".to_string())?;
-    let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
-    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = stdout_tx.send(read_stream(stdout));
-    });
-    std::thread::spawn(move || {
-        let _ = stderr_tx.send(read_stream(stderr));
-    });
-
-    let mut timed_out = false;
-    let exit_code = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.code(),
-            Ok(None) => {
-                if started.elapsed() >= timeout {
-                    timed_out = true;
-                    kill_child_tree(&mut child);
-                    // Reap the killed child so the readers see EOF.
-                    break child.wait().ok().and_then(|status| status.code());
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err(error) => {
-                return Err(format!("wait_failed: {error}"));
-            }
+        .run_any_exit(&what, timeout);
+    let (exit_code, output, timed_out) = match run {
+        Ok(exited) => (exited.status.code(), exited.output, false),
+        Err(RunError::TimedOut { stdout, stderr, .. }) => (None, Output { stdout, stderr }, true),
+        Err(error @ RunError::Start { .. }) => {
+            return Err(format!(
+                "spawn_failed: {} {}: {error}",
+                exe.display(),
+                args.join(" ")
+            ));
         }
+        Err(error) => return Err(format!("run_failed: {error}")),
     };
-
-    // Bounded drain: a pipe-inheriting grandchild that survived the kill (or
-    // a reader panic) must degrade to a marked partial capture, never a hang.
-    let drain = |rx: std::sync::mpsc::Receiver<String>, name: &str| {
-        rx.recv_timeout(STREAM_DRAIN_TIMEOUT).unwrap_or_else(|_| {
-            log::warn!(
-                "assistant build_exec: {name} capture incomplete — a child process is still holding the pipe"
-            );
-            format!("[{name} capture incomplete: a child process is still holding the pipe]")
-        })
-    };
-    let stdout = drain(stdout_rx, "stdout");
-    let stderr = drain(stderr_rx, "stderr");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     Ok(BuildCommandOutput {
         exit_code,
         stdout: text::head_tail(&stdout, MAX_STREAM_CHARS, text::Style::Block),
@@ -158,32 +98,6 @@ pub(crate) fn run_build_command(
         timed_out,
         duration_ms: started.elapsed().as_millis() as u64,
     })
-}
-
-/// Kill the child and, on Unix, its whole process group (enabled by the
-/// `process_group(0)` spawn above) so grandchildren die with it.
-fn kill_child_tree(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    {
-        let pgid = child.id() as libc::pid_t;
-        // Negative pid targets the process group. The child is its own group
-        // leader, so pgid == child pid.
-        if unsafe { libc::kill(-pgid, libc::SIGKILL) } == 0 {
-            return;
-        }
-        log::warn!("assistant build_exec: process-group kill failed; killing direct child only");
-    }
-    if let Err(error) = child.kill() {
-        log::warn!("assistant build_exec: kill after timeout failed: {error}");
-    }
-}
-
-fn read_stream(mut stream: impl Read) -> String {
-    let mut buffer = Vec::new();
-    if let Err(error) = stream.read_to_end(&mut buffer) {
-        log::warn!("assistant build_exec: stream read failed: {error}");
-    }
-    String::from_utf8_lossy(&buffer).into_owned()
 }
 
 #[cfg(test)]
@@ -259,6 +173,47 @@ mod tests {
             "capture must not wait for the grandchild: {:?}",
             started.elapsed()
         );
+    }
+
+    /// Stint 1626: a command that exits while a grandchild still holds its
+    /// output returns at once with the whole capture, and the grandchild dies
+    /// with it. The old runner waited out a drain bound and returned an
+    /// "incomplete" marker instead of the output.
+    #[cfg(unix)]
+    #[test]
+    fn an_exit_with_a_pipe_holding_grandchild_returns_whole_output_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let sleeper = dir.path().join("sleeper");
+        let started = std::time::Instant::now();
+        let out = run_build_command(
+            &PathBuf::from("/bin/sh"),
+            &args(&[
+                "-c",
+                &format!("sleep 30 & echo $! > '{}'; echo built", sleeper.display()),
+            ]),
+            &std::env::temp_dir(),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+        let sleeper: i32 = std::fs::read_to_string(&sleeper)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // SAFETY: kill(pid, 0) only probes; SIGKILL cleans up a test process.
+        let probe = || unsafe { libc::kill(sleeper, 0) } == 0;
+        let gone_by = std::time::Instant::now() + Duration::from_secs(3);
+        while probe() && std::time::Instant::now() < gone_by {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let alive = probe();
+        unsafe { libc::kill(sleeper, libc::SIGKILL) };
+        assert_eq!(out.exit_code, Some(0));
+        assert_eq!(out.stdout.trim(), "built");
+        assert!(!out.timed_out);
+        assert!(elapsed < Duration::from_secs(3), "held for {elapsed:?}");
+        assert!(!alive, "grandchild {sleeper} outlived the command");
     }
 
     #[test]

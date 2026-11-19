@@ -26,6 +26,13 @@ pub trait NonDestructiveStore: Send + Sync {
     fn get_interactive(&self, account: &str) -> Result<Option<Zeroizing<String>>, SecretError> {
         Ok(self.get(account))
     }
+    /// Whether `account` holds a value, for an explicit operation that must
+    /// tell "absent" from "could not tell" (`secret rm`, a grant). It never
+    /// raises an authentication dialog. The default is the background `get`;
+    /// a backend whose `get` hides lifecycle errors overrides it.
+    fn contains(&self, account: &str) -> Result<bool, SecretError> {
+        Ok(self.get(account).is_some())
+    }
     /// Create-only write: stores `value` **only** if `account` does not
     /// already exist, and returns [`SecretError::AlreadyExists`] if it does.
     /// Never updates — the backend itself refuses the duplicate, so the check

@@ -127,7 +127,10 @@ pub fn remove_folder_secret(
 ) -> Result<(), String> {
     let folder = canonical_folder(folder)?;
     let account = account_name(&folder, name);
-    if store.get(&account).is_none() {
+    let present = store
+        .contains(&account)
+        .map_err(|err| format!("folder secret lookup failed for '{name}': {err}"))?;
+    if !present {
         return Err(format!("secret '{name}' not found in {}", folder.display()));
     }
     store
@@ -214,7 +217,10 @@ pub fn grant_folder_secret(
 ) -> Result<String, String> {
     let folder = canonical_folder(folder)?;
     let account = account_name(&folder, name);
-    if store.get(&account).is_none() {
+    let present = store
+        .contains(&account)
+        .map_err(|err| format!("folder secret lookup failed for '{name}': {err}"))?;
+    if !present {
         return Err(format!("secret '{name}' not found in {}", folder.display()));
     }
     let record = grant_record(actor, name, &folder)?;
@@ -1243,6 +1249,68 @@ mod tests {
         assert!(blob.contains("allow_once"));
         assert!(blob.contains("FOLDER_E2E_SECRET"));
         assert!(!blob.contains(value));
+    }
+}
+
+/// Stint 1626 (Codex round 2): `secret rm` and a grant report a store that
+/// could not answer as that failure, never as "not found".
+#[cfg(test)]
+mod lookup_failure_tests {
+    use super::super::store::{NonDestructiveStore, SecretError, SecretStore};
+    use super::*;
+
+    struct Unanswering;
+
+    impl NonDestructiveStore for Unanswering {
+        fn get(&self, _: &str) -> Option<Zeroizing<String>> {
+            None
+        }
+        fn contains(&self, _: &str) -> Result<bool, SecretError> {
+            Err(SecretError::Backend("secret-tool did not finish".into()))
+        }
+        fn add_new(&self, _: &str, _: &str) -> Result<(), SecretError> {
+            panic!("no write expected")
+        }
+        fn delete_if_value(&self, _: &str, _: &str) -> Result<(), SecretError> {
+            panic!("no delete expected")
+        }
+        fn list_with_prefix(&self, _: &str) -> Vec<String> {
+            Vec::new()
+        }
+        fn scan_accounts(&self) -> Result<Vec<String>, SecretError> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl SecretStore for Unanswering {
+        fn set(&self, _: &str, _: &str) -> Result<(), SecretError> {
+            panic!("no write expected")
+        }
+        fn delete(&self, _: &str) -> Result<(), SecretError> {
+            panic!("no delete expected")
+        }
+    }
+
+    #[test]
+    fn remove_reports_a_lookup_failure_not_absence() {
+        let folder = tempfile::tempdir().unwrap();
+        let error = remove_folder_secret(&Unanswering, "TOKEN", folder.path()).unwrap_err();
+        assert!(error.contains("did not finish"), "{error}");
+        assert!(!error.contains("not found"), "{error}");
+    }
+
+    #[test]
+    fn grant_reports_a_lookup_failure_not_absence() {
+        let monitor = PermissionMonitor::ephemeral();
+        let folder = tempfile::tempdir().unwrap();
+        let actor = SecretActor {
+            kind: ActorType::Agent,
+            id: "pane:1626".into(),
+        };
+        let error = grant_folder_secret(&monitor, &Unanswering, &actor, "TOKEN", folder.path())
+            .unwrap_err();
+        assert!(error.contains("did not finish"), "{error}");
+        assert!(!error.contains("not found"), "{error}");
     }
 }
 
