@@ -102,7 +102,7 @@ impl PaneProcessGroup {
     }
 
     #[cfg(test)]
-    fn record_for(pid: u32, marker: &str) -> Self {
+    pub(crate) fn record_for(pid: u32, marker: &str) -> Self {
         Self::record_for_profile_inner(pid, marker, None)
     }
 
@@ -346,42 +346,26 @@ fn post_kill_deadline(killed: Instant, process_deadline: Instant) -> Instant {
     (killed + POST_KILL_WAIT).min(process_deadline.max(killed + POST_KILL_MIN))
 }
 
-// Shutdown helpers must not let an unresponsive tmux server stall host exit.
+/// Run a shutdown helper bounded by the quit deadline, so an unresponsive
+/// tmux server (or a descendant holding its output) never stalls host exit.
 fn quit_helper(
     program: &str,
     args: &[&str],
     deadline: Instant,
-) -> std::io::Result<std::process::Output> {
-    if Instant::now() >= deadline {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "quit helper deadline elapsed",
-        ));
+) -> Result<plexi_distribution::bounded::Exited, plexi_distribution::bounded::RunError> {
+    let what = format!("{program} {}", args.first().copied().unwrap_or_default());
+    let limit = deadline.saturating_duration_since(Instant::now());
+    if limit.is_zero() {
+        return Err(plexi_distribution::bounded::RunError::TimedOut {
+            what,
+            limit,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        });
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "baseline: unbounded helper, stint 1610 slice 2"
-    )]
-    let mut child = std::process::Command::new(program)
+    plexi_distribution::bounded::Helper::new(program)
         .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
-    loop {
-        if child.try_wait()?.is_some() {
-            return child.wait_with_output();
-        }
-        if Instant::now() >= deadline {
-            child.kill()?;
-            child.wait()?;
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "quit helper timed out",
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+        .run_any_exit(&what, limit)
 }
 
 /// An existing tmux server does not necessarily propagate a client's env to
@@ -389,9 +373,13 @@ fn quit_helper(
 /// never kill an unmarked shared server or a user-selected custom socket.
 fn stop_marked_tmux_sessions(tmux: &str, marker: &str, deadline: Instant) {
     let sessions = match quit_helper(tmux, &["list-sessions", "-F", "#{session_id}"], deadline) {
-        Ok(output) if output.status.success() => output,
+        Ok(exited) if exited.status.success() => exited.output,
         Ok(_) => return, // No default server is a normal state.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(plexi_distribution::bounded::RunError::Start { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            return;
+        }
         Err(e) => {
             log::warn!("quit: tmux session discovery failed: {e}");
             return;
@@ -408,20 +396,20 @@ fn stop_marked_tmux_sessions(tmux: &str, marker: &str, deadline: Instant) {
             &["show-environment", "-t", session, SESSION_ENV],
             deadline,
         ) {
-            Ok(output) => output,
+            Ok(exited) => exited,
             Err(e) => {
                 log::warn!("quit: tmux environment query failed session={session}: {e}");
                 continue;
             }
         };
-        if env.status.success() && String::from_utf8_lossy(&env.stdout).trim() == expected {
+        if env.status.success() && String::from_utf8_lossy(&env.output.stdout).trim() == expected {
             match quit_helper(tmux, &["kill-session", "-t", session], deadline) {
-                Ok(output) if output.status.success() => {
+                Ok(exited) if exited.status.success() => {
                     log::info!("quit: stopped marked tmux session={session}")
                 }
-                Ok(output) => log::warn!(
+                Ok(exited) => log::warn!(
                     "quit: tmux kill-session failed session={session} status={}",
-                    output.status
+                    exited.status
                 ),
                 Err(e) => log::warn!("quit: tmux kill-session failed session={session}: {e}"),
             }
@@ -749,8 +737,35 @@ mod tests {
         let start = Instant::now();
         let error =
             quit_helper("/bin/sleep", &["600"], start + Duration::from_millis(30)).unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            matches!(
+                error,
+                plexi_distribution::bounded::RunError::TimedOut { .. }
+            ),
+            "{error}"
+        );
         assert!(start.elapsed() < crate::testing::load_aware_timeout(Duration::from_secs(1)));
+    }
+
+    /// Stint 1626: a helper that exits while a descendant still holds its
+    /// stdout returns at once with its output; the descendant does not hold
+    /// host exit until it ends.
+    #[test]
+    fn a_quit_helper_whose_descendant_holds_stdout_returns_at_once() {
+        let start = Instant::now();
+        let exited = quit_helper(
+            "/bin/sh",
+            &["-c", "sleep 10 & echo listed"],
+            start + Duration::from_secs(8),
+        )
+        .unwrap();
+        assert!(exited.status.success());
+        assert_eq!(String::from_utf8_lossy(&exited.output.stdout), "listed\n");
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "held for {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]

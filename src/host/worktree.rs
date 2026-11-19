@@ -6,10 +6,19 @@
 //! ahead/away from its base commit, close retains the worktree and reports the
 //! retained path.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
 
+use plexi_distribution::bounded::{self, Helper};
 use serde::{Deserialize, Serialize};
+
+/// How long one `wtp` call gets. `wtp add` checks out a whole tree and runs
+/// the repo's post-create hooks; pane creation waits on it.
+const WTP_LIMIT: Duration = Duration::from_secs(60);
+/// How long one git query (`show-ref`, `rev-parse`, `update-index`,
+/// `status`) gets.
+const GIT_LIMIT: Duration = Duration::from_secs(15);
 
 /// Host-tracked metadata for a worktree created via `plexi pane new --worktree`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,26 +65,60 @@ enum WtpBackend {
     TestShim,
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "baseline: unbounded helper, stint 1610 slice 2"
-)]
-fn wtp_command(backend: WtpBackend) -> Command {
-    #[cfg(not(test))]
-    {
-        let _ = backend;
-        Command::new("wtp")
+/// The helpers worktree code runs, and their limits. Production uses
+/// `Tools::system`; tests swap in the wtp shim, a fake git or short limits.
+struct Tools {
+    wtp: WtpBackend,
+    git: OsString,
+    wtp_limit: Duration,
+    git_limit: Duration,
+}
+
+impl Tools {
+    fn system() -> Self {
+        Self {
+            wtp: WtpBackend::Default,
+            git: "git".into(),
+            wtp_limit: WTP_LIMIT,
+            git_limit: GIT_LIMIT,
+        }
     }
-    #[cfg(test)]
-    {
-        match backend {
-            WtpBackend::Default if system_wtp_available() => Command::new("wtp"),
-            WtpBackend::Default | WtpBackend::TestShim => {
-                let mut cmd = Command::new("python3");
-                cmd.arg(test_wtp_shim_script());
-                cmd
+
+    fn wtp(&self) -> Helper {
+        #[cfg(not(test))]
+        {
+            let _ = self.wtp;
+            Helper::new("wtp")
+        }
+        #[cfg(test)]
+        {
+            match self.wtp {
+                WtpBackend::Default if system_wtp_available() => Helper::new("wtp"),
+                WtpBackend::Default | WtpBackend::TestShim => {
+                    let mut helper = Helper::new("python3");
+                    helper.arg(test_wtp_shim_script());
+                    helper
+                }
             }
         }
+    }
+
+    /// `git -C <dir>`, never prompting.
+    fn git(&self, dir: &Path) -> Helper {
+        let mut helper = bounded::git_at(&self.git);
+        helper.arg("-C").arg(dir);
+        helper
+    }
+}
+
+/// A failed helper's detail: its stderr, else its stdout, else the error.
+fn detail(exited: &bounded::Exited) -> String {
+    let stderr = String::from_utf8_lossy(&exited.output.stderr);
+    let stdout = String::from_utf8_lossy(&exited.output.stdout);
+    if !stderr.trim().is_empty() {
+        stderr.trim().to_string()
+    } else {
+        stdout.trim().to_string()
     }
 }
 
@@ -84,10 +127,10 @@ fn system_wtp_available() -> bool {
     use std::sync::OnceLock;
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
-        Command::new("wtp")
+        Helper::new("wtp")
             .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
+            .run("wtp --version", Duration::from_secs(10))
+            .is_ok()
     })
 }
 
@@ -280,13 +323,13 @@ if __name__ == "__main__":
 /// new), and records the initial `HEAD` commit so close-time reclamation can
 /// tell whether any commits were made.
 pub fn create_worktree(anchor_dir: &Path, branch: &str) -> Result<ManagedWorktree, String> {
-    create_worktree_with(anchor_dir, branch, WtpBackend::Default)
+    create_worktree_with(anchor_dir, branch, &Tools::system())
 }
 
 fn create_worktree_with(
     anchor_dir: &Path,
     branch: &str,
-    backend: WtpBackend,
+    tools: &Tools,
 ) -> Result<ManagedWorktree, String> {
     let branch = branch.trim();
     if branch.is_empty() {
@@ -308,14 +351,14 @@ fn create_worktree_with(
     // Resolve the main worktree root through `wtp cd` (with no args, `wtp cd`
     // prints the main worktree path). This also verifies `wtp` is installed and
     // `anchor_dir` is inside a git repository.
-    let wtp_cd_out = wtp_command(backend)
+    let wtp_cd_out = tools
+        .wtp()
         .arg("cd")
         .current_dir(anchor_dir)
-        .output()
+        .run_any_exit("wtp cd", tools.wtp_limit)
         .map_err(|e| format!("failed to run `wtp cd` in '{}': {e}", anchor_dir.display()))?;
     if !wtp_cd_out.status.success() {
-        let stderr = String::from_utf8_lossy(&wtp_cd_out.stderr);
-        let detail = stderr.trim();
+        let detail = detail(&wtp_cd_out);
         return Err(if detail.is_empty() {
             format!(
                 "`wtp cd` failed in '{}' (not a git repository?)",
@@ -325,7 +368,7 @@ fn create_worktree_with(
             format!("`wtp cd` failed in '{}': {detail}", anchor_dir.display())
         });
     }
-    let repo_root_str = String::from_utf8_lossy(&wtp_cd_out.stdout)
+    let repo_root_str = String::from_utf8_lossy(&wtp_cd_out.output.stdout)
         .lines()
         .last()
         .unwrap_or("")
@@ -339,20 +382,18 @@ fn create_worktree_with(
 
     // Check whether the local branch already exists so we know whether to pass
     // `-b` to `wtp add` and whether clean reclamation should delete the branch.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "baseline: unbounded helper, stint 1610 slice 2"
-    )]
-    let branch_exists = Command::new("git")
-        .arg("-C")
-        .arg(&repo_root)
+    // Exit 1 means no such branch; a git that could not answer fails the
+    // create, since guessing "absent" would create the branch anew.
+    let branch_exists = tools
+        .git(&repo_root)
         .args(["show-ref", "--verify", "--quiet"])
         .arg(format!("refs/heads/{branch}"))
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .run_any_exit("git show-ref", tools.git_limit)
+        .map_err(|e| format!("could not check whether branch '{branch}' exists: {e}"))?
+        .status
+        .success();
 
-    let mut add_cmd = wtp_command(backend);
+    let mut add_cmd = tools.wtp();
     add_cmd.arg("add");
     if !branch_exists {
         add_cmd.arg("-b").arg(branch);
@@ -369,26 +410,18 @@ fn create_worktree_with(
     );
 
     let add_out = add_cmd
-        .output()
+        .run_any_exit("wtp add", tools.wtp_limit)
         .map_err(|e| format!("failed to run `wtp add` for branch '{branch}': {e}"))?;
     if !add_out.status.success() {
-        let stderr = String::from_utf8_lossy(&add_out.stderr);
-        let stdout = String::from_utf8_lossy(&add_out.stdout);
-        let detail = if !stderr.trim().is_empty() {
-            stderr.trim()
-        } else {
-            stdout.trim()
-        };
+        let detail = detail(&add_out);
         log::warn!("pane_worktree: `wtp add` failed for branch={branch:?}: {detail}");
-        return Err(format!(
-            "`wtp add` failed for branch '{branch}': {detail}"
-        ));
+        return Err(format!("`wtp add` failed for branch '{branch}': {detail}"));
     }
 
     // Resolve the created path via `wtp cd <branch>`, falling back to the last
     // non-empty stdout line of `wtp add --quiet`.
-    let worktree_path = resolve_worktree_path(&repo_root, branch, backend).or_else(|| {
-        String::from_utf8_lossy(&add_out.stdout)
+    let worktree_path = resolve_worktree_path(&repo_root, branch, tools).or_else(|| {
+        String::from_utf8_lossy(&add_out.output.stdout)
             .lines()
             .rev()
             .map(str::trim)
@@ -402,7 +435,7 @@ fn create_worktree_with(
         ));
     };
 
-    let base_head = git_head_sha(&path).ok_or_else(|| {
+    let base_head = git_head_sha(&path, tools).ok_or_else(|| {
         format!(
             "worktree created at '{}', but `git rev-parse HEAD` failed",
             path.display()
@@ -427,13 +460,10 @@ fn create_worktree_with(
 /// Inspect `wt` on pane close: reclaim via `wtp remove` when clean and unmoved,
 /// or retain on disk and report why when dirty or ahead/moved.
 pub fn reclaim_or_retain_worktree(wt: &ManagedWorktree) -> WorktreeCloseReport {
-    reclaim_or_retain_worktree_with(wt, WtpBackend::Default)
+    reclaim_or_retain_worktree_with(wt, &Tools::system())
 }
 
-fn reclaim_or_retain_worktree_with(
-    wt: &ManagedWorktree,
-    backend: WtpBackend,
-) -> WorktreeCloseReport {
+fn reclaim_or_retain_worktree_with(wt: &ManagedWorktree, tools: &Tools) -> WorktreeCloseReport {
     if !wt.path.exists() {
         log::info!(
             "pane_worktree: close branch={:?} path={} already absent; treating as reclaimed",
@@ -450,7 +480,7 @@ fn reclaim_or_retain_worktree_with(
 
     let mut retain_reasons: Vec<&'static str> = Vec::new();
 
-    match is_worktree_dirty(&wt.path) {
+    match is_worktree_dirty(&wt.path, tools) {
         Ok(true) => retain_reasons.push("dirty"),
         Ok(false) => {}
         Err(err) => {
@@ -462,7 +492,7 @@ fn reclaim_or_retain_worktree_with(
         }
     }
 
-    match git_head_sha(&wt.path) {
+    match git_head_sha(&wt.path, tools) {
         Some(current_head) => {
             if current_head != wt.base_head {
                 retain_reasons.push("ahead");
@@ -494,7 +524,7 @@ fn reclaim_or_retain_worktree_with(
 
     // Clean and unmoved: reclaim via `wtp remove`. Run from `repo_root` so
     // `wtp` never complains about running inside the worktree being removed.
-    let mut rm_cmd = wtp_command(backend);
+    let mut rm_cmd = tools.wtp();
     rm_cmd.arg("remove");
     if wt.created_branch {
         rm_cmd.arg("--with-branch");
@@ -504,7 +534,7 @@ fn reclaim_or_retain_worktree_with(
         rm_cmd.current_dir(&wt.repo_root);
     }
 
-    match rm_cmd.output() {
+    match rm_cmd.run_any_exit("wtp remove", tools.wtp_limit) {
         Ok(out) if out.status.success() => {
             log::info!(
                 "pane_worktree: reclaimed clean worktree branch={:?} path={} with_branch={}",
@@ -520,12 +550,11 @@ fn reclaim_or_retain_worktree_with(
             }
         }
         Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
             log::warn!(
                 "pane_worktree: `wtp remove` failed for branch={:?} path={}: {}; retaining",
                 wt.branch,
                 wt.path.display(),
-                stderr.trim()
+                detail(&out)
             );
             WorktreeCloseReport {
                 action: "retained".to_string(),
@@ -550,15 +579,14 @@ fn reclaim_or_retain_worktree_with(
     }
 }
 
-fn resolve_worktree_path(repo_root: &Path, branch: &str, backend: WtpBackend) -> Option<PathBuf> {
-    let out = wtp_command(backend)
+fn resolve_worktree_path(repo_root: &Path, branch: &str, tools: &Tools) -> Option<PathBuf> {
+    let out = tools
+        .wtp()
         .args(["cd", branch])
         .current_dir(repo_root)
-        .output()
+        .run("wtp cd <branch>", tools.wtp_limit)
+        .map_err(|e| log::warn!("pane_worktree: could not resolve worktree for {branch:?}: {e}"))
         .ok()?;
-    if !out.status.success() {
-        return None;
-    }
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .last()
@@ -567,53 +595,79 @@ fn resolve_worktree_path(repo_root: &Path, branch: &str, backend: WtpBackend) ->
         .map(PathBuf::from)
 }
 
-fn git_head_sha(worktree_path: &Path) -> Option<String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "baseline: unbounded helper, stint 1610 slice 2"
-    )]
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(worktree_path)
+fn git_head_sha(worktree_path: &Path, tools: &Tools) -> Option<String> {
+    let out = tools
+        .git(worktree_path)
         .args(["rev-parse", "HEAD"])
-        .output()
+        .run("git rev-parse HEAD", tools.git_limit)
+        .map_err(|e| log::warn!("pane_worktree: {e}"))
         .ok()?;
-    if !out.status.success() {
-        return None;
-    }
     let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (!sha.is_empty()).then_some(sha)
 }
 
-fn is_worktree_dirty(worktree_path: &Path) -> Result<bool, String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "baseline: unbounded helper, stint 1610 slice 2"
-    )]
-    let _ = Command::new("git")
-        .arg("-C")
-        .arg(worktree_path)
+/// Whether the worktree has changes. The index refresh only updates cached
+/// stat data, so git refusing it is ignored; a refresh that hung or could
+/// not be stopped leaves the answer unknown.
+fn is_worktree_dirty(worktree_path: &Path, tools: &Tools) -> Result<bool, String> {
+    let refreshed = tools
+        .git(worktree_path)
         .args(["update-index", "-q", "--refresh"])
-        .output();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "baseline: unbounded helper, stint 1610 slice 2"
-    )]
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(worktree_path)
-        .args(["status", "--porcelain"])
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        .run("git update-index --refresh", tools.git_limit);
+    if let Err(error) = refreshed {
+        if !error.is_tool_failure() {
+            return Err(error.to_string());
+        }
     }
+    let out = tools
+        .git(worktree_path)
+        .args(["status", "--porcelain"])
+        .run("git status --porcelain", tools.git_limit)
+        .map_err(|e| e.to_string())?;
     Ok(!String::from_utf8_lossy(&out.stdout).trim().is_empty())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
+
+    impl Tools {
+        fn shim() -> Self {
+            Self {
+                wtp: WtpBackend::TestShim,
+                ..Self::system()
+            }
+        }
+    }
+
+    /// Stint 1626: a git that hangs under `create_worktree` is stopped at its
+    /// limit and the create fails, rather than holding pane creation (and
+    /// the host loop) until git returns.
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_git_fails_create_worktree_at_its_limit() {
+        use std::os::unix::fs::PermissionsExt;
+        let (tmp, repo) = init_temp_git_repo();
+        let fake = tmp.path().join("git");
+        std::fs::write(&fake, "#!/bin/sh\nsleep 10\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tools = Tools {
+            git: fake.into(),
+            git_limit: Duration::from_millis(300),
+            ..Tools::shim()
+        };
+        let started = std::time::Instant::now();
+        let result = create_worktree_with(&repo, "feature/hung-git", &tools);
+        let elapsed = started.elapsed();
+        let error = result.expect_err("a hung git must fail the create");
+        assert!(error.contains("did not finish"), "{error}");
+        assert!(elapsed < Duration::from_secs(8), "held for {elapsed:?}");
+        assert!(
+            !repo.join("worktrees/feature/hung-git").exists(),
+            "no worktree is created after git could not answer"
+        );
+    }
 
     fn init_temp_git_repo() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -728,27 +782,27 @@ mod tests {
         let (_tmp, repo) = init_temp_git_repo();
 
         // 1. Clean + unmoved -> reclaimed and branch removed.
-        let clean_wt = create_worktree_with(&repo, "feature/shim-clean", WtpBackend::TestShim)
+        let clean_wt = create_worktree_with(&repo, "feature/shim-clean", &Tools::shim())
             .expect("create clean worktree via shim");
         assert!(clean_wt.path.is_dir());
         assert!(clean_wt.created_branch);
-        let clean_report = reclaim_or_retain_worktree_with(&clean_wt, WtpBackend::TestShim);
+        let clean_report = reclaim_or_retain_worktree_with(&clean_wt, &Tools::shim());
         assert_eq!(clean_report.action, "reclaimed");
         assert!(clean_report.reason.is_none());
         assert!(!clean_wt.path.exists());
 
         // 2. Dirty -> retained with path and reason="dirty".
-        let dirty_wt = create_worktree_with(&repo, "feature/shim-dirty", WtpBackend::TestShim)
+        let dirty_wt = create_worktree_with(&repo, "feature/shim-dirty", &Tools::shim())
             .expect("create dirty worktree via shim");
         std::fs::write(dirty_wt.path.join("wip.txt"), "dirty\n").expect("write dirty file");
-        let dirty_report = reclaim_or_retain_worktree_with(&dirty_wt, WtpBackend::TestShim);
+        let dirty_report = reclaim_or_retain_worktree_with(&dirty_wt, &Tools::shim());
         assert_eq!(dirty_report.action, "retained");
         assert_eq!(dirty_report.reason.as_deref(), Some("dirty"));
         assert_eq!(dirty_report.path, dirty_wt.path);
         assert!(dirty_wt.path.is_dir());
 
         // 3. Ahead -> retained with path and reason="ahead".
-        let ahead_wt = create_worktree_with(&repo, "feature/shim-ahead", WtpBackend::TestShim)
+        let ahead_wt = create_worktree_with(&repo, "feature/shim-ahead", &Tools::shim())
             .expect("create ahead worktree via shim");
         let status = Command::new("git")
             .arg("-C")
@@ -757,7 +811,7 @@ mod tests {
             .status()
             .expect("commit in shim worktree");
         assert!(status.success());
-        let ahead_report = reclaim_or_retain_worktree_with(&ahead_wt, WtpBackend::TestShim);
+        let ahead_report = reclaim_or_retain_worktree_with(&ahead_wt, &Tools::shim());
         assert_eq!(ahead_report.action, "retained");
         assert_eq!(ahead_report.reason.as_deref(), Some("ahead"));
         assert_eq!(ahead_report.path, ahead_wt.path);

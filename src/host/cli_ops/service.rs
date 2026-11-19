@@ -918,6 +918,10 @@ fn finish(
             "cancelled",
             failure(request_id, operation_id, code::CANCELLED, "cancelled"),
         ),
+        Completion::Failed(message) => (
+            "run_failed",
+            failure(request_id, operation_id, code::LAUNCH_FAILED, message.clone()),
+        ),
     };
     if let Err(error) = env.monitor.note_outcome(
         &running.actor,

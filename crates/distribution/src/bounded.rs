@@ -15,7 +15,11 @@
 //! killed child is not reaped within `REAP_LIMIT`, the run still returns, with
 //! `RunError::NotStopped`.
 //!
-//! Output past `CAPTURE_LIMIT` is `RunError::OutputTooLarge`, never cut bytes.
+//! Output past `CAPTURE_LIMIT` (or a caller's `stdout_limit`) is
+//! `RunError::OutputTooLarge`, never cut bytes; the size is checked while the
+//! child runs, so a runaway writer is stopped rather than filling the disk
+//! until its limit. A caller may cancel a run (`cancel_on`), give it a small
+//! fixed stdin (`input`, Unix) or discard its output (`discard_output`).
 //!
 //! Callers: a helper that changes state (an install, a venv, a git checkout,
 //! a copy) fails its caller on any error except `RunError::is_tool_failure`,
@@ -29,6 +33,8 @@
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// The most read back from each output stream. More than this is an error.
@@ -75,6 +81,8 @@ pub enum RunError {
         stdout: Vec<u8>,
         stderr: Vec<u8>,
     },
+    #[error("{what} was cancelled and stopped")]
+    Cancelled { what: String },
     #[error("{what} could not be stopped ({cause}); it may still be running")]
     NotStopped { what: String, cause: String },
     #[error("{what} wrote more than {limit} bytes to {stream}; its output is incomplete")]
@@ -113,9 +121,15 @@ fn stderr_suffix(stderr: &[u8]) -> String {
 }
 
 /// A helper process to run once, bounded. Built like a `Command`, but only
-/// arguments, environment and working directory can be set.
+/// arguments, environment, working directory and the bounded options below
+/// can be set.
 pub struct Helper {
     command: Command,
+    stdout_limit: u64,
+    cancel: Option<Arc<AtomicBool>>,
+    #[cfg(unix)]
+    input: Option<Vec<u8>>,
+    discard_output: bool,
 }
 
 impl Helper {
@@ -126,7 +140,50 @@ impl Helper {
     pub fn new(program: impl AsRef<OsStr>) -> Self {
         Self {
             command: Command::new(program),
+            stdout_limit: CAPTURE_LIMIT,
+            cancel: None,
+            #[cfg(unix)]
+            input: None,
+            discard_output: false,
         }
+    }
+
+    /// The program's `argv[0]`, when it should differ from the path run.
+    #[cfg(unix)]
+    pub fn arg0(&mut self, arg0: impl AsRef<OsStr>) -> &mut Self {
+        std::os::unix::process::CommandExt::arg0(&mut self.command, arg0);
+        self
+    }
+
+    /// stdout past this many bytes stops the child and is
+    /// `RunError::OutputTooLarge`. stderr keeps `CAPTURE_LIMIT`.
+    pub fn stdout_limit(&mut self, bytes: u64) -> &mut Self {
+        self.stdout_limit = bytes;
+        self
+    }
+
+    /// Once `flag` is set the child and its session are stopped and the run
+    /// is `RunError::Cancelled`. Checked at every exit check, so within
+    /// `MAX_POLL`.
+    pub fn cancel_on(&mut self, flag: Arc<AtomicBool>) -> &mut Self {
+        self.cancel = Some(flag);
+        self
+    }
+
+    /// stdin is a pipe already holding `bytes` and closed for writing, so
+    /// nothing waits on the child to read it. More than the pipe holds
+    /// (at least 16 KiB on macOS and Linux) is `RunError::Io` before start.
+    #[cfg(unix)]
+    pub fn input(&mut self, bytes: impl Into<Vec<u8>>) -> &mut Self {
+        self.input = Some(bytes.into());
+        self
+    }
+
+    /// stdout and stderr go to the null device; the run's `Output` is empty.
+    /// For a step whose output no one reads, so its size cannot fail it.
+    pub fn discard_output(&mut self) -> &mut Self {
+        self.discard_output = true;
+        self
     }
 
     pub fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
@@ -185,6 +242,12 @@ impl Helper {
 
     /// As `run`, but any exit code is Ok, for callers that read the code.
     pub fn run_any_exit(&mut self, what: &str, limit: Duration) -> Result<Exited, RunError> {
+        self.start(what)?.wait(limit)
+    }
+
+    /// Start the child and return at once, for a caller that waits for it on
+    /// another thread. The limit `Started::wait` is given counts from here.
+    pub fn start(&mut self, what: &str) -> Result<Started, RunError> {
         let io = |action: &'static str| {
             move |source| RunError::Io {
                 what: what.to_string(),
@@ -195,22 +258,46 @@ impl Helper {
         // Named so the read-back opens its own handle: a positioned read on
         // the child's handle would share (on Windows, move) the writer's
         // offset.
-        let stdout = tempfile::NamedTempFile::new().map_err(io("create output file"))?;
-        let stderr = tempfile::NamedTempFile::new().map_err(io("create error file"))?;
-        self.command
-            .stdin(Stdio::null())
-            .stdout(
-                stdout
-                    .as_file()
-                    .try_clone()
-                    .map_err(io("share output file"))?,
-            )
-            .stderr(
-                stderr
-                    .as_file()
-                    .try_clone()
-                    .map_err(io("share error file"))?,
-            );
+        let captures = if self.discard_output {
+            self.command.stdout(Stdio::null()).stderr(Stdio::null());
+            None
+        } else {
+            let stdout = tempfile::NamedTempFile::new().map_err(io("create output file"))?;
+            let stderr = tempfile::NamedTempFile::new().map_err(io("create error file"))?;
+            self.command
+                .stdout(
+                    stdout
+                        .as_file()
+                        .try_clone()
+                        .map_err(io("share output file"))?,
+                )
+                .stderr(
+                    stderr
+                        .as_file()
+                        .try_clone()
+                        .map_err(io("share error file"))?,
+                );
+            Some([
+                Capture {
+                    file: stdout,
+                    stream: "stdout",
+                    limit: self.stdout_limit,
+                },
+                Capture {
+                    file: stderr,
+                    stream: "stderr",
+                    limit: CAPTURE_LIMIT,
+                },
+            ])
+        };
+        #[cfg(unix)]
+        let stdin = match self.input.take() {
+            Some(bytes) => Stdio::from(filled_pipe(&bytes).map_err(io("fill input pipe"))?),
+            None => Stdio::null(),
+        };
+        #[cfg(windows)]
+        let stdin = Stdio::null();
+        self.command.stdin(stdin);
         // SAFETY: between fork and exec the closure calls only setsid(), which
         // is async-signal-safe and neither allocates nor locks.
         #[cfg(unix)]
@@ -224,58 +311,192 @@ impl Helper {
                 Ok(())
             });
         }
-        let mut child = self.command.spawn().map_err(|source| RunError::Start {
+        let child = self.command.spawn().map_err(|source| RunError::Start {
             what: what.to_string(),
             source,
         })?;
-        let deadline = Instant::now() + limit;
-        let mut pause = Duration::from_millis(1);
-        let status = loop {
-            let exited = exited_unreaped(&mut child).map_err(io("wait"))?;
-            let step = next_step(Instant::now(), deadline, exited, pause);
-            if let Step::Wait(wait) = step {
-                std::thread::sleep(wait);
-                pause = (pause * 2).min(MAX_POLL);
-                continue;
-            }
-            if step == Step::Finish {
-                break finish_session(child, what)?;
-            }
-            {
-                let captured = |file: &tempfile::NamedTempFile| {
-                    read_capped(file.path(), CAPTURE_LIMIT)
-                        .map(|(bytes, _)| bytes)
-                        .unwrap_or_default()
-                };
-                return Err(stop(
-                    child,
-                    what,
-                    limit,
-                    kill_tree,
-                    REAP_LIMIT,
-                    captured(&stdout),
-                    captured(&stderr),
-                ));
-            }
+        let started_at = Instant::now();
+        // Drop the parent's copy of the input pipe's read end now rather
+        // than when the command is dropped.
+        self.command.stdin(Stdio::null());
+        Ok(Started {
+            child: Some(child),
+            what: what.to_string(),
+            started_at,
+            captures,
+            cancel: self.cancel.clone(),
+        })
+    }
+}
+
+/// A helper that has been started and must be waited for. Dropping it
+/// without `wait` stops the child and its session, so a holder that cannot
+/// wait (a supervisor thread that failed to start) leaves nothing running.
+#[must_use = "a started helper is stopped when dropped; call wait"]
+pub struct Started {
+    child: Option<Child>,
+    what: String,
+    started_at: Instant,
+    captures: Option<[Capture; 2]>,
+    cancel: Option<Arc<AtomicBool>>,
+}
+
+impl Started {
+    /// The child's process id (and, on Unix, its session and group id).
+    pub fn id(&self) -> u32 {
+        self.child.as_ref().map_or(0, Child::id)
+    }
+
+    /// Wait until `limit` after the start. As `Helper::run_any_exit`.
+    pub fn wait(mut self, limit: Duration) -> Result<Exited, RunError> {
+        let Some(child) = self.child.take() else {
+            return Err(RunError::NotStopped {
+                what: self.what.clone(),
+                cause: "its child was already given up".to_string(),
+            });
         };
-        let read = |file: tempfile::NamedTempFile, stream: &'static str| {
-            let (bytes, over) =
-                read_capped(file.path(), CAPTURE_LIMIT).map_err(io("read output"))?;
-            if over {
-                return Err(RunError::OutputTooLarge {
-                    what: what.to_string(),
-                    stream,
-                    limit: CAPTURE_LIMIT,
-                });
-            }
-            Ok(bytes)
-        };
-        let output = Output {
-            stdout: read(stdout, "stdout")?,
-            stderr: read(stderr, "stderr")?,
+        let status = supervise(
+            child,
+            &self.what,
+            self.started_at + limit,
+            limit,
+            self.captures.as_ref(),
+            self.cancel.as_deref(),
+        )?;
+        let output = match self.captures.take() {
+            None => Output::default(),
+            Some([stdout, stderr]) => Output {
+                stdout: stdout.read_whole(&self.what)?,
+                stderr: stderr.read_whole(&self.what)?,
+            },
         };
         Ok(Exited { status, output })
     }
+}
+
+impl Drop for Started {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.take() {
+            // `stop` logs the outcome; there is no caller left to tell.
+            let _ = stop(child, &self.what, Stopped::Cancelled, kill_tree, REAP_LIMIT);
+        }
+    }
+}
+
+/// Wait for the child to exit before `deadline`, stopping it there, on
+/// cancel, or when a capture outgrows its limit.
+fn supervise(
+    mut child: Child,
+    what: &str,
+    deadline: Instant,
+    limit: Duration,
+    captures: Option<&[Capture; 2]>,
+    cancel: Option<&AtomicBool>,
+) -> Result<ExitStatus, RunError> {
+    let mut pause = Duration::from_millis(1);
+    loop {
+        let exited = exited_unreaped(&mut child).map_err(|source| RunError::Io {
+            what: what.to_string(),
+            action: "wait",
+            source,
+        })?;
+        let reason = match next_step(Instant::now(), deadline, exited, pause) {
+            Step::Finish => return finish_session(child, what),
+            Step::Stop => Stopped::TimedOut {
+                limit,
+                stdout: captures.map(|c| c[0].partial()).unwrap_or_default(),
+                stderr: captures.map(|c| c[1].partial()).unwrap_or_default(),
+            },
+            Step::Wait(wait) => {
+                if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                    Stopped::Cancelled
+                } else if let Some(over) =
+                    captures.and_then(|c| c.iter().find(|capture| capture.is_over()))
+                {
+                    Stopped::OutputTooLarge {
+                        stream: over.stream,
+                        limit: over.limit,
+                    }
+                } else {
+                    std::thread::sleep(wait);
+                    pause = (pause * 2).min(MAX_POLL);
+                    continue;
+                }
+            }
+        };
+        return Err(stop(child, what, reason, kill_tree, REAP_LIMIT));
+    }
+}
+
+/// One output stream captured to a temp file.
+struct Capture {
+    file: tempfile::NamedTempFile,
+    stream: &'static str,
+    limit: u64,
+}
+
+impl Capture {
+    /// Already past its limit while the child runs. An unreadable size is
+    /// not an overflow; the read after exit reports it.
+    fn is_over(&self) -> bool {
+        self.file
+            .as_file()
+            .metadata()
+            .is_ok_and(|meta| meta.len() > self.limit)
+    }
+
+    /// What was written so far, for a timeout's error.
+    fn partial(&self) -> Vec<u8> {
+        read_capped(self.file.path(), self.limit)
+            .map(|(bytes, _)| bytes)
+            .unwrap_or_default()
+    }
+
+    fn read_whole(self, what: &str) -> Result<Vec<u8>, RunError> {
+        let (bytes, over) =
+            read_capped(self.file.path(), self.limit).map_err(|source| RunError::Io {
+                what: what.to_string(),
+                action: "read output",
+                source,
+            })?;
+        if over {
+            return Err(RunError::OutputTooLarge {
+                what: what.to_string(),
+                stream: self.stream,
+                limit: self.limit,
+            });
+        }
+        Ok(bytes)
+    }
+}
+
+/// A pipe holding `bytes` with its write end closed. The write never blocks:
+/// input larger than the pipe holds is an error, not a wait.
+#[cfg(unix)]
+fn filled_pipe(bytes: &[u8]) -> std::io::Result<std::io::PipeReader> {
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    let (reader, mut writer) = std::io::pipe()?;
+    let fd = writer.as_raw_fd();
+    // SAFETY: fcntl reads and sets the flags of a pipe fd this function owns.
+    let set = unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        flags != -1 && libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) != -1
+    };
+    if !set {
+        return Err(std::io::Error::last_os_error());
+    }
+    writer.write_all(bytes).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            std::io::Error::other(format!(
+                "{} bytes of input is more than a pipe holds",
+                bytes.len()
+            ))
+        } else {
+            error
+        }
+    })?;
+    Ok(reader)
 }
 
 /// A `git` helper that never prompts, and the only way any module starts
@@ -285,7 +506,12 @@ impl Helper {
 /// (cleared and refused). Credentials must come from an ssh key or agent or
 /// a credential helper; `git_error` says so when they are missing.
 pub fn git() -> Helper {
-    let mut helper = Helper::new("git");
+    git_at("git")
+}
+
+/// As `git`, for the git at `program` (a caller's injected fake in tests).
+pub fn git_at(program: impl AsRef<OsStr>) -> Helper {
+    let mut helper = Helper::new(program);
     helper
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "")
@@ -567,17 +793,65 @@ fn kill_tree(child: &mut Child) -> std::io::Result<()> {
     }
 }
 
-/// Stop a child that ran past `limit`: kill it with `kill`, then reap it,
-/// waiting at most `reap_limit` so a failed kill never holds the caller. Only
-/// a kill that succeeded followed by a reap is `TimedOut`.
+/// Why a running child is being stopped.
+#[derive(Debug)]
+enum Stopped {
+    TimedOut {
+        limit: Duration,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    },
+    Cancelled,
+    OutputTooLarge {
+        stream: &'static str,
+        limit: u64,
+    },
+}
+
+impl Stopped {
+    fn describe(&self) -> String {
+        match self {
+            Self::TimedOut { limit, .. } => format!("it exceeded {limit:?}"),
+            Self::Cancelled => "it was cancelled".to_string(),
+            Self::OutputTooLarge { stream, limit } => {
+                format!("it wrote more than {limit} bytes to {stream}")
+            }
+        }
+    }
+
+    fn into_error(self, what: &str) -> RunError {
+        let what = what.to_string();
+        match self {
+            Self::TimedOut {
+                limit,
+                stdout,
+                stderr,
+            } => RunError::TimedOut {
+                what,
+                limit,
+                stdout,
+                stderr,
+            },
+            Self::Cancelled => RunError::Cancelled { what },
+            Self::OutputTooLarge { stream, limit } => RunError::OutputTooLarge {
+                what,
+                stream,
+                limit,
+            },
+        }
+    }
+}
+
+/// Stop a running child: kill it with `kill`, then reap it, waiting at most
+/// `reap_limit` so a failed kill never holds the caller. Only a kill that
+/// succeeded followed by a reap is the error `reason` names; anything else is
+/// `NotStopped`.
 fn stop(
     mut child: Child,
     what: &str,
-    limit: Duration,
+    reason: Stopped,
     kill: fn(&mut Child) -> std::io::Result<()>,
     reap_limit: Duration,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
 ) -> RunError {
     let killed = kill(&mut child);
     let reap_deadline = Instant::now() + reap_limit;
@@ -589,15 +863,11 @@ fn stop(
             Err(error) => break Err(format!("wait failed: {error}")),
         }
     };
+    let why = reason.describe();
     let cause = match (killed, reaped) {
         (Ok(()), Ok(status)) => {
-            log::warn!("distribution: {what} exceeded {limit:?}; killed and reaped ({status})");
-            return RunError::TimedOut {
-                what: what.to_string(),
-                limit,
-                stdout,
-                stderr,
-            };
+            log::warn!("distribution: {what} stopped because {why}; killed and reaped ({status})");
+            return reason.into_error(what);
         }
         (Err(error), Ok(status)) => {
             format!("killing it failed: {error}; it then exited ({status})")
@@ -605,10 +875,10 @@ fn stop(
         (Err(error), Err(reap)) => format!("killing it failed: {error}; {reap}"),
         (Ok(()), Err(reap)) => reap,
     };
-    log::error!("distribution: {what} exceeded {limit:?} and could not be stopped: {cause}");
+    log::error!("distribution: {what} could not be stopped after {why}: {cause}");
     RunError::NotStopped {
         what: what.to_string(),
-        cause: format!("it exceeded {limit:?}; {cause}"),
+        cause: format!("{why}; {cause}"),
     }
 }
 
@@ -978,11 +1248,9 @@ mod tests {
             let error = stop(
                 child,
                 "test child",
-                Duration::from_millis(1),
+                Stopped::Cancelled,
                 refuse,
                 Duration::from_millis(300),
-                Vec::new(),
-                Vec::new(),
             );
             let _ = tx.send(error);
         });
@@ -1007,15 +1275,132 @@ mod tests {
         let error = stop(
             child,
             "test child",
-            Duration::from_millis(1),
+            Stopped::Cancelled,
             refuse,
             Duration::from_secs(5),
-            Vec::new(),
-            Vec::new(),
         );
         let text = error.to_string();
         assert!(matches!(error, RunError::NotStopped { .. }), "{text}");
         assert!(text.contains("refused"), "{text}");
+    }
+
+    /// Stint 1626: setting the cancel flag stops the child and its session
+    /// well inside the limit, and the run says it was cancelled.
+    #[test]
+    fn a_cancelled_run_stops_the_child_and_its_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let sleeper = dir.path().join("sleeper");
+        let flag = Arc::new(AtomicBool::new(false));
+        let script = format!("sleep 600 & echo $! > '{}'; wait", sleeper.display());
+        let run = {
+            let flag = Arc::clone(&flag);
+            std::thread::spawn(move || {
+                sh(&script)
+                    .cancel_on(flag)
+                    .run("test child", Duration::from_secs(600))
+            })
+        };
+        wait_for_file(&sleeper);
+        let started = Instant::now();
+        flag.store(true, Ordering::SeqCst);
+        let error = run.join().unwrap().unwrap_err();
+        let sleeper = pid_in(&sleeper);
+        let died = dies_within(sleeper, Duration::from_secs(5));
+        kill(sleeper);
+        assert!(matches!(error, RunError::Cancelled { .. }), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(5), "{error}");
+        assert!(died, "descendant {sleeper} survived the cancel");
+    }
+
+    /// Stint 1626: a started helper dropped without a wait is stopped with
+    /// its session, never left running unsupervised.
+    #[test]
+    fn a_started_helper_dropped_unwaited_is_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let sleeper = dir.path().join("sleeper");
+        let started = sh(&format!(
+            "sleep 600 & echo $! > '{}'; wait",
+            sleeper.display()
+        ))
+        .start("test child")
+        .unwrap();
+        let child = started.id();
+        wait_for_file(&sleeper);
+        drop(started);
+        let sleeper = pid_in(&sleeper);
+        let died = dies_within(sleeper, Duration::from_secs(5));
+        kill(sleeper);
+        assert!(!process_alive(child), "child {child} survived the drop");
+        assert!(died, "descendant {sleeper} survived the drop");
+    }
+
+    /// Stint 1626: a writer past its stdout limit is stopped while it runs,
+    /// not left to fill the disk until its time limit.
+    #[test]
+    fn a_runaway_writer_is_stopped_at_its_stdout_limit() {
+        let started = Instant::now();
+        let error = sh("yes")
+            .stdout_limit(4096)
+            .run("test child", Duration::from_secs(600))
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                RunError::OutputTooLarge {
+                    stream: "stdout",
+                    limit: 4096,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(10), "{error}");
+    }
+
+    /// Stint 1626: input reaches the child's stdin whole and closed, so a
+    /// reader to end of file finishes.
+    #[test]
+    fn input_reaches_stdin_and_ends() {
+        let output = sh("cat")
+            .input(b"secret value\n".to_vec())
+            .run("test child", Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(output.stdout, b"secret value\n");
+    }
+
+    /// Input larger than the pipe holds fails before the child starts,
+    /// rather than blocking on a child that never reads.
+    #[test]
+    fn input_larger_than_a_pipe_is_an_error_not_a_wait() {
+        let started = Instant::now();
+        let error = sh("sleep 600")
+            .input(vec![b'x'; 16 * 1024 * 1024])
+            .run("test child", Duration::from_secs(600))
+            .unwrap_err();
+        assert!(matches!(error, RunError::Io { .. }), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(5), "{error}");
+    }
+
+    /// Stint 1626: discarded output is never captured, so its size cannot
+    /// fail the run.
+    #[test]
+    fn discarded_output_cannot_fail_the_run() {
+        let output = sh(&format!("head -c {} /dev/zero", CAPTURE_LIMIT * 2))
+            .discard_output()
+            .run("test child", Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(output, Output::default());
+    }
+
+    /// `arg0` is what the program sees as its name.
+    #[test]
+    fn arg0_names_the_program() {
+        let output = Helper::new("/bin/sh")
+            .arg0("shown-name")
+            .args(["-c", "echo $0"])
+            .run("test child", Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(output.stdout, b"shown-name\n");
     }
 
     /// A hung child and its descendants are killed at the limit and reaped,

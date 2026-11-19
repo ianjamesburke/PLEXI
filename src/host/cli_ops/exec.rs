@@ -24,22 +24,20 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use plexi_distribution::bounded::{Helper, RunError};
 use sha2::{Digest, Sha256};
 
 use crate::app::cli_operation::hex;
 
 /// Largest program the host will hash and copy per launch.
 pub const MAX_EXECUTABLE_BYTES: u64 = 64 * 1024 * 1024;
-const POLL_INTERVAL: Duration = Duration::from_millis(5);
-const READER_GRACE: Duration = Duration::from_millis(500);
+/// How much of stderr an outcome keeps.
 const STDERR_KEEP: usize = 2048;
 
 /// Why an executable cannot be used. Each variant maps to one guest-facing code.
@@ -461,6 +459,9 @@ pub enum Completion {
     TimedOut,
     OutputTooLarge,
     Cancelled,
+    /// The supervisor could not finish the run cleanly: the program could
+    /// not be stopped, or its output could not be read back.
+    Failed(String),
 }
 
 #[derive(Debug)]
@@ -502,126 +503,77 @@ impl Drop for RunningOperation {
     }
 }
 
-fn kill_group(pid: i32) {
-    // The child is its own process-group leader, so -pid reaches descendants.
-    // SAFETY: plain syscall on a pid this module spawned.
-    unsafe {
-        libc::kill(-pid, libc::SIGKILL);
-    }
-}
-
-/// Verify the sealed copy and spawn it under supervision.
+/// Verify the sealed copy and start it as a bounded helper, waited for on a
+/// supervisor thread. The helper leads its own session; it is killed with
+/// everything it started when it exits, at the timeout, when its stdout
+/// passes the limit, or on cancel.
 pub fn spawn_supervised(spec: LaunchSpec, wake: Wake) -> Result<RunningOperation, ExecError> {
     spec.sealed.verify()?;
     let path = spec.sealed.path().to_path_buf();
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "supervised: the operation owner streams output and enforces its own limits and cancel"
-    )]
-    let mut command = Command::new(&path);
-    command
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut helper = Helper::new(&path);
+    helper
         .arg0(&spec.display_name)
         .args(&spec.argv)
         .current_dir(&spec.cwd)
         .env_clear()
-        .envs(spec.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
-    let mut child = command.spawn().map_err(|e| io("spawn", &path, e))?;
-    let pid = child.id() as i32;
+        .stdout_limit(spec.limits.max_output as u64)
+        .cancel_on(Arc::clone(&cancel));
+    for (key, value) in &spec.env {
+        helper.env(key, value);
+    }
+    let started = helper
+        .start(&spec.display_name)
+        .map_err(|error| match error {
+            RunError::Start { source, .. } => io("spawn", &path, source),
+            other => io("spawn", &path, std::io::Error::other(other.to_string())),
+        })?;
+    let pid = started.id();
     log::info!(
         "cli_ops: launched pid={pid} program={} argc={} cwd={}",
         spec.display_name,
         spec.argv.len(),
         spec.cwd.display()
     );
-    let cancel = Arc::new(AtomicBool::new(false));
     let (tx, rx) = sync_channel::<Outcome>(1);
-    let cancel_thread = Arc::clone(&cancel);
     let limits = spec.limits;
-    let stdout_pipe = child.stdout.take();
-    let stderr_pipe = child.stderr.take();
     let sealed = spec.sealed;
+    let begun = Instant::now();
     let join = std::thread::Builder::new()
         .name("cli-op".into())
         .spawn(move || {
-            let started = Instant::now();
-            let out_buf = Arc::new(Mutex::new(Vec::<u8>::new()));
-            let overflow = Arc::new(AtomicBool::new(false));
-            let out_done = Arc::new(AtomicBool::new(false));
-            let err_buf = Arc::new(Mutex::new(Vec::<u8>::new()));
-            let err_done = Arc::new(AtomicBool::new(false));
-            spawn_reader(
-                stdout_pipe,
-                Arc::clone(&out_buf),
-                Some((limits.max_output, Arc::clone(&overflow))),
-                Arc::clone(&out_done),
-            );
-            spawn_reader(
-                stderr_pipe,
-                Arc::clone(&err_buf),
-                None,
-                Arc::clone(&err_done),
-            );
-            let deadline = started + limits.timeout;
-            let mut forced: Option<Completion> = None;
-            let status = loop {
-                match child.try_wait() {
-                    Ok(Some(status)) => break Some(status),
-                    Ok(None) => {}
-                    Err(error) => {
-                        log::error!("cli_ops: wait failed pid={pid}: {error}");
-                        break None;
-                    }
-                }
-                if cancel_thread.load(Ordering::SeqCst) {
-                    forced = Some(Completion::Cancelled);
-                } else if overflow.load(Ordering::SeqCst) {
-                    forced = Some(Completion::OutputTooLarge);
-                } else if Instant::now() >= deadline {
-                    forced = Some(Completion::TimedOut);
-                }
-                if forced.is_some() {
-                    kill_group(pid);
-                    break child.wait().ok();
-                }
-                std::thread::sleep(POLL_INTERVAL);
-            };
-            if forced.is_none() && overflow.load(Ordering::SeqCst) {
-                // The reader stopped at the cap and closed the pipe, so the
-                // program may have exited on SIGPIPE before the loop saw it.
-                forced = Some(Completion::OutputTooLarge);
-            }
-            // Whatever the leader did, nothing it started in this group survives.
-            kill_group(pid);
-            let grace = Instant::now() + READER_GRACE;
-            while !(out_done.load(Ordering::SeqCst) && err_done.load(Ordering::SeqCst))
-                && Instant::now() < grace
-            {
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            let completion = forced.unwrap_or_else(|| match status {
-                Some(status) => {
+            let (completion, stdout, stderr) = match started.wait(limits.timeout) {
+                Ok(exited) => {
                     use std::os::unix::process::ExitStatusExt;
-                    match (status.code(), status.signal()) {
+                    let completion = match (exited.status.code(), exited.status.signal()) {
                         (Some(code), _) => Completion::Exited(code),
                         (None, Some(signal)) => Completion::Signaled(signal),
                         (None, None) => Completion::Exited(-1),
-                    }
+                    };
+                    (completion, exited.output.stdout, exited.output.stderr)
                 }
-                None => Completion::Exited(-1),
-            });
-            let stdout = std::mem::take(&mut *out_buf.lock().unwrap_or_else(|e| e.into_inner()));
-            let stderr =
-                String::from_utf8_lossy(&err_buf.lock().unwrap_or_else(|e| e.into_inner()))
-                    .into_owned();
+                Err(RunError::TimedOut { stderr, .. }) => {
+                    (Completion::TimedOut, Vec::new(), stderr)
+                }
+                Err(RunError::OutputTooLarge { .. }) => {
+                    (Completion::OutputTooLarge, Vec::new(), Vec::new())
+                }
+                Err(RunError::Cancelled { .. }) => (Completion::Cancelled, Vec::new(), Vec::new()),
+                Err(error) => {
+                    log::error!("cli_ops: run failed pid={pid}: {error}");
+                    (
+                        Completion::Failed(error.to_string()),
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                }
+            };
+            let keep = stderr.len().min(STDERR_KEEP);
             let outcome = Outcome {
                 completion,
                 stdout,
-                stderr,
-                elapsed: started.elapsed(),
+                stderr: String::from_utf8_lossy(&stderr[..keep]).into_owned(),
+                elapsed: begun.elapsed(),
             };
             log::info!(
                 "cli_ops: finished pid={pid} completion={:?} stdout_bytes={} elapsed_ms={}",
@@ -641,47 +593,4 @@ pub fn spawn_supervised(spec: LaunchSpec, wake: Wake) -> Result<RunningOperation
         rx,
         join: Some(join),
     })
-}
-
-fn spawn_reader<R: Read + Send + 'static>(
-    pipe: Option<R>,
-    buf: Arc<Mutex<Vec<u8>>>,
-    cap: Option<(usize, Arc<AtomicBool>)>,
-    done: Arc<AtomicBool>,
-) {
-    let Some(mut pipe) = pipe else {
-        done.store(true, Ordering::SeqCst);
-        return;
-    };
-    let spawned = std::thread::Builder::new().name("cli-op-io".into()).spawn({
-        let done = Arc::clone(&done);
-        move || {
-            let mut chunk = [0u8; 8192];
-            loop {
-                match pipe.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        let mut guard = buf.lock().unwrap_or_else(|e| e.into_inner());
-                        match &cap {
-                            Some((max, overflow)) => {
-                                if guard.len() + n > *max {
-                                    overflow.store(true, Ordering::SeqCst);
-                                    break;
-                                }
-                                guard.extend_from_slice(&chunk[..n]);
-                            }
-                            None => {
-                                let room = STDERR_KEEP.saturating_sub(guard.len());
-                                guard.extend_from_slice(&chunk[..n.min(room)]);
-                            }
-                        }
-                    }
-                }
-            }
-            done.store(true, Ordering::SeqCst);
-        }
-    });
-    if spawned.is_err() {
-        done.store(true, Ordering::SeqCst);
-    }
 }

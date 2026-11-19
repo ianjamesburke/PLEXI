@@ -498,33 +498,28 @@ fn write_service_index(names: &[String]) -> Result<(), SecretError> {
     write_private(&service_index_path(), body.as_bytes())
 }
 
-/// Run `secret-tool`. Stdout may be a secret; callers must not log it.
+/// How long one `secret-tool` call gets. A session bus can hang while
+/// activating a locked service; secrets must never hold host startup or a
+/// CLI invocation indefinitely.
 #[cfg(all(target_os = "linux", not(test)))]
-fn secret_tool(args: &[&str], stdin: Option<&[u8]>) -> Result<std::process::Output, SecretError> {
-    // A session bus can hang while activating a locked service. Bound every
-    // call so secrets never hold host startup or a CLI invocation indefinitely.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "baseline: secret-tool needs a stdin-capable bounded helper, stint 1610 follow-up"
-    )]
-    let mut cmd = std::process::Command::new("timeout");
-    cmd.arg("5s").arg("secret-tool").args(args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    let mut child = cmd
-        .spawn()
-        .map_err(|err| SecretError::Backend(format!("secret-tool failed to start: {err}")))?;
+const SECRET_TOOL_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run `secret-tool` as a bounded helper; `stdin` (a secret being stored)
+/// is handed over in a pipe already holding it. Stdout may be a secret;
+/// callers must not log it.
+#[cfg(all(target_os = "linux", not(test)))]
+fn secret_tool(
+    args: &[&str],
+    stdin: Option<&[u8]>,
+) -> Result<plexi_distribution::bounded::Exited, SecretError> {
+    let mut helper = plexi_distribution::bounded::Helper::new("secret-tool");
+    helper.args(args);
     if let Some(bytes) = stdin {
-        if let Some(mut pipe) = child.stdin.take() {
-            pipe.write_all(bytes).map_err(|err| {
-                SecretError::Backend(format!("secret-tool stdin write failed: {err}"))
-            })?;
-        }
+        helper.input(bytes);
     }
-    child
-        .wait_with_output()
-        .map_err(|err| SecretError::Backend(format!("secret-tool wait failed: {err}")))
+    helper
+        .run_any_exit("secret-tool", SECRET_TOOL_LIMIT)
+        .map_err(|err| SecretError::Backend(err.to_string()))
 }
 
 #[cfg(all(target_os = "linux", not(test)))]
@@ -537,7 +532,7 @@ fn service_get(account: &str) -> Option<Zeroizing<String>> {
         );
         return None;
     }
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut text = String::from_utf8_lossy(&output.output.stdout).into_owned();
     if text.ends_with('\n') {
         text.pop();
         if text.ends_with('\r') {
