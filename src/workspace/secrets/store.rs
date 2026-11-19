@@ -107,11 +107,14 @@ fn keychain_read_error(code: i32, fallback: &str) -> Result<(), SecretError> {
     }
 }
 
+/// Maps the status of an attributes-only lookup in one keychain whose
+/// status check already passed. Only errSecItemNotFound means absent.
 #[cfg(any(test, all(target_os = "macos", not(test))))]
-fn keychain_contains_result(result: Result<bool, (i32, String)>) -> Result<bool, SecretError> {
-    match result {
-        Ok(found) => Ok(found),
-        Err((code, message)) => keychain_read_error(code, &message).map(|()| false),
+fn keychain_existence(code: i32) -> Result<bool, SecretError> {
+    match code {
+        0 => Ok(true),
+        _ => keychain_read_error(code, &format!("keychain lookup failed (status {code})"))
+            .map(|()| false),
     }
 }
 
@@ -183,27 +186,21 @@ fn keychain_status_message(code: i32, fallback: &str) -> String {
 #[cfg(all(target_os = "macos", not(test)))]
 pub(super) struct MacKeychain;
 
+/// Turns Keychain UI off for this call. Callers hold [`keychain_call_lock`].
+/// The switch is process-wide and an interactive scope turns it back on, so
+/// it is set on every call rather than once: a failed restore after an
+/// interactive read cannot leave a later call able to raise a dialog.
 #[cfg(all(target_os = "macos", not(test)))]
 fn silence_keychain_ui() -> Result<(), SecretError> {
-    use std::sync::OnceLock;
-
-    use security_framework::os::macos::keychain::SecKeychain;
-
-    static DONE: OnceLock<Result<(), String>> = OnceLock::new();
-    DONE.get_or_init(|| match SecKeychain::disable_user_interaction() {
-        Ok(lock) => {
-            // The lock re-enables prompts on drop. Keep interaction off for
-            // the rest of the process.
-            std::mem::forget(lock);
-            log::info!("workspace_secrets: keychain user interaction disabled");
-            Ok(())
-        }
-        Err(error) => Err(format!(
-            "could not disable keychain user interaction: {error}"
-        )),
-    })
-    .clone()
-    .map_err(SecretError::Backend)
+    let code = unsafe { security_framework_sys::keychain::SecKeychainSetUserInteractionAllowed(0) };
+    if code != 0 {
+        return Err(SecretError::Backend(format!(
+            "could not disable keychain user interaction (status {code})"
+        )));
+    }
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    LOGGED.call_once(|| log::info!("workspace_secrets: keychain user interaction disabled"));
+    Ok(())
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
@@ -307,6 +304,68 @@ fn open_explicit_keychain(
         ))
     })?;
     Ok(Some(keychain))
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+#[link(name = "Security", kind = "framework")]
+extern "C" {
+    // Not bound by security-framework-sys.
+    fn SecKeychainGetStatus(
+        keychain: security_framework_sys::base::SecKeychainRef,
+        status: *mut u32,
+    ) -> i32;
+}
+
+/// Fails with -25294 for a missing file and -25295 for a damaged one.
+#[cfg(all(target_os = "macos", not(test)))]
+fn keychain_status(
+    keychain: &security_framework::os::macos::keychain::SecKeychain,
+) -> Result<(), SecretError> {
+    use core_foundation::base::TCFType;
+
+    let mut status = 0u32;
+    let code = unsafe { SecKeychainGetStatus(keychain.as_concrete_TypeRef(), &mut status) };
+    if code == 0 {
+        return Ok(());
+    }
+    // Any nonzero status is a failure here; errSecItemNotFound cannot mean absent.
+    let message = format!("keychain status check failed (status {code})");
+    Err(keychain_read_error(code, &message)
+        .err()
+        .unwrap_or(SecretError::Backend(message)))
+}
+
+/// `SecKeychainFindGenericPassword` with null password pointers returns the
+/// item reference only, never its data. Returns the raw status.
+#[cfg(all(target_os = "macos", not(test)))]
+fn find_item_attributes_only(
+    keychain: &security_framework::os::macos::keychain::SecKeychain,
+    account: &str,
+) -> Result<i32, SecretError> {
+    use core_foundation::base::TCFType;
+    use security_framework::os::macos::keychain_item::SecKeychainItem;
+
+    let length = |text: &str| {
+        u32::try_from(text.len())
+            .map_err(|_| SecretError::Backend(format!("keychain name too long: {text}")))
+    };
+    let mut item: security_framework_sys::base::SecKeychainItemRef = std::ptr::null_mut();
+    let code = unsafe {
+        security_framework_sys::keychain::SecKeychainFindGenericPassword(
+            keychain.as_CFTypeRef(),
+            length(KEYCHAIN_SERVICE)?,
+            KEYCHAIN_SERVICE.as_ptr().cast(),
+            length(account)?,
+            account.as_ptr().cast(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut item,
+        )
+    };
+    if !item.is_null() {
+        drop(unsafe { SecKeychainItem::wrap_under_create_rule(item) });
+    }
+    Ok(code)
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
@@ -458,34 +517,23 @@ fn remove_explicit_password(
 
 #[cfg(all(target_os = "macos", not(test)))]
 impl NonDestructiveStore for MacKeychain {
+    /// Asks one keychain, the explicit test file or the default keychain that
+    /// `write_password` adds to. `SecKeychainGetStatus` runs first because the
+    /// lookup cursor skips a keychain it cannot open and reports
+    /// errSecItemNotFound for a missing or damaged file. The lookup passes
+    /// null password pointers, so only attributes are read and the item ACL
+    /// is never evaluated. A locked keychain still answers.
     fn contains(&self, account: &str) -> Result<bool, SecretError> {
-        use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
+        use security_framework::os::macos::keychain::SecKeychain;
 
         let _lock = keychain_call_lock();
         silence_keychain_ui()?;
-        let keychain = open_explicit_keychain()?;
-        let mut search = ItemSearchOptions::new();
-        search
-            .class(ItemClass::generic_password())
-            .service(KEYCHAIN_SERVICE)
-            .account(account)
-            .load_attributes(true)
-            .limit(Limit::One);
-        if let Some(keychain) = keychain.as_ref() {
-            search.keychains(std::slice::from_ref(keychain));
-        }
-        let result = search
-            .search()
-            .map(|items| !items.is_empty())
-            .map_err(|error| (error.code(), error.to_string()));
-        // An explicit file outside the search list may be invisible even when
-        // supplied in kSecMatchSearchList. Do not report that as absence.
-        if keychain.is_some() && matches!(&result, Err((-25300, _))) {
-            return Err(SecretError::Backend(
-                "cannot establish existence in the explicit keychain".into(),
-            ));
-        }
-        keychain_contains_result(result)
+        let keychain = match open_explicit_keychain()? {
+            Some(keychain) => keychain,
+            None => SecKeychain::default().map_err(explain_keychain)?,
+        };
+        keychain_status(&keychain)?;
+        keychain_existence(find_item_attributes_only(&keychain, account)?)
     }
 
     fn get_interactive(&self, account: &str) -> Result<Option<Zeroizing<String>>, SecretError> {
@@ -1077,16 +1125,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keychain_contains_distinguishes_missing_from_errors() {
-        assert!(keychain_contains_result(Ok(true)).unwrap());
-        assert!(!keychain_contains_result(Ok(false)).unwrap());
-        assert!(!keychain_contains_result(Err((-25300, "missing".into()))).unwrap());
+    fn keychain_existence_is_absent_only_for_item_not_found() {
+        assert!(keychain_existence(0).unwrap());
+        assert!(!keychain_existence(-25300).unwrap());
         assert!(matches!(
-            keychain_contains_result(Err((-25308, "interaction".into()))),
+            keychain_existence(-25308),
             Err(SecretError::Authentication(-25308))
         ));
         assert!(matches!(
-            keychain_contains_result(Err((-25294, "unavailable".into()))),
+            keychain_existence(-25294),
+            Err(SecretError::Backend(_))
+        ));
+        assert!(matches!(
+            keychain_existence(-25295),
             Err(SecretError::Backend(_))
         ));
     }
