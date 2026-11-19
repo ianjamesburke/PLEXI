@@ -18,10 +18,7 @@ use zeroize::Zeroizing;
 
 use super::store::SecretStore;
 use crate::broker::gate::{self, Admission, AdmitRequest, PermissionMonitor};
-use crate::broker::{
-    ActorScope, ActorType, Decision, ExactBinding, GrantDuration, GrantRecord, GrantSource,
-    ResourceScope, TargetType,
-};
+use crate::broker::{ActorScope, ActorType, TargetType};
 
 const ACCOUNT_PREFIX: &str = "plexi:folder:";
 /// Tool name the permission monitor admits for a folder-secret read.
@@ -206,36 +203,6 @@ pub enum ReadResult {
     PermissionRequired { pending_id: String },
     Denied,
     NotFound,
-}
-
-pub fn grant_folder_secret(
-    monitor: &PermissionMonitor,
-    store: &dyn SecretStore,
-    actor: &SecretActor,
-    name: &str,
-    folder: &Path,
-) -> Result<String, String> {
-    let folder = canonical_folder(folder)?;
-    let account = account_name(&folder, name);
-    let present = store
-        .contains(&account)
-        .map_err(|err| format!("folder secret lookup failed for '{name}': {err}"))?;
-    if !present {
-        return Err(format!("secret '{name}' not found in {}", folder.display()));
-    }
-    let record = grant_record(actor, name, &folder)?;
-    let grant_id = record.grant_id.clone();
-    {
-        let mut grants = monitor.store();
-        grants.record(record);
-        grants.save();
-    }
-    log::info!(
-        "folder_secrets: grant name={name} folder={} actor={} grant_id={grant_id}",
-        folder.display(),
-        actor.id
-    );
-    Ok(grant_id)
 }
 
 /// Admit the read before the store is touched. A missing grant audits the
@@ -904,37 +871,6 @@ fn decode_read_result(line: &str) -> Result<ReadResult, String> {
     }
 }
 
-fn grant_record(actor: &SecretActor, name: &str, folder: &Path) -> Result<GrantRecord, String> {
-    let folder_str = folder.to_string_lossy().into_owned();
-    let input = read_input_json(name, &folder_str);
-    let fingerprint = gate::fingerprint_args(&input)?;
-    let binding = ExactBinding {
-        actor_type: actor.kind,
-        actor_id: actor.id.clone(),
-        actor_scope: ActorScope::User,
-        trust_origin: TRUST_ORIGIN.to_string(),
-        workspace_root: folder.to_path_buf(),
-        target_type: TargetType::Secret,
-        target_id: SECRET_READ_TOOL.to_string(),
-        resource_scope: ResourceScope::Path,
-        resource_id: Some(format!("{name}@{folder_str}")),
-        args_fingerprint: fingerprint,
-        session_id: None,
-        package_id: String::new(),
-        instance_id: Some(0),
-        context_id: Some(0),
-        call_id: String::new(),
-        operation_id: String::new(),
-    };
-    Ok(GrantRecord::from_binding(
-        &binding,
-        Decision::Allow,
-        GrantDuration::Always,
-        GrantSource::User,
-        &format!("grant-secret-{}", uuid::Uuid::new_v4()),
-    ))
-}
-
 fn read_input_json(name: &str, folder: &str) -> String {
     serde_json::json!({
         "name": name,
@@ -1100,58 +1036,144 @@ mod tests {
         assert!(set_folder_secret(&store, "OK_NAME", &folder, "").is_err());
     }
 
+    fn pending_of(result: ReadResult) -> String {
+        match result {
+            ReadResult::PermissionRequired { pending_id } => pending_id,
+            other => panic!("expected permission_required, got {other:?}"),
+        }
+    }
+
+    /// Stint 1635: the only allow is a human decision on a pending read.
+    /// Neither the denial nor the approval fetches a value; the approval
+    /// covers that actor, name and folder only.
     #[test]
-    fn agent_without_grant_is_permission_required_and_audit_omits_the_value() {
+    fn approval_of_a_pending_read_is_the_only_allow() {
         let root = scratch();
         let folder = root.path().join("A");
+        let other_folder = root.path().join("B");
         std::fs::create_dir(&folder).unwrap();
+        std::fs::create_dir(&other_folder).unwrap();
         let store = store();
         let value = "folder-secret-unit-value-9f3c2a";
         set_folder_secret(&store, "FOLDER_E2E_SECRET", &folder, value).unwrap();
+        set_folder_secret(&store, "FOLDER_E2E_SECRET", &other_folder, "other-value").unwrap();
         let monitor = PermissionMonitor::ephemeral();
-        let actor = SecretActor::agent("reader");
-        let blocked =
-            read_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder).unwrap();
-        match blocked {
-            ReadResult::PermissionRequired { pending_id } => {
-                assert!(pending_id.starts_with("req_"));
+
+        for actor in [SecretActor::agent("reader"), SecretActor::app("mail")] {
+            super::super::store::take_test_value_reads();
+            let pending_id = pending_of(
+                read_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder).unwrap(),
+            );
+            assert!(pending_id.starts_with("req_"));
+            monitor
+                .approve_pending(&pending_id, gate::ApprovalChoice::Always)
+                .unwrap();
+            assert_eq!(
+                super::super::store::take_test_value_reads(),
+                0,
+                "denial and approval must not fetch a value"
+            );
+            match read_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder)
+                .unwrap()
+            {
+                ReadResult::Value(got) => assert_eq!(got.as_str(), value),
+                other => panic!("expected the secret, got {other:?}"),
             }
-            other => panic!("expected permission_required, got {other:?}"),
+            assert!(
+                matches!(
+                    read_folder_secret(
+                        &monitor,
+                        &store,
+                        &actor,
+                        "FOLDER_E2E_SECRET",
+                        &other_folder
+                    )
+                    .unwrap(),
+                    ReadResult::PermissionRequired { .. }
+                ),
+                "an approval for one folder must not cover another"
+            );
         }
-        let audit = monitor.audit_records();
-        assert!(!audit.is_empty());
-        let blob = serde_json::to_string(&audit_as_json(&audit)).unwrap();
-        assert!(blob.contains("FOLDER_E2E_SECRET"));
-        assert!(blob.contains("ask"));
-        assert!(!blob.contains(value));
-
-        grant_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder).unwrap();
-        let allowed =
-            read_folder_secret(&monitor, &store, &actor, "FOLDER_E2E_SECRET", &folder).unwrap();
-        match allowed {
-            ReadResult::Value(got) => assert_eq!(got.as_str(), value),
-            other => panic!("expected the secret, got {other:?}"),
-        }
-        let other = SecretActor::agent("someone-else");
-        let still =
-            read_folder_secret(&monitor, &store, &other, "FOLDER_E2E_SECRET", &folder).unwrap();
-        assert!(matches!(still, ReadResult::PermissionRequired { .. }));
-
-        let app = SecretActor::app("mail");
-        let plugin_blocked =
-            read_folder_secret(&monitor, &store, &app, "FOLDER_E2E_SECRET", &folder).unwrap();
+        let stranger = SecretActor::agent("someone-else");
         assert!(matches!(
-            plugin_blocked,
+            read_folder_secret(&monitor, &store, &stranger, "FOLDER_E2E_SECRET", &folder).unwrap(),
             ReadResult::PermissionRequired { .. }
         ));
-        grant_folder_secret(&monitor, &store, &app, "FOLDER_E2E_SECRET", &folder).unwrap();
-        let plugin_ok =
-            read_folder_secret(&monitor, &store, &app, "FOLDER_E2E_SECRET", &folder).unwrap();
-        assert!(matches!(plugin_ok, ReadResult::Value(_)));
 
-        let after = serde_json::to_string(&audit_as_json(&monitor.audit_records())).unwrap();
-        assert!(!after.contains(value));
-        assert!(after.contains("FOLDER_E2E_SECRET"));
+        let audit = serde_json::to_string(&audit_as_json(&monitor.audit_records())).unwrap();
+        assert!(audit.contains("FOLDER_E2E_SECRET"));
+        assert!(audit.contains("ask"));
+        assert!(!audit.contains(value));
+    }
+
+    /// Stint 1635: a one-shot approval is spent by the admitted attempt even
+    /// when the item is missing or the store fails.
+    #[test]
+    fn once_approval_is_spent_on_a_missing_or_failed_read() {
+        struct FailingRead;
+        impl super::super::store::NonDestructiveStore for FailingRead {
+            fn get(&self, _: &str) -> Option<Zeroizing<String>> {
+                None
+            }
+            fn get_interactive(
+                &self,
+                _: &str,
+            ) -> Result<Option<Zeroizing<String>>, super::super::store::SecretError> {
+                Err(super::super::store::SecretError::Authentication(-25293))
+            }
+            fn add_new(&self, _: &str, _: &str) -> Result<(), super::super::store::SecretError> {
+                panic!("no write expected")
+            }
+            fn delete_if_value(
+                &self,
+                _: &str,
+                _: &str,
+            ) -> Result<(), super::super::store::SecretError> {
+                panic!("no delete expected")
+            }
+            fn list_with_prefix(&self, _: &str) -> Vec<String> {
+                Vec::new()
+            }
+            fn scan_accounts(&self) -> Result<Vec<String>, super::super::store::SecretError> {
+                Ok(Vec::new())
+            }
+        }
+        impl SecretStore for FailingRead {
+            fn set(&self, _: &str, _: &str) -> Result<(), super::super::store::SecretError> {
+                panic!("no write expected")
+            }
+            fn delete(&self, _: &str) -> Result<(), super::super::store::SecretError> {
+                panic!("no delete expected")
+            }
+        }
+
+        let root = scratch();
+        let folder = root.path().join("A");
+        std::fs::create_dir(&folder).unwrap();
+        let missing = store();
+        let failing = FailingRead;
+        let stores: [&dyn SecretStore; 2] = [&missing, &failing];
+        for store in stores {
+            let monitor = PermissionMonitor::ephemeral();
+            let actor = SecretActor::agent("reader");
+            let pending_id =
+                pending_of(read_folder_secret(&monitor, store, &actor, "ABSENT", &folder).unwrap());
+            monitor
+                .approve_pending(&pending_id, gate::ApprovalChoice::Once)
+                .unwrap();
+            let spent = read_folder_secret(&monitor, store, &actor, "ABSENT", &folder);
+            assert!(
+                matches!(spent, Ok(ReadResult::NotFound) | Err(_)),
+                "{spent:?}"
+            );
+            assert!(
+                matches!(
+                    read_folder_secret(&monitor, store, &actor, "ABSENT", &folder).unwrap(),
+                    ReadResult::PermissionRequired { .. }
+                ),
+                "the one-shot approval must be spent by the attempt that used it"
+            );
+        }
     }
 
     fn audit_as_json(records: &[crate::broker::gate::AuditFact]) -> Vec<serde_json::Value> {
@@ -1252,8 +1274,8 @@ mod tests {
     }
 }
 
-/// Stint 1626 (Codex round 2): `secret rm` and a grant report a store that
-/// could not answer as that failure, never as "not found".
+/// Stint 1626 (Codex round 2): `secret rm` reports a store that could not
+/// answer as that failure, never as "not found".
 #[cfg(test)]
 mod lookup_failure_tests {
     use super::super::store::{NonDestructiveStore, SecretError, SecretStore};
@@ -1295,20 +1317,6 @@ mod lookup_failure_tests {
     fn remove_reports_a_lookup_failure_not_absence() {
         let folder = tempfile::tempdir().unwrap();
         let error = remove_folder_secret(&Unanswering, "TOKEN", folder.path()).unwrap_err();
-        assert!(error.contains("did not finish"), "{error}");
-        assert!(!error.contains("not found"), "{error}");
-    }
-
-    #[test]
-    fn grant_reports_a_lookup_failure_not_absence() {
-        let monitor = PermissionMonitor::ephemeral();
-        let folder = tempfile::tempdir().unwrap();
-        let actor = SecretActor {
-            kind: ActorType::Agent,
-            id: "pane:1626".into(),
-        };
-        let error = grant_folder_secret(&monitor, &Unanswering, &actor, "TOKEN", folder.path())
-            .unwrap_err();
         assert!(error.contains("did not finish"), "{error}");
         assert!(!error.contains("not found"), "{error}");
     }

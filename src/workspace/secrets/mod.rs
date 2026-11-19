@@ -54,7 +54,7 @@ pub use store::{NonDestructiveStore, SecretStore};
 // the macOS keychain-counting tests; every platform's tests name the in-memory
 // store. In-module callers reach both through their defining submodule.
 #[cfg(test)]
-pub use store::InMemoryKeychain;
+pub use store::{take_test_store_calls, InMemoryKeychain};
 #[cfg(all(test, target_os = "macos"))]
 pub use store::SecretError;
 
@@ -63,7 +63,7 @@ pub use reconcile::reconcile_index_with_keychain;
 
 pub use folder::{
     canonical_folder, deliver_folder_secret_choice, env_for_cwd, folder_secret_sheet_pending,
-    grant_folder_secret, list_folder_secrets, read_folder_secret, read_through_host_gate,
+    list_folder_secrets, read_folder_secret, read_through_host_gate,
     remove_folder_secret, set_folder_secret, take_folder_secret_sheet, ReadResult, SecretActor,
     SECRET_READ_TOOL,
 };

@@ -866,11 +866,24 @@ pub(super) fn migrate_linux_file_store(destination: &dyn SecretStore) {
 #[cfg(test)]
 thread_local! {
     static TEST_VALUE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static TEST_STORE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
 pub(super) fn take_test_value_reads() -> usize {
     TEST_VALUE_READS.with(|count| count.replace(0))
+}
+
+/// Every [`InMemoryKeychain`] call on this thread since the last take, so a
+/// test can prove a path never opened the store at all.
+#[cfg(test)]
+pub fn take_test_store_calls() -> usize {
+    TEST_STORE_CALLS.with(|count| count.replace(0))
+}
+
+#[cfg(test)]
+fn note_test_store_call() {
+    TEST_STORE_CALLS.with(|count| count.set(count.get() + 1));
 }
 
 /// Pure in-memory `SecretStore` for tests. Wraps a `Mutex<HashMap>` for
@@ -936,6 +949,7 @@ impl Default for InMemoryKeychain {
 #[cfg(test)]
 impl NonDestructiveStore for InMemoryKeychain {
     fn get(&self, account: &str) -> Option<Zeroizing<String>> {
+        note_test_store_call();
         TEST_VALUE_READS.with(|count| count.set(count.get() + 1));
         if self.unreadable.as_deref() == Some(account) {
             return None;
@@ -955,6 +969,7 @@ impl NonDestructiveStore for InMemoryKeychain {
     }
 
     fn add_new(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        note_test_store_call();
         let mut g = self
             .store
             .lock()
@@ -967,6 +982,7 @@ impl NonDestructiveStore for InMemoryKeychain {
     }
 
     fn delete_if_value(&self, account: &str, expected: &str) -> Result<(), SecretError> {
+        note_test_store_call();
         if self.delete_fails {
             return Err(SecretError::Backend(
                 "delete refused by test store".to_string(),
@@ -989,6 +1005,7 @@ impl NonDestructiveStore for InMemoryKeychain {
     }
 
     fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
+        note_test_store_call();
         let g = match self.store.lock() {
             Ok(g) => g,
             Err(_) => return Vec::new(),
@@ -1000,6 +1017,7 @@ impl NonDestructiveStore for InMemoryKeychain {
     }
 
     fn scan_accounts(&self) -> Result<Vec<String>, SecretError> {
+        note_test_store_call();
         let g = self
             .store
             .lock()
@@ -1011,6 +1029,7 @@ impl NonDestructiveStore for InMemoryKeychain {
 #[cfg(test)]
 impl SecretStore for InMemoryKeychain {
     fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        note_test_store_call();
         let mut g = self
             .store
             .lock()
@@ -1020,6 +1039,7 @@ impl SecretStore for InMemoryKeychain {
     }
 
     fn delete(&self, account: &str) -> Result<(), SecretError> {
+        note_test_store_call();
         if self.delete_fails {
             return Err(SecretError::Backend(
                 "delete refused by test store".to_string(),

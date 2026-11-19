@@ -1133,23 +1133,12 @@ pub fn folder_secret_rm(name: &str, folder: &std::path::Path) -> i32 {
     }
 }
 
-type HostFolderGrant = fn(
-    &crate::broker::gate::PermissionMonitor,
-    &dyn crate::workspace::secrets::SecretStore,
-    &crate::workspace::secrets::SecretActor,
-    &str,
-    &std::path::Path,
-) -> Result<String, String>;
-
 /// `plexi secret grant NAME --agent <id>`.
 ///
-/// The CLI does not write an allow. A pane agent (and any other socket
-/// client) used to open the permission monitor in this process and store a
-/// `User`/`Always` grant with no human present. The command returns
-/// `permission_denied`, audits the name and folder, and does not read the
-/// secret value. A human Allow once is `approve_pending(ApprovalChoice::Once)`
-/// on the read's pending. This command does not call
-/// [`crate::workspace::secrets::grant_folder_secret`].
+/// The CLI holds no authority to allow a read, so it refuses every valid
+/// request with `permission_denied` without discovering a folder or opening a
+/// secret store. A human Allow is `PermissionMonitor::approve_pending` on the
+/// read's pending request, through the host's folder approval sheet.
 pub fn folder_secret_grant(
     name: &str,
     agent: Option<&str>,
@@ -1159,28 +1148,14 @@ pub fn folder_secret_grant(
     if !folder_feature_available() {
         return 1;
     }
-    // Referenced, not called. `grant_folder_secret` writes an Always grant.
-    // A human click uses `approve_pending(Once)` instead. This command must
-    // not invoke the function.
-    let _host_grant: HostFolderGrant = crate::workspace::secrets::grant_folder_secret;
     let actor = match actor_from_flags(agent, app) {
         Ok(actor) => actor,
         Err(code) => return code,
     };
-    let folder = match folder {
-        Some(folder) => match crate::workspace::secrets::canonical_folder(folder) {
-            Ok(folder) => folder,
-            Err(err) => {
-                eprintln!("error: {err}");
-                return 1;
-            }
-        },
-        None => match resolve_secret_folder(name, None) {
-            Ok(folder) => folder,
-            Err(code) => return code,
-        },
+    let resource = match folder {
+        Some(folder) => format!("{name}@{}", folder.display()),
+        None => format!("{name}@<folder not supplied>"),
     };
-    let resource = format!("{name}@{}", folder.display());
     let call_id = format!("secret-grant-{}", uuid::Uuid::new_v4());
     audit_folder_denial(&actor.id, &resource, &call_id);
     println!("permission_denied");
@@ -1345,8 +1320,10 @@ mod secret_set_tests {
         assert_eq!(error, "secret 'missing' not found");
     }
 
+    /// Stint 1635: the CLI refuses a grant without touching any store, with
+    /// or without `--folder`, and writes no allow or audit.
     #[test]
-    fn cli_secret_grant_does_not_write_an_allow_or_the_value() {
+    fn cli_secret_grant_refuses_without_touching_the_store() {
         let _enabled =
             crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
         let dir = tempfile::tempdir().unwrap();
@@ -1354,8 +1331,29 @@ mod secret_set_tests {
         let _guard = crate::config::set_test_profile_dir(profile.clone());
         let folder = dir.path().join("B");
         fs::create_dir(&folder).unwrap();
-        let code = folder_secret_grant("FOLDER_B_SECRET", Some("me"), None, Some(folder.as_path()));
-        assert_eq!(code, 1);
+        // A stored binding gives folder discovery something to find.
+        crate::workspace::secrets::set_folder_secret(
+            crate::workspace::secrets::folder_store(),
+            "FOLDER_B_SECRET_1635",
+            &folder,
+            "test-only",
+        )
+        .unwrap();
+        for (agent, app, folder) in [
+            (Some("me"), None, Some(folder.as_path())),
+            (Some("me"), None, None),
+            (None, Some("mail"), Some(folder.as_path())),
+            (None, Some("mail"), None),
+        ] {
+            crate::workspace::secrets::take_test_store_calls();
+            let code = folder_secret_grant("FOLDER_B_SECRET_1635", agent, app, folder);
+            assert_eq!(code, 1);
+            assert_eq!(
+                crate::workspace::secrets::take_test_store_calls(),
+                0,
+                "a grant refusal must not open the store (folder={folder:?})"
+            );
+        }
         assert!(
             !profile.join("grants.toml").exists(),
             "the cli must not record a folder-secret allow"
@@ -1366,11 +1364,12 @@ mod secret_set_tests {
             !profile.join("permission-audit.jsonl").exists(),
             "the cli must not write the sealed audit"
         );
-        assert_eq!(
-            crate::workspace::secrets::backend_label(),
-            "in-memory",
-            "grant refusal must not select a real keychain"
-        );
+        crate::workspace::secrets::remove_folder_secret(
+            crate::workspace::secrets::folder_store(),
+            "FOLDER_B_SECRET_1635",
+            &folder,
+        )
+        .unwrap();
     }
 
     /// Helper: checks whether a given `cwd` path would be rejected by the
