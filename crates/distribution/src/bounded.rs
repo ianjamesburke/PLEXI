@@ -212,10 +212,17 @@ impl Helper {
         let deadline = Instant::now() + limit;
         let mut pause = Duration::from_millis(1);
         let status = loop {
-            if exited_unreaped(&mut child).map_err(io("wait"))? {
+            let exited = exited_unreaped(&mut child).map_err(io("wait"))?;
+            let step = next_step(Instant::now(), deadline, exited, pause);
+            if let Step::Wait(wait) = step {
+                std::thread::sleep(wait);
+                pause = (pause * 2).min(MAX_POLL);
+                continue;
+            }
+            if step == Step::Finish {
                 break finish_session(child, what)?;
             }
-            if Instant::now() >= deadline {
+            {
                 let captured = |file: &tempfile::NamedTempFile| {
                     read_capped(file.path(), CAPTURE_LIMIT)
                         .map(|(bytes, _)| bytes)
@@ -231,8 +238,6 @@ impl Helper {
                     captured(&stderr),
                 ));
             }
-            std::thread::sleep(pause);
-            pause = (pause * 2).min(MAX_POLL);
         };
         let read = |file: tempfile::NamedTempFile, stream: &'static str| {
             let (bytes, over) =
@@ -297,6 +302,27 @@ once with `ssh -T <host>`; for an https GitHub URL, run `gh auth login` then \
     message
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// The child exited inside its limit.
+    Finish,
+    /// The limit has passed, whether or not the child has exited since: an
+    /// exit seen after the limit is not a success.
+    Stop,
+    /// Check again after this long, never past the limit.
+    Wait(Duration),
+}
+
+fn next_step(now: Instant, deadline: Instant, exited: bool, pause: Duration) -> Step {
+    if now >= deadline {
+        Step::Stop
+    } else if exited {
+        Step::Finish
+    } else {
+        Step::Wait(pause.min(deadline - now))
+    }
+}
+
 /// Whether the child has exited, without reaping it, so its pid (and group
 /// id) stay reserved until the group is killed.
 #[cfg(unix)]
@@ -334,7 +360,8 @@ fn exited_unreaped(child: &mut Child) -> std::io::Result<bool> {
     child.try_wait().map(|status| status.is_some())
 }
 
-/// The child exited by itself: kill what is left of its group, then reap it.
+/// The child exited by itself: kill what is left of its session, then reap
+/// it.
 fn finish_session(mut child: Child, what: &str) -> Result<ExitStatus, RunError> {
     let killed = kill_tree(&mut child);
     let status = child.wait().map_err(|source| RunError::Io {
@@ -345,49 +372,116 @@ fn finish_session(mut child: Child, what: &str) -> Result<ExitStatus, RunError> 
     if let Err(error) = killed {
         return Err(RunError::NotStopped {
             what: what.to_string(),
-            cause: format!("it exited ({status}) but killing its process group failed: {error}"),
+            cause: format!("it exited ({status}) but its session could not be ended: {error}"),
         });
     }
     Ok(status)
 }
 
-/// Kill the child's whole process group. The child is unreaped, so its pid is
-/// still its group id. A group already gone is not a failure.
+/// How long the processes left in a helper's session get to die.
+#[cfg(unix)]
+const SESSION_KILL_LIMIT: Duration = Duration::from_secs(5);
+
+/// Kill every process in the child's session, whatever process group it moved
+/// to, and confirm none is left alive. The child leads the session, so its
+/// pid is the session id; it is unreaped, so the id cannot be reused. A
+/// process that called setsid itself has left the session and is not touched.
 #[cfg(unix)]
 fn kill_tree(child: &mut Child) -> std::io::Result<()> {
-    let leader = child.id() as libc::pid_t;
-    // SAFETY: killpg only sends a signal; the pid names an unreaped child.
-    if unsafe { libc::killpg(leader, libc::SIGKILL) } == 0 {
-        return Ok(());
-    }
-    let error = std::io::Error::last_os_error();
-    match error.raw_os_error() {
-        Some(libc::ESRCH) => Ok(()),
-        #[cfg(target_os = "macos")]
-        Some(libc::EPERM) if only_the_leader_is_left(leader) => Ok(()),
-        _ => Err(error),
+    let session = child.id() as libc::pid_t;
+    // SAFETY: kill only sends a signal; the pid names our unreaped child.
+    unsafe { libc::kill(session, libc::SIGKILL) };
+    let deadline = Instant::now() + SESSION_KILL_LIMIT;
+    loop {
+        let alive = live_session_members(session)?;
+        if alive.is_empty() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::other(format!(
+                "processes {alive:?} in its session are still alive {SESSION_KILL_LIMIT:?} after SIGKILL"
+            )));
+        }
+        for pid in alive {
+            // SAFETY: kill only sends a signal to a member of our session.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
-/// macOS refuses `killpg` with EPERM when the group holds nothing but its
-/// exited, unreaped leader, which is the normal state after a helper exits
-/// by itself. Only then is EPERM an empty group; any other member means the
-/// kill truly failed.
+/// Live processes whose session is `session`, other than its leader. Exited
+/// processes waiting to be reaped are not alive.
+#[cfg(unix)]
+fn live_session_members(session: libc::pid_t) -> std::io::Result<Vec<libc::pid_t>> {
+    Ok(all_pids()?
+        .into_iter()
+        // SAFETY: getsid only reads the session id of a pid.
+        .filter(|&pid| pid != session && unsafe { libc::getsid(pid) } == session)
+        .filter(|&pid| !is_zombie(pid))
+        .collect())
+}
+
 #[cfg(target_os = "macos")]
-fn only_the_leader_is_left(leader: libc::pid_t) -> bool {
-    let mut members = [0 as libc::pid_t; 64];
+fn all_pids() -> std::io::Result<Vec<libc::pid_t>> {
+    // SAFETY: a null buffer asks only for the number of pids.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if count < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // Room for processes started between the two calls.
+    let mut pids = vec![0 as libc::pid_t; count as usize + 64];
     // SAFETY: the buffer is valid for its full byte size; the call writes at
     // most that many bytes and returns the number of pids written.
-    let count = unsafe {
-        libc::proc_listpgrppids(
-            leader,
-            members.as_mut_ptr().cast(),
-            std::mem::size_of_val(&members) as libc::c_int,
+    let written = unsafe {
+        libc::proc_listallpids(
+            pids.as_mut_ptr().cast(),
+            std::mem::size_of_val(pids.as_slice()) as libc::c_int,
         )
     };
-    count >= 1
-        && (count as usize) < members.len()
-        && members[..count as usize].iter().all(|&pid| pid == leader)
+    if written < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    pids.truncate(written as usize);
+    Ok(pids)
+}
+
+#[cfg(target_os = "macos")]
+fn is_zombie(pid: libc::pid_t) -> bool {
+    // SAFETY: a zeroed proc_bsdinfo is a valid out-parameter.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: proc_pidinfo writes at most `size` bytes into `info`.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    // Unreadable counts as alive, so the caller looks again rather than
+    // declaring the session empty.
+    written == size && info.pbi_status == libc::SZOMB
+}
+
+#[cfg(not(target_os = "macos"))]
+#[cfg(unix)]
+fn all_pids() -> std::io::Result<Vec<libc::pid_t>> {
+    Ok(std::fs::read_dir("/proc")?
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+        .collect())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[cfg(unix)]
+fn is_zombie(pid: libc::pid_t) -> bool {
+    // The state follows the last ')' of /proc/<pid>/stat, past the command.
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(')')
+            .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
+    })
 }
 
 /// Windows kills only the child; capture through files means a surviving
@@ -589,6 +683,56 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(10));
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "done");
         assert!(died, "background job {sleeper} outlived the child");
+    }
+
+    /// Stint 1610: a descendant that moved to its own process group inside
+    /// the session dies with the child; the session ends, not just the group.
+    #[test]
+    fn a_descendant_in_another_group_dies_with_the_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let mover = dir.path().join("mover");
+        sh(&format!(
+            "perl -e 'setpgrp(0, 0); sleep 600' & echo $! > '{}'; sleep 0.3",
+            mover.display()
+        ))
+        .run("test child", Duration::from_secs(30))
+        .unwrap();
+        let mover = pid_in(&mover);
+        let died = dies_within(mover, Duration::from_secs(5));
+        kill(mover);
+        assert!(
+            died,
+            "descendant {mover} in its own group outlived the child"
+        );
+    }
+
+    /// Stint 1610: the limit is checked before an exit is accepted, so an
+    /// exit seen after it is a timeout; a wait never runs past the limit.
+    #[test]
+    fn the_limit_is_checked_before_an_exit_is_accepted() {
+        let now = Instant::now();
+        let pause = Duration::from_millis(20);
+        assert_eq!(next_step(now, now, true, pause), Step::Stop);
+        assert_eq!(next_step(now + pause, now, true, pause), Step::Stop);
+        assert_eq!(
+            next_step(now, now + Duration::from_secs(1), true, pause),
+            Step::Finish
+        );
+        assert_eq!(
+            next_step(now, now + Duration::from_millis(5), false, pause),
+            Step::Wait(Duration::from_millis(5))
+        );
+        assert_eq!(
+            next_step(now, now + Duration::from_secs(1), false, pause),
+            Step::Wait(pause)
+        );
+    }
+
+    /// With no time at all, even a child that exits at once is a timeout.
+    #[test]
+    fn a_zero_limit_never_succeeds() {
+        let error = sh("exit 0").run("test child", Duration::ZERO).unwrap_err();
+        assert!(matches!(error, RunError::TimedOut { .. }), "{error}");
     }
 
     /// A process that left the session by calling setsid itself, as the host

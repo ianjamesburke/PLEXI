@@ -1,7 +1,7 @@
 use crate::app::registry::PluginManifest;
 use crate::host::wasm_python::PythonLaunchConfig;
 use crate::host::wasm_view::UiTree;
-use plexi_distribution::bounded::Helper;
+use plexi_distribution::bounded::{Helper, RunError};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -1461,6 +1461,9 @@ fn run_python_type_check_with(
         )
     })?;
     if let Err(probe) = probe_mypy(python) {
+        if !tool_unavailable(&probe) {
+            return Err(probe.to_string());
+        }
         // One-time install into the plugin venv, mirroring how plugin
         // dependencies land there (`python_env::install_dependencies`).
         let install = Helper::new("uv")
@@ -1469,9 +1472,7 @@ fn run_python_type_check_with(
             .arg("mypy")
             .run("`uv pip install mypy`", MYPY_INSTALL_LIMIT);
         if let Err(error) = install {
-            return Ok(TypeCheckOutcome::Unavailable(format!(
-                "mypy not importable ({probe}) and installing it failed: {error}"
-            )));
+            return unavailable_or_fatal(error, &probe);
         }
         probe_mypy(python).map_err(|e| format!("mypy installed but still not importable: {e}"))?;
         log::info!(
@@ -1526,7 +1527,7 @@ const MYPY_INSTALL_LIMIT: Duration = Duration::from_secs(900);
 const MYPY_LIMIT: Duration = Duration::from_secs(300);
 const PYTHON_PROBE_LIMIT: Duration = Duration::from_secs(60);
 
-fn probe_mypy(python: &Path) -> Result<(), String> {
+fn probe_mypy(python: &Path) -> Result<(), RunError> {
     Helper::new(python)
         .args(["-m", "mypy", "--version"])
         .run(
@@ -1534,7 +1535,24 @@ fn probe_mypy(python: &Path) -> Result<(), String> {
             PYTHON_PROBE_LIMIT,
         )
         .map(|_| ())
-        .map_err(|e| e.to_string())
+}
+
+/// mypy is optional: a tool that would not start or exited non-zero is
+/// unavailable. A hang, an unstopped process or cut output is a failure of
+/// the check, never a pass.
+fn tool_unavailable(error: &RunError) -> bool {
+    matches!(error, RunError::Start { .. } | RunError::Failed { .. })
+}
+
+/// The outcome when installing mypy failed after `probe` found it missing.
+fn unavailable_or_fatal(install: RunError, probe: &RunError) -> Result<TypeCheckOutcome, String> {
+    if tool_unavailable(&install) {
+        Ok(TypeCheckOutcome::Unavailable(format!(
+            "mypy not importable ({probe}) and installing it failed: {install}"
+        )))
+    } else {
+        Err(format!("installing mypy failed: {install}"))
+    }
 }
 
 fn analyze_python_entry(
@@ -2224,6 +2242,48 @@ profile_dir = ".plexi-beta"
 
 #[cfg(test)]
 mod type_check_tests {
+    /// Stint 1610: only a missing or failing tool makes mypy unavailable; a
+    /// hung, unstopped or oversized install fails the check.
+    #[test]
+    fn only_a_missing_tool_makes_mypy_unavailable() {
+        use plexi_distribution::bounded::RunError;
+        let probe = RunError::Start {
+            what: "mypy probe".into(),
+            source: std::io::Error::from(std::io::ErrorKind::NotFound),
+        };
+        let missing = RunError::Start {
+            what: "uv".into(),
+            source: std::io::Error::from(std::io::ErrorKind::NotFound),
+        };
+        assert!(matches!(
+            super::unavailable_or_fatal(missing, &probe),
+            Ok(super::TypeCheckOutcome::Unavailable(_))
+        ));
+        for fatal in [
+            RunError::TimedOut {
+                what: "uv".into(),
+                limit: std::time::Duration::from_secs(1),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+            RunError::NotStopped {
+                what: "uv".into(),
+                cause: "test".into(),
+            },
+            RunError::OutputTooLarge {
+                what: "uv".into(),
+                stream: "stdout",
+                limit: 1,
+            },
+        ] {
+            let text = fatal.to_string();
+            assert!(
+                super::unavailable_or_fatal(fatal, &probe).is_err(),
+                "{text} must fail the check"
+            );
+        }
+    }
+
     use super::*;
 
     /// Stint 0415, both halves of the contract: (1) a plugin reading a field

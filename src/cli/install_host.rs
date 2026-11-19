@@ -112,6 +112,30 @@ fn run_git(
         .map_err(|error| plexi_distribution::bounded::git_error(&error))
 }
 
+/// A ref already present needs no fetch, so a fetch that failed or timed out
+/// (and was stopped) falls back to the local ref. A fetch that could not be
+/// stopped may still be writing the repository, and output that was cut is
+/// incomplete: both are fatal.
+fn fetch_or_fall_back(
+    fetched: Result<plexi_distribution::bounded::Output, plexi_distribution::bounded::RunError>,
+    git_ref: &str,
+) -> Result<(), String> {
+    use plexi_distribution::bounded::RunError;
+    match fetched {
+        Ok(_) => Ok(()),
+        Err(
+            error @ (RunError::Start { .. } | RunError::Failed { .. } | RunError::TimedOut { .. }),
+        ) => {
+            log::info!(
+                "install_host: {}; trying checkout of {git_ref} anyway",
+                plexi_distribution::bounded::git_error(&error)
+            );
+            Ok(())
+        }
+        Err(error) => Err(plexi_distribution::bounded::git_error(&error)),
+    }
+}
+
 fn git_in(dir: &Path) -> Helper {
     let mut helper = plexi_distribution::bounded::git();
     helper.current_dir(dir);
@@ -134,13 +158,10 @@ impl Cloner for GitCloner {
         // For shallow clones we may need the ref fetched explicitly. A ref
         // already present needs no fetch, so a failure here is not fatal;
         // the checkout decides.
-        if let Err(error) = run_git(
-            git_in(repo_dir).args(["fetch", "--depth", "1", "origin", git_ref]),
-            &format!("git fetch {git_ref}"),
-            self.network_limit,
-        ) {
-            log::info!("install_host: {error}; trying checkout of {git_ref} anyway");
-        }
+        let fetched = git_in(repo_dir)
+            .args(["fetch", "--depth", "1", "origin", git_ref])
+            .run(&format!("git fetch {git_ref}"), self.network_limit);
+        fetch_or_fall_back(fetched, git_ref)?;
         run_git(
             git_in(repo_dir).args(["checkout", git_ref]),
             &format!("git checkout {git_ref}"),
@@ -1301,6 +1322,25 @@ mod install_tests {
         let error = result.unwrap_err();
         assert!(error.contains("did not finish within"), "{error}");
         drop(held);
+    }
+
+    /// Stint 1610: a fetch that could not be stopped fails the checkout;
+    /// an ordinary fetch failure falls back to the local ref.
+    #[test]
+    fn an_unstopped_fetch_fails_the_checkout() {
+        use plexi_distribution::bounded::RunError;
+        let unstopped = Err(RunError::NotStopped {
+            what: "git fetch v1".into(),
+            cause: "test".into(),
+        });
+        assert!(fetch_or_fall_back(unstopped, "v1").is_err());
+        let timed_out = Err(RunError::TimedOut {
+            what: "git fetch v1".into(),
+            limit: Duration::from_secs(1),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        });
+        assert!(fetch_or_fall_back(timed_out, "v1").is_ok());
     }
 
     /// Stint 1610: a clone through the bounded runner still works end to end.
