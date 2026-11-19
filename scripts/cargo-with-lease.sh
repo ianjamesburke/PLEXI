@@ -51,6 +51,7 @@ export PLEXI_CARGO_JOB_CLASS="$job_class"
 # Cargo checks freshness, so the slot never serves an artifact compiled from
 # another worktree's sources (stint 1630; contract in scripts/build-cache.py).
 # Runs before the nesting guard: a nested call may build a different tree.
+# Its log goes to stderr so the wrapped command's stdout stays parseable.
 if [[ -n "${PLEXI_BUILD_CACHE_SLOT:-}" ]]; then
   python3 "$(dirname "${BASH_SOURCE[0]}")/build-cache.py" sync-sources
 fi

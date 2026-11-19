@@ -201,10 +201,11 @@ def load_sources(slot):
         return None
     except (OSError, ValueError) as error:
         print(f"build-cache: sources record unreadable at {path} ({error}); treating every file as changed",
-              flush=True)
+              file=sys.stderr, flush=True)
         return None
     if not isinstance(record, dict) or record.get("schema") != SOURCES_SCHEMA:
-        print(f"build-cache: sources record at {path} has another schema; treating every file as changed", flush=True)
+        print(f"build-cache: sources record at {path} has another schema; treating every file as changed",
+              file=sys.stderr, flush=True)
         return None
     return record
 
@@ -238,7 +239,7 @@ def sync_sources(slot, tree, run):
         if record is not None and record["run"] != run and not record["settled"]:
             # An earlier run ended without settling (killed): its last tree may
             # have changed under a compile. Nothing it recorded can be trusted.
-            print(f"build-cache: sources from unsettled run {record['run']} discarded", flush=True)
+            print(f"build-cache: sources from unsettled run {record['run']} discarded", file=sys.stderr, flush=True)
             record = None
         if record is not None and record["run"] == run and record["tree"] != str(tree):
             forget_drift(record)
@@ -258,7 +259,7 @@ def sync_sources(slot, tree, run):
         save_sources(slot, {"schema": SOURCES_SCHEMA, "run": run, "settled": False, "tree": str(tree),
                             "files": files})
     print(f"build-cache: sources tree={tree} files={len(files)} changed={changed} raised={raised} "
-          f"(changed files rebuild; unchanged files keep their stamp and stay cache hits)", flush=True)
+          f"(changed files rebuild; unchanged files keep their stamp and stay cache hits)", file=sys.stderr, flush=True)
     return changed
 
 

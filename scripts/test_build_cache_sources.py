@@ -118,6 +118,16 @@ class SharedSlotTest(Fixture):
         self.assertIn('changed=0', log)
 
 
+    def test_registration_keeps_the_wrapped_commands_stdout_clean(self):
+        # filter_check parses `cargo test -- --list` from the wrapper's stdout.
+        tree = self.worktree('tree', self.two)
+        out = self.root / 'stdout.txt'
+        result = self.call('python3', 'scripts/build-cache.py', 'task-1630', 'bash', '-c',
+                           f'bash scripts/cargo-with-lease.sh echo listed > {out}', cwd=tree)
+        self.assertEqual(out.read_text(), 'listed\n')
+        self.assertIn('build-cache: sources tree=', result.stderr)
+
+
 class StampTest(Fixture):
     """The per-file stamps directly: what is raised, what is kept, what is forgotten."""
 
