@@ -1541,7 +1541,7 @@ fn probe_mypy(python: &Path) -> Result<(), RunError> {
 /// unavailable. A hang, an unstopped process or cut output is a failure of
 /// the check, never a pass.
 fn tool_unavailable(error: &RunError) -> bool {
-    matches!(error, RunError::Start { .. } | RunError::Failed { .. })
+    error.is_tool_failure()
 }
 
 /// The outcome when installing mypy failed after `probe` found it missing.

@@ -16,6 +16,14 @@
 //! `RunError::NotStopped`.
 //!
 //! Output past `CAPTURE_LIMIT` is `RunError::OutputTooLarge`, never cut bytes.
+//!
+//! Callers: a helper that changes state (an install, a venv, a git checkout,
+//! a copy) fails its caller on any error except `RunError::is_tool_failure`,
+//! and only where the tool is optional. A read-only probe (a version, a
+//! path, `--help`, hardware facts) may degrade to "unknown" on any error,
+//! since it changed nothing. LaunchServices registration after an install
+//! has committed is the one state-changing helper that degrades; see
+//! `transaction::lsregister`.
 //! Windows kills only the child; descendants there are stint 1613.
 
 use std::ffi::OsStr;
@@ -81,6 +89,17 @@ pub enum RunError {
         action: &'static str,
         source: std::io::Error,
     },
+}
+
+impl RunError {
+    /// The tool would not start or exited non-zero: it said no, and nothing
+    /// of it is left running or was cut short. A caller for which the tool
+    /// is optional may degrade on this. Every other error (a timeout, a run
+    /// that could not be stopped, cut output, an I/O failure) means the work
+    /// is in an unknown state, and a caller that changes state must fail.
+    pub fn is_tool_failure(&self) -> bool {
+        matches!(self, Self::Start { .. } | Self::Failed { .. })
+    }
 }
 
 fn stderr_suffix(stderr: &[u8]) -> String {

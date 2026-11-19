@@ -1184,6 +1184,12 @@ fn finish_bundle_swap(swap: &BundleSwap) {
     }
 }
 
+/// Register (`-f`) or unregister (`-u`) a bundle with LaunchServices. Every
+/// error degrades to a log line, including a run that could not be stopped:
+/// it runs after the install has committed or while an uninstall removes the
+/// bundle, the registration only tells Finder and Spotlight about the
+/// bundle, and LaunchServices rescans bundles itself. The installed files
+/// are correct either way.
 #[cfg(target_os = "macos")]
 fn lsregister(flag: &str, path: &Path) {
     const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";

@@ -1,4 +1,4 @@
-use plexi_distribution::bounded::Helper;
+use plexi_distribution::bounded::{Helper, RunError};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -27,11 +27,41 @@ const UV_LIMITS: UvLimits = UvLimits {
     install: Duration::from_secs(900),
 };
 
+/// Why a plugin's Python environment could not be prepared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum VenvError {
+    /// uv or Python is missing, too old, or refused: the plugin is installed
+    /// but will not launch until its environment is fixed.
+    Unavailable(String),
+    /// A uv or Python helper timed out, could not be stopped, or its output
+    /// was cut: the environment is in an unknown state and may still be
+    /// changing.
+    Fatal(String),
+}
+
+impl std::fmt::Display for VenvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(message) | Self::Fatal(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<RunError> for VenvError {
+    fn from(error: RunError) -> Self {
+        if error.is_tool_failure() {
+            Self::Unavailable(error.to_string())
+        } else {
+            Self::Fatal(error.to_string())
+        }
+    }
+}
+
 pub(crate) fn ensure_plugin_venv(
     plugin_id: &str,
     plugin_dir: &Path,
     dependencies: &[String],
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, VenvError> {
     ensure_plugin_venv_using(
         OsStr::new("uv"),
         plugin_id,
@@ -47,7 +77,7 @@ fn ensure_plugin_venv_using(
     plugin_dir: &Path,
     dependencies: &[String],
     limits: &UvLimits,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, VenvError> {
     let venv_path = plugin_dir.join(".venv");
     let python = venv_path.join("bin").join("python");
 
@@ -62,20 +92,24 @@ fn ensure_plugin_venv_using(
     }
 
     if venv_path.exists() {
-        return Err(format!(
+        return Err(VenvError::Unavailable(format!(
             "{} exists but {} is missing; remove the broken venv and retry",
             venv_path.display(),
             python.display()
-        ));
+        )));
     }
 
     Helper::new(uv)
         .arg("--version")
         .run("`uv --version`", limits.probe)
         .map_err(|e| {
-            format!(
+            let message = format!(
                 "`uv` is required to create a Python {PYTHON_APP_VENV_VERSION} plugin venv but did not run: {e}"
-            )
+            );
+            match VenvError::from(e) {
+                VenvError::Unavailable(_) => VenvError::Unavailable(message),
+                VenvError::Fatal(_) => VenvError::Fatal(message),
+            }
         })?;
 
     Helper::new(uv)
@@ -87,8 +121,7 @@ fn ensure_plugin_venv_using(
                 venv_path.display()
             ),
             limits.venv,
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
 
     let version = check_python_version(&python, limits.probe)?;
     log::info!(
@@ -113,7 +146,8 @@ pub(crate) fn resolve_python_runtime(
     })?;
 
     if ensure_venv {
-        let python = ensure_plugin_venv(plugin_id, plugin_dir, dependencies)?;
+        let python =
+            ensure_plugin_venv(plugin_id, plugin_dir, dependencies).map_err(|e| e.to_string())?;
         return runtime_from_path("venv", python);
     }
 
@@ -139,7 +173,7 @@ pub(crate) fn bundled_python_bin_dir() -> Option<PathBuf> {
 }
 
 fn runtime_from_path(source: &str, python: PathBuf) -> Result<PythonRuntime, String> {
-    let version = check_python_version(&python, UV_LIMITS.probe)?;
+    let version = check_python_version(&python, UV_LIMITS.probe).map_err(|e| e.to_string())?;
     Ok(PythonRuntime {
         executable: OsString::from(&python),
         label: format!("{source}: {}", python.display()),
@@ -153,7 +187,7 @@ fn install_dependencies(
     python: &Path,
     dependencies: &[String],
     limits: &UvLimits,
-) -> Result<(), String> {
+) -> Result<(), VenvError> {
     if dependencies.is_empty() {
         return Ok(());
     }
@@ -164,8 +198,7 @@ fn install_dependencies(
         .run(
             &format!("`uv pip install --python {}`", python.display()),
             limits.install,
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
     log::info!(
         "python_env[{plugin_id}]: installed {} Python dep(s): {}",
         dependencies.len(),
@@ -174,14 +207,13 @@ fn install_dependencies(
     Ok(())
 }
 
-fn check_python_version(python: &Path, limit: Duration) -> Result<String, String> {
+fn check_python_version(python: &Path, limit: Duration) -> Result<String, VenvError> {
     let exited = Helper::new(python)
         .arg("-c")
         .arg(
             "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}'); sys.exit(0 if sys.version_info >= (3, 11) else 42)",
         )
-        .run_any_exit(&format!("Python interpreter {}", python.display()), limit)
-        .map_err(|e| e.to_string())?;
+        .run_any_exit(&format!("Python interpreter {}", python.display()), limit)?;
     let version = String::from_utf8_lossy(&exited.output.stdout)
         .trim()
         .to_string();
@@ -193,10 +225,10 @@ fn check_python_version(python: &Path, limit: Duration) -> Result<String, String
     } else {
         version
     };
-    Err(format!(
+    Err(VenvError::Unavailable(format!(
         "Python interpreter {} is {rendered_version}; Plexi SDK v3 requires Python >= 3.11",
         python.display()
-    ))
+    )))
 }
 
 fn bundled_python() -> Option<PathBuf> {
@@ -246,6 +278,9 @@ mod tests {
             .recv_timeout(Duration::from_secs(20))
             .expect("ensure_plugin_venv returned inside its limit");
         let error = result.unwrap_err();
-        assert!(error.contains("did not finish within"), "{error}");
+        assert!(
+            matches!(&error, VenvError::Fatal(message) if message.contains("did not finish within")),
+            "a hung uv must be fatal: {error:?}"
+        );
     }
 }

@@ -16,6 +16,7 @@
 //! from the embedded `plugins/` tree.
 
 use crate::app::packs::{parse_source_spec, Pack, PackPlugin, SourceSpec};
+use crate::app::python_env::VenvError;
 use crate::app::registry::{PluginManifest, MANIFEST_SCHEMA_VERSION};
 use plexi_distribution::bounded::Helper;
 use std::collections::HashMap;
@@ -250,24 +251,35 @@ pub fn install_one(
     git_ref: Option<&str>,
     target_root: &Path,
 ) -> Result<InstallOutcome, String> {
-    install_one_with_ref_policy(cloner, source, git_ref, target_root, GitRefPolicy::Strict)
+    install_one_with_ref_policy(
+        cloner,
+        &UvProvisioner,
+        source,
+        git_ref,
+        target_root,
+        GitRefPolicy::Strict,
+    )
 }
 
 fn install_one_with_ref_policy(
     cloner: &dyn Cloner,
+    provision: &dyn Provision,
     source: &SourceSpec,
     git_ref: Option<&str>,
     target_root: &Path,
     ref_policy: GitRefPolicy,
 ) -> Result<InstallOutcome, String> {
     match source {
-        SourceSpec::Git(url) => install_one_git(cloner, url, git_ref, target_root, ref_policy),
-        SourceSpec::Local(name) => install_one_local(name, target_root),
+        SourceSpec::Git(url) => {
+            install_one_git(cloner, provision, url, git_ref, target_root, ref_policy)
+        }
+        SourceSpec::Local(name) => install_one_local(provision, name, target_root),
     }
 }
 
 fn install_one_git(
     cloner: &dyn Cloner,
+    provision: &dyn Provision,
     url: &str,
     git_ref: Option<&str>,
     target_root: &Path,
@@ -345,7 +357,7 @@ fn install_one_git(
     cleanup(&stage_root);
 
     chmod_python_entries(&dest);
-    provision_venv(&id, &dest, &manifest);
+    provision_venv(provision, &id, &dest, &manifest)?;
     write_installed_version_file(&dest, &manifest.plugin.version);
     log::info!("install: id={} ref={}", id, git_ref.unwrap_or("default"));
     Ok(InstallOutcome {
@@ -354,7 +366,11 @@ fn install_one_git(
     })
 }
 
-fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, String> {
+fn install_one_local(
+    provision: &dyn Provision,
+    name: &str,
+    target_root: &Path,
+) -> Result<InstallOutcome, String> {
     std::fs::create_dir_all(target_root)
         .map_err(|e| format!("create plugins dir {}: {e}", target_root.display()))?;
 
@@ -396,7 +412,7 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
         .extract(target_root)
         .map_err(|e| format!("extract local '{name}' → {}: {e}", target_root.display()))?;
     chmod_python_entries(&dest);
-    provision_venv(&id, &dest, &manifest);
+    provision_venv(provision, &id, &dest, &manifest)?;
     write_installed_version_file(&dest, &manifest.plugin.version);
     log::info!("install: {id} ← local:{name}");
     Ok(InstallOutcome {
@@ -468,22 +484,74 @@ fn chmod_python_entries(plugin_dir: &Path) {
 #[cfg(not(unix))]
 fn chmod_python_entries(_plugin_dir: &Path) {}
 
-fn provision_venv(plugin_id: &str, plugin_dir: &Path, manifest: &PluginManifest) {
-    let entry = &manifest.plugin.entry;
-    let is_python = entry.ends_with(".py");
-    if !is_python {
-        return;
-    }
+/// Prepares an installed plugin's runtime. Production: [`UvProvisioner`].
+pub(crate) trait Provision {
+    fn provision(
+        &self,
+        plugin_id: &str,
+        plugin_dir: &Path,
+        manifest: &PluginManifest,
+    ) -> Result<(), VenvError>;
+}
 
-    match crate::app::python_env::ensure_plugin_venv(plugin_id, plugin_dir, &manifest.plugin.dependencies) {
-        Ok(python) => log::info!(
+/// Creates a Python plugin's venv and installs its dependencies with uv.
+pub(crate) struct UvProvisioner;
+
+impl Provision for UvProvisioner {
+    fn provision(
+        &self,
+        plugin_id: &str,
+        plugin_dir: &Path,
+        manifest: &PluginManifest,
+    ) -> Result<(), VenvError> {
+        if !manifest.plugin.entry.ends_with(".py") {
+            return Ok(());
+        }
+        let python = crate::app::python_env::ensure_plugin_venv(
+            plugin_id,
+            plugin_dir,
+            &manifest.plugin.dependencies,
+        )?;
+        log::info!(
             "install[{plugin_id}]: Python plugin environment ready at {}",
             python.display()
-        ),
-        Err(e) => log::warn!(
-            "install[{plugin_id}]: Python plugin environment setup failed: {e}; plugin may not launch until `plexi plugin check {}` succeeds",
-            plugin_dir.display()
-        ),
+        );
+        Ok(())
+    }
+}
+
+/// Provision an installed plugin. A missing or refusing uv or Python leaves
+/// the plugin installed with a warning, as before. A provisioning helper
+/// that timed out, could not be stopped or was cut leaves the environment
+/// unknown and possibly still changing: the install fails and the plugin
+/// directory is removed.
+fn provision_venv(
+    provision: &dyn Provision,
+    plugin_id: &str,
+    plugin_dir: &Path,
+    manifest: &PluginManifest,
+) -> Result<(), String> {
+    match provision.provision(plugin_id, plugin_dir, manifest) {
+        Ok(()) => Ok(()),
+        Err(VenvError::Unavailable(e)) => {
+            log::warn!(
+                "install[{plugin_id}]: Python plugin environment setup failed: {e}; plugin may not launch until `plexi plugin check {}` succeeds",
+                plugin_dir.display()
+            );
+            Ok(())
+        }
+        Err(VenvError::Fatal(e)) => {
+            log::error!("install[{plugin_id}]: Python plugin environment setup failed: {e}");
+            if let Err(remove) = std::fs::remove_dir_all(plugin_dir) {
+                log::error!(
+                    "install[{plugin_id}]: could not remove {} after the failed setup: {remove}",
+                    plugin_dir.display()
+                );
+            }
+            Err(format!(
+                "install {plugin_id}: Python environment setup failed: {e}"
+            ))
+        }
     }
 }
 
@@ -505,11 +573,22 @@ pub fn apply_pack(
     target_root: &Path,
     refresh_local: bool,
 ) -> Vec<InstallOutcome> {
+    apply_pack_with(cloner, &UvProvisioner, pack, target_root, refresh_local)
+}
+
+fn apply_pack_with(
+    cloner: &dyn Cloner,
+    provision: &dyn Provision,
+    pack: &Pack,
+    target_root: &Path,
+    refresh_local: bool,
+) -> Vec<InstallOutcome> {
     let mut outcomes = Vec::with_capacity(pack.plugins.len());
     let installed = installed_versions(target_root);
     for entry in &pack.plugins {
         outcomes.push(apply_pack_entry(
             cloner,
+            provision,
             entry,
             target_root,
             &installed,
@@ -520,7 +599,12 @@ pub fn apply_pack(
 }
 
 /// Replace an installed `local:` plugin with the copy embedded in this binary.
-fn refresh_one_local(name: &str, id: &str, target_root: &Path) -> InstallOutcome {
+fn refresh_one_local(
+    provision: &dyn Provision,
+    name: &str,
+    id: &str,
+    target_root: &Path,
+) -> InstallOutcome {
     let dest = target_root.join(id);
     if let Err(e) = std::fs::remove_dir_all(&dest) {
         return InstallOutcome {
@@ -528,7 +612,7 @@ fn refresh_one_local(name: &str, id: &str, target_root: &Path) -> InstallOutcome
             status: InstallStatus::Failed(format!("refresh: remove {}: {e}", dest.display())),
         };
     }
-    match install_one_local(name, target_root) {
+    match install_one_local(provision, name, target_root) {
         Ok(o) => {
             log::info!("install: refreshed {} ← local:{name}", o.id);
             InstallOutcome {
@@ -548,6 +632,7 @@ fn refresh_one_local(name: &str, id: &str, target_root: &Path) -> InstallOutcome
 
 fn apply_pack_entry(
     cloner: &dyn Cloner,
+    provision: &dyn Provision,
     entry: &PackPlugin,
     target_root: &Path,
     installed: &HashMap<String, String>,
@@ -556,7 +641,7 @@ fn apply_pack_entry(
     if let Some(installed_version) = installed.get(&entry.id) {
         if refresh_local {
             if let Ok(SourceSpec::Local(name)) = parse_source_spec(&entry.source) {
-                return refresh_one_local(&name, &entry.id, target_root);
+                return refresh_one_local(provision, &name, &entry.id, target_root);
             }
         }
         if installed_version == &entry.version {
@@ -588,6 +673,7 @@ fn apply_pack_entry(
     };
     match install_one_with_ref_policy(
         cloner,
+        provision,
         &source,
         git_ref,
         target_root,
@@ -1752,6 +1838,43 @@ mod pack_tests {
         }
         let ok = outcomes.iter().find(|o| o.id == "ok").unwrap();
         assert!(matches!(ok.status, InstallStatus::Installed(_)));
+    }
+
+    /// Stint 1610: a Python environment setup that could not be stopped
+    /// fails the pack entry and removes the plugin, instead of reporting
+    /// Installed; a missing uv still installs with a warning.
+    #[test]
+    fn pack_apply_fails_an_entry_whose_provisioning_could_not_be_stopped() {
+        struct Stuck(VenvError);
+        impl Provision for Stuck {
+            fn provision(&self, _: &str, _: &Path, _: &PluginManifest) -> Result<(), VenvError> {
+                Err(self.0.clone())
+            }
+        }
+        let target = tempfile::tempdir().unwrap();
+        let cloner = MockCloner::new();
+        let pack = pack_with(&[("stuck", "github:owner/stuck", "0.0.1")]);
+        let stuck = Stuck(VenvError::Fatal(
+            "`uv pip install` could not be stopped".into(),
+        ));
+
+        let outcomes = apply_pack_with(&cloner, &stuck, &pack, target.path(), false);
+
+        assert!(
+            matches!(&outcomes[0].status, InstallStatus::Failed(msg) if msg.contains("could not be stopped")),
+            "got {:?}",
+            outcomes[0].status
+        );
+        assert!(!target.path().join("stuck").exists());
+
+        let target = tempfile::tempdir().unwrap();
+        let missing = Stuck(VenvError::Unavailable("could not start uv".into()));
+        let outcomes = apply_pack_with(&cloner, &missing, &pack, target.path(), false);
+        assert!(
+            matches!(outcomes[0].status, InstallStatus::Installed(_)),
+            "got {:?}",
+            outcomes[0].status
+        );
     }
 
     /// Stint 1610: a checkout that could not be stopped fails the pack entry

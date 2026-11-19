@@ -181,7 +181,12 @@ pub fn plugin_init(
                     Ok(python) => {
                         println!("  Python venv: {}", python.display());
                     }
-                    Err(e) => {
+                    Err(crate::app::python_env::VenvError::Fatal(e)) => {
+                        log::error!("plugin_init[{name}]: Python venv setup failed: {e}");
+                        eprintln!("error: plugin created, but its Python venv setup failed: {e}");
+                        return 1;
+                    }
+                    Err(crate::app::python_env::VenvError::Unavailable(e)) => {
                         let entry_path = plugin_dir.join("main.py");
                         match crate::app::python_env::resolve_python_runtime(
                             name,

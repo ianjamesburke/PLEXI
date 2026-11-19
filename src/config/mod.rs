@@ -2634,6 +2634,12 @@ pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
             .run("`open`", OPEN_LIMIT);
         if let Err(error) = &opened {
             log::info!("open_file_with_fallback: `open {args:?}` failed: {error}");
+            // A next opener is tried only when this one refused; after a hang
+            // or an `open` that could not be stopped, a second could open the
+            // file twice.
+            if !error.is_tool_failure() {
+                return false;
+            }
         }
         if opened.is_ok() {
             log::info!(
