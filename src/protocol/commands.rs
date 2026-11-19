@@ -1010,7 +1010,7 @@ pub enum HostRequest {
     },
 
     /// Deliver a synthetic click to a view pane by node id, activating the
-    /// Button/TextInput/ListView node the id names — the node-addressed
+    /// Button/TextInput/list-row node the id names — the node-addressed
     /// sibling of `ClickPane` (stint 0414). Sent by
     /// `plexi pane click <pane_id> --node <node_id>`. `node_id` matches
     /// `SemanticPaneNode.id`, the id `plexi pane state` reports for every

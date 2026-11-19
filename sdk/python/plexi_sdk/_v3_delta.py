@@ -17,9 +17,13 @@ from __future__ import annotations
 # Wire type aliases map to their child field and whether it contains a list.
 # Keep this aligned with decode_node_data and validate_python_ui_tree in the host.
 CONTAINER_FIELDS = {
-    **dict.fromkeys(("column", "row", "datatable", "data_table", "table"), ("children", True)),
+    **dict.fromkeys(("column", "row"), ("children", True)),
+    **dict.fromkeys(("table", "datatable", "data_table"), ("rows", True)),
     **dict.fromkeys(("listview", "list_view", "list-view"), ("items", True)),
-    **dict.fromkeys(("scroll", "padding", "card", "pinned"), ("child", False)),
+    **dict.fromkeys(
+        ("scroll", "padding", "card", "pinned", "listitem", "list_item", "list-item"),
+        ("child", False),
+    ),
 }
 
 

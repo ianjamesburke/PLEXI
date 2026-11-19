@@ -58,10 +58,44 @@ impl UiTree {
                 UiNodeData::Text(t) => Some(t.text.clone()),
                 UiNodeData::Button(b) => Some(b.label.clone()),
                 UiNodeData::Badge(b) => Some(b.text.clone()),
+                UiNodeData::Table(t) if !t.columns.is_empty() => Some(t.columns.join("\n")),
+                UiNodeData::TableRow(r) if !r.cells.is_empty() => Some(r.cells.join("\n")),
                 _ => None,
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+/// The node ids `data` references as children, in paint order. The one edge
+/// list every tree walk reads (decode validation, reachability, plugin check,
+/// pane state), so a new container kind is wired everywhere by one match.
+/// Container arms come first; the leaf arm opens with `Empty` (the SDK's
+/// `test_container_table_covers_host_decoder` reads that boundary).
+pub(crate) fn children(data: &UiNodeData) -> &[u32] {
+    match data {
+        UiNodeData::Row(row) => &row.children,
+        UiNodeData::Column(column) => &column.children,
+        UiNodeData::ListView(list) => &list.items,
+        UiNodeData::Table(table) => &table.rows,
+        UiNodeData::ListItem(item) => std::slice::from_ref(&item.child),
+        UiNodeData::Scroll(scroll) => std::slice::from_ref(&scroll.child),
+        UiNodeData::Padding(padding) => std::slice::from_ref(&padding.child),
+        UiNodeData::Pinned(pinned) => std::slice::from_ref(&pinned.child),
+        UiNodeData::Empty
+        | UiNodeData::Text(_)
+        | UiNodeData::Button(_)
+        | UiNodeData::TextInput(_)
+        | UiNodeData::ProgressBar(_)
+        | UiNodeData::Badge(_)
+        | UiNodeData::Canvas(_)
+        | UiNodeData::Divider
+        | UiNodeData::Space(_)
+        | UiNodeData::Surface(_)
+        | UiNodeData::SurfaceHeader(_)
+        | UiNodeData::FooterKeys(_)
+        | UiNodeData::Spinner(_)
+        | UiNodeData::TableRow(_) => &[],
     }
 }
 
@@ -651,6 +685,25 @@ fn host_wit_package() -> &'static str {
         .unwrap_or("plexi:platform (version unavailable)")
 }
 
+/// The `plexi:platform` package a component was built against, when it is not
+/// the host's. A WIT version bump renames every interface, so a component from
+/// an older SDK would otherwise fail to link as if it lacked a grant.
+fn foreign_sdk_package(engine: &Engine, component: &Component) -> Option<String> {
+    let host = host_wit_package();
+    let ty = component.component_type();
+    let names: Vec<String> = ty
+        .imports(engine)
+        .map(|(name, _)| name.to_string())
+        .chain(ty.exports(engine).map(|(name, _)| name.to_string()))
+        .collect();
+    names.into_iter().find_map(|name| {
+        let rest = name.strip_prefix("plexi:platform/")?;
+        let (_, version) = rest.split_once('@')?;
+        let package = format!("plexi:platform@{version}");
+        (package != host).then_some(package)
+    })
+}
+
 fn component_load_error(plugin_id: &str, error: wasmtime::Error) -> wasmtime::Error {
     // Wasmtime does not expose a typed component signature-mismatch error.
     // Inspect its chain only at load boundaries, never errors from guest calls.
@@ -719,6 +772,13 @@ impl WasmView {
         grants: &Grants,
         state: StateStore,
     ) -> wasmtime::Result<Self> {
+        if let Some(found) = foreign_sdk_package(engine, component) {
+            let package = host_wit_package();
+            log::info!("plugin::{plugin_id}: incompatible SDK {found} (host WIT {package})");
+            return Err(wasmtime::Error::msg(format!(
+                "plugin '{plugin_id}' was built against a different SDK ({found}); rebuild against the current SDK (host WIT package {package})"
+            )));
+        }
         let mut linker = Linker::<HostCtx>::new(engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
         host_log::add_to_linker::<_, HasSelf<HostCtx>>(&mut linker, |c| c)?;
@@ -1055,12 +1115,13 @@ mod tests {
     }
 
     #[test]
-    fn older_sdk_record_shape_reports_rebuild_and_plugin_id() {
+    fn older_sdk_component_reports_rebuild_and_plugin_id() {
         let dir = tempfile::tempdir().unwrap();
         let _profile = crate::config::set_test_profile_dir(dir.path().to_path_buf());
         let capture = crate::testing::test_log::capture();
         // Frozen sysmon from d6c1a15e1^ (blob b4317b91fd8e0e885977b6e27112e7254a235cdd),
-        // before Row/Column gained `justify`. Do not rebuild this negative fixture.
+        // before Row/Column gained `justify`, built against plexi:platform@0.3.0.
+        // Do not rebuild this negative fixture.
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/sysmon-pre-justify.wasm");
         let error = WasmView::load_with_grants(
@@ -1082,12 +1143,12 @@ mod tests {
         );
         assert!(message.contains("com.plexi.old-sysmon"), "{message}");
         assert!(message.contains(host_wit_package()), "{message}");
-        assert!(format!("{error:#}").contains("expected record of 5 fields, found 4 fields"));
+        assert!(message.contains("plexi:platform@0.3.0"), "{message}");
         assert!(
             capture.lines().iter().any(|line| {
-                line.contains("com.plexi.old-sysmon") && line.contains("type mismatch")
+                line.contains("com.plexi.old-sysmon") && line.contains("incompatible SDK")
             }),
-            "original Wasmtime error must be logged"
+            "the rejected SDK version must be logged"
         );
     }
 

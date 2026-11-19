@@ -12,6 +12,7 @@ from ._v3_state import StateSnapshot
 from . import _v3_state
 from . import effects as effect_types
 from . import events as event_types
+from .ui import Keyed
 
 _module = None
 
@@ -260,27 +261,29 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
             "bottom": pad,
             "left": pad,
         }
-    if node_type in ("DataTable", "data_table", "table", "Table"):
-        children = data.get("children", [])
-        child_ids = [
-            flatten(child, f"{key}/{idx}") for idx, child in enumerate(children)
-        ]
-        selected = data.get("selected", data.get("selected_idx"))
-        if selected is not None:
-            selected = int(selected)
-        out = {
-            "type": "DataTable",
+    if node_type in ("table", "Table"):
+        return {
+            "type": "Table",
             "columns": [str(c) for c in data.get("columns", [])],
-            "rows": [[str(cell) for cell in r] for r in data.get("rows", [])],
-            "selected": selected,
-            "on_select": data.get("on_select"),
-            "children": child_ids,
-            "align": data.get("align", "start"),
-            "grow": data.get("grow", False),
+            "rows": [
+                flatten(row, f"{key}/{idx}")
+                for idx, row in enumerate(data.get("rows", []))
+            ],
         }
-        if data.get("gap") is not None:
-            out["gap"] = data["gap"]
-        return out
+    if node_type in ("table_row", "TableRow"):
+        return {
+            "type": "TableRow",
+            "cells": [str(cell) for cell in data.get("cells", [])],
+            "selected": bool(data.get("selected", False)),
+            "on_select": data.get("on_select"),
+        }
+    if node_type in ("list_item", "ListItem"):
+        return {
+            "type": "ListItem",
+            "child": flatten(data["child"], f"{key}/0"),
+            "selected": bool(data.get("selected", False)),
+            "on_select": data.get("on_select"),
+        }
     if node_type in ("row", "Row"):
         children = data.get("children", [])
         child_ids = [
@@ -316,8 +319,17 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
         }
     if node_type == "select_list":
         items = data.get("items", [])
+        selected = data.get("selected_idx", data.get("selected"))
+        if selected is not None:
+            selected = int(selected)
+        on_select = data.get("on_select")
         child_ids = []
         for idx, item in enumerate(items):
+            # A Keyed item keys its row, so the key moves onto the wrapper.
+            row_key = ""
+            if isinstance(item, Keyed):
+                row_key = item.key
+                item = item.child
             if hasattr(item, "to_node"):
                 item_node: Any = item
             elif isinstance(item, dict) and ("type" in item or "kind" in item):
@@ -368,16 +380,17 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
                     item_node = {"type": "row", "children": row_children, "gap": 8.0}
                 else:
                     item_node = main
-            child_ids.append(flatten(item_node, f"{key}/{idx}"))
-        selected = data.get("selected_idx", data.get("selected"))
-        if selected is not None:
-            selected = int(selected)
-        return {
-            "type": "ListView",
-            "items": child_ids,
-            "selected": selected,
-            "on_select": data.get("on_select"),
-        }
+            # Each row carries its own selection and complete action.
+            row: dict[str, Any] = {
+                "type": "list_item",
+                "child": item_node,
+                "selected": idx == selected,
+                "on_select": f"{on_select}:{idx}" if on_select else None,
+            }
+            if row_key:
+                row["_plexi_key"] = row_key
+            child_ids.append(flatten(row, f"{key}/{idx}"))
+        return {"type": "ListView", "items": child_ids}
     if node_type in ("scroll", "Scroll"):
         child = data.get("child")
         if child is None:

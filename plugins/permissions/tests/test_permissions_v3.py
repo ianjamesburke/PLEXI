@@ -333,10 +333,12 @@ def test_rendered_open_and_row_selection_bind_entry_across_poll(removed) -> None
     _set_state(data)
     open_handler = _rendered_action("Open")
     tree = _encode_uitree(permissions.view())
-    prefix = next(n["data"]["on_select"] for n in tree["nodes"] if "on_select" in n["data"])
+    first_row = next(
+        n["data"]["on_select"] for n in tree["nodes"] if n["data"]["type"] == "ListItem"
+    )
     entries = data["entries"][1:] if removed else data["entries"][::-1]
     polled = _state_effect(permissions.update(PermissionInventory(entries=entries)))
-    for handler in [open_handler, f"{prefix}:0"]:
+    for handler in [open_handler, first_row]:
         _set_state(polled)
         result = _state_effect(permissions.update(UiAction(handler)))
         if removed:

@@ -36,8 +36,9 @@ use super::wasm_frame::repaint_delay_until;
 use super::wasm_view::bindings::plexi::platform::types::{
     BadgeColor, ButtonNode, ButtonStyle, CanvasCircle, CanvasCommand, CanvasLine, CanvasNode,
     CanvasRect, CanvasText, Color, ColumnNode, FooterKeyEntry, FooterKeysNode, IndexedNode,
-    ListNode, PaddingNode, PinnedEdge, PinnedNode, ProgressBarNode, RowNode, ScrollNode, SpaceNode,
-    SpinnerNode, SurfaceHeaderNode, TextInputNode, TextNode, UiNodeData, UiTree,
+    ListItemNode, ListNode, PaddingNode, PinnedEdge, PinnedNode, ProgressBarNode, RowNode,
+    ScrollNode, SpaceNode, SpinnerNode, SurfaceHeaderNode, TableNode, TableRowNode, TextInputNode,
+    TextNode, UiNodeData, UiTree,
 };
 #[cfg(test)]
 use super::wasm_view::bindings::plexi::platform::types::{
@@ -7200,15 +7201,7 @@ fn validate_python_ui_tree(tree: &UiTree) -> Result<(), WasmPythonError> {
         ));
     }
     for node in &tree.nodes {
-        let references: &[u32] = match &node.data {
-            UiNodeData::Column(column) => &column.children,
-            UiNodeData::Row(row) => &row.children,
-            UiNodeData::ListView(list) => &list.items,
-            UiNodeData::Scroll(scroll) => std::slice::from_ref(&scroll.child),
-            UiNodeData::Padding(padding) => std::slice::from_ref(&padding.child),
-            UiNodeData::Pinned(pinned) => std::slice::from_ref(&pinned.child),
-            _ => &[],
-        };
+        let references = super::wasm_view::children(&node.data);
         if references.iter().any(|id| !ids.contains(id)) {
             return Err(WasmPythonError::BridgeJson(format!(
                 "ui tree node {} references a missing child",
@@ -7333,8 +7326,6 @@ fn decode_indexed_node(value: &Value) -> Result<IndexedNode, WasmPythonError> {
         } else {
             format!("{}{raw_key}", super::wasm_render::CARD_NODE_KEY_PREFIX)
         }
-    } else if matches!(kind, "DataTable" | "data_table" | "table" | "Table") {
-        encode_table_node_key(data, raw_key)?
     } else if let Some(role) = text_role {
         role.key(&raw_key)
     } else {
@@ -7345,70 +7336,6 @@ fn decode_indexed_node(value: &Value) -> Result<IndexedNode, WasmPythonError> {
         key,
         data: decode_node_data(data)?,
     })
-}
-
-fn encode_table_node_key(value: &Value, identity_key: String) -> Result<String, WasmPythonError> {
-    let columns: Vec<String> = value
-        .get("columns")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .map(|c| {
-                    c.as_str()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| c.to_string())
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let rows: Vec<Vec<String>> = value
-        .get("rows")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .map(|row| {
-                    row.as_array()
-                        .map(|cells| {
-                            cells
-                                .iter()
-                                .map(|cell| {
-                                    cell.as_str()
-                                        .map(str::to_string)
-                                        .unwrap_or_else(|| cell.to_string())
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let selected = value
-        .get("selected")
-        .or_else(|| value.get("selected_idx"))
-        .and_then(Value::as_u64)
-        .map(u32::try_from)
-        .transpose()
-        .map_err(|_| WasmPythonError::BridgeJson("field 'selected' out of range".to_string()))?;
-    let on_select = value
-        .get("on_select")
-        .or_else(|| value.get("on-select"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let meta = super::wasm_render::TableNodeMeta {
-        identity_key,
-        columns,
-        rows,
-        selected,
-        on_select,
-    };
-    let encoded =
-        serde_json::to_string(&meta).map_err(|e| WasmPythonError::BridgeJson(e.to_string()))?;
-    Ok(format!(
-        "{}{encoded}",
-        super::wasm_render::TABLE_NODE_KEY_PREFIX
-    ))
 }
 
 fn decode_text_role(
@@ -7523,20 +7450,30 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
             justify: decode_justify(value)?,
             grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
         })),
-        "DataTable" | "data_table" | "table" | "Table" => {
-            let children = if value.get("children").is_some() {
-                u32_list(value, "children")?
-            } else {
-                Vec::new()
-            };
-            Ok(UiNodeData::Column(ColumnNode {
-                children,
-                gap: optional_f32(value, "gap")?.unwrap_or(4.0),
-                align: Alignment::Start,
-                justify: Justify::Start,
-                grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
+        "Table" | "table" | "DataTable" | "data_table" => {
+            reject_pre_row_fields(value, "Table", PRE_ROW_STATE_FIELDS)?;
+            reject_pre_row_fields(value, "Table", &["children"])?;
+            Ok(UiNodeData::Table(TableNode {
+                columns: string_list(value, "columns")?,
+                rows: row_ids(value, "Table")?,
             }))
         }
+        "TableRow" | "table_row" | "table-row" => Ok(UiNodeData::TableRow(TableRowNode {
+            cells: string_list(value, "cells")?,
+            selected: value
+                .get("selected")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            on_select: row_action(value),
+        })),
+        "ListItem" | "list_item" | "list-item" => Ok(UiNodeData::ListItem(ListItemNode {
+            child: required_u32(value, "child")?,
+            selected: value
+                .get("selected")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            on_select: row_action(value),
+        })),
         "Button" | "button" => Ok(UiNodeData::Button(ButtonNode {
             label: required_string(value, "label")?,
             on_click: required_string(value, "on_click")?,
@@ -7634,22 +7571,12 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
                 )?,
             },
         )),
-        "ListView" | "list_view" | "list-view" => Ok(UiNodeData::ListView(ListNode {
-            items: u32_list(value, "items")?,
-            selected: value
-                .get("selected")
-                .and_then(Value::as_u64)
-                .map(u32::try_from)
-                .transpose()
-                .map_err(|_| {
-                    WasmPythonError::BridgeJson("field 'selected' out of range".to_string())
-                })?,
-            on_select: value
-                .get("on_select")
-                .or_else(|| value.get("on-select"))
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        })),
+        "ListView" | "list_view" | "list-view" => {
+            reject_pre_row_fields(value, "ListView", PRE_ROW_STATE_FIELDS)?;
+            Ok(UiNodeData::ListView(ListNode {
+                items: u32_list(value, "items")?,
+            }))
+        }
         "Scroll" | "scroll" => Ok(UiNodeData::Scroll(ScrollNode {
             child: required_u32(value, "child")?,
             horizontal: value
@@ -7950,6 +7877,67 @@ fn headers_field(value: &Value, field: &str) -> Result<Vec<(String, String)>, Wa
             "field '{field}' must be an object or array"
         ))),
     }
+}
+
+/// Every spelling the pre-0.4 decoder read row state from on a `ListView` or
+/// `DataTable` parent. A stale SDK sending any of them must fail, not decode
+/// into a list that silently drops selection.
+const PRE_ROW_STATE_FIELDS: &[&str] = &["selected", "selected_idx", "on_select", "on-select"];
+
+/// A list or table that still carries row state on itself is the pre-0.4
+/// shape: selection and the action now live on each row node. Refuse it by
+/// name instead of guessing, so a stale SDK fails loudly at decode.
+fn reject_pre_row_fields(
+    value: &Value,
+    kind: &str,
+    fields: &[&str],
+) -> Result<(), WasmPythonError> {
+    match fields.iter().find(|field| value.get(**field).is_some()) {
+        Some(field) => Err(WasmPythonError::BridgeJson(format!(
+            "{kind} field '{field}' is the pre-0.4 shape: row state and actions now live on \
+             each ListItem/TableRow node; update plexi_sdk"
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// A table's `rows` are `TableRow` node ids. Cell arrays are the pre-0.4
+/// `DataTable` blob and are refused by field name.
+fn row_ids(value: &Value, kind: &str) -> Result<Vec<u32>, WasmPythonError> {
+    let legacy = value
+        .get("rows")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| rows.iter().any(Value::is_array));
+    if legacy {
+        return Err(WasmPythonError::BridgeJson(format!(
+            "{kind} field 'rows' holds cell arrays, the pre-0.4 DataTable shape: rows are now \
+             TableRow node ids; update plexi_sdk"
+        )));
+    }
+    u32_list(value, "rows")
+}
+
+/// A row's complete action, as the SDK wrote it. Empty means none.
+fn row_action(value: &Value) -> Option<String> {
+    value
+        .get("on_select")
+        .and_then(Value::as_str)
+        .filter(|action| !action.is_empty())
+        .map(str::to_string)
+}
+
+fn string_list(value: &Value, field: &str) -> Result<Vec<String>, WasmPythonError> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| WasmPythonError::BridgeJson(format!("missing array field '{field}'")))?
+        .iter()
+        .map(|item| {
+            item.as_str().map(str::to_string).ok_or_else(|| {
+                WasmPythonError::BridgeJson(format!("field '{field}' contains a non-string"))
+            })
+        })
+        .collect()
 }
 
 fn u32_list(value: &Value, field: &str) -> Result<Vec<u32>, WasmPythonError> {
@@ -13146,7 +13134,7 @@ default = true
                     {"id":0,"key":"0","data":{"type":"Column","children":[1,2,3,4],"gap":4.0}},
                     {"id":1,"key":"0/input","data":{"type":"TextInput","value":"draft","placeholder":"New item","on_change":"draft","on_submit":"submit"}},
                     {"id":2,"key":"0/item","data":{"type":"Text","text":"Write tests"}},
-                    {"id":3,"key":"0/list","data":{"type":"ListView","items":[2],"selected":0}},
+                    {"id":3,"key":"0/list","data":{"type":"ListView","items":[2]}},
                     {"id":4,"key":"0/progress","data":{"type":"ProgressBar","value":3.0,"max":5.0,"label":"3 / 5"}}
                 ]
             }"#,
@@ -13369,20 +13357,114 @@ default = true
         .is_err());
     }
 
+    /// Stint 1636: a list or table carrying row state on itself is the
+    /// pre-0.4 shape. Decode refuses it by field name, never guesses.
     #[test]
-    fn data_table_key_keeps_raw_identity_when_contents_change() {
-        let first = json!({
-            "columns": ["name"], "rows": [["a"]], "selected": 0
-        });
-        let second = json!({
-            "columns": ["name"], "rows": [["b"]], "selected": 0
-        });
-        let first = encode_table_node_key(&first, "0/@table".to_string()).expect("first key");
-        let second = encode_table_node_key(&second, "0/@table".to_string()).expect("second key");
-        let first = super::super::wasm_render::parse_table_node_key(&first).expect("first meta");
-        let second = super::super::wasm_render::parse_table_node_key(&second).expect("second meta");
-        assert_eq!(first.identity_key, second.identity_key);
-        assert_ne!(first.rows, second.rows);
+    fn legacy_list_and_table_row_state_fails_decode_naming_the_field() {
+        /// Every (path, field) that decoded instead of failing by name.
+        fn refusal_gap(
+            result: Result<PythonUiTree, WasmPythonError>,
+            path: &str,
+            field: &str,
+        ) -> Option<String> {
+            match result {
+                Ok(_) => Some(format!("{path}: '{field}' decoded")),
+                Err(error) => {
+                    let message = error.to_string();
+                    (!message.contains(&format!("'{field}'"))
+                        || !message.contains("update plexi_sdk"))
+                    .then(|| format!("{path}: '{field}' wrong error: {message}"))
+                }
+            }
+        }
+        let base = decode_python_ui_tree_value(&json!({"root": 0, "nodes": [
+            {"id": 0, "key": "0", "data": {"type": "Column", "children": [1, 3]}},
+            {"id": 1, "key": "0/0", "data": {"type": "ListView", "items": [2]}},
+            {"id": 2, "key": "0/0/0", "data": {"type": "ListItem", "child": 4, "selected": false, "on_select": "pick:0"}},
+            {"id": 3, "key": "0/1", "data": {"type": "Table", "columns": [], "rows": []}},
+            {"id": 4, "key": "0/0/0/0", "data": {"type": "Text", "text": "a"}}
+        ]}))
+        .expect("current shape decodes");
+        let with_alias = |mut data: Value, field: &str| {
+            let value = if field.starts_with("selected") {
+                json!(0)
+            } else {
+                json!("pick")
+            };
+            data[field] = value;
+            data
+        };
+        let mut cases = Vec::new();
+        // Spelled out, not read from `PRE_ROW_STATE_FIELDS`: the spellings the
+        // pre-0.4 decoder accepted (alpha 388606fc0 `decode_node_data` and
+        // `encode_table_node_key`).
+        for field in ["selected", "selected_idx", "on_select", "on-select"] {
+            cases.push((
+                1,
+                with_alias(json!({"type": "ListView", "items": [2]}), field),
+                field,
+            ));
+            for kind in ["Table", "DataTable"] {
+                cases.push((
+                    3,
+                    with_alias(json!({"type": kind, "columns": [], "rows": []}), field),
+                    field,
+                ));
+            }
+        }
+        cases.push((
+            3,
+            json!({"type": "DataTable", "columns": [], "rows": [["a"], ["b"]]}),
+            "rows",
+        ));
+        cases.push((
+            3,
+            json!({"type": "Table", "columns": [], "rows": [], "children": []}),
+            "children",
+        ));
+        let mut gaps = Vec::new();
+        for (id, data, field) in cases {
+            let kind = data["type"].as_str().unwrap_or_default().to_string();
+            let node = json!({"id": id, "key": format!("0/{}", id / 2), "data": data});
+            let full = json!({"root": 0, "nodes": [
+                {"id": 0, "key": "0", "data": {"type": "Column", "children": [id]}},
+                node.clone()
+            ]});
+            let full = if id == 1 {
+                let mut full = full;
+                full["nodes"].as_array_mut().unwrap().extend([
+                    json!({"id": 2, "key": "0/0/0", "data": {"type": "ListItem", "child": 4, "selected": false, "on_select": "pick:0"}}),
+                    json!({"id": 4, "key": "0/0/0/0", "data": {"type": "Text", "text": "a"}}),
+                ]);
+                full
+            } else {
+                full
+            };
+            gaps.extend(refusal_gap(
+                decode_python_ui_tree_value(&full),
+                &format!("full tree {kind}"),
+                field,
+            ));
+            gaps.extend(refusal_gap(
+                apply_tree_delta(&base, &[node], None, None),
+                &format!("tree_delta {kind}"),
+                field,
+            ));
+        }
+        assert!(gaps.is_empty(), "legacy row state not refused: {gaps:#?}");
+    }
+
+    #[test]
+    fn table_key_is_its_raw_identity() {
+        let tree = decode_ui_tree(
+            &json!({"root": 0, "nodes": [
+                {"id": 0, "key": "0/@table", "data": {"type": "Table", "columns": ["name"], "rows": [1]}},
+                {"id": 1, "key": "0/@table/0", "data": {"type": "TableRow", "cells": ["a"], "selected": true, "on_select": "pick:0"}}
+            ]})
+            .to_string(),
+        )
+        .expect("table decodes");
+        assert_eq!(tree.nodes[0].key, "0/@table");
     }
 
     fn continuous_wake(
@@ -14193,12 +14275,29 @@ default = true
                         "id": 1,
                         "key": "tbl",
                         "data": {
-                            "type": "DataTable",
+                            "type": "Table",
                             "columns": ["Host", "State"],
-                            "rows": [["alpha", "up"], ["beta", "idle"]],
-                            "selected": 1,
-                            "on_select": "pick_host",
-                            "children": []
+                            "rows": [2, 3]
+                        }
+                    },
+                    {
+                        "id": 2,
+                        "key": "tbl/0",
+                        "data": {
+                            "type": "TableRow",
+                            "cells": ["alpha", "up"],
+                            "selected": false,
+                            "on_select": "pick_host:0"
+                        }
+                    },
+                    {
+                        "id": 3,
+                        "key": "tbl/1",
+                        "data": {
+                            "type": "TableRow",
+                            "cells": ["beta", "idle"],
+                            "selected": true,
+                            "on_select": "pick_host:1"
                         }
                     }
                 ]
@@ -14213,12 +14312,17 @@ default = true
                 .starts_with(crate::host::wasm_render::CARD_NODE_KEY_PREFIX),
             "Card node must carry CARD_NODE_KEY_PREFIX"
         );
-        let table_meta = crate::host::wasm_render::parse_table_node_key(&tree.nodes[1].key)
-            .expect("DataTable node must carry encoded TableNodeMeta");
-        assert_eq!(table_meta.columns, vec!["Host", "State"]);
-        assert_eq!(table_meta.rows.len(), 2);
-        assert_eq!(table_meta.selected, Some(1));
-        assert_eq!(table_meta.on_select.as_deref(), Some("pick_host"));
+        let UiNodeData::Table(table) = &tree.nodes[1].data else {
+            panic!("Table node decodes to a table: {:?}", tree.nodes[1].data);
+        };
+        assert_eq!(table.columns, vec!["Host", "State"]);
+        assert_eq!(table.rows, vec![2, 3]);
+        let UiNodeData::TableRow(beta) = &tree.nodes[3].data else {
+            panic!("row decodes to a table row");
+        };
+        assert_eq!(beta.cells, vec!["beta", "idle"]);
+        assert!(beta.selected);
+        assert_eq!(beta.on_select.as_deref(), Some("pick_host:1"));
     }
 }
 

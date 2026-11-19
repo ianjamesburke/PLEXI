@@ -1,0 +1,300 @@
+{
+  "nodes": [
+    {
+      "data": {
+        "align": "start",
+        "children": [
+          1,
+          2,
+          17,
+          21
+        ],
+        "grow": false,
+        "justify": "start",
+        "type": "Column"
+      },
+      "id": 0,
+      "key": "0"
+    },
+    {
+      "data": {
+        "align": "left",
+        "bold": false,
+        "italic": false,
+        "monospace": false,
+        "size": 13.0,
+        "text": "Services",
+        "truncate": false,
+        "type": "text"
+      },
+      "id": 1,
+      "key": "0/0"
+    },
+    {
+      "data": {
+        "items": [
+          3,
+          9,
+          15
+        ],
+        "type": "ListView"
+      },
+      "id": 2,
+      "key": "0/1"
+    },
+    {
+      "data": {
+        "child": 4,
+        "on_select": "pick:0",
+        "selected": false,
+        "type": "ListItem"
+      },
+      "id": 3,
+      "key": "0/1/0"
+    },
+    {
+      "data": {
+        "align": "center",
+        "children": [
+          5,
+          8
+        ],
+        "gap": 8.0,
+        "grow": false,
+        "justify": "start",
+        "type": "Row"
+      },
+      "id": 4,
+      "key": "0/1/0/0"
+    },
+    {
+      "data": {
+        "align": "start",
+        "children": [
+          6,
+          7
+        ],
+        "gap": 2.0,
+        "grow": false,
+        "justify": "start",
+        "type": "Column"
+      },
+      "id": 5,
+      "key": "0/1/0/0/0"
+    },
+    {
+      "data": {
+        "bold": true,
+        "text": "api-gateway",
+        "type": "text"
+      },
+      "id": 6,
+      "key": "0/1/0/0/0/0"
+    },
+    {
+      "data": {
+        "color": "muted",
+        "size": 12.0,
+        "text": "edge router",
+        "type": "text"
+      },
+      "id": 7,
+      "key": "0/1/0/0/0/1"
+    },
+    {
+      "data": {
+        "color": "muted",
+        "size": 12.0,
+        "text": "12ms",
+        "type": "text"
+      },
+      "id": 8,
+      "key": "0/1/0/0/1"
+    },
+    {
+      "data": {
+        "child": 10,
+        "on_select": "pick:1",
+        "selected": true,
+        "type": "ListItem"
+      },
+      "id": 9,
+      "key": "0/1/1"
+    },
+    {
+      "data": {
+        "align": "center",
+        "children": [
+          11,
+          14
+        ],
+        "gap": 8.0,
+        "grow": false,
+        "justify": "start",
+        "type": "Row"
+      },
+      "id": 10,
+      "key": "0/1/1/0"
+    },
+    {
+      "data": {
+        "align": "start",
+        "children": [
+          12,
+          13
+        ],
+        "gap": 2.0,
+        "grow": false,
+        "justify": "start",
+        "type": "Column"
+      },
+      "id": 11,
+      "key": "0/1/1/0/0"
+    },
+    {
+      "data": {
+        "bold": true,
+        "text": "worker-pool",
+        "type": "text"
+      },
+      "id": 12,
+      "key": "0/1/1/0/0/0"
+    },
+    {
+      "data": {
+        "color": "muted",
+        "size": 12.0,
+        "text": "batch jobs",
+        "type": "text"
+      },
+      "id": 13,
+      "key": "0/1/1/0/0/1"
+    },
+    {
+      "data": {
+        "color": "muted",
+        "size": 12.0,
+        "text": "184ms",
+        "type": "text"
+      },
+      "id": 14,
+      "key": "0/1/1/0/1"
+    },
+    {
+      "data": {
+        "child": 16,
+        "on_select": "pick:2",
+        "selected": false,
+        "type": "ListItem"
+      },
+      "id": 15,
+      "key": "0/1/2"
+    },
+    {
+      "data": {
+        "text": "scheduler",
+        "type": "text"
+      },
+      "id": 16,
+      "key": "0/1/2/0"
+    },
+    {
+      "data": {
+        "columns": [
+          "Service",
+          "Status",
+          "Latency"
+        ],
+        "rows": [
+          18,
+          19,
+          20
+        ],
+        "type": "Table"
+      },
+      "id": 17,
+      "key": "0/2"
+    },
+    {
+      "data": {
+        "cells": [
+          "api-gateway",
+          "healthy",
+          "12ms"
+        ],
+        "on_select": "row:0",
+        "selected": true,
+        "type": "TableRow"
+      },
+      "id": 18,
+      "key": "0/2/0"
+    },
+    {
+      "data": {
+        "cells": [
+          "worker-pool",
+          "degraded",
+          "184ms"
+        ],
+        "on_select": "row:1",
+        "selected": false,
+        "type": "TableRow"
+      },
+      "id": 19,
+      "key": "0/2/1"
+    },
+    {
+      "data": {
+        "cells": [
+          "scheduler",
+          "idle",
+          "3ms"
+        ],
+        "on_select": "row:2",
+        "selected": false,
+        "type": "TableRow"
+      },
+      "id": 20,
+      "key": "0/2/2"
+    },
+    {
+      "data": {
+        "columns": [],
+        "rows": [
+          22,
+          23
+        ],
+        "type": "Table"
+      },
+      "id": 21,
+      "key": "0/3"
+    },
+    {
+      "data": {
+        "cells": [
+          "A",
+          "first"
+        ],
+        "on_select": "bare:0",
+        "selected": false,
+        "type": "TableRow"
+      },
+      "id": 22,
+      "key": "0/3/0"
+    },
+    {
+      "data": {
+        "cells": [
+          "B",
+          "second"
+        ],
+        "on_select": "bare:1",
+        "selected": false,
+        "type": "TableRow"
+      },
+      "id": 23,
+      "key": "0/3/1"
+    }
+  ],
+  "root": 0
+}

@@ -298,7 +298,10 @@ def test_clicking_select_list_row_dispatches_on_select_and_opens_article():
         n["data"] for n in tree["nodes"] if n["data"].get("type") == "ListView"
     ]
     assert len(list_nodes) == 1
-    assert list_nodes[0]["on_select"] == "wiki-open-row"
+    row_actions = [
+        n["data"]["on_select"] for n in tree["nodes"] if n["data"].get("type") == "ListItem"
+    ]
+    assert row_actions and row_actions[0] == "wiki-open-row:0"
     text_values = [
         n["data"].get("text")
         for n in tree["nodes"]
@@ -685,9 +688,7 @@ def test_app_harness_search_snippets_open_article_and_navigate_back():
         cmds = h.run(1)
         trees = [c for c in cmds if c.get("type") == "component_tree"]
         assert trees
-        list_views = [
-            n["data"]
-            for n in trees[-1]["tree"]["nodes"]
-            if n["data"].get("type") == "ListView"
-        ]
-        assert list_views and list_views[0]["selected"] == 1
+        by_id = {n["id"]: n["data"] for n in trees[-1]["tree"]["nodes"]}
+        list_views = [d for d in by_id.values() if d.get("type") == "ListView"]
+        assert list_views
+        assert [by_id[row]["selected"] for row in list_views[0]["items"]].index(True) == 1

@@ -1727,7 +1727,7 @@ Two mutually exclusive targeting modes:
 
 PANE-PIXEL coordinates (origin at the pane's top-left) — the honest primitive, since it exercises the same fit=contain/fit=fill `canvas_transform` inversion a real click goes through. The host injects a real pointer move + press + release into the live egui pass, never a parallel resolver.
 
-`--node <node_id>` — targets a specific Button/TextInput/ListView node by the id `plexi pane state` reports, so a caller never has to compute pixel geometry. The host resolves the node's on-screen rect during the next render pass and fails loudly if the id is missing or not an interactive role.
+`--node <node_id>` — targets a specific Button/TextInput/list-row node by the id `plexi pane state` reports, so a caller never has to compute pixel geometry. The host resolves the node's on-screen rect during the next render pass and fails loudly if the id is missing or not an interactive role.
 
 Only view panes accept clicks today.
 
