@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
-pub(crate) const SEMANTIC_PANE_STATE_SCHEMA_VERSION: u32 = 3;
+pub(crate) const SEMANTIC_PANE_STATE_SCHEMA_VERSION: u32 = 4;
 
 fn short_session_id(id: &str) -> &str {
     const MAX_SESSION_ID_CHARS: usize = 12;
@@ -69,7 +69,13 @@ impl Default for SemanticPaneState {
 #[derive(Clone, Debug, serde::Serialize)]
 pub(crate) struct SemanticPaneNode {
     pub id: String,
+    /// The node ref `plexi pane click --node` takes (`crate::host::node_ref`).
+    /// Only plugin panes mint refs; a builtin pane's nodes have none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#ref: Option<String>,
     pub role: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,6 +92,106 @@ pub(crate) struct SemanticPaneNode {
     pub bounds: Option<[f64; 4]>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub canvas_commands: Vec<serde_json::Value>,
+}
+
+impl SemanticPaneNode {
+    /// One plugin tree node's role, label and value, without a ref.
+    pub(crate) fn from_indexed(node: &crate::host::wasm_view::IndexedNode) -> Self {
+        use crate::host::wasm_view::UiNodeData;
+
+        let mut selected = false;
+        let mut cells = Vec::new();
+        let (role, label, value) = match &node.data {
+            UiNodeData::Empty => ("empty", None, None),
+            UiNodeData::Text(text) => ("text", Some(text.text.clone()), None),
+            UiNodeData::Button(button) => ("button", Some(button.label.clone()), None),
+            UiNodeData::TextInput(input) => (
+                "text_input",
+                Some(input.placeholder.clone()),
+                (!input.password).then(|| input.value.clone()),
+            ),
+            UiNodeData::Row(_) => ("row", None, None),
+            UiNodeData::Column(_) => ("column", None, None),
+            UiNodeData::ProgressBar(progress) => (
+                "progress_bar",
+                progress.label.clone(),
+                Some(progress.value.to_string()),
+            ),
+            UiNodeData::Badge(badge) => ("badge", Some(badge.text.clone()), None),
+            UiNodeData::ListView(_) => ("list_view", None, None),
+            UiNodeData::ListItem(item) => {
+                selected = item.selected;
+                ("list_item", None, None)
+            }
+            UiNodeData::Table(table) => {
+                cells = table.columns.clone();
+                ("table", None, None)
+            }
+            UiNodeData::TableRow(row) => {
+                selected = row.selected;
+                cells = row.cells.clone();
+                ("table_row", None, None)
+            }
+            UiNodeData::Scroll(_) => ("scroll", None, None),
+            UiNodeData::Padding(_) => ("padding", None, None),
+            UiNodeData::Divider => ("divider", None, None),
+            UiNodeData::Space(space) => (
+                "space",
+                None,
+                Some(format!(
+                    "{}{}",
+                    space.size,
+                    if space.grow { "+grow" } else { "" }
+                )),
+            ),
+            UiNodeData::Surface(surface) => (
+                "surface",
+                None,
+                Some(format!("{}x{}", surface.width, surface.height)),
+            ),
+            UiNodeData::Canvas(canvas) => (
+                "canvas",
+                None,
+                Some(format!("{}x{}", canvas.width, canvas.height)),
+            ),
+            UiNodeData::SurfaceHeader(surface_header) => (
+                "surface_header",
+                Some(surface_header.title.clone()),
+                (!surface_header.subtitle.is_empty()).then(|| surface_header.subtitle.clone()),
+            ),
+            UiNodeData::FooterKeys(footer_keys) => (
+                "footer_keys",
+                None,
+                Some(format!("{} entries", footer_keys.entries.len())),
+            ),
+            UiNodeData::Pinned(pinned) => (
+                "pinned",
+                None,
+                Some(format!("{:?}", pinned.edge).to_ascii_lowercase()),
+            ),
+            UiNodeData::Spinner(spinner) => (
+                "spinner",
+                (!spinner.label.is_empty()).then(|| spinner.label.clone()),
+                None,
+            ),
+        };
+        SemanticPaneNode {
+            id: node.id.to_string(),
+            r#ref: None,
+            role: role.to_string(),
+            disabled: matches!(&node.data, UiNodeData::Button(button) if button.disabled),
+            label,
+            value,
+            children: crate::host::wasm_view::children(&node.data)
+                .iter()
+                .map(u32::to_string)
+                .collect(),
+            selected,
+            cells,
+            bounds: None,
+            canvas_commands: Vec::new(),
+        }
+    }
 }
 
 impl SemanticPaneState {
@@ -124,7 +230,9 @@ impl SemanticPaneState {
                 );
                 pane_rect.contains(center).then(|| SemanticPaneNode {
                     id: id.value().to_string(),
+                    r#ref: None,
                     role: format!("{:?}", node.role()).to_ascii_lowercase(),
+                    disabled: node.is_disabled(),
                     label: node.label().map(str::to_string),
                     value: node.value().map(str::to_string),
                     children: node.children().iter().map(|id| id.0.to_string()).collect(),
@@ -157,104 +265,16 @@ impl SemanticPaneState {
         }
     }
 
-    pub(crate) fn from_wasm_tree(tree: &crate::host::wasm_view::UiTree) -> Self {
-        use crate::host::wasm_view::UiNodeData;
-
+    /// The semantics of a plugin pane's committed tree, with a node ref for
+    /// every node minted for the pane whose launch epoch is `epoch`.
+    pub(crate) fn from_wasm_tree(tree: &crate::host::wasm_view::UiTree, epoch: u128) -> Self {
+        let refs = crate::host::node_ref::refs(tree, epoch);
         let nodes = tree
             .nodes
             .iter()
-            .map(|node| {
-                let mut selected = false;
-                let mut cells = Vec::new();
-                let (role, label, value) = match &node.data {
-                    UiNodeData::Empty => ("empty", None, None),
-                    UiNodeData::Text(text) => ("text", Some(text.text.clone()), None),
-                    UiNodeData::Button(button) => ("button", Some(button.label.clone()), None),
-                    UiNodeData::TextInput(input) => (
-                        "text_input",
-                        Some(input.placeholder.clone()),
-                        (!input.password).then(|| input.value.clone()),
-                    ),
-                    UiNodeData::Row(_) => ("row", None, None),
-                    UiNodeData::Column(_) => ("column", None, None),
-                    UiNodeData::ProgressBar(progress) => (
-                        "progress_bar",
-                        progress.label.clone(),
-                        Some(progress.value.to_string()),
-                    ),
-                    UiNodeData::Badge(badge) => ("badge", Some(badge.text.clone()), None),
-                    UiNodeData::ListView(_) => ("list_view", None, None),
-                    UiNodeData::ListItem(item) => {
-                        selected = item.selected;
-                        ("list_item", None, None)
-                    }
-                    UiNodeData::Table(table) => {
-                        cells = table.columns.clone();
-                        ("table", None, None)
-                    }
-                    UiNodeData::TableRow(row) => {
-                        selected = row.selected;
-                        cells = row.cells.clone();
-                        ("table_row", None, None)
-                    }
-                    UiNodeData::Scroll(_) => ("scroll", None, None),
-                    UiNodeData::Padding(_) => ("padding", None, None),
-                    UiNodeData::Divider => ("divider", None, None),
-                    UiNodeData::Space(space) => (
-                        "space",
-                        None,
-                        Some(format!(
-                            "{}{}",
-                            space.size,
-                            if space.grow { "+grow" } else { "" }
-                        )),
-                    ),
-                    UiNodeData::Surface(surface) => (
-                        "surface",
-                        None,
-                        Some(format!("{}x{}", surface.width, surface.height)),
-                    ),
-                    UiNodeData::Canvas(canvas) => (
-                        "canvas",
-                        None,
-                        Some(format!("{}x{}", canvas.width, canvas.height)),
-                    ),
-                    UiNodeData::SurfaceHeader(surface_header) => (
-                        "surface_header",
-                        Some(surface_header.title.clone()),
-                        (!surface_header.subtitle.is_empty())
-                            .then(|| surface_header.subtitle.clone()),
-                    ),
-                    UiNodeData::FooterKeys(footer_keys) => (
-                        "footer_keys",
-                        None,
-                        Some(format!("{} entries", footer_keys.entries.len())),
-                    ),
-                    UiNodeData::Pinned(pinned) => (
-                        "pinned",
-                        None,
-                        Some(format!("{:?}", pinned.edge).to_ascii_lowercase()),
-                    ),
-                    UiNodeData::Spinner(spinner) => (
-                        "spinner",
-                        (!spinner.label.is_empty()).then(|| spinner.label.clone()),
-                        None,
-                    ),
-                };
-                SemanticPaneNode {
-                    id: node.id.to_string(),
-                    role: role.to_string(),
-                    label,
-                    value,
-                    children: crate::host::wasm_view::children(&node.data)
-                        .iter()
-                        .map(u32::to_string)
-                        .collect(),
-                    selected,
-                    cells,
-                    bounds: None,
-                    canvas_commands: Vec::new(),
-                }
+            .map(|node| SemanticPaneNode {
+                r#ref: refs.get(&node.id).map(ToString::to_string),
+                ..SemanticPaneNode::from_indexed(node)
             })
             .collect();
         Self {
@@ -277,31 +297,6 @@ impl SemanticPaneState {
                     .collect();
             }
         }
-    }
-
-    /// Resolve `node_id` (as reported by `plexi pane state`) against this
-    /// cached snapshot and confirm it is an activatable role. Used by the
-    /// `ClickPaneNode` host command to fail loudly — named error, no queued
-    /// click — before a `PendingPaneClick` is ever inserted, instead of
-    /// silently no-op'ing against a missing or non-interactive node.
-    pub(crate) fn resolve_interactive_node(&self, node_id: &str) -> Result<u64, String> {
-        const INTERACTIVE_ROLES: &[&str] =
-            &["button", "text_input", "list_item", "table_row", "checkbox"];
-
-        let Some(node) = self.nodes.iter().find(|n| n.id == node_id) else {
-            return Err(format!(
-                "node {node_id} not found in this pane's current tree"
-            ));
-        };
-        if !INTERACTIVE_ROLES.contains(&node.role.as_str()) {
-            return Err(format!(
-                "node {node_id} is not interactive (role: {})",
-                node.role
-            ));
-        }
-        node.id
-            .parse::<u64>()
-            .map_err(|_| format!("node {node_id} has a non-numeric id and cannot be targeted"))
     }
 }
 
@@ -342,7 +337,9 @@ fn collect_process_semantics(
             });
             nodes.push(SemanticPaneNode {
                 id: path.to_string(),
+                r#ref: None,
                 role: role.to_string(),
+                disabled: false,
                 label,
                 value,
                 children,
@@ -2011,19 +2008,8 @@ mod agent_source_tests {
 // ViewPane — dedicated plugin runtime (process or in-process builtin)
 // ---------------------------------------------------------------------------
 
-/// What a `PendingPaneClick` is aimed at: a raw screen position (the pixel
-/// `plexi pane click <x> <y>` path), or a specific WASM UI-tree arena node id
-/// (the node-addressed `plexi pane click <pane_id> --node <node_id>` sibling,
-/// stint 0414). `node_id` matches `SemanticPaneNode.id` — the same id
-/// `plexi pane state` reports for every node in the tree.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum PaneClickTarget {
-    Pos(egui::Pos2),
-    Node(u64),
-}
-
-/// A pointer click injected by `HostRequest::ClickPane`/`ClickPaneNode`
-/// (`plexi pane click`, or `HostHarness::inject_click`/`inject_node_click`),
+/// A pointer click injected by `HostRequest::ClickPane`/`DragPane`
+/// (`plexi pane click <x> <y>`, `plexi pane drag`, or `HostHarness::inject_click`),
 /// queued on `PlexiApp` and consumed by the canvas render pass for the
 /// target pane on the next frame it renders.
 ///
@@ -2032,18 +2018,18 @@ pub(crate) enum PaneClickTarget {
 /// before host/plugin code runs — so a click cannot be faked by mutating
 /// `ctx.input_mut()` mid-pass the way `KeyPane` replays keys (key checks
 /// re-scan `InputState.events` live at widget-render time; pointer-click
-/// detection does not). `PendingPaneClick` is delivered instead through the
-/// same call chain a real click's hit-test result would reach —
-/// `render_node`'s Canvas branch for `Pos`, or the matching interactive
-/// node's own branch (Button/TextInput/list row) for `Node` — so it still
-/// exercises the pane's live rendering for the frame's actual widget, just
-/// via an explicit id/rect-containment check instead of `Sense::click()`.
+/// detection does not). `PendingPaneClick` is delivered instead to the
+/// Canvas branch of `render_node`, matched against the frame's live canvas
+/// rect: the same hit-test a real click needs, resolved explicitly. A node
+/// is never a pointer target: `plexi pane click --node` is a semantic
+/// activation (`ViewRuntime::activate_node`), delivered from `App::logic`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PendingPaneClick {
-    pub target: PaneClickTarget,
+    /// Absolute screen position of the pointer sample.
+    pub pos: egui::Pos2,
     pub button: &'static str,
     /// Which pointer transition this sample delivers. `Click` (the default,
-    /// what `ClickPane`/`ClickPaneNode` queue) is a press+release pair;
+    /// what `ClickPane` queues) is a press+release pair;
     /// `Press`/`Move`/`Release` are the per-frame samples of an
     /// `HostRequest::DragPane` schedule (stint 0510) — one sample per frame,
     /// resolved against that frame's live canvas rect like any click.
@@ -2059,17 +2045,10 @@ pub(crate) enum PointerPhase {
     Release,
 }
 
-impl PendingPaneClick {
-    /// True when this pending click's target identity-matches `id` — the same
-    /// honest node-id equality check `node_click_matches` (wasm_render.rs)
-    /// uses on the WASM/Python path, applied to a Builtin plugin's own `egui::Id`
-    /// instead of a WASM arena index. Drag-phase samples never activate a
-    /// node — only a real `Click` does.
-    pub(crate) fn targets_id(&self, id: egui::Id) -> bool {
-        self.phase == PointerPhase::Click
-            && matches!(self.target, PaneClickTarget::Node(n) if n == id.value())
-    }
-}
+/// Builtin views publish AccessKit semantics for observation only; they have
+/// no committed tree, so no node refs.
+pub(crate) const BUILTIN_HAS_NO_NODE_REFS: &str =
+    "is a builtin view and has no node refs; click by position with pane click <x> <y>";
 
 pub enum ViewRuntime {
     Builtin(Box<dyn View>),
@@ -2126,7 +2105,7 @@ impl ViewRuntime {
         pending_click: Option<PendingPaneClick>,
     ) {
         match self {
-            ViewRuntime::Builtin(app) => app.ui(ui, ctx, pending_click),
+            ViewRuntime::Builtin(app) => app.ui(ui, ctx),
             ViewRuntime::Python(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
             ViewRuntime::Wasm(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
         }
@@ -2294,6 +2273,41 @@ impl ViewRuntime {
                 app.queue_outbound_event(crate::protocol::PlexiEvent::Action { action, args });
                 Ok(())
             }
+        }
+    }
+
+    /// Activate the node `reference` names, checked and delivered in one step
+    /// against the pane's committed tree (stint 1600). `Ok` means the guest
+    /// was handed the action, or the pane holds the focus request.
+    pub(crate) fn activate_node(
+        &mut self,
+        reference: &crate::host::node_ref::NodeRef,
+    ) -> Result<crate::host::node_ref::Activation, crate::host::node_ref::ActivationFailure> {
+        match self {
+            ViewRuntime::Builtin(_) => Err(format!("this pane {BUILTIN_HAS_NO_NODE_REFS}").into()),
+            ViewRuntime::Python(app) => app.activate_node(reference),
+            ViewRuntime::Wasm(app) => app.activate_node(reference),
+        }
+    }
+
+    /// Withdraw a focus activation the host could not complete.
+    pub(crate) fn cancel_node_focus_request(&mut self) {
+        match self {
+            ViewRuntime::Builtin(_) => {}
+            ViewRuntime::Python(app) => app.cancel_node_focus_request(),
+            ViewRuntime::Wasm(app) => app.cancel_node_focus_request(),
+        }
+    }
+
+    /// The arena id `reference` names on the pane's committed tree.
+    pub(crate) fn resolve_node(
+        &mut self,
+        reference: &crate::host::node_ref::NodeRef,
+    ) -> Result<u32, String> {
+        match self {
+            ViewRuntime::Builtin(_) => Err(format!("this pane {BUILTIN_HAS_NO_NODE_REFS}")),
+            ViewRuntime::Python(app) => app.resolve_node(reference),
+            ViewRuntime::Wasm(app) => app.resolve_node(reference),
         }
     }
 
@@ -2656,48 +2670,5 @@ mod semantic_state_tests {
             .expect("parent retained");
 
         assert_eq!(parent.children, vec![inside_id.value().to_string()]);
-    }
-
-    fn node(id: &str, role: &str) -> SemanticPaneNode {
-        SemanticPaneNode {
-            id: id.to_string(),
-            role: role.to_string(),
-            label: None,
-            value: None,
-            children: Vec::new(),
-            selected: false,
-            cells: Vec::new(),
-            bounds: None,
-            canvas_commands: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn resolve_interactive_node_accepts_button_and_returns_arena_id() {
-        let mut state = SemanticPaneState::empty("wasm");
-        state.nodes = vec![node("0", "column"), node("5", "button")];
-
-        assert_eq!(state.resolve_interactive_node("5"), Ok(5));
-    }
-
-    #[test]
-    fn resolve_interactive_node_rejects_missing_node_id() {
-        let state = SemanticPaneState::empty("wasm");
-
-        let err = state
-            .resolve_interactive_node("9999")
-            .expect_err("missing node_id must fail loudly");
-        assert!(err.contains("not found"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn resolve_interactive_node_rejects_non_interactive_role() {
-        let mut state = SemanticPaneState::empty("wasm");
-        state.nodes = vec![node("1", "text")];
-
-        let err = state
-            .resolve_interactive_node("1")
-            .expect_err("non-interactive role must fail loudly");
-        assert!(err.contains("not interactive"), "unexpected error: {err}");
     }
 }

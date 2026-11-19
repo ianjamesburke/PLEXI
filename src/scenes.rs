@@ -668,8 +668,8 @@ pub struct KeySpec {
 }
 
 /// One pointer drag: endpoints are pane-pixel coordinates (`from`/`to`) or
-/// semantic node ids (`from_node`/`to_node` — the drag targets the node's
-/// rendered bounds center). Exactly one form per endpoint.
+/// node refs from pane state (`from_node`/`to_node` — the drag targets the
+/// node's rendered bounds center). Exactly one form per endpoint.
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct DragSpec {

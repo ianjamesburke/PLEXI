@@ -554,12 +554,7 @@ impl View for SecretsView {
         }
         KeyDisposition::Consumed
     }
-    fn ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
-    ) {
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &ViewRenderContext<'_>) {
         let colors = ctx.colors;
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, colors.terminal_bg);

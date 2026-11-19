@@ -2270,17 +2270,19 @@ pub enum PaneCmd {
     /// injects a real pointer move + press + release into the live egui pass,
     /// never a parallel resolver.
     ///
-    /// `--node <node_id>` — targets a specific Button/TextInput/list-row node
-    /// by the id `plexi pane state` reports, so a caller never has to compute
-    /// pixel geometry. The host resolves the node's on-screen rect during the
-    /// next render pass and fails loudly if the id is missing or not an
-    /// interactive role.
+    /// `--node <ref>` — activates one node of a plugin pane by the ref
+    /// `plexi pane state` reports for it: a button's action, a list or table
+    /// row's selection, or focus for a text input. The host checks the ref
+    /// against the pane's current tree and delivers in the same step; if the
+    /// node changed since you read it, the click is refused as stale and
+    /// nothing happens. Re-read pane state and retry. Builtin views have no
+    /// refs; click them by position.
     ///
     /// Only view panes accept clicks today.
     ///
     /// Examples:
     ///   plexi pane click 42 120 80
-    ///   plexi pane click 42 --node 5
+    ///   plexi pane click 42 --node 5.0f3a9c1e2b4d6e70
     Click {
         /// Pane id or name to click (from `plexi pane list`)
         pane_id: PaneTarget,
@@ -2290,19 +2292,20 @@ pub enum PaneCmd {
         /// Y offset in pane pixels from the pane's top-left corner
         #[arg(requires = "x", conflicts_with = "node")]
         y: Option<f32>,
-        /// Node id to click (from `plexi pane state`), instead of pixel coordinates
+        /// Node ref to activate (from `plexi pane state`), instead of pixel coordinates
         #[arg(long, conflicts_with_all = ["x", "y"])]
         node: Option<String>,
-        /// Pointer button: "left", "right", or "middle"
-        #[arg(long, default_value = "left")]
-        button: String,
+        /// Pointer button for a position click: "left" (default), "right", or "middle".
+        /// A node activation has no pointer button.
+        #[arg(long, conflicts_with = "node")]
+        button: Option<String>,
     },
     /// Drag the pointer across a view pane through the production input path:
     /// press, N intermediate moves, release — delivered one frame at a time.
     ///
     /// Endpoints are pane-pixel coordinates ("x,y" from the pane's top-left)
-    /// or semantic node ids from `plexi pane state` (the drag targets the
-    /// node's rendered bounds center).
+    /// or node refs from `plexi pane state` (the drag targets the node's
+    /// rendered bounds center).
     ///
     /// Example: plexi pane drag 42 --from 40,120 --to 260,120 --steps 12
     Drag {
@@ -2311,13 +2314,13 @@ pub enum PaneCmd {
         /// Start position "x,y" in pane pixels
         #[arg(long, conflicts_with = "from_node")]
         from: Option<String>,
-        /// Start node id (from `plexi pane state`)
+        /// Start node ref (from `plexi pane state`)
         #[arg(long)]
         from_node: Option<String>,
         /// End position "x,y" in pane pixels
         #[arg(long, conflicts_with = "to_node")]
         to: Option<String>,
-        /// End node id (from `plexi pane state`)
+        /// End node ref (from `plexi pane state`)
         #[arg(long)]
         to_node: Option<String>,
         /// Intermediate pointer moves between press and release (max 256)

@@ -30,12 +30,7 @@ impl View for AgentsDashboardView {
         "Agents dashboard".to_string()
     }
 
-    fn ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
-    ) {
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &ViewRenderContext<'_>) {
         let colors = ctx.colors;
         let lines = crate::agent::runs::pane_lines(&self.workspace);
         egui::ScrollArea::vertical()

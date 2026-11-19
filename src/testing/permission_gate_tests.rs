@@ -2073,10 +2073,10 @@ fn permissions_button(h: &HostHarness, pane_id: u64, label: &str) -> Option<Stri
         .nodes
         .into_iter()
         .find(|node| node.role == "button" && node.label.as_deref() == Some(label))
-        .map(|node| node.id)
+        .and_then(|node| node.r#ref)
 }
 
-/// `plexi pane click <pane> --node <id>`: the route that skips
+/// `plexi pane click <pane> --node <ref>`: the route that skips
 /// `refuse_synthetic_approval` and reaches the plugin's own button handler.
 #[track_caller]
 fn node_click_permissions_button(h: &mut HostHarness, pane_id: u64, label: &str) {
@@ -2089,12 +2089,7 @@ fn node_click_permissions_button(h: &mut HostHarness, pane_id: u64, label: &str)
 fn click_permissions_node(h: &mut HostHarness, pane_id: u64, label: &str, node: &str) {
     let response = h.workspace_root().join(format!("node-{label}.json"));
     let _ = std::fs::remove_file(&response);
-    h.inject_node_click(
-        pane_id,
-        node,
-        "left",
-        Some(response.to_string_lossy().into_owned()),
-    );
+    h.inject_node_click(pane_id, node, Some(response.to_string_lossy().into_owned()));
     pump_until(h, |_| response.is_file());
     let body = std::fs::read_to_string(&response).unwrap();
     assert!(body.contains("\"ok\":true"), "{label} node click: {body}");
@@ -2272,10 +2267,11 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
         .nodes
         .into_iter()
         .find(|node| node.role == "list_item")
-        .expect("permission list row");
+        .and_then(|node| node.r#ref)
+        .expect("permission list row ref");
     // A node click on a list row delivers that row's own action.
     // Raw synthetic KeyPane input to Permissions is intentionally refused.
-    click_permissions_node(&mut h, pane, "select-denial", &first_row.id);
+    click_permissions_node(&mut h, pane, "select-denial", &first_row);
     pump_until(&mut h, |h| {
         h.app.windows[h.app.active_window]
             .panes
@@ -2429,7 +2425,7 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
         undecided(&h, route);
     }
     let node = permissions_button(&h, pane, "Allow").expect("Allow node behind the overlay");
-    h.inject_node_click(pane, &node, "left", Some(respond(&h, "node")));
+    h.inject_node_click(pane, &node, Some(respond(&h, "node")));
     h.run_frames(4);
     undecided(&h, "click_pane_node");
     // Let any guest reply to the routes above land, then re-check.

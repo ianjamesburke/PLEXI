@@ -1479,6 +1479,13 @@ pub struct LivePythonPane {
     /// tree from a repaint of the same stale one (stint 0720).
     tree_seq: u64,
     pending_trees: HashMap<u64, Arc<PythonUiTree>>,
+    /// Launch epoch every node ref this pane mints is bound to
+    /// (`crate::host::node_ref`). Renewed on relaunch, which clears `tree`,
+    /// so no ref read before a hot reload resolves after it.
+    epoch: u128,
+    /// A text input a node activation asked to focus; claimed on the next
+    /// paint if the ref still resolves on the tree being painted.
+    focus_request: Option<crate::host::node_ref::NodeRef>,
     initialized: bool,
     ready: bool,
     frame_scheduler: PythonFrameScheduler,
@@ -1572,14 +1579,11 @@ pub struct LivePythonPane {
     /// Stint 0426: `ui()`'s caller (`tiling.rs`/`render.rs`) removes a queued
     /// `PendingPaneClick` from `PlexiApp::pending_pane_clicks` *before*
     /// calling `ui()`, so this is the pane's only chance to consume it. `ui()`
-    /// has three early-return branches (fatal error, not yet initialized, not
-    /// yet `ready`) that ran before ever reaching the tree-render call — a
-    /// click/node-click arriving on exactly one of those frames (subprocess
-    /// startup, or a hot-reload `relaunch()`) was silently dropped forever
-    /// with no error and no retry, even though `plexi pane click --node`
-    /// reported `{"ok": true}`. Carry it here across the transient branches
-    /// instead of discarding it, so it survives to the next frame that
-    /// actually reaches the render call.
+    /// has early-return branches (not yet initialized, not yet `ready`, no
+    /// committed tree) that never reach the tree-render call; a pointer
+    /// sample landing on one of those frames is carried here to the next
+    /// frame that renders. Node activations never come through here: they
+    /// are delivered from `App::logic` by `activate_node`.
     pending_click_carry: Option<crate::host::pane::PendingPaneClick>,
     /// Line-buffered, traceback-aware classifier over this guest's stderr.
     /// Lives on the pane because a traceback spans several `drain_stderr`
@@ -3178,6 +3182,8 @@ impl LivePythonPane {
             title: None,
             tree: None,
             tree_seq: 0,
+            epoch: uuid::Uuid::new_v4().as_u128(),
+            focus_request: None,
             pending_trees: HashMap::new(),
             initialized: false,
             ready: false,
@@ -3309,7 +3315,7 @@ impl LivePythonPane {
         let pending_click = pending_click.or_else(|| self.pending_click_carry.take());
         if pending_click.is_some() {
             log::info!(
-                "plugin::{}: pending pane click/node-click entering render (carried={})",
+                "plugin::{}: pending pane click entering render (carried={})",
                 self.plugin_id,
                 self.pending_click_carry.is_none()
             );
@@ -3424,8 +3430,9 @@ impl LivePythonPane {
             }
             self.drain_runtime();
         }
-        if let Some(tree) = &self.tree {
+        if let Some(tree) = self.tree.clone() {
             let render_started = std::time::Instant::now();
+            let focus_node = self.take_focus_request(&tree.tree);
             let result = super::wasm_render::render_ui_tree_with_canvas_fits(
                 ui,
                 &tree.tree,
@@ -3433,6 +3440,7 @@ impl LivePythonPane {
                 None,
                 Some(&tree.canvas_fits),
                 pending_click,
+                focus_node,
                 Some(crate::ui::focus::SurfaceKey::Pane(pane_key)),
                 self.tree_seq,
             );
@@ -5651,7 +5659,84 @@ impl LivePythonPane {
     }
 
     pub(crate) fn semantic_state(&self) -> crate::host::pane::SemanticPaneState {
-        python_semantic_state(self.tree.as_deref())
+        python_semantic_state(self.tree.as_deref(), self.epoch)
+    }
+
+    /// Resolve `reference` on the committed tree, after draining what the
+    /// guest has already sent so the newest committed frame is the one used.
+    pub(crate) fn resolve_node(
+        &mut self,
+        reference: &crate::host::node_ref::NodeRef,
+    ) -> Result<u32, String> {
+        let tree = self.committed_tree()?;
+        crate::host::node_ref::resolve(&tree.tree, self.epoch, reference)
+    }
+
+    fn committed_tree(&mut self) -> Result<Arc<PythonUiTree>, String> {
+        self.drain_runtime();
+        if let Some(error) = &self.error {
+            return Err(format!("plugin {} is in an error state: {error}", self.plugin_id));
+        }
+        self.tree.clone().ok_or_else(|| {
+            format!(
+                "plugin {} has no committed tree (starting or hot reloading); re-read pane state",
+                self.plugin_id
+            )
+        })
+    }
+
+    /// Check and deliver a node activation in one step against the committed
+    /// tree pane state is served from. An action is written to the guest as
+    /// the same `ui_action` message a pointer click sends.
+    pub(crate) fn activate_node(
+        &mut self,
+        reference: &crate::host::node_ref::NodeRef,
+    ) -> Result<crate::host::node_ref::Activation, crate::host::node_ref::ActivationFailure> {
+        use crate::host::node_ref::Activation;
+        let tree = self.committed_tree()?;
+        let id = crate::host::node_ref::resolve(&tree.tree, self.epoch, reference)?;
+        let activation =
+            crate::host::node_ref::activation(tree.tree.root, &tree.tree.nodes, id)?;
+        match &activation {
+            Activation::Action(action) => {
+                // A failed send wrote nothing to the guest: a refusal.
+                self.runtime
+                    .send(&json!({"type": "ui_action", "handler_id": action}))
+                    .map_err(|error| {
+                        format!(
+                            "plugin {}: sending ui_action to the guest failed: {error}",
+                            self.plugin_id
+                        )
+                    })?;
+                log::info!(
+                    "plugin::{}: emitted UI action at Python host boundary handler={action} (node activation)",
+                    self.plugin_id,
+                    action = guest_text::shown(action)
+                );
+            }
+            Activation::Focus(_) => self.focus_request = Some(*reference),
+        }
+        Ok(activation)
+    }
+
+    pub(crate) fn cancel_node_focus_request(&mut self) {
+        self.focus_request = None;
+    }
+
+    /// The focus request's text input on the tree about to be painted, or
+    /// `None` (logged) when the ref no longer resolves there.
+    fn take_focus_request(&mut self, tree: &UiTree) -> Option<u32> {
+        let reference = self.focus_request.take()?;
+        match crate::host::node_ref::resolve(tree, self.epoch, &reference) {
+            Ok(id) => Some(id),
+            Err(error) => {
+                log::info!(
+                    "plugin::{}: node focus request dropped: {error}",
+                    self.plugin_id
+                );
+                None
+            }
+        }
     }
     pub(crate) fn lifecycle(&self) -> (&'static str, Option<&str>) {
         python_lifecycle(
@@ -5777,16 +5862,17 @@ impl LivePythonPane {
         self.announced_permission_read = false;
         self.launch_admissions = LaunchAdmissionMemo::default();
         self.permission_ui = permission_ui;
+        // A new guest gets a new epoch: every ref read from the old tree is
+        // stale from here on, and a pending focus request with it.
+        self.epoch = uuid::Uuid::new_v4().as_u128();
+        self.focus_request = None;
         if let Some(dropped) = self.pending_click_carry.take() {
-            // A node-targeted click's arena id belongs to the tree it was
-            // resolved against — that tree is gone after relaunch, so
-            // replaying it against the new one would hit the wrong node (or
-            // nothing at all). Fail loud instead of a silent stale-node
-            // click, matching the same policy as the other drop points above.
+            // A pointer sample aimed at the old guest's layout: the layout is
+            // gone after relaunch, so it is dropped loudly, never replayed.
             log::error!(
-                "plugin::{}: dropping pending pane click across hot-reload relaunch (target={:?}) — the tree it targeted no longer exists",
+                "plugin::{}: dropping pending pane click across hot-reload relaunch (pos={:?})",
                 self.plugin_id,
-                dropped.target
+                dropped.pos
             );
         }
         log::info!(
@@ -5803,11 +5889,14 @@ fn encode_python_host_event(
     serde_json::to_value(event)
 }
 
-fn python_semantic_state(tree: Option<&PythonUiTree>) -> crate::host::pane::SemanticPaneState {
+fn python_semantic_state(
+    tree: Option<&PythonUiTree>,
+    epoch: u128,
+) -> crate::host::pane::SemanticPaneState {
     let Some(tree) = tree else {
         return crate::host::pane::SemanticPaneState::empty("python-wasm");
     };
-    let mut state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree.tree);
+    let mut state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree.tree, epoch);
     state.runtime_kind = "python-wasm".to_string();
     state.expose_canvas_commands(&tree.tree);
     for node in &mut state.nodes {
@@ -13809,7 +13898,7 @@ default = true
         .expect("valid JSON"))
         .expect("tree");
 
-        let state = python_semantic_state(Some(&tree));
+        let state = python_semantic_state(Some(&tree), 0);
         assert_eq!(state.runtime_kind, "python-wasm");
         assert_eq!(state.roots, ["0"]);
         assert_eq!(state.nodes.len(), 3);

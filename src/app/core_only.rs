@@ -102,12 +102,7 @@ impl View for DisabledPluginView {
         Some(&self.original)
     }
 
-    fn ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
-    ) {
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &ViewRenderContext<'_>) {
         ui.vertical_centered(|ui| {
             ui.add_space(crate::ui::style::SPACE_XL);
             ui.heading("Core-only mode");

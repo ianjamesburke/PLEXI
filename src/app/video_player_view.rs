@@ -197,7 +197,6 @@ impl View for VideoPlayerView {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         self.tick_position();
         self.drain_frames(ui.ctx());

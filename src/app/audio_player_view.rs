@@ -118,7 +118,6 @@ impl View for AudioPlayerView {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         self.sync_position();
         if self.playing {

@@ -26,12 +26,7 @@ struct Frame {
     shapes: Vec<egui::epaint::ClippedShape>,
 }
 
-fn run_frame(
-    ctx: &egui::Context,
-    tree: &UiTree,
-    events: Vec<egui::Event>,
-    pending_click: Option<crate::host::pane::PendingPaneClick>,
-) -> Frame {
+fn run_frame(ctx: &egui::Context, tree: &UiTree, events: Vec<egui::Event>) -> Frame {
     let colors =
         Colors::from_config(&crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"));
     let mut out = RenderResult::default();
@@ -51,7 +46,8 @@ fn run_frame(
                         &colors,
                         None,
                         None,
-                        pending_click,
+                        None,
+                        None,
                         None,
                         0,
                         RenderResult {
@@ -80,8 +76,8 @@ fn new_ctx() -> egui::Context {
 /// warm-up frame so egui hit-tests against laid-out widgets.
 fn press_at(tree: &UiTree, pos: impl Fn(&Frame) -> egui::Pos2) -> Vec<String> {
     let ctx = new_ctx();
-    let warm = run_frame(&ctx, tree, Vec::new(), None);
-    let _ = run_frame(&ctx, tree, Vec::new(), None);
+    let warm = run_frame(&ctx, tree, Vec::new());
+    let _ = run_frame(&ctx, tree, Vec::new());
     let at = pos(&warm);
     let events = vec![
         egui::Event::PointerMoved(at),
@@ -98,24 +94,16 @@ fn press_at(tree: &UiTree, pos: impl Fn(&Frame) -> egui::Pos2) -> Vec<String> {
             modifiers: egui::Modifiers::default(),
         },
     ];
-    run_frame(&ctx, tree, events, None).out.actions
+    run_frame(&ctx, tree, events).out.actions
 }
 
-/// Actions `plexi pane click --node <id>` delivers.
+/// Actions `plexi pane click --node <ref>` delivers for node `id`: the
+/// activation the host derives from the tree (`node_ref::activation`).
 fn node_click(tree: &UiTree, id: u32) -> Vec<String> {
-    let ctx = new_ctx();
-    run_frame(
-        &ctx,
-        tree,
-        Vec::new(),
-        Some(crate::host::pane::PendingPaneClick {
-            target: crate::host::pane::PaneClickTarget::Node(u64::from(id)),
-            button: "left",
-            phase: crate::host::pane::PointerPhase::Click,
-        }),
-    )
-    .out
-    .actions
+    match crate::host::node_ref::activation(tree.root, &tree.nodes, id) {
+        Ok(crate::host::node_ref::Activation::Action(action)) => vec![action],
+        Ok(crate::host::node_ref::Activation::Focus(_)) | Err(_) => Vec::new(),
+    }
 }
 
 fn painted_text_center(frame: &Frame, label: &str) -> egui::Pos2 {

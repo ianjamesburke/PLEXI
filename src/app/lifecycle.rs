@@ -3468,7 +3468,7 @@ impl PlexiApp {
                             self.pending_pane_clicks.insert(
                                 *pane_id,
                                 crate::host::pane::PendingPaneClick {
-                                    target: crate::host::pane::PaneClickTarget::Pos(abs),
+                                    pos: abs,
                                     button: button_str,
                                     phase: crate::host::pane::PointerPhase::Click,
                                 },
@@ -3493,62 +3493,77 @@ impl PlexiApp {
             }
             crate::protocol::HostRequest::ClickPaneNode {
                 pane_id,
-                node_id,
-                button,
+                node_ref,
                 response_file,
             } => {
-                log::info!(
-                    "pane_ipc: kind=click_pane_node pane_id={pane_id} node_id={node_id} button={button:?}"
-                );
-                let result: Result<serde_json::Value, String> = (|| {
+                // Stint 1600: one semantic activation, checked and delivered
+                // in this step against the pane's committed tree. No paint
+                // runs in between, so a hidden window still gets its answer.
+                use crate::host::node_ref::{Activation, ActivationFailure};
+                let result: Result<Activation, ActivationFailure> = (|| {
+                    let reference = crate::host::node_ref::NodeRef::parse(node_ref)?;
                     let Some((win_idx, _tile_id)) = self.find_pane_in_any_window(*pane_id) else {
-                        return Err(format!("pane {pane_id} not found"));
+                        return Err(format!("pane {pane_id} not found").into());
                     };
                     let Some(view_pane) = self.windows[win_idx]
                         .panes
-                        .get(pane_id)
-                        .and_then(|pane| pane.as_view())
+                        .get_mut(pane_id)
+                        .and_then(crate::host::pane::Pane::as_view_mut)
                     else {
                         return Err(format!(
-                            "pane {pane_id}: click injection is only supported for view panes"
-                        ));
+                            "pane {pane_id} is not a view pane and has no node refs"
+                        )
+                        .into());
                     };
-                    let arena_id = view_pane
-                        .semantic_state()
-                        .resolve_interactive_node(node_id)?;
-                    if !self.pane_navigate(*pane_id) {
-                        return Err(format!("pane {pane_id} could not be focused"));
+                    if matches!(
+                        view_pane.runtime,
+                        crate::host::pane::ViewRuntime::Builtin(_)
+                    ) {
+                        return Err(format!(
+                            "pane {pane_id} {}",
+                            crate::host::pane::BUILTIN_HAS_NO_NODE_REFS
+                        )
+                        .into());
                     }
-                    let button_str = match button.as_deref() {
-                        Some("right") => "right",
-                        Some("middle") => "middle",
-                        _ => "left",
-                    };
-                    // Same non-mid-pass reasoning as `ClickPane` above: queue
-                    // instead of replaying pointer input. The interactive
-                    // node's own render branch (`wasm_render.rs`) matches this
-                    // arena id against the frame's live tree and activates it
-                    // exactly as a real click would.
-                    self.pending_pane_clicks.insert(
-                        *pane_id,
-                        crate::host::pane::PendingPaneClick {
-                            target: crate::host::pane::PaneClickTarget::Node(arena_id),
-                            button: button_str,
-                            phase: crate::host::pane::PointerPhase::Click,
-                        },
-                    );
+                    let activation = view_pane.runtime.activate_node(&reference)?;
+                    // Focus is host input state: the field can only take it
+                    // while its pane owns input. If the pane cannot take
+                    // input, the focus request is withdrawn and refused.
+                    if matches!(activation, Activation::Focus(_)) && !self.pane_navigate(*pane_id) {
+                        if let Some(view_pane) = self.windows[win_idx]
+                            .panes
+                            .get_mut(pane_id)
+                            .and_then(crate::host::pane::Pane::as_view_mut)
+                        {
+                            view_pane.runtime.cancel_node_focus_request();
+                        }
+                        return Err(format!("pane {pane_id} could not be focused").into());
+                    }
                     self.ctx.request_repaint();
-                    log::info!(
-                        "pane_ipc: click_pane_node: pane_id={pane_id} queued node_id={node_id} arena_id={arena_id}"
-                    );
-                    Ok(serde_json::json!({"ok": true}))
+                    Ok(activation)
                 })();
+                let json = match &result {
+                    Ok(activation) => {
+                        log::info!(
+                            "pane_ipc: click_pane_node activated pane_id={pane_id} ref={node_ref} activation={activation:?}"
+                        );
+                        serde_json::json!({"ok": true})
+                    }
+                    Err(failure @ ActivationFailure::Refused(_)) => {
+                        log::info!(
+                            "pane_ipc: click_pane_node refused pane_id={pane_id} ref={node_ref} reason={failure}"
+                        );
+                        serde_json::json!({"error": failure.to_string(), "delivered": false})
+                    }
+                    Err(failure @ ActivationFailure::DeliveredThenFailed(_)) => {
+                        log::warn!(
+                            "pane_ipc: click_pane_node failed after delivery pane_id={pane_id} ref={node_ref} reason={failure}"
+                        );
+                        serde_json::json!({"error": failure.to_string(), "delivered": true})
+                    }
+                };
                 if let Some(rf) = response_file {
-                    let json = match &result {
-                        Ok(v) => v.to_string(),
-                        Err(msg) => serde_json::json!({"error": msg}).to_string(),
-                    };
-                    write_response(rf, json.as_bytes());
+                    write_response(rf, json.to_string().as_bytes());
                 }
             }
             crate::protocol::HostRequest::DragPane {
@@ -3576,8 +3591,8 @@ impl PlexiApp {
                     };
                     let Some(view_pane) = self.windows[win_idx]
                         .panes
-                        .get(pane_id)
-                        .and_then(crate::host::pane::Pane::as_view)
+                        .get_mut(pane_id)
+                        .and_then(crate::host::pane::Pane::as_view_mut)
                     else {
                         return Err(format!(
                             "pane {pane_id}: drag injection is only supported for view panes"
@@ -3588,21 +3603,30 @@ impl PlexiApp {
                         crate::host::pane::ViewRuntime::Builtin(_)
                     );
                     // Resolve each endpoint to an absolute screen position:
-                    // pane-pixel coordinates directly, or a semantic node's
-                    // cached bounds center. Nodes without recorded bounds
-                    // fail loudly — a drag must never silently guess.
-                    let resolve = |px: &Option<[f32; 2]>,
-                                   node: &Option<String>,
-                                   which: &str|
+                    // pane-pixel coordinates directly, or the cached bounds
+                    // center of the node a ref names, resolved on the pane's
+                    // committed tree here at dispatch. A stale ref or a node
+                    // without recorded bounds fails loudly — a drag must
+                    // never silently guess.
+                    let mut resolve = |px: &Option<[f32; 2]>,
+                                       node: &Option<String>,
+                                       which: &str|
                      -> Result<egui::Pos2, String> {
                         match (px, node) {
                             (Some(_), Some(_)) => Err(format!(
-                                "drag {which}: give pixel coordinates or a node id, not both"
+                                "drag {which}: give pixel coordinates or a node ref, not both"
                             )),
                             (Some([x, y]), None) => Ok(pane_rect.min + egui::vec2(*x, *y)),
-                            (None, Some(node_id)) => {
+                            (None, Some(node_ref)) => {
+                                let reference = crate::host::node_ref::NodeRef::parse(node_ref)
+                                    .map_err(|e| format!("drag {which}: {e}"))?;
+                                let node_id = view_pane
+                                    .runtime
+                                    .resolve_node(&reference)
+                                    .map_err(|e| format!("drag {which}: {e}"))?
+                                    .to_string();
                                 let state = view_pane.semantic_state();
-                                let Some(node) = state.nodes.iter().find(|n| &n.id == node_id)
+                                let Some(node) = state.nodes.iter().find(|n| n.id == node_id)
                                 else {
                                     return Err(format!(
                                         "drag {which}: node {node_id} not found in this pane's current tree"
@@ -3669,9 +3693,9 @@ impl PlexiApp {
                         frames.push_back(press(to_abs, false));
                         self.pending_pane_pointer_frames.insert(*pane_id, frames);
                     } else {
-                        use crate::host::pane::{PaneClickTarget, PendingPaneClick, PointerPhase};
+                        use crate::host::pane::{PendingPaneClick, PointerPhase};
                         let sample = |pos: egui::Pos2, phase: PointerPhase| PendingPaneClick {
-                            target: PaneClickTarget::Pos(pos),
+                            pos,
                             button: button_str,
                             phase,
                         };
@@ -3946,6 +3970,12 @@ impl PlexiApp {
                 log::info!(
                     "pane_ipc: kind=get_pane_state pane_id={pane_id} response_file={response_file:?} stale_after_secs={stale_after_secs:?}"
                 );
+                // Where the pane sits on screen: builtin node bounds are
+                // absolute, and `pane click <x> <y>` takes pane-relative points.
+                let pane_rect = self
+                    .find_pane_in_any_window(*pane_id)
+                    .and_then(|(win, tile)| self.windows[win].tree.tiles.rect(tile))
+                    .map(|rect| [rect.min.x, rect.min.y, rect.max.x, rect.max.y]);
                 let json_str = match self.windows.iter().find_map(|win| win.panes.get(pane_id)) {
                     None => {
                         log::warn!("pane_ipc: get_pane_state: pane_id={pane_id} not found");
@@ -3983,6 +4013,7 @@ impl PlexiApp {
                                 "type": "view",
                                 "title": view_pane.name,
                                 "manifest_id": view_pane.manifest_id,
+                                "rect": pane_rect,
                                 "lifecycle": lifecycle,
                                 // The CLI transport envelope signals failure
                                 // with a top-level `error` string. Guest-domain

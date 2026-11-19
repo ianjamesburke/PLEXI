@@ -3294,7 +3294,6 @@ impl FileBrowserView {
         &mut self,
         ui: &mut egui::Ui,
         colors: &Colors,
-        pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let mut navigate_target: Option<PathBuf> = None;
         let font_size = self.font_size;
@@ -3375,37 +3374,23 @@ impl FileBrowserView {
                     label.clone()
                 };
                 let btn = breadcrumb_segment(ui, &display_label, is_last, font_size, colors);
-                let synthetic_click = pending_click.is_some_and(|click| click.targets_id(btn.id));
-                if btn.clicked() || synthetic_click {
+                if btn.clicked() {
                     navigate_target = Some(seg_path.clone());
                 }
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Hand-rolled expansion of `ui.menu_button` (egui's
-                // `stationary_menu_impl`) so a queued node click can open the
-                // popup. `menu_button` flips its open state only from a real
-                // click resolved inside `Context::begin_pass`, which
-                // `plexi pane click --node` / `PendingPaneClick` bypasses
-                // (stint 0469).
+                // `stationary_menu_impl`): a kit button toggles the popup.
                 let bar_id = ui.id().with("view_menu");
                 let menu_button = ui.add(
                     crate::ui::button::KitButton::new("View \u{2304}", colors)
                         .kind(crate::ui::button::ButtonKind::Secondary)
                         .size(crate::ui::button::ButtonSize::Sm),
                 );
-                let synthetic_open =
-                    pending_click.is_some_and(|click| click.targets_id(menu_button.id));
-                if synthetic_open {
-                    log::info!("file_browser: View menu opened via synthetic node click");
-                }
-                let set_open = if synthetic_open {
-                    Some(egui::SetOpenCommand::Bool(true))
-                } else if menu_button.clicked() {
-                    Some(egui::SetOpenCommand::Toggle)
-                } else {
-                    None
-                };
+                let set_open = menu_button
+                    .clicked()
+                    .then_some(egui::SetOpenCommand::Toggle);
                 egui::Popup::menu(&menu_button)
                     .id(bar_id)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
@@ -3421,15 +3406,8 @@ impl FileBrowserView {
                             );
                         }
                         let mut show_hidden = self.columns.show_hidden;
-                        let show_hidden_resp = ui.checkbox(&mut show_hidden, "Show hidden files");
-                        let synthetic_toggle =
-                            pending_click.is_some_and(|c| c.targets_id(show_hidden_resp.id));
-                        if show_hidden_resp.changed() || synthetic_toggle {
-                            self.columns.show_hidden = if show_hidden_resp.changed() {
-                                show_hidden
-                            } else {
-                                !self.columns.show_hidden
-                            };
+                        if ui.checkbox(&mut show_hidden, "Show hidden files").changed() {
+                            self.columns.show_hidden = show_hidden;
                             self.refresh_preserving_filter();
                             log::info!(
                                 "file_browser: show_hidden changed to {}",
@@ -3482,7 +3460,6 @@ impl FileBrowserView {
         ui: &mut egui::Ui,
         colors: &Colors,
         pane_id: u64,
-        pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let claim = std::mem::take(&mut self.search_focus_pending);
         let hit_count = self.search_session.hits().len();
@@ -3493,7 +3470,6 @@ impl FileBrowserView {
         )
         .claim_focus(claim)
         .font_size(self.font_size)
-        .pending_click(pending_click)
         .shortcut(if self.in_search {
             None
         } else {
@@ -3521,7 +3497,6 @@ impl FileBrowserView {
         ui: &mut egui::Ui,
         colors: &Colors,
         pane_id: u64,
-        pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let claim = std::mem::take(&mut self.palette_focus_pending);
         let cursor_to_end = std::mem::take(&mut self.palette_cursor_to_end);
@@ -3619,9 +3594,7 @@ impl FileBrowserView {
                             .text_size(self.font_size)
                             .text_color(colors.text_dim),
                     );
-                    let synthetic_close =
-                        pending_click.is_some_and(|c| c.targets_id(close_btn.id));
-                    if close_btn.clicked() || synthetic_close {
+                    if close_btn.clicked() {
                         close_clicked = true;
                     }
                 });
@@ -3981,7 +3954,6 @@ impl View for FileBrowserView {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &ViewRenderContext<'_>,
-        pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let colors = ctx.colors;
         if let Some(text) = self.pending_clipboard_text.take() {
@@ -3996,12 +3968,12 @@ impl View for FileBrowserView {
             .inner_margin(egui::Margin::symmetric(12, 8))
             .show(ui, |ui| {
                 let show_inspector = self.should_show_inspector(ui.available_width());
-                self.draw_toolbar(ui, colors, pending_click);
+                self.draw_toolbar(ui, colors);
 
                 if self.in_palette {
-                    self.draw_action_palette(ui, colors, ctx.pane_id, pending_click);
+                    self.draw_action_palette(ui, colors, ctx.pane_id);
                 } else {
-                    self.draw_search_bar(ui, colors, ctx.pane_id, pending_click);
+                    self.draw_search_bar(ui, colors, ctx.pane_id);
                 }
 
                 ui.add_space(style::SPACE_XS);
@@ -7306,7 +7278,7 @@ mod tests {
         let ctx = egui::Context::default();
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let _ = ctx.run_ui(RawInput::default(), |ui| {
-            app.draw_search_bar(ui, &colors, 42, None);
+            app.draw_search_bar(ui, &colors, 42);
         });
         let registry = crate::ui::focus::drain_text_surfaces(&ctx);
         let key = crate::ui::focus::SurfaceKey::Pane(42);
@@ -7341,7 +7313,7 @@ mod tests {
                         ..Default::default()
                     },
                     |ui| {
-                        app.draw_action_palette(ui, &colors, 42, None);
+                        app.draw_action_palette(ui, &colors, 42);
                     },
                 ));
             }
@@ -7563,7 +7535,7 @@ mod tests {
                         pane_id: 1,
                         synthetic_input: false,
                     };
-                    app.ui(ui, &render_ctx, None);
+                    app.ui(ui, &render_ctx);
                 });
             });
 
@@ -7776,7 +7748,7 @@ mod tests {
         crate::ui::theme::setup_fonts(&ctx);
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let _ = ctx.run_ui(RawInput::default(), |ui| {
-            app.draw_action_palette(ui, &colors, 77, None);
+            app.draw_action_palette(ui, &colors, 77);
         });
         let registry = crate::ui::focus::drain_text_surfaces(&ctx);
         let key = crate::ui::focus::SurfaceKey::Pane(77);
@@ -8232,7 +8204,7 @@ mod tests {
                 colors: &colors,
                 synthetic_input: false,
             };
-            app.ui(ui, &render_ctx, None);
+            app.ui(ui, &render_ctx);
         });
         assert!(
             !app.in_search,
@@ -8369,7 +8341,7 @@ mod tests {
                 colors: &colors,
                 synthetic_input: false,
             };
-            app.ui(ui, &render_ctx, None);
+            app.ui(ui, &render_ctx);
         });
 
         let mut found_empty_state = false;

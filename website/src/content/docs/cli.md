@@ -1727,25 +1727,25 @@ Two mutually exclusive targeting modes:
 
 PANE-PIXEL coordinates (origin at the pane's top-left) — the honest primitive, since it exercises the same fit=contain/fit=fill `canvas_transform` inversion a real click goes through. The host injects a real pointer move + press + release into the live egui pass, never a parallel resolver.
 
-`--node <node_id>` — targets a specific Button/TextInput/list-row node by the id `plexi pane state` reports, so a caller never has to compute pixel geometry. The host resolves the node's on-screen rect during the next render pass and fails loudly if the id is missing or not an interactive role.
+`--node <ref>` — activates one node of a plugin pane by the ref `plexi pane state` reports for it: a button's action, a list or table row's selection, or focus for a text input. The host checks the ref against the pane's current tree and delivers in the same step; if the node changed since you read it, the click is refused as stale and nothing happens. Re-read pane state and retry. Builtin views have no refs; click them by position.
 
 Only view panes accept clicks today.
 
-Examples: plexi pane click 42 120 80 plexi pane click 42 --node 5
+Examples: plexi pane click 42 120 80 plexi pane click 42 --node 5.0f3a9c1e2b4d6e70
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<pane_id>` | string | yes | Pane id or name to click (from `plexi pane list`) |
 | `<x>` | string | no | X offset in pane pixels from the pane's top-left corner |
 | `<y>` | string | no | Y offset in pane pixels from the pane's top-left corner |
-| `--node` | string | no | Node id to click (from `plexi pane state`), instead of pixel coordinates |
-| `--button` | string | no | Pointer button: "left", "right", or "middle" Default: `left`. |
+| `--node` | string | no | Node ref to activate (from `plexi pane state`), instead of pixel coordinates |
+| `--button` | string | no | Pointer button for a position click: "left" (default), "right", or "middle". A node activation has no pointer button |
 
 ### `plexi pane drag`
 
 Drag the pointer across a view pane through the production input path: press, N intermediate moves, release — delivered one frame at a time.
 
-Endpoints are pane-pixel coordinates ("x,y" from the pane's top-left) or semantic node ids from `plexi pane state` (the drag targets the node's rendered bounds center).
+Endpoints are pane-pixel coordinates ("x,y" from the pane's top-left) or node refs from `plexi pane state` (the drag targets the node's rendered bounds center).
 
 Example: plexi pane drag 42 --from 40,120 --to 260,120 --steps 12
 
@@ -1753,9 +1753,9 @@ Example: plexi pane drag 42 --from 40,120 --to 260,120 --steps 12
 |---|---|---|---|
 | `<pane_id>` | string | yes | Pane id or name to drag in (from `plexi pane list`) |
 | `--from` | string | no | Start position "x,y" in pane pixels |
-| `--from-node` | string | no | Start node id (from `plexi pane state`) |
+| `--from-node` | string | no | Start node ref (from `plexi pane state`) |
 | `--to` | string | no | End position "x,y" in pane pixels |
-| `--to-node` | string | no | End node id (from `plexi pane state`) |
+| `--to-node` | string | no | End node ref (from `plexi pane state`) |
 | `--steps` | string | no | Intermediate pointer moves between press and release (max 256) Default: `8`. |
 | `--button` | string | no | Pointer button: "left", "right", or "middle" Default: `left`. |
 

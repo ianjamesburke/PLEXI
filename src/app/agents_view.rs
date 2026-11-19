@@ -174,12 +174,7 @@ impl View for AgentsPaneView {
         }
         KeyDisposition::Consumed
     }
-    fn ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
-    ) {
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &ViewRenderContext<'_>) {
         let colors = ctx.colors;
         egui::Frame::new()
             .fill(colors.terminal_bg)

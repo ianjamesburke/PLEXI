@@ -19,13 +19,7 @@ impl crate::app::view_trait::View for ThemeEventRecorder {
         self
     }
 
-    fn ui(
-        &mut self,
-        _ui: &mut egui::Ui,
-        _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
-    ) {
-    }
+    fn ui(&mut self, _ui: &mut egui::Ui, _ctx: &crate::app::view_trait::ViewRenderContext<'_>) {}
 
     fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
         self.events.lock().expect("event recorder").push(event);
