@@ -8296,6 +8296,10 @@ open(out + ".done", "w").close()
                 > 0,
             "gallery should render the host TextArea primitive"
         );
+        assert!(
+            h.harness().query_by_label("Open text-entry modal").is_none(),
+            "the gallery has no hand-rolled text-entry dialog demo (stint 1561)"
+        );
         h.save_screenshot(&evidence_png!()).expect("render failed");
         assert!(
             h.with_app(|app| app.show_ui_gallery),

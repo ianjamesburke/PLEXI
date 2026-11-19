@@ -460,11 +460,6 @@ pub(crate) fn kit_specimens() -> impl Iterator<Item = KitSpecimen> {
                 label: "Deny forever",
                 min_width: 116.0,
             },
-            KitSpecimen::GalleryButton {
-                kind: ButtonKind::Primary,
-                label: "Open text-entry modal",
-                min_width: 180.0,
-            },
             KitSpecimen::Choice,
             KitSpecimen::Icon,
             KitSpecimen::Toolbar,
@@ -531,12 +526,10 @@ impl PlexiApp {
             d.get_temp::<UiGalleryPreview>(UiGalleryPreview::id())
                 .unwrap_or_default()
         });
-        // Escape is gated off while the nested text-entry demo is open so the
-        // nested modal consumes it first — otherwise one press closes both.
         let response = ModalShell::centered("host_ui_gallery")
             .title("Host UI Gallery")
             .width(style::MODAL_WIDTH_NOTIFY)
-            .escape(!self.ui_gallery_show_text_modal)
+            .escape(true)
             .show(ctx, &colors, |ui| {
                 ui.label("Chrome primitives");
                 let previous = preview.mode;
@@ -687,20 +680,6 @@ impl PlexiApp {
                             gallery_text_area(ui, &colors, &mut multiline_demo);
                         });
 
-                        chrome_section(ui, "Modal patterns", &colors, |ui| {
-                            if (KitSpecimen::GalleryButton {
-                                kind: ButtonKind::Primary,
-                                label: "Open text-entry modal",
-                                min_width: 180.0,
-                            })
-                            .show(ui, &colors, false, "", "")
-                            .clicked()
-                            {
-                                self.ui_gallery_show_text_modal = true;
-                                log::info!("ui_gallery: opened text-entry modal demo");
-                            }
-                        });
-
                         chrome_section(ui, "Buttons and chips", &colors, |ui| {
                             draw_button_sizes(ui, &colors);
                             ui.horizontal_wrapped(|ui| {
@@ -768,38 +747,9 @@ impl PlexiApp {
 
         ctx.data_mut(|d| d.insert_temp(UiGalleryPreview::id(), preview));
 
-        // Ignore gallery click-away while the nested demo is open — a click
-        // inside the nested modal must not tear down the gallery under it.
-        if response.dismissed && !self.ui_gallery_show_text_modal {
+        if response.dismissed {
             self.show_ui_gallery = false;
             log::info!("ui_gallery: closed by escape or click-away");
-        }
-
-        if self.ui_gallery_show_text_modal {
-            let entry = ModalShell::centered("host_ui_gallery_text_modal")
-                .title("Text entry")
-                .width(style::MODAL_WIDTH_MD)
-                .escape(true)
-                .show(ctx, &colors, |ui| {
-                    gallery_text_field(
-                        ui,
-                        &colors,
-                        egui::Id::new("host_ui_gallery_modal_field"),
-                        "Type something...",
-                        &mut self.ui_gallery_modal_buf,
-                        Some("ui_gallery_modal"),
-                    );
-                    let hints = [
-                        HintGroup::new(&["\u{23ce}"], "save"),
-                        HintGroup::new(&["esc"], "dismiss"),
-                    ];
-                    HintBar::new(&hints).show(ui, &colors);
-                });
-            let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-            if entry.dismissed || enter {
-                self.ui_gallery_show_text_modal = false;
-                log::info!("ui_gallery: text-entry modal demo closed");
-            }
         }
     }
 }

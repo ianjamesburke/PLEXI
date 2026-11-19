@@ -16,6 +16,8 @@ mod layout_guard_tests;
 pub(crate) mod layout_report;
 pub mod list;
 pub mod markdown;
+#[cfg(test)]
+mod modal_kit_guard_tests;
 pub mod overlay;
 pub(crate) mod pane_header;
 pub mod provenance;
