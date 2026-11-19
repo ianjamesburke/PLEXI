@@ -16,7 +16,7 @@
 // u32 ID, breaking recursive type constraints while enabling O(n) structural
 // diffing in the host.
 
-package plexi:platform@0.3.0;
+package plexi:platform@0.4.0;
 
 
 // ─── Shared Types ─────────────────────────────────────────────────────────────
@@ -390,7 +390,17 @@ interface types {
     record column-node  { children: list<node-id>, gap: f32, align: alignment, justify: justify, grow: bool }
     record scroll-node  { child: node-id, horizontal: bool }
     record padding-node { child: node-id, top: f32, right: f32, bottom: f32, left: f32 }
-    record list-node    { items: list<node-id>, selected: option<u32>, on-select: option<string> }
+    record list-node    { items: list<node-id> }
+
+    // A row is a node that describes itself: what it paints, whether it is
+    // selected and the complete action activating it delivers are its own
+    // fields. A host never derives any of them from a parent or a position.
+    record list-item-node { child: node-id, selected: bool, on-select: option<string> }
+
+    // A table header is `columns`, never a child. `rows` holds body rows only.
+    record table-node { columns: list<string>, rows: list<node-id> }
+
+    record table-row-node { cells: list<string>, selected: bool, on-select: option<string> }
 
     record progress-bar-node {
         value: f32,
@@ -494,6 +504,9 @@ interface types {
         footer-keys(footer-keys-node),
         pinned(pinned-node),
         spinner(spinner-node),
+        list-item(list-item-node),
+        table(table-node),
+        table-row(table-row-node),
     }
 
     record indexed-node {

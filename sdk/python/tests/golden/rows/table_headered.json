@@ -1,0 +1,43 @@
+{
+  "nodes": [
+    {
+      "data": {
+        "columns": [
+          "Name"
+        ],
+        "rows": [
+          1,
+          2
+        ],
+        "type": "Table"
+      },
+      "id": 0,
+      "key": "0"
+    },
+    {
+      "data": {
+        "cells": [
+          "A"
+        ],
+        "on_select": "pick:0",
+        "selected": false,
+        "type": "TableRow"
+      },
+      "id": 1,
+      "key": "0/0"
+    },
+    {
+      "data": {
+        "cells": [
+          "B"
+        ],
+        "on_select": "pick:1",
+        "selected": false,
+        "type": "TableRow"
+      },
+      "id": 2,
+      "key": "0/1"
+    }
+  ],
+  "root": 0
+}

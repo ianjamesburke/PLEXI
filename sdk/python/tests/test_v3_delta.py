@@ -447,8 +447,11 @@ class TestReconstruction:
 
     def test_container_table_covers_host_decoder(self):
         source = (REPO_ROOT / "src/host/wasm_python.rs").read_text()
-        validator = source.split("fn validate_python_ui_tree(", 1)[1].split("\n}\n", 1)[0]
-        variants = set(re.findall(r"UiNodeData::(\w+)\(", validator))
+        # `children` lists every container kind before the leaf arm, which
+        # opens with `UiNodeData::Empty`.
+        edges = (REPO_ROOT / "src/host/wasm_view.rs").read_text()
+        children = edges.split("pub(crate) fn children(", 1)[1].split("UiNodeData::Empty", 1)[0]
+        variants = set(re.findall(r"UiNodeData::(\w+)\(", children))
         decoder = source.split("fn decode_node_data(", 1)[1].split("\nfn canvas_commands(", 1)[0]
         arms = re.split(r'(?m)^        (?="[^"]+"\s*\|?[^\n]*=>)', decoder)
         covered = set()

@@ -14,7 +14,11 @@ fn ui_builder_covers_every_node_variant() {
     let column = tree.column("column", [input, row]);
     let progress = tree.progress_bar("progress", 2.0, 10.0);
     let badge = tree.badge("badge", "Ready");
-    let list = tree.list_view("list", [text], Some(0), Some("select"));
+    let item_text = tree.text("item-text", "Item");
+    let item = tree.list_item("item", item_text, true, Some("select:0"));
+    let list = tree.list_view("list", [item]);
+    let table_row = tree.table_row("table-row", ["a", "b"], false, Some("pick:0"));
+    let table = tree.table("table", ["A", "B"], [table_row]);
     let scroll = tree.scroll("scroll", list, false);
     let padding = tree.padding("padding", scroll, 4.0);
     let canvas = tree.canvas("canvas", 320.0, 200.0, []);
@@ -24,12 +28,12 @@ fn ui_builder_covers_every_node_variant() {
     let root = tree.column(
         "root",
         [
-            empty, column, progress, badge, padding, canvas, divider, space, surface,
+            empty, column, progress, badge, padding, canvas, divider, space, surface, table,
         ],
     );
     let tree = tree.finish(root);
 
-    assert_eq!(tree.nodes.len(), 16);
+    assert_eq!(tree.nodes.len(), 20);
     assert!(tree
         .nodes
         .iter()

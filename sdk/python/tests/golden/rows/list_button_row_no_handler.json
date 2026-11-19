@@ -1,0 +1,36 @@
+{
+  "nodes": [
+    {
+      "data": {
+        "items": [
+          1
+        ],
+        "type": "ListView"
+      },
+      "id": 0,
+      "key": "0"
+    },
+    {
+      "data": {
+        "child": 2,
+        "on_select": null,
+        "selected": true,
+        "type": "ListItem"
+      },
+      "id": 1,
+      "key": "0/0"
+    },
+    {
+      "data": {
+        "disabled": false,
+        "label": "Run",
+        "on_click": "run",
+        "style": "secondary",
+        "type": "Button"
+      },
+      "id": 2,
+      "key": "0/0/0"
+    }
+  ],
+  "root": 0
+}

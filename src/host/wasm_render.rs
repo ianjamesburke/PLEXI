@@ -13,7 +13,7 @@ use crate::ui::style;
 use crate::ui::theme::Colors;
 
 use super::wasm_view::bindings::plexi::platform::types::{
-    CanvasCommand, FooterKeysNode, PinnedEdge, RowNode, TextNode,
+    CanvasCommand, FooterKeysNode, ListItemNode, PinnedEdge, RowNode, TableRowNode, TextNode,
 };
 use super::wasm_view::{
     Alignment, BadgeColor, ButtonStyle, Color, IndexedNode, Justify, UiNodeData, UiTree,
@@ -1083,27 +1083,11 @@ fn subtree_contains(nodes: &[IndexedNode], root_id: u32, target_id: u32) -> bool
     if root_id == target_id {
         return true;
     }
-    let Some(node) = find_node(nodes, root_id) else {
-        return false;
-    };
-    match &node.data {
-        UiNodeData::Row(r) => r
-            .children
+    find_node(nodes, root_id).is_some_and(|node| {
+        super::wasm_view::children(&node.data)
             .iter()
-            .any(|&c| subtree_contains(nodes, c, target_id)),
-        UiNodeData::Column(c) => c
-            .children
-            .iter()
-            .any(|&c| subtree_contains(nodes, c, target_id)),
-        UiNodeData::ListView(l) => l
-            .items
-            .iter()
-            .any(|&c| subtree_contains(nodes, c, target_id)),
-        UiNodeData::Scroll(s) => subtree_contains(nodes, s.child, target_id),
-        UiNodeData::Padding(p) => subtree_contains(nodes, p.child, target_id),
-        UiNodeData::Pinned(p) => subtree_contains(nodes, p.child, target_id),
-        _ => false,
-    }
+            .any(|&child| subtree_contains(nodes, child, target_id))
+    })
 }
 
 fn is_nested_card(nodes: &[IndexedNode], card_id: u32) -> bool {
@@ -2027,10 +2011,6 @@ fn render_node_inner(
         UiNodeData::Row(r) => render_row_node(ui, env, id, r, out, depth),
 
         UiNodeData::Column(c) => {
-            if let Some(table) = parse_table_node_key(&node.key) {
-                render_data_table_node(ui, &table, id, &c.children, colors, out, pending_click);
-                return;
-            }
             let footer = c
                 .children
                 .last()
@@ -2110,68 +2090,24 @@ fn render_node_inner(
                 .id_salt(stable_node_id(ui, "l1_list_view", node))
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    let has_on_select = l.on_select.as_deref().is_some_and(|a| !a.is_empty());
-                    for (i, item_id) in l.items.iter().enumerate() {
-                        let selected = l.selected == Some(i as u32);
-                        let bg_idx = ui.painter().add(egui::Shape::Noop);
-                        let bar_idx = ui.painter().add(egui::Shape::Noop);
-                        let inner_resp = egui::Frame::new()
-                            .inner_margin(egui::Margin::symmetric(8, 6))
-                            .corner_radius(style::RADIUS_SMALL)
-                            .show(ui, |ui| {
-                                ui.set_min_width(ui.available_width());
-                                if selected {
-                                    ui.visuals_mut().override_text_color = Some(colors.accent);
-                                }
-                                render_node(ui, env, *item_id, out, depth + 1);
-                            });
-                        let row_rect = inner_resp.response.rect;
-                        let resp = inner_resp.response.interact(egui::Sense::click());
-                        if resp.hovered() && has_on_select {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
-                        if selected {
-                            ui.painter().set(
-                                bg_idx,
-                                egui::Shape::rect_filled(
-                                    row_rect,
-                                    crate::ui::style::radius_fit(row_rect),
-                                    colors.accent.gamma_multiply(0.18),
-                                ),
-                            );
-                            let bar_rect = egui::Rect::from_min_size(
-                                egui::pos2(row_rect.left(), row_rect.top() + 2.0),
-                                egui::vec2(3.0, (row_rect.height() - 4.0).max(2.0)),
-                            );
-                            ui.painter().set(
-                                bar_idx,
-                                egui::Shape::rect_filled(
-                                    bar_rect,
-                                    crate::ui::style::radius_fit(bar_rect),
-                                    colors.accent,
-                                ),
-                            );
-                        } else if resp.hovered() && has_on_select {
-                            ui.painter().set(
-                                bg_idx,
-                                egui::Shape::rect_filled(
-                                    row_rect,
-                                    crate::ui::style::radius_fit(row_rect),
-                                    colors.bg_hover,
-                                ),
-                            );
-                        }
-                        let list_clicked = i == 0 && node_click_matches(pending_click, id);
-                        if resp.clicked()
-                            || node_click_matches(pending_click, *item_id)
-                            || list_clicked
-                        {
-                            if let Some(action) = l.on_select.as_deref().filter(|a| !a.is_empty()) {
-                                out.actions.push(format!("{action}:{i}"));
-                            }
-                        }
+                    for item_id in &l.items {
+                        render_node(ui, env, *item_id, out, depth + 1);
                     }
                 });
+        }
+
+        UiNodeData::ListItem(item) => {
+            render_list_item(ui, env, node, item, out, depth);
+        }
+
+        UiNodeData::Table(t) => {
+            render_table(ui, env, node, &t.columns, &t.rows, out, depth);
+        }
+
+        UiNodeData::TableRow(row) => {
+            // A row outside a table still paints as a row and delivers its
+            // own action; its column count is its own cell count.
+            paint_table_row(ui, env, id, row, row.cells.len().max(1), out);
         }
 
         UiNodeData::Scroll(s) => {
@@ -2472,44 +2408,115 @@ fn render_node_inner(
 }
 
 pub(crate) const CARD_NODE_KEY_PREFIX: &str = "__plexi_card__:";
-pub(crate) const TABLE_NODE_KEY_PREFIX: &str = "__plexi_table__:";
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub(crate) struct TableNodeMeta {
-    pub identity_key: String,
-    pub columns: Vec<String>,
-    pub rows: Vec<Vec<String>>,
-    pub selected: Option<u32>,
-    pub on_select: Option<String>,
-}
-
-pub(crate) fn parse_table_node_key(key: &str) -> Option<TableNodeMeta> {
-    let payload = key.strip_prefix(TABLE_NODE_KEY_PREFIX)?;
-    serde_json::from_str(payload).ok()
-}
-
-fn render_data_table_node(
+/// A list row: its own chrome, selection and action. The row senses clicks
+/// beneath its children (`UiBuilder::sense`), so a press on a widget inside
+/// the row goes to that widget and a press anywhere else activates the row.
+fn render_list_item(
     ui: &mut egui::Ui,
-    table: &TableNodeMeta,
-    id: u32,
-    child_ids: &[u32],
-    colors: &Colors,
+    env: TreeRenderEnv<'_>,
+    node: &IndexedNode,
+    item: &ListItemNode,
     out: &mut RenderResult,
-    pending_click: Option<crate::host::pane::PendingPaneClick>,
+    depth: u32,
 ) {
-    let col_count = table
-        .columns
-        .len()
-        .max(table.rows.iter().map(Vec::len).max().unwrap_or(0))
-        .max(1);
+    let colors = env.colors;
+    let action = item.on_select.as_deref().filter(|a| !a.is_empty());
+    let bg_idx = ui.painter().add(egui::Shape::Noop);
+    let bar_idx = ui.painter().add(egui::Shape::Noop);
+    let resp = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .id_salt(("l1_list_item", node.key.as_str(), node.id))
+                .sense(egui::Sense::click()),
+            |ui| {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(8, 6))
+                    .corner_radius(style::RADIUS_SMALL)
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        if item.selected {
+                            ui.visuals_mut().override_text_color = Some(colors.accent);
+                        }
+                        render_node(ui, env, item.child, out, depth + 1);
+                    });
+            },
+        )
+        .response;
+    let row_rect = resp.rect;
+    if resp.hovered() && action.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if item.selected {
+        ui.painter().set(
+            bg_idx,
+            egui::Shape::rect_filled(
+                row_rect,
+                crate::ui::style::radius_fit(row_rect),
+                colors.accent.gamma_multiply(0.18),
+            ),
+        );
+        let bar_rect = egui::Rect::from_min_size(
+            egui::pos2(row_rect.left(), row_rect.top() + 2.0),
+            egui::vec2(3.0, (row_rect.height() - 4.0).max(2.0)),
+        );
+        ui.painter().set(
+            bar_idx,
+            egui::Shape::rect_filled(
+                bar_rect,
+                crate::ui::style::radius_fit(bar_rect),
+                colors.accent,
+            ),
+        );
+    } else if resp.hovered() && action.is_some() {
+        ui.painter().set(
+            bg_idx,
+            egui::Shape::rect_filled(
+                row_rect,
+                crate::ui::style::radius_fit(row_rect),
+                colors.bg_hover,
+            ),
+        );
+    }
+    if resp.clicked() || node_click_matches(env.pending_click, node.id) {
+        if let Some(action) = action {
+            log::info!(
+                "[wasm_render] list item {} activated: {action}",
+                node.id
+            );
+            out.actions.push(action.to_string());
+        }
+    }
+}
+
+/// A table: `columns` paint the header, `rows` are the body rows in order.
+/// A row that is not a `TableRow` renders as plain content.
+fn render_table(
+    ui: &mut egui::Ui,
+    env: TreeRenderEnv<'_>,
+    node: &IndexedNode,
+    columns: &[String],
+    rows: &[u32],
+    out: &mut RenderResult,
+    depth: u32,
+) {
+    let colors = env.colors;
+    let widest_row = rows
+        .iter()
+        .filter_map(|row_id| match find_node(env.nodes, *row_id).map(|n| &n.data) {
+            Some(UiNodeData::TableRow(row)) => Some(row.cells.len()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    let col_count = columns.len().max(widest_row).max(1);
     let table_width = ui.available_width().max(1.0);
     let col_w = table_width / col_count as f32;
 
-    if !table.columns.is_empty() {
+    if !columns.is_empty() {
         let (header_rect, _) =
             ui.allocate_exact_size(egui::vec2(table_width, 24.0), egui::Sense::hover());
         crate::ui::list::paint_table_header_background(ui, header_rect, colors);
-        for (col_idx, label) in table.columns.iter().enumerate() {
+        for (col_idx, label) in columns.iter().enumerate() {
             let left = header_rect.left() + col_idx as f32 * col_w;
             let right = (left + col_w).min(header_rect.right());
             let cell = egui::Rect::from_min_max(
@@ -2537,57 +2544,67 @@ fn render_data_table_node(
     }
 
     egui::ScrollArea::vertical()
-        .id_salt(ui.id().with(("l1_data_table", table.identity_key.as_str())))
+        .id_salt(ui.id().with(("l1_data_table", node.key.as_str())))
         .auto_shrink([false, true])
         .show(ui, |ui| {
-            let row_w = ui.available_width().max(1.0);
-            let row_col_w = row_w / col_count as f32;
-            let row_offset = usize::from(!table.columns.is_empty());
-            for (row_idx, row_cells) in table.rows.iter().enumerate() {
-                let (row_rect, resp) = ui.allocate_exact_size(
-                    egui::vec2(row_w, style::LIST_ROW_DENSE_H),
-                    egui::Sense::click(),
-                );
-                let selected = table.selected == Some(row_idx as u32);
-                crate::ui::list::paint_table_row_background(
-                    ui,
-                    row_rect,
-                    selected,
-                    resp.hovered(),
-                    colors,
-                );
-                let font = egui::FontId::proportional(style::TEXT_CAPTION);
-                for (col_idx, cell_text) in row_cells.iter().enumerate() {
-                    let left = row_rect.left() + col_idx as f32 * row_col_w;
-                    let right = (left + row_col_w).min(row_rect.right());
-                    let cell = egui::Rect::from_min_max(
-                        egui::pos2(left, row_rect.top()),
-                        egui::pos2(right, row_rect.bottom()),
-                    );
-                    let color = if selected || col_idx == 0 {
-                        colors.text_primary
-                    } else {
-                        colors.text_dim
-                    };
-                    crate::ui::list::paint_table_cell_text(
-                        ui,
-                        cell,
-                        cell_text.clone(),
-                        font.clone(),
-                        color,
-                    );
-                }
-                let child_clicked = child_ids
-                    .get(row_offset + row_idx)
-                    .is_some_and(|cid| node_click_matches(pending_click, *cid));
-                let table_clicked = row_idx == 0 && node_click_matches(pending_click, id);
-                if resp.clicked() || child_clicked || table_clicked {
-                    if let Some(action) = table.on_select.as_deref().filter(|a| !a.is_empty()) {
-                        out.actions.push(format!("{action}:{row_idx}"));
+            for row_id in rows {
+                match find_node(env.nodes, *row_id).map(|n| &n.data) {
+                    Some(UiNodeData::TableRow(row)) => {
+                        let start = node_paint_start(ui, out);
+                        paint_table_row(ui, env, *row_id, row, col_count, out);
+                        record_node_paint(ui, out, *row_id, start);
                     }
+                    _ => render_node(ui, env, *row_id, out, depth + 1),
                 }
             }
         });
+}
+
+/// One table row: a leaf, so its whole rect is the row. Selection and the
+/// action it delivers are the row's own fields.
+fn paint_table_row(
+    ui: &mut egui::Ui,
+    env: TreeRenderEnv<'_>,
+    id: u32,
+    row: &TableRowNode,
+    col_count: usize,
+    out: &mut RenderResult,
+) {
+    let colors = env.colors;
+    let row_w = ui.available_width().max(1.0);
+    let col_w = row_w / col_count as f32;
+    let (row_rect, resp) = ui.allocate_exact_size(
+        egui::vec2(row_w, style::LIST_ROW_DENSE_H),
+        egui::Sense::click(),
+    );
+    crate::ui::list::paint_table_row_background(
+        ui,
+        row_rect,
+        row.selected,
+        resp.hovered(),
+        colors,
+    );
+    let font = egui::FontId::proportional(style::TEXT_CAPTION);
+    for (col_idx, cell_text) in row.cells.iter().enumerate() {
+        let left = row_rect.left() + col_idx as f32 * col_w;
+        let right = (left + col_w).min(row_rect.right());
+        let cell = egui::Rect::from_min_max(
+            egui::pos2(left, row_rect.top()),
+            egui::pos2(right, row_rect.bottom()),
+        );
+        let color = if row.selected || col_idx == 0 {
+            colors.text_primary
+        } else {
+            colors.text_dim
+        };
+        crate::ui::list::paint_table_cell_text(ui, cell, cell_text.clone(), font.clone(), color);
+    }
+    if resp.clicked() || node_click_matches(env.pending_click, id) {
+        if let Some(action) = row.on_select.as_deref().filter(|a| !a.is_empty()) {
+            log::info!("[wasm_render] table row {id} activated: {action}");
+            out.actions.push(action.to_string());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3740,8 +3757,6 @@ mod tests {
                 UiNodeData::ListView(
                     crate::host::wasm_view::bindings::plexi::platform::types::ListNode {
                         items: items.clone(),
-                        selected: None,
-                        on_select: None,
                     },
                 ),
             ),
@@ -5792,15 +5807,29 @@ mod tests {
                         "id": 4,
                         "key": "table",
                         "data": {
-                            "type": "DataTable",
+                            "type": "Table",
                             "columns": ["Service", "Status", "Latency"],
-                            "rows": [
-                                ["api-gateway", "healthy", "12ms"],
-                                ["worker-pool", "degraded", "184ms"]
-                            ],
-                            "selected": 0,
-                            "on_select": "select_row",
-                            "children": []
+                            "rows": [8, 9]
+                        }
+                    },
+                    {
+                        "id": 8,
+                        "key": "table/0",
+                        "data": {
+                            "type": "TableRow",
+                            "cells": ["api-gateway", "healthy", "12ms"],
+                            "selected": true,
+                            "on_select": "select_row:0"
+                        }
+                    },
+                    {
+                        "id": 9,
+                        "key": "table/1",
+                        "data": {
+                            "type": "TableRow",
+                            "cells": ["worker-pool", "degraded", "184ms"],
+                            "selected": false,
+                            "on_select": "select_row:1"
                         }
                     },
                     {
@@ -5808,10 +5837,27 @@ mod tests {
                         "key": "list",
                         "data": {
                             "type": "ListView",
-                            "items": [6, 7],
-                            "selected": 1,
-                            "item_height": 28.0,
-                            "on_select": "select_item"
+                            "items": [10, 11]
+                        }
+                    },
+                    {
+                        "id": 10,
+                        "key": "list/0",
+                        "data": {
+                            "type": "ListItem",
+                            "child": 6,
+                            "selected": false,
+                            "on_select": "select_item:0"
+                        }
+                    },
+                    {
+                        "id": 11,
+                        "key": "list/1",
+                        "data": {
+                            "type": "ListItem",
+                            "child": 7,
+                            "selected": true,
+                            "on_select": "select_item:1"
                         }
                     },
                     {
@@ -5853,7 +5899,7 @@ mod tests {
                     None,
                     None,
                     Some(crate::host::pane::PendingPaneClick {
-                        target: crate::host::pane::PaneClickTarget::Node(4),
+                        target: crate::host::pane::PaneClickTarget::Node(8),
                         button: "left",
                         phase: crate::host::pane::PointerPhase::Click,
                     }),
@@ -5885,7 +5931,7 @@ mod tests {
                     None,
                     None,
                     Some(crate::host::pane::PendingPaneClick {
-                        target: crate::host::pane::PaneClickTarget::Node(6),
+                        target: crate::host::pane::PaneClickTarget::Node(10),
                         button: "left",
                         phase: crate::host::pane::PointerPhase::Click,
                     }),
@@ -5929,10 +5975,18 @@ mod tests {
                         "key": "list",
                         "data": {
                             "type": "ListView",
-                            "items": [1, 4],
-                            "selected": 0,
-                            "on_select": "pick"
+                            "items": [5, 6]
                         }
+                    },
+                    {
+                        "id": 5,
+                        "key": "list/0",
+                        "data": {"type": "ListItem", "child": 1, "selected": true, "on_select": "pick:0"}
+                    },
+                    {
+                        "id": 6,
+                        "key": "list/1",
+                        "data": {"type": "ListItem", "child": 4, "selected": false, "on_select": "pick:1"}
                     },
                     {
                         "id": 1,
@@ -6249,3 +6303,7 @@ mod tests {
 #[cfg(test)]
 #[path = "wasm_render/contrast_tests.rs"]
 mod contrast_tests;
+
+#[cfg(test)]
+#[path = "wasm_render/row_tests.rs"]
+mod row_tests;

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
-pub(crate) const SEMANTIC_PANE_STATE_SCHEMA_VERSION: u32 = 2;
+pub(crate) const SEMANTIC_PANE_STATE_SCHEMA_VERSION: u32 = 3;
 
 fn short_session_id(id: &str) -> &str {
     const MAX_SESSION_ID_CHARS: usize = 12;
@@ -76,6 +76,12 @@ pub(crate) struct SemanticPaneNode {
     pub value: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<String>,
+    /// A `list_item` or `table_row` the plugin marked selected.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub selected: bool,
+    /// A `table`'s column headers or a `table_row`'s cells.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cells: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bounds: Option<[f64; 4]>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -122,6 +128,8 @@ impl SemanticPaneState {
                     label: node.label().map(str::to_string),
                     value: node.value().map(str::to_string),
                     children: node.children().iter().map(|id| id.0.to_string()).collect(),
+                    selected: false,
+                    cells: Vec::new(),
                     bounds: Some([bounds.x0, bounds.y0, bounds.x1, bounds.y1]),
                     canvas_commands: Vec::new(),
                 })
@@ -156,52 +164,42 @@ impl SemanticPaneState {
             .nodes
             .iter()
             .map(|node| {
-                let (role, label, value, children) = match &node.data {
-                    UiNodeData::Empty => ("empty", None, None, Vec::new()),
-                    UiNodeData::Text(text) => ("text", Some(text.text.clone()), None, Vec::new()),
-                    UiNodeData::Button(button) => {
-                        ("button", Some(button.label.clone()), None, Vec::new())
-                    }
+                let mut selected = false;
+                let mut cells = Vec::new();
+                let (role, label, value) = match &node.data {
+                    UiNodeData::Empty => ("empty", None, None),
+                    UiNodeData::Text(text) => ("text", Some(text.text.clone()), None),
+                    UiNodeData::Button(button) => ("button", Some(button.label.clone()), None),
                     UiNodeData::TextInput(input) => (
                         "text_input",
                         Some(input.placeholder.clone()),
                         (!input.password).then(|| input.value.clone()),
-                        Vec::new(),
                     ),
-                    UiNodeData::Row(row) => (
-                        "row",
-                        None,
-                        None,
-                        row.children.iter().map(u32::to_string).collect(),
-                    ),
-                    UiNodeData::Column(column) => (
-                        "column",
-                        None,
-                        None,
-                        column.children.iter().map(u32::to_string).collect(),
-                    ),
+                    UiNodeData::Row(_) => ("row", None, None),
+                    UiNodeData::Column(_) => ("column", None, None),
                     UiNodeData::ProgressBar(progress) => (
                         "progress_bar",
                         progress.label.clone(),
                         Some(progress.value.to_string()),
-                        Vec::new(),
                     ),
-                    UiNodeData::Badge(badge) => {
-                        ("badge", Some(badge.text.clone()), None, Vec::new())
+                    UiNodeData::Badge(badge) => ("badge", Some(badge.text.clone()), None),
+                    UiNodeData::ListView(_) => ("list_view", None, None),
+                    UiNodeData::ListItem(item) => {
+                        selected = item.selected;
+                        ("list_item", None, None)
                     }
-                    UiNodeData::ListView(list) => (
-                        "list_view",
-                        None,
-                        list.selected.map(|selected| selected.to_string()),
-                        list.items.iter().map(u32::to_string).collect(),
-                    ),
-                    UiNodeData::Scroll(scroll) => {
-                        ("scroll", None, None, vec![scroll.child.to_string()])
+                    UiNodeData::Table(table) => {
+                        cells = table.columns.clone();
+                        ("table", None, None)
                     }
-                    UiNodeData::Padding(padding) => {
-                        ("padding", None, None, vec![padding.child.to_string()])
+                    UiNodeData::TableRow(row) => {
+                        selected = row.selected;
+                        cells = row.cells.clone();
+                        ("table_row", None, None)
                     }
-                    UiNodeData::Divider => ("divider", None, None, Vec::new()),
+                    UiNodeData::Scroll(_) => ("scroll", None, None),
+                    UiNodeData::Padding(_) => ("padding", None, None),
+                    UiNodeData::Divider => ("divider", None, None),
                     UiNodeData::Space(space) => (
                         "space",
                         None,
@@ -210,44 +208,37 @@ impl SemanticPaneState {
                             space.size,
                             if space.grow { "+grow" } else { "" }
                         )),
-                        Vec::new(),
                     ),
                     UiNodeData::Surface(surface) => (
                         "surface",
                         None,
                         Some(format!("{}x{}", surface.width, surface.height)),
-                        Vec::new(),
                     ),
                     UiNodeData::Canvas(canvas) => (
                         "canvas",
                         None,
                         Some(format!("{}x{}", canvas.width, canvas.height)),
-                        Vec::new(),
                     ),
                     UiNodeData::SurfaceHeader(surface_header) => (
                         "surface_header",
                         Some(surface_header.title.clone()),
                         (!surface_header.subtitle.is_empty())
                             .then(|| surface_header.subtitle.clone()),
-                        Vec::new(),
                     ),
                     UiNodeData::FooterKeys(footer_keys) => (
                         "footer_keys",
                         None,
                         Some(format!("{} entries", footer_keys.entries.len())),
-                        Vec::new(),
                     ),
                     UiNodeData::Pinned(pinned) => (
                         "pinned",
                         None,
                         Some(format!("{:?}", pinned.edge).to_ascii_lowercase()),
-                        vec![pinned.child.to_string()],
                     ),
                     UiNodeData::Spinner(spinner) => (
                         "spinner",
                         (!spinner.label.is_empty()).then(|| spinner.label.clone()),
                         None,
-                        Vec::new(),
                     ),
                 };
                 SemanticPaneNode {
@@ -255,7 +246,12 @@ impl SemanticPaneState {
                     role: role.to_string(),
                     label,
                     value,
-                    children,
+                    children: crate::host::wasm_view::children(&node.data)
+                        .iter()
+                        .map(u32::to_string)
+                        .collect(),
+                    selected,
+                    cells,
                     bounds: None,
                     canvas_commands: Vec::new(),
                 }
@@ -289,7 +285,8 @@ impl SemanticPaneState {
     /// click — before a `PendingPaneClick` is ever inserted, instead of
     /// silently no-op'ing against a missing or non-interactive node.
     pub(crate) fn resolve_interactive_node(&self, node_id: &str) -> Result<u64, String> {
-        const INTERACTIVE_ROLES: &[&str] = &["button", "text_input", "list_view", "checkbox"];
+        const INTERACTIVE_ROLES: &[&str] =
+            &["button", "text_input", "list_item", "table_row", "checkbox"];
 
         let Some(node) = self.nodes.iter().find(|n| n.id == node_id) else {
             return Err(format!(
@@ -349,6 +346,8 @@ fn collect_process_semantics(
                 label,
                 value,
                 children,
+                selected: false,
+                cells: Vec::new(),
                 bounds: process_command_bounds(object),
                 canvas_commands: Vec::new(),
             });
@@ -2666,6 +2665,8 @@ mod semantic_state_tests {
             label: None,
             value: None,
             children: Vec::new(),
+            selected: false,
+            cells: Vec::new(),
             bounds: None,
             canvas_commands: Vec::new(),
         }

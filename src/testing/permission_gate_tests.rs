@@ -2263,7 +2263,7 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
     });
     // The removed selection stays cleared across polls. Choose the denial
     // explicitly before opening it instead of inheriting its old row position.
-    let list = h.app.windows[h.app.active_window]
+    let first_row = h.app.windows[h.app.active_window]
         .panes
         .get(&pane)
         .and_then(crate::host::pane::Pane::as_view)
@@ -2271,11 +2271,11 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
         .semantic_state()
         .nodes
         .into_iter()
-        .find(|node| node.role == "list_view")
-        .expect("permission list");
-    // A node click on ListView selects its first row through the renderer.
+        .find(|node| node.role == "list_item")
+        .expect("permission list row");
+    // A node click on a list row delivers that row's own action.
     // Raw synthetic KeyPane input to Permissions is intentionally refused.
-    click_permissions_node(&mut h, pane, "select-denial", &list.id);
+    click_permissions_node(&mut h, pane, "select-denial", &first_row.id);
     pump_until(&mut h, |h| {
         h.app.windows[h.app.active_window]
             .panes
@@ -2285,7 +2285,7 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
                 view.semantic_state()
                     .nodes
                     .iter()
-                    .any(|node| node.role == "list_view" && node.value.as_deref() == Some("0"))
+                    .any(|node| node.role == "list_item" && node.selected)
             })
     });
     node_click_permissions_button(&mut h, pane, "Open");
