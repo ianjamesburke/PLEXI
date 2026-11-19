@@ -265,10 +265,33 @@ impl<'a> TreeIndex<'a> {
             h.u32(*step);
         }
         h.0.update(scope);
+        // A table row's cells mean what its table's columns say, even when
+        // the row is keyed and roots its own scope.
+        match self.table_columns(id) {
+            Some(columns) => {
+                h.tag(1);
+                h.u32(columns.len() as u32);
+                for column in columns {
+                    h.str(column);
+                }
+            }
+            None => h.tag(0),
+        }
         let hash = h.0.finalize();
         let mut prefix = [0u8; 8];
         prefix.copy_from_slice(&hash[..8]);
         u64::from_le_bytes(prefix)
+    }
+
+    /// The columns of the table a table row sits in.
+    fn table_columns(&self, id: u32) -> Option<&[String]> {
+        if !matches!(self.nodes.get(&id)?.data, UiNodeData::TableRow(_)) {
+            return None;
+        }
+        match &self.nodes.get(&self.parent(id)?)?.data {
+            UiNodeData::Table(table) => Some(&table.columns),
+            _ => None,
+        }
     }
 
     /// Digest of every unambiguous reachable node.
@@ -1157,6 +1180,25 @@ mod tests {
         let row = ref_of(&table(&["Approve"], false), 1);
         assert_eq!(resolve(&table(&["Approve"], true), 7, &row), Ok(1));
         assert!(resolve(&table(&["Delete"], false), 7, &row).is_err());
+
+        // Swapping only the headers changes what the row's cells mean.
+        let headed = |columns: [&str; 2]| {
+            tree(vec![
+                node(
+                    0,
+                    "0",
+                    UiNodeData::Table(TableNode {
+                        columns: columns.iter().map(|c| c.to_string()).collect(),
+                        rows: vec![1],
+                    }),
+                ),
+                node(1, "0/@r1", table_row(&["a", "b"], false, Some("move:r1"))),
+            ])
+        };
+        let moved = ref_of(&headed(["Source", "Destination"]), 1);
+        let error = resolve(&headed(["Destination", "Source"]), 7, &moved)
+            .expect_err("swapped headers change the row's meaning");
+        assert!(error.contains("stale"), "{error}");
     }
 
     #[test]
