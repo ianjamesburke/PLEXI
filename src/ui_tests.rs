@@ -759,6 +759,21 @@ mod tests {
     use crate::host::pane::{Pane, PortalPane, TerminalPane, ViewPane, ViewRuntime};
     use egui_kittest::kittest::Queryable;
 
+    /// Stint 1636: lists and tables built from self-describing row nodes
+    /// render a realistic SDK tree (a selected list row with description and
+    /// trailing text, a headered table with a selected row, a headerless
+    /// table). The tree is the SDK's golden encoding.
+    #[test]
+    fn screenshot_list_and_table_rows() {
+        let tree = crate::host::wasm_python::decode_ui_tree(include_str!(
+            "../sdk/python/tests/golden/rows/gallery.json"
+        ))
+        .expect("gallery tree decodes");
+        let png = crate::host::wasm_render::render_ui_tree_to_png(&tree, 520.0, 420.0, 2.0)
+            .expect("render rows");
+        std::fs::write(evidence_png!(), png).expect("write evidence");
+    }
+
     #[test]
     fn screenshot_card_gallery_all_states_and_surfaces() {
         for theme in ["plexi-dusk", "plexi-dawn"] {

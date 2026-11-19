@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from plexi_sdk._adapter import _encode_uitree
 from plexi_sdk._v3_delta import child_refs
-from plexi_sdk.ui import Button, DataTable, Keyed, Label, SelectList
+from plexi_sdk.ui import Button, Column, DataTable, Keyed, Label, SelectList, Text
 
 GOLDEN = Path(__file__).resolve().parent / "golden" / "rows"
 
@@ -25,6 +25,26 @@ CASES = {
     "table_headered": lambda: DataTable(columns=["Name"], rows=[["A"], ["B"]], on_select="pick"),
     "list_button_row": lambda: SelectList([Button("Run", "run")], on_select="pick"),
     "list_button_row_no_handler": lambda: SelectList([Button("Run", "run")]),
+    # Realistic list and tables the host's row screenshot test renders.
+    "gallery": lambda: Column([
+        Text("Services"),
+        SelectList([
+            {"name": "api-gateway", "description": "edge router", "trailing": "12ms"},
+            {"name": "worker-pool", "description": "batch jobs", "trailing": "184ms"},
+            "scheduler",
+        ], selected_idx=1, on_select="pick"),
+        DataTable(
+            columns=["Service", "Status", "Latency"],
+            rows=[
+                ["api-gateway", "healthy", "12ms"],
+                ["worker-pool", "degraded", "184ms"],
+                ["scheduler", "idle", "3ms"],
+            ],
+            selected=0,
+            on_select="row",
+        ),
+        DataTable(rows=[["A", "first"], ["B", "second"]], on_select="bare"),
+    ]),
 }
 
 
