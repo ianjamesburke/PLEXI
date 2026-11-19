@@ -859,8 +859,9 @@ mod tests {
         let win = &mut h.app.windows[win_idx];
         win.tree = egui_tiles::Tree::new("launch-plan-test", root, tiles);
         win.panes = panes.into_iter().collect();
+        // Left unsimplified so the first pane keeps tile id 1, the id a
+        // rebuilt single-pane tree gives its own root pane.
         win.focused_pane = Some(tile_ids[0]);
-        win.simplify_and_reconcile();
         ids
     }
 
@@ -978,6 +979,7 @@ mod tests {
             .admit_terminal_launch(&spec(&h, "split_h", None, Some("work")))
             .unwrap();
 
+        let a_tile = h.app.windows[0].tree.tiles.find_pane(&a).unwrap();
         // Rebuild both trees in place through the production seed path.
         for win_idx in [0, work_win] {
             let context = h.app.pane_context_env_for_window(win_idx);
@@ -991,6 +993,10 @@ mod tests {
                 .expect("rebuilt root terminal");
         }
         assert_eq!(h.app.windows[0].context_id, main_ctx);
+        assert!(
+            h.app.windows[0].tree.tiles.get(a_tile).is_some(),
+            "fixture: the anchor's old tile id names a node of the rebuilt tree"
+        );
         for (label, plan) in [("split", &split), ("tab", &tab), ("named", &named)] {
             let before = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
             let error = apply(&mut h, plan).expect_err(label);
