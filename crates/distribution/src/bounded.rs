@@ -343,27 +343,40 @@ impl Helper {
     }
 }
 
-/// stdin bytes being written by their own thread.
+/// stdin bytes being written by their own thread. The write end is
+/// non-blocking and written in a poll loop that also watches `stop`, so a
+/// reader that never reads (even a descendant that left the session holding
+/// stdin) cannot pin the thread, the pipe or the bytes: once the run ends,
+/// `stop` is set and the thread exits within `INPUT_POLL`, dropping (and so
+/// zeroing) the bytes on every path.
 struct Delivery {
     done: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
     result: Arc<Mutex<Option<std::io::Result<()>>>>,
 }
 
+/// The longest an input thread waits for room in the pipe before it looks at
+/// `stop` again.
+const INPUT_POLL: Duration = Duration::from_millis(10);
+
 impl Delivery {
-    fn spawn(mut writer: std::io::PipeWriter, bytes: Zeroizing<Vec<u8>>) -> std::io::Result<Self> {
+    fn spawn(writer: std::io::PipeWriter, bytes: Zeroizing<Vec<u8>>) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        set_nonblocking(&writer)?;
         let done = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
         let result = Arc::new(Mutex::new(None));
-        let (thread_done, thread_result) = (Arc::clone(&done), Arc::clone(&result));
+        let (thread_done, thread_stop, thread_result) =
+            (Arc::clone(&done), Arc::clone(&stop), Arc::clone(&result));
         std::thread::Builder::new()
             .name("helper-input".into())
             .spawn(move || {
-                let written = writer.write_all(&bytes);
-                drop(writer);
+                let written = write_until_stopped(writer, &bytes, &thread_stop);
                 drop(bytes);
                 *thread_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(written);
                 thread_done.store(true, Ordering::SeqCst);
             })?;
-        Ok(Self { done, result })
+        Ok(Self { done, stop, result })
     }
 
     /// After the child's session has ended: Ok if every byte was written or
@@ -375,6 +388,7 @@ impl Delivery {
             source,
         };
         if !wait_flag(&self.done, DRAIN_LIMIT) {
+            self.stop.store(true, Ordering::SeqCst);
             return Err(io(std::io::Error::other(
                 "a process outside its session still holds stdin open without reading it",
             )));
@@ -384,6 +398,77 @@ impl Delivery {
             _ => Ok(()),
         }
     }
+}
+
+impl Drop for Delivery {
+    /// However the run ended, the input thread stops writing and exits.
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+#[cfg(unix)]
+fn set_nonblocking(writer: &std::io::PipeWriter) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let fd = writer.as_raw_fd();
+    // SAFETY: fcntl reads and sets the flags of a pipe fd the caller owns.
+    let set = unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        flags != -1 && libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) != -1
+    };
+    if set {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// Write all of `bytes`, waiting for room at most `INPUT_POLL` at a time,
+/// until done or `stop` is set. Stopped early is `Interrupted`.
+#[cfg(unix)]
+fn write_until_stopped(
+    mut writer: std::io::PipeWriter,
+    bytes: &[u8],
+    stop: &AtomicBool,
+) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        if stop.load(Ordering::SeqCst) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "the run ended before stdin was written",
+            ));
+        }
+        match writer.write(rest) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => rest = &rest[n..],
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                let mut ready = libc::pollfd {
+                    fd: writer.as_raw_fd(),
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                // SAFETY: poll reads one pollfd naming a pipe fd this thread
+                // owns. Its result only decides when to try the write again.
+                unsafe { libc::poll(&mut ready, 1, INPUT_POLL.as_millis() as libc::c_int) };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// Windows pipes here are blocking; there the child is the only reader and
+/// is killed at the deadline, which breaks the pipe.
+#[cfg(windows)]
+fn write_until_stopped(
+    mut writer: std::io::PipeWriter,
+    bytes: &[u8],
+    _stop: &AtomicBool,
+) -> std::io::Result<()> {
+    writer.write_all(bytes)
 }
 
 /// Whether `flag` was set within `limit`.
@@ -1666,6 +1751,58 @@ mod tests {
         .run("test child", Duration::from_secs(30))
         .unwrap();
         assert_eq!(output, Output::default());
+    }
+
+    /// Stint 1626 (Codex round 2): an input thread whose reader never reads
+    /// exits once its run ends, so it pins neither the pipe nor the secret
+    /// bytes it owns (dropping them zeroes them).
+    #[test]
+    fn an_input_thread_with_a_reader_that_never_reads_exits_when_the_run_ends() {
+        let (reader, writer) = std::io::pipe().unwrap();
+        let delivery =
+            Delivery::spawn(writer, Zeroizing::new(vec![b'x'; 16 * 1024 * 1024])).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !delivery.done.load(Ordering::SeqCst),
+            "the pipe should be full and the thread waiting"
+        );
+        let done = Arc::clone(&delivery.done);
+        drop(delivery);
+        let exited = wait_flag(&done, Duration::from_secs(2));
+        drop(reader);
+        assert!(exited, "the input thread outlived its run");
+    }
+
+    /// Stint 1626 (Codex round 2): a descendant that leaves the session while
+    /// holding stdin, never reading it, does not hold the run: it returns an
+    /// error within its drain bound.
+    #[test]
+    fn a_detached_descendant_holding_stdin_does_not_hold_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let holder = dir.path().join("holder");
+        let started = Instant::now();
+        let error = sh(&format!(
+            // A background job's stdin is /dev/null unless redirected
+            // explicitly, so hand it the real stdin through fd 3.
+            "exec 3<&0; perl -MPOSIX -e 'POSIX::setsid(); sleep 600' <&3 & echo $! > '{}'; sleep 0.3",
+            holder.display()
+        ))
+        .input(vec![b'x'; 16 * 1024 * 1024])
+        .run("test child", Duration::from_secs(30))
+        .unwrap_err();
+        let elapsed = started.elapsed();
+        kill(pid_in(&holder));
+        assert!(
+            matches!(
+                &error,
+                RunError::Io {
+                    action: "write stdin",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(elapsed < Duration::from_secs(10), "held for {elapsed:?}");
     }
 
     /// Stint 1626: a memory capture is read whole without a temp file, and

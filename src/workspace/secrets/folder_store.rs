@@ -504,9 +504,28 @@ fn write_service_index(names: &[String]) -> Result<(), SecretError> {
 #[cfg(all(target_os = "linux", not(test)))]
 const SECRET_TOOL_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// The largest value `secret-tool lookup` may return.
-#[cfg(all(target_os = "linux", not(test)))]
-const SECRET_VALUE_LIMIT: usize = 64 * 1024;
+/// The largest secret value the Secret Service backend stores, in bytes.
+/// One limit for writes and reads: a value is refused before any write when
+/// it is larger, so everything stored can be read back.
+#[cfg(any(test, target_os = "linux"))]
+const SECRET_VALUE_MAX: usize = 64 * 1024;
+
+/// The most `secret-tool lookup` may print: the value plus the line ending
+/// `service_lookup` strips (`\r\n` at most).
+#[cfg(any(test, target_os = "linux"))]
+const SECRET_LOOKUP_CAPTURE: usize = SECRET_VALUE_MAX + 2;
+
+/// Refuse a value the backend could store but not read back.
+#[cfg(any(test, target_os = "linux"))]
+fn check_secret_size(account: &str, value: &str) -> Result<(), SecretError> {
+    if value.len() > SECRET_VALUE_MAX {
+        return Err(SecretError::Backend(format!(
+            "secret {account} is {} bytes; the Secret Service backend stores at most {SECRET_VALUE_MAX}",
+            value.len()
+        )));
+    }
+    Ok(())
+}
 
 /// Run `secret-tool` as a bounded helper. Nothing it reads or writes touches
 /// disk: `stdin` (a secret being stored) goes through a pipe from a writer
@@ -524,7 +543,7 @@ fn secret_tool(
     helper
         .args(args)
         .stdout(OutputPolicy::Memory {
-            limit: SECRET_VALUE_LIMIT,
+            limit: SECRET_LOOKUP_CAPTURE,
         })
         .stderr(OutputPolicy::Tail { keep: 2048 });
     if let Some(bytes) = stdin {
@@ -569,6 +588,7 @@ fn service_lookup(account: &str) -> Result<Option<Zeroizing<String>>, SecretErro
 
 #[cfg(all(target_os = "linux", not(test)))]
 fn service_set(account: &str, value: &str) -> Result<(), SecretError> {
+    check_secret_size(account, value)?;
     let output = secret_tool(
         &[
             "store",
@@ -627,6 +647,13 @@ impl NonDestructiveStore for LinuxFolderStore {
         match linux_kind() {
             LinuxBackend::SecretService => service_lookup(account),
             LinuxBackend::EncryptedFile => EncryptedFileStore::profile().get_interactive(account),
+        }
+    }
+
+    fn contains(&self, account: &str) -> Result<bool, SecretError> {
+        match linux_kind() {
+            LinuxBackend::SecretService => Ok(service_lookup(account)?.is_some()),
+            LinuxBackend::EncryptedFile => EncryptedFileStore::profile().contains(account),
         }
     }
 
@@ -728,6 +755,37 @@ mod tests {
             .delete("plexi:folder:aabb:FOLDER_E2E_SECRET")
             .expect("delete");
         assert!(store.get("plexi:folder:aabb:FOLDER_E2E_SECRET").is_none());
+    }
+
+    /// Stint 1626 (Codex round 2): one size limit for writes and reads. A
+    /// value at the limit is accepted and its lookup output (with the line
+    /// ending secret-tool prints) fits the lookup capture; one byte more is
+    /// refused before any write, and its lookup could not be read back.
+    #[cfg(unix)]
+    #[test]
+    fn the_secret_size_limit_is_the_same_for_writes_and_reads() {
+        use plexi_distribution::bounded::{Helper, OutputPolicy, RunError};
+        let at_limit = "x".repeat(SECRET_VALUE_MAX);
+        let over = "x".repeat(SECRET_VALUE_MAX + 1);
+        check_secret_size("a", &at_limit).unwrap();
+        let refused = check_secret_size("a", &over).unwrap_err().to_string();
+        assert!(refused.contains("at most 65536"), "{refused}");
+        let lookup = |len: usize| {
+            Helper::new("/bin/sh")
+                .args(["-c", &format!("head -c {len} /dev/zero; printf '\\r\\n'")])
+                .stdout(OutputPolicy::Memory {
+                    limit: SECRET_LOOKUP_CAPTURE,
+                })
+                .run("lookup framing", std::time::Duration::from_secs(10))
+        };
+        assert_eq!(
+            lookup(SECRET_VALUE_MAX).unwrap().stdout.len(),
+            SECRET_VALUE_MAX + 2
+        );
+        assert!(matches!(
+            lookup(SECRET_VALUE_MAX + 1),
+            Err(RunError::OutputTooLarge { .. })
+        ));
     }
 
     #[test]
