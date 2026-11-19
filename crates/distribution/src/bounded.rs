@@ -341,6 +341,21 @@ pub struct Started {
     cancel: Option<Arc<AtomicBool>>,
 }
 
+/// How long a started helper may run before it is stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deadline {
+    /// Stopped and `RunError::TimedOut` once this long has passed since the
+    /// start. Every helper the host waits on for an answer uses this.
+    After(Duration),
+    /// No wall-clock limit: the child belongs to the host session, like a
+    /// pane, and runs until it exits, is cancelled, outgrows its capture, or
+    /// the host ends the session. Only for work the user started and waits
+    /// for off the host loop (a saved command's shell step); the caller must
+    /// register it with host quit cleanup, since this run never stops it on
+    /// its own.
+    HostSession,
+}
+
 impl Started {
     /// The child's process id (and, on Unix, its session and group id).
     pub fn id(&self) -> u32 {
@@ -348,7 +363,12 @@ impl Started {
     }
 
     /// Wait until `limit` after the start. As `Helper::run_any_exit`.
-    pub fn wait(mut self, limit: Duration) -> Result<Exited, RunError> {
+    pub fn wait(self, limit: Duration) -> Result<Exited, RunError> {
+        self.wait_for(Deadline::After(limit))
+    }
+
+    /// Wait under `deadline`, counted from the start.
+    pub fn wait_for(mut self, deadline: Deadline) -> Result<Exited, RunError> {
         let Some(child) = self.child.take() else {
             return Err(RunError::NotStopped {
                 what: self.what.clone(),
@@ -358,8 +378,10 @@ impl Started {
         let status = supervise(
             child,
             &self.what,
-            self.started_at + limit,
-            limit,
+            match deadline {
+                Deadline::After(limit) => Some((self.started_at + limit, limit)),
+                Deadline::HostSession => None,
+            },
             self.captures.as_ref(),
             self.cancel.as_deref(),
         )?;
@@ -383,13 +405,13 @@ impl Drop for Started {
     }
 }
 
-/// Wait for the child to exit before `deadline`, stopping it there, on
+/// Wait for the child to exit before `deadline` (the instant and the limit
+/// it came from; none for `Deadline::HostSession`), stopping it there, on
 /// cancel, or when a capture outgrows its limit.
 fn supervise(
     mut child: Child,
     what: &str,
-    deadline: Instant,
-    limit: Duration,
+    deadline: Option<(Instant, Duration)>,
     captures: Option<&[Capture; 2]>,
     cancel: Option<&AtomicBool>,
 ) -> Result<ExitStatus, RunError> {
@@ -400,10 +422,10 @@ fn supervise(
             action: "wait",
             source,
         })?;
-        let reason = match next_step(Instant::now(), deadline, exited, pause) {
+        let reason = match next_step(Instant::now(), deadline.map(|(at, _)| at), exited, pause) {
             Step::Finish => return finish_session(child, what),
             Step::Stop => Stopped::TimedOut {
-                limit,
+                limit: deadline.map_or(Duration::ZERO, |(_, limit)| limit),
                 stdout: captures.map(|c| c[0].partial()).unwrap_or_default(),
                 stderr: captures.map(|c| c[1].partial()).unwrap_or_default(),
             },
@@ -558,13 +580,12 @@ enum Step {
     Wait(Duration),
 }
 
-fn next_step(now: Instant, deadline: Instant, exited: bool, pause: Duration) -> Step {
-    if now >= deadline {
-        Step::Stop
-    } else if exited {
-        Step::Finish
-    } else {
-        Step::Wait(pause.min(deadline - now))
+fn next_step(now: Instant, deadline: Option<Instant>, exited: bool, pause: Duration) -> Step {
+    match deadline {
+        Some(deadline) if now >= deadline => Step::Stop,
+        _ if exited => Step::Finish,
+        Some(deadline) => Step::Wait(pause.min(deadline - now)),
+        None => Step::Wait(pause),
     }
 }
 
@@ -1107,20 +1128,36 @@ mod tests {
     fn the_limit_is_checked_before_an_exit_is_accepted() {
         let now = Instant::now();
         let pause = Duration::from_millis(20);
-        assert_eq!(next_step(now, now, true, pause), Step::Stop);
-        assert_eq!(next_step(now + pause, now, true, pause), Step::Stop);
+        assert_eq!(next_step(now, Some(now), true, pause), Step::Stop);
+        assert_eq!(next_step(now + pause, Some(now), true, pause), Step::Stop);
         assert_eq!(
-            next_step(now, now + Duration::from_secs(1), true, pause),
+            next_step(now, Some(now + Duration::from_secs(1)), true, pause),
             Step::Finish
         );
         assert_eq!(
-            next_step(now, now + Duration::from_millis(5), false, pause),
+            next_step(now, Some(now + Duration::from_millis(5)), false, pause),
             Step::Wait(Duration::from_millis(5))
         );
         assert_eq!(
-            next_step(now, now + Duration::from_secs(1), false, pause),
+            next_step(now, Some(now + Duration::from_secs(1)), false, pause),
             Step::Wait(pause)
         );
+    }
+
+    /// Stint 1626: a host-session run has no wall-clock limit: it never
+    /// stops for time, only on exit, cancel or overflow.
+    #[test]
+    fn a_host_session_run_has_no_deadline() {
+        let now = Instant::now();
+        let pause = Duration::from_millis(20);
+        assert_eq!(next_step(now, None, false, pause), Step::Wait(pause));
+        assert_eq!(next_step(now, None, true, pause), Step::Finish);
+        let exited = sh("sleep 0.3; exit 4")
+            .start("test child")
+            .unwrap()
+            .wait_for(Deadline::HostSession)
+            .unwrap();
+        assert_eq!(exited.status.code(), Some(4));
     }
 
     /// With no time at all, even a child that exits at once is a timeout.

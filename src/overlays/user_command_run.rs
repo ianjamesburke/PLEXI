@@ -33,16 +33,15 @@ pub(crate) struct ShellStep {
     started: std::time::Instant,
 }
 
-/// How long a saved command's shell step may run before it is stopped and
-/// counted as failed.
-const SHELL_STEP_LIMIT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
-
-/// Start `sh -c <script>` as a bounded helper waited for on a worker thread.
-/// The worker sends the exit code and wakes the host; a launch failure, a
-/// timeout or a step that could not be stopped is logged and reported as
-/// exit 1. The step is registered as a pane process group and carries the
-/// host's session marker, so quitting the host kills it and everything it
-/// started, as it does pane processes.
+/// Start `sh -c <script>` as a helper waited for on a worker thread. The
+/// step is the user's own command and runs off `App::logic`, so it has no
+/// wall-clock limit (`Deadline::HostSession`): a long build or server step
+/// runs until it exits. It belongs to the host session instead: it is
+/// registered as a pane process group and carries the host's session
+/// marker, so quitting the host kills it and everything it started, as it
+/// does pane processes. The worker sends the exit code and wakes the host;
+/// a launch failure, a kill or a step that could not be stopped is logged
+/// and reported as a non-zero exit.
 pub(crate) fn spawn_shell_step(
     script: &str,
     cwd: Option<&Path>,
@@ -55,7 +54,6 @@ pub(crate) fn spawn_shell_step(
         pane_id,
         crate::host::process_cleanup::session_marker(),
         crate::host::process_cleanup::PaneProcessGroup::record,
-        SHELL_STEP_LIMIT,
         wake,
     )
 }
@@ -66,7 +64,6 @@ fn spawn_marked_shell_step(
     pane_id: Option<u64>,
     marker: &str,
     register: impl FnOnce(u32) -> crate::host::process_cleanup::PaneProcessGroup,
-    limit: std::time::Duration,
     wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
 ) -> HostStepOutcome {
     let command_chars = script.chars().count();
@@ -90,20 +87,37 @@ fn spawn_marked_shell_step(
             return HostStepOutcome::Exited(1);
         }
     };
+    let pid = started.id();
+    log::info!("user_command: shell step started pid={pid} command_chars={command_chars}");
     // Held until the step ends; quit cleanup stops every registered group.
-    let registration = register(started.id());
+    let registration = register(pid);
     let (tx, exit) = mpsc::channel();
     // A thread that fails to start drops `started`, which stops the step.
     let spawned = std::thread::Builder::new()
         .name("user-command-step".to_string())
         .spawn(move || {
-            let waited = started.wait(limit);
+            let waited = started.wait_for(plexi_distribution::bounded::Deadline::HostSession);
             drop(registration);
             let code = match waited {
-                Ok(exited) => exited.status.code().unwrap_or(1),
+                Ok(exited) => match exited.status.code() {
+                    Some(code) => {
+                        log::info!("user_command: shell step exited pid={pid} code={code}");
+                        code
+                    }
+                    None => {
+                        #[cfg(unix)]
+                        let signal = std::os::unix::process::ExitStatusExt::signal(&exited.status);
+                        #[cfg(not(unix))]
+                        let signal: Option<i32> = None;
+                        log::info!(
+                            "user_command: shell step killed pid={pid} signal={signal:?}"
+                        );
+                        1
+                    }
+                },
                 Err(e) => {
                     log::error!(
-                        "user_command: shell step failed command_chars={command_chars} error={e}"
+                        "user_command: shell step failed pid={pid} command_chars={command_chars} error={e}"
                     );
                     1
                 }
@@ -417,7 +431,6 @@ mod tests {
             None,
             &marker,
             |pid| PaneProcessGroup::record_for(pid, &marker),
-            Duration::from_secs(600),
             wake(),
         );
         let read_pid = |path: &Path| -> i32 {
@@ -459,24 +472,6 @@ mod tests {
         assert!(matches!(code, Some(c) if c != 0), "step reported {code:?}");
     }
 
-    /// A shell step past its limit is stopped and fails.
-    #[test]
-    fn a_shell_step_past_its_limit_fails() {
-        let marker = uuid::Uuid::new_v4().to_string();
-        let started = Instant::now();
-        let outcome = spawn_marked_shell_step(
-            "sleep 600",
-            None,
-            None,
-            &marker,
-            |pid| PaneProcessGroup::record_for(pid, &marker),
-            Duration::from_millis(300),
-            wake(),
-        );
-        assert_eq!(recv(outcome, Duration::from_secs(10)), Some(1));
-        assert!(started.elapsed() < Duration::from_secs(8));
-    }
-
     /// A step's exit code, its working directory and pane id reach the run.
     #[test]
     fn a_shell_step_reports_its_exit_code_in_its_cwd() {
@@ -490,7 +485,6 @@ mod tests {
             Some(7),
             &marker,
             |pid| PaneProcessGroup::record_for(pid, &marker),
-            Duration::from_secs(30),
             wake(),
         );
         assert_eq!(recv(outcome, Duration::from_secs(10)), Some(3));
