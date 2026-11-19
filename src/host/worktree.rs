@@ -70,7 +70,7 @@ enum WtpBackend {
 
 /// The helpers worktree code runs, and their limits. Production uses
 /// `Tools::system`; tests swap in the wtp shim, a fake git or short limits.
-struct Tools {
+pub(crate) struct Tools {
     wtp: WtpBackend,
     git: OsString,
     wtp_limit: Duration,
@@ -78,7 +78,7 @@ struct Tools {
 }
 
 impl Tools {
-    fn system() -> Self {
+    pub(crate) fn system() -> Self {
         Self {
             wtp: WtpBackend::Default,
             git: "git".into(),
@@ -104,6 +104,16 @@ impl Tools {
                 }
                 WtpBackend::Program(path) => Helper::new(path),
             }
+        }
+    }
+
+    /// A test's fake `wtp` at `program`, stopped after `limit`.
+    #[cfg(test)]
+    pub(crate) fn with_wtp_program(program: PathBuf, limit: Duration) -> Self {
+        Self {
+            wtp: WtpBackend::Program(program),
+            wtp_limit: limit,
+            ..Self::system()
         }
     }
 
@@ -139,7 +149,7 @@ fn system_wtp_available() -> bool {
 }
 
 #[cfg(test)]
-fn test_wtp_shim_script() -> &'static Path {
+pub(crate) fn test_wtp_shim_script() -> &'static Path {
     use std::sync::OnceLock;
     static SHIM_PATH: OnceLock<PathBuf> = OnceLock::new();
     SHIM_PATH
@@ -326,11 +336,10 @@ if __name__ == "__main__":
 /// whether `refs/heads/<branch>` already exists, invokes `wtp add` (`-b` when
 /// new), and records the initial `HEAD` commit so close-time reclamation can
 /// tell whether any commits were made.
-pub fn create_worktree(anchor_dir: &Path, branch: &str) -> Result<ManagedWorktree, String> {
-    create_worktree_with(anchor_dir, branch, &Tools::system())
-}
-
-fn create_worktree_with(
+///
+/// Runs `wtp` and git to completion (up to their limits), so the host loop
+/// never calls it directly: `app::host_helpers` runs it on a worker thread.
+pub(crate) fn create_worktree(
     anchor_dir: &Path,
     branch: &str,
     tools: &Tools,
@@ -465,11 +474,13 @@ fn create_worktree_with(
 
 /// Inspect `wt` on pane close: reclaim via `wtp remove` when clean and unmoved,
 /// or retain on disk and report why when dirty or ahead/moved.
-pub fn reclaim_or_retain_worktree(wt: &ManagedWorktree) -> WorktreeCloseReport {
-    reclaim_or_retain_worktree_with(wt, &Tools::system())
-}
-
-fn reclaim_or_retain_worktree_with(wt: &ManagedWorktree, tools: &Tools) -> WorktreeCloseReport {
+///
+/// Like [`create_worktree`], it blocks on `wtp` and git; the host loop runs it
+/// through `app::host_helpers`.
+pub(crate) fn reclaim_or_retain_worktree(
+    wt: &ManagedWorktree,
+    tools: &Tools,
+) -> WorktreeCloseReport {
     if !wt.path.exists() {
         log::info!(
             "pane_worktree: close branch={:?} path={} already absent; treating as reclaimed",
@@ -689,7 +700,7 @@ mod tests {
             ..Tools::system()
         };
         let started = std::time::Instant::now();
-        let result = create_worktree_with(&repo, "feature/hung-cd", &tools);
+        let result = create_worktree(&repo, "feature/hung-cd", &tools);
         let elapsed = started.elapsed();
         let error = result.expect_err("an unresolved path must fail the create");
         assert!(error.contains("resolving its path failed"), "{error}");
@@ -717,7 +728,7 @@ mod tests {
             wtp: WtpBackend::Program(fake),
             ..Tools::system()
         };
-        let wt = create_worktree_with(&repo, "feature/refused-cd", &tools).unwrap();
+        let wt = create_worktree(&repo, "feature/refused-cd", &tools).unwrap();
         assert!(wt.path.is_dir());
     }
 
@@ -738,7 +749,7 @@ mod tests {
             ..Tools::shim()
         };
         let started = std::time::Instant::now();
-        let result = create_worktree_with(&repo, "feature/hung-git", &tools);
+        let result = create_worktree(&repo, "feature/hung-git", &tools);
         let elapsed = started.elapsed();
         let error = result.expect_err("a hung git must fail the create");
         assert!(error.contains("did not finish"), "{error}");
@@ -776,11 +787,12 @@ mod tests {
     #[test]
     fn clean_unmoved_worktree_is_reclaimed_on_close() {
         let (_tmp, repo) = init_temp_git_repo();
-        let wt = create_worktree(&repo, "feature/clean-test").expect("create worktree");
+        let wt = create_worktree(&repo, "feature/clean-test", &Tools::system())
+            .expect("create worktree");
         assert!(wt.path.is_dir(), "worktree directory must exist");
         assert!(wt.created_branch);
 
-        let report = reclaim_or_retain_worktree(&wt);
+        let report = reclaim_or_retain_worktree(&wt, &Tools::system());
         assert_eq!(report.action, "reclaimed");
         assert_eq!(report.branch, "feature/clean-test");
         assert_eq!(report.path, wt.path);
@@ -810,11 +822,12 @@ mod tests {
     #[test]
     fn dirty_worktree_is_retained_and_reports_path() {
         let (_tmp, repo) = init_temp_git_repo();
-        let wt = create_worktree(&repo, "feature/dirty-test").expect("create worktree");
+        let wt = create_worktree(&repo, "feature/dirty-test", &Tools::system())
+            .expect("create worktree");
         std::fs::write(wt.path.join("untracked.txt"), "work in progress\n")
             .expect("write untracked file");
 
-        let report = reclaim_or_retain_worktree(&wt);
+        let report = reclaim_or_retain_worktree(&wt, &Tools::system());
         assert_eq!(report.action, "retained");
         assert_eq!(report.branch, "feature/dirty-test");
         assert_eq!(report.path, wt.path);
@@ -828,7 +841,8 @@ mod tests {
     #[test]
     fn ahead_worktree_is_retained_and_reports_path() {
         let (_tmp, repo) = init_temp_git_repo();
-        let wt = create_worktree(&repo, "feature/ahead-test").expect("create worktree");
+        let wt = create_worktree(&repo, "feature/ahead-test", &Tools::system())
+            .expect("create worktree");
 
         let status = Command::new("git")
             .arg("-C")
@@ -838,7 +852,7 @@ mod tests {
             .expect("commit in worktree");
         assert!(status.success());
 
-        let report = reclaim_or_retain_worktree(&wt);
+        let report = reclaim_or_retain_worktree(&wt, &Tools::system());
         assert_eq!(report.action, "retained");
         assert_eq!(report.branch, "feature/ahead-test");
         assert_eq!(report.path, wt.path);
@@ -852,9 +866,9 @@ mod tests {
     #[test]
     fn rejects_empty_or_flag_like_branch_names() {
         let (_tmp, repo) = init_temp_git_repo();
-        assert!(create_worktree(&repo, "").is_err());
-        assert!(create_worktree(&repo, "   ").is_err());
-        assert!(create_worktree(&repo, "--help").is_err());
+        assert!(create_worktree(&repo, "", &Tools::system()).is_err());
+        assert!(create_worktree(&repo, "   ", &Tools::system()).is_err());
+        assert!(create_worktree(&repo, "--help", &Tools::system()).is_err());
     }
 
     #[test]
@@ -862,27 +876,27 @@ mod tests {
         let (_tmp, repo) = init_temp_git_repo();
 
         // 1. Clean + unmoved -> reclaimed and branch removed.
-        let clean_wt = create_worktree_with(&repo, "feature/shim-clean", &Tools::shim())
+        let clean_wt = create_worktree(&repo, "feature/shim-clean", &Tools::shim())
             .expect("create clean worktree via shim");
         assert!(clean_wt.path.is_dir());
         assert!(clean_wt.created_branch);
-        let clean_report = reclaim_or_retain_worktree_with(&clean_wt, &Tools::shim());
+        let clean_report = reclaim_or_retain_worktree(&clean_wt, &Tools::shim());
         assert_eq!(clean_report.action, "reclaimed");
         assert!(clean_report.reason.is_none());
         assert!(!clean_wt.path.exists());
 
         // 2. Dirty -> retained with path and reason="dirty".
-        let dirty_wt = create_worktree_with(&repo, "feature/shim-dirty", &Tools::shim())
+        let dirty_wt = create_worktree(&repo, "feature/shim-dirty", &Tools::shim())
             .expect("create dirty worktree via shim");
         std::fs::write(dirty_wt.path.join("wip.txt"), "dirty\n").expect("write dirty file");
-        let dirty_report = reclaim_or_retain_worktree_with(&dirty_wt, &Tools::shim());
+        let dirty_report = reclaim_or_retain_worktree(&dirty_wt, &Tools::shim());
         assert_eq!(dirty_report.action, "retained");
         assert_eq!(dirty_report.reason.as_deref(), Some("dirty"));
         assert_eq!(dirty_report.path, dirty_wt.path);
         assert!(dirty_wt.path.is_dir());
 
         // 3. Ahead -> retained with path and reason="ahead".
-        let ahead_wt = create_worktree_with(&repo, "feature/shim-ahead", &Tools::shim())
+        let ahead_wt = create_worktree(&repo, "feature/shim-ahead", &Tools::shim())
             .expect("create ahead worktree via shim");
         let status = Command::new("git")
             .arg("-C")
@@ -891,7 +905,7 @@ mod tests {
             .status()
             .expect("commit in shim worktree");
         assert!(status.success());
-        let ahead_report = reclaim_or_retain_worktree_with(&ahead_wt, &Tools::shim());
+        let ahead_report = reclaim_or_retain_worktree(&ahead_wt, &Tools::shim());
         assert_eq!(ahead_report.action, "retained");
         assert_eq!(ahead_report.reason.as_deref(), Some("ahead"));
         assert_eq!(ahead_report.path, ahead_wt.path);

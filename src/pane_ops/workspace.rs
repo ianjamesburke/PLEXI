@@ -1209,7 +1209,7 @@ impl PlexiApp {
             crate::app::attention_queue::retire_requester_approvals(&panes, Some(*context_id));
         }
         for pane_id in doomed_pane_ids {
-            self.reclaim_pane_worktree(pane_id);
+            self.reclaim_pane_worktree(pane_id, None);
         }
         let doomed: Vec<Window> = {
             let mut kept = Vec::new();

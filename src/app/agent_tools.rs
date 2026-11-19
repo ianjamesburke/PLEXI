@@ -17,10 +17,19 @@ pub(crate) struct AgentCallRequest<'a> {
     pub credential: Option<&'a str>,
     pub peer_ancestry: &'a [u32],
     pub cwd: Option<&'a str>,
-    pub worktree: Option<&'a str>,
+    pub worktree: Option<WorktreeStep<'a>>,
     pub asynchronous: bool,
     pub handoff: bool,
     pub response_file: &'a str,
+}
+
+/// A call's `worktree` branch. The worktree is created off the host loop
+/// (stint 1632): with `provisioned` empty the call starts that job and
+/// returns, and the drain resumes `request` with the result.
+pub(crate) struct WorktreeStep<'a> {
+    pub branch: &'a str,
+    pub request: &'a crate::protocol::HostRequest,
+    pub provisioned: &'a mut super::host_helpers::Provisioned,
 }
 
 pub(crate) struct AgentToolWait {
@@ -168,10 +177,20 @@ impl PlexiApp {
             adapter,
             crate::cli::agent::build_agent_spawn_command(&def, adapter, &task)?,
         );
-        let managed = request
-            .worktree
-            .map(|branch| crate::host::worktree::create_worktree(&lookup_root, branch))
-            .transpose()?;
+        let managed = match request.worktree {
+            None => None,
+            Some(step) => match step.provisioned.take() {
+                None => {
+                    self.create_worktree_off_loop(
+                        step.request,
+                        lookup_root,
+                        step.branch.to_string(),
+                    );
+                    return Ok(());
+                }
+                Some(created) => Some(created?),
+            },
+        };
         let cwd = managed
             .as_ref()
             .map(|w| w.path.clone())

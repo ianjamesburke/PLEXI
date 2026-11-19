@@ -20,6 +20,7 @@ pub mod file_handlers;
 mod fleet;
 mod focus;
 pub(crate) mod focus_journal;
+mod host_helpers;
 pub(crate) mod host_instance;
 pub mod host_mcp;
 pub mod host_version;
@@ -603,6 +604,9 @@ pub struct PlexiApp {
     /// sends through a `UiMailbox` built on this wake; watcher restarts and
     /// periodic updater re-checks clone it to build fresh mailboxes.
     pub(crate) ui_wake: std::sync::Arc<dyn ui_mailbox::UiWake>,
+    /// pgrep, wtp and git jobs started off the host loop (stint 1632);
+    /// `service_host_helpers` drains them in `App::logic`.
+    pub(crate) host_helpers: host_helpers::HostHelpers,
     /// Receiver for the running update check's status events
     /// (`update_check::launch_update_check`). `None` when no check runs.
     pub(crate) update_rx:
@@ -1854,6 +1858,7 @@ impl PlexiApp {
                     pane_heartbeats: restored.pane_heartbeats,
                     pane_worktrees: HashMap::new(),
                     last_worktree_close_reports: HashMap::new(),
+                    host_helpers: host_helpers::HostHelpers::new(std::sync::Arc::clone(&ui_wake)),
                     last_sent_window_title: None,
                     permission_store_dir: profile_dir.clone(),
                     #[cfg(test)]
@@ -2150,6 +2155,7 @@ impl PlexiApp {
             pane_heartbeats: HashMap::new(),
             pane_worktrees: HashMap::new(),
             last_worktree_close_reports: HashMap::new(),
+            host_helpers: host_helpers::HostHelpers::new(std::sync::Arc::clone(&ui_wake)),
             last_sent_window_title: None,
             permission_store_dir: crate::config::config_dir(),
             #[cfg(test)]
@@ -3121,6 +3127,7 @@ impl PlexiApp {
             pane_heartbeats: HashMap::new(),
             pane_worktrees: HashMap::new(),
             last_worktree_close_reports: HashMap::new(),
+            host_helpers: host_helpers::HostHelpers::new(std::sync::Arc::clone(&ui_wake)),
             pane_mailboxes: HashMap::new(),
             pending_message_recvs: Vec::new(),
             next_pane_message_id: 1,
@@ -3758,6 +3765,12 @@ impl eframe::App for PlexiApp {
         // File watching/reload is core plugin servicing, including for an
         // occluded host. Keep it independent of change-set preview.
         if self.service_pane_external_io() {
+            ctx.request_repaint();
+        }
+
+        // pgrep, wtp and git answers (stint 1632): the loop never waits on
+        // them, it finishes their requests here.
+        if self.service_host_helpers() {
             ctx.request_repaint();
         }
 

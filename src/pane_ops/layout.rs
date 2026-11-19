@@ -1060,7 +1060,7 @@ impl PlexiApp {
                 log::info!("pane_mailbox: pane_id={pane_id} cleared reason=closed");
             }
             self.pane_results.entry(pane_id).or_default().pane_closed = true;
-            self.reclaim_pane_worktree(pane_id);
+            self.reclaim_pane_worktree(pane_id, None);
             for name in self.scheduler.reap_pane(pane_id) {
                 log::info!("scheduler: routine '{name}' run ended — pane {pane_id} closed");
             }
@@ -1284,26 +1284,24 @@ impl PlexiApp {
 
     /// Reclaim or retain the git worktree owned by `pane_id`, if any (stint 0668).
     ///
-    /// Idempotent: removes the entry from `pane_worktrees` on first call and
-    /// caches the resulting [`crate::host::worktree::WorktreeCloseReport`] in
-    /// `last_worktree_close_reports` so `ClosePane` can report the disposition
-    /// even if `close_tile` ran first (or vice versa).
-    pub(crate) fn reclaim_pane_worktree(
-        &mut self,
-        pane_id: PaneId,
-    ) -> Option<crate::host::worktree::WorktreeCloseReport> {
-        let wt = self.pane_worktrees.remove(&pane_id)?;
-        let report = crate::host::worktree::reclaim_or_retain_worktree(&wt);
+    /// Idempotent: removes the entry from `pane_worktrees` on first call, so
+    /// `ClosePane` and `close_tile` never inspect it twice. The git and `wtp`
+    /// work runs off the host loop (stint 1632); when it finishes the drain
+    /// caches the [`crate::host::worktree::WorktreeCloseReport`] in
+    /// `last_worktree_close_reports` and answers `reply`, a `close_pane`
+    /// response file. Returns false when the pane owned no worktree, so the
+    /// caller still owes `reply` its answer.
+    pub(crate) fn reclaim_pane_worktree(&mut self, pane_id: PaneId, reply: Option<String>) -> bool {
+        let Some(wt) = self.pane_worktrees.remove(&pane_id) else {
+            return false;
+        };
         log::info!(
-            "pane_worktree: pane_id={pane_id} branch='{}' path='{}' action={} reason={}",
-            report.branch,
-            report.path.display(),
-            report.action,
-            report.reason.as_deref().unwrap_or("clean")
+            "pane_worktree: pane_id={pane_id} branch='{}' path='{}' closing",
+            wt.branch,
+            wt.path.display()
         );
-        self.last_worktree_close_reports
-            .insert(pane_id, report.clone());
-        Some(report)
+        self.close_worktree_off_loop(Some(pane_id), wt, reply);
+        true
     }
 
     /// Select a deterministic pane for a window that has none focused.

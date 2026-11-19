@@ -70,49 +70,75 @@ pub(crate) fn pid_is_alive(pid: u32) -> bool {
     }
 }
 
-/// How long `pgrep -P` gets before the inventory is reported empty. The
-/// liveness RPC is served on the host loop, so a hung pgrep must not hold it.
+/// How long `pgrep -P` gets before the inventory is reported empty.
 const PGREP_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Direct children of `pid`, via `pgrep -P` — never `proc_listchildpids`,
-/// which returns `EFAULT` on macOS 23.x/Sonoma (root `AGENTS.md` Traps).
-fn child_pids_via_pgrep(pid: u32) -> Vec<u32> {
-    child_pids_with("pgrep", pid, PGREP_LIMIT)
+/// The `pgrep` that lists a shell's direct children, and its limit.
+/// `child_pids` blocks for up to the limit, so the host loop never calls it:
+/// `app::host_helpers` runs it on a worker thread and drains the answer.
+pub(crate) struct Pgrep {
+    program: std::ffi::OsString,
+    limit: std::time::Duration,
 }
 
-/// `pgrep` exits 1 with empty stdout when there are no children; that is
-/// not a failure, just an empty inventory. A read-only probe, so any error
-/// degrades to an empty inventory.
-fn child_pids_with(pgrep: &str, pid: u32, limit: std::time::Duration) -> Vec<u32> {
-    let run = plexi_distribution::bounded::Helper::new(pgrep)
-        .arg("-P")
-        .arg(pid.to_string())
-        .run_any_exit("pgrep -P", limit);
-    match run {
-        Ok(exited) => String::from_utf8_lossy(&exited.output.stdout)
-            .lines()
-            .filter_map(|line| line.trim().parse::<u32>().ok())
-            .collect(),
-        Err(error) => {
-            log::warn!("pane_liveness: pgrep -P {pid} failed: {error}");
-            Vec::new()
+impl Pgrep {
+    /// `pgrep -P`, never `proc_listchildpids`, which returns `EFAULT` on
+    /// macOS 23.x/Sonoma (root `AGENTS.md` Traps).
+    pub(crate) fn system() -> Self {
+        Self {
+            program: "pgrep".into(),
+            limit: PGREP_LIMIT,
+        }
+    }
+
+    /// A test's fake `pgrep` at `program`, stopped after `limit`.
+    #[cfg(test)]
+    pub(crate) fn at(program: impl Into<std::ffi::OsString>, limit: std::time::Duration) -> Self {
+        Self {
+            program: program.into(),
+            limit,
+        }
+    }
+
+    /// Direct children of `pid`. `pgrep` exits 1 with empty stdout when there
+    /// are no children; that is not a failure, just an empty inventory. A
+    /// read-only probe, so any error degrades to an empty inventory.
+    pub(crate) fn child_pids(&self, pid: u32) -> Vec<u32> {
+        let run = plexi_distribution::bounded::Helper::new(&self.program)
+            .arg("-P")
+            .arg(pid.to_string())
+            .run_any_exit("pgrep -P", self.limit);
+        match run {
+            Ok(exited) => String::from_utf8_lossy(&exited.output.stdout)
+                .lines()
+                .filter_map(|line| line.trim().parse::<u32>().ok())
+                .collect(),
+            Err(error) => {
+                log::warn!("pane_liveness: pgrep -P {pid} failed: {error}");
+                Vec::new()
+            }
         }
     }
 }
 
+/// The shell pid whose children `compute` reports: a terminal pane whose
+/// process is alive. `None` means the inventory is empty without asking.
+pub(crate) fn inventory_pid(pane: &Pane) -> Option<u32> {
+    let terminal = pane.as_terminal()?;
+    let shell_pid = terminal.backend.child_pid();
+    (!terminal.exited && pid_is_alive(shell_pid)).then_some(shell_pid)
+}
+
 /// Host-derived liveness observation. Never trusts any pane-authored value.
-fn observed_state(pane: &Pane) -> serde_json::Value {
+/// `child_pids` is the inventory of [`inventory_pid`], gathered off the loop.
+fn observed_state(pane: &Pane, child_pids: &[u32]) -> serde_json::Value {
     match pane {
         Pane::Terminal(terminal) => {
             let shell_pid = terminal.backend.child_pid();
             let process_alive = !terminal.exited && pid_is_alive(shell_pid);
             let last_output_seconds_ago =
                 terminal.last_pty_output_at.map(|at| at.elapsed().as_secs());
-            let child_pids = if process_alive {
-                child_pids_via_pgrep(shell_pid)
-            } else {
-                Vec::new()
-            };
+            let child_pids = if process_alive { child_pids } else { &[] };
             let foreground_command = terminal
                 .backend
                 .foreground_pid()
@@ -237,9 +263,15 @@ fn evaluate_inactive_claim(
 /// `plexi pane state --stale-after <secs>`; omit it (`None`) to skip
 /// stale-claim evaluation entirely. `agent_activity` and `inactive_claim` need
 /// no window: they compare the claim with the agent detector's current state.
-pub fn compute(pane: &Pane, stale_after_secs: Option<u64>) -> serde_json::Value {
+/// `child_pids` is [`Pgrep::child_pids`] of [`inventory_pid`], which the
+/// caller gathers off the host loop (empty when `inventory_pid` is `None`).
+pub fn compute(
+    pane: &Pane,
+    stale_after_secs: Option<u64>,
+    child_pids: &[u32],
+) -> serde_json::Value {
     let claimed = claimed_state(pane);
-    let observed = observed_state(pane);
+    let observed = observed_state(pane, child_pids);
     let agent_state = pane.agent().map(|agent| &agent.state);
     let stale = evaluate_stale_claim(&claimed, &observed, stale_after_secs);
     let inactive = evaluate_inactive_claim(&claimed, &observed, agent_state);
@@ -276,11 +308,8 @@ mod tests {
         std::fs::write(&fake, "#!/bin/sh\nsleep 5\necho 4242\n").unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let started = std::time::Instant::now();
-        let pids = child_pids_with(
-            fake.to_str().unwrap(),
-            std::process::id(),
-            std::time::Duration::from_millis(300),
-        );
+        let pids = Pgrep::at(fake.as_os_str(), std::time::Duration::from_millis(300))
+            .child_pids(std::process::id());
         assert!(pids.is_empty(), "{pids:?}");
         assert!(
             started.elapsed() < std::time::Duration::from_secs(4),
@@ -297,7 +326,7 @@ mod tests {
             .arg("30")
             .spawn()
             .unwrap();
-        let pids = child_pids_via_pgrep(std::process::id());
+        let pids = Pgrep::system().child_pids(std::process::id());
         let _ = child.kill();
         let _ = child.wait();
         assert!(pids.contains(&child.id()), "{pids:?} lacks {}", child.id());

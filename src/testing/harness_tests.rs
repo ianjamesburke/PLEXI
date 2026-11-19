@@ -793,6 +793,23 @@ fn temp_response(dir: &std::path::Path, name: &str) -> String {
         .into_owned()
 }
 
+/// Pump visible or hidden frames until the response file exists, waiting
+/// generously: an agent boot needs real seconds (shell boot, the typed
+/// command, a settle window, a 1 Hz detector tick), and a reply that waits on
+/// a host helper (pgrep, wtp, git) is finished by a later frame (stint 1632).
+fn pump_until_response(h: &mut HostHarness, response: &str, hidden: bool) {
+    let deadline = std::time::Instant::now()
+        + crate::testing::load_aware_timeout(std::time::Duration::from_secs(20));
+    while !std::path::Path::new(response).exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        if hidden {
+            h.run_hidden_frames(1);
+        } else {
+            h.run_frames(1);
+        }
+    }
+}
+
 fn read_json_response(path: &str) -> serde_json::Value {
     let content = std::fs::read_to_string(path).expect("response file must exist");
     serde_json::from_str(&content).expect("response must be valid JSON")
@@ -980,7 +997,7 @@ fn pane_state_ipc_returns_non_empty_semantic_tree_for_live_builtin_view() {
         response_file: response_file.clone(),
         stale_after_secs: None,
     });
-    h.run_hidden_frames(1);
+    pump_until_response(&mut h, &response_file, true);
 
     let response = read_json_response(&response_file);
     assert_eq!(response["type"], "view");
@@ -1062,7 +1079,7 @@ default = true
         response_file: response_file.clone(),
         stale_after_secs: None,
     });
-    h.run_hidden_frames(1);
+    pump_until_response(&mut h, &response_file, true);
 
     let response = read_json_response(&response_file);
     assert_eq!(response["lifecycle"], "failed", "response={response}");
@@ -1102,7 +1119,7 @@ fn pane_state_response_always_carries_claimed_and_observed_state_together() {
         response_file: response_file.clone(),
         stale_after_secs: None,
     });
-    h.run_hidden_frames(1);
+    pump_until_response(&mut h, &response_file, true);
 
     let response = read_json_response(&response_file);
     assert!(
@@ -1169,7 +1186,7 @@ fn pane_state_reports_an_ended_agent_turn_next_to_a_working_claim() {
             response_file: response_file.clone(),
             stale_after_secs: None,
         });
-        h.run_hidden_frames(1);
+        pump_until_response(h, &response_file, true);
         read_json_response(&response_file)
     };
 
@@ -1257,7 +1274,7 @@ fn pane_state_reports_dead_process_truthfully_even_while_claimed_state_says_runn
         response_file: response_file.clone(),
         stale_after_secs: None,
     });
-    h.run_hidden_frames(1);
+    pump_until_response(&mut h, &response_file, true);
 
     let response = read_json_response(&response_file);
     assert_eq!(
@@ -1318,7 +1335,7 @@ fn pane_state_raises_stale_claim_only_when_a_window_is_given_and_exceeded() {
         response_file: no_window_response.clone(),
         stale_after_secs: None,
     });
-    h.run_hidden_frames(1);
+    pump_until_response(&mut h, &no_window_response, true);
     assert!(
         read_json_response(&no_window_response)["stale_claim"].is_null(),
         "no --stale-after given must never invent a default window"
@@ -1330,7 +1347,7 @@ fn pane_state_raises_stale_claim_only_when_a_window_is_given_and_exceeded() {
         response_file: stale_response.clone(),
         stale_after_secs: Some(60),
     });
-    h.run_hidden_frames(1);
+    pump_until_response(&mut h, &stale_response, true);
     let response = read_json_response(&stale_response);
     assert_eq!(response["stale_claim"]["stale_after_seconds"], 60);
     assert!(
@@ -11192,22 +11209,6 @@ mod agent_boot {
         read_json_response(&response)
     }
 
-    /// Pump visible or hidden frames until the response file exists, waiting
-    /// generously — the observed path needs real seconds: shell boot, the
-    /// typed command, a full settle window, and a 1 Hz detector tick.
-    fn pump_until_response(h: &mut HostHarness, response: &str, hidden: bool) {
-        let deadline = std::time::Instant::now()
-            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(20));
-        while !std::path::Path::new(response).exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            if hidden {
-                h.run_hidden_frames(1);
-            } else {
-                h.run_frames(1);
-            }
-        }
-    }
-
     /// The tester's exact failure: a booted Codex never fires a hook, so the
     /// spawn must complete from the host-observed detector alone.
     #[test]
@@ -14013,7 +14014,7 @@ mod pane_worktree_tests {
             result_schema: None,
             peer_ancestry: None,
         });
-        h.run_frames(1);
+        pump_until_response(&mut h, &spawn_resp, false);
 
         let reply = read_json_response(&spawn_resp);
         let Some(pane_id) = reply["pane_id"].as_u64() else {
@@ -14048,7 +14049,7 @@ mod pane_worktree_tests {
             pane_id,
             response_file: Some(close_resp.clone()),
         });
-        h.run_frames(1);
+        pump_until_response(&mut h, &close_resp, false);
 
         let close_reply = read_json_response(&close_resp);
         assert_eq!(close_reply["ok"].as_bool(), Some(true));
@@ -14092,7 +14093,7 @@ mod pane_worktree_tests {
             result_schema: None,
             peer_ancestry: None,
         });
-        h.run_frames(1);
+        pump_until_response(&mut h, &spawn_resp, false);
 
         let reply = read_json_response(&spawn_resp);
         let Some(pane_id) = reply["pane_id"].as_u64() else {
@@ -14111,7 +14112,7 @@ mod pane_worktree_tests {
             pane_id,
             response_file: Some(close_resp.clone()),
         });
-        h.run_frames(1);
+        pump_until_response(&mut h, &close_resp, false);
 
         let close_raw = std::fs::read_to_string(&close_resp).expect("read close response");
         let close_reply: serde_json::Value =
@@ -14167,7 +14168,7 @@ mod pane_worktree_tests {
             result_schema: None,
             peer_ancestry: None,
         });
-        h.run_frames(1);
+        pump_until_response(&mut h, &spawn_resp, false);
 
         let reply = read_json_response(&spawn_resp);
         let Some(pane_id) = reply["pane_id"].as_u64() else {
@@ -14193,7 +14194,7 @@ mod pane_worktree_tests {
             pane_id,
             response_file: Some(close_resp.clone()),
         });
-        h.run_frames(1);
+        pump_until_response(&mut h, &close_resp, false);
 
         let close_reply = read_json_response(&close_resp);
         assert_eq!(close_reply["worktree"]["action"].as_str(), Some("retained"));
@@ -14253,7 +14254,7 @@ mod pane_result_harness_tests {
             result_schema: Some(schema),
             peer_ancestry: None,
         });
-        h.run_frames(1);
+        pump_until_response(&mut h, &spawn_resp, false);
 
         let spawn_reply = read_json_response(&spawn_resp);
         let pane_id = spawn_reply["pane_id"]

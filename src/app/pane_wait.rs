@@ -361,7 +361,7 @@ impl PlexiApp {
             Ok(()) => None,
             Err(msg) => {
                 log::warn!("pane_ipc: spawn_pane: launch failed, returning error to caller: {msg}");
-                self.reclaim_pane_worktree(pane_id);
+                self.reclaim_pane_worktree(pane_id, None);
                 Some(msg.clone())
             }
         };
@@ -380,7 +380,7 @@ impl PlexiApp {
             if typed.is_none() {
                 let msg = format!("pane {pane_id} is not a terminal, cannot launch an agent in it");
                 log::warn!("pane_agent_boot: {msg}");
-                self.reclaim_pane_worktree(pane_id);
+                self.reclaim_pane_worktree(pane_id, None);
                 if let Some(rf) = &spec.response_file {
                     crate::rpc::write_json_response(rf, serde_json::json!({ "error": msg }));
                 }
