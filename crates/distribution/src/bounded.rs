@@ -1,9 +1,10 @@
 //! The one way to run a helper process: bounded in time, never interactive,
 //! and never Ok with incomplete work (stints 1605, 1610).
 //!
-//! `Helper` exposes only arguments, environment and working directory. stdin
-//! is `/dev/null` and output goes to temp files, not pipes, so nothing a
-//! descendant keeps open can block the caller. On Unix the child leads a new
+//! `Helper` exposes only arguments, environment, working directory and the
+//! bounded options below. stdin is `/dev/null` and output goes to temp files
+//! unless a caller chooses otherwise; a pipe is drained by a thread whose wait
+//! is itself bounded, so nothing a descendant keeps open can block the caller. On Unix the child leads a new
 //! session with no controlling terminal, so it can neither read nor write the
 //! caller's terminal; a session leader also leads its own process group.
 //!
@@ -15,11 +16,12 @@
 //! killed child is not reaped within `REAP_LIMIT`, the run still returns, with
 //! `RunError::NotStopped`.
 //!
-//! Output past `CAPTURE_LIMIT` (or a caller's `stdout_limit`) is
+//! Output past its policy's limit (`CAPTURE_LIMIT` by default) is
 //! `RunError::OutputTooLarge`, never cut bytes; the size is checked while the
 //! child runs, so a runaway writer is stopped rather than filling the disk
-//! until its limit. A caller may cancel a run (`cancel_on`), give it a small
-//! fixed stdin (`input`, Unix) or discard its output (`discard_output`).
+//! until its limit. Each stream's `OutputPolicy` can instead keep it in
+//! memory only (secrets), keep a bounded tail (diagnostics) or discard it. A
+//! caller may cancel a run (`cancel_on`) or feed it stdin (`input`).
 //!
 //! Callers: a helper that changes state (an install, a venv, a git checkout,
 //! a copy) fails its caller on any error except `RunError::is_tool_failure`,
@@ -31,11 +33,14 @@
 //! Windows kills only the child; descendants there are stint 1613.
 
 use std::ffi::OsStr;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use zeroize::Zeroizing;
 
 /// The most read back from each output stream. More than this is an error.
 pub const CAPTURE_LIMIT: u64 = 1024 * 1024;
@@ -120,16 +125,40 @@ fn stderr_suffix(stderr: &[u8]) -> String {
     }
 }
 
+/// What happens to one output stream of a helper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputPolicy {
+    /// Captured to a temp file and read back whole. Past `limit` bytes the
+    /// child is stopped and the run is `RunError::OutputTooLarge`. The
+    /// default for both streams, at `CAPTURE_LIMIT`.
+    File { limit: u64 },
+    /// Captured in memory only, never on disk: a thread drains a pipe into a
+    /// buffer allocated up front, so it is never reallocated and copied, and
+    /// zeroes its read buffer. Past `limit` bytes the child is stopped and
+    /// the run is `RunError::OutputTooLarge`. For secrets; the caller zeroes
+    /// what it gets back. A process outside the session that keeps the pipe
+    /// open fails the run rather than holding it.
+    Memory { limit: usize },
+    /// Drained continuously; only the last `keep` bytes are kept. Never fails
+    /// the run, whatever the stream's size. For diagnostics.
+    Tail { keep: usize },
+    /// Sent to the null device. For output no one reads.
+    Discard,
+}
+
+/// How long a pipe's drain or input thread gets to finish after the child's
+/// session has ended. Only a process outside the session can hold it longer.
+const DRAIN_LIMIT: Duration = Duration::from_secs(2);
+
 /// A helper process to run once, bounded. Built like a `Command`, but only
 /// arguments, environment, working directory and the bounded options below
 /// can be set.
 pub struct Helper {
     command: Command,
-    stdout_limit: u64,
+    stdout: OutputPolicy,
+    stderr: OutputPolicy,
     cancel: Option<Arc<AtomicBool>>,
-    #[cfg(unix)]
-    input: Option<Vec<u8>>,
-    discard_output: bool,
+    input: Option<Zeroizing<Vec<u8>>>,
 }
 
 impl Helper {
@@ -140,11 +169,14 @@ impl Helper {
     pub fn new(program: impl AsRef<OsStr>) -> Self {
         Self {
             command: Command::new(program),
-            stdout_limit: CAPTURE_LIMIT,
+            stdout: OutputPolicy::File {
+                limit: CAPTURE_LIMIT,
+            },
+            stderr: OutputPolicy::File {
+                limit: CAPTURE_LIMIT,
+            },
             cancel: None,
-            #[cfg(unix)]
             input: None,
-            discard_output: false,
         }
     }
 
@@ -155,10 +187,17 @@ impl Helper {
         self
     }
 
-    /// stdout past this many bytes stops the child and is
-    /// `RunError::OutputTooLarge`. stderr keeps `CAPTURE_LIMIT`.
-    pub fn stdout_limit(&mut self, bytes: u64) -> &mut Self {
-        self.stdout_limit = bytes;
+    /// How stdout is captured; `OutputPolicy::File` at `CAPTURE_LIMIT` unless
+    /// set.
+    pub fn stdout(&mut self, policy: OutputPolicy) -> &mut Self {
+        self.stdout = policy;
+        self
+    }
+
+    /// How stderr is captured; `OutputPolicy::File` at `CAPTURE_LIMIT` unless
+    /// set.
+    pub fn stderr(&mut self, policy: OutputPolicy) -> &mut Self {
+        self.stderr = policy;
         self
     }
 
@@ -170,19 +209,13 @@ impl Helper {
         self
     }
 
-    /// stdin is a pipe already holding `bytes` and closed for writing, so
-    /// nothing waits on the child to read it. More than the pipe holds
-    /// (at least 16 KiB on macOS and Linux) is `RunError::Io` before start.
-    #[cfg(unix)]
+    /// stdin is a pipe a writer thread feeds `bytes` into, then closes. Any
+    /// size works; a child that never reads holds only that thread, and the
+    /// run still ends at its deadline, when the session's death breaks the
+    /// pipe. The bytes are zeroed once written. A write that fails for any
+    /// reason but the child closing stdin fails the run.
     pub fn input(&mut self, bytes: impl Into<Vec<u8>>) -> &mut Self {
-        self.input = Some(bytes.into());
-        self
-    }
-
-    /// stdout and stderr go to the null device; the run's `Output` is empty.
-    /// For a step whose output no one reads, so its size cannot fail it.
-    pub fn discard_output(&mut self) -> &mut Self {
-        self.discard_output = true;
+        self.input = Some(Zeroizing::new(bytes.into()));
         self
     }
 
@@ -255,49 +288,19 @@ impl Helper {
                 source,
             }
         };
-        // Named so the read-back opens its own handle: a positioned read on
-        // the child's handle would share (on Windows, move) the writer's
-        // offset.
-        let captures = if self.discard_output {
-            self.command.stdout(Stdio::null()).stderr(Stdio::null());
-            None
-        } else {
-            let stdout = tempfile::NamedTempFile::new().map_err(io("create output file"))?;
-            let stderr = tempfile::NamedTempFile::new().map_err(io("create error file"))?;
-            self.command
-                .stdout(
-                    stdout
-                        .as_file()
-                        .try_clone()
-                        .map_err(io("share output file"))?,
-                )
-                .stderr(
-                    stderr
-                        .as_file()
-                        .try_clone()
-                        .map_err(io("share error file"))?,
-                );
-            Some([
-                Capture {
-                    file: stdout,
-                    stream: "stdout",
-                    limit: self.stdout_limit,
-                },
-                Capture {
-                    file: stderr,
-                    stream: "stderr",
-                    limit: CAPTURE_LIMIT,
-                },
-            ])
+        let (stdout, stdout_stdio) = Sink::open(self.stdout).map_err(io("open stdout"))?;
+        let (stderr, stderr_stdio) = Sink::open(self.stderr).map_err(io("open stderr"))?;
+        let (stdin_stdio, input_writer) = match self.input.take() {
+            Some(bytes) => {
+                let (reader, writer) = std::io::pipe().map_err(io("open stdin"))?;
+                (Stdio::from(reader), Some((writer, bytes)))
+            }
+            None => (Stdio::null(), None),
         };
-        #[cfg(unix)]
-        let stdin = match self.input.take() {
-            Some(bytes) => Stdio::from(filled_pipe(&bytes).map_err(io("fill input pipe"))?),
-            None => Stdio::null(),
-        };
-        #[cfg(windows)]
-        let stdin = Stdio::null();
-        self.command.stdin(stdin);
+        self.command
+            .stdin(stdin_stdio)
+            .stdout(stdout_stdio)
+            .stderr(stderr_stdio);
         // SAFETY: between fork and exec the closure calls only setsid(), which
         // is async-signal-safe and neither allocates nor locks.
         #[cfg(unix)]
@@ -311,22 +314,88 @@ impl Helper {
                 Ok(())
             });
         }
-        let child = self.command.spawn().map_err(|source| RunError::Start {
+        let spawned = self.command.spawn();
+        let started_at = Instant::now();
+        // Close the parent's copies of the child's pipe ends, so a drain sees
+        // end of file once the child's session is gone.
+        self.command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = spawned.map_err(|source| RunError::Start {
             what: what.to_string(),
             source,
         })?;
-        let started_at = Instant::now();
-        // Drop the parent's copy of the input pipe's read end now rather
-        // than when the command is dropped.
-        self.command.stdin(Stdio::null());
-        Ok(Started {
+        let mut started = Started {
             child: Some(child),
             what: what.to_string(),
             started_at,
-            captures,
+            stdout,
+            stderr,
+            input: None,
             cancel: self.cancel.clone(),
-        })
+        };
+        if let Some((writer, bytes)) = input_writer {
+            // On failure `started` drops here, which stops the child.
+            started.input = Some(Delivery::spawn(writer, bytes).map_err(io("start input"))?);
+        }
+        Ok(started)
     }
+}
+
+/// stdin bytes being written by their own thread.
+struct Delivery {
+    done: Arc<AtomicBool>,
+    result: Arc<Mutex<Option<std::io::Result<()>>>>,
+}
+
+impl Delivery {
+    fn spawn(mut writer: std::io::PipeWriter, bytes: Zeroizing<Vec<u8>>) -> std::io::Result<Self> {
+        let done = Arc::new(AtomicBool::new(false));
+        let result = Arc::new(Mutex::new(None));
+        let (thread_done, thread_result) = (Arc::clone(&done), Arc::clone(&result));
+        std::thread::Builder::new()
+            .name("helper-input".into())
+            .spawn(move || {
+                let written = writer.write_all(&bytes);
+                drop(writer);
+                drop(bytes);
+                *thread_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(written);
+                thread_done.store(true, Ordering::SeqCst);
+            })?;
+        Ok(Self { done, result })
+    }
+
+    /// After the child's session has ended: Ok if every byte was written or
+    /// the child closed stdin itself (its exit says whether that mattered).
+    fn finish(&self, what: &str) -> Result<(), RunError> {
+        let io = |source| RunError::Io {
+            what: what.to_string(),
+            action: "write stdin",
+            source,
+        };
+        if !wait_flag(&self.done, DRAIN_LIMIT) {
+            return Err(io(std::io::Error::other(
+                "a process outside its session still holds stdin open without reading it",
+            )));
+        }
+        match self.result.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            Some(Err(error)) if error.kind() != std::io::ErrorKind::BrokenPipe => Err(io(error)),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Whether `flag` was set within `limit`.
+fn wait_flag(flag: &AtomicBool, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
+    while !flag.load(Ordering::SeqCst) {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    true
 }
 
 /// A helper that has been started and must be waited for. Dropping it
@@ -337,7 +406,9 @@ pub struct Started {
     child: Option<Child>,
     what: String,
     started_at: Instant,
-    captures: Option<[Capture; 2]>,
+    stdout: Sink,
+    stderr: Sink,
+    input: Option<Delivery>,
     cancel: Option<Arc<AtomicBool>>,
 }
 
@@ -368,7 +439,16 @@ impl Started {
     }
 
     /// Wait under `deadline`, counted from the start.
-    pub fn wait_for(mut self, deadline: Deadline) -> Result<Exited, RunError> {
+    pub fn wait_for(self, deadline: Deadline) -> Result<Exited, RunError> {
+        self.wait_with(deadline, exited_unreaped)
+    }
+
+    /// `wait_for` with the exit check injected, so a test can make it fail.
+    fn wait_with(
+        mut self,
+        deadline: Deadline,
+        exited: fn(&mut Child) -> std::io::Result<bool>,
+    ) -> Result<Exited, RunError> {
         let Some(child) = self.child.take() else {
             return Err(RunError::NotStopped {
                 what: self.what.clone(),
@@ -382,15 +462,18 @@ impl Started {
                 Deadline::After(limit) => Some((self.started_at + limit, limit)),
                 Deadline::HostSession => None,
             },
-            self.captures.as_ref(),
+            [("stdout", &self.stdout), ("stderr", &self.stderr)],
             self.cancel.as_deref(),
+            exited,
         )?;
-        let output = match self.captures.take() {
-            None => Output::default(),
-            Some([stdout, stderr]) => Output {
-                stdout: stdout.read_whole(&self.what)?,
-                stderr: stderr.read_whole(&self.what)?,
-            },
+        if let Some(input) = &self.input {
+            input.finish(&self.what)?;
+        }
+        let stdout = std::mem::replace(&mut self.stdout, Sink::Discard);
+        let stderr = std::mem::replace(&mut self.stderr, Sink::Discard);
+        let output = Output {
+            stdout: stdout.finish(&self.what, "stdout")?,
+            stderr: stderr.finish(&self.what, "stderr")?,
         };
         Ok(Exited { status, output })
     }
@@ -407,38 +490,45 @@ impl Drop for Started {
 
 /// Wait for the child to exit before `deadline` (the instant and the limit
 /// it came from; none for `Deadline::HostSession`), stopping it there, on
-/// cancel, or when a capture outgrows its limit.
+/// cancel, when a capture outgrows its limit, or when the exit check itself
+/// fails. Every error path stops and reaps the session before returning.
 fn supervise(
     mut child: Child,
     what: &str,
     deadline: Option<(Instant, Duration)>,
-    captures: Option<&[Capture; 2]>,
+    sinks: [(&'static str, &Sink); 2],
     cancel: Option<&AtomicBool>,
+    exited_check: fn(&mut Child) -> std::io::Result<bool>,
 ) -> Result<ExitStatus, RunError> {
     let mut pause = Duration::from_millis(1);
     loop {
-        let exited = exited_unreaped(&mut child).map_err(|source| RunError::Io {
-            what: what.to_string(),
-            action: "wait",
-            source,
-        })?;
+        let exited = match exited_check(&mut child) {
+            Ok(exited) => exited,
+            Err(error) => {
+                return Err(stop(
+                    child,
+                    what,
+                    Stopped::WaitFailed(error),
+                    kill_tree,
+                    REAP_LIMIT,
+                ));
+            }
+        };
         let reason = match next_step(Instant::now(), deadline.map(|(at, _)| at), exited, pause) {
             Step::Finish => return finish_session(child, what),
             Step::Stop => Stopped::TimedOut {
                 limit: deadline.map_or(Duration::ZERO, |(_, limit)| limit),
-                stdout: captures.map(|c| c[0].partial()).unwrap_or_default(),
-                stderr: captures.map(|c| c[1].partial()).unwrap_or_default(),
+                stdout: sinks[0].1.partial(),
+                stderr: sinks[1].1.partial(),
             },
             Step::Wait(wait) => {
                 if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
                     Stopped::Cancelled
-                } else if let Some(over) =
-                    captures.and_then(|c| c.iter().find(|capture| capture.is_over()))
+                } else if let Some((stream, limit)) = sinks
+                    .iter()
+                    .find_map(|(stream, sink)| sink.over_limit().map(|limit| (*stream, limit)))
                 {
-                    Stopped::OutputTooLarge {
-                        stream: over.stream,
-                        limit: over.limit,
-                    }
+                    Stopped::OutputTooLarge { stream, limit }
                 } else {
                     std::thread::sleep(wait);
                     pause = (pause * 2).min(MAX_POLL);
@@ -450,75 +540,196 @@ fn supervise(
     }
 }
 
-/// One output stream captured to a temp file.
-struct Capture {
-    file: tempfile::NamedTempFile,
-    stream: &'static str,
-    limit: u64,
+/// Where one output stream goes while the child runs.
+enum Sink {
+    File {
+        file: tempfile::NamedTempFile,
+        limit: u64,
+    },
+    Pipe {
+        drained: Arc<Drained>,
+        /// `Some` for `OutputPolicy::Memory` (fatal past it), `None` for
+        /// `OutputPolicy::Tail`.
+        memory_limit: Option<usize>,
+    },
+    Discard,
 }
 
-impl Capture {
-    /// Already past its limit while the child runs. An unreadable size is
-    /// not an overflow; the read after exit reports it.
-    fn is_over(&self) -> bool {
-        self.file
-            .as_file()
-            .metadata()
-            .is_ok_and(|meta| meta.len() > self.limit)
+/// What a drain thread has read from a pipe.
+struct Drained {
+    bytes: Mutex<Zeroizing<Vec<u8>>>,
+    over: AtomicBool,
+    failed: Mutex<Option<std::io::Error>>,
+    done: AtomicBool,
+}
+
+impl Sink {
+    /// The sink for `policy`, and the child's end of it.
+    fn open(policy: OutputPolicy) -> std::io::Result<(Self, Stdio)> {
+        match policy {
+            OutputPolicy::File { limit } => {
+                // Named so the read-back opens its own handle: a positioned
+                // read on the child's handle would share (on Windows, move)
+                // the writer's offset.
+                let file = tempfile::NamedTempFile::new()?;
+                let stdio = Stdio::from(file.as_file().try_clone()?);
+                Ok((Self::File { file, limit }, stdio))
+            }
+            OutputPolicy::Memory { limit } => Self::pipe(Some(limit), limit),
+            OutputPolicy::Tail { keep } => Self::pipe(None, keep),
+            OutputPolicy::Discard => Ok((Self::Discard, Stdio::null())),
+        }
     }
 
-    /// What was written so far, for a timeout's error.
-    fn partial(&self) -> Vec<u8> {
-        read_capped(self.file.path(), self.limit)
-            .map(|(bytes, _)| bytes)
-            .unwrap_or_default()
-    }
-
-    fn read_whole(self, what: &str) -> Result<Vec<u8>, RunError> {
-        let (bytes, over) =
-            read_capped(self.file.path(), self.limit).map_err(|source| RunError::Io {
-                what: what.to_string(),
-                action: "read output",
-                source,
+    fn pipe(memory_limit: Option<usize>, size: usize) -> std::io::Result<(Self, Stdio)> {
+        const CHUNK: usize = 8 * 1024;
+        let (mut reader, writer) = std::io::pipe()?;
+        // Room for every byte kept plus one chunk, so the buffer never
+        // reallocates (which would leave a copy behind).
+        let drained = Arc::new(Drained {
+            bytes: Mutex::new(Zeroizing::new(Vec::with_capacity(size + CHUNK))),
+            over: AtomicBool::new(false),
+            failed: Mutex::new(None),
+            done: AtomicBool::new(false),
+        });
+        let thread = Arc::clone(&drained);
+        std::thread::Builder::new()
+            .name("helper-drain".into())
+            .spawn(move || {
+                let mut chunk = Zeroizing::new([0u8; CHUNK]);
+                loop {
+                    match reader.read(&mut chunk[..]) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let mut bytes = thread.bytes.lock().unwrap_or_else(|e| e.into_inner());
+                            if memory_limit.is_some_and(|limit| bytes.len() + n > limit) {
+                                // Closing the pipe stops a writer that keeps
+                                // going; the supervisor stops the child.
+                                thread.over.store(true, Ordering::SeqCst);
+                                break;
+                            }
+                            bytes.extend_from_slice(&chunk[..n]);
+                            if memory_limit.is_none() && bytes.len() > size {
+                                let cut = bytes.len() - size;
+                                bytes.drain(..cut);
+                            }
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(error) => {
+                            *thread.failed.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
+                            break;
+                        }
+                    }
+                }
+                thread.done.store(true, Ordering::SeqCst);
             })?;
-        if over {
-            return Err(RunError::OutputTooLarge {
-                what: what.to_string(),
-                stream: self.stream,
-                limit: self.limit,
-            });
-        }
-        Ok(bytes)
+        Ok((
+            Self::Pipe {
+                drained,
+                memory_limit,
+            },
+            Stdio::from(writer),
+        ))
     }
-}
 
-/// A pipe holding `bytes` with its write end closed. The write never blocks:
-/// input larger than the pipe holds is an error, not a wait.
-#[cfg(unix)]
-fn filled_pipe(bytes: &[u8]) -> std::io::Result<std::io::PipeReader> {
-    use std::io::Write;
-    use std::os::fd::AsRawFd;
-    let (reader, mut writer) = std::io::pipe()?;
-    let fd = writer.as_raw_fd();
-    // SAFETY: fcntl reads and sets the flags of a pipe fd this function owns.
-    let set = unsafe {
-        let flags = libc::fcntl(fd, libc::F_GETFL);
-        flags != -1 && libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) != -1
-    };
-    if !set {
-        return Err(std::io::Error::last_os_error());
-    }
-    writer.write_all(bytes).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::WouldBlock {
-            std::io::Error::other(format!(
-                "{} bytes of input is more than a pipe holds",
-                bytes.len()
-            ))
-        } else {
-            error
+    /// The limit this sink has already passed while the child runs. An
+    /// unreadable file size is not an overflow; the read after exit reports
+    /// it.
+    fn over_limit(&self) -> Option<u64> {
+        match self {
+            Self::File { file, limit } => file
+                .as_file()
+                .metadata()
+                .is_ok_and(|meta| meta.len() > *limit)
+                .then_some(*limit),
+            Self::Pipe {
+                drained,
+                memory_limit: Some(limit),
+            } => drained.over.load(Ordering::SeqCst).then_some(*limit as u64),
+            Self::Pipe { .. } | Self::Discard => None,
         }
-    })?;
-    Ok(reader)
+    }
+
+    /// What was written so far, for a timeout's error. Memory captures may
+    /// be secrets and are never copied into an error.
+    fn partial(&self) -> Vec<u8> {
+        match self {
+            Self::File { file, limit } => read_capped(file.path(), *limit)
+                .map(|(bytes, _)| bytes)
+                .unwrap_or_default(),
+            Self::Pipe {
+                drained,
+                memory_limit: None,
+            } => drained
+                .bytes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .to_vec(),
+            Self::Pipe { .. } | Self::Discard => Vec::new(),
+        }
+    }
+
+    /// The whole stream, once the child's session has ended.
+    fn finish(self, what: &str, stream: &'static str) -> Result<Vec<u8>, RunError> {
+        let io = |action: &'static str, source| RunError::Io {
+            what: what.to_string(),
+            action,
+            source,
+        };
+        let too_large = |limit: u64| RunError::OutputTooLarge {
+            what: what.to_string(),
+            stream,
+            limit,
+        };
+        match self {
+            Self::File { file, limit } => {
+                let (bytes, over) =
+                    read_capped(file.path(), limit).map_err(|e| io("read output", e))?;
+                if over {
+                    return Err(too_large(limit));
+                }
+                Ok(bytes)
+            }
+            Self::Pipe {
+                drained,
+                memory_limit,
+            } => {
+                let finished = wait_flag(&drained.done, DRAIN_LIMIT);
+                let take = || {
+                    std::mem::take(&mut **drained.bytes.lock().unwrap_or_else(|e| e.into_inner()))
+                };
+                let Some(limit) = memory_limit else {
+                    if !finished {
+                        log::warn!(
+                            "distribution: {what} {stream} is still held open outside its session; keeping the tail read so far"
+                        );
+                    }
+                    return Ok(take());
+                };
+                if !finished {
+                    return Err(io(
+                        "drain output",
+                        std::io::Error::other(format!(
+                            "a process outside its session still holds {stream} open"
+                        )),
+                    ));
+                }
+                if drained.over.load(Ordering::SeqCst) {
+                    return Err(too_large(limit as u64));
+                }
+                if let Some(error) = drained
+                    .failed
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    return Err(io("drain output", error));
+                }
+                Ok(take())
+            }
+            Self::Discard => Ok(Vec::new()),
+        }
+    }
 }
 
 /// A `git` helper that never prompts, and the only way any module starts
@@ -827,6 +1038,8 @@ enum Stopped {
         stream: &'static str,
         limit: u64,
     },
+    /// Checking whether the child had exited failed.
+    WaitFailed(std::io::Error),
 }
 
 impl Stopped {
@@ -837,6 +1050,7 @@ impl Stopped {
             Self::OutputTooLarge { stream, limit } => {
                 format!("it wrote more than {limit} bytes to {stream}")
             }
+            Self::WaitFailed(error) => format!("checking whether it exited failed: {error}"),
         }
     }
 
@@ -858,6 +1072,11 @@ impl Stopped {
                 what,
                 stream,
                 limit,
+            },
+            Self::WaitFailed(source) => RunError::Io {
+                what,
+                action: "wait",
+                source,
             },
         }
     }
@@ -1377,7 +1596,7 @@ mod tests {
     fn a_runaway_writer_is_stopped_at_its_stdout_limit() {
         let started = Instant::now();
         let error = sh("yes")
-            .stdout_limit(4096)
+            .stdout(OutputPolicy::File { limit: 4096 })
             .run("test child", Duration::from_secs(600))
             .unwrap_err();
         assert!(
@@ -1405,28 +1624,145 @@ mod tests {
         assert_eq!(output.stdout, b"secret value\n");
     }
 
-    /// Input larger than the pipe holds fails before the child starts,
-    /// rather than blocking on a child that never reads.
+    /// Stint 1626: input far larger than a pipe holds reaches a child that
+    /// reads it.
     #[test]
-    fn input_larger_than_a_pipe_is_an_error_not_a_wait() {
+    fn input_larger_than_a_pipe_reaches_a_reader() {
+        let size = 4 * 1024 * 1024;
+        let output = sh("wc -c")
+            .input(vec![b'x'; size])
+            .run("test child", Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            size.to_string()
+        );
+    }
+
+    /// Stint 1626: a child that never reads its large input still ends at
+    /// its limit; the blocked writer does not hold the run.
+    #[test]
+    fn a_child_that_never_reads_its_input_still_times_out() {
         let started = Instant::now();
         let error = sh("sleep 600")
             .input(vec![b'x'; 16 * 1024 * 1024])
-            .run("test child", Duration::from_secs(600))
+            .run("test child", Duration::from_millis(500))
             .unwrap_err();
-        assert!(matches!(error, RunError::Io { .. }), "{error}");
-        assert!(started.elapsed() < Duration::from_secs(5), "{error}");
+        assert!(matches!(error, RunError::TimedOut { .. }), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(8), "{error}");
     }
 
     /// Stint 1626: discarded output is never captured, so its size cannot
     /// fail the run.
     #[test]
     fn discarded_output_cannot_fail_the_run() {
-        let output = sh(&format!("head -c {} /dev/zero", CAPTURE_LIMIT * 2))
-            .discard_output()
-            .run("test child", Duration::from_secs(30))
-            .unwrap();
+        let output = sh(&format!(
+            "head -c {} /dev/zero >&2; head -c {} /dev/zero",
+            CAPTURE_LIMIT * 2,
+            CAPTURE_LIMIT * 2
+        ))
+        .stdout(OutputPolicy::Discard)
+        .stderr(OutputPolicy::Discard)
+        .run("test child", Duration::from_secs(30))
+        .unwrap();
         assert_eq!(output, Output::default());
+    }
+
+    /// Stint 1626: a memory capture is read whole without a temp file, and
+    /// past its limit stops the child as `OutputTooLarge` on that stream.
+    #[test]
+    fn a_memory_capture_is_whole_and_bounded() {
+        let output = sh("printf secret-value")
+            .stdout(OutputPolicy::Memory { limit: 64 })
+            .run("test child", Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(output.stdout, b"secret-value");
+        let started = Instant::now();
+        let error = sh("yes")
+            .stdout(OutputPolicy::Memory { limit: 64 })
+            .run("test child", Duration::from_secs(600))
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                RunError::OutputTooLarge {
+                    stream: "stdout",
+                    limit: 64,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(10), "{error}");
+    }
+
+    /// Stint 1626: a memory capture never creates a temp file: both streams
+    /// are pipes drained into memory.
+    #[test]
+    fn a_memory_capture_never_touches_disk() {
+        let started = sh("sleep 0.3; printf secret-value")
+            .stdout(OutputPolicy::Memory { limit: 64 })
+            .stderr(OutputPolicy::Memory { limit: 64 })
+            .start("test child")
+            .unwrap();
+        let Sink::Pipe { .. } = &started.stdout else {
+            panic!("stdout is not a pipe");
+        };
+        let Sink::Pipe { .. } = &started.stderr else {
+            panic!("stderr is not a pipe");
+        };
+        assert_eq!(
+            started.wait(Duration::from_secs(10)).unwrap().output.stdout,
+            b"secret-value"
+        );
+    }
+
+    /// Stint 1626: a tail policy drains a stream of any size, keeps its last
+    /// bytes and never fails the run.
+    #[test]
+    fn a_tail_keeps_the_end_and_never_fails() {
+        let output = sh(&format!(
+            "head -c {} /dev/zero >&2; printf the-end >&2; echo ok",
+            CAPTURE_LIMIT * 3
+        ))
+        .stderr(OutputPolicy::Tail { keep: 16 })
+        .run("test child", Duration::from_secs(30))
+        .unwrap();
+        assert_eq!(output.stderr.len(), 16);
+        assert!(output.stderr.ends_with(b"the-end"), "{:?}", output.stderr);
+        assert_eq!(output.stdout, b"ok\n");
+    }
+
+    /// Stint 1626: when checking for the child's exit fails, the session is
+    /// still stopped and reaped before the error returns.
+    #[test]
+    fn a_failed_exit_check_still_stops_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let sleeper = dir.path().join("sleeper");
+        let started = sh(&format!(
+            "sleep 600 & echo $! > '{}'; wait",
+            sleeper.display()
+        ))
+        .start("test child")
+        .unwrap();
+        let child = started.id();
+        wait_for_file(&sleeper);
+        let failing = |_: &mut Child| Err(std::io::Error::other("injected wait failure"));
+        let error = started
+            .wait_with(Deadline::After(Duration::from_secs(600)), failing)
+            .unwrap_err();
+        let sleeper = pid_in(&sleeper);
+        let died = dies_within(sleeper, Duration::from_secs(5));
+        kill(sleeper);
+        assert!(
+            error.to_string().contains("injected wait failure"),
+            "{error}"
+        );
+        assert!(
+            !process_alive(child),
+            "child {child} survived the failed wait"
+        );
+        assert!(died, "descendant {sleeper} survived the failed wait");
     }
 
     /// `arg0` is what the program sees as its name.

@@ -73,7 +73,8 @@ fn spawn_marked_shell_step(
         .arg(script)
         .env(crate::host::process_cleanup::SESSION_ENV, marker)
         // No one reads a step's output; its size must not fail the step.
-        .discard_output();
+        .stdout(plexi_distribution::bounded::OutputPolicy::Discard)
+        .stderr(plexi_distribution::bounded::OutputPolicy::Discard);
     if let Some(root) = cwd {
         helper.current_dir(root);
     }

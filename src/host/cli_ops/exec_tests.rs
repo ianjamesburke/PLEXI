@@ -349,6 +349,30 @@ fn stderr_is_captured_and_bounded() {
     assert!(outcome.stderr.len() <= 2048);
 }
 
+/// Stint 1626: diagnostics far past any capture limit are drained and only
+/// their tail kept; the operation still succeeds with its stdout whole.
+#[test]
+fn verbose_stderr_never_fails_an_operation() {
+    let rig = Rig::new("a");
+    let op = spawn_supervised(
+        rig.spec(rig.sealed(), &["noisy", "3000000"], limits()),
+        wake(),
+    )
+    .unwrap();
+    let outcome = wait(&op);
+    assert_eq!(outcome.completion, Completion::Exited(0), "{outcome:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&outcome.stdout).trim(),
+        "{\"ok\":true}"
+    );
+    assert!(outcome.stderr.len() <= 2048, "{}", outcome.stderr.len());
+    assert!(
+        outcome.stderr.ends_with("last-words\n"),
+        "{:?}",
+        &outcome.stderr[outcome.stderr.len().saturating_sub(40)..]
+    );
+}
+
 #[test]
 fn default_search_dirs_are_fixed_system_locations() {
     let dirs = default_search_dirs();

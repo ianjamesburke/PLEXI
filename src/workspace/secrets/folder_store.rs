@@ -504,16 +504,29 @@ fn write_service_index(names: &[String]) -> Result<(), SecretError> {
 #[cfg(all(target_os = "linux", not(test)))]
 const SECRET_TOOL_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Run `secret-tool` as a bounded helper; `stdin` (a secret being stored)
-/// is handed over in a pipe already holding it. Stdout may be a secret;
-/// callers must not log it.
+/// The largest value `secret-tool lookup` may return.
+#[cfg(all(target_os = "linux", not(test)))]
+const SECRET_VALUE_LIMIT: usize = 64 * 1024;
+
+/// Run `secret-tool` as a bounded helper. Nothing it reads or writes touches
+/// disk: `stdin` (a secret being stored) goes through a pipe from a writer
+/// thread, stdout (a looked-up secret) is captured in memory only, and
+/// stderr keeps a bounded tail in memory. Callers zero stdout and must not
+/// log it. Every lifecycle failure (a timeout, a run that could not be
+/// stopped, cut output) is an error, never an absent secret.
 #[cfg(all(target_os = "linux", not(test)))]
 fn secret_tool(
     args: &[&str],
     stdin: Option<&[u8]>,
 ) -> Result<plexi_distribution::bounded::Exited, SecretError> {
-    let mut helper = plexi_distribution::bounded::Helper::new("secret-tool");
-    helper.args(args);
+    use plexi_distribution::bounded::{Helper, OutputPolicy};
+    let mut helper = Helper::new("secret-tool");
+    helper
+        .args(args)
+        .stdout(OutputPolicy::Memory {
+            limit: SECRET_VALUE_LIMIT,
+        })
+        .stderr(OutputPolicy::Tail { keep: 2048 });
     if let Some(bytes) = stdin {
         helper.input(bytes);
     }
@@ -522,24 +535,36 @@ fn secret_tool(
         .map_err(|err| SecretError::Backend(err.to_string()))
 }
 
+/// Look `account` up. A lookup secret-tool answered with a non-zero exit is
+/// a miss; any failure to get an answer is an error, so a mutation guard
+/// never treats "could not tell" as "absent".
 #[cfg(all(target_os = "linux", not(test)))]
-fn service_get(account: &str) -> Option<Zeroizing<String>> {
-    let output = secret_tool(&["lookup", "account", account], None).ok()?;
-    if !output.status.success() {
+fn service_lookup(account: &str) -> Result<Option<Zeroizing<String>>, SecretError> {
+    let exited = secret_tool(&["lookup", "account", account], None)?;
+    let mut stdout = Zeroizing::new(exited.output.stdout);
+    if !exited.status.success() {
         log::info!(
             "folder_secrets: secret-tool lookup miss account={account} status={}",
-            output.status
+            exited.status
         );
-        return None;
+        return Ok(None);
     }
-    let mut text = String::from_utf8_lossy(&output.output.stdout).into_owned();
+    let mut text = match String::from_utf8(std::mem::take(&mut *stdout)) {
+        Ok(text) => Zeroizing::new(text),
+        Err(error) => {
+            zeroize::Zeroize::zeroize(&mut error.into_bytes());
+            return Err(SecretError::Backend(format!(
+                "secret-tool returned a value for {account} that is not UTF-8"
+            )));
+        }
+    };
     if text.ends_with('\n') {
         text.pop();
         if text.ends_with('\r') {
             text.pop();
         }
     }
-    Some(Zeroizing::new(text))
+    Ok(Some(text))
 }
 
 #[cfg(all(target_os = "linux", not(test)))]
@@ -590,20 +615,32 @@ pub(super) struct LinuxFolderStore;
 impl NonDestructiveStore for LinuxFolderStore {
     fn get(&self, account: &str) -> Option<Zeroizing<String>> {
         match linux_kind() {
-            LinuxBackend::SecretService => service_get(account),
+            LinuxBackend::SecretService => service_lookup(account).unwrap_or_else(|err| {
+                log::warn!("folder_secrets: background lookup failed account={account}: {err}");
+                None
+            }),
             LinuxBackend::EncryptedFile => EncryptedFileStore::profile().get(account),
         }
     }
 
+    fn get_interactive(&self, account: &str) -> Result<Option<Zeroizing<String>>, SecretError> {
+        match linux_kind() {
+            LinuxBackend::SecretService => service_lookup(account),
+            LinuxBackend::EncryptedFile => EncryptedFileStore::profile().get_interactive(account),
+        }
+    }
+
+    /// The existence check keeps lookup errors: an inconclusive lookup must
+    /// never let a create overwrite a stored value.
     fn add_new(&self, account: &str, value: &str) -> Result<(), SecretError> {
-        if self.get(account).is_some() {
+        if self.get_interactive(account)?.is_some() {
             return Err(SecretError::AlreadyExists(account.to_string()));
         }
         self_set(self, account, value)
     }
 
     fn delete_if_value(&self, account: &str, expected: &str) -> Result<(), SecretError> {
-        match self.get(account) {
+        match self.get_interactive(account)? {
             None => Ok(()),
             Some(current) if current.as_str() == expected => SecretStore::delete(self, account),
             Some(_) => Err(SecretError::ValueChanged(account.to_string())),

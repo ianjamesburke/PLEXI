@@ -30,14 +30,14 @@ use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use plexi_distribution::bounded::{Helper, RunError};
+use plexi_distribution::bounded::{Helper, OutputPolicy, RunError};
 use sha2::{Digest, Sha256};
 
 use crate::app::cli_operation::hex;
 
 /// Largest program the host will hash and copy per launch.
 pub const MAX_EXECUTABLE_BYTES: u64 = 64 * 1024 * 1024;
-/// How much of stderr an outcome keeps.
+/// How much of stderr (its tail) an outcome keeps.
 const STDERR_KEEP: usize = 2048;
 
 /// Why an executable cannot be used. Each variant maps to one guest-facing code.
@@ -517,7 +517,12 @@ pub fn spawn_supervised(spec: LaunchSpec, wake: Wake) -> Result<RunningOperation
         .args(&spec.argv)
         .current_dir(&spec.cwd)
         .env_clear()
-        .stdout_limit(spec.limits.max_output as u64)
+        .stdout(OutputPolicy::File {
+            limit: spec.limits.max_output as u64,
+        })
+        // Diagnostics are drained and only a tail is kept; their size never
+        // fails the operation. Only the declared stdout limit is fatal.
+        .stderr(OutputPolicy::Tail { keep: STDERR_KEEP })
         .cancel_on(Arc::clone(&cancel));
     for (key, value) in &spec.env {
         helper.env(key, value);
@@ -568,11 +573,10 @@ pub fn spawn_supervised(spec: LaunchSpec, wake: Wake) -> Result<RunningOperation
                     )
                 }
             };
-            let keep = stderr.len().min(STDERR_KEEP);
             let outcome = Outcome {
                 completion,
                 stdout,
-                stderr: String::from_utf8_lossy(&stderr[..keep]).into_owned(),
+                stderr: String::from_utf8_lossy(&stderr).into_owned(),
                 elapsed: begun.elapsed(),
             };
             log::info!(

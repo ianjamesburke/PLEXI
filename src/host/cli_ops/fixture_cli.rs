@@ -44,6 +44,21 @@ fn main() {
                 left -= take;
             }
         }
+        "noisy" => {
+            let n: usize = rest.first().and_then(|v| v.parse().ok()).unwrap_or(0);
+            let chunk = vec![b'.'; 8192];
+            let mut err = std::io::stderr().lock();
+            let mut left = n;
+            while left > 0 {
+                let take = left.min(chunk.len());
+                if err.write_all(&chunk[..take]).is_err() {
+                    return;
+                }
+                left -= take;
+            }
+            let _ = err.write_all(b"last-words\n");
+            println!("{{\"ok\":true}}");
+        }
         "spawn-child" => {
             let child = std::process::Command::new("/bin/sleep")
                 .arg("60")

@@ -10,7 +10,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use plexi_distribution::bounded::{self, Helper};
+use plexi_distribution::bounded::{self, Helper, RunError};
 use serde::{Deserialize, Serialize};
 
 /// How long one `wtp` call gets. `wtp add` checks out a whole tree and runs
@@ -53,7 +53,7 @@ pub struct WorktreeCloseReport {
 }
 
 /// Which `wtp` command runner to use.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum WtpBackend {
     /// Default runtime behavior: invokes `"wtp"` in production; in `#[cfg(test)]`
     /// uses `"wtp"` when installed on `PATH`, otherwise falls back to the
@@ -63,6 +63,9 @@ enum WtpBackend {
     /// Explicitly force the self-contained test shim even on machines where
     /// `wtp` is installed, so unit tests always cover the shim path.
     TestShim,
+    #[cfg(test)]
+    /// A test's fake `wtp` at this path.
+    Program(PathBuf),
 }
 
 /// The helpers worktree code runs, and their limits. Production uses
@@ -92,13 +95,14 @@ impl Tools {
         }
         #[cfg(test)]
         {
-            match self.wtp {
+            match &self.wtp {
                 WtpBackend::Default if system_wtp_available() => Helper::new("wtp"),
                 WtpBackend::Default | WtpBackend::TestShim => {
                     let mut helper = Helper::new("python3");
                     helper.arg(test_wtp_shim_script());
                     helper
                 }
+                WtpBackend::Program(path) => Helper::new(path),
             }
         }
     }
@@ -419,8 +423,10 @@ fn create_worktree_with(
     }
 
     // Resolve the created path via `wtp cd <branch>`, falling back to the last
-    // non-empty stdout line of `wtp add --quiet`.
-    let worktree_path = resolve_worktree_path(&repo_root, branch, tools).or_else(|| {
+    // non-empty stdout line of `wtp add --quiet` only when wtp answered no.
+    let resolved = resolve_worktree_path(&repo_root, branch, tools)
+        .map_err(|e| format!("`wtp add` ran for '{branch}', but resolving its path failed: {e}"))?;
+    let worktree_path = resolved.or_else(|| {
         String::from_utf8_lossy(&add_out.output.stdout)
             .lines()
             .rev()
@@ -435,9 +441,9 @@ fn create_worktree_with(
         ));
     };
 
-    let base_head = git_head_sha(&path, tools).ok_or_else(|| {
+    let base_head = git_head_sha(&path, tools).map_err(|e| {
         format!(
-            "worktree created at '{}', but `git rev-parse HEAD` failed",
+            "worktree created at '{}', but `git rev-parse HEAD` failed: {e}",
             path.display()
         )
     })?;
@@ -493,14 +499,14 @@ fn reclaim_or_retain_worktree_with(wt: &ManagedWorktree, tools: &Tools) -> Workt
     }
 
     match git_head_sha(&wt.path, tools) {
-        Some(current_head) => {
+        Ok(current_head) => {
             if current_head != wt.base_head {
                 retain_reasons.push("ahead");
             }
         }
-        None => {
+        Err(err) => {
             log::warn!(
-                "pane_worktree: could not read HEAD in {}; retaining",
+                "pane_worktree: could not read HEAD in {}: {err}; retaining",
                 wt.path.display()
             );
             retain_reasons.push("head_unknown");
@@ -579,31 +585,49 @@ fn reclaim_or_retain_worktree_with(wt: &ManagedWorktree, tools: &Tools) -> Workt
     }
 }
 
-fn resolve_worktree_path(repo_root: &Path, branch: &str, tools: &Tools) -> Option<PathBuf> {
-    let out = tools
+/// The path `wtp cd <branch>` reports. `Ok(None)` only when wtp answered
+/// and said no (or printed nothing); a wtp that could not answer is an error,
+/// never a reason to trust another source.
+fn resolve_worktree_path(
+    repo_root: &Path,
+    branch: &str,
+    tools: &Tools,
+) -> Result<Option<PathBuf>, RunError> {
+    let out = match tools
         .wtp()
         .args(["cd", branch])
         .current_dir(repo_root)
         .run("wtp cd <branch>", tools.wtp_limit)
-        .map_err(|e| log::warn!("pane_worktree: could not resolve worktree for {branch:?}: {e}"))
-        .ok()?;
-    String::from_utf8_lossy(&out.stdout)
+    {
+        Ok(out) => out,
+        Err(e) if e.is_tool_failure() => {
+            log::warn!("pane_worktree: wtp could not resolve worktree for {branch:?}: {e}");
+            return Ok(None);
+        }
+        Err(e) => return Err(e),
+    };
+    Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .last()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
+        .map(PathBuf::from))
 }
 
-fn git_head_sha(worktree_path: &Path, tools: &Tools) -> Option<String> {
+fn git_head_sha(worktree_path: &Path, tools: &Tools) -> Result<String, RunError> {
     let out = tools
         .git(worktree_path)
         .args(["rev-parse", "HEAD"])
-        .run("git rev-parse HEAD", tools.git_limit)
-        .map_err(|e| log::warn!("pane_worktree: {e}"))
-        .ok()?;
+        .run("git rev-parse HEAD", tools.git_limit)?;
     let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!sha.is_empty()).then_some(sha)
+    if sha.is_empty() {
+        return Err(RunError::Io {
+            what: "git rev-parse HEAD".to_string(),
+            action: "read HEAD",
+            source: std::io::Error::other("git printed no commit"),
+        });
+    }
+    Ok(sha)
 }
 
 /// Whether the worktree has changes. The index refresh only updates cached
@@ -639,6 +663,62 @@ mod tests {
                 ..Self::system()
             }
         }
+    }
+
+    /// Stint 1626 (Codex round 1): a `wtp cd <branch>` that times out after
+    /// `wtp add` fails the create; the path printed by `wtp add` is trusted
+    /// only when wtp answered no.
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_wtp_cd_after_add_fails_create_worktree() {
+        use std::os::unix::fs::PermissionsExt;
+        let (tmp, repo) = init_temp_git_repo();
+        let fake = tmp.path().join("wtp");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = cd ] && [ -n \"$2\" ]; then sleep 10; fi\nexec python3 '{}' \"$@\"\n",
+                test_wtp_shim_script().display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tools = Tools {
+            wtp: WtpBackend::Program(fake),
+            wtp_limit: Duration::from_secs(3),
+            ..Tools::system()
+        };
+        let started = std::time::Instant::now();
+        let result = create_worktree_with(&repo, "feature/hung-cd", &tools);
+        let elapsed = started.elapsed();
+        let error = result.expect_err("an unresolved path must fail the create");
+        assert!(error.contains("resolving its path failed"), "{error}");
+        assert!(error.contains("did not finish"), "{error}");
+        assert!(elapsed < Duration::from_secs(9), "held for {elapsed:?}");
+    }
+
+    /// When `wtp cd <branch>` answers no, the path `wtp add` printed is used.
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_wtp_cd_falls_back_to_the_add_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let (tmp, repo) = init_temp_git_repo();
+        let fake = tmp.path().join("wtp");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = cd ] && [ -n \"$2\" ]; then exit 1; fi\nexec python3 '{}' \"$@\"\n",
+                test_wtp_shim_script().display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tools = Tools {
+            wtp: WtpBackend::Program(fake),
+            ..Tools::system()
+        };
+        let wt = create_worktree_with(&repo, "feature/refused-cd", &tools).unwrap();
+        assert!(wt.path.is_dir());
     }
 
     /// Stint 1626: a git that hangs under `create_worktree` is stopped at its
