@@ -5654,7 +5654,7 @@ mod tests {
         use std::io::BufRead;
 
         let mut h = HostHarness::new();
-        h.add_test_pane();
+        let invoker = h.add_test_pane();
         let initial_count = h.pane_count();
         assert_eq!(initial_count, 1);
 
@@ -5689,7 +5689,13 @@ steps = [
 
         let ws_for_cli = ws_root.clone();
         let cli_handle = std::thread::spawn(move || {
-            crate::cli::run_command_for_root(Some(&ws_for_cli), &ws_for_cli, "play", &[])
+            crate::cli::run_command_for_root_from_pane(
+                Some(&ws_for_cli),
+                &ws_for_cli,
+                "play",
+                &[],
+                Some(invoker),
+            )
         });
 
         while !cli_handle.is_finished() {
