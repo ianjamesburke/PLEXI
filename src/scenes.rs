@@ -5001,10 +5001,10 @@ run_steps = 100
     }
 
     #[test]
-    fn reveal_scene_fails_if_an_extra_parent_pane_prevents_transition() {
+    fn unpack_scene_fails_if_an_extra_parent_pane_prevents_transition() {
         let temp = tempfile::tempdir().unwrap();
         let scene = temp.path().join("extra-parent.toml");
-        let source = include_str!("../tests/scenes/reveal-sole-subcontext.toml");
+        let source = include_str!("../tests/scenes/unpack-sole-subcontext.toml");
         let extra = "[[steps]]\nopen = { kind = \"builtin\", id = \"file_browser\", cwd = \"tests/fixtures/file-browser-tree\", as = \"extra\" }\n\n[[steps]]\nfocus = \"child_files\"";
         let modified = source.replacen("[[steps]]\nfocus = \"child_files\"", extra, 1);
         assert_ne!(modified, source);
