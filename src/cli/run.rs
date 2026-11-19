@@ -319,40 +319,72 @@ where
     let total = steps.len();
     for (idx, raw_step) in steps.iter().enumerate() {
         let step_num = idx + 1;
-        let rendered = substitute_step_args(raw_step, extra_args);
-        if let Some(reason) = retired_step_error(&rendered) {
-            let msg = format!("step {step_num}/{total} refused: {reason}");
-            log::warn!("commands: refused retired step={step_num}/{total}");
-            eprintln!("error: {msg}");
-            return StepRunReport {
-                exit_code: 2,
-                total_steps: total,
-                completed_steps: idx,
-                failed_step_index: Some(step_num),
-                failed_step: Some(rendered),
-                error_message: Some(msg),
-            };
-        }
-        let parsed = parse_step(&rendered);
-        log::info!(
-            "commands: running step={step_num}/{total} command_chars={}",
-            rendered.chars().count()
-        );
+        let (rendered, parsed) = match prepare_step(raw_step, step_num, total, extra_args) {
+            Ok(step) => step,
+            Err(refused) => return refused,
+        };
         let code = runner(step_num, &rendered, &parsed);
         if code != 0 {
-            let msg = format!("step {step_num}/{total} failed: {rendered} (exit {code})");
-            log::warn!("commands: failed step={step_num}/{total} exit={code}");
-            eprintln!("error: {msg}");
-            return StepRunReport {
-                exit_code: code,
-                total_steps: total,
-                completed_steps: idx,
-                failed_step_index: Some(step_num),
-                failed_step: Some(rendered),
-                error_message: Some(msg),
-            };
+            return failed_step_report(step_num, total, rendered, code);
         }
     }
+    completed_steps_report(total)
+}
+
+/// Render step `step_num` (1-based) of `total` and parse it, or refuse it
+/// with a report when it starts with a retired short form. Shared by
+/// `run_steps_with` and the host's resumable step runner so both walk a
+/// saved command the same way.
+pub(crate) fn prepare_step(
+    raw_step: &str,
+    step_num: usize,
+    total: usize,
+    extra_args: &[String],
+) -> Result<(String, ParsedStep), StepRunReport> {
+    let rendered = substitute_step_args(raw_step, extra_args);
+    if let Some(reason) = retired_step_error(&rendered) {
+        let msg = format!("step {step_num}/{total} refused: {reason}");
+        log::warn!("commands: refused retired step={step_num}/{total}");
+        eprintln!("error: {msg}");
+        return Err(StepRunReport {
+            exit_code: 2,
+            total_steps: total,
+            completed_steps: step_num - 1,
+            failed_step_index: Some(step_num),
+            failed_step: Some(rendered),
+            error_message: Some(msg),
+        });
+    }
+    let parsed = parse_step(&rendered);
+    log::info!(
+        "commands: running step={step_num}/{total} command_chars={}",
+        rendered.chars().count()
+    );
+    Ok((rendered, parsed))
+}
+
+/// The report for step `step_num` of `total` exiting with non-zero `code`.
+pub(crate) fn failed_step_report(
+    step_num: usize,
+    total: usize,
+    rendered: String,
+    code: i32,
+) -> StepRunReport {
+    let msg = format!("step {step_num}/{total} failed: {rendered} (exit {code})");
+    log::warn!("commands: failed step={step_num}/{total} exit={code}");
+    eprintln!("error: {msg}");
+    StepRunReport {
+        exit_code: code,
+        total_steps: total,
+        completed_steps: step_num - 1,
+        failed_step_index: Some(step_num),
+        failed_step: Some(rendered),
+        error_message: Some(msg),
+    }
+}
+
+/// The report for all `total` steps exiting 0.
+pub(crate) fn completed_steps_report(total: usize) -> StepRunReport {
     log::info!("commands: completed {total}/{total} step(s)");
     StepRunReport {
         exit_code: 0,

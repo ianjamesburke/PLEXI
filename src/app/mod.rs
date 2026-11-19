@@ -489,6 +489,8 @@ pub struct PlexiApp {
     pub(crate) pane_focus_history: Vec<(u64, egui_tiles::TileId)>,
     /// Palette and key-bound user commands, serviced in logic.
     pub(crate) pending_user_commands: Vec<crate::overlays::command_palette::PendingUserCommand>,
+    /// Saved commands parked on a shell step running off the logic thread.
+    pub(crate) user_command_runs: Vec<crate::overlays::user_command_run::UserCommandRun>,
     /// Pane focus future — entries undone by back-navigation; cleared on any
     /// organic focus change.
     pub(crate) pane_focus_future: Vec<(u64, egui_tiles::TileId)>,
@@ -1927,6 +1929,7 @@ impl PlexiApp {
                     focus_history_depth,
                     pane_focus_history: Vec::new(),
                     pending_user_commands: Vec::new(),
+                    user_command_runs: Vec::new(),
                     pane_focus_future: Vec::new(),
                     navigating_history: false,
                     last_notify_poll: std::time::Instant::now(),
@@ -2224,6 +2227,7 @@ impl PlexiApp {
             focus_history_depth,
             pane_focus_history: Vec::new(),
             pending_user_commands: Vec::new(),
+            user_command_runs: Vec::new(),
             pane_focus_future: Vec::new(),
             navigating_history: false,
             last_notify_poll: std::time::Instant::now(),
@@ -3219,6 +3223,7 @@ impl PlexiApp {
             focus_history_depth: 100,
             pane_focus_history: Vec::new(),
             pending_user_commands: Vec::new(),
+            user_command_runs: Vec::new(),
             pane_focus_future: Vec::new(),
             navigating_history: false,
             host: crate::host::model::HostModel::new(),
