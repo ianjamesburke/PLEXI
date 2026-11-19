@@ -165,7 +165,10 @@ fn table_row_id(tree: &UiTree, cell: &str) -> u32 {
 
 #[test]
 fn table_press_on_painted_b_and_node_click_on_b_emit_pick_1() {
-    for (name, json) in [("headerless", TABLE_HEADERLESS), ("headered", TABLE_HEADERED)] {
+    for (name, json) in [
+        ("headerless", TABLE_HEADERLESS),
+        ("headered", TABLE_HEADERED),
+    ] {
         let tree = decode(json);
         assert_eq!(
             press_at(&tree, |frame| painted_text_center(frame, "B")),

@@ -447,7 +447,11 @@ pub mod ui {
                 }),
             )
         }
-        pub fn list_view(&mut self, key: impl Into<String>, items: impl IntoIterator<Item = u32>) -> u32 {
+        pub fn list_view(
+            &mut self,
+            key: impl Into<String>,
+            items: impl IntoIterator<Item = u32>,
+        ) -> u32 {
             self.push(
                 key,
                 UiNodeData::ListView(ListNode {

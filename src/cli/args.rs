@@ -2270,7 +2270,7 @@ pub enum PaneCmd {
     /// injects a real pointer move + press + release into the live egui pass,
     /// never a parallel resolver.
     ///
-    /// `--node <node_id>` — targets a specific Button/TextInput/ListView node
+    /// `--node <node_id>` — targets a specific Button/TextInput/list-row node
     /// by the id `plexi pane state` reports, so a caller never has to compute
     /// pixel geometry. The host resolves the node's on-screen rect during the
     /// next render pass and fails loudly if the id is missing or not an

@@ -2035,7 +2035,7 @@ pub(crate) enum PaneClickTarget {
 /// detection does not). `PendingPaneClick` is delivered instead through the
 /// same call chain a real click's hit-test result would reach —
 /// `render_node`'s Canvas branch for `Pos`, or the matching interactive
-/// node's own branch (Button/TextInput/ListView) for `Node` — so it still
+/// node's own branch (Button/TextInput/list row) for `Node` — so it still
 /// exercises the pane's live rendering for the frame's actual widget, just
 /// via an explicit id/rect-containment check instead of `Sense::click()`.
 #[derive(Clone, Copy, Debug)]

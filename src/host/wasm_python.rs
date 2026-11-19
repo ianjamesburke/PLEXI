@@ -36,9 +36,9 @@ use super::wasm_frame::repaint_delay_until;
 use super::wasm_view::bindings::plexi::platform::types::{
     BadgeColor, ButtonNode, ButtonStyle, CanvasCircle, CanvasCommand, CanvasLine, CanvasNode,
     CanvasRect, CanvasText, Color, ColumnNode, FooterKeyEntry, FooterKeysNode, IndexedNode,
-    ListItemNode, ListNode, PaddingNode, PinnedEdge, PinnedNode, ProgressBarNode, RowNode, ScrollNode, SpaceNode,
-    SpinnerNode, SurfaceHeaderNode, TableNode, TableRowNode, TextInputNode, TextNode, UiNodeData,
-    UiTree,
+    ListItemNode, ListNode, PaddingNode, PinnedEdge, PinnedNode, ProgressBarNode, RowNode,
+    ScrollNode, SpaceNode, SpinnerNode, SurfaceHeaderNode, TableNode, TableRowNode, TextInputNode,
+    TextNode, UiNodeData, UiTree,
 };
 #[cfg(test)]
 use super::wasm_view::bindings::plexi::platform::types::{
@@ -7571,7 +7571,11 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
             },
         )),
         "ListView" | "list_view" | "list-view" => {
-            reject_pre_row_fields(value, "ListView", &["selected", "selected_idx", "on_select"])?;
+            reject_pre_row_fields(
+                value,
+                "ListView",
+                &["selected", "selected_idx", "on_select"],
+            )?;
             Ok(UiNodeData::ListView(ListNode {
                 items: u32_list(value, "items")?,
             }))
@@ -13356,8 +13360,14 @@ default = true
     #[test]
     fn legacy_list_and_table_row_state_fails_decode_naming_the_field() {
         for (data, field) in [
-            (json!({"type": "ListView", "items": [], "selected": 0}), "'selected'"),
-            (json!({"type": "ListView", "items": [], "on_select": "pick"}), "'on_select'"),
+            (
+                json!({"type": "ListView", "items": [], "selected": 0}),
+                "'selected'",
+            ),
+            (
+                json!({"type": "ListView", "items": [], "on_select": "pick"}),
+                "'on_select'",
+            ),
             (
                 json!({"type": "DataTable", "columns": [], "rows": [["a"], ["b"]]}),
                 "'rows'",
