@@ -3208,6 +3208,13 @@ impl PermissionMonitor {
                     // the previous host; a retry must recheck authorization.
                     record.run_outcome = Some("retry_requires_authorization_check".to_string());
                     dirty = true;
+                } else if record.state == ContinuationState::Paused
+                    && record.run_outcome.as_deref() == Some("retry_required")
+                    && record.resolution.is_none()
+                {
+                    // An earlier restart paused it before any decision: it
+                    // never dispatched and holds no authority, and its exact
+                    // retry asks again. Keep it as it is (stint 1624).
                 } else if record.state.is_in_flight() && !waiting_on_restored_open {
                     record.state = ContinuationState::OutcomeUnknown;
                     record.run_outcome = Some(RunOutcome::OutcomeUnknown.as_str().to_string());
@@ -6026,12 +6033,17 @@ mod tests {
         );
         drop(monitor);
 
+        // Stint 1624: the old ask is gone; the exact retry is the
+        // revalidation. The undispatched retry survives a second restart too.
         let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
-        // Stint 1624: the old ask is gone; the exact retry is the revalidation.
         assert_retired_at_restart(&restored, &pending_request_id);
+        drop(restored);
+        let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
+        assert!(restored.show_pending(&pending_request_id).is_none());
         let record = restored.get_continuation("waiting-restart").unwrap();
         assert_eq!(record.state, ContinuationState::Paused);
         assert_eq!(record.run_outcome.as_deref(), Some("retry_required"));
+        assert_eq!(record.resolution, None, "nothing was approved");
         let Admission::Required {
             pending_request_id: renewed,
         } = admit_of(&restored, &base, args)
