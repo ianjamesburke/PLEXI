@@ -16,10 +16,12 @@
 //! from the embedded `plugins/` tree.
 
 use crate::app::packs::{parse_source_spec, Pack, PackPlugin, SourceSpec};
+use crate::app::python_env::VenvError;
 use crate::app::registry::{PluginManifest, MANIFEST_SCHEMA_VERSION};
+use plexi_distribution::bounded::Helper;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
 
 /// Pack file embedded into the binary. Auto-applied on every launch (core) or
 /// on first launch only (examples). Also reachable via `plexi install --pack core`.
@@ -66,6 +68,24 @@ enum GitRefPolicy {
     FallbackToDefaultBranch,
 }
 
+/// Why a checkout failed. Only a ref that is not there lets a pack install
+/// fall back to the default branch; anything else leaves the clone in an
+/// unknown state (a git that was cut off or could not be stopped) and fails
+/// the install.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckoutError {
+    RefUnavailable(String),
+    Fatal(String),
+}
+
+impl std::fmt::Display for CheckoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RefUnavailable(message) | Self::Fatal(message) => f.write_str(message),
+        }
+    }
+}
+
 /// Abstraction over the actual git client. Production: [`GitCloner`] (shells
 /// out to `git`). Tests: in-memory mock that just creates the target dir.
 pub trait Cloner: Send + Sync {
@@ -74,74 +94,132 @@ pub trait Cloner: Send + Sync {
     fn clone(&self, url: &str, target_dir: &Path) -> Result<(), String>;
     /// Check out a specific ref (tag, branch, or sha) inside an existing
     /// clone. Optional — `None` = leave on the default branch.
-    fn checkout(&self, repo_dir: &Path, git_ref: &str) -> Result<(), String>;
+    fn checkout(&self, repo_dir: &Path, git_ref: &str) -> Result<(), CheckoutError>;
     /// `git fetch && git pull` — used by `plexi update plugins`.
     fn pull(&self, repo_dir: &Path) -> Result<(), String>;
 }
 
 /// Production [`Cloner`] that shells out to the system `git` binary. No
 /// libgit2 / `git2` crate dependency — keeps the release build slim.
-pub struct GitCloner;
+pub struct GitCloner {
+    /// Clone, fetch and pull.
+    network_limit: Duration,
+}
+
+impl Default for GitCloner {
+    fn default() -> Self {
+        Self {
+            network_limit: GIT_NETWORK_LIMIT,
+        }
+    }
+}
+
+/// Network git steps (clone, fetch, pull) get a generous limit; local reads
+/// finish at once when healthy. The limits only stop a hung git.
+const GIT_NETWORK_LIMIT: Duration = Duration::from_secs(600);
+const GIT_LOCAL_LIMIT: Duration = Duration::from_secs(30);
+
+/// Run a git helper bounded by `limit`; the error names what failed and,
+/// for an auth failure, how to set up credentials.
+fn run_git(
+    helper: &mut Helper,
+    what: &str,
+    limit: Duration,
+) -> Result<plexi_distribution::bounded::Output, String> {
+    helper
+        .run(what, limit)
+        .map_err(|error| plexi_distribution::bounded::git_error(&error))
+}
+
+/// Check out `git_ref` once its fetch has run.
+fn checkout_after_fetch(
+    fetched: Result<plexi_distribution::bounded::Output, plexi_distribution::bounded::RunError>,
+    repo_dir: &Path,
+    git_ref: &str,
+) -> Result<(), CheckoutError> {
+    fetch_or_fall_back(fetched, git_ref).map_err(CheckoutError::Fatal)?;
+    let checked_out = git_in(repo_dir)
+        .args(["checkout", git_ref])
+        .run(&format!("git checkout {git_ref}"), GIT_LOCAL_LIMIT);
+    checkout_outcome(checked_out)
+}
+
+/// A ref already present needs no fetch, so a fetch that exited non-zero
+/// (the remote has no such ref, or refused) falls back to the local ref.
+/// Every other failure is fatal: a fetch cut off at its limit or not stopped
+/// may have left the repository half-updated or still changing, and cut
+/// output is incomplete.
+fn fetch_or_fall_back(
+    fetched: Result<plexi_distribution::bounded::Output, plexi_distribution::bounded::RunError>,
+    git_ref: &str,
+) -> Result<(), String> {
+    use plexi_distribution::bounded::RunError;
+    match fetched {
+        Ok(_) => Ok(()),
+        Err(error @ RunError::Failed { .. }) => {
+            log::info!(
+                "install_host: {}; trying checkout of {git_ref} anyway",
+                plexi_distribution::bounded::git_error(&error)
+            );
+            Ok(())
+        }
+        Err(error) => Err(plexi_distribution::bounded::git_error(&error)),
+    }
+}
+
+/// `git checkout` exiting non-zero means the ref is not there and the tree
+/// is untouched. A checkout cut off at its limit or not stopped may have
+/// half-written the tree, so it is fatal.
+fn checkout_outcome(
+    checked_out: Result<plexi_distribution::bounded::Output, plexi_distribution::bounded::RunError>,
+) -> Result<(), CheckoutError> {
+    use plexi_distribution::bounded::{git_error, RunError};
+    match checked_out {
+        Ok(_) => Ok(()),
+        Err(error @ RunError::Failed { .. }) => {
+            Err(CheckoutError::RefUnavailable(git_error(&error)))
+        }
+        Err(error) => Err(CheckoutError::Fatal(git_error(&error))),
+    }
+}
+
+fn git_in(dir: &Path) -> Helper {
+    let mut helper = plexi_distribution::bounded::git();
+    helper.current_dir(dir);
+    helper
+}
 
 impl Cloner for GitCloner {
     fn clone(&self, url: &str, target_dir: &Path) -> Result<(), String> {
-        let status = Command::new("git")
-            .args(["clone", "--depth", "1", url])
-            .arg(target_dir)
-            .status()
-            .map_err(|e| format!("could not run git: {e}"))?;
-        if !status.success() {
-            return Err(format!(
-                "git clone {url} failed (exit {})",
-                status.code().unwrap_or(-1)
-            ));
-        }
+        run_git(
+            plexi_distribution::bounded::git()
+                .args(["clone", "--depth", "1", url])
+                .arg(target_dir),
+            &format!("git clone {url}"),
+            self.network_limit,
+        )?;
         Ok(())
     }
 
-    fn checkout(&self, repo_dir: &Path, git_ref: &str) -> Result<(), String> {
+    fn checkout(&self, repo_dir: &Path, git_ref: &str) -> Result<(), CheckoutError> {
         // For shallow clones we may need the ref fetched explicitly.
-        let _ = Command::new("git")
+        let fetched = git_in(repo_dir)
             .args(["fetch", "--depth", "1", "origin", git_ref])
-            .current_dir(repo_dir)
-            .status();
-        let status = Command::new("git")
-            .args(["checkout", git_ref])
-            .current_dir(repo_dir)
-            .status()
-            .map_err(|e| format!("could not run git checkout: {e}"))?;
-        if !status.success() {
-            return Err(format!(
-                "git checkout {git_ref} failed (exit {})",
-                status.code().unwrap_or(-1)
-            ));
-        }
-        Ok(())
+            .run(&format!("git fetch {git_ref}"), self.network_limit);
+        checkout_after_fetch(fetched, repo_dir, git_ref)
     }
 
     fn pull(&self, repo_dir: &Path) -> Result<(), String> {
-        let fetch = Command::new("git")
-            .args(["fetch"])
-            .current_dir(repo_dir)
-            .status()
-            .map_err(|e| format!("could not run git fetch: {e}"))?;
-        if !fetch.success() {
-            return Err(format!(
-                "git fetch failed (exit {})",
-                fetch.code().unwrap_or(-1)
-            ));
-        }
-        let pull = Command::new("git")
-            .args(["pull", "--ff-only"])
-            .current_dir(repo_dir)
-            .status()
-            .map_err(|e| format!("could not run git pull: {e}"))?;
-        if !pull.success() {
-            return Err(format!(
-                "git pull failed (exit {})",
-                pull.code().unwrap_or(-1)
-            ));
-        }
+        run_git(
+            git_in(repo_dir).arg("fetch"),
+            "git fetch",
+            self.network_limit,
+        )?;
+        run_git(
+            git_in(repo_dir).args(["pull", "--ff-only"]),
+            "git pull",
+            self.network_limit,
+        )?;
         Ok(())
     }
 }
@@ -179,24 +257,35 @@ pub fn install_one(
     git_ref: Option<&str>,
     target_root: &Path,
 ) -> Result<InstallOutcome, String> {
-    install_one_with_ref_policy(cloner, source, git_ref, target_root, GitRefPolicy::Strict)
+    install_one_with_ref_policy(
+        cloner,
+        &UvProvisioner,
+        source,
+        git_ref,
+        target_root,
+        GitRefPolicy::Strict,
+    )
 }
 
 fn install_one_with_ref_policy(
     cloner: &dyn Cloner,
+    provision: &dyn Provision,
     source: &SourceSpec,
     git_ref: Option<&str>,
     target_root: &Path,
     ref_policy: GitRefPolicy,
 ) -> Result<InstallOutcome, String> {
     match source {
-        SourceSpec::Git(url) => install_one_git(cloner, url, git_ref, target_root, ref_policy),
-        SourceSpec::Local(name) => install_one_local(name, target_root),
+        SourceSpec::Git(url) => {
+            install_one_git(cloner, provision, url, git_ref, target_root, ref_policy)
+        }
+        SourceSpec::Local(name) => install_one_local(provision, name, target_root),
     }
 }
 
 fn install_one_git(
     cloner: &dyn Cloner,
+    provision: &dyn Provision,
     url: &str,
     git_ref: Option<&str>,
     target_root: &Path,
@@ -226,12 +315,12 @@ fn install_one_git(
     }
     if let Some(r) = git_ref {
         if let Err(e) = cloner.checkout(&stage_path, r) {
-            match ref_policy {
-                GitRefPolicy::Strict => {
+            match (ref_policy, &e) {
+                (GitRefPolicy::Strict, _) | (_, CheckoutError::Fatal(_)) => {
                     cleanup(&stage_root);
-                    return Err(e);
+                    return Err(e.to_string());
                 }
-                GitRefPolicy::FallbackToDefaultBranch => {
+                (GitRefPolicy::FallbackToDefaultBranch, CheckoutError::RefUnavailable(_)) => {
                     log::warn!(
                         "install: ref '{r}' unavailable for {url}; using default branch HEAD: {e}"
                     );
@@ -274,7 +363,7 @@ fn install_one_git(
     cleanup(&stage_root);
 
     chmod_python_entries(&dest);
-    provision_venv(&id, &dest, &manifest);
+    provision_venv(provision, &id, &dest, &manifest)?;
     write_installed_version_file(&dest, &manifest.plugin.version);
     log::info!("install: id={} ref={}", id, git_ref.unwrap_or("default"));
     Ok(InstallOutcome {
@@ -283,7 +372,11 @@ fn install_one_git(
     })
 }
 
-fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, String> {
+fn install_one_local(
+    provision: &dyn Provision,
+    name: &str,
+    target_root: &Path,
+) -> Result<InstallOutcome, String> {
     std::fs::create_dir_all(target_root)
         .map_err(|e| format!("create plugins dir {}: {e}", target_root.display()))?;
 
@@ -325,7 +418,7 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
         .extract(target_root)
         .map_err(|e| format!("extract local '{name}' → {}: {e}", target_root.display()))?;
     chmod_python_entries(&dest);
-    provision_venv(&id, &dest, &manifest);
+    provision_venv(provision, &id, &dest, &manifest)?;
     write_installed_version_file(&dest, &manifest.plugin.version);
     log::info!("install: {id} ← local:{name}");
     Ok(InstallOutcome {
@@ -397,22 +490,74 @@ fn chmod_python_entries(plugin_dir: &Path) {
 #[cfg(not(unix))]
 fn chmod_python_entries(_plugin_dir: &Path) {}
 
-fn provision_venv(plugin_id: &str, plugin_dir: &Path, manifest: &PluginManifest) {
-    let entry = &manifest.plugin.entry;
-    let is_python = entry.ends_with(".py");
-    if !is_python {
-        return;
-    }
+/// Prepares an installed plugin's runtime. Production: [`UvProvisioner`].
+pub(crate) trait Provision {
+    fn provision(
+        &self,
+        plugin_id: &str,
+        plugin_dir: &Path,
+        manifest: &PluginManifest,
+    ) -> Result<(), VenvError>;
+}
 
-    match crate::app::python_env::ensure_plugin_venv(plugin_id, plugin_dir, &manifest.plugin.dependencies) {
-        Ok(python) => log::info!(
+/// Creates a Python plugin's venv and installs its dependencies with uv.
+pub(crate) struct UvProvisioner;
+
+impl Provision for UvProvisioner {
+    fn provision(
+        &self,
+        plugin_id: &str,
+        plugin_dir: &Path,
+        manifest: &PluginManifest,
+    ) -> Result<(), VenvError> {
+        if !manifest.plugin.entry.ends_with(".py") {
+            return Ok(());
+        }
+        let python = crate::app::python_env::ensure_plugin_venv(
+            plugin_id,
+            plugin_dir,
+            &manifest.plugin.dependencies,
+        )?;
+        log::info!(
             "install[{plugin_id}]: Python plugin environment ready at {}",
             python.display()
-        ),
-        Err(e) => log::warn!(
-            "install[{plugin_id}]: Python plugin environment setup failed: {e}; plugin may not launch until `plexi plugin check {}` succeeds",
-            plugin_dir.display()
-        ),
+        );
+        Ok(())
+    }
+}
+
+/// Provision an installed plugin. A missing or refusing uv or Python leaves
+/// the plugin installed with a warning, as before. A provisioning helper
+/// that timed out, could not be stopped or was cut leaves the environment
+/// unknown and possibly still changing: the install fails and the plugin
+/// directory is removed.
+fn provision_venv(
+    provision: &dyn Provision,
+    plugin_id: &str,
+    plugin_dir: &Path,
+    manifest: &PluginManifest,
+) -> Result<(), String> {
+    match provision.provision(plugin_id, plugin_dir, manifest) {
+        Ok(()) => Ok(()),
+        Err(VenvError::Unavailable(e)) => {
+            log::warn!(
+                "install[{plugin_id}]: Python plugin environment setup failed: {e}; plugin may not launch until `plexi plugin check {}` succeeds",
+                plugin_dir.display()
+            );
+            Ok(())
+        }
+        Err(VenvError::Fatal(e)) => {
+            log::error!("install[{plugin_id}]: Python plugin environment setup failed: {e}");
+            if let Err(remove) = std::fs::remove_dir_all(plugin_dir) {
+                log::error!(
+                    "install[{plugin_id}]: could not remove {} after the failed setup: {remove}",
+                    plugin_dir.display()
+                );
+            }
+            Err(format!(
+                "install {plugin_id}: Python environment setup failed: {e}"
+            ))
+        }
     }
 }
 
@@ -434,11 +579,22 @@ pub fn apply_pack(
     target_root: &Path,
     refresh_local: bool,
 ) -> Vec<InstallOutcome> {
+    apply_pack_with(cloner, &UvProvisioner, pack, target_root, refresh_local)
+}
+
+fn apply_pack_with(
+    cloner: &dyn Cloner,
+    provision: &dyn Provision,
+    pack: &Pack,
+    target_root: &Path,
+    refresh_local: bool,
+) -> Vec<InstallOutcome> {
     let mut outcomes = Vec::with_capacity(pack.plugins.len());
     let installed = installed_versions(target_root);
     for entry in &pack.plugins {
         outcomes.push(apply_pack_entry(
             cloner,
+            provision,
             entry,
             target_root,
             &installed,
@@ -449,7 +605,12 @@ pub fn apply_pack(
 }
 
 /// Replace an installed `local:` plugin with the copy embedded in this binary.
-fn refresh_one_local(name: &str, id: &str, target_root: &Path) -> InstallOutcome {
+fn refresh_one_local(
+    provision: &dyn Provision,
+    name: &str,
+    id: &str,
+    target_root: &Path,
+) -> InstallOutcome {
     let dest = target_root.join(id);
     if let Err(e) = std::fs::remove_dir_all(&dest) {
         return InstallOutcome {
@@ -457,7 +618,7 @@ fn refresh_one_local(name: &str, id: &str, target_root: &Path) -> InstallOutcome
             status: InstallStatus::Failed(format!("refresh: remove {}: {e}", dest.display())),
         };
     }
-    match install_one_local(name, target_root) {
+    match install_one_local(provision, name, target_root) {
         Ok(o) => {
             log::info!("install: refreshed {} ← local:{name}", o.id);
             InstallOutcome {
@@ -477,6 +638,7 @@ fn refresh_one_local(name: &str, id: &str, target_root: &Path) -> InstallOutcome
 
 fn apply_pack_entry(
     cloner: &dyn Cloner,
+    provision: &dyn Provision,
     entry: &PackPlugin,
     target_root: &Path,
     installed: &HashMap<String, String>,
@@ -485,7 +647,7 @@ fn apply_pack_entry(
     if let Some(installed_version) = installed.get(&entry.id) {
         if refresh_local {
             if let Ok(SourceSpec::Local(name)) = parse_source_spec(&entry.source) {
-                return refresh_one_local(&name, &entry.id, target_root);
+                return refresh_one_local(provision, &name, &entry.id, target_root);
             }
         }
         if installed_version == &entry.version {
@@ -517,6 +679,7 @@ fn apply_pack_entry(
     };
     match install_one_with_ref_policy(
         cloner,
+        provision,
         &source,
         git_ref,
         target_root,
@@ -682,14 +845,12 @@ pub fn infer_source_and_version(plugin_dir: &Path, manifest: &PluginManifest) ->
 }
 
 fn git_remote_origin_url(repo_dir: &Path) -> Option<String> {
-    let output = Command::new("git")
-        .args(["config", "--get", "remote.origin.url"])
-        .current_dir(repo_dir)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
+    let output = run_git(
+        git_in(repo_dir).args(["config", "--get", "remote.origin.url"]),
+        "git config remote.origin.url",
+        GIT_LOCAL_LIMIT,
+    )
+    .ok()?;
     let raw = String::from_utf8(output.stdout).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -730,30 +891,25 @@ fn format_git_source_spec(url: &str) -> String {
 
 fn git_current_ref(repo_dir: &Path) -> Option<String> {
     // Prefer an exact-tag match so re-install lands on the same release.
-    let tag = Command::new("git")
-        .args(["describe", "--tags", "--exact-match"])
-        .current_dir(repo_dir)
-        .output()
-        .ok();
-    if let Some(out) = tag {
-        if out.status.success() {
-            if let Ok(s) = String::from_utf8(out.stdout) {
-                let trimmed = s.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
-                }
+    if let Ok(out) = run_git(
+        git_in(repo_dir).args(["describe", "--tags", "--exact-match"]),
+        "git describe",
+        GIT_LOCAL_LIMIT,
+    ) {
+        if let Ok(s) = String::from_utf8(out.stdout) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
             }
         }
     }
     // Fall back to a short SHA — re-install still reproducible.
-    let sha = Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .current_dir(repo_dir)
-        .output()
-        .ok()?;
-    if !sha.status.success() {
-        return None;
-    }
+    let sha = run_git(
+        git_in(repo_dir).args(["rev-parse", "--short", "HEAD"]),
+        "git rev-parse",
+        GIT_LOCAL_LIMIT,
+    )
+    .ok()?;
     let s = String::from_utf8(sha.stdout).ok()?;
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -1166,7 +1322,7 @@ pub(crate) mod test_support {
         /// Per-URL clone failures, queued and popped in order.
         pub failures: Mutex<Vec<String>>,
         /// Per-checkout failures, queued and popped in order.
-        pub checkout_failures: Mutex<Vec<String>>,
+        pub checkout_failures: Mutex<Vec<CheckoutError>>,
         /// Track every `clone` call for assertions.
         pub clones: Mutex<Vec<(String, PathBuf)>>,
         /// Track every checkout ref for assertions.
@@ -1197,7 +1353,16 @@ pub(crate) mod test_support {
             self.failures.lock().unwrap().push(msg.to_string());
         }
         pub fn fail_next_checkout(&self, msg: &str) {
-            self.checkout_failures.lock().unwrap().push(msg.to_string());
+            self.checkout_failures
+                .lock()
+                .unwrap()
+                .push(CheckoutError::RefUnavailable(msg.to_string()));
+        }
+        pub fn fail_next_checkout_fatally(&self, msg: &str) {
+            self.checkout_failures
+                .lock()
+                .unwrap()
+                .push(CheckoutError::Fatal(msg.to_string()));
         }
     }
 
@@ -1238,7 +1403,7 @@ pub(crate) mod test_support {
             }
             Ok(())
         }
-        fn checkout(&self, _repo_dir: &Path, git_ref: &str) -> Result<(), String> {
+        fn checkout(&self, _repo_dir: &Path, git_ref: &str) -> Result<(), CheckoutError> {
             self.checkouts.lock().unwrap().push(git_ref.to_string());
             if let Some(err) = self.checkout_failures.lock().unwrap().pop() {
                 return Err(err);
@@ -1266,6 +1431,85 @@ pub(crate) mod test_support {
 mod install_tests {
     use super::test_support::MockCloner;
     use super::*;
+
+    /// Stint 1610: a clone from a server that never answers is stopped at
+    /// the network limit instead of holding the install.
+    #[test]
+    fn a_hung_clone_is_stopped_at_its_limit() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Accept and hold the connection without ever answering.
+        let held = std::thread::spawn(move || listener.accept().map(|(stream, _)| stream));
+        let dir = tmp();
+        let target = dir.path().join("r");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let cloner = GitCloner {
+                network_limit: Duration::from_millis(500),
+            };
+            let _ = tx.send(cloner.clone(&format!("git://127.0.0.1:{port}/r.git"), &target));
+        });
+        let result = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the clone returned inside its limit");
+        let error = result.unwrap_err();
+        assert!(error.contains("did not finish within"), "{error}");
+        drop(held);
+    }
+
+    /// Stint 1610: a fetch that could not be stopped fails the checkout;
+    /// an ordinary fetch failure falls back to the local ref.
+    #[test]
+    fn only_a_refused_fetch_falls_back_to_the_local_ref() {
+        use plexi_distribution::bounded::RunError;
+        let refused = Err(RunError::Failed {
+            what: "git fetch v1".into(),
+            status: std::process::ExitStatus::default(),
+            stderr: b"fatal: couldn't find remote ref v1".to_vec(),
+        });
+        assert!(fetch_or_fall_back(refused, "v1").is_ok());
+        let unstopped = Err(RunError::NotStopped {
+            what: "git fetch v1".into(),
+            cause: "test".into(),
+        });
+        assert!(fetch_or_fall_back(unstopped, "v1").is_err());
+        let timed_out = Err(RunError::TimedOut {
+            what: "git fetch v1".into(),
+            limit: Duration::from_secs(1),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        });
+        assert!(fetch_or_fall_back(timed_out, "v1").is_err());
+    }
+
+    /// Stint 1610: a clone through the bounded runner still works end to end.
+    #[test]
+    fn git_cloner_clones_a_local_repository() {
+        let dir = tmp();
+        let source = dir.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        let git = |args: &[&str]| {
+            run_git(
+                git_in(&source)
+                    .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+                    .args(args),
+                "test git",
+                GIT_LOCAL_LIMIT,
+            )
+            .unwrap();
+        };
+        git(&["init", "-q"]);
+        std::fs::write(source.join("README"), "hi").unwrap();
+        git(&["add", "README"]);
+        git(&["commit", "-q", "-m", "init"]);
+        let target = dir.path().join("clone");
+        let url = format!("file://{}", source.display());
+        GitCloner::default().clone(&url, &target).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(target.join("README")).unwrap(),
+            "hi"
+        );
+    }
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
@@ -1606,6 +1850,125 @@ mod pack_tests {
         }
         let ok = outcomes.iter().find(|o| o.id == "ok").unwrap();
         assert!(matches!(ok.status, InstallStatus::Installed(_)));
+    }
+
+    /// Stint 1610: a pack entry whose version fetch timed out fails instead
+    /// of falling back to the default branch and reporting Installed. The
+    /// cloner clones like the mock and checks out through the production
+    /// path after a fetch that timed out.
+    #[test]
+    fn pack_apply_fails_an_entry_whose_fetch_timed_out() {
+        struct TimedOutFetch(MockCloner);
+        impl Cloner for TimedOutFetch {
+            fn clone(&self, url: &str, target_dir: &Path) -> Result<(), String> {
+                self.0.clone(url, target_dir)
+            }
+            fn checkout(&self, repo_dir: &Path, git_ref: &str) -> Result<(), CheckoutError> {
+                let timed_out = Err(plexi_distribution::bounded::RunError::TimedOut {
+                    what: format!("git fetch {git_ref}"),
+                    limit: Duration::from_secs(600),
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                });
+                checkout_after_fetch(timed_out, repo_dir, git_ref)
+            }
+            fn pull(&self, repo_dir: &Path) -> Result<(), String> {
+                self.0.pull(repo_dir)
+            }
+        }
+        let target = tempfile::tempdir().unwrap();
+        let cloner = TimedOutFetch(MockCloner::new());
+        let pack = pack_with(&[("slow", "github:owner/slow", "0.0.1")]);
+
+        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
+
+        assert!(
+            matches!(&outcomes[0].status, InstallStatus::Failed(msg) if msg.contains("did not finish within")),
+            "got {:?}",
+            outcomes[0].status
+        );
+        assert!(!target.path().join("slow").exists());
+    }
+
+    /// Stint 1610: a Python environment setup that could not be stopped
+    /// fails the pack entry and removes the plugin, instead of reporting
+    /// Installed; a missing uv still installs with a warning.
+    #[test]
+    fn pack_apply_fails_an_entry_whose_provisioning_could_not_be_stopped() {
+        struct Stuck(VenvError);
+        impl Provision for Stuck {
+            fn provision(&self, _: &str, _: &Path, _: &PluginManifest) -> Result<(), VenvError> {
+                Err(self.0.clone())
+            }
+        }
+        let target = tempfile::tempdir().unwrap();
+        let cloner = MockCloner::new();
+        let pack = pack_with(&[("stuck", "github:owner/stuck", "0.0.1")]);
+        let stuck = Stuck(VenvError::Fatal(
+            "`uv pip install` could not be stopped".into(),
+        ));
+
+        let outcomes = apply_pack_with(&cloner, &stuck, &pack, target.path(), false);
+
+        assert!(
+            matches!(&outcomes[0].status, InstallStatus::Failed(msg) if msg.contains("could not be stopped")),
+            "got {:?}",
+            outcomes[0].status
+        );
+        assert!(!target.path().join("stuck").exists());
+
+        let target = tempfile::tempdir().unwrap();
+        let missing = Stuck(VenvError::Unavailable("could not start uv".into()));
+        let outcomes = apply_pack_with(&cloner, &missing, &pack, target.path(), false);
+        assert!(
+            matches!(outcomes[0].status, InstallStatus::Installed(_)),
+            "got {:?}",
+            outcomes[0].status
+        );
+    }
+
+    /// Stint 1610: a checkout that could not be stopped fails the pack entry
+    /// instead of falling back and reporting Installed.
+    #[test]
+    fn pack_apply_fails_an_entry_whose_checkout_could_not_be_stopped() {
+        let target = tempfile::tempdir().unwrap();
+        let cloner = MockCloner::new();
+        cloner.fail_next_checkout_fatally("git fetch 0.0.1 could not be stopped");
+        let pack = pack_with(&[("stuck", "github:owner/stuck", "0.0.1")]);
+
+        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
+
+        assert!(
+            matches!(&outcomes[0].status, InstallStatus::Failed(msg) if msg.contains("could not be stopped")),
+            "got {:?}",
+            outcomes[0].status
+        );
+        assert!(!target.path().join("stuck").exists());
+    }
+
+    /// Stint 1610: only a non-zero `git checkout` is a missing ref.
+    #[test]
+    fn only_a_failed_checkout_is_a_missing_ref() {
+        use plexi_distribution::bounded::RunError;
+        let failed = RunError::Failed {
+            what: "git checkout v1".into(),
+            status: std::process::ExitStatus::default(),
+            stderr: b"error: pathspec 'v1' did not match".to_vec(),
+        };
+        assert!(matches!(
+            checkout_outcome(Err(failed)),
+            Err(CheckoutError::RefUnavailable(_))
+        ));
+        let timed_out = RunError::TimedOut {
+            what: "git checkout v1".into(),
+            limit: Duration::from_secs(1),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        assert!(matches!(
+            checkout_outcome(Err(timed_out)),
+            Err(CheckoutError::Fatal(_))
+        ));
     }
 
     #[test]

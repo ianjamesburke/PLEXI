@@ -1605,22 +1605,18 @@ pub(super) fn open_github_ephemeral(
             cache_dir.display()
         );
         eprintln!("Cloning github:{owner}/{repo}...");
-        match std::process::Command::new("git")
-            .arg("clone")
-            .arg("--depth=1")
+        // A network clone; the limit only stops a hung one.
+        const CLONE_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
+        if let Err(error) = plexi_distribution::bounded::git()
+            .args(["clone", "--depth=1"])
             .arg(&url)
             .arg(&cache_dir)
-            .status()
+            .run(&format!("git clone {url}"), CLONE_LIMIT)
         {
-            Ok(s) if s.success() => {}
-            Ok(s) => {
-                eprintln!("error: git clone failed (exit {})", s.code().unwrap_or(-1));
-                return 1;
-            }
-            Err(e) => {
-                eprintln!("error: could not run git: {e}");
-                return 1;
-            }
+            let message = plexi_distribution::bounded::git_error(&error);
+            log::warn!("open_github_ephemeral: {message}");
+            eprintln!("error: {message}");
+            return 1;
         }
     } else {
         log::info!(

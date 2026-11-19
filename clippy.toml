@@ -27,4 +27,9 @@ disallowed-methods = [
     { path = "egui::containers::menu::MenuButton::from_button", reason = "the kit owns every button (stint 1211). Use crate::ui::button::KitButton (menu_item, toolbar_button); only KitButton::ui may construct egui::Button." },
     { path = "egui::containers::menu::SubMenuButton::new", reason = "the kit owns every button (stint 1211). Use crate::ui::button::KitButton (menu_item, toolbar_button); only KitButton::ui may construct egui::Button." },
     { path = "egui::containers::menu::SubMenuButton::from_button", reason = "the kit owns every button (stint 1211). Use crate::ui::button::KitButton (menu_item, toolbar_button); only KitButton::ui may construct egui::Button." },
+    { path = "std::process::Command::new", reason = "start helpers with plexi_distribution::bounded::Helper; any other launch needs #[expect(clippy::disallowed_methods, reason = \"<kind>: <why>\")] (stint 1610)", allow-invalid = true },
+    { path = "libc::fork", reason = "start helpers with plexi_distribution::bounded::Helper; any other launch needs #[expect(clippy::disallowed_methods, reason = \"<kind>: <why>\")] (stint 1610)", allow-invalid = true },
+    { path = "libc::posix_spawn", reason = "start helpers with plexi_distribution::bounded::Helper; any other launch needs #[expect(clippy::disallowed_methods, reason = \"<kind>: <why>\")] (stint 1610)", allow-invalid = true },
+    { path = "libc::posix_spawnp", reason = "start helpers with plexi_distribution::bounded::Helper; any other launch needs #[expect(clippy::disallowed_methods, reason = \"<kind>: <why>\")] (stint 1610)", allow-invalid = true },
+    { path = "open::that", reason = "start helpers with plexi_distribution::bounded::Helper; any other launch needs #[expect(clippy::disallowed_methods, reason = \"<kind>: <why>\")] (stint 1610)", allow-invalid = true },
 ]

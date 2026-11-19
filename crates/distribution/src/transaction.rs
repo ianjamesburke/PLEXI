@@ -1,5 +1,6 @@
 use crate::{
     Error, IoContext, Result,
+    bounded::Helper,
     package::{Package, hash_file},
     release,
 };
@@ -566,17 +567,18 @@ fn copy_package(package: &Package, destination: &Path) -> Result<()> {
     sync_tree(destination)
 }
 
+/// Limits for one-shot installer subprocesses. Each finishes within a
+/// few seconds when healthy; the limits only stop a hung one from holding the
+/// install. Copying a bundle scales with its size, so `ditto` gets longer.
+const CHECK_LIMIT: Duration = Duration::from_secs(60);
+#[cfg(target_os = "macos")]
+const COPY_BUNDLE_LIMIT: Duration = Duration::from_secs(300);
+
 fn verify_target(generation: &Generation) -> Result<()> {
-    let mut command = Command::new(generation.executable());
-    command.arg("--distribution-check");
-    clean_environment(&mut command);
-    let output = command.output().context("verify installed runtime")?;
-    if !output.status.success() {
-        return Err(Error::Invalid(format!(
-            "installed runtime check failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
+    let mut helper = Helper::new(generation.executable());
+    helper.arg("--distribution-check");
+    clean_environment(&mut helper);
+    let output = helper.run("installed runtime check", CHECK_LIMIT)?;
     let identity: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     if identity["build_id"].as_str() != Some(&generation.build_id)
         || identity["tag"].as_str() != Some(&generation.tag)
@@ -588,28 +590,68 @@ fn verify_target(generation: &Generation) -> Result<()> {
     Ok(())
 }
 
-pub fn clean_environment(command: &mut Command) {
-    clean_environment_from(command, std::env::vars_os());
+/// Something a child's environment can be edited on: a helper, or a raw
+/// launch such as the detached restart.
+trait ChildEnvironment {
+    fn set(&mut self, key: &std::ffi::OsStr, value: &std::ffi::OsStr);
+    fn remove(&mut self, key: &std::ffi::OsStr);
+}
+impl ChildEnvironment for Helper {
+    fn set(&mut self, key: &std::ffi::OsStr, value: &std::ffi::OsStr) {
+        self.env(key, value);
+    }
+    fn remove(&mut self, key: &std::ffi::OsStr) {
+        self.env_remove(key);
+    }
+}
+impl ChildEnvironment for Command {
+    fn set(&mut self, key: &std::ffi::OsStr, value: &std::ffi::OsStr) {
+        self.env(key, value);
+    }
+    fn remove(&mut self, key: &std::ffi::OsStr) {
+        self.env_remove(key);
+    }
+}
+
+fn clean_environment(child: &mut impl ChildEnvironment) {
+    clean_environment_from(child, std::env::vars_os());
 }
 
 fn clean_environment_from(
-    command: &mut Command,
+    child: &mut impl ChildEnvironment,
     variables: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
 ) {
     for (key, value) in variables {
         // A bootstrap invoked from a Plexi terminal must restore the user's
         // original zsh directory before dropping the pane's integration marker.
         if key == "PLEXI_ORIG_ZDOTDIR" {
-            command.env("ZDOTDIR", value);
+            child.set("ZDOTDIR".as_ref(), &value);
         }
         if key.to_string_lossy().starts_with("PLEXI_") {
-            command.env_remove(key);
+            child.remove(&key);
         }
     }
 }
 #[cfg(unix)]
 fn quote_shell(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+/// The completion script `executable completions <shell>` prints. A failed
+/// run, an empty script or one past the capture limit is an error, so an
+/// incomplete script is never installed.
+#[cfg(unix)]
+fn completion_script(executable: &Path, shell: &str, name: &str) -> Result<Vec<u8>> {
+    let mut helper = Helper::new(executable);
+    helper.args(["completions", shell]);
+    clean_environment(&mut helper);
+    let output = helper.run(&format!("{shell} completions generation"), CHECK_LIMIT)?;
+    if output.stdout.is_empty() {
+        return Err(Error::Invalid(format!(
+            "could not generate {shell} completions for {name}: the script is empty"
+        )));
+    }
+    Ok(output.stdout)
 }
 
 fn integration_files(package: &Package, receipt: &Receipt) -> Result<Vec<(PathBuf, Vec<u8>)>> {
@@ -626,19 +668,8 @@ fn integration_files(package: &Package, receipt: &Receipt) -> Result<Vec<(PathBu
         files.push((receipt.bin_dir.join(&name), script.into_bytes()));
         if !receipt.channel.starts_with("pr-") {
             for shell in ["zsh", "bash", "fish"] {
-                let mut command = Command::new(receipt.active.executable());
-                command.args(["completions", shell]);
-                clean_environment(&mut command);
-                let output = command
-                    .output()
-                    .context(format!("generate {shell} completions"))?;
-                if !output.status.success() || output.stdout.is_empty() {
-                    return Err(Error::Invalid(format!(
-                        "could not generate {shell} completions for {name}: {}",
-                        String::from_utf8_lossy(&output.stderr)
-                    )));
-                }
-                files.push((completion_path(receipt, shell), output.stdout.clone()));
+                let script = completion_script(&receipt.active.executable(), shell, &name)?;
+                files.push((completion_path(receipt, shell), script.clone()));
                 for dropin in dropin_completion_paths(&name, shell) {
                     let can_own = (!dropin.exists() && !dropin.is_symlink())
                         || receipt
@@ -646,7 +677,7 @@ fn integration_files(package: &Package, receipt: &Receipt) -> Result<Vec<(PathBu
                             .iter()
                             .any(|p| p.path == dropin && p.matches().unwrap_or(false));
                     if can_own {
-                        files.push((dropin, output.stdout.clone()));
+                        files.push((dropin, script.clone()));
                     } else {
                         log::info!(
                             "distribution: skipping unowned completion drop-in {}",
@@ -1082,18 +1113,10 @@ fn prepare_bundle_change(
 /// `ditto` keeps the code signature, extended attributes and bundle metadata.
 #[cfg(target_os = "macos")]
 fn copy_bundle(source: &Path, destination: &Path) -> Result<()> {
-    let output = Command::new("/usr/bin/ditto")
+    Helper::new("/usr/bin/ditto")
         .arg(source)
         .arg(destination)
-        .output()
-        .context("run ditto")?;
-    if !output.status.success() {
-        return Err(Error::Invalid(format!(
-            "ditto {} failed: {}",
-            source.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
+        .run(&format!("ditto {}", source.display()), COPY_BUNDLE_LIMIT)?;
     Ok(())
 }
 #[cfg(all(test, unix, not(target_os = "macos")))]
@@ -1161,28 +1184,31 @@ fn finish_bundle_swap(swap: &BundleSwap) {
     }
 }
 
+/// Register (`-f`) or unregister (`-u`) a bundle with LaunchServices. Every
+/// error degrades to a log line, including a run that could not be stopped:
+/// it runs after the install has committed or while an uninstall removes the
+/// bundle, the registration only tells Finder and Spotlight about the
+/// bundle, and LaunchServices rescans bundles itself. The installed files
+/// are correct either way.
 #[cfg(target_os = "macos")]
 fn lsregister(flag: &str, path: &Path) {
     const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
-    match Command::new(LSREGISTER).arg(flag).arg(path).output() {
-        Ok(output) if output.status.success() => {
-            log::info!("distribution: lsregister {flag} {}", path.display())
-        }
+    match Helper::new(LSREGISTER)
+        .arg(flag)
+        .arg(path)
+        .run("lsregister", CHECK_LIMIT)
+    {
+        Ok(_) => log::info!("distribution: lsregister {flag} {}", path.display()),
         // -10814 (kLSApplicationNotFoundErr): unregistering a bundle
         // LaunchServices never knew, the normal case for generation bundles.
-        Ok(output)
-            if flag == "-u" && String::from_utf8_lossy(&output.stderr).contains("-10814") =>
+        Err(crate::bounded::RunError::Failed { stderr, .. })
+            if flag == "-u" && String::from_utf8_lossy(&stderr).contains("-10814") =>
         {
             log::debug!(
                 "distribution: lsregister -u {} was not registered",
                 path.display()
             )
         }
-        Ok(output) => log::warn!(
-            "distribution: lsregister {flag} {} failed: {}",
-            path.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ),
         Err(error) => log::warn!(
             "distribution: lsregister {flag} {} failed: {error}",
             path.display()
@@ -1595,6 +1621,10 @@ pub fn launch(root: &Path, args: &[std::ffi::OsString]) -> Result<i32> {
     {
         return launch(&other.root, args);
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "foreground: the installed Plexi takes over this process and terminal"
+    )]
     let mut command = Command::new(receipt.active.executable());
     command.args(args);
     #[cfg(unix)]
@@ -1715,36 +1745,24 @@ pub fn launch_ready_in(
     let package = Package::load(&receipt.active.path)?;
     let start_hint = format!("run {} host start", receipt.active.executable().display());
     let host_command = |args: &[&str]| {
-        let mut command = Command::new(receipt.active.executable());
+        let mut helper = Helper::new(receipt.active.executable());
         if let Some(home) = dirs::home_dir() {
-            command.current_dir(home);
+            helper.current_dir(home);
         }
-        command.args(args);
-        clean_environment(&mut command);
-        command
+        helper.args(args);
+        clean_environment(&mut helper);
+        helper
     };
     // `host start` defaults to 15s. A cold Windows install missed that and
     // the package gate reported the host as not ready. The e2e scripts use 90s.
-    let started = crate::bounded::run(
-        host_command(&["host", "start", "--timeout-secs", "90"]),
-        "installed host start",
-        limits.start,
-    )
-    .map_err(|error| Error::Invalid(format!("{error}; {start_hint}")))?;
-    if !started.status.success() {
-        return Err(Error::Invalid(format!(
-            "installed host did not report ready: {}; {start_hint}",
-            String::from_utf8_lossy(&started.stderr).trim()
-        )));
-    }
+    host_command(&["host", "start", "--timeout-secs", "90"])
+        .run("installed host start", limits.start)
+        .map_err(|error| Error::Invalid(format!("{error}; {start_hint}")))?;
     // An already-running older host also reports ready; require its identity.
-    let status = crate::bounded::run(
-        host_command(&["host", "status", "--json"]),
-        "running host identity query",
-        limits.status,
-    )?;
+    let status = host_command(&["host", "status", "--json"])
+        .run_any_exit("running host identity query", limits.status)?;
     let response: serde_json::Value = if status.status.success() {
-        serde_json::from_slice(&status.stdout).unwrap_or_default()
+        serde_json::from_slice(&status.output.stdout).unwrap_or_default()
     } else {
         serde_json::Value::Null
     };
@@ -1837,6 +1855,10 @@ pub fn schedule_restart(receipt: &Receipt, pid: u32) -> Result<()> {
     } else {
         "plexi-installer"
     });
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "detached: the restart must outlive this installer"
+    )]
     let mut command = Command::new(installer);
     command
         .args(["restart", "--receipt"])
@@ -1862,20 +1884,13 @@ fn prepare_windows_integration(
 }
 
 #[cfg(windows)]
-fn powershell(script: &str, env: &[(&str, &std::ffi::OsStr)]) -> Result<std::process::Output> {
-    let mut command = Command::new("powershell");
-    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+fn powershell(script: &str, env: &[(&str, &std::ffi::OsStr)]) -> Result<crate::bounded::Output> {
+    let mut helper = Helper::new("powershell");
+    helper.args(["-NoProfile", "-NonInteractive", "-Command", script]);
     for (key, value) in env {
-        command.env(key, value);
+        helper.env(key, value);
     }
-    let output = command.output().context("run Windows integration")?;
-    if !output.status.success() {
-        return Err(Error::Invalid(format!(
-            "Windows integration failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-    Ok(output)
+    Ok(helper.run("Windows integration", CHECK_LIMIT)?)
 }
 #[cfg(windows)]
 fn read_windows_path() -> Result<String> {
@@ -2020,6 +2035,35 @@ fn windows_remove(receipt: &Receipt) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// Stint 1610: a completion script past the capture limit fails the
+    /// install instead of being installed cut.
+    #[cfg(unix)]
+    #[test]
+    fn an_oversized_completion_script_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("plexi");
+        let script = format!(
+            "#!/bin/sh\nhead -c {} /dev/zero\n",
+            crate::bounded::CAPTURE_LIMIT + 1
+        );
+        fs::write(&exe, script).unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        let error = completion_script(&exe, "zsh", "plexi").unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Helper(crate::bounded::RunError::OutputTooLarge { .. })
+            ),
+            "{error}"
+        );
+        fs::write(&exe, "#!/bin/sh\necho '#compdef plexi'\n").unwrap();
+        assert_eq!(
+            completion_script(&exe, "zsh", "plexi").unwrap(),
+            b"#compdef plexi\n"
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn shell_paths_remove_verbatim_namespaces_without_losing_spaces_or_unc() {
@@ -2157,9 +2201,9 @@ mod tests {
 
     #[test]
     fn launch_environment_restores_original_zsh_configuration() {
-        let mut command = Command::new("unused");
+        let mut helper = Helper::new("unused");
         clean_environment_from(
-            &mut command,
+            &mut helper,
             [
                 ("PLEXI_ORIG_ZDOTDIR".into(), "/user/zsh".into()),
                 (
@@ -2170,7 +2214,7 @@ mod tests {
             ]
             .into_iter(),
         );
-        let edits: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        let edits: std::collections::BTreeMap<_, _> = helper.get_envs().collect();
         assert_eq!(
             edits[std::ffi::OsStr::new("ZDOTDIR")],
             Some(std::ffi::OsStr::new("/user/zsh"))

@@ -1308,6 +1308,10 @@ pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
         cwd.display(),
         command[0]
     );
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "foreground: the command owns the terminal and its exit code is passed through"
+    )]
     let mut child = std::process::Command::new(&command[0]);
     child.args(&command[1..]).current_dir(cwd);
     for (key, value) in &pane_env {

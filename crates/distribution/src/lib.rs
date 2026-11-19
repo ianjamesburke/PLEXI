@@ -1,4 +1,7 @@
 //! Package validation and channel-scoped installation shared by every installer.
+// Helpers start through bounded::Helper; tests may start processes freely.
+#![deny(clippy::disallowed_methods)]
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
 pub mod bounded;
 pub mod host_presence;
 pub mod package;
@@ -18,6 +21,8 @@ pub enum Error {
     },
     #[error("{0}")]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Helper(#[from] bounded::RunError),
 }
 pub type Result<T> = std::result::Result<T, Error>;
 

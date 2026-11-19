@@ -79,6 +79,10 @@ pub(crate) fn run_build_command(
     timeout: Duration,
 ) -> Result<BuildCommandOutput, String> {
     let started = Instant::now();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "baseline: unbounded helper, stint 1610 slice 2"
+    )]
     let mut command = Command::new(exe);
     command
         .args(args)

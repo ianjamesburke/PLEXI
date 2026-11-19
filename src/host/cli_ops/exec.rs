@@ -514,6 +514,10 @@ fn kill_group(pid: i32) {
 pub fn spawn_supervised(spec: LaunchSpec, wake: Wake) -> Result<RunningOperation, ExecError> {
     spec.sealed.verify()?;
     let path = spec.sealed.path().to_path_buf();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "supervised: the operation owner streams output and enforces its own limits and cancel"
+    )]
     let mut command = Command::new(&path);
     command
         .arg0(&spec.display_name)

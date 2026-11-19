@@ -181,7 +181,12 @@ pub fn plugin_init(
                     Ok(python) => {
                         println!("  Python venv: {}", python.display());
                     }
-                    Err(e) => {
+                    Err(crate::app::python_env::VenvError::Fatal(e)) => {
+                        log::error!("plugin_init[{name}]: Python venv setup failed: {e}");
+                        eprintln!("error: plugin created, but its Python venv setup failed: {e}");
+                        return 1;
+                    }
+                    Err(crate::app::python_env::VenvError::Unavailable(e)) => {
                         let entry_path = plugin_dir.join("main.py");
                         match crate::app::python_env::resolve_python_runtime(
                             name,
@@ -391,6 +396,10 @@ pub fn plugin_test_cli(path: &str, snapshot: bool) -> i32 {
         plugin_dir.display()
     );
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "foreground: plugin tests stream to the terminal with their exit code passed through"
+    )]
     let mut cmd = std::process::Command::new("uv");
     cmd.args(&uv_args).current_dir(plugin_dir);
     cmd.env("PYTHONPATH", plugin_test_pythonpath(plugin_dir));

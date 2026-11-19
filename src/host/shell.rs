@@ -4,10 +4,7 @@ use std::collections::HashMap;
 use std::io;
 #[cfg(target_os = "macos")]
 use std::os::unix::ffi::OsStrExt;
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -257,6 +254,10 @@ pub fn install_login_shell_env() {
     }
 }
 
+/// A login shell that has not answered by now is hung in the user's profile
+/// chain (a prompt, a network call, a `sudo`); startup goes on without it.
+pub(crate) const LOGIN_SHELL_PROBE_LIMIT: Duration = Duration::from_secs(15);
+
 /// Run a one-shot login-shell probe fully isolated from the launching session.
 ///
 /// Plexi may be launched attached to a terminal (`plexi` run directly, before
@@ -268,52 +269,45 @@ pub fn install_login_shell_env() {
 /// shells out to `sudo` then bleeds `sudo: a terminal is required` onto the
 /// launching session.
 ///
-/// `setsid` gives the probe its own session with no controlling terminal, and
-/// `Command::output()` reads stdout/stderr through pipes over a null stdin — so
-/// the launching session can never be polluted. Captured stderr is routed to
-/// the channel log, never silently discarded.
-pub(crate) fn run_login_shell_probe(shell: &str, args: &[&str]) -> Option<std::process::Output> {
-    let mut cmd = Command::new(shell);
-    cmd.args(args).stdin(std::process::Stdio::null());
-    // SAFETY: pre_exec runs only libc::setsid() between fork and exec — an
-    // async-signal-safe syscall with no allocation, locking, or heap access.
-    #[cfg(unix)]
-    unsafe {
-        cmd.pre_exec(|| {
-            // A forked child is never a process-group leader, so setsid()
-            // succeeds and yields a new session detached from any terminal.
-            if libc::setsid() == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let output = cmd.output().ok()?;
+/// `plexi_distribution::bounded::Helper` gives the probe its own session with
+/// no controlling terminal, a null stdin and file-captured output, and kills
+/// the probe and its descendants at `limit` and when it exits: a background
+/// job the profile starts dies with the probe. Output past the capture limit,
+/// a non-zero exit or a timeout is None, so nothing partial is adopted.
+/// Captured stderr is routed to the channel log, never silently discarded.
+pub(crate) fn run_login_shell_probe(
+    shell: &str,
+    args: &[&str],
+    limit: Duration,
+) -> Option<plexi_distribution::bounded::Output> {
+    let what = format!("login-shell probe `{shell} {}`", args.join(" "));
+    let output = match plexi_distribution::bounded::Helper::new(shell)
+        .args(args)
+        .run(&what, limit)
+    {
+        Ok(output) => output,
+        Err(error) => {
+            log::warn!("Login-shell probe failed: {error}");
+            return None;
+        }
+    };
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stderr = stderr.trim();
     if !stderr.is_empty() {
-        log::warn!(
-            "Login-shell probe `{shell} {}` wrote to stderr: {stderr}",
-            args.join(" ")
-        );
+        log::warn!("{what} wrote to stderr: {stderr}");
     }
     Some(output)
 }
 
 fn probe_login_shell_env() -> Option<HashMap<String, String>> {
-    let shell = detect_shell();
+    probe_login_shell_env_of(&detect_shell())
+}
+
+fn probe_login_shell_env_of(shell: &str) -> Option<HashMap<String, String>> {
     // `-i -l`: interactive + login. Login alone loads `~/.zprofile` /
     // `~/.zlogin` but NOT `~/.zshrc`, so secrets sourced from `.zshrc` (e.g.
     // `~/.zsh_secrets`) are invisible. Interactive forces `.zshrc` to load.
-    let output = run_login_shell_probe(&shell, &["-i", "-l", "-c", "env"])?;
-    if !output.status.success() {
-        log::warn!(
-            "Login-shell env probe failed: {} exited {}",
-            shell,
-            output.status
-        );
-        return None;
-    }
+    let output = run_login_shell_probe(shell, &["-i", "-l", "-c", "env"], LOGIN_SHELL_PROBE_LIMIT)?;
     let text = String::from_utf8(output.stdout).ok()?;
     let mut map = HashMap::new();
     for line in text.lines() {
@@ -330,15 +324,11 @@ fn probe_login_shell_env() -> Option<HashMap<String, String>> {
 
 fn probe_login_shell_path() -> Option<String> {
     let shell = detect_shell();
-    let output = run_login_shell_probe(&shell, &["-l", "-c", "printf %s \"$PATH\""])?;
-    if !output.status.success() {
-        log::warn!(
-            "Login-shell PATH probe failed: {} exited {}",
-            shell,
-            output.status
-        );
-        return None;
-    }
+    let output = run_login_shell_probe(
+        &shell,
+        &["-l", "-c", "printf %s \"$PATH\""],
+        LOGIN_SHELL_PROBE_LIMIT,
+    )?;
     let path = String::from_utf8(output.stdout).ok()?.trim().to_string();
     if path.is_empty() {
         return None;
@@ -1561,7 +1551,12 @@ mod tests {
         // session's fds. A dotfiles footgun like a `sleep()` function shelling
         // out to `sudo` used to bleed `sudo: a terminal is required` onto the
         // terminal Plexi was launched from.
-        let out = run_login_shell_probe("/bin/sh", &["-c", "printf out; printf err 1>&2"]).unwrap();
+        let out = run_login_shell_probe(
+            "/bin/sh",
+            &["-c", "printf out; printf err 1>&2"],
+            LOGIN_SHELL_PROBE_LIMIT,
+        )
+        .unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), "out");
         assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "err");
     }
@@ -1571,8 +1566,73 @@ mod tests {
         // Regression (stint 0443): stdin is redirected to /dev/null, so a probe
         // shell that reads stdin hits EOF immediately instead of blocking on —
         // or stealing keystrokes from — the launching terminal.
-        let out = run_login_shell_probe("/bin/sh", &["-c", "cat; printf done"]).unwrap();
+        let out = run_login_shell_probe(
+            "/bin/sh",
+            &["-c", "cat; printf done"],
+            LOGIN_SHELL_PROBE_LIMIT,
+        )
+        .unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), "done");
+    }
+
+    /// Stint 1610 (ruling 3): a background job the profile starts during
+    /// the probe dies when the probe ends. Session isolation itself is
+    /// covered in `plexi_distribution::bounded`.
+    #[cfg(unix)]
+    #[test]
+    fn a_background_job_started_by_the_profile_dies_with_the_probe() {
+        let out = run_login_shell_probe(
+            "/bin/sh",
+            &["-l", "-c", "sleep 600 & echo $!"],
+            LOGIN_SHELL_PROBE_LIMIT,
+        )
+        .unwrap();
+        let sleeper: libc::pid_t = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+        // SAFETY: signal 0 only checks whether the pid exists.
+        let exists = || unsafe { libc::kill(sleeper, 0) } == 0;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let survived = exists();
+        // SAFETY: test cleanup of a process this test started.
+        unsafe { libc::kill(sleeper, libc::SIGKILL) };
+        assert!(!survived, "profile job {sleeper} outlived the probe");
+    }
+
+    /// Stint 1610: a profile that prints past the capture limit yields no
+    /// environment, so nothing partial is adopted.
+    #[cfg(unix)]
+    #[test]
+    fn an_oversized_env_probe_adopts_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let shell = dir.path().join("noisy-shell");
+        std::fs::write(
+            &shell,
+            format!(
+                "#!/bin/sh\nhead -c {} /dev/zero | tr '\\0' x\necho\necho FOO=bar\n",
+                plexi_distribution::bounded::CAPTURE_LIMIT
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(probe_login_shell_env_of(shell.to_str().unwrap()), None);
+    }
+
+    /// Stint 1610: a login shell hung in its profile chain is stopped at the
+    /// limit and the probe reports nothing instead of holding startup.
+    #[test]
+    fn a_hung_login_shell_probe_is_stopped_at_its_limit() {
+        let started = Instant::now();
+        let out =
+            run_login_shell_probe("/bin/sh", &["-c", "sleep 600"], Duration::from_millis(500));
+        assert!(out.is_none(), "a hung probe must not report output");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

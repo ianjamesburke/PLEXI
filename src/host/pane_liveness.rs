@@ -75,6 +75,10 @@ pub(crate) fn pid_is_alive(pid: u32) -> bool {
 /// `pgrep` exits 1 with empty stdout when there are no children; that is
 /// not a failure, just an empty inventory.
 fn child_pids_via_pgrep(pid: u32) -> Vec<u32> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "baseline: unbounded helper, stint 1610 slice 2"
+    )]
     let output = std::process::Command::new("pgrep")
         .arg("-P")
         .arg(pid.to_string())

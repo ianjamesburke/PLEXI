@@ -41,6 +41,10 @@ pub(crate) fn spawn_shell_step(
     pane_id: Option<u64>,
     wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
 ) -> HostStepOutcome {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "baseline: a user shell step runs off the loop with no limit yet, stint 1626"
+    )]
     let mut command = std::process::Command::new("sh");
     command.arg("-c").arg(script);
     if let Some(root) = cwd {

@@ -188,7 +188,7 @@ fn main() -> eframe::Result {
             .unwrap_or(false)
         {
             let plugins_dir = crate::app::registry::plugins_dir();
-            let cloner = crate::cli::install_host::GitCloner;
+            let cloner = crate::cli::install_host::GitCloner::default();
 
             // On first launch, also seed the example plugins.
             if is_first_launch {

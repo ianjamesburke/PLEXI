@@ -21,10 +21,14 @@ pub struct RealRunner;
 
 impl DescriptorRunner for RealRunner {
     fn run(&self, command: &str, args: &[&str]) -> std::io::Result<RunOutput> {
-        let captured = crate::cli::subprocess::run_capture(command, args, NATIVE_PROBE_TIMEOUT)?;
+        let what = format!("`{command} {}`", args.join(" "));
+        let exited = plexi_distribution::bounded::Helper::new(command)
+            .args(args)
+            .run_any_exit(&what, NATIVE_PROBE_TIMEOUT)
+            .map_err(std::io::Error::other)?;
         Ok(RunOutput {
-            status_success: captured.success,
-            stdout: captured.stdout,
+            status_success: exited.status.success(),
+            stdout: String::from_utf8_lossy(&exited.output.stdout).into_owned(),
         })
     }
 }

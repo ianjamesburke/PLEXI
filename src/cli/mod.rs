@@ -632,7 +632,6 @@ pub mod skill_draft;
 pub mod skill_install;
 #[cfg(test)]
 mod skill_surface;
-pub mod subprocess;
 #[cfg(test)]
 pub mod test_env;
 pub mod trace;
@@ -691,51 +690,10 @@ pub(super) fn print_tip(msg: &str) {
     }
 }
 
-/// Prints JSON to stdout. If `jq` is in PATH, pipes through `jq .` for
-/// colour and pretty-printing; otherwise falls back to serde pretty-print.
-/// Content that is not JSON at all is passed through verbatim — the host's
-/// reply is never withheld from the caller.
+/// Prints JSON to stdout, pretty-printed by serde. Content that is not JSON
+/// at all is passed through verbatim — the host's reply is never withheld
+/// from the caller.
 pub(super) fn print_json_output(json_str: &str) -> i32 {
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
-
-    let jq_available = Command::new("jq")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if jq_available {
-        match Command::new("jq").arg(".").stdin(Stdio::piped()).spawn() {
-            Ok(mut child) => {
-                if let Some(mut stdin) = child.stdin.take() {
-                    if let Err(e) = stdin.write_all(json_str.as_bytes()) {
-                        log::warn!("print_json_output: failed writing to jq stdin ({e})");
-                    }
-                }
-                match child.wait() {
-                    Ok(status) if status.success() => {
-                        log::info!("print_json_output: rendered via jq");
-                        return 0;
-                    }
-                    Ok(status) => {
-                        log::warn!("print_json_output: jq exited non-zero ({status}), falling back to serde");
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "print_json_output: jq wait failed ({e}), falling back to serde"
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                log::warn!("print_json_output: jq spawn failed ({e}), falling back to serde");
-            }
-        }
-    }
-
     match serde_json::from_str::<serde_json::Value>(json_str) {
         Ok(v) => match serde_json::to_string_pretty(&v) {
             Ok(pretty) => {

@@ -72,54 +72,44 @@ fn detect_hardware() -> HardwareReport {
     }
 }
 
+/// Hardware probes answer at once when healthy; `system_profiler` is the
+/// slowest and still finishes in seconds.
+const HARDWARE_PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn run_sysctl(key: &str) -> Option<String> {
-    let out = std::process::Command::new("sysctl")
+    let out = plexi_distribution::bounded::Helper::new("sysctl")
         .arg("-n")
         .arg(key)
-        .output()
+        .run(&format!("`sysctl -n {key}`"), HARDWARE_PROBE_LIMIT)
         .ok()?;
-    if out.status.success() {
-        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if s.is_empty() {
-            None
-        } else {
-            Some(s)
-        }
-    } else {
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
         None
+    } else {
+        Some(s)
     }
 }
 
 fn detect_gpu(is_apple_silicon: bool, ram_gb: Option<f64>) -> (Option<String>, Option<f64>) {
     // Try system_profiler for GPU name; unified memory is the VRAM on Apple Silicon.
-    let out = std::process::Command::new("system_profiler")
+    let profile = plexi_distribution::bounded::Helper::new("system_profiler")
         .arg("SPDisplaysDataType")
         .arg("-json")
-        .output();
-
-    let gpu_name = match out {
-        Ok(ref o) if o.status.success() => {
-            let text = String::from_utf8_lossy(&o.stdout);
-            parse_gpu_name_from_profiler(&text)
-        }
-        _ => None,
-    };
-
+        .run("`system_profiler SPDisplaysDataType`", HARDWARE_PROBE_LIMIT)
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    if let Err(error) = &profile {
+        log::warn!("ai_doctor: GPU probe failed: {error}");
+    }
+    let gpu_name = profile
+        .as_deref()
+        .ok()
+        .and_then(parse_gpu_name_from_profiler);
     let vram_gb = if is_apple_silicon {
         // On Apple Silicon, unified memory is the effective VRAM.
         ram_gb
     } else {
         // Try to parse VRAM from system_profiler JSON.
-        if let Ok(ref o) = out {
-            if o.status.success() {
-                let text = String::from_utf8_lossy(&o.stdout);
-                parse_vram_from_profiler(&text)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+        profile.as_deref().ok().and_then(parse_vram_from_profiler)
     };
 
     (gpu_name, vram_gb)
@@ -170,14 +160,11 @@ fn detect_disk_free() -> Option<f64> {
 
 #[cfg(unix)]
 fn detect_disk_free_via_df(path: &str) -> Option<f64> {
-    let out = std::process::Command::new("df")
+    let out = plexi_distribution::bounded::Helper::new("df")
         .arg("-k")
         .arg(path)
-        .output()
+        .run(&format!("`df -k {path}`"), HARDWARE_PROBE_LIMIT)
         .ok()?;
-    if !out.status.success() {
-        return None;
-    }
     let text = String::from_utf8_lossy(&out.stdout);
     // df -k output: Filesystem 1K-blocks Used Available Capacity Mounted on
     // Second line has the values.

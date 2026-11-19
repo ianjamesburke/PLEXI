@@ -43,15 +43,20 @@ pub fn read_bundle_identifier(bundle: &Path) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn binary_plist_identifier(plist: &Path) -> Option<String> {
-    let output = std::process::Command::new("/usr/bin/plutil")
+    let output = crate::bounded::Helper::new("/usr/bin/plutil")
         .args(["-extract", "CFBundleIdentifier", "raw", "-o", "-"])
         .arg(plist)
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .run("plutil", std::time::Duration::from_secs(10));
+    match output {
+        Ok(output) => Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
+        Err(error) => {
+            log::warn!(
+                "distribution: read bundle identifier of {} failed: {error}",
+                plist.display()
+            );
+            None
+        }
+    }
 }
 #[cfg(not(target_os = "macos"))]
 fn binary_plist_identifier(_plist: &Path) -> Option<String> {

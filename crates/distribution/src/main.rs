@@ -1,3 +1,6 @@
+// Helpers start through bounded::Helper; tests may start processes freely.
+#![deny(clippy::disallowed_methods)]
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
 use clap::{Parser, Subcommand};
 use plexi_distribution::{
     Error, Result,
