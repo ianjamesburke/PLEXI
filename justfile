@@ -573,6 +573,7 @@ test-infra-scripts: test-build-inputs
     uv run --no-project python scripts/test_filter_check.py
     uv run --no-project python scripts/test_run_logged.py
     uv run --no-project python scripts/test_build_lifecycle.py
+    uv run --no-project python scripts/test_build_cache_sources.py
     uv run --no-project python scripts/test_distribution_cache.py
     uv run --no-project python scripts/test_publish_pr_image.py
     uv run --no-project python scripts/test_probe_one_note_authority.py
