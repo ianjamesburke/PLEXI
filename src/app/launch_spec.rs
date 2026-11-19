@@ -259,6 +259,45 @@ impl PaneLaunchSpec {
     }
 }
 
+/// What a terminal `spawn_pane` was admitted with: what its caller lets the
+/// new pane have, and where the pane goes, by stable id. Computed once. A
+/// `--worktree` spawn carries it across worktree creation, so completion
+/// never re-derives authority or destination from state that changed in the
+/// meantime (stint 1632).
+#[derive(Clone, Debug)]
+pub(crate) struct TerminalAdmission {
+    pub(crate) is_agent_pane: bool,
+    pub(crate) inject_folder_secrets: bool,
+    /// The verified spawner's provenance label.
+    pub(crate) spawned_by: String,
+    /// The caller's permission posture, which the new pane is restricted by.
+    pub(crate) parent_posture: Option<crate::broker::PermissionPosture>,
+    pub(crate) destination: TerminalDestination,
+}
+
+/// Where an admitted terminal goes. Context and window ids are never reused,
+/// so one that no longer resolves means the destination is gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminalDestination {
+    /// `context_name`: split beside `tile` in that context's window.
+    Context {
+        context_id: u64,
+        window_id: u64,
+        tile: egui_tiles::TileId,
+    },
+    /// A new page in `context_id`, on row `grid_y`.
+    NewWindow { context_id: u64, grid_y: u32 },
+    /// A new tab in the window.
+    Tab { window_id: u64 },
+    /// Split beside `tile` in the window.
+    Split {
+        window_id: u64,
+        tile: egui_tiles::TileId,
+    },
+    /// Seed the root pane of the window, which was empty and active.
+    SeedRoot { window_id: u64 },
+}
+
 #[cfg(test)]
 mod tests {
     use super::{PaneLaunchSpec, PaneLaunchTarget, DEFAULT_AGENT_BOOT_TIMEOUT};

@@ -10427,6 +10427,77 @@ mod routine_firing {
         assert_eq!(h.app.active_window, active_win_before);
     }
 
+    /// Stint 1632: a `--worktree` spawn is admitted against the named
+    /// context's id. Deleting the context while the worktree is created and
+    /// making a new one under the same name refuses the spawn; it never lands
+    /// in the new context.
+    #[cfg(unix)]
+    #[test]
+    fn spawn_pane_worktree_refuses_a_context_recreated_during_provisioning() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
+        let root = tempfile::tempdir().expect("tempdir");
+        root_default_context(&mut h, root.path());
+        add_focused_view_pane(&mut h, 0, root.path());
+        let repo = crate::app::host_helpers::tests::git_repo(tmp.path());
+        let work_root = tempfile::tempdir().expect("tempdir");
+        add_secondary_context(&mut h, "work", work_root.path());
+        let tools = crate::app::host_helpers::HelperTools {
+            worktree: crate::host::worktree::Tools::with_wtp_program(
+                crate::app::host_helpers::tests::slow_add_wtp(tmp.path(), 1),
+                std::time::Duration::from_secs(60),
+            ),
+            pgrep: crate::host::pane_liveness::Pgrep::system(),
+        };
+        h.app.host_helpers.set_tools(tools);
+
+        let response = temp_response(tmp.path(), "ctx-recreated");
+        h.inject_ipc(HostRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("split_h".to_string()),
+            args: vec!["true".to_string()],
+            from_pane_id: None,
+            request_id: None,
+            response_file: Some(response.clone()),
+            ephemeral: false,
+            cwd: Some(repo.to_string_lossy().into_owned()),
+            no_focus: false,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+            context_name: Some("work".to_string()),
+            name: None,
+            agent_cmd: None,
+            boot_timeout_secs: None,
+            worktree: Some("feature/ctx".to_string()),
+            result_schema: None,
+            peer_ancestry: None,
+        });
+        h.run_hidden_frames(1);
+        assert!(!std::path::Path::new(&response).exists());
+
+        let work_idx = h
+            .app
+            .router
+            .position(|c| c.name == "work")
+            .expect("work context");
+        h.app.delete_context(work_idx);
+        let new_work_win = add_secondary_context(&mut h, "work", work_root.path());
+        let new_work_panes = h.app.windows[new_work_win].panes.len();
+
+        pump_until_response(&mut h, &response, true);
+        let reply = read_json_response(&response);
+        let error = reply["error"].as_str().unwrap_or_else(|| panic!("{reply}"));
+        assert!(error.contains("destination is gone"), "{error}");
+        assert_eq!(
+            h.app.windows[new_work_win].panes.len(),
+            new_work_panes,
+            "the recreated context must not receive the pane"
+        );
+    }
+
     /// A `context_name` naming no live context is a hard error back to the
     /// caller — never a silent fallback into the active context.
     #[test]

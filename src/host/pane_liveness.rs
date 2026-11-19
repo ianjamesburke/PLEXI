@@ -79,6 +79,8 @@ const PGREP_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
 pub(crate) struct Pgrep {
     program: std::ffi::OsString,
     limit: std::time::Duration,
+    /// Set when the host exits; a running `pgrep` stops at once.
+    exiting: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Pgrep {
@@ -88,6 +90,7 @@ impl Pgrep {
         Self {
             program: "pgrep".into(),
             limit: PGREP_LIMIT,
+            exiting: Default::default(),
         }
     }
 
@@ -97,7 +100,14 @@ impl Pgrep {
         Self {
             program: program.into(),
             limit,
+            exiting: Default::default(),
         }
+    }
+
+    /// Stop any running lookup; the host is exiting.
+    pub(crate) fn begin_exit(&self) {
+        self.exiting
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Direct children of `pid`. `pgrep` exits 1 with empty stdout when there
@@ -107,6 +117,7 @@ impl Pgrep {
         let run = plexi_distribution::bounded::Helper::new(&self.program)
             .arg("-P")
             .arg(pid.to_string())
+            .cancel_on(std::sync::Arc::clone(&self.exiting))
             .run_any_exit("pgrep -P", self.limit);
         match run {
             Ok(exited) => String::from_utf8_lossy(&exited.output.stdout)

@@ -10,6 +10,27 @@ const MAX_SLOT_CONTENT_SIZE: usize = 10 * 1024 * 1024;
 
 use crate::rpc::{write_json_response, write_response};
 
+/// An admitted terminal destination resolved to current window indexes.
+enum TerminalPlacement {
+    Context {
+        context_id: u64,
+        win_idx: usize,
+        tile: egui_tiles::TileId,
+    },
+    NewWindow {
+        context_id: u64,
+        grid_y: u32,
+    },
+    Tab {
+        win_idx: usize,
+    },
+    Split {
+        win_idx: usize,
+        tile: egui_tiles::TileId,
+    },
+    SeedRoot,
+}
+
 fn slot_error(response_file: &str, message: impl Into<String>) {
     write_json_response(
         response_file,
@@ -5299,15 +5320,200 @@ impl PlexiApp {
         write_response(response_file, json_str.as_bytes());
     }
 
+    /// Admit a terminal `spawn_pane`: what the caller lets the new pane have
+    /// and where it goes. Called once per request, never on a resumed one.
+    fn admit_terminal_spawn(
+        &self,
+        spec: &crate::app::launch_spec::PaneLaunchSpec,
+        layout_str: &str,
+        active: usize,
+    ) -> Result<crate::app::launch_spec::TerminalAdmission, String> {
+        use crate::app::launch_spec::TerminalDestination;
+        let peer_pane = spec
+            .peer_ancestry
+            .as_deref()
+            .filter(|pids| !pids.is_empty())
+            .and_then(|pids| self.resolve_socket_peer_pane(pids).map(|(pid, _, _)| pid));
+        let requester_is_pane = peer_pane.is_some();
+        let requester_is_agent = peer_pane.is_some_and(|pid| !self.is_human_owned_pane(pid))
+            || spec
+                .from_pane_id
+                .is_some_and(|pid| !self.is_human_owned_pane(pid));
+        let is_agent_pane = spec.agent.is_some() || requester_is_agent;
+        let inject_folder_secrets = !requester_is_pane
+            && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets);
+        if requester_is_pane {
+            log::info!(
+                "pane_ipc: spawn_pane requester is a pane (peer_pane={peer_pane:?}, is_agent_pane={is_agent_pane}); withholding folder secrets"
+            );
+        }
+        let caller_window = || {
+            spec.from_pane_id
+                .and_then(|fid| self.find_pane_in_any_window(fid).map(|(idx, _)| idx))
+        };
+        // Named-context targeting (stint 0574): `plexi routine run` fires a
+        // routine into its configured context by name, matching the
+        // scheduler's fire path. The context is a hard target — a missing
+        // name errors back to the caller, and the spawn never touches
+        // active_window or focus state.
+        let destination = if let Some(ctx_name) =
+            spec.context_name.as_deref().filter(|c| !c.is_empty())
+        {
+            if layout_str == "new_window" || layout_str == "tab" {
+                return Err(format!(
+                    "context_name does not support layout '{layout_str}' — use a split layout"
+                ));
+            }
+            let context_id = self
+                .router
+                .iter()
+                .find(|c| c.name == ctx_name)
+                .map(|c| c.context_id)
+                .ok_or_else(|| format!("context '{ctx_name}' does not exist"))?;
+            let (win, tile) = self
+                .context_spawn_target(context_id)
+                .ok_or_else(|| format!("context '{ctx_name}' has no pane to spawn beside"))?;
+            TerminalDestination::Context {
+                context_id,
+                window_id: self.windows[win].window_id,
+                tile,
+            }
+        } else if layout_str == "new_window" {
+            // The calling pane's window; fall back to active.
+            let win = caller_window().unwrap_or(active);
+            TerminalDestination::NewWindow {
+                context_id: self.windows[win].context_id,
+                grid_y: self.windows[win].grid_y,
+            }
+        } else if layout_str == "tab" {
+            // The calling pane's window; fall back to active.
+            let win = caller_window().unwrap_or(active);
+            TerminalDestination::Tab {
+                window_id: self.windows[win].window_id,
+            }
+        } else {
+            // from_pane_id wins (cross-window), then the active window's
+            // focused pane.
+            let split_target = match spec.from_pane_id {
+                Some(from_id) => match self.find_pane_in_any_window(from_id) {
+                    Some(loc) => {
+                        log::info!(
+                            "pane_ipc: spawn_pane: targeting from_pane_id={from_id} in win_idx={}",
+                            loc.0
+                        );
+                        Some(loc)
+                    }
+                    None => {
+                        log::warn!(
+                            "pane_ipc: spawn_pane: from_pane_id={from_id} not found in any window, using focused pane"
+                        );
+                        None
+                    }
+                },
+                None => None,
+            }
+            .or_else(|| {
+                self.windows[active]
+                    .focused_pane
+                    .or(self.windows[active].tree.root)
+                    .map(|tile| (active, tile))
+            });
+            match split_target {
+                Some((win, tile)) => TerminalDestination::Split {
+                    window_id: self.windows[win].window_id,
+                    tile,
+                },
+                None => TerminalDestination::SeedRoot {
+                    window_id: self.windows[active].window_id,
+                },
+            }
+        };
+        let (caller_pane_id, spawned_by) =
+            self.resolve_unspoofable_spawner(spec.from_pane_id, spec.peer_ancestry.as_deref());
+        let parent_posture = caller_pane_id.and_then(|cid| self.pane_permission_posture(cid));
+        log::info!(
+            "pane_ipc: spawn_pane admitted destination={destination:?} is_agent_pane={is_agent_pane} inject_folder_secrets={inject_folder_secrets} caller_pane_id={caller_pane_id:?} inherits_posture={}",
+            parent_posture.is_some()
+        );
+        Ok(crate::app::launch_spec::TerminalAdmission {
+            is_agent_pane,
+            inject_folder_secrets,
+            spawned_by,
+            parent_posture,
+            destination,
+        })
+    }
+
+    /// Resolve an admitted destination against current state. A window,
+    /// context or tile that is gone (ids are never reused) refuses the spawn
+    /// rather than placing it somewhere the caller never named.
+    fn locate_terminal_destination(
+        &self,
+        destination: crate::app::launch_spec::TerminalDestination,
+        active: usize,
+    ) -> Result<TerminalPlacement, String> {
+        use crate::app::launch_spec::TerminalDestination;
+        let window = |window_id: u64| self.windows.iter().position(|w| w.window_id == window_id);
+        let context_live = |context_id: u64| self.router.iter().any(|c| c.context_id == context_id);
+        let has_tile =
+            |win: usize, tile: egui_tiles::TileId| self.windows[win].tree.tiles.get(tile).is_some();
+        let gone = |what: String| format!("the spawn's destination is gone: {what}");
+        match destination {
+            TerminalDestination::Context {
+                context_id,
+                window_id,
+                tile,
+            } => {
+                if !context_live(context_id) {
+                    return Err(gone(format!("context {context_id} was deleted")));
+                }
+                let win_idx = window(window_id)
+                    .filter(|&w| self.windows[w].context_id == context_id && has_tile(w, tile))
+                    .ok_or_else(|| gone(format!("window {window_id} or its pane closed")))?;
+                Ok(TerminalPlacement::Context {
+                    context_id,
+                    win_idx,
+                    tile,
+                })
+            }
+            TerminalDestination::NewWindow { context_id, grid_y } => {
+                if !context_live(context_id) {
+                    return Err(gone(format!("context {context_id} was deleted")));
+                }
+                Ok(TerminalPlacement::NewWindow { context_id, grid_y })
+            }
+            TerminalDestination::Tab { window_id } => window(window_id)
+                .map(|win_idx| TerminalPlacement::Tab { win_idx })
+                .ok_or_else(|| gone(format!("window {window_id} closed"))),
+            TerminalDestination::Split { window_id, tile } => window(window_id)
+                .filter(|&w| has_tile(w, tile))
+                .map(|win_idx| TerminalPlacement::Split { win_idx, tile })
+                .ok_or_else(|| gone(format!("window {window_id} or its pane closed"))),
+            TerminalDestination::SeedRoot { window_id } => {
+                let still_empty_and_active = self.windows[active].window_id == window_id
+                    && self.windows[active].tree.root.is_none();
+                if still_empty_and_active {
+                    Ok(TerminalPlacement::SeedRoot)
+                } else {
+                    Err(gone(format!(
+                        "window {window_id} is no longer the empty active window"
+                    )))
+                }
+            }
+        }
+    }
+
     /// Handle `spawn_pane`. A `--worktree` spawn first creates its worktree
-    /// off the host loop: with `provisioned` empty this starts that job and
-    /// returns; the drain calls back with the result, which this takes when
-    /// it owns it. A worktree left in `provisioned` is reclaimed by the
-    /// caller (stint 1632).
+    /// off the host loop: with `resumed` empty this admits the request,
+    /// starts that job and returns; the drain calls back with the admission
+    /// and the result, which this takes when it owns it. A worktree left in
+    /// `resumed` is reclaimed by the caller (stint 1632).
     pub(crate) fn spawn_pane_request(
         &mut self,
         cmd: &crate::protocol::HostRequest,
-        provisioned: &mut crate::app::host_helpers::Provisioned,
+        resumed: &mut Option<
+            crate::app::host_helpers::Resumed<crate::app::launch_spec::TerminalAdmission>,
+        >,
     ) {
         let crate::protocol::HostRequest::SpawnPane { response_file, .. } = cmd else {
             log::error!("pane_ipc: spawn_pane_request given another request kind");
@@ -5336,24 +5542,6 @@ impl PlexiApp {
             spec.workspace_root,
             spec.response_file
         );
-        let peer_pane = spec
-            .peer_ancestry
-            .as_deref()
-            .filter(|pids| !pids.is_empty())
-            .and_then(|pids| self.resolve_socket_peer_pane(pids).map(|(pid, _, _)| pid));
-        let requester_is_pane = peer_pane.is_some();
-        let requester_is_agent = peer_pane.is_some_and(|pid| !self.is_human_owned_pane(pid))
-            || spec
-                .from_pane_id
-                .is_some_and(|pid| !self.is_human_owned_pane(pid));
-        let is_agent_pane = spec.agent.is_some() || requester_is_agent;
-        let inject_folder_secrets = !requester_is_pane
-            && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets);
-        if requester_is_pane {
-            log::info!(
-                "pane_ipc: spawn_pane requester is a pane (peer_pane={peer_pane:?}, is_agent_pane={is_agent_pane}); withholding folder secrets"
-            );
-        }
         let mut response_pane_id = self.host.next_pane_id();
 
         let active = self.active_window;
@@ -5379,6 +5567,7 @@ impl PlexiApp {
         }
 
         let mut created_worktree: Option<crate::host::worktree::ManagedWorktree> = None;
+        let mut terminal_admission: Option<crate::app::launch_spec::TerminalAdmission> = None;
         let mut launch_result: Result<(), String> = Ok(());
         if matches!(
             spec.target,
@@ -5386,57 +5575,56 @@ impl PlexiApp {
         ) {
             let layout_str = spec.layout.as_deref().unwrap_or("split_h");
             let initial_cmd = super::cmd_from_args(&spec.args);
-            // Named-context targeting (stint 0574): `plexi routine run`
-            // fires a routine into its configured context by name,
-            // matching the scheduler's fire path. The context is a hard
-            // target — a missing name errors back to the caller, and
-            // the spawn never touches active_window or focus state.
-            let resolved_context_target =
-                if let Some(ctx_name) = spec.context_name.as_deref().filter(|c| !c.is_empty()) {
-                    if layout_str == "new_window" || layout_str == "tab" {
-                        let msg = format!(
-                        "context_name does not support layout '{layout_str}' — use a split layout"
-                    );
+            // Admission happens once. A resumed `--worktree` spawn uses what
+            // it was admitted with; nothing is recomputed from current state.
+            let admission = match resumed.as_ref() {
+                Some(resumed) => resumed.admission.clone(),
+                None => match self.admit_terminal_spawn(&spec, layout_str, active) {
+                    Ok(admission) => admission,
+                    Err(msg) => {
                         log::warn!("pane_ipc: spawn_pane rejected: {msg}");
                         if let Some(rf) = &spec.response_file {
                             write_json_response(rf, serde_json::json!({ "error": msg }));
                         }
                         return;
                     }
-                    let Some(target_ctx_id) = self
-                        .router
-                        .iter()
-                        .find(|c| c.name == ctx_name)
-                        .map(|c| c.context_id)
-                    else {
-                        let msg = format!("context '{ctx_name}' does not exist");
-                        log::warn!("pane_ipc: spawn_pane: {msg}");
-                        if let Some(rf) = &spec.response_file {
-                            write_json_response(rf, serde_json::json!({ "error": msg }));
-                        }
-                        return;
-                    };
-                    let Some((target_win, target_tile)) = self.context_spawn_target(target_ctx_id)
-                    else {
-                        let msg = format!("context '{ctx_name}' has no pane to spawn beside");
-                        log::warn!("pane_ipc: spawn_pane: {msg}");
-                        if let Some(rf) = &spec.response_file {
-                            write_json_response(rf, serde_json::json!({ "error": msg }));
-                        }
-                        return;
-                    };
-                    Some((ctx_name, target_ctx_id, target_win, target_tile))
-                } else {
-                    None
-                };
+                },
+            };
+            let crate::app::launch_spec::TerminalAdmission {
+                is_agent_pane,
+                inject_folder_secrets,
+                destination,
+                ..
+            } = admission.clone();
 
-            if let Some(ref branch) = spec.worktree {
-                match provisioned.take() {
-                    None => {
-                        let anchor_dir = self.resolve_worktree_anchor(&spec);
-                        self.create_worktree_off_loop(cmd, anchor_dir, branch.clone());
-                        return;
+            if let (Some(branch), None) = (&spec.worktree, resumed.as_ref()) {
+                let anchor_dir = self.resolve_worktree_anchor(&spec);
+                self.create_worktree_off_loop(
+                    crate::app::host_helpers::Resume::SpawnPane {
+                        request: Box::new(cmd.clone()),
+                        admission,
+                    },
+                    anchor_dir,
+                    branch.clone(),
+                );
+                return;
+            }
+
+            // The destination must still be the one admitted. A worktree
+            // left in `resumed` here is reclaimed by the caller.
+            let placement = match self.locate_terminal_destination(destination, active) {
+                Ok(placement) => placement,
+                Err(msg) => {
+                    log::warn!("pane_ipc: spawn_pane refused: {msg}");
+                    if let Some(rf) = &spec.response_file {
+                        write_json_response(rf, serde_json::json!({ "error": msg }));
                     }
+                    return;
+                }
+            };
+
+            if spec.worktree.is_some() {
+                match resumed.as_mut().and_then(|r| r.worktree.take()) {
                     Some(Ok(wt)) => {
                         cwd_override = Some(wt.path.clone());
                         created_worktree = Some(wt);
@@ -5448,152 +5636,113 @@ impl PlexiApp {
                         }
                         return;
                     }
+                    None => {
+                        log::error!("pane_ipc: spawn_pane resumed without its worktree result");
+                        if let Some(rf) = &spec.response_file {
+                            write_json_response(
+                                rf,
+                                serde_json::json!({ "error": "worktree result missing" }),
+                            );
+                        }
+                        return;
+                    }
                 }
             }
+            terminal_admission = Some(admission);
 
-            if let Some((ctx_name, target_ctx_id, target_win, target_tile)) =
-                resolved_context_target
-            {
-                let vertical = matches!(layout_str, "split_h" | "split_right" | "split_left");
-                let new_pane_first = matches!(layout_str, "split_above" | "split_left");
-                log::info!(
-                    "pane_ipc: spawn_pane terminal context_name='{ctx_name}' context_id={target_ctx_id} target_win={target_win} layout={layout_str} ephemeral={}",
-                    spec.ephemeral
-                );
-                response_pane_id =
-                    self.spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
-                        win_idx: target_win,
-                        target_tile,
-                        vertical,
-                        new_pane_first,
-                        keep_focus: spec.no_focus,
-                        options: crate::pane_ops::create::TerminalSpawnOptions {
-                            initial_cmd: initial_cmd.as_deref(),
-                            close_on_exit: spec.ephemeral,
-                            cwd_override,
-                            agent_pane: is_agent_pane,
-                            inject_folder_secrets,
-                        },
-                    });
-            } else if layout_str == "new_window" {
-                // Derive context from the calling pane's window; fall back to active.
-                let target_win_idx = spec
-                    .from_pane_id
-                    .and_then(|fid| self.find_pane_in_any_window(fid).map(|(idx, _)| idx))
-                    .unwrap_or(self.active_window);
-                let ws_id = self.windows[target_win_idx].context_id;
-                let active_y = self.windows[target_win_idx].grid_y;
-                let max_x = self
-                    .windows
-                    .iter()
-                    .filter(|w| w.context_id == ws_id && w.grid_y == active_y)
-                    .map(|w| w.grid_x)
-                    .max();
-                let new_x = max_x.map(|x| x + 1).unwrap_or(1);
-                log::info!(
-                    "pane_ipc: spawn_pane terminal layout=new_window from_pane_id={:?} target_win_idx={target_win_idx} context={ws_id} grid=({new_x},{active_y}) response_pane_id={response_pane_id} cwd={cwd_override:?} ephemeral={}",
-                    spec.from_pane_id,
-                    spec.ephemeral
-                );
-                self.create_page_at(
-                    new_x,
-                    active_y,
-                    ws_id,
-                    crate::pane_ops::create::TerminalSpawnOptions {
-                        initial_cmd: initial_cmd.as_deref(),
-                        close_on_exit: spec.ephemeral,
-                        cwd_override,
-                        agent_pane: is_agent_pane,
-                        inject_folder_secrets,
-                    },
-                );
-                if spec.no_focus {
-                    self.active_window = active;
-                }
-            } else if layout_str == "tab" {
-                // Derive target window from the calling pane's window; fall back to active.
-                let target_win_idx = spec
-                    .from_pane_id
-                    .and_then(|fid| self.find_pane_in_any_window(fid).map(|(idx, _)| idx))
-                    .unwrap_or(active);
-                let original_focused = self.windows[target_win_idx].focused_pane;
-                log::info!(
-                    "pane_ipc: spawn_pane terminal layout=tab from_pane_id={:?} target_win_idx={target_win_idx} window_id={} response_pane_id={response_pane_id} cwd={cwd_override:?} ephemeral={}",
-                    spec.from_pane_id,
-                    self.windows[target_win_idx].window_id,
-                    spec.ephemeral
-                );
-                self.new_tab(
-                    target_win_idx,
-                    initial_cmd.as_deref(),
-                    spec.ephemeral,
-                    cwd_override,
-                    is_agent_pane,
-                    inject_folder_secrets,
-                );
-                if spec.no_focus {
-                    self.restore_window_focused_pane(target_win_idx, original_focused);
-                }
-                // self.active_window is intentionally left untouched here, matching
-                // the split path below: a from_pane_id spawn must never steal the
-                // user's currently active Plexi window, only set the new tab as the
-                // target window's own focused pane (done inside new_tab above).
-            } else {
-                let vertical = matches!(layout_str, "split_h" | "split_right" | "split_left");
-                let new_pane_first = matches!(layout_str, "split_above" | "split_left");
-                // Resolve target window and tile: from_pane_id wins (cross-window),
-                // then fall back to the active window's focused pane.
-                let split_target = if let Some(from_id) = spec.from_pane_id {
-                    match self.find_pane_in_any_window(from_id) {
-                        Some(loc) => {
-                            log::info!(
-                                "pane_ipc: spawn_pane: targeting from_pane_id={from_id} in win_idx={}",
-                                loc.0
-                            );
-                            Some(loc)
-                        }
-                        None => {
-                            log::warn!(
-                                "pane_ipc: spawn_pane: from_pane_id={from_id} not found in any window, using focused pane"
-                            );
-                            self.windows[active]
-                                .focused_pane
-                                .or(self.windows[active].tree.root)
-                                .map(|tile| (active, tile))
-                        }
-                    }
-                } else {
-                    self.windows[active]
-                        .focused_pane
-                        .or(self.windows[active].tree.root)
-                        .map(|tile| (active, tile))
-                };
-
-                if let Some((target_win, target_tile)) = split_target {
-                    let keep_focus = spec.no_focus || spec.from_pane_id.is_some();
+            let vertical = matches!(layout_str, "split_h" | "split_right" | "split_left");
+            let new_pane_first = matches!(layout_str, "split_above" | "split_left");
+            let options = crate::pane_ops::create::TerminalSpawnOptions {
+                initial_cmd: initial_cmd.as_deref(),
+                close_on_exit: spec.ephemeral,
+                cwd_override,
+                agent_pane: is_agent_pane,
+                inject_folder_secrets,
+            };
+            match placement {
+                TerminalPlacement::Context {
+                    context_id,
+                    win_idx,
+                    tile,
+                } => {
                     log::info!(
-                        "pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} ephemeral={} target_win={target_win} keep_focus={keep_focus}",
+                        "pane_ipc: spawn_pane terminal context_name={:?} context_id={context_id} target_win={win_idx} layout={layout_str} ephemeral={}",
+                        spec.context_name,
                         spec.ephemeral
                     );
                     response_pane_id =
                         self.spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
-                            win_idx: target_win,
-                            target_tile,
+                            win_idx,
+                            target_tile: tile,
+                            vertical,
+                            new_pane_first,
+                            keep_focus: spec.no_focus,
+                            options,
+                        });
+                }
+                TerminalPlacement::NewWindow { context_id, grid_y } => {
+                    let max_x = self
+                        .windows
+                        .iter()
+                        .filter(|w| w.context_id == context_id && w.grid_y == grid_y)
+                        .map(|w| w.grid_x)
+                        .max();
+                    let new_x = max_x.map(|x| x + 1).unwrap_or(1);
+                    log::info!(
+                        "pane_ipc: spawn_pane terminal layout=new_window from_pane_id={:?} context={context_id} grid=({new_x},{grid_y}) response_pane_id={response_pane_id} ephemeral={}",
+                        spec.from_pane_id,
+                        spec.ephemeral
+                    );
+                    self.create_page_at(new_x, grid_y, context_id, options);
+                    if spec.no_focus {
+                        self.active_window = active;
+                    }
+                }
+                TerminalPlacement::Tab { win_idx } => {
+                    let original_focused = self.windows[win_idx].focused_pane;
+                    log::info!(
+                        "pane_ipc: spawn_pane terminal layout=tab from_pane_id={:?} target_win_idx={win_idx} window_id={} response_pane_id={response_pane_id} ephemeral={}",
+                        spec.from_pane_id,
+                        self.windows[win_idx].window_id,
+                        spec.ephemeral
+                    );
+                    self.new_tab(
+                        win_idx,
+                        options.initial_cmd,
+                        options.close_on_exit,
+                        options.cwd_override,
+                        options.agent_pane,
+                        options.inject_folder_secrets,
+                    );
+                    if spec.no_focus {
+                        self.restore_window_focused_pane(win_idx, original_focused);
+                    }
+                    // self.active_window is intentionally left untouched here,
+                    // matching the split path below: a from_pane_id spawn must
+                    // never steal the user's currently active Plexi window,
+                    // only set the new tab as the target window's own focused
+                    // pane (done inside new_tab above).
+                }
+                TerminalPlacement::Split { win_idx, tile } => {
+                    let keep_focus = spec.no_focus || spec.from_pane_id.is_some();
+                    log::info!(
+                        "pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} ephemeral={} target_win={win_idx} keep_focus={keep_focus}",
+                        spec.ephemeral
+                    );
+                    response_pane_id =
+                        self.spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
+                            win_idx,
+                            target_tile: tile,
                             vertical,
                             new_pane_first,
                             keep_focus,
-                            options: crate::pane_ops::create::TerminalSpawnOptions {
-                                initial_cmd: initial_cmd.as_deref(),
-                                close_on_exit: spec.ephemeral,
-                                cwd_override,
-                                agent_pane: is_agent_pane,
-                                inject_folder_secrets,
-                            },
+                            options,
                         });
                     if spec.no_focus {
                         self.active_window = active;
                     }
-                } else {
+                }
+                TerminalPlacement::SeedRoot => {
                     // Truly empty window (windowless boot): no root pane to
                     // split, so `split_focused` would no-op and drop the
                     // spawn. Seed a root pane into the existing active window
@@ -5603,11 +5752,11 @@ impl PlexiApp {
                         spec.ephemeral
                     );
                     match self.seed_root_pane(
-                        initial_cmd.as_deref(),
-                        spec.ephemeral,
-                        cwd_override,
-                        is_agent_pane,
-                        inject_folder_secrets,
+                        options.initial_cmd,
+                        options.close_on_exit,
+                        options.cwd_override,
+                        options.agent_pane,
+                        options.inject_folder_secrets,
                     ) {
                         Some(seeded_id) => response_pane_id = seeded_id,
                         None => launch_result = Err("failed to seed root pane".into()),
@@ -5771,23 +5920,22 @@ impl PlexiApp {
             // wire: `pane new` from an agent pane is that agent's child,
             // from a plain terminal it is the person's own pane. The
             // parent link is left alone so no result delivery is implied.
-            let (caller_pane_id, spawned_by) =
-                self.resolve_unspoofable_spawner(spec.from_pane_id, spec.peer_ancestry.as_deref());
-            self.set_pane_spawned_by(response_pane_id, spawned_by, None);
-            if let Some(parent_posture) =
-                caller_pane_id.and_then(|cid| self.pane_permission_posture(cid))
-            {
-                if let Some((win_idx, _)) = self.find_pane_in_any_window(response_pane_id) {
-                    if let Some(term) = self.windows[win_idx]
-                        .panes
-                        .get_mut(&response_pane_id)
-                        .and_then(|p| p.as_terminal_mut())
-                    {
-                        term.agent_permission_posture =
-                            Some(match term.agent_permission_posture.take() {
-                                Some(child) => child.restricted_by(&parent_posture),
-                                None => parent_posture,
-                            });
+            // Both were fixed at admission (`admit_terminal_spawn`).
+            if let Some(admission) = terminal_admission {
+                self.set_pane_spawned_by(response_pane_id, admission.spawned_by, None);
+                if let Some(parent_posture) = admission.parent_posture {
+                    if let Some((win_idx, _)) = self.find_pane_in_any_window(response_pane_id) {
+                        if let Some(term) = self.windows[win_idx]
+                            .panes
+                            .get_mut(&response_pane_id)
+                            .and_then(|p| p.as_terminal_mut())
+                        {
+                            term.agent_permission_posture =
+                                Some(match term.agent_permission_posture.take() {
+                                    Some(child) => child.restricted_by(&parent_posture),
+                                    None => parent_posture,
+                                });
+                        }
                     }
                 }
             }
@@ -5800,7 +5948,9 @@ impl PlexiApp {
     pub(crate) fn agent_call_request(
         &mut self,
         cmd: &crate::protocol::HostRequest,
-        provisioned: &mut crate::app::host_helpers::Provisioned,
+        resumed: &mut Option<
+            crate::app::host_helpers::Resumed<crate::app::agent_tools::AgentAdmission>,
+        >,
     ) {
         let crate::protocol::HostRequest::AgentCall {
             role,
@@ -5830,7 +5980,7 @@ impl PlexiApp {
                 .map(|branch| crate::app::agent_tools::WorktreeStep {
                     branch,
                     request: cmd,
-                    provisioned,
+                    resumed,
                 }),
             asynchronous: *asynchronous,
             handoff: *handoff,

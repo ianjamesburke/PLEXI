@@ -24,12 +24,22 @@ pub(crate) struct AgentCallRequest<'a> {
 }
 
 /// A call's `worktree` branch. The worktree is created off the host loop
-/// (stint 1632): with `provisioned` empty the call starts that job and
-/// returns, and the drain resumes `request` with the result.
+/// (stint 1632): with `resumed` empty the call starts that job and returns,
+/// and the drain resumes `request` with its admission and the result.
 pub(crate) struct WorktreeStep<'a> {
     pub branch: &'a str,
     pub request: &'a crate::protocol::HostRequest,
-    pub provisioned: &'a mut super::host_helpers::Provisioned,
+    pub resumed: &'a mut Option<super::host_helpers::Resumed<AgentAdmission>>,
+}
+
+/// Who an `agent_call` was admitted for and where its worker starts. A
+/// resumed call that no longer matches is refused, so the time spent
+/// creating its worktree can never widen what it may do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentAdmission {
+    parent: Option<u64>,
+    context_id: u64,
+    lookup_root: std::path::PathBuf,
 }
 
 pub(crate) struct AgentToolWait {
@@ -135,6 +145,30 @@ impl PlexiApp {
                 .map(std::path::PathBuf::from)
                 .unwrap_or(root.clone())
         };
+        let admission = AgentAdmission {
+            parent,
+            context_id: self.windows[parent
+                .and_then(|id| self.find_pane_in_any_window(id))
+                .map_or(self.active_window, |(win, _)| win)]
+            .context_id,
+            lookup_root: lookup_root.clone(),
+        };
+        if let Some(admitted) = request
+            .worktree
+            .as_ref()
+            .and_then(|step| step.resumed.as_ref())
+            .map(|resumed| &resumed.admission)
+        {
+            if *admitted != admission {
+                log::warn!(
+                    "agent_call: refused on resume: admitted {admitted:?}, now {admission:?}"
+                );
+                return Err(
+                    "the caller, its context or its root changed while the worktree was created"
+                        .into(),
+                );
+            }
+        }
         let workspace = crate::app::registry::resolve_agent_lookup_workspace_root(&lookup_root);
         let (def, _) = crate::cli::agent::resolve_agent_definition_in(
             request.role,
@@ -179,16 +213,22 @@ impl PlexiApp {
         );
         let managed = match request.worktree {
             None => None,
-            Some(step) => match step.provisioned.take() {
+            Some(step) => match step.resumed.as_mut() {
                 None => {
                     self.create_worktree_off_loop(
-                        step.request,
+                        super::host_helpers::Resume::AgentCall {
+                            request: Box::new(step.request.clone()),
+                            admission,
+                        },
                         lookup_root,
                         step.branch.to_string(),
                     );
                     return Ok(());
                 }
-                Some(created) => Some(created?),
+                Some(resumed) => match resumed.worktree.take() {
+                    Some(created) => Some(created?),
+                    None => return Err("agent_call resumed without its worktree result".into()),
+                },
             },
         };
         let cwd = managed

@@ -20,7 +20,7 @@ pub mod file_handlers;
 mod fleet;
 mod focus;
 pub(crate) mod focus_journal;
-mod host_helpers;
+pub(crate) mod host_helpers;
 pub(crate) mod host_instance;
 pub mod host_mcp;
 pub mod host_version;
@@ -4507,6 +4507,7 @@ impl eframe::App for PlexiApp {
         // No dialog can answer here, so a failing save is retried a bounded
         // number of times and the exit then records the workspace unsaved.
         let durability = self.persist_for_teardown(std::time::Duration::from_secs(1));
+        self.settle_host_helpers_for_exit();
         self.begin_quit_cleanup();
         quit::exit_host(
             self.quit_coordinator

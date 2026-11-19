@@ -8,6 +8,8 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use plexi_distribution::bounded::{self, Helper, RunError};
@@ -75,6 +77,11 @@ pub(crate) struct Tools {
     git: OsString,
     wtp_limit: Duration,
     git_limit: Duration,
+    /// Set when the host exits. Queries (`wtp cd`, git) stop at once; a
+    /// `wtp add` or `wtp remove` not yet started never starts, and one
+    /// already running finishes or hits its limit, so a worktree is never
+    /// left half made or half removed.
+    exiting: Arc<AtomicBool>,
 }
 
 impl Tools {
@@ -84,9 +91,32 @@ impl Tools {
             git: "git".into(),
             wtp_limit: WTP_LIMIT,
             git_limit: GIT_LIMIT,
+            exiting: Arc::new(AtomicBool::new(false)),
         }
     }
 
+    /// Stop queries now and refuse to start `wtp add` or `wtp remove`.
+    pub(crate) fn begin_exit(&self) {
+        self.exiting.store(true, Ordering::SeqCst);
+    }
+
+    fn exiting(&self) -> bool {
+        self.exiting.load(Ordering::SeqCst)
+    }
+
+    /// The longest one mutating `wtp` call can run.
+    pub(crate) fn wtp_limit(&self) -> Duration {
+        self.wtp_limit
+    }
+
+    /// `wtp` for a read-only call, stopped when the host exits.
+    fn wtp_query(&self) -> Helper {
+        let mut helper = self.wtp();
+        helper.cancel_on(Arc::clone(&self.exiting));
+        helper
+    }
+
+    /// `wtp` for `add` or `remove`, which never stops part way.
     fn wtp(&self) -> Helper {
         #[cfg(not(test))]
         {
@@ -117,10 +147,14 @@ impl Tools {
         }
     }
 
-    /// `git -C <dir>`, never prompting.
+    /// `git -C <dir>`, never prompting; only queries, so stopped when the
+    /// host exits.
     fn git(&self, dir: &Path) -> Helper {
         let mut helper = bounded::git_at(&self.git);
-        helper.arg("-C").arg(dir);
+        helper
+            .arg("-C")
+            .arg(dir)
+            .cancel_on(Arc::clone(&self.exiting));
         helper
     }
 }
@@ -365,7 +399,7 @@ pub(crate) fn create_worktree(
     // prints the main worktree path). This also verifies `wtp` is installed and
     // `anchor_dir` is inside a git repository.
     let wtp_cd_out = tools
-        .wtp()
+        .wtp_query()
         .arg("cd")
         .current_dir(anchor_dir)
         .run_any_exit("wtp cd", tools.wtp_limit)
@@ -406,6 +440,11 @@ pub(crate) fn create_worktree(
         .status
         .success();
 
+    if tools.exiting() {
+        return Err(format!(
+            "the host is exiting; worktree for branch '{branch}' was not created"
+        ));
+    }
     let mut add_cmd = tools.wtp();
     add_cmd.arg("add");
     if !branch_exists {
@@ -539,6 +578,20 @@ pub(crate) fn reclaim_or_retain_worktree(
         };
     }
 
+    if tools.exiting() {
+        log::info!(
+            "pane_worktree: host exiting; retaining clean worktree branch={:?} path={}",
+            wt.branch,
+            wt.path.display()
+        );
+        return WorktreeCloseReport {
+            action: "retained".to_string(),
+            branch: wt.branch.clone(),
+            path: wt.path.clone(),
+            reason: Some("host_exit".to_string()),
+        };
+    }
+
     // Clean and unmoved: reclaim via `wtp remove`. Run from `repo_root` so
     // `wtp` never complains about running inside the worktree being removed.
     let mut rm_cmd = tools.wtp();
@@ -605,7 +658,7 @@ fn resolve_worktree_path(
     tools: &Tools,
 ) -> Result<Option<PathBuf>, RunError> {
     let out = match tools
-        .wtp()
+        .wtp_query()
         .args(["cd", branch])
         .current_dir(repo_root)
         .run("wtp cd <branch>", tools.wtp_limit)

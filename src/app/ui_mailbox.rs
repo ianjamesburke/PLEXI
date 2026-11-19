@@ -262,6 +262,18 @@ impl<T> MailboxReceiver<T> {
         Ok(msg)
     }
 
+    /// Receive, waiting at most `timeout`. Only for a bounded drain on the
+    /// quit path, where no further frame will come; per-frame drains use
+    /// `try_recv`.
+    pub(crate) fn recv_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<T, mpsc::RecvTimeoutError> {
+        let msg = self.rx.recv_timeout(timeout)?;
+        self.gauge.note_serviced();
+        Ok(msg)
+    }
+
     /// Blocking receive — used by test servers that service a mailbox from a
     /// dedicated thread; production drains are per-frame `try_recv` loops.
     #[cfg(test)]

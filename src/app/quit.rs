@@ -439,6 +439,9 @@ impl super::PlexiApp {
         self.flush_editor_positions_now();
         self.bank_final_focus_segment();
         self.flush_admission_summaries();
+        // Owed pgrep/wtp/git jobs answer their callers and leave no worktree
+        // half made or half removed (stint 1632).
+        self.settle_host_helpers_for_exit();
         exit_host(
             reason,
             self.quit_workspace_durability(),
