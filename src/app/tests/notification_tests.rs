@@ -18,6 +18,7 @@ fn same_workspace_window_below(context_id: u64, window_id: u64, pane_id: u64) ->
         grid_y: 1,
         window_id,
         context_id,
+        tree_generation: 0,
     }
 }
 
@@ -331,6 +332,7 @@ fn dispatch_notify_action_pane_focus_navigates() {
         grid_y: 1,
         window_id: 2,
         context_id: 2,
+        tree_generation: 0,
     });
     h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),
@@ -1834,6 +1836,7 @@ fn push_second_context_window(h: &mut HostHarness, ctx_id: u64, window_id: u64) 
         grid_y: 1,
         window_id,
         context_id: ctx_id,
+        tree_generation: 0,
     });
     h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),

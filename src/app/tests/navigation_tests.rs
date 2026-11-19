@@ -18,6 +18,7 @@ fn second_window(context_id: u64, window_id: u64, pane_id: u64) -> Window {
         grid_y: 1,
         window_id,
         context_id,
+        tree_generation: 0,
     }
 }
 
@@ -33,6 +34,7 @@ fn same_workspace_window_right(context_id: u64, window_id: u64) -> Window {
         grid_y: 0,
         window_id,
         context_id,
+        tree_generation: 0,
     }
 }
 
@@ -51,6 +53,7 @@ fn same_workspace_window_below(context_id: u64, window_id: u64, pane_id: u64) ->
         grid_y: 1,
         window_id,
         context_id,
+        tree_generation: 0,
     }
 }
 
@@ -69,6 +72,7 @@ fn same_workspace_window_bottom(context_id: u64, window_id: u64, pane_id: u64) -
         grid_y: 2,
         window_id,
         context_id,
+        tree_generation: 0,
     }
 }
 
@@ -1197,6 +1201,7 @@ fn empty_window(context_id: u64, window_id: u64) -> Window {
         grid_y: 1,
         window_id,
         context_id,
+        tree_generation: 0,
     }
 }
 

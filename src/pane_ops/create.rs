@@ -84,6 +84,56 @@ pub(crate) struct SpawnTerminalAtSpec<'a> {
     pub options: TerminalSpawnOptions<'a>,
 }
 
+/// Where an agent spawn hangs: see [`PlexiApp::agent_spawn_parent`].
+pub(crate) struct AgentSpawnParent {
+    pub(crate) pane_id: Option<u64>,
+    pub(crate) win_idx: usize,
+    pub(crate) context_id: u64,
+    pub(crate) root: PathBuf,
+    pub(crate) depth: u32,
+}
+
+/// The sub-context an agent spawn lands in, under its parent's context.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SubcontextTarget<'a> {
+    /// Reuse the sub-context of this name, or create it.
+    Named(&'a str),
+    /// The sub-context admitted earlier; a same-named replacement refuses.
+    Existing { name: &'a str, context_id: u64 },
+    /// Create the sub-context; one that appeared since admission refuses.
+    Create(&'a str),
+}
+
+impl<'a> SubcontextTarget<'a> {
+    pub(crate) fn name(self) -> &'a str {
+        match self {
+            Self::Named(name) | Self::Create(name) | Self::Existing { name, .. } => name,
+        }
+    }
+}
+
+/// The permission ceiling an agent worker pane is created under, prepared
+/// before the pane exists (stint 1632).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentWorkerAuthority {
+    pub(crate) posture: Option<crate::broker::PermissionPosture>,
+}
+
+impl AgentWorkerAuthority {
+    /// `role` narrowed by the parent's posture, when the parent has one.
+    pub(crate) fn ceiling(
+        role: crate::broker::PermissionPosture,
+        parent: Option<&crate::broker::PermissionPosture>,
+    ) -> Self {
+        Self {
+            posture: Some(match parent {
+                Some(parent) => role.restricted_by(parent),
+                None => role,
+            }),
+        }
+    }
+}
+
 pub(crate) struct IdViewLaunchOptions {
     pub target_win: usize,
     pub bypass_on_launch: bool,
@@ -1746,17 +1796,15 @@ impl PlexiApp {
         );
     }
 
-    /// Single choke point resolving where a spawned agent pane lands (`(target_win_idx, target_ctx_id, parent_pane_id, effective_cwd)`).
-    /// Keeps sub-context / split placement behind one function so competing sub-context prototypes
-    /// (#2864, #2865, #2862) can plug in without touching callers.
-    pub(crate) fn resolve_agent_spawn_location(
-        &mut self,
-        subcontext: Option<&str>,
+    /// The parent an agent spawn hangs under: the live `from_pane_id`, else the
+    /// origin context's first window (or the active window). Read-only, so the
+    /// authority a spawn installs and the place it lands derive from the same
+    /// parent and root.
+    pub(crate) fn agent_spawn_parent(
+        &self,
         from_pane_id: Option<u64>,
-        cwd_override: Option<std::path::PathBuf>,
-        conjoined: bool,
         origin_context_id: Option<u64>,
-    ) -> Result<(usize, u64, Option<u64>, std::path::PathBuf), String> {
+    ) -> Result<AgentSpawnParent, String> {
         let origin_win = match origin_context_id {
             Some(id) => self
                 .windows
@@ -1787,14 +1835,67 @@ impl PlexiApp {
             .position(|c| c.context_id == parent_ctx_id)
             .map(|idx| self.router.get(idx).depth)
             .unwrap_or(0);
+        Ok(AgentSpawnParent {
+            pane_id: parent_pane_id,
+            win_idx: parent_win_idx,
+            context_id: parent_ctx_id,
+            root: parent_root,
+            depth: parent_depth,
+        })
+    }
+
+    /// The sub-context named `name` directly under `parent_ctx_id`, if any.
+    pub(crate) fn agent_subcontext_under(&self, parent_ctx_id: u64, name: &str) -> Option<u64> {
+        self.router
+            .iter()
+            .find(|c| {
+                c.parent_id == Some(parent_ctx_id) && c.name.displayed().eq_ignore_ascii_case(name)
+            })
+            .map(|c| c.context_id)
+    }
+
+    /// Single choke point resolving where a spawned agent pane lands (`(target_win_idx, target_ctx_id, parent_pane_id, effective_cwd)`).
+    /// Keeps sub-context / split placement behind one function so competing sub-context prototypes
+    /// (#2864, #2865, #2862) can plug in without touching callers.
+    pub(crate) fn resolve_agent_spawn_location(
+        &mut self,
+        subcontext: Option<SubcontextTarget<'_>>,
+        from_pane_id: Option<u64>,
+        cwd_override: Option<std::path::PathBuf>,
+        conjoined: bool,
+        origin_context_id: Option<u64>,
+    ) -> Result<(usize, u64, Option<u64>, std::path::PathBuf), String> {
+        let AgentSpawnParent {
+            pane_id: parent_pane_id,
+            win_idx: parent_win_idx,
+            context_id: parent_ctx_id,
+            root: parent_root,
+            depth: parent_depth,
+        } = self.agent_spawn_parent(from_pane_id, origin_context_id)?;
         let effective_cwd = cwd_override.unwrap_or_else(|| parent_root.clone());
 
-        let (target_win_idx, target_ctx_id) = if let Some(sub_name) = subcontext {
-            if let Some(existing_ctx_idx) = self.router.position(|c| {
-                c.parent_id == Some(parent_ctx_id)
-                    && c.name.displayed().eq_ignore_ascii_case(sub_name)
-            }) {
-                let existing_ctx_id = self.router.get(existing_ctx_idx).context_id;
+        let (target_win_idx, target_ctx_id) = if let Some(target) = subcontext {
+            let sub_name = target.name();
+            let existing = self.agent_subcontext_under(parent_ctx_id, sub_name);
+            // An admitted sub-context is the incarnation the caller saw: a
+            // same-named replacement, or one that appeared after a create
+            // intent, is a different destination (stint 1632).
+            match (target, existing) {
+                (SubcontextTarget::Existing { context_id, .. }, found)
+                    if found != Some(context_id) =>
+                {
+                    return Err(format!(
+                        "sub-context '{sub_name}' (id={context_id}) is no longer under context {parent_ctx_id}"
+                    ));
+                }
+                (SubcontextTarget::Create(_), Some(found)) => {
+                    return Err(format!(
+                        "sub-context '{sub_name}' (id={found}) appeared after the launch was admitted"
+                    ));
+                }
+                _ => {}
+            }
+            if let Some(existing_ctx_id) = existing {
                 let win_idx = self
                     .windows
                     .iter()
@@ -1861,6 +1962,7 @@ impl PlexiApp {
                     grid_y: 0,
                     window_id: win_id,
                     context_id: ctx_id,
+                    tree_generation: 0,
                 });
                 self.context_active_window.insert(ctx_id, win_id);
                 (self.windows.len() - 1, ctx_id)
@@ -1896,6 +1998,9 @@ impl PlexiApp {
     /// Spawn a worker terminal pane for `plexi agent spawn` / `plexi agent start` / team / GUI,
     /// creating or reusing a sub-context and linking a `PortalPane` in the parent context when
     /// `subcontext` is specified.
+    ///
+    /// The role's permission ceiling is resolved once, before placement, from
+    /// the same parent and working directory the pane will use.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn_agent_worker_pane(
         &mut self,
@@ -1904,6 +2009,79 @@ impl PlexiApp {
         cmd: &str,
         task: &str,
         subcontext: Option<&str>,
+        ephemeral: bool,
+        from_pane_id: Option<u64>,
+        cwd_override: Option<std::path::PathBuf>,
+        result_schema: Option<serde_json::Value>,
+        run_token: Option<&str>,
+        conjoined: bool,
+        origin_context_id: Option<u64>,
+    ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
+        let parent = self.agent_spawn_parent(from_pane_id, origin_context_id)?;
+        let lookup_cwd = cwd_override.clone().unwrap_or(parent.root);
+        let authority = self.agent_worker_authority(role, &lookup_cwd, parent.pane_id);
+        self.spawn_prepared_agent_worker_pane(
+            authority,
+            role,
+            harness,
+            cmd,
+            task,
+            subcontext.map(SubcontextTarget::Named),
+            ephemeral,
+            from_pane_id,
+            cwd_override,
+            result_schema,
+            run_token,
+            conjoined,
+            origin_context_id,
+        )
+    }
+
+    /// Resolve `role`'s permission ceiling from the definition visible at
+    /// `lookup_cwd`, narrowed by the parent pane's posture. `None` posture when
+    /// the role does not resolve, which the broker treats as `Ask`.
+    pub(crate) fn agent_worker_authority(
+        &self,
+        role: &str,
+        lookup_cwd: &Path,
+        parent_pane_id: Option<u64>,
+    ) -> AgentWorkerAuthority {
+        let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(lookup_cwd);
+        let posture = crate::cli::agent::resolve_agent_definition_in(
+            role,
+            &crate::config::config_dir(),
+            lookup_root.as_deref(),
+        )
+        .map(|(definition, _)| {
+            AgentWorkerAuthority::ceiling(
+                definition.posture,
+                parent_pane_id
+                    .and_then(|parent| self.pane_permission_posture(parent))
+                    .as_ref(),
+            )
+            .posture
+        })
+        .map_err(|error| {
+            log::info!("agent_spawn: no posture snapshot for role={role}: {error}");
+            error
+        })
+        .ok()
+        .flatten();
+        AgentWorkerAuthority { posture }
+    }
+
+    /// Spawn an agent worker under an already prepared `authority`. Nothing
+    /// here re-reads a role definition: a worker started in a new checkout
+    /// cannot pick up a broader definition from that checkout (stint 1632).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn spawn_prepared_agent_worker_pane(
+        &mut self,
+        authority: AgentWorkerAuthority,
+        role: &str,
+        harness: &str,
+        cmd: &str,
+        task: &str,
+        subcontext: Option<SubcontextTarget<'_>>,
         ephemeral: bool,
         from_pane_id: Option<u64>,
         cwd_override: Option<std::path::PathBuf>,
@@ -1994,25 +2172,7 @@ impl PlexiApp {
         pane.agent_harness = Some(harness.to_string());
         pane.agent_role = Some(role.to_string());
         pane.begin_agent_launch(crate::host::pane::AgentLaunchKind::Command);
-        let lookup_root =
-            crate::app::registry::resolve_agent_lookup_workspace_root(&effective_cwd_for_schema);
-        pane.agent_permission_posture = crate::cli::agent::resolve_agent_definition_in(
-            role,
-            &crate::config::config_dir(),
-            lookup_root.as_deref(),
-        )
-        .map(|(definition, _)| {
-            let child = definition.posture;
-            parent_pane_id
-                .and_then(|parent| self.pane_permission_posture(parent))
-                .map(|parent| child.clone().restricted_by(&parent))
-                .unwrap_or(child)
-        })
-        .map_err(|error| {
-            log::info!("agent_spawn: no posture snapshot for role={role} pane={new_id}: {error}");
-            error
-        })
-        .ok();
+        pane.agent_permission_posture = authority.posture;
         if let Some(ref posture) = pane.agent_permission_posture {
             log::info!(
                 "agent_spawn: posture snapshot for role={role} pane={new_id}: default={}",

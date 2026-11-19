@@ -503,6 +503,7 @@ impl PlexiApp {
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
+            tree_generation: 0,
         });
         self.context_active_window.insert(ctx_id, win_id);
 
@@ -743,6 +744,7 @@ impl PlexiApp {
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
+            tree_generation: 0,
         });
         let new_idx = self.windows.len() - 1;
         if self
@@ -874,6 +876,7 @@ impl PlexiApp {
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
+            tree_generation: 0,
         });
         let new_idx = self.windows.len() - 1;
         if self
@@ -960,7 +963,7 @@ impl PlexiApp {
         grid_y: u32,
         context_id: u64,
         options: super::create::TerminalSpawnOptions<'_>,
-    ) {
+    ) -> Option<PaneId> {
         let super::create::TerminalSpawnOptions {
             initial_cmd,
             close_on_exit,
@@ -989,8 +992,9 @@ impl PlexiApp {
             inject_folder_secrets,
         ) else {
             log::error!("Failed to create terminal for new page at ({grid_x}, {grid_y})");
-            return;
+            return None;
         };
+        let pane_id = panes.keys().next().copied();
         let name = String::new();
         let ctx_id = context_id;
         let win_id = self.next_window_id;
@@ -1007,11 +1011,13 @@ impl PlexiApp {
             grid_y,
             window_id: win_id,
             context_id: ctx_id,
+            tree_generation: 0,
         });
         self.active_window = self.windows.len() - 1;
         self.context_active_window.insert(ctx_id, win_id);
         log::info!("window: created window={win_id} context={ctx_id}");
         self.minimap.visible = true;
+        pane_id
     }
 
     /// The single install point for a context's base root terminal pane. Creates
@@ -1068,10 +1074,11 @@ impl PlexiApp {
         win.panes = panes;
         win.focused_pane = Some(root_tile);
         win.zoomed_pane = None;
+        win.advance_tree_generation();
         Some((pane_id, root_tile))
     }
 
-    /// Seed a root terminal pane into the active window when it has no tree root
+    /// Seed a root terminal pane into window `win_idx` when it has no tree root
     /// and no focused pane yet (the windowless-boot state). Returns the id of the
     /// pane actually created, or `None` if terminal creation failed.
     ///
@@ -1082,6 +1089,7 @@ impl PlexiApp {
     /// in the window the host booted with.
     pub(crate) fn seed_root_pane(
         &mut self,
+        win_idx: usize,
         initial_cmd: Option<&str>,
         close_on_exit: bool,
         cwd_override: Option<PathBuf>,
@@ -1093,10 +1101,9 @@ impl PlexiApp {
             .or_else(|| self.resolve_new_pane_cwd(None))
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
-        let active = self.active_window;
-        let context = self.pane_context_env_for_window(active);
+        let context = self.pane_context_env_for_window(win_idx);
         let Some((pane_id, _root_tile)) = self.seed_window_root_pane(
-            active,
+            win_idx,
             &context,
             cwd,
             super::create::TerminalSpawnOptions {
@@ -1107,10 +1114,10 @@ impl PlexiApp {
                 inject_folder_secrets,
             },
         ) else {
-            log::error!("seed_root_pane: failed to create terminal for empty active window");
+            log::error!("seed_root_pane: failed to create terminal for empty window idx={win_idx}");
             return None;
         };
-        let window_id = self.windows[active].window_id;
+        let window_id = self.windows[win_idx].window_id;
         log::info!(
             "seed_root_pane: seeded root pane_id={pane_id} into empty window_id={window_id} (windowless-boot spawn fallback) close_on_exit={close_on_exit} inject_folder_secrets={inject_folder_secrets}"
         );
@@ -1137,6 +1144,7 @@ impl PlexiApp {
         ctx.panes = panes;
         ctx.focused_pane = Some(root_tile);
         ctx.zoomed_pane = None;
+        ctx.advance_tree_generation();
     }
 
     pub(crate) fn delete_context(&mut self, ws_index: usize) {
@@ -1254,6 +1262,7 @@ impl PlexiApp {
                 if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
                     win.tree.remove_recursively(tile_id);
                 }
+                win.advance_tree_generation();
             }
         }
 
@@ -2086,6 +2095,7 @@ impl PlexiApp {
             self.windows[parent_idx]
                 .tree
                 .remove_recursively(portal_tile_id);
+            self.windows[parent_idx].advance_tree_generation();
             if let Some(idx) = self.router.position(|c| c.context_id == child_ctx_id) {
                 self.router.remove_at(idx);
             }
@@ -2146,6 +2156,8 @@ impl PlexiApp {
             parent_win
                 .panes
                 .extend(std::mem::take(&mut primary_child_win.panes));
+            parent_win.advance_tree_generation();
+            primary_child_win.advance_tree_generation();
             if let Some(parent_tile) = parent_win.tree.tiles.parent_of(portal_tile_id) {
                 if let Some(Tile::Container(parent_container)) =
                     parent_win.tree.tiles.get_mut(parent_tile)
@@ -2240,6 +2252,7 @@ impl PlexiApp {
                 if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
                     win.tree.remove_recursively(tile_id);
                 }
+                win.advance_tree_generation();
                 log::warn!(
                     "dissolve_portal: removed stale PortalPane {pane_id} targeting dissolved ctx={child_ctx_id}"
                 );

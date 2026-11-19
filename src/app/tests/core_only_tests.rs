@@ -243,6 +243,7 @@ fn core_only_terminal_executes_and_splits() {
     let terminal = h
         .app
         .seed_root_pane(
+            h.app.active_window,
             None,
             false,
             Some(h.workspace_root().to_path_buf()),

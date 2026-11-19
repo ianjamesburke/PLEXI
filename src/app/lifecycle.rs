@@ -2183,26 +2183,12 @@ impl PlexiApp {
                     spec.workspace_root,
                     spec.response_file
                 );
-                let peer_pane = spec
-                    .peer_ancestry
-                    .as_deref()
-                    .filter(|pids| !pids.is_empty())
-                    .and_then(|pids| self.resolve_socket_peer_pane(pids).map(|(pid, _, _)| pid));
-                let requester_is_pane = peer_pane.is_some();
-                let requester_is_agent = peer_pane
-                    .is_some_and(|pid| !self.is_human_owned_pane(pid))
-                    || spec
-                        .from_pane_id
-                        .is_some_and(|pid| !self.is_human_owned_pane(pid));
-                let is_agent_pane = spec.agent.is_some() || requester_is_agent;
-                let inject_folder_secrets = !requester_is_pane
-                    && crate::release::feature_enabled(
-                        crate::release::ReleaseFeature::FolderSecrets,
-                    );
-                if requester_is_pane {
-                    log::info!(
-                        "pane_ipc: spawn_pane requester is a pane (peer_pane={peer_pane:?}, is_agent_pane={is_agent_pane}); withholding folder secrets"
-                    );
+                if matches!(
+                    spec.target,
+                    crate::app::launch_spec::PaneLaunchTarget::Terminal
+                ) {
+                    self.launch_terminal_spec(&spec);
+                    return;
                 }
                 let mut response_pane_id = self.host.next_pane_id();
 
@@ -2228,250 +2214,8 @@ impl PlexiApp {
                     }
                 }
 
-                let mut created_worktree: Option<crate::host::worktree::ManagedWorktree> = None;
                 let mut launch_result: Result<(), String> = Ok(());
-                if matches!(
-                    spec.target,
-                    crate::app::launch_spec::PaneLaunchTarget::Terminal
-                ) {
-                    let layout_str = spec.layout.as_deref().unwrap_or("split_h");
-                    let initial_cmd = super::cmd_from_args(&spec.args);
-                    // Named-context targeting (stint 0574): `plexi routine run`
-                    // fires a routine into its configured context by name,
-                    // matching the scheduler's fire path. The context is a hard
-                    // target — a missing name errors back to the caller, and
-                    // the spawn never touches active_window or focus state.
-                    let resolved_context_target = if let Some(ctx_name) =
-                        spec.context_name.as_deref().filter(|c| !c.is_empty())
-                    {
-                        if layout_str == "new_window" || layout_str == "tab" {
-                            let msg = format!(
-                                "context_name does not support layout '{layout_str}' — use a split layout"
-                            );
-                            log::warn!("pane_ipc: spawn_pane rejected: {msg}");
-                            if let Some(rf) = &spec.response_file {
-                                write_json_response(rf, serde_json::json!({ "error": msg }));
-                            }
-                            return;
-                        }
-                        let Some(target_ctx_id) = self
-                            .router
-                            .iter()
-                            .find(|c| c.name == ctx_name)
-                            .map(|c| c.context_id)
-                        else {
-                            let msg = format!("context '{ctx_name}' does not exist");
-                            log::warn!("pane_ipc: spawn_pane: {msg}");
-                            if let Some(rf) = &spec.response_file {
-                                write_json_response(rf, serde_json::json!({ "error": msg }));
-                            }
-                            return;
-                        };
-                        let Some((target_win, target_tile)) =
-                            self.context_spawn_target(target_ctx_id)
-                        else {
-                            let msg = format!("context '{ctx_name}' has no pane to spawn beside");
-                            log::warn!("pane_ipc: spawn_pane: {msg}");
-                            if let Some(rf) = &spec.response_file {
-                                write_json_response(rf, serde_json::json!({ "error": msg }));
-                            }
-                            return;
-                        };
-                        Some((ctx_name, target_ctx_id, target_win, target_tile))
-                    } else {
-                        None
-                    };
-
-                    if let Some(ref branch) = spec.worktree {
-                        let anchor_dir = self.resolve_worktree_anchor(&spec);
-                        match crate::host::worktree::create_worktree(&anchor_dir, branch) {
-                            Ok(wt) => {
-                                cwd_override = Some(wt.path.clone());
-                                created_worktree = Some(wt);
-                            }
-                            Err(msg) => {
-                                log::warn!("pane_ipc: spawn_pane worktree rejected: {msg}");
-                                if let Some(rf) = &spec.response_file {
-                                    write_json_response(rf, serde_json::json!({ "error": msg }));
-                                }
-                                return;
-                            }
-                        }
-                    }
-
-                    if let Some((ctx_name, target_ctx_id, target_win, target_tile)) =
-                        resolved_context_target
-                    {
-                        let vertical =
-                            matches!(layout_str, "split_h" | "split_right" | "split_left");
-                        let new_pane_first = matches!(layout_str, "split_above" | "split_left");
-                        log::info!(
-                            "pane_ipc: spawn_pane terminal context_name='{ctx_name}' context_id={target_ctx_id} target_win={target_win} layout={layout_str} ephemeral={}",
-                            spec.ephemeral
-                        );
-                        response_pane_id = self.spawn_terminal_pane_at(
-                            crate::pane_ops::create::SpawnTerminalAtSpec {
-                                win_idx: target_win,
-                                target_tile,
-                                vertical,
-                                new_pane_first,
-                                keep_focus: spec.no_focus,
-                                options: crate::pane_ops::create::TerminalSpawnOptions {
-                                    initial_cmd: initial_cmd.as_deref(),
-                                    close_on_exit: spec.ephemeral,
-                                    cwd_override,
-                                    agent_pane: is_agent_pane,
-                                    inject_folder_secrets,
-                                },
-                            },
-                        );
-                    } else if layout_str == "new_window" {
-                        // Derive context from the calling pane's window; fall back to active.
-                        let target_win_idx = spec
-                            .from_pane_id
-                            .and_then(|fid| self.find_pane_in_any_window(fid).map(|(idx, _)| idx))
-                            .unwrap_or(self.active_window);
-                        let ws_id = self.windows[target_win_idx].context_id;
-                        let active_y = self.windows[target_win_idx].grid_y;
-                        let max_x = self
-                            .windows
-                            .iter()
-                            .filter(|w| w.context_id == ws_id && w.grid_y == active_y)
-                            .map(|w| w.grid_x)
-                            .max();
-                        let new_x = max_x.map(|x| x + 1).unwrap_or(1);
-                        log::info!(
-                            "pane_ipc: spawn_pane terminal layout=new_window from_pane_id={:?} target_win_idx={target_win_idx} context={ws_id} grid=({new_x},{active_y}) response_pane_id={response_pane_id} cwd={cwd_override:?} ephemeral={}",
-                            spec.from_pane_id,
-                            spec.ephemeral
-                        );
-                        self.create_page_at(
-                            new_x,
-                            active_y,
-                            ws_id,
-                            crate::pane_ops::create::TerminalSpawnOptions {
-                                initial_cmd: initial_cmd.as_deref(),
-                                close_on_exit: spec.ephemeral,
-                                cwd_override,
-                                agent_pane: is_agent_pane,
-                                inject_folder_secrets,
-                            },
-                        );
-                        if spec.no_focus {
-                            self.active_window = active;
-                        }
-                    } else if layout_str == "tab" {
-                        // Derive target window from the calling pane's window; fall back to active.
-                        let target_win_idx = spec
-                            .from_pane_id
-                            .and_then(|fid| self.find_pane_in_any_window(fid).map(|(idx, _)| idx))
-                            .unwrap_or(active);
-                        let original_focused = self.windows[target_win_idx].focused_pane;
-                        log::info!(
-                            "pane_ipc: spawn_pane terminal layout=tab from_pane_id={:?} target_win_idx={target_win_idx} window_id={} response_pane_id={response_pane_id} cwd={cwd_override:?} ephemeral={}",
-                            spec.from_pane_id,
-                            self.windows[target_win_idx].window_id,
-                            spec.ephemeral
-                        );
-                        self.new_tab(
-                            target_win_idx,
-                            initial_cmd.as_deref(),
-                            spec.ephemeral,
-                            cwd_override,
-                            is_agent_pane,
-                            inject_folder_secrets,
-                        );
-                        if spec.no_focus {
-                            self.restore_window_focused_pane(target_win_idx, original_focused);
-                        }
-                        // self.active_window is intentionally left untouched here, matching
-                        // the split path below: a from_pane_id spawn must never steal the
-                        // user's currently active Plexi window, only set the new tab as the
-                        // target window's own focused pane (done inside new_tab above).
-                    } else {
-                        let vertical =
-                            matches!(layout_str, "split_h" | "split_right" | "split_left");
-                        let new_pane_first = matches!(layout_str, "split_above" | "split_left");
-                        // Resolve target window and tile: from_pane_id wins (cross-window),
-                        // then fall back to the active window's focused pane.
-                        let split_target = if let Some(from_id) = spec.from_pane_id {
-                            match self.find_pane_in_any_window(from_id) {
-                                Some(loc) => {
-                                    log::info!(
-                                        "pane_ipc: spawn_pane: targeting from_pane_id={from_id} in win_idx={}",
-                                        loc.0
-                                    );
-                                    Some(loc)
-                                }
-                                None => {
-                                    log::warn!(
-                                        "pane_ipc: spawn_pane: from_pane_id={from_id} not found in any window, using focused pane"
-                                    );
-                                    self.windows[active]
-                                        .focused_pane
-                                        .or(self.windows[active].tree.root)
-                                        .map(|tile| (active, tile))
-                                }
-                            }
-                        } else {
-                            self.windows[active]
-                                .focused_pane
-                                .or(self.windows[active].tree.root)
-                                .map(|tile| (active, tile))
-                        };
-
-                        if let Some((target_win, target_tile)) = split_target {
-                            let keep_focus = spec.no_focus || spec.from_pane_id.is_some();
-                            log::info!(
-                                "pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} ephemeral={} target_win={target_win} keep_focus={keep_focus}",
-                                spec.ephemeral
-                            );
-                            response_pane_id = self.spawn_terminal_pane_at(
-                                crate::pane_ops::create::SpawnTerminalAtSpec {
-                                    win_idx: target_win,
-                                    target_tile,
-                                    vertical,
-                                    new_pane_first,
-                                    keep_focus,
-                                    options: crate::pane_ops::create::TerminalSpawnOptions {
-                                        initial_cmd: initial_cmd.as_deref(),
-                                        close_on_exit: spec.ephemeral,
-                                        cwd_override,
-                                        agent_pane: is_agent_pane,
-                                        inject_folder_secrets,
-                                    },
-                                },
-                            );
-                            if spec.no_focus {
-                                self.active_window = active;
-                            }
-                        } else {
-                            // Truly empty window (windowless boot): no root pane to
-                            // split, so `split_focused` would no-op and drop the
-                            // spawn. Seed a root pane into the existing active window
-                            // instead. The seeded pane's id is the id we report.
-                            log::info!(
-                                "pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} ephemeral={} (empty active window — seeding root)",
-                                spec.ephemeral
-                            );
-                            match self.seed_root_pane(
-                                initial_cmd.as_deref(),
-                                spec.ephemeral,
-                                cwd_override,
-                                is_agent_pane,
-                                inject_folder_secrets,
-                            ) {
-                                Some(seeded_id) => response_pane_id = seeded_id,
-                                None => launch_result = Err("failed to seed root pane".into()),
-                            }
-                            if spec.no_focus {
-                                self.active_window = active;
-                            }
-                        }
-                    }
-                } else if let crate::app::launch_spec::PaneLaunchTarget::Path(app_path) =
-                    &spec.target
-                {
+                if let crate::app::launch_spec::PaneLaunchTarget::Path(app_path) = &spec.target {
                     let (target_win, orig_focused_in_target) =
                         self.redirect_focus_to_spawn_origin(spec.from_pane_id, "path", active);
                     // A raw `.wasm` with unreviewed imports queues the host's
@@ -2591,70 +2335,18 @@ impl PlexiApp {
                         self.restore_window_focused_pane(target_win, orig_focused_in_target);
                     }
                 }
-                if let Some(wt) = created_worktree {
-                    let pane_live = launch_result.is_ok()
-                        && self
-                            .windows
-                            .iter()
-                            .any(|w| w.panes.contains_key(&response_pane_id));
-                    if pane_live {
-                        log::info!(
-                            "pane_worktree: registered pane_id={response_pane_id} branch='{}' path='{}'",
-                            wt.branch,
-                            wt.path.display()
-                        );
-                        self.pane_worktrees.insert(response_pane_id, wt);
-                    } else {
-                        let _ = crate::host::worktree::reclaim_or_retain_worktree(&wt);
-                    }
-                }
                 if launch_result.is_ok() {
-                    let entry = self.pane_results.entry(response_pane_id).or_default();
                     if let Some(ref schema) = spec.result_schema {
-                        entry.schema = Some(schema.clone());
+                        self.pane_results
+                            .entry(response_pane_id)
+                            .or_default()
+                            .schema = Some(schema.clone());
                         log::info!(
                             "pane_result: registered schema at spawn for pane_id={response_pane_id}"
                         );
                     }
                 }
-                if matches!(
-                    spec.target,
-                    crate::app::launch_spec::PaneLaunchTarget::Terminal
-                ) && launch_result.is_ok()
-                {
-                    if let Some(ref pane_name) = spec.name {
-                        if !pane_name.is_empty() {
-                            self.apply_inline_pane_name(response_pane_id, pane_name);
-                        }
-                    }
-                    // Provenance comes from the verified socket peer, never the
-                    // wire: `pane new` from an agent pane is that agent's child,
-                    // from a plain terminal it is the person's own pane. The
-                    // parent link is left alone so no result delivery is implied.
-                    let (caller_pane_id, spawned_by) = self.resolve_unspoofable_spawner(
-                        spec.from_pane_id,
-                        spec.peer_ancestry.as_deref(),
-                    );
-                    self.set_pane_spawned_by(response_pane_id, spawned_by, None);
-                    if let Some(parent_posture) =
-                        caller_pane_id.and_then(|cid| self.pane_permission_posture(cid))
-                    {
-                        if let Some((win_idx, _)) = self.find_pane_in_any_window(response_pane_id) {
-                            if let Some(term) = self.windows[win_idx]
-                                .panes
-                                .get_mut(&response_pane_id)
-                                .and_then(|p| p.as_terminal_mut())
-                            {
-                                term.agent_permission_posture =
-                                    Some(match term.agent_permission_posture.take() {
-                                        Some(child) => child.restricted_by(&parent_posture),
-                                        None => parent_posture,
-                                    });
-                            }
-                        }
-                    }
-                }
-                self.reply_spawn_pane(&spec, response_pane_id, &launch_result);
+                self.reply_spawn_pane(&spec, &launch_result.map(|()| response_pane_id));
             }
             crate::protocol::HostRequest::SendToPane {
                 pane_id,
@@ -6828,7 +6520,7 @@ impl PlexiApp {
 
     /// Apply an inline pane name immediately after spawn. Sets `name_locked` so
     /// OSC title sequences don't overwrite the explicit label.
-    fn apply_inline_pane_name(&mut self, pane_id: u64, pane_name: &str) {
+    pub(crate) fn apply_inline_pane_name(&mut self, pane_id: u64, pane_name: &str) {
         log::info!("pane_ipc: spawn_pane: applying inline name={pane_name:?} to pane_id={pane_id}");
         for win in &mut self.windows {
             if let Some(pane) = win.panes.get_mut(&pane_id) {

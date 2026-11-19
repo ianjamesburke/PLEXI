@@ -31,7 +31,7 @@ pub(crate) struct AgentToolWait {
 }
 
 impl PlexiApp {
-    fn agent_tool_caller(&self, caller: AgentCaller<'_>) -> Result<Option<u64>, String> {
+    pub(crate) fn agent_tool_caller(&self, caller: AgentCaller<'_>) -> Result<Option<u64>, String> {
         let peer = self
             .resolve_socket_peer_pane(caller.peer_ancestry)
             .map(|(id, _, _)| id);
@@ -106,104 +106,19 @@ impl PlexiApp {
         request: AgentCallRequest<'_>,
     ) -> Result<(), String> {
         super::agent_open::admit_agent_mesh_route("AgentCall")?;
-        if request.task.trim().is_empty() {
-            return Err("task must be non-empty".into());
-        }
-        let parent = self.agent_tool_caller(AgentCaller {
-            pane_id: request.parent_pane_id,
-            credential: request.credential,
-            peer_ancestry: request.peer_ancestry,
-        })?;
-        if request.handoff && parent.is_none() {
-            return Err("handoff requires a live caller pane".into());
-        }
-        let root = self.check_agent_tool_permission(parent, request.role, request.handoff)?;
-        let lookup_root = if parent.is_some() {
-            root.clone()
-        } else {
-            request
-                .cwd
-                .map(std::path::PathBuf::from)
-                .unwrap_or(root.clone())
-        };
-        let workspace = crate::app::registry::resolve_agent_lookup_workspace_root(&lookup_root);
-        let (def, _) = crate::cli::agent::resolve_agent_definition_in(
-            request.role,
-            &crate::config::config_dir(),
-            workspace.as_deref(),
-        )?;
-        let harness = def
-            .harness
-            .as_ref()
-            .ok_or("agent role has no CLI harness")?;
-        let adapter = crate::cli::agent::resolve_harness_adapter(harness)?;
-        let handoff_result = if request.handoff {
-            let old = parent.ok_or("handoff requires a caller")?;
-            let raw = json!({"status":"handed_off","role":def.id,"task":request.task}).to_string();
-            let mut result_state = self.pane_results.get(&old).cloned().unwrap_or_default();
-            result_state
-                .write_payload(&raw)
-                .map_err(|error| format!("handoff completion: {}", error.message()))?;
-            Some(raw)
-        } else {
-            None
-        };
-        let task = if request.handoff {
-            let old = parent.ok_or("handoff requires a caller")?;
-            let terminal = self
-                .windows
-                .iter()
-                .find_map(|w| w.panes.get(&old))
-                .and_then(|p| p.as_terminal());
-            let packet = json!({"from_pane_id":old,"from_role":terminal.and_then(|t| t.agent_role.as_deref()),
-                "session":terminal.and_then(|t| t.build_saved_agent_session()),"task":request.task});
-            format!(
-                "# Restore packet\n{packet}\n\n# Successor task\n{}",
-                request.task
-            )
-        } else {
-            request.task.to_string()
-        };
-        let command = crate::cli::agent::with_auto_state_hooks(
-            adapter,
-            crate::cli::agent::build_agent_spawn_command(&def, adapter, &task)?,
-        );
-        let managed = request
+        let plan = self.admit_agent_call(&request)?;
+        let managed = plan
             .worktree
-            .map(|branch| crate::host::worktree::create_worktree(&lookup_root, branch))
+            .as_deref()
+            .map(|branch| crate::host::worktree::create_worktree(&plan.lookup_root, branch))
             .transpose()?;
-        let cwd = managed
-            .as_ref()
-            .map(|w| w.path.clone())
-            .unwrap_or(lookup_root);
-        let child_parent = if request.handoff {
-            parent
-                .and_then(|id| self.windows.iter().find_map(|w| w.panes.get(&id)))
-                .and_then(|p| p.as_terminal())
-                .and_then(|t| t.parent_pane_id)
-        } else {
-            parent
-        };
-        let subcontext = child_parent.map(|id| format!("agent-tools-{id}"));
-        let origin_context = parent
-            .and_then(|id| self.find_pane_in_any_window(id))
-            .map(|(win, _)| self.windows[win].context_id);
-        let spawned = self.spawn_agent_worker_pane(
-            &def.id,
-            adapter.harness.as_str(),
-            &command,
-            request.task,
-            subcontext.as_deref(),
-            harness.ephemeral,
-            child_parent,
-            Some(cwd),
-            harness.result_schema.clone(),
-            None,
-            true,
-            origin_context,
-        );
-        let (pane_id, _) = match spawned {
-            Ok(pair) => pair,
+        let child_parent = plan.child_parent;
+        let parent = plan.authority.parent;
+        let pane_id = match self.apply_launch(
+            super::launch_plan::LaunchPlan::Agent(&plan),
+            managed.as_ref(),
+        ) {
+            Ok(pane_id) => pane_id,
             Err(error) => {
                 if let Some(wt) = managed {
                     log::warn!(
@@ -218,16 +133,19 @@ impl PlexiApp {
             self.pane_worktrees.insert(pane_id, wt);
         }
         self.agent_tool_children.insert(pane_id, child_parent);
-        log::info!("agent_call: spawned role={} parent={child_parent:?} child={pane_id} async={} handoff={}", def.id, request.asynchronous, request.handoff);
+        log::info!("agent_call: spawned role={} parent={child_parent:?} child={pane_id} async={} handoff={}", plan.role, request.asynchronous, request.handoff);
         if request.handoff {
             if let Some(old) = parent {
                 // Preserve the successor reference as the caller's validated completion.
-                let result = handoff_result.ok_or("missing prepared handoff completion")?;
+                let result = plan
+                    .handoff_result
+                    .clone()
+                    .ok_or("missing prepared handoff completion")?;
                 self.handle_pane_ipc_request(crate::protocol::HostRequest::AgentDone {
                     peer_ancestry: None,
                     pane_id: old,
                     result: Some(result),
-                    summary: Some(format!("Handed off to {}", def.id)),
+                    summary: Some(format!("Handed off to {}", plan.role)),
                     response_file: request.response_file.to_string(),
                 });
                 // Handoff transfers ownership, independently of ordinary done's

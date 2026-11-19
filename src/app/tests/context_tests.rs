@@ -140,6 +140,7 @@ fn deleting_context_preserves_workspace_save_and_restore() {
         grid_y: 0,
         window_id: window,
         context_id: child,
+        tree_generation: 0,
     });
     h.app.context_active_window.insert(child, window);
     let index = h
@@ -252,6 +253,7 @@ fn assert_workspace_config_applies_when_switching_contexts() {
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_b_id,
+        tree_generation: 0,
     });
 
     app.switch_workspace(1);
@@ -309,6 +311,7 @@ fn switching_contexts_refreshes_workspace_plugin_registry() {
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_b_id,
+        tree_generation: 0,
     });
 
     app.switch_workspace(1);
@@ -841,6 +844,7 @@ fn delete_context_portal_resets_stale_focused_pane() {
             grid_y: 0,
             window_id: child_win_id,
             context_id: child_id,
+            tree_generation: 0,
         });
     }
 
@@ -955,6 +959,7 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
             grid_y: 0,
             window_id: a_win_id,
             context_id: a_id,
+            tree_generation: 0,
         });
     }
     {
@@ -973,6 +978,7 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
             grid_y: 0,
             window_id: b_win_id,
             context_id: b_id,
+            tree_generation: 0,
         });
     }
 
@@ -1064,6 +1070,7 @@ fn delete_window_revokes_removed_pane_credentials() {
         grid_y: 0,
         window_id: 65_300_102,
         context_id,
+        tree_generation: 0,
     });
 
     app.delete_window(1);
@@ -1300,6 +1307,7 @@ fn context_transition_rescans_registry() {
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_b_id,
+        tree_generation: 0,
     });
     let ctx_b_idx = app.router.len() - 1;
     app.switch_workspace(ctx_b_idx);
@@ -1544,6 +1552,7 @@ fn delete_context_collapses_empty_portal_window() {
             grid_y: 0,
             window_id: win2_id,
             context_id: root_id,
+            tree_generation: 0,
         });
     }
 
@@ -1574,6 +1583,7 @@ fn delete_context_collapses_empty_portal_window() {
             grid_y: 0,
             window_id: child_win_id,
             context_id: child_id,
+            tree_generation: 0,
         });
     }
 
@@ -1664,6 +1674,7 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
             grid_y: 0,
             window_id: win2_id,
             context_id: root_id,
+            tree_generation: 0,
         });
     }
 
@@ -1694,6 +1705,7 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
             grid_y: 0,
             window_id: child_win_id,
             context_id: child_id,
+            tree_generation: 0,
         });
     }
 
@@ -1853,6 +1865,7 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
         grid_y: 0,
         window_id: child_win_id,
         context_id: child_ctx_id,
+        tree_generation: 0,
     });
     app.router
         .push_depth(child_ctx_id, child_win_id, Some(child_right_tile));
@@ -2035,6 +2048,7 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
         grid_y: 0,
         window_id: child_win_a,
         context_id: child_ctx_id,
+        tree_generation: 0,
     });
 
     let mut tiles_primary = egui_tiles::Tiles::default();
@@ -2056,6 +2070,7 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
         grid_y: 0,
         window_id: child_win_primary,
         context_id: child_ctx_id,
+        tree_generation: 0,
     });
 
     let mut tiles_c = egui_tiles::Tiles::default();
@@ -2073,6 +2088,7 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
         grid_y: 0,
         window_id: child_win_c,
         context_id: child_ctx_id,
+        tree_generation: 0,
     });
 
     app.minimap.visible = false;
@@ -2366,6 +2382,7 @@ fn closing_last_pane_in_subcontext_collapses_and_zooms_out() {
         grid_y: 0,
         window_id: child_win_id,
         context_id: child_id,
+        tree_generation: 0,
     });
 
     // Zoom Root → child, as sidebar/portal zoom does.
@@ -2468,6 +2485,7 @@ fn closing_last_pane_in_background_subcontext_removes_it_without_switching() {
         grid_y: 0,
         window_id: child_win_id,
         context_id: child_id,
+        tree_generation: 0,
     });
 
     // Root stays active; close the subcontext's only pane by id.
@@ -2715,6 +2733,7 @@ fn set_context_root_ipc_targets_caller_context() {
         grid_y: 0,
         window_id: 65_300_202,
         context_id: other_id,
+        tree_generation: 0,
     });
     let old_root = std::path::PathBuf::from("/tmp/background");
     let token = crate::app::host_mcp::register_pane_credential_for_test(
@@ -3286,6 +3305,7 @@ fn context_sub_focus_returns_to_the_callers_window_not_the_active_one() {
         grid_y: 0,
         window_id: other_win_id,
         context_id: other_ctx_id,
+        tree_generation: 0,
     });
     h.app.active_window = h.app.windows.len() - 1;
     assert_ne!(
@@ -3566,6 +3586,7 @@ fn perf_gate_delete_context_does_not_block_ui_thread() {
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
+            tree_generation: 0,
         });
     }
 
@@ -3699,6 +3720,7 @@ fn launch_into_an_inactive_context_resolves_that_contexts_own_registry() {
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_b_id,
+        tree_generation: 0,
     });
 
     // Context A is still active — no `switch_workspace`/context transition
@@ -3784,6 +3806,7 @@ fn set_context_root_on_an_inactive_context_rescans_its_registry() {
         grid_y: 0,
         window_id: 2,
         context_id: ctx_b_id,
+        tree_generation: 0,
     });
     assert_ne!(
         app.router.active().context_id,
@@ -3864,6 +3887,7 @@ fn registry_watcher_covers_an_inactive_contexts_root_and_rescans_it_alone() {
         grid_y: 0,
         window_id: 2,
         context_id: ctx_b_id,
+        tree_generation: 0,
     });
 
     // Resolve BOTH contexts' views (context A's happens automatically at
@@ -4122,6 +4146,7 @@ fn spawn_stamp_matches_placement_for_caller_in_inactive_context() {
         grid_y: 1,
         window_id: 10,
         context_id: other_ctx,
+        tree_generation: 0,
     });
     app.active_window = 1;
     app.router.set_active(1);
@@ -4568,6 +4593,7 @@ fn context_targets_background_id_open_uses_owning_root() {
         grid_y: 0,
         window_id: b_id + 1,
         context_id: b_id,
+        tree_generation: 0,
     });
     // Install a global runtime fixture, with no workspace_root to mask the default.
     let global = tempfile::tempdir().unwrap();

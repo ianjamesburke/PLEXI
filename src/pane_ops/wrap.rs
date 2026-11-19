@@ -151,6 +151,7 @@ impl PlexiApp {
                 child_panes.insert(*id, pane);
             }
         }
+        parent.advance_tree_generation();
         if let Some(Tile::Pane(slot)) = parent.tree.tiles.get_mut(anchor_tile) {
             *slot = portal_id;
         }
@@ -199,6 +200,7 @@ impl PlexiApp {
             grid_y: 0,
             window_id,
             context_id,
+            tree_generation: 0,
         };
         child_window.simplify_and_reconcile();
         self.windows.push(child_window);

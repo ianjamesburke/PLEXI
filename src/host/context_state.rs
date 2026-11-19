@@ -337,6 +337,7 @@ mod tests {
             grid_y: 0,
             window_id,
             context_id,
+            tree_generation: 0,
         }
     }
 

@@ -408,6 +408,7 @@ fn another_context(h: &mut HostHarness, id: u64) -> u64 {
         grid_y: 0,
         window_id: id,
         context_id: id,
+        tree_generation: 0,
     });
     let pane = h.add_test_pane();
     let (_, tile) = h.app.find_pane_in_any_window(pane).unwrap();

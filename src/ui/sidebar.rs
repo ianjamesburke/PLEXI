@@ -957,6 +957,7 @@ mod tests {
                 grid_y: 0,
                 window_id,
                 context_id,
+                tree_generation: 0,
             });
         }
         app.context_active_window.insert(context_id, 43);

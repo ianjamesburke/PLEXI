@@ -349,6 +349,7 @@ impl PlexiApp {
                 {
                     self.windows[active].tree = tree;
                     self.windows[active].panes = panes;
+                    self.windows[active].advance_tree_generation();
                     self.set_window_focused_pane(active, root_tile);
                 }
             }
@@ -511,20 +512,24 @@ impl PlexiApp {
         Some(new_id)
     }
 
+    /// Open a terminal tab beside `anchor` in `target_win_idx` and return the
+    /// pane it created. `anchor` is the pane the caller selected, never the
+    /// window's focus at call time; `None` is only valid for an empty window,
+    /// whose first pane becomes the tree root.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_tab(
         &mut self,
         target_win_idx: usize,
+        anchor: Option<PaneId>,
         initial_cmd: Option<&str>,
         close_on_exit: bool,
         cwd_override: Option<PathBuf>,
         agent_pane: bool,
         inject_folder_secrets: bool,
-    ) {
-        if self.windows.get(target_win_idx).is_none() {
-            return;
-        }
+    ) -> Option<PaneId> {
+        self.windows.get(target_win_idx)?;
         // Empty context (welcome screen): create the first pane as tree root.
-        if self.windows[target_win_idx].panes.is_empty() {
+        if anchor.is_none() && self.windows[target_win_idx].panes.is_empty() {
             let new_id = self.host.alloc_pane_id();
             let ctx_id = self
                 .windows
@@ -572,7 +577,7 @@ impl PlexiApp {
                 Ok(pane) => pane,
                 Err(error) => {
                     log::error!("Failed to create first terminal pane in empty context: {error}");
-                    return;
+                    return None;
                 }
             };
             pane.ephemeral = close_on_exit;
@@ -584,24 +589,17 @@ impl PlexiApp {
             ctx.tree.root = Some(tab_tile);
             ctx.navigate_to(pane_tile);
             ctx.simplify_and_reconcile();
-            return;
+            return Some(new_id);
         }
 
         let old_window_id = self.windows[target_win_idx].window_id;
         let old_focus = self.windows[target_win_idx].focused_pane;
-        let Some(focused) = self.windows[target_win_idx]
-            .focused_pane
-            .and_then(|tile| self.windows[target_win_idx].find_first_pane_in(tile))
-        else {
-            return;
-        };
-        let Some(Tile::Pane(source_id)) = self.windows[target_win_idx].tree.tiles.get(focused)
-        else {
-            return;
-        };
-        if !self.windows[target_win_idx].panes.contains_key(source_id) {
-            return;
+        let anchor = anchor?;
+        if !self.windows[target_win_idx].panes.contains_key(&anchor) {
+            log::info!("new_tab: anchor pane {anchor} is not in window idx={target_win_idx}");
+            return None;
         }
+        let focused = self.windows[target_win_idx].tree.tiles.find_pane(&anchor)?;
 
         let new_id = self.host.alloc_pane_id();
 
@@ -647,7 +645,7 @@ impl PlexiApp {
             Ok(pane) => pane,
             Err(error) => {
                 log::error!("Failed to create new terminal pane: {error}");
-                return;
+                return None;
             }
         };
         pane.ephemeral = close_on_exit;
@@ -684,6 +682,20 @@ impl PlexiApp {
 
         ctx.navigate_to(new_tile);
         ctx.simplify_and_reconcile();
+        Some(new_id)
+    }
+
+    /// The pane the keyboard "new tab" acts on: the first pane under the
+    /// active window's focus.
+    pub(crate) fn focused_tab_anchor(&self, win_idx: usize) -> Option<PaneId> {
+        let win = self.windows.get(win_idx)?;
+        let tile = win
+            .focused_pane
+            .and_then(|tile| win.find_first_pane_in(tile))?;
+        match win.tree.tiles.get(tile) {
+            Some(Tile::Pane(pane_id)) => Some(*pane_id),
+            _ => None,
+        }
     }
 
     pub(crate) fn cycle_tab(&mut self, forward: bool) {
@@ -987,6 +999,7 @@ impl PlexiApp {
                     context_root.as_deref(),
                 );
                 closed_pane_id = Some(pane_id);
+                ctx.advance_tree_generation();
                 ctx.panes.remove(&pane_id)
             } else {
                 None
@@ -1701,6 +1714,7 @@ impl PlexiApp {
             }
             ctx.tree.tiles.remove(focused_tile);
             let pane = ctx.panes.remove(&src_pane_id);
+            ctx.advance_tree_generation();
             ctx.focused_pane = next_src_focus;
             ctx.simplify_and_reconcile();
             pane
@@ -1767,6 +1781,7 @@ impl PlexiApp {
             grid_y: src_grid_y,
             window_id: win_id,
             context_id: ws_id,
+            tree_generation: 0,
         });
 
         self.active_window = self.windows.len() - 1;
@@ -1875,6 +1890,7 @@ impl PlexiApp {
             }
             ctx.tree.tiles.remove(src_focused_tile);
             let pane = ctx.panes.remove(&src_pane_id);
+            ctx.advance_tree_generation();
             ctx.focused_pane = next_src_focus;
             ctx.simplify_and_reconcile();
             pane
@@ -2230,6 +2246,7 @@ mod close_pane_by_id_tests {
             grid_y,
             window_id,
             context_id,
+            tree_generation: 0,
         }
     }
 

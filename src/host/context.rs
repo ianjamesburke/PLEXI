@@ -211,9 +211,19 @@ pub struct Window {
     pub window_id: u64,
     /// The context this window belongs to.
     pub context_id: u64,
+    /// Advances whenever the tree is rebuilt in place or a pane leaves the
+    /// window. Tile ids restart in a rebuilt tree, so a `TileId` names a node
+    /// only together with this generation; an admitted empty-root launch
+    /// binds it so a fill-and-empty cycle cannot satisfy it (stint 1632).
+    pub tree_generation: u64,
 }
 
 impl Window {
+    /// Record a tree rebuild or a pane leaving this window.
+    pub(crate) fn advance_tree_generation(&mut self) {
+        self.tree_generation += 1;
+    }
+
     pub(crate) fn find_ancestor_tabs(&self, tile_id: TileId) -> Option<(TileId, TileId)> {
         let mut current = tile_id;
         loop {

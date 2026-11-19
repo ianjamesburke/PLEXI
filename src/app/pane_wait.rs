@@ -354,18 +354,19 @@ impl PlexiApp {
     pub(crate) fn reply_spawn_pane(
         &mut self,
         spec: &crate::app::launch_spec::PaneLaunchSpec,
-        pane_id: u64,
-        launch_result: &Result<(), String>,
+        outcome: &Result<u64, String>,
     ) {
-        let error = match launch_result {
-            Ok(()) => None,
+        let pane_id = match outcome {
+            Ok(pane_id) => *pane_id,
             Err(msg) => {
                 log::warn!("pane_ipc: spawn_pane: launch failed, returning error to caller: {msg}");
-                self.reclaim_pane_worktree(pane_id);
-                Some(msg.clone())
+                if let Some(rf) = &spec.response_file {
+                    crate::rpc::write_json_response(rf, serde_json::json!({ "error": msg }));
+                }
+                return;
             }
         };
-        if let (None, Some(agent)) = (&error, &spec.agent) {
+        if let Some(agent) = &spec.agent {
             let typed = self
                 .windows
                 .iter_mut()
@@ -413,14 +414,9 @@ impl PlexiApp {
             self.complete_agent_boots(pane_id);
             return;
         }
-        let Some(rf) = &spec.response_file else {
-            return;
-        };
-        let json = match error {
-            None => self.spawn_pane_success_json(pane_id),
-            Some(msg) => serde_json::json!({ "error": msg }),
-        };
-        crate::rpc::write_json_response(rf, json);
+        if let Some(rf) = &spec.response_file {
+            crate::rpc::write_json_response(rf, self.spawn_pane_success_json(pane_id));
+        }
     }
 
     pub(crate) fn spawn_pane_success_json(&self, pane_id: u64) -> serde_json::Value {
