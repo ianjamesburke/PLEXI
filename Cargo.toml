@@ -103,7 +103,10 @@ wasmtime = "43.0.2"
 wasmtime-wasi = "43.0.2"
 bytes = "1"
 tokio = { version = "1", features = ["io-util"] }
-sysinfo = "0.32"
+# Only "system": the default "multithread" routes even a one-pid refresh through
+# rayon's global pool, which wasmtime compiles saturate; pane spawn then stalls
+# for seconds (stint 1633).
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 # Clipboard reads for capability-gated WASM effects. eframe owns writes through egui.
 arboard = "3"
 # Static X25519 so the desktop private key can live in the keychain across a

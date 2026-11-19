@@ -121,8 +121,12 @@ perf-clippy:
     RUSTC_WRAPPER= RUSTFLAGS= bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py clippy --all-targets --all-features --locked -- -A clippy::all -D clippy::perf -D clippy::redundant_clone -D clippy::needless_collect -D clippy::large_enum_variant -D clippy::clone_on_copy
 
 # Strict lint gate with the same managed build inputs and warning flags.
-clippy:
+clippy: check-sysinfo-features
     python3 scripts/run_logged.py --tee clippy -- bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py clippy --bin plexi -- -D warnings
+
+# Fail if any resolved sysinfo can run on rayon's global pool (stint 1633).
+check-sysinfo-features:
+    python3 scripts/check-sysinfo-features.py
 
 # Verify host surface registration and scoped raw-composition exceptions.
 check-ui-layout:
