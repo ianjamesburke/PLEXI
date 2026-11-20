@@ -119,9 +119,79 @@ fn two_windows_mut(
     }
 }
 
-fn revoke_window_pane_credentials(window: &Window) {
-    for pane_id in window.panes.keys() {
-        crate::app::host_mcp::revoke_pane_credentials(*pane_id);
+/// Revoke the credentials of every pane in a window being removed, at its
+/// logical removal: background disposal of the window may run much later.
+fn revoke_window_pane_credentials(window: &mut Window) {
+    for pane in window.panes.values_mut() {
+        pane.revoke_credentials();
+    }
+}
+
+/// Dispose of logically removed windows off the UI thread. Every pane's
+/// credentials are revoked here, synchronously, before disposal is
+/// scheduled: a removed pane authenticates nothing however long its
+/// backend takes to drop (stint 1632).
+fn dispose_removed_windows(mut windows: Vec<Window>, what: &'static str) {
+    for window in &mut windows {
+        revoke_window_pane_credentials(window);
+    }
+    log::info!(
+        "{what}: disposing {} window(s) off UI thread",
+        windows.len()
+    );
+    #[cfg(test)]
+    if disposal::held(&mut windows) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        drop(windows);
+        log::debug!(
+            "{what}: window disposal thread finished in {:?}",
+            start.elapsed()
+        );
+    });
+}
+
+/// Hold removed windows instead of disposing of them, so a test can observe
+/// a removed pane while its backend is still alive.
+#[cfg(test)]
+pub(crate) mod disposal {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static HELD: RefCell<Option<Vec<super::Window>>> = const { RefCell::new(None) };
+    }
+
+    /// Hold every window this thread disposes of until the guard drops.
+    pub(crate) fn hold() -> Guard {
+        HELD.with(|held| *held.borrow_mut() = Some(Vec::new()));
+        Guard
+    }
+
+    pub(crate) struct Guard;
+
+    impl Guard {
+        /// How many removed windows are held, undisposed.
+        pub(crate) fn held_count(&self) -> usize {
+            HELD.with(|held| held.borrow().as_ref().map_or(0, Vec::len))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            HELD.with(|held| held.borrow_mut().take());
+        }
+    }
+
+    pub(super) fn held(windows: &mut Vec<super::Window>) -> bool {
+        HELD.with(|held| match held.borrow_mut().as_mut() {
+            Some(slot) => {
+                slot.append(windows);
+                true
+            }
+            None => false,
+        })
     }
 }
 
@@ -1160,10 +1230,7 @@ impl PlexiApp {
             .windows
             .iter()
             .filter(|window| deleted.contains(&window.context_id))
-            .flat_map(|window| {
-                revoke_window_pane_credentials(window);
-                window.panes.keys().copied().collect::<Vec<_>>()
-            })
+            .flat_map(|window| window.panes.keys().copied().collect::<Vec<_>>())
             .collect();
         for context_id in &deleted {
             let panes: Vec<_> = self
@@ -1190,18 +1257,8 @@ impl PlexiApp {
             self.windows = kept;
             doomed
         };
-        log::info!(
-            "delete_context: disposing {} window(s) off UI thread (ctx_id={target_ctx_id})",
-            doomed.len()
-        );
-        std::thread::spawn(move || {
-            let start = std::time::Instant::now();
-            drop(doomed);
-            log::debug!(
-                "delete_context: window disposal thread finished in {:?}",
-                start.elapsed()
-            );
-        });
+        log::info!("delete_context: removed ctx_id={target_ctx_id}");
+        dispose_removed_windows(doomed, "delete_context");
 
         // 4. Remove Portal tiles in surviving windows that point to any deleted ctx.
         for win in &mut self.windows {
@@ -1564,19 +1621,9 @@ impl PlexiApp {
         for pane in self.windows[index].panes.values() {
             self.record_closed_agent_pane(removed_ws_id, &self.windows[index].path, pane);
         }
-        revoke_window_pane_credentials(&self.windows[index]);
         let removed_window = self.windows.remove(index);
-        log::info!(
-            "delete_window: disposing window off UI thread (window_id={removed_win_id}, ctx_id={removed_ws_id})"
-        );
-        std::thread::spawn(move || {
-            let start = std::time::Instant::now();
-            drop(removed_window);
-            log::debug!(
-                "delete_window: window disposal thread finished in {:?}",
-                start.elapsed()
-            );
-        });
+        log::info!("delete_window: removed window_id={removed_win_id} ctx_id={removed_ws_id}");
+        dispose_removed_windows(vec![removed_window], "delete_window");
 
         // If the deleted window was the stored last-visited for its context,
         // point to another window in the same context so the palette doesn't
@@ -1891,13 +1938,16 @@ impl PlexiApp {
         auto_init_workspace(&root);
         let context_id = self.router.get(idx).context_id;
         let old_root = self.router.get(idx).root.clone();
-        for pane_id in self
+        for terminal in self
             .windows
             .iter()
             .filter(|window| window.context_id == context_id)
-            .flat_map(|window| window.panes.keys())
+            .flat_map(|window| window.panes.values())
+            .filter_map(crate::host::pane::Pane::terminal_incarnation)
         {
-            crate::app::host_mcp::rebind_pane_credential(*pane_id, root.clone());
+            if let Some(credentials) = terminal.credentials() {
+                credentials.rebind_workspace(root.clone());
+            }
         }
         self.router.get_mut(idx).root = root.clone();
 
@@ -2162,7 +2212,7 @@ impl PlexiApp {
             );
         }
 
-        for window in self.windows.iter().filter(|window| {
+        for window in self.windows.iter_mut().filter(|window| {
             window.window_id == primary_child_window_id || window.context_id == child_ctx_id
         }) {
             // The primary window's panes were grafted into the parent above,

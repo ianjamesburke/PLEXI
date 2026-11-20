@@ -55,7 +55,10 @@ impl CloseFocusRule {
 /// Restoring NEVER writes into the restored terminal. Cwd handoff is an
 /// explicit `ViewCommand::CdRequest` only (#2145) — a coding agent may be
 /// running in the terminal behind the overlay.
-pub(super) fn restore_overlay_replacement(win: &mut crate::host::context::Window, pane_id: PaneId) -> bool {
+pub(super) fn restore_overlay_replacement(
+    win: &mut crate::host::context::Window,
+    pane_id: PaneId,
+) -> bool {
     let Some(Pane::View(app)) = win.pop_overlay(pane_id) else {
         return false;
     };
@@ -893,7 +896,7 @@ impl PlexiApp {
 
         // Phase 3: Remove tile and extract pane — defer drop so background plugins can be parked.
         let mut closed_pane_id = None;
-        let removed_pane = {
+        let mut removed_pane = {
             let ctx = &mut self.windows[ctx_idx];
             if let Some(parent_id) = ctx.tree.tiles.parent_of(tile_id) {
                 if let Some(Tile::Container(parent)) = ctx.tree.tiles.get_mut(parent_id) {
@@ -976,7 +979,9 @@ impl PlexiApp {
                 Ok(mut timeline) => timeline.close_lifecycle_pane(pane_id),
                 Err(error) => log::error!("pane_lifecycle: closing pane {pane_id}: {error}"),
             }
-            crate::app::host_mcp::revoke_pane_credentials(pane_id);
+            if let Some(pane) = removed_pane.as_mut() {
+                pane.revoke_credentials();
+            }
             if self.pane_heartbeats.remove(&pane_id).is_some() {
                 log::info!("pane_heartbeat: pane_id={pane_id} removed reason=closed");
             }

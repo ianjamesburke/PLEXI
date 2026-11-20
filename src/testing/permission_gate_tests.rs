@@ -2601,3 +2601,48 @@ fn a_retired_permission_change_id_cannot_settle_a_repeated_ask() {
         );
     }
 }
+
+/// Round 3 item 3c: a credential carries the context it was issued in, never
+/// proof that its pane still exists. A plugin call authenticated by the
+/// credential of a pane that has closed is refused before it reaches the
+/// broker, even though the credential names a real context (stint 1632).
+#[test]
+fn launch_plan_credential_of_a_closed_pane_cannot_call_a_plugin() {
+    let mut h = HostHarness::new();
+    isolate_tool_context(&mut h);
+    let _chess = h.launch_repo_view("plugins/chess", &[]);
+    let ctx = h.app.windows[h.app.active_window].context_id;
+    let workspace = h.workspace_root();
+    let closed = h.add_test_pane();
+    let credential =
+        monitor().issue_credential(Some(closed), ctx, &workspace, &format!("pane:{closed}"));
+    let op = format!("gate-{}-closed", uuid::Uuid::new_v4());
+    let live = socket_call(
+        &mut h,
+        Some(closed),
+        Some(&credential),
+        &[],
+        play(0, &op, "e2e4", "game-1"),
+    );
+    assert_eq!(
+        live["error_code"], "permission_required",
+        "a live pane reaches the broker: {live}"
+    );
+    h.app.close_pane_by_id(closed);
+    assert!(h.app.find_pane_in_any_window(closed).is_none());
+    let body = socket_call(
+        &mut h,
+        Some(closed),
+        Some(&credential),
+        &[],
+        play(0, &op, "e2e4", "game-1"),
+    );
+    assert_eq!(body["error_code"], "permission_denied", "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains(&format!("caller pane {closed} not found")),
+        "refused as a dead pane, not by the broker: {body}"
+    );
+}

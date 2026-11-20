@@ -65,21 +65,19 @@ struct McpCaller {
     authority: Option<Arc<crate::broker::pane_authority::PaneAuthority>>,
 }
 
-#[derive(Default)]
-struct CredentialRegistry {
-    by_token: HashMap<String, McpCaller>,
-    by_pane: HashMap<u64, String>,
+/// Pane bearers by token. Each registration is its own entry under a token
+/// minted for it, so the token is the registration's exact handle: a second
+/// registration under the same pane id gets a different token, and only the
+/// handle's owner can rebind or revoke it (stint 1632).
+static CREDENTIALS: OnceLock<Mutex<HashMap<String, McpCaller>>> = OnceLock::new();
+
+fn credentials() -> &'static Mutex<HashMap<String, McpCaller>> {
+    CREDENTIALS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-static CREDENTIALS: OnceLock<Mutex<CredentialRegistry>> = OnceLock::new();
-
-fn credentials() -> &'static Mutex<CredentialRegistry> {
-    CREDENTIALS.get_or_init(|| Mutex::new(CredentialRegistry::default()))
-}
-
-/// Register or refresh the credential injected into one pane, carrying the
-/// authority binding it was issued from. The caller's context and workspace
-/// come from host-owned pane construction, never the MCP request.
+/// Register a new bearer for one pane incarnation, carrying the authority
+/// binding it was issued from. The caller's context and workspace come from
+/// host-owned pane construction, never the MCP request.
 fn register_pane_credential(
     authority: Option<Arc<crate::broker::pane_authority::PaneAuthority>>,
     pane_id: u64,
@@ -95,13 +93,8 @@ fn register_pane_credential(
         actor_id: None,
         authority,
     };
-    if let Some(token) = registry.by_pane.get(&pane_id).cloned() {
-        registry.by_token.insert(token.clone(), caller);
-        return token;
-    }
     let token = uuid::Uuid::new_v4().to_string();
-    registry.by_pane.insert(pane_id, token.clone());
-    registry.by_token.insert(token.clone(), caller);
+    registry.insert(token.clone(), caller);
     log::info!(
         "host_mcp: registered scoped credential pane={pane_id} context={context_id} workspace={}",
         workspace_root.display()
@@ -126,42 +119,36 @@ pub(crate) fn register_pane_bearer(
     })
 }
 
-pub(crate) fn revoke_pane_credentials(pane_id: u64) {
-    let mut registry = credentials().lock().unwrap();
-    if let Some(token) = registry.by_pane.remove(&pane_id) {
-        registry.by_token.remove(&token);
-        log::info!("host_mcp: revoked scoped credential pane={pane_id}");
+/// Revoke exactly the registration `token` names. Another registration for
+/// the same pane id is untouched.
+pub(crate) fn revoke_pane_bearer(token: &str) {
+    if let Some(caller) = credentials().lock().unwrap().remove(token) {
+        log::info!(
+            "host_mcp: revoked scoped credential pane={}",
+            caller.pane_id
+        );
     }
 }
 
-/// Update the trusted workspace attached to a live pane without rotating its
-/// credential. Context roots can change while their panes remain alive — the
-/// pane's `context_id` never changes on a root move, so it is carried forward
-/// from the existing credential rather than taken as a parameter here.
-pub(crate) fn rebind_pane_credential(pane_id: u64, workspace_root: PathBuf) {
+/// Update the trusted workspace attached to the registration `token` names,
+/// without rotating it. Context roots can change while their panes remain
+/// alive; the registration's context is carried forward.
+pub(crate) fn rebind_pane_bearer(token: &str, workspace_root: PathBuf) {
     let mut registry = credentials().lock().unwrap();
-    let Some(token) = registry.by_pane.get(&pane_id).cloned() else {
+    let Some(caller) = registry.get_mut(token) else {
         return;
     };
-    let Some(previous) = registry.by_token.get(&token).cloned() else {
-        return;
-    };
-    let context_id = previous.context_id;
-    registry.by_token.insert(
-        token,
-        McpCaller {
-            workspace_root: workspace_root.clone(),
-            ..previous
-        },
-    );
+    caller.workspace_root = workspace_root.clone();
     log::info!(
-        "host_mcp: rebound scoped credential pane={pane_id} context={context_id} workspace={}",
+        "host_mcp: rebound scoped credential pane={} context={} workspace={}",
+        caller.pane_id,
+        caller.context_id,
         workspace_root.display()
     );
 }
 
 fn authenticate(token: &str) -> Option<McpCaller> {
-    if let Some(caller) = credentials().lock().unwrap().by_token.get(token).cloned() {
+    if let Some(caller) = credentials().lock().unwrap().get(token).cloned() {
         // A pane bearer authorizes only under the authority it was issued
         // from; without one there is no ceiling to apply, so the bearer is
         // refused rather than evaluated more loosely (stint 1632).
@@ -205,6 +192,22 @@ pub(crate) fn register_pane_credential_for_test(
         workspace_root: workspace_root.clone(),
     });
     register_pane_credential(Some(binding), pane_id, context_id, workspace_root)
+}
+
+/// Make sure an MCP endpoint is bound, so constructed panes get bearers.
+#[cfg(test)]
+pub(crate) fn ensure_test_discovery() {
+    if discovery().is_some() {
+        return;
+    }
+    let (tx, _rx) = UiMailbox::<HostSubscribeRequest>::channel(
+        std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new()),
+        "host-mcp-test-discovery",
+    );
+    let dir = tempfile::tempdir().expect("mcp profile dir");
+    start_host_mcp_server(tx, dir.path()).expect("mcp test server");
+    // The accept thread keeps using this directory.
+    std::mem::forget(dir);
 }
 
 /// The ceiling an authenticated bearer is evaluated under.
@@ -906,8 +909,62 @@ mod tests {
         });
         let token = register_pane_bearer_for(&binding, root);
         assert_eq!(authenticated_posture_for_test(&token), Some(Some(posture)));
-        revoke_pane_credentials(pane_id);
+        revoke_pane_bearer(&token);
         assert!(authenticate(&token).is_none(), "revoked bearer refused");
+    }
+
+    /// Round 3 item 3a: each registration is its own handle. A second
+    /// registration under a reused pane id gets a different token; the first
+    /// bearer keeps resolving its own binding, and revoking either leaves
+    /// the other intact.
+    #[test]
+    fn pane_bearer_registrations_are_exact_handles() {
+        let pane_id = 900_100_002u64;
+        let root = PathBuf::from("/workspace/host-mcp-reuse");
+        let binding = |posture: crate::broker::Decision| {
+            Arc::new(crate::broker::pane_authority::PaneAuthority {
+                pane_id,
+                posture: Some(crate::broker::PermissionPosture {
+                    default_posture: posture,
+                    allow: Vec::new(),
+                    ask: Vec::new(),
+                    deny: Vec::new(),
+                }),
+                spawned_by: None,
+                context_id: 1,
+                workspace_root: root.clone(),
+            })
+        };
+        let (first, second) = (
+            binding(crate::broker::Decision::Deny),
+            binding(crate::broker::Decision::Ask),
+        );
+        let first_token = register_pane_bearer_for(&first, root.clone());
+        let second_token = register_pane_bearer_for(&second, root.clone());
+        assert_ne!(
+            first_token, second_token,
+            "a reused pane id gets a new token"
+        );
+        assert_eq!(
+            authenticated_posture_for_test(&first_token),
+            Some(first.posture.clone()),
+            "the first bearer still resolves its own binding"
+        );
+        revoke_pane_bearer(&second_token);
+        assert_eq!(
+            authenticated_posture_for_test(&first_token),
+            Some(first.posture.clone()),
+            "the second owner's revocation leaves the first registration"
+        );
+        let third_token = register_pane_bearer_for(&second, root);
+        revoke_pane_bearer(&first_token);
+        assert!(authenticate(&first_token).is_none());
+        assert_eq!(
+            authenticated_posture_for_test(&third_token),
+            Some(second.posture.clone()),
+            "the first owner's revocation leaves the later registration"
+        );
+        revoke_pane_bearer(&third_token);
     }
 
     fn register_pane_bearer_for(
@@ -1117,7 +1174,7 @@ mod tests {
 
         tool_dispatch::unregister(provider_a_pane);
         tool_dispatch::unregister(provider_b_pane);
-        revoke_pane_credentials(caller_pane);
+        revoke_pane_bearer(&caller_token);
         let (status, _) = post(
             port,
             Some(&caller_token),

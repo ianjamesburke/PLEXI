@@ -515,6 +515,35 @@ impl Pane {
         }
     }
 
+    /// The terminal process this slot runs, whether it is the top occupant
+    /// or covered by an overlay. A covered terminal keeps running, so every
+    /// question about who a live process is (its socket peer, posture, role)
+    /// is asked of it, never of the overlay (stint 1632).
+    pub(crate) fn terminal_incarnation(&self) -> Option<&TerminalPane> {
+        match self {
+            Pane::Terminal(t) => Some(t),
+            Pane::View(view) => view
+                .overlay_replaced
+                .as_deref()
+                .and_then(Pane::terminal_incarnation),
+            Pane::Portal(_) => None,
+        }
+    }
+
+    /// Revoke the credentials of every terminal in this slot, covered or
+    /// not, at the slot's logical removal.
+    pub(crate) fn revoke_credentials(&mut self) {
+        match self {
+            Pane::Terminal(t) => t.revoke_credentials(),
+            Pane::View(view) => {
+                if let Some(covered) = view.overlay_replaced.as_deref_mut() {
+                    covered.revoke_credentials();
+                }
+            }
+            Pane::Portal(_) => {}
+        }
+    }
+
     pub fn as_terminal_mut(&mut self) -> Option<&mut TerminalPane> {
         match self {
             Pane::Terminal(t) => Some(t),
@@ -1612,8 +1641,6 @@ impl TerminalPane {
         }
     }
 
-    /// Build the persisted [`crate::workspace::SavedAgentSession`] for this pane
-    /// if it is an agent pane.
     /// The authority binding this pane was constructed under, if it has one.
     pub(crate) fn authority(
         &self,
@@ -1626,6 +1653,20 @@ impl TerminalPane {
         self.authority().and_then(|a| a.posture.as_ref())
     }
 
+    /// Revoke this pane's credentials at its logical removal, before its
+    /// backend is disposed of (stint 1632).
+    pub(crate) fn revoke_credentials(&mut self) {
+        if let Some(credentials) = self.credentials.as_mut() {
+            credentials.revoke();
+        }
+    }
+
+    pub(crate) fn credentials(&self) -> Option<&crate::pane_ops::construct::PaneCredentials> {
+        self.credentials.as_ref()
+    }
+
+    /// Build the persisted [`crate::workspace::SavedAgentSession`] for this pane
+    /// if it is an agent pane.
     pub fn build_saved_agent_session(&self) -> Option<crate::workspace::SavedAgentSession> {
         self.build_saved_agent_session_with_scrollback(20)
     }

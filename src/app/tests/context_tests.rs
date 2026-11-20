@@ -913,16 +913,8 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
     let b_win_id = 9004u64;
     let a_pane_id = 65_300_111u64;
     let b_pane_id = 65_300_112u64;
-    let a_token = crate::app::host_mcp::register_pane_credential_for_test(
-        a_pane_id,
-        a_id,
-        std::path::PathBuf::from("/tmp/a"),
-    );
-    let b_token = crate::app::host_mcp::register_pane_credential_for_test(
-        b_pane_id,
-        b_id,
-        std::path::PathBuf::from("/tmp/b"),
-    );
+    let (a_pane, a_token, a_call) = credentialed_terminal(&app, a_pane_id, a_id, "/tmp/a");
+    let (b_pane, b_token, b_call) = credentialed_terminal(&app, b_pane_id, b_id, "/tmp/b");
 
     app.router.push(crate::host::context::Context {
         name: "A".to_string().into(),
@@ -950,7 +942,7 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
         let mut tiles_a = egui_tiles::Tiles::default();
         let r_a = tiles_a.insert_pane(a_pane_id);
         let mut panes = std::collections::HashMap::new();
-        panes.insert(a_pane_id, test_view_pane(a_pane_id));
+        panes.insert(a_pane_id, a_pane);
         app.windows.push(crate::host::context::Window {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/a"),
@@ -969,7 +961,7 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
         let mut tiles_b = egui_tiles::Tiles::default();
         let r_b = tiles_b.insert_pane(b_pane_id);
         let mut panes = std::collections::HashMap::new();
-        panes.insert(b_pane_id, test_view_pane(b_pane_id));
+        panes.insert(b_pane_id, b_pane);
         app.windows.push(crate::host::context::Window {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/b"),
@@ -992,7 +984,15 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
 
     // Delete A (find it by id).
     let a_idx_now = app.router.position(|c| c.context_id == a_id).unwrap();
+    // Disposal is held: the removed terminals are still alive, so only
+    // revocation at logical removal can make their credentials stale.
+    let held = crate::pane_ops::disposal::hold();
     app.delete_context(a_idx_now);
+    assert_eq!(held.held_count(), 2, "both removed windows await disposal");
+    assert!(
+        call_credential_revoked(a_pane_id, &a_call) && call_credential_revoked(b_pane_id, &b_call),
+        "deleting a context revokes its panes' call credentials before disposal"
+    );
 
     assert!(!app.context_active_window.contains_key(&a_id));
     assert!(!app.context_active_window.contains_key(&b_id));
@@ -1052,16 +1052,13 @@ fn delete_window_revokes_removed_pane_credentials() {
 
     let context_id = app.router.active().context_id;
     let removed_pane_id = 65_300_101u64;
-    let removed_token = crate::app::host_mcp::register_pane_credential_for_test(
-        removed_pane_id,
-        context_id,
-        std::path::PathBuf::from("/tmp/removed"),
-    );
+    let (removed_pane, removed_token, removed_call) =
+        credentialed_terminal(&app, removed_pane_id, context_id, "/tmp/removed");
 
     let mut tiles = egui_tiles::Tiles::default();
     let root = tiles.insert_pane(removed_pane_id);
     let mut panes = std::collections::HashMap::new();
-    panes.insert(removed_pane_id, test_view_pane(removed_pane_id));
+    panes.insert(removed_pane_id, removed_pane);
     app.windows.push(Window {
         name: "removed".to_string(),
         path: std::path::PathBuf::from("/tmp/removed"),
@@ -1076,7 +1073,13 @@ fn delete_window_revokes_removed_pane_credentials() {
         tree_history: Default::default(),
     });
 
+    let held = crate::pane_ops::disposal::hold();
     app.delete_window(1);
+    assert_eq!(held.held_count(), 1, "the removed window awaits disposal");
+    assert!(
+        call_credential_revoked(removed_pane_id, &removed_call),
+        "deleting a window revokes its panes' call credentials before disposal"
+    );
 
     assert_eq!(
         crate::app::host_mcp::authenticated_workspace_for_test(&removed_token),
@@ -1762,6 +1765,62 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
     );
 }
 
+/// A live terminal that owns its credentials, as construction issues them,
+/// with its MCP bearer and call credential (stint 1632).
+fn credentialed_terminal(
+    app: &PlexiApp,
+    pane_id: u64,
+    context_id: u64,
+    root: &str,
+) -> (crate::host::pane::Pane, String, String) {
+    crate::app::host_mcp::ensure_test_discovery();
+    let terminal = app
+        .construct_terminal(crate::pane_ops::construct::TerminalLaunch {
+            pane_id,
+            posture: None,
+            spawned_by: None,
+            context: crate::pane_ops::create::PaneContextEnv {
+                context_id,
+                name: "test".to_string(),
+                description: String::new(),
+                root: Some(std::path::PathBuf::from(root)),
+                depth: 0,
+            },
+            cwd: None,
+            secrets: crate::host::shell::SecretPolicy::NONE,
+            agent_pane: false,
+            command: None,
+            ephemeral: false,
+            env: Vec::new(),
+            mcp: crate::pane_ops::construct::McpBearer::Pane,
+            profile_dir: crate::config::config_dir(),
+        })
+        .expect("test terminal starts");
+    let credentials = terminal
+        .credentials()
+        .expect("constructed with credentials");
+    let mcp = credentials.mcp_token().expect("an MCP bearer").to_string();
+    let call = credentials
+        .call_token()
+        .expect("a call credential")
+        .to_string();
+    (
+        crate::host::pane::Pane::Terminal(Box::new(terminal)),
+        mcp,
+        call,
+    )
+}
+
+/// The call credential `token` no longer authenticates pane `pane_id`.
+fn call_credential_revoked(pane_id: u64, token: &str) -> bool {
+    matches!(
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .expect("permission monitor")
+            .authenticate_call(Some(pane_id), Some(token), None),
+        Err(crate::broker::gate::IdentityError::StaleCredential)
+    )
+}
+
 fn test_view_pane(pane_id: u64) -> crate::host::pane::Pane {
     use crate::app::permissions::PluginPermissions;
     use crate::host::pane::{ViewPane, ViewRuntime};
@@ -1855,7 +1914,9 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
     let child_right_tile = child_tiles.insert_pane(child_right);
     let child_root = child_tiles.insert_horizontal_tile(vec![child_left_tile, child_right_tile]);
     let mut child_panes = HashMap::new();
-    child_panes.insert(child_left, test_view_pane(child_left));
+    let (child_left_pane, moved_token, _) =
+        credentialed_terminal(&app, child_left, child_ctx_id, "/tmp/dissolve_single_child");
+    child_panes.insert(child_left, child_left_pane);
     child_panes.insert(child_right, test_view_pane(child_right));
     app.windows.push(Window {
         name: "child".to_string(),
@@ -1872,12 +1933,6 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
     });
     app.router
         .push_depth(child_ctx_id, child_win_id, Some(child_right_tile));
-    let moved_token = crate::app::host_mcp::register_pane_credential_for_test(
-        child_left,
-        child_ctx_id,
-        std::path::PathBuf::from("/tmp/dissolve_single_child"),
-    );
-
     app.dissolve_portal(child_ctx_id);
 
     assert_eq!(
@@ -1885,7 +1940,6 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
         Some(std::path::PathBuf::from("/tmp/dissolve_single_child")),
         "dissolving a context moves its panes and must not revoke their credentials"
     );
-    crate::app::host_mcp::revoke_pane_credentials(child_left);
 
     assert!(
         app.router.iter().all(|ctx| ctx.context_id != child_ctx_id),
@@ -2716,10 +2770,11 @@ fn set_context_root_ipc_targets_caller_context() {
         .router
         .push(test_context(other_id, active_id, "background"));
     let pane_id = 65_300_201u64;
+    let (terminal, token, _) = credentialed_terminal(&h.app, pane_id, other_id, "/tmp/background");
     let mut tiles = egui_tiles::Tiles::default();
     let pane_tile = tiles.insert_pane(pane_id);
     let mut panes = std::collections::HashMap::new();
-    panes.insert(pane_id, test_view_pane(pane_id));
+    panes.insert(pane_id, terminal);
     h.app.windows.push(Window {
         name: "background".to_string(),
         path: std::path::PathBuf::from("/tmp/background"),
@@ -2734,11 +2789,6 @@ fn set_context_root_ipc_targets_caller_context() {
         tree_history: Default::default(),
     });
     let old_root = std::path::PathBuf::from("/tmp/background");
-    let token = crate::app::host_mcp::register_pane_credential_for_test(
-        pane_id,
-        other_id,
-        old_root.clone(),
-    );
     assert_eq!(
         crate::app::host_mcp::authenticated_workspace_for_test(&token),
         Some(old_root)
@@ -2776,7 +2826,6 @@ fn set_context_root_ipc_targets_caller_context() {
         Some(tmp.path().to_path_buf()),
         "set-root must rebind live pane credentials to the new workspace"
     );
-    crate::app::host_mcp::revoke_pane_credentials(pane_id);
 }
 
 /// Setting a context root must ensure `<root>/.plexi/.gitignore` covers

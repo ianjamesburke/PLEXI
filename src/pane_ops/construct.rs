@@ -68,11 +68,15 @@ pub(crate) struct TerminalLaunch {
 }
 
 /// The credentials issued for one pane and the binding they were issued
-/// from. Owned by the pane; dropping them revokes both credentials, then
-/// removes the binding.
+/// from. Owned by the pane: each credential is held by its exact handle, so
+/// revoking them can never touch another pane's, even one that reuses this
+/// pane id. They are revoked when the pane is logically removed
+/// ([`Self::revoke`]), and at the latest when they drop.
 pub(crate) struct PaneCredentials {
     call: Option<(Arc<PermissionMonitor>, String)>,
-    mcp_bearer: bool,
+    /// This pane's own host-MCP registration. `None` under a team run token
+    /// or with no MCP server.
+    mcp: Option<String>,
     authority: Arc<PaneAuthority>,
 }
 
@@ -81,7 +85,7 @@ impl std::fmt::Debug for PaneCredentials {
         f.debug_struct("PaneCredentials")
             .field("pane_id", &self.authority.pane_id)
             .field("call", &self.call.is_some())
-            .field("mcp_bearer", &self.mcp_bearer)
+            .field("mcp", &self.mcp.is_some())
             .finish()
     }
 }
@@ -108,26 +112,25 @@ impl PaneCredentials {
                 None
             }
         };
-        let mcp_bearer = match mcp {
-            McpBearer::Pane => match crate::app::host_mcp::register_pane_bearer(&binding) {
-                Some((port, token)) => {
+        let mcp = match mcp {
+            McpBearer::Pane => {
+                crate::app::host_mcp::register_pane_bearer(&binding).map(|(port, token)| {
                     env.insert("PLEXI_HOST_MCP_PORT".into(), port.to_string());
-                    env.insert("PLEXI_HOST_MCP_TOKEN".into(), token);
-                    true
-                }
-                None => false,
-            },
+                    env.insert("PLEXI_HOST_MCP_TOKEN".into(), token.clone());
+                    token
+                })
+            }
             McpBearer::RunToken(token) => {
                 if let Some(port) = crate::app::host_mcp::bound_port() {
                     env.insert("PLEXI_HOST_MCP_PORT".into(), port.to_string());
                 }
                 env.insert("PLEXI_HOST_MCP_TOKEN".into(), token.clone());
-                false
+                None
             }
         };
         let credentials = Self {
             call,
-            mcp_bearer,
+            mcp,
             authority,
         };
         #[cfg(test)]
@@ -138,18 +141,45 @@ impl PaneCredentials {
     pub(crate) fn authority(&self) -> &Arc<PaneAuthority> {
         &self.authority
     }
+
+    /// Revoke both credentials now. Idempotent: the handles are taken, so a
+    /// later call (or the drop) revokes nothing further.
+    pub(crate) fn revoke(&mut self) {
+        let call = self.call.take();
+        let mcp = self.mcp.take();
+        if call.is_none() && mcp.is_none() {
+            return;
+        }
+        if let Some((monitor, token)) = call {
+            monitor.revoke_credential(&token);
+        }
+        if let Some(token) = mcp {
+            crate::app::host_mcp::revoke_pane_bearer(&token);
+        }
+        log::info!("pane_credentials: revoked pane={}", self.authority.pane_id);
+    }
+
+    /// Point this pane's MCP registration at a moved context root.
+    pub(crate) fn rebind_workspace(&self, workspace_root: PathBuf) {
+        if let Some(token) = &self.mcp {
+            crate::app::host_mcp::rebind_pane_bearer(token, workspace_root);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mcp_token(&self) -> Option<&str> {
+        self.mcp.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn call_token(&self) -> Option<&str> {
+        self.call.as_ref().map(|(_, token)| token.as_str())
+    }
 }
 
 impl Drop for PaneCredentials {
     fn drop(&mut self) {
-        let pane_id = self.authority.pane_id;
-        if let Some((monitor, token)) = self.call.take() {
-            monitor.revoke_credential(&token);
-        }
-        if self.mcp_bearer {
-            crate::app::host_mcp::revoke_pane_credentials(pane_id);
-        }
-        log::info!("pane_credentials: revoked pane={pane_id}");
+        self.revoke();
     }
 }
 

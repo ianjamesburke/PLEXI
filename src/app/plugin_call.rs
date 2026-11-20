@@ -715,11 +715,12 @@ impl PlexiApp {
             }));
             return;
         }
-        let context_id = if verified.context_id != 0 {
-            verified.context_id
-        } else if let Some(pane_id) = verified.pane_id {
-            match self.find_pane_in_any_window(pane_id) {
-                Some((win_idx, _)) => self.windows[win_idx].context_id,
+        // A pane caller must be live, however it authenticated: a credential
+        // carries the context it was issued in, never proof the pane still
+        // exists (stint 1632).
+        let live_context = match verified.pane_id {
+            Some(pane_id) => match self.find_pane_in_any_window(pane_id) {
+                Some((win_idx, _)) => Some(self.windows[win_idx].context_id),
                 None => {
                     log::warn!("plugin_call: refused — verified pane {pane_id} is not live");
                     reply(serde_json::json!({
@@ -729,7 +730,13 @@ impl PlexiApp {
                     }));
                     return;
                 }
-            }
+            },
+            None => None,
+        };
+        let context_id = if verified.context_id != 0 {
+            verified.context_id
+        } else if let Some(context_id) = live_context {
+            context_id
         } else {
             // A no-pane session may ask in an explicit context. It is not the human.
             self.windows[self.active_window].context_id
