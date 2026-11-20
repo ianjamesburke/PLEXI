@@ -13466,6 +13466,67 @@ open(out + ".done", "w").close()
         apply(&mut h, fresh).expect("a fresh admission after the edit launches");
     }
 
+    /// Ledger row 155: a sealed pane says why in itself, and its notice opens
+    /// a new pane beside it, owned by the person.
+    #[test]
+    fn screenshot_sealed_pane_notice_and_new_pane() {
+        let mut h = PlexiUiHarness::new_sized(1100.0, 600.0);
+        h.step();
+        let root = h.workspace.path().to_path_buf();
+        let sealed = h.with_app_mut(|app| {
+            let context = app.pane_context_env_for_window(app.active_window);
+            let pane_id = app.host.alloc_pane_id();
+            let grant = crate::broker::pane_authority::PaneAuthority::sealed(
+                crate::broker::pane_authority::SealReason::OlderSave,
+                &crate::config::config_dir(),
+                pane_id,
+                crate::broker::pane_authority::Provenance::LegacyImport,
+                None,
+                "unknown".into(),
+                crate::pane_ops::grant::credential_scope(&context, Some(&root)),
+            );
+            let pane = app
+                .construct_terminal(crate::pane_ops::construct::TerminalLaunch {
+                    authority: crate::broker::pane_authority::LivePaneAuthority::admitted(grant),
+                    context,
+                    cwd: Some(root.clone()),
+                    command: None,
+                    ephemeral: false,
+                    env: Vec::new(),
+                    mcp: crate::pane_ops::construct::McpBearer::Pane,
+                    profile_dir: crate::config::config_dir(),
+                })
+                .expect("terminal starts");
+            let win = &mut app.windows[app.active_window];
+            win.panes
+                .insert(pane_id, Pane::Terminal(Box::new(pane)))
+                .unwrap();
+            let tile = win.tree.tiles.insert_pane(pane_id);
+            win.tree.root = Some(tile);
+            win.focused_pane = Some(tile);
+            pane_id
+        });
+        h.run_steps(3);
+        let notice = h
+            .harness()
+            .get_by_label_contains("restored from an older save; open a new pane");
+        assert!(notice.rect().width() > 0.0, "the notice is painted");
+        h.save_screenshot(&evidence_png!())
+            .expect("screenshot failed");
+        h.harness().get_by_label("Open a new pane").click();
+        h.run_steps(3);
+        let opened = h.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .keys()
+                .copied()
+                .find(|id| *id != sealed)
+        });
+        let opened = opened.expect("a new pane opened beside the sealed one");
+        assert!(h.with_app(|app| app.is_human_owned_pane(opened)));
+        assert!(h.with_app(|app| app.terminal_incarnation(sealed).is_some()));
+    }
+
     /// Stint 0755: when `outside_workspace` is active on a terminal pane,
     /// `render_name_bar_and_tabs` must reserve the `outside workspace` badge's
     /// width plus `SPACE_XS` on both single-tab and multi-tab paths and elide

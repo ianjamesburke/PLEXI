@@ -45,6 +45,7 @@ impl PlexiApp {
                     workspace_root: PathBuf::new(),
                 };
                 GrantSource::VerifiedPane(Box::new(PaneAuthority::sealed(
+                    crate::broker::pane_authority::SealReason::Unestablished,
                     &crate::config::config_dir(),
                     caller,
                     crate::broker::pane_authority::Provenance::LegacyImport,
@@ -179,5 +180,30 @@ impl PlexiApp {
             cwd,
             command,
         )
+    }
+
+    /// The way out of a sealed pane: a new terminal the person opens beside
+    /// it, in its directory, admitted from their own input. The sealed pane
+    /// is left as it is.
+    pub(crate) fn open_pane_beside_sealed(&mut self, sealed: PaneId) -> Option<PaneId> {
+        let (win_idx, tile) = self.find_pane_in_any_window(sealed)?;
+        let cwd = self.windows[win_idx].get_focused_pane_cwd(tile);
+        let context = self.pane_context_env_for_window(win_idx);
+        let launch = self.desktop_terminal_launch(context, cwd, None);
+        let opened = self.spawn_terminal_pane_at(
+            super::create::SplitPlacement {
+                win_idx,
+                target_tile: tile,
+                vertical: true,
+                new_pane_first: false,
+                keep_focus: false,
+            },
+            launch,
+        );
+        match &opened {
+            Ok(pane) => log::info!("sealed_notice: opened pane {pane} beside sealed pane {sealed}"),
+            Err(error) => log::warn!("sealed_notice: no pane beside sealed pane {sealed}: {error}"),
+        }
+        opened.ok()
     }
 }

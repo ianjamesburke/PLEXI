@@ -4324,4 +4324,72 @@ mod tests {
             "B's grant applies"
         );
     }
+
+    /// Ledger row 155: a plain shell restored from an older save is sealed,
+    /// and says so. Its notice names the reason, a brokered call from it is
+    /// refused with that reason rather than a generic permission error, and
+    /// the notice's way out opens a desktop pane beside it.
+    #[test]
+    fn grant_sealed_legacy_shell_names_its_reason_and_offers_a_new_pane() {
+        let profile = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let shell = {
+            let mut h = HostHarness::from_profile_dir(profile.path());
+            let shell = h.add_focused_terminal();
+            assert!(h.app.save_workspace_now(), "saved");
+            shell
+        };
+        edit_saved_workspace(profile.path(), |ws| {
+            saved_pane_mut(ws, shell).authority = None
+        });
+        let mut h = HostHarness::from_profile_dir(profile.path());
+        let reason = "this pane was restored from an older save; open a new pane";
+        assert_eq!(
+            h.app.terminal_incarnation(shell).unwrap().sealed_reason(),
+            Some(crate::broker::pane_authority::SealReason::OlderSave)
+        );
+        assert_eq!(
+            crate::broker::pane_authority::SealReason::OlderSave.explanation(),
+            reason
+        );
+        // A brokered call over the socket from the sealed shell's process.
+        let context = secret_context(&mut h, other.path());
+        let pid = pid_of(&mut h, shell);
+        let response_file = crate::rpc::response_file("grant-1632-sealed", "json");
+        let line = serde_json::to_string(&HostRequest::PaneSecretList {
+            context,
+            peer_ancestry: vec![pid],
+            response_file: response_file.clone(),
+        })
+        .unwrap();
+        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[pid]), &mut Vec::new());
+        h.hidden_frame();
+        let body = std::fs::read_to_string(response_file).unwrap();
+        assert!(
+            body.contains(reason),
+            "the refusal names the reason: {body}"
+        );
+        let error = h
+            .app
+            .check_agent_tool_permission(Some(shell), h.app.windows[0].context_id, "tester", false)
+            .expect_err("a sealed pane delegates nothing");
+        assert!(error.contains(reason), "{error}");
+
+        let opened = h
+            .app
+            .open_pane_beside_sealed(shell)
+            .expect("a new pane opens");
+        assert!(
+            h.app.is_human_owned_pane(opened),
+            "the new pane is the person's"
+        );
+        assert_eq!(
+            h.app.terminal_incarnation(opened).unwrap().sealed_reason(),
+            None
+        );
+        assert!(
+            h.app.terminal_incarnation(shell).is_some(),
+            "the sealed pane stays"
+        );
+    }
 }

@@ -6246,6 +6246,7 @@ pub(crate) fn restore_workspace(
                             };
                             (
                                 crate::broker::pane_authority::PaneAuthority::sealed(
+                                    crate::broker::pane_authority::SealReason::UnreadableRecord,
                                     collaborators.profile_dir,
                                     saved_pane.id,
                                     crate::broker::pane_authority::Provenance::LegacyImport,

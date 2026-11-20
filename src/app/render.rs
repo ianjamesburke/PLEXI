@@ -781,6 +781,7 @@ impl PlexiApp {
                     new_focused: None,
                     clicked: None,
                     close_exited: None,
+                    reopen_sealed: None,
                     tab_action: None,
                     tab_info,
                     tab_labels,
@@ -958,6 +959,7 @@ impl PlexiApp {
                 let tab_action = behavior.tab_action.take();
                 let portal_zoom = behavior.portal_zoom_request.take();
                 let child_agent_dive = behavior.child_agent_dive.take();
+                let reopen_sealed = behavior.reopen_sealed.take();
 
                 drop(behavior);
                 if tile_dropped {
@@ -1119,6 +1121,9 @@ impl PlexiApp {
                 }
 
                 if let Some(parent) = child_agent_dive { self.dive_into_agent_children(parent); }
+                if let Some(sealed) = reopen_sealed {
+                    self.open_pane_beside_sealed(sealed);
+                }
 
                 // Portal double-click zoom — same logic as ToggleZoom on a Portal pane.
                 if let Some(child_ctx_id) = portal_zoom {

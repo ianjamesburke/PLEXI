@@ -483,6 +483,8 @@ pub struct PlexiBehavior<'a> {
     /// which also sets `new_focused` (stint 1340: a click clears selection).
     pub clicked: Option<TileId>,
     pub close_exited: Option<TileId>,
+    /// A sealed terminal whose notice asked for a new pane in its place.
+    pub reopen_sealed: Option<PaneId>,
     /// Set when a tab bar switches or reorders tabs.
     pub tab_action: Option<(TileId, TabBarAction)>,
     pub tab_info: HashMap<TileId, TabGroupInfo>,
@@ -799,6 +801,9 @@ impl PlexiBehavior<'_> {
             });
             if close_exited {
                 self.close_exited = Some(tile_id);
+            }
+            if std::mem::take(&mut terminal.reopen_requested) {
+                self.reopen_sealed = Some(*pane_id);
             }
             if tab_action.is_some() {
                 self.tab_action = tab_action;

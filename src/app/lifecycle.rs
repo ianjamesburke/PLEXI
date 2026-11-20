@@ -2750,28 +2750,27 @@ impl PlexiApp {
                 // unconfigured or corrupted agent definition) still enters the
                 // broker with `None`, so the gate falls back to `Ask` instead of
                 // being skipped — missing posture must never mean un-gated.
-                let caller_and_posture = peer_ancestry
-                    .as_deref()
-                    .and_then(|ancestry| {
-                        self.resolve_socket_peer_pane(ancestry)
-                            .map(|(caller, _, _)| caller)
-                    })
+                let peer = peer_ancestry.as_deref().and_then(|ancestry| {
+                    self.resolve_socket_peer_pane(ancestry)
+                        .map(|(caller, _, _)| caller)
+                });
+                // A pane whose authority was never established sends nothing
+                // under it, and is told why (stint 1632).
+                if let Some(Err(error)) = peer.map(|caller| self.pane_ceiling(caller)) {
+                    log::info!("pane_ipc: send_to_pane: caller pane_id={peer:?} refused: {error}");
+                    if let Some(rf) = response_file {
+                        write_json_response(
+                            rf,
+                            serde_json::json!({"error": error, "error_code": "permission_denied"}),
+                        );
+                    }
+                    return;
+                }
+                let caller_and_posture = peer
                     .and_then(|caller| match self.pane_ceiling(caller) {
                         Ok(Some(posture)) => Some((caller, Some(posture))),
-                        // A pane whose authority was never established sends
-                        // nothing under it: an explicit deny no grant beats.
-                        Err(error) => {
-                            log::info!("pane_ipc: send_to_pane: caller pane_id={caller}: {error}");
-                            Some((
-                                caller,
-                                Some(crate::broker::PermissionPosture {
-                                    default_posture: crate::broker::Decision::Deny,
-                                    allow: Vec::new(),
-                                    ask: Vec::new(),
-                                    deny: vec!["pane.send".to_string()],
-                                }),
-                            ))
-                        }
+                        // Refused, with its reason, above.
+                        Err(_) => None,
                         Ok(None) if self.is_human_owned_pane(caller) => None,
                         Ok(None) => {
                             log::info!(

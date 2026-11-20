@@ -105,16 +105,48 @@ pub(crate) enum Ceiling {
     /// At most this posture.
     Posture { posture: PermissionPosture },
     /// Nothing is authorized under this pane's identity, whatever grants
-    /// exist: authority that could not be established. The pane holds no
-    /// credential and is refused before the broker is consulted.
-    Sealed,
+    /// exist: authority that could not be established, for `reason`. The pane
+    /// holds no credential and is refused before the broker is consulted,
+    /// with that reason.
+    Sealed { reason: SealReason },
+}
+
+/// Why a pane's authority could not be established. Every refusal and the
+/// pane's own notice name it.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SealReason {
+    /// Restored from a save made before panes recorded their grant, with
+    /// nothing in it that proves who opened the pane.
+    OlderSave,
+    /// Restored from a grant record that did not validate.
+    UnreadableRecord,
+    /// Never established: opened by such a pane, or holding no grant.
+    Unestablished,
+}
+
+impl SealReason {
+    /// What the pane's notice and every refusal from it say.
+    pub(crate) fn explanation(self) -> &'static str {
+        match self {
+            Self::OlderSave => "this pane was restored from an older save; open a new pane",
+            Self::UnreadableRecord => {
+                "this pane's saved permissions could not be read; open a new pane"
+            }
+            Self::Unestablished => {
+                "this pane's permissions were never established; open a new pane"
+            }
+        }
+    }
 }
 
 impl Ceiling {
     /// The stricter of two ceilings.
     pub(crate) fn meet(&self, other: &Self) -> Self {
         match (self, other) {
-            (Self::Sealed, _) | (_, Self::Sealed) => Self::Sealed,
+            (Self::Sealed { reason }, _) | (_, Self::Sealed { reason }) => {
+                Self::Sealed { reason: *reason }
+            }
             (Self::Baseline, c) | (c, Self::Baseline) => c.clone(),
             (Self::Posture { posture: a }, Self::Posture { posture: b }) => Self::Posture {
                 posture: a.clone().restricted_by(b),
@@ -128,20 +160,20 @@ impl Ceiling {
         match self {
             Self::Baseline => Ok(None),
             Self::Posture { posture } => Ok(Some(posture)),
-            Self::Sealed => Err(SealedAuthority),
+            Self::Sealed { reason } => Err(SealedAuthority { reason: *reason }),
         }
     }
 }
 
 /// A pane whose authority could not be established acts for nobody.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SealedAuthority;
+pub(crate) struct SealedAuthority {
+    pub(crate) reason: SealReason,
+}
 
 impl std::fmt::Display for SealedAuthority {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(
-            "permission_denied: this pane's authority could not be established; open a new pane",
-        )
+        write!(f, "permission_denied: {}", self.reason.explanation())
     }
 }
 
@@ -359,6 +391,7 @@ impl PaneAuthority {
     /// A grant that acts for nobody: no ownership, delegation, secrets or
     /// broker authority. Used where authority could not be established.
     pub(crate) fn sealed(
+        reason: SealReason,
         profile: &Path,
         pane_id: u64,
         provenance: Provenance,
@@ -377,7 +410,7 @@ impl PaneAuthority {
             role: None,
             can_call: Delegation::none(),
             can_handoff: Delegation::none(),
-            ceiling: Ceiling::Sealed,
+            ceiling: Ceiling::Sealed { reason },
             secrets: SecretEligibility::none(),
             scope,
         }
@@ -439,11 +472,15 @@ impl PaneAuthority {
                         "pane_authority: recorded grant of pane {pane_id} has unknown version {}; sealed",
                         grant.version
                     );
-                    Some(blank(Ceiling::Sealed))
+                    Some(blank(Ceiling::Sealed {
+                        reason: SealReason::UnreadableRecord,
+                    }))
                 }
                 Err(error) => {
                     log::warn!("pane_authority: recorded grant of pane {pane_id} unreadable: {error}; sealed");
-                    Some(blank(Ceiling::Sealed))
+                    Some(blank(Ceiling::Sealed {
+                        reason: SealReason::UnreadableRecord,
+                    }))
                 }
             },
             None => posture.map(|posture| {
@@ -460,7 +497,22 @@ impl PaneAuthority {
 
     /// The broker posture for this pane, or a refusal for a sealed one.
     pub(crate) fn posture(&self) -> Result<Option<&PermissionPosture>, SealedAuthority> {
-        self.ceiling.posture()
+        self.ceiling.posture().inspect_err(|sealed| {
+            log::info!(
+                "pane_authority: pane {} is sealed ({:?}); refused: {}",
+                self.pane_id,
+                sealed.reason,
+                sealed.reason.explanation()
+            )
+        })
+    }
+
+    /// The notice a sealed pane shows in itself, or `None`.
+    pub(crate) fn sealed_reason(&self) -> Option<SealReason> {
+        match self.ceiling {
+            Ceiling::Sealed { reason } => Some(reason),
+            Ceiling::Baseline | Ceiling::Posture { .. } => None,
+        }
     }
 
     /// The delegation limit for one action.
@@ -476,7 +528,7 @@ impl PaneAuthority {
         match self.ceiling {
             Ceiling::Baseline => "baseline",
             Ceiling::Posture { .. } => "posture",
-            Ceiling::Sealed => "sealed",
+            Ceiling::Sealed { .. } => "sealed",
         }
     }
 }
@@ -684,8 +736,11 @@ mod tests {
             deny: vec![],
         };
         let p = Ceiling::Posture { posture };
-        assert_eq!(p.meet(&Ceiling::Sealed), Ceiling::Sealed);
+        let sealed = Ceiling::Sealed {
+            reason: SealReason::OlderSave,
+        };
+        assert_eq!(p.meet(&sealed), sealed);
         assert_eq!(Ceiling::Baseline.meet(&p), p);
-        assert!(Ceiling::Sealed.posture().is_err());
+        assert!(sealed.posture().is_err());
     }
 }

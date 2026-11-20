@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use crate::broker::pane_authority::{
     Ceiling, CredentialScope, Delegation, LiveScope, Ownership, PaneAuthority, Provenance,
-    SavedPaneAuthority, SecretEligibility, GRANT_VERSION,
+    SavedPaneAuthority, SealReason, SecretEligibility, GRANT_VERSION,
 };
 use crate::workspace::{SavedPane, SavedPaneKind, WorkspaceFile};
 
@@ -42,9 +42,9 @@ struct Restriction {
 }
 
 impl Restriction {
-    fn sealed() -> Self {
+    fn sealed(reason: SealReason) -> Self {
         Self {
-            ceiling: Ceiling::Sealed,
+            ceiling: Ceiling::Sealed { reason },
             can_call: Delegation::none(),
             can_handoff: Delegation::none(),
             desktop: false,
@@ -108,7 +108,7 @@ pub(crate) fn import(
             match restored.0.ceiling {
                 Ceiling::Baseline => "baseline",
                 Ceiling::Posture { .. } => "posture",
-                Ceiling::Sealed => "sealed",
+                Ceiling::Sealed { .. } => "sealed",
             }
         );
         grants.insert(pane_id, restored);
@@ -183,13 +183,13 @@ impl Importer<'_> {
                     "workspace_restore: pane {} grant refused: {problem}; sealed",
                     pane.id
                 );
-                return self.sealed(pane, scope);
+                return self.sealed(SealReason::UnreadableRecord, pane, scope);
             }
             None => {}
         }
         let restriction = self.restriction(pane.id, memo, &mut HashSet::new());
-        if matches!(restriction.ceiling, Ceiling::Sealed) {
-            return self.sealed(pane, scope);
+        if let Ceiling::Sealed { reason } = restriction.ceiling {
+            return self.sealed(reason, pane, scope);
         }
         let session = pane.agent_session.as_ref();
         let grant = PaneAuthority {
@@ -201,7 +201,12 @@ impl Importer<'_> {
                 .and_then(|s| s.spawned_by.clone())
                 .unwrap_or_else(|| "unknown".into()),
             parent: self.parent_of(pane.id),
-            ownership: Ownership::Restricted,
+            // Desktop only where the policy above trusts the save to say so.
+            ownership: if restriction.desktop {
+                Ownership::Desktop
+            } else {
+                Ownership::Restricted
+            },
             role: session.and_then(|s| s.config_name.clone()),
             can_call: restriction.can_call,
             can_handoff: restriction.can_handoff,
@@ -217,13 +222,19 @@ impl Importer<'_> {
         (grant, live)
     }
 
-    fn sealed(&self, pane: &SavedPane, scope: CredentialScope) -> (PaneAuthority, LiveScope) {
+    fn sealed(
+        &self,
+        reason: SealReason,
+        pane: &SavedPane,
+        scope: CredentialScope,
+    ) -> (PaneAuthority, LiveScope) {
         let live = LiveScope {
             context_id: scope.context_id,
             workspace_root: scope.workspace_root.clone(),
             revision: 0,
         };
         let grant = PaneAuthority::sealed(
+            reason,
             self.profile,
             pane.id,
             Provenance::LegacyImport,
@@ -265,11 +276,11 @@ impl Importer<'_> {
         }
         if !visiting.insert(pane_id) {
             log::warn!("workspace_restore: ancestry cycle through pane {pane_id}; sealed");
-            return Restriction::sealed();
+            return Restriction::sealed(SealReason::OlderSave);
         }
         let Some((pane, context_id)) = self.panes.get(&pane_id) else {
             log::warn!("workspace_restore: ancestor pane {pane_id} is not in the save; sealed");
-            return Restriction::sealed();
+            return Restriction::sealed(SealReason::OlderSave);
         };
         let own = self.own_restriction(pane, *context_id);
         let result = match self.parent_of(pane_id) {
@@ -294,7 +305,7 @@ impl Importer<'_> {
                     can_handoff: saved.grant.can_handoff,
                 }
             }
-            Some(Err(_)) => return Restriction::sealed(),
+            Some(Err(_)) => return Restriction::sealed(SealReason::UnreadableRecord),
             None => {}
         }
         if !matches!(pane.kind, SavedPaneKind::Terminal) {
@@ -308,13 +319,7 @@ impl Importer<'_> {
             };
         }
         let Some(session) = pane.agent_session.as_ref() else {
-            // A legacy save cannot show whether a plain shell was opened by
-            // the person or by an agent.
-            log::info!(
-                "workspace_restore: legacy plain shell {} has no provable provenance; sealed",
-                pane.id
-            );
-            return Restriction::sealed();
+            return legacy_plain_shell(pane.id);
         };
         let lookup = pane.cwd.clone();
         let role = session
@@ -334,7 +339,7 @@ impl Importer<'_> {
                     pane.id,
                     session.config_name
                 );
-                return Restriction::sealed();
+                return Restriction::sealed(SealReason::OlderSave);
             }
         };
         let (can_call, can_handoff) = match &role {
@@ -351,4 +356,17 @@ impl Importer<'_> {
             desktop: false,
         }
     }
+}
+
+/// The policy for a plain shell restored from a save made before panes
+/// recorded their grant (ledger row 155). Such a save cannot show whether the
+/// person or an agent opened the shell, so it is sealed: it keeps working as a
+/// shell, says why in its own pane, and refuses brokered calls with that
+/// reason. Trusting old saves once instead would return a desktop
+/// restriction here; nothing else changes.
+fn legacy_plain_shell(pane_id: u64) -> Restriction {
+    log::info!(
+        "workspace_restore: legacy plain shell {pane_id} has no provable provenance; sealed"
+    );
+    Restriction::sealed(SealReason::OlderSave)
 }

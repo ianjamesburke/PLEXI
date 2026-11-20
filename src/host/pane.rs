@@ -885,6 +885,9 @@ pub struct TerminalPane {
     /// Cached result for the workspace-scope badge. The actual probe hits the
     /// OS for the child process cwd, so the render path throttles it.
     pub(crate) outside_workspace_cached: bool,
+    /// The person asked, from this sealed pane's notice, for a new pane in
+    /// its place (stint 1632). Taken by the tiling pass.
+    pub(crate) reopen_requested: bool,
     pub(crate) outside_workspace_checked_at: Option<std::time::Instant>,
     pub(crate) outside_workspace_root: Option<PathBuf>,
     pub agent: Option<crate::protocol::PaneAgentState>,
@@ -1142,6 +1145,7 @@ impl TerminalPane {
             last_resumed_command,
             pty_title: None,
             outside_workspace_cached: false,
+            reopen_requested: false,
             outside_workspace_checked_at: None,
             outside_workspace_root: None,
             fleet_result: None,
@@ -1192,6 +1196,12 @@ impl TerminalPane {
     /// (a session, a role, a badge) can make a restricted pane human-owned.
     pub fn is_human_owned(&self) -> bool {
         self.is_desktop_granted() && !self.is_agent_pane()
+    }
+
+    /// Why this pane's authority could not be established, when it could
+    /// not: the pane says so in itself.
+    pub(crate) fn sealed_reason(&self) -> Option<crate::broker::pane_authority::SealReason> {
+        self.authority().and_then(|a| a.grant().sealed_reason())
     }
 
     /// The pane's grant records desktop ownership.
@@ -1650,7 +1660,9 @@ impl TerminalPane {
         crate::broker::pane_authority::SealedAuthority,
     > {
         self.authority()
-            .ok_or(crate::broker::pane_authority::SealedAuthority)?
+            .ok_or(crate::broker::pane_authority::SealedAuthority {
+                reason: crate::broker::pane_authority::SealReason::Unestablished,
+            })?
             .grant()
             .posture()
     }

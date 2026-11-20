@@ -91,6 +91,7 @@ impl PlexiApp {
                 .pane_authority(id)
                 .ok_or_else(|| format!("permission_denied: caller pane {id} has no grant"))?;
             let grant = authority.grant();
+            grant.posture().map_err(|sealed| sealed.to_string())?;
             if !grant.delegation(handoff).allows(role) {
                 let field = if handoff { "can_handoff" } else { "can_call" };
                 log::info!(

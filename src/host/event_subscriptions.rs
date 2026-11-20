@@ -415,7 +415,10 @@ impl SubscriberAuthority {
                     .map_err(|sealed| sealed.to_string())
             }),
             Self::Plugin | Self::Run | Self::External => Ok(None),
-            Self::Sealed => Err(crate::broker::pane_authority::SealedAuthority.to_string()),
+            Self::Sealed => Err(crate::broker::pane_authority::SealedAuthority {
+                reason: crate::broker::pane_authority::SealReason::Unestablished,
+            }
+            .to_string()),
         }
     }
 
