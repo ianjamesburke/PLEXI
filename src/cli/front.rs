@@ -347,7 +347,72 @@ struct Recognized {
     root_operand: Option<String>,
     /// argv[0] and every token left for clap.
     kept: Vec<String>,
+    /// Per argv index: the argument whose value the token carries.
+    owners: Vec<Option<Owner>>,
     stop: Option<Stop>,
+}
+
+/// The argument a token's value belongs to: its command path, argument id,
+/// and the byte length of any option prefix (`--name=`, `-x`) before the value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Owner {
+    pub path: Vec<String>,
+    pub id: String,
+    pub prefix: usize,
+}
+
+impl Owner {
+    fn new(path: &[String], arg: &clap::Arg, prefix: usize) -> Self {
+        Self {
+            path: path.to_vec(),
+            id: arg.get_id().as_str().to_string(),
+            prefix,
+        }
+    }
+}
+
+/// Which argument owns each argv token's value, for a complete invocation
+/// clap confirms. `None` when recognition stops, clap rejects the tokens, or
+/// clap's values disagree with recognition: callers fail closed.
+pub(crate) fn argument_owners(argv: &[String]) -> Option<Vec<Option<Owner>>> {
+    let bin = "plexi";
+    let mut tree = grammar(bin);
+    tree.build();
+    let r = recognize(&tree, argv);
+    if r.stop.is_some() || r.help_subcommand.is_some() {
+        return None;
+    }
+    let matches = display_grammar(grammar(bin))
+        .try_get_matches_from(&r.kept)
+        .ok()?;
+    if path_disagreement(&r.path, &matches).is_some() {
+        return None;
+    }
+    let mut recognized: Vec<((Vec<String>, String), Vec<String>)> = Vec::new();
+    for (token, owner) in argv.iter().zip(&r.owners) {
+        let Some(owner) = owner else { continue };
+        let key = (owner.path.clone(), owner.id.clone());
+        let value = token.get(owner.prefix..)?.to_string();
+        match recognized.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, values)) => values.push(value),
+            None => recognized.push((key, vec![value])),
+        }
+    }
+    for ((path, id), values) in &recognized {
+        let at = path
+            .iter()
+            .try_fold(&matches, |m, name| m.subcommand_matches(name))?;
+        let parsed: Vec<String> = at
+            .try_get_raw(id)
+            .ok()??
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+        if &parsed != values {
+            log::warn!("cli_front: ownership of {path:?} {id} disagrees with clap");
+            return None;
+        }
+    }
+    Some(r.owners)
 }
 
 enum Stop {
@@ -434,6 +499,7 @@ fn possible_subcommand<'a>(node: &'a Command, token: &str, arg_given: bool) -> O
 fn recognize(tree: &Command, argv: &[String]) -> Recognized {
     let mut r = Recognized {
         kept: argv.first().cloned().into_iter().collect(),
+        owners: vec![None; argv.len()],
         ..Recognized::default()
     };
     let mut node = tree;
@@ -526,6 +592,9 @@ fn recognize(tree: &Command, argv: &[String]) -> Recognized {
                     }
                     arg_given = true;
                     r.kept.push(token.clone());
+                    if inline.is_some() && takes_values(arg) {
+                        r.owners[i] = Some(Owner::new(&r.path, arg, name.len() + 3));
+                    }
                     i += 1;
                     state = if !takes_values(arg) {
                         if inline.is_some() {
@@ -590,6 +659,9 @@ fn recognize(tree: &Command, argv: &[String]) -> Recognized {
                         if rest.is_empty() {
                             next_state = State::Opt(arg, 0);
                         } else {
+                            let eq = usize::from(rest.starts_with('='));
+                            r.owners[i] =
+                                Some(Owner::new(&r.path, arg, 1 + at + c.len_utf8() + eq));
                             kept_flags.push_str(rest);
                         }
                         break;
@@ -625,6 +697,7 @@ fn recognize(tree: &Command, argv: &[String]) -> Recognized {
                 } else {
                     State::Done
                 };
+                r.owners[i] = Some(Owner::new(&r.path, arg, 0));
                 r.kept.push(token.clone());
                 i += 1;
                 continue;
@@ -651,6 +724,7 @@ fn recognize(tree: &Command, argv: &[String]) -> Recognized {
             r.root_operand = Some(token.clone());
         }
         arg_given = true;
+        r.owners[i] = Some(Owner::new(&r.path, arg, 0));
         state = if is_multiple(arg) {
             State::Pos(arg)
         } else {

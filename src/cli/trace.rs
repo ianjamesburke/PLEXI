@@ -600,31 +600,13 @@ fn content_id(id: &str) -> bool {
     )
 }
 
-fn content_values(matches: &clap::ArgMatches) -> Vec<String> {
-    content_values_at(matches, &[])
-}
-
-fn content_values_at(matches: &clap::ArgMatches, path: &[&str]) -> Vec<String> {
-    let mut values = Vec::new();
-    for id in matches.ids().filter(|id| {
-        content_id(id.as_str())
-            || (path == ["pane", "result"] && id.as_str() == "write")
-            || (path == ["pane", "result", "write"]
-                && (id.as_str() == "second"
-                    || (id.as_str() == "first" && !matches.contains_id("second"))))
-    }) {
-        if matches.value_source(id.as_str()) == Some(clap::parser::ValueSource::CommandLine) {
-            if let Some(raw) = matches.get_raw(id.as_str()) {
-                values.extend(raw.map(|value| value.to_string_lossy().into_owned()));
-            }
-        }
-    }
-    if let Some((name, child)) = matches.subcommand() {
-        let mut path = path.to_vec();
-        path.push(name);
-        values.extend(content_values_at(child, &path));
-    }
-    values
+/// Free-form payload arguments, by command path and argument id.
+fn is_content(path: &[String], id: &str, present: impl Fn(&str) -> bool) -> bool {
+    let at = |want: &[&str]| path.iter().map(String::as_str).eq(want.iter().copied());
+    content_id(id)
+        || (at(&["pane", "result"]) && id == "write")
+        || (at(&["pane", "result", "write"])
+            && (id == "second" || (id == "first" && !present("second"))))
 }
 
 /// On an invalid invocation, retain only grammar-recognized flags and the
@@ -676,50 +658,28 @@ fn fail_closed(command: &clap::Command, argv: &[String]) -> Vec<Option<String>> 
 
 fn redact_content(argv: &[String]) -> (Vec<Option<String>>, bool) {
     use clap::CommandFactory;
-    // main uses this same grammar through help::gated_command. Its additional
-    // transforms only hide help and consult runtime profiles; tracing must not.
-    let command = super::args::Cli::command();
-    let Ok(matches) = command.clone().try_get_matches_from(argv) else {
-        return (fail_closed(&command, argv), true);
+    // Ownership comes from the CLI front end's recognition, confirmed against
+    // clap's own values; anything it cannot confirm fails closed.
+    let Some(owners) = super::front::argument_owners(argv) else {
+        return (fail_closed(&super::args::Cli::command(), argv), true);
     };
-    let values = content_values(&matches);
-    let mut replacements = vec![None; argv.len()];
-    // Clap indices are logical indices (equals syntax and short clusters expand
-    // them), not argv offsets. Reparse candidate substitutions to prove ownership
-    // instead. This also disambiguates a payload equal to an id or command name.
-    let mut marker = "plexi_trace_content_probe".to_string();
-    while argv.iter().any(|arg| arg.contains(&marker)) {
-        marker.push('_');
-    }
-    for value in values {
-        let mut mapped = false;
-        for (index, arg) in argv.iter().enumerate().skip(1) {
-            let prefix = if arg == &value {
-                ""
-            } else if let Some((flag, rhs)) = arg.split_once('=') {
-                if rhs != value || !flag.starts_with('-') {
-                    continue;
-                }
-                &arg[..flag.len() + 1]
-            } else {
-                continue;
+    let replacements = argv
+        .iter()
+        .zip(&owners)
+        .map(|(token, owner)| {
+            let owner = owner.as_ref()?;
+            let present = |id: &str| {
+                owners
+                    .iter()
+                    .flatten()
+                    .any(|other| other.path == owner.path && other.id == id)
             };
-            let mut probe = argv.to_vec();
-            probe[index] = format!("{prefix}{marker}");
-            if command
-                .clone()
-                .try_get_matches_from(&probe)
-                .ok()
-                .is_some_and(|parsed| content_values(&parsed).contains(&marker))
-            {
-                replacements[index] = Some(format!("{prefix}{}", text_placeholder(&value)));
-                mapped = true;
-            }
-        }
-        if !mapped {
-            return (fail_closed(&command, argv), true);
-        }
-    }
+            is_content(&owner.path, &owner.id, present).then(|| {
+                let (prefix, value) = token.split_at(owner.prefix);
+                format!("{prefix}{}", text_placeholder(value))
+            })
+        })
+        .collect();
     (replacements, false)
 }
 
