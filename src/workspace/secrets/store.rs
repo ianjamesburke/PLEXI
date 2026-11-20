@@ -119,6 +119,7 @@ pub enum KeychainStage {
     Delete,
     Update,
     DefaultKeychain,
+    Identify,
     Add,
 }
 
@@ -134,6 +135,7 @@ impl KeychainStage {
             Self::Delete => "delete the selected item",
             Self::Update => "update the selected item",
             Self::DefaultKeychain => "resolve the default keychain",
+            Self::Identify => "identify the keychain file",
             Self::Add => "add the item",
         }
     }

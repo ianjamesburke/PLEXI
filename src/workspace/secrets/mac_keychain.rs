@@ -83,7 +83,13 @@ pub(super) trait Native {
         value: &[u8],
     ) -> i32;
     /// Whether two handles name the same keychain file.
-    fn same_keychain(&self, left: &Self::Keychain, right: &Self::Keychain) -> bool;
+    /// Whether two handles name the same keychain file. A failed identity
+    /// lookup is an error with its native status, never "different".
+    fn same_keychain(
+        &self,
+        left: &Self::Keychain,
+        right: &Self::Keychain,
+    ) -> Result<bool, SecretError>;
 }
 
 /// A finished removal attempt and what the cache needs to know.
@@ -262,13 +268,14 @@ fn create_destination<'d, N: Native>(
             .ok_or_else(|| SecretError::Backend("the keychain domain is empty".to_string())),
         Destination::OsDefault => {
             let default = native.default_keychain()?;
-            domain
-                .search
-                .iter()
-                .find(|member| native.same_keychain(member, &default))
-                .ok_or_else(|| SecretError::Backend(
-                    "the default keychain is not in the keychain search list, so a new secret there could not be read back; nothing was stored. Add it to the search list or choose a default keychain that is on it".to_string(),
-                ))
+            for member in &domain.search {
+                if native.same_keychain(member, &default)? {
+                    return Ok(member);
+                }
+            }
+            Err(SecretError::Backend(
+                "the default keychain is not in the keychain search list, so a new secret there could not be read back; nothing was stored. Add it to the search list or choose a default keychain that is on it".to_string(),
+            ))
         }
     }
 }
@@ -351,7 +358,7 @@ mod production {
     /// The real Security.framework calls.
     pub(in crate::workspace::secrets) struct SecurityFramework;
 
-    fn keychain_path(keychain: &SecKeychain) -> Option<Vec<u8>> {
+    fn keychain_path(keychain: &SecKeychain) -> Result<Vec<u8>, SecretError> {
         let mut buffer = vec![0u8; 1024];
         let mut length = buffer.len() as u32;
         let status = unsafe {
@@ -362,11 +369,14 @@ mod production {
             )
         };
         if status != 0 {
-            log::warn!("workspace_secrets: SecKeychainGetPath failed: {status}");
-            return None;
+            log::warn!("workspace_secrets: SecKeychainGetPath status={status}");
+            return Err(SecretError::Keychain {
+                stage: KeychainStage::Identify,
+                status,
+            });
         }
         buffer.truncate(length as usize);
-        Some(buffer)
+        Ok(buffer)
     }
 
     fn test_password() -> Result<Zeroizing<String>, SecretError> {
@@ -614,8 +624,12 @@ mod production {
             }
         }
 
-        fn same_keychain(&self, left: &SecKeychain, right: &SecKeychain) -> bool {
-            matches!((keychain_path(left), keychain_path(right)), (Some(a), Some(b)) if a == b)
+        fn same_keychain(
+            &self,
+            left: &SecKeychain,
+            right: &SecKeychain,
+        ) -> Result<bool, SecretError> {
+            Ok(keychain_path(left)? == keychain_path(right)?)
         }
     }
 }
@@ -649,6 +663,7 @@ mod tests {
         items: RefCell<Vec<(u8, String, String)>>,
         find_override: Option<(i32, bool)>,
         delete_status: Option<i32>,
+        identity_status: Option<i32>,
     }
 
     impl Fake {
@@ -663,6 +678,7 @@ mod tests {
                 items: RefCell::new(Vec::new()),
                 find_override: None,
                 delete_status: None,
+                identity_status: None,
             }
         }
 
@@ -796,8 +812,14 @@ mod tests {
             0
         }
 
-        fn same_keychain(&self, left: &u8, right: &u8) -> bool {
-            left == right
+        fn same_keychain(&self, left: &u8, right: &u8) -> Result<bool, SecretError> {
+            match self.identity_status {
+                Some(status) => Err(SecretError::Keychain {
+                    stage: KeychainStage::Identify,
+                    status,
+                }),
+                None => Ok(left == right),
+            }
         }
     }
 
@@ -1079,6 +1101,21 @@ mod tests {
         assert_eq!(calls.last(), Some(&Call::Interaction(false)));
         assert!(calls.contains(&Call::Add(1)), "{calls:?}");
         assert_eq!(fake.in_keychain(1, ACCOUNT).as_deref(), Some("created"));
+    }
+
+    #[test]
+    fn a_failed_identity_lookup_is_its_native_error_not_an_excluded_default() {
+        let mut fake = Fake::new(&[1], 1);
+        fake.identity_status = Some(-25295);
+        let error = write(&fake, ACCOUNT, "label", "v", false).unwrap_err();
+        assert_eq!(stage_status(&error), (KeychainStage::Identify, -25295));
+        assert!(
+            !error
+                .to_string()
+                .contains("not in the keychain search list"),
+            "{error}"
+        );
+        assert!(!fake.calls().iter().any(|call| matches!(call, Call::Add(_))));
     }
 
     #[test]

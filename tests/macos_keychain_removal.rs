@@ -188,9 +188,12 @@ impl Sandbox {
         (output, String::from_utf8_lossy(&log[before..]).into_owned())
     }
 
+    /// Every removal is checked: no data copy and no UI, whatever its result.
     fn rm(&self, keychain: &str) -> (Output, String) {
         let folder = self.folder.to_str().unwrap().to_string();
-        self.run(keychain, &["secret", "rm", NAME, "--folder", &folder])
+        let (output, log) = self.run(keychain, &["secret", "rm", NAME, "--folder", &folder]);
+        assert_no_password_request(&log);
+        (output, log)
     }
 }
 
@@ -261,7 +264,6 @@ fn unindexed_item_is_removed_without_a_password_request() {
     assert!(removed(&first), "{}", text(&first.stderr));
     assert!(!sandbox.holds(KEYCHAIN, &account));
     assert_eq!(log.matches(&format!("{DELETE_CALL}0")).count(), 1, "{log}");
-    assert_no_password_request(&log);
 
     let (again, log) = sandbox.rm(KEYCHAIN);
     assert!(!again.status.success());
@@ -269,7 +271,6 @@ fn unindexed_item_is_removed_without_a_password_request() {
     assert!(err.contains("returned no match"), "{err}");
     assert!(!text(&again.stdout).contains("Removed"));
     assert!(!log.contains(DELETE_CALL), "{log}");
-    assert_no_password_request(&log);
 }
 
 /// A stale index entry over an already-created empty file is never success.
@@ -284,7 +285,6 @@ fn stale_cached_name_in_an_empty_file_is_a_reported_no_match() {
     let err = text(&out.stderr);
     assert!(err.contains("returned no match"), "{err}");
     assert!(!text(&out.stdout).contains("Removed"));
-    assert_no_password_request(&log);
 }
 
 /// A damaged file fails at its own stage, never as a no-match, and no other
@@ -384,7 +384,6 @@ fn native_delete_refusal_fails_with_its_status_and_keeps_the_item() {
     assert!(!out.status.success(), "{err}");
     assert!(!text(&out.stdout).contains("Removed"));
     assert!(err.contains("delete the selected item (status "), "{err}");
-    assert_no_password_request(&log);
     let call = log
         .lines()
         .find(|line| line.contains(DELETE_CALL))
