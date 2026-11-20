@@ -347,8 +347,9 @@ fn a_closed_pane_cannot_query_its_neighbour() {
     let (exited, rx) = spawn("exit 0");
     let old = exited.foreground.read().unwrap().expect("open master");
     wait_exit(&rx);
-    wait_until("the exited pane's pty to close", || {
-        exited.foreground.read().unwrap().is_none()
+    // The number is free once the pty closed both its masters.
+    wait_until("the exited pane's pty to close", || unsafe {
+        libc::fcntl(old, libc::F_GETFD) == -1
     });
     let (neighbour, _neighbour_rx) = spawn("exec sleep 3600");
     assert_eq!(
