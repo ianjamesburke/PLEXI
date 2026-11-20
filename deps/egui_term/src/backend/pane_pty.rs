@@ -4,19 +4,20 @@
 //! that pid and waits with the master still open (alacritty_terminal
 //! 0.25.1 `src/tty/unix.rs`, `Pty::drop` and `next_child_event`). That
 //! deadlocked a closing pane and could signal a reused pid. Here the master
-//! closes first, and the shell stays an unreaped zombie, pinning its pid,
-//! session and group numbers, until its [`Session`] ends and reaps it.
+//! closes first, and the shell stays waitable, pinning its pid and group,
+//! until the lifecycle worker reaps it (`session`).
 //!
 //! Spawning mirrors alacritty's `tty::unix::from_fd` line for line: IUTF8,
 //! the child's env, `setsid`, controlling tty, closed fds and signal resets.
+//! Every fallible fd step runs before the child exists.
 use std::fs::File;
 use std::io::{self, Read};
 use std::mem::ManuallyDrop;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use alacritty_terminal::event::{OnResize, WindowSize};
 use alacritty_terminal::tty::{
@@ -26,24 +27,39 @@ use polling::{Event, PollMode, Poller};
 use signal_hook::low_level::{pipe as signal_pipe, unregister};
 use signal_hook::SigId;
 
-use super::session::Session;
+use super::session::{self, Session};
 use super::settings::BackendSettings;
 use super::tap::TapReader;
-use super::PtyExitStatus;
+use super::{failpoint, PtyExitStatus};
 
 // The event loop's poll keys, `pub(crate)` in alacritty (`src/tty/unix.rs`
 // `PTY_READ_WRITE_TOKEN`, `PTY_CHILD_EVENT_TOKEN`); the dependency is pinned.
-const PTY_READ_WRITE_TOKEN: usize = 0;
-const PTY_CHILD_EVENT_TOKEN: usize = 1;
+pub(super) const PTY_READ_WRITE_TOKEN: usize = 0;
+pub(super) const PTY_CHILD_EVENT_TOKEN: usize = 1;
+
+/// The master fd for foreground queries, `None` once it is closed. The
+/// close takes the write lock, so a query holding the read lock always
+/// borrows a live descriptor for its whole ioctl.
+pub(super) type Foreground = Arc<RwLock<Option<RawFd>>>;
 
 pub(super) struct PanePty {
     master: ManuallyDrop<File>,
     /// The tap reads through a dup of the master so it can own its reader.
     reader: ManuallyDrop<TapReader<File>>,
+    foreground: Foreground,
     signals: UnixStream,
-    sig_id: SigId,
+    _sigchld: SigChld,
     session: Arc<Session>,
     exit_status: Arc<Mutex<Option<PtyExitStatus>>>,
+}
+
+/// The SIGCHLD pipe registration, removed on drop.
+struct SigChld(SigId);
+
+impl Drop for SigChld {
+    fn drop(&mut self) {
+        unregister(self.0);
+    }
 }
 
 pub(super) fn spawn(
@@ -52,7 +68,9 @@ pub(super) fn spawn(
     size: WindowSize,
     reply: Box<dyn FnMut(Vec<u8>) + Send>,
     exit_status: Arc<Mutex<Option<PtyExitStatus>>>,
-) -> io::Result<(PanePty, Arc<Session>)> {
+) -> io::Result<(PanePty, Arc<Session>, Foreground)> {
+    // The shell's owner exists before the shell does.
+    let worker = session::worker()?;
     let pty = rustix_openpty::openpty(None, Some(&size.to_winsize()))?;
     let (master, slave): (OwnedFd, OwnedFd) = (pty.controller, pty.user);
     let (master_fd, slave_fd) = (master.as_raw_fd(), slave.as_raw_fd());
@@ -68,6 +86,21 @@ pub(super) fn spawn(
             );
         }
     }
+    failpoint("nonblocking")?;
+    let flags = unsafe { libc::fcntl(master_fd, libc::F_GETFL, 0) };
+    if flags < 0
+        || unsafe {
+            libc::fcntl(master_fd, libc::F_SETFL, flags | libc::O_NONBLOCK)
+        } < 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let master = File::from(master);
+    let tap = master.try_clone()?;
+    let (sender, signals) = UnixStream::pair()?;
+    signals.set_nonblocking(true)?;
+    let sigchld = SigChld(signal_pipe::register(libc::SIGCHLD, sender)?);
+    failpoint("sigchld")?;
     let mut command = Command::new(&settings.shell);
     command.args(&settings.args);
     command.stdin(slave.try_clone()?);
@@ -108,42 +141,19 @@ pub(super) fn spawn(
             Ok(())
         });
     }
-    let (sender, signals) = UnixStream::pair()?;
-    let sig_id = signal_pipe::register(libc::SIGCHLD, sender)?;
-    signals.set_nonblocking(true)?;
-    let child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            unregister(sig_id);
-            return Err(io::Error::new(
-                error.kind(),
-                format!(
-                    "Failed to spawn command '{}': {error}",
-                    settings.shell
-                ),
-            ));
-        },
-    };
+    let child = command.spawn().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("Failed to spawn command '{}': {error}", settings.shell),
+        )
+    })?;
     // The parent's slave copies close with the command.
     drop(command);
-    let session = Arc::new(Session::new(pane, child.id() as libc::pid_t));
-    let master = File::from(master);
-    let flags = unsafe { libc::fcntl(master_fd, libc::F_GETFL, 0) };
-    if flags < 0
-        || unsafe {
-            libc::fcntl(master_fd, libc::F_SETFL, flags | libc::O_NONBLOCK)
-        } < 0
-    {
-        unregister(sig_id);
-        return Err(io::Error::last_os_error());
-    }
-    let tap = match master.try_clone() {
-        Ok(tap) => tap,
-        Err(error) => {
-            unregister(sig_id);
-            return Err(error);
-        },
-    };
+    let session =
+        Arc::new(Session::new(pane, child.id() as libc::pid_t, worker));
+    #[cfg(test)]
+    super::close_tests::note_spawn(session.pid(), &master);
+    let foreground = Arc::new(RwLock::new(Some(master_fd)));
     let pty = PanePty {
         master: ManuallyDrop::new(master),
         reader: ManuallyDrop::new(TapReader::new(
@@ -151,12 +161,13 @@ pub(super) fn spawn(
             settings.byte_tap,
             reply,
         )),
+        foreground: foreground.clone(),
         signals,
-        sig_id,
+        _sigchld: sigchld,
         session: session.clone(),
         exit_status,
     };
-    Ok((pty, session))
+    Ok((pty, session, foreground))
 }
 
 /// `USER` / `HOME` from the environment, else from the passwd entry, as
@@ -193,23 +204,20 @@ fn env_or_passwd(
     Ok(field((text(entry.pw_name), text(entry.pw_dir))))
 }
 
-impl PanePty {
-    /// For `tcgetpgrp` foreground queries by the backend.
-    pub(super) fn master_fd(&self) -> std::os::fd::RawFd {
-        self.master.as_raw_fd()
-    }
-}
-
-/// Closes the master before anything waits on the shell, then lets go of
-/// the session: on a close this is its last handle and it ends here, on the
-/// PTY reader thread. After a natural exit the backend still holds it.
+/// Closes both masters, which hangs up the tty, before anything waits on
+/// the shell. Then lets go of the session: if this is its last handle
+/// (a close of a running pane), the shell goes to the lifecycle worker.
+/// Runs on the PTY reader thread, or the constructor's on a failed start;
+/// nothing here waits.
 impl Drop for PanePty {
     fn drop(&mut self) {
+        let mut foreground =
+            self.foreground.write().unwrap_or_else(|e| e.into_inner());
         unsafe {
             ManuallyDrop::drop(&mut self.reader);
             ManuallyDrop::drop(&mut self.master);
         }
-        unregister(self.sig_id);
+        *foreground = None;
     }
 }
 

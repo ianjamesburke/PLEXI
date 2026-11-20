@@ -790,7 +790,6 @@ impl Pane {
 // ---------------------------------------------------------------------------
 
 pub struct TerminalPane {
-    _process_group: super::process_cleanup::PaneProcessGroup,
     pub fleet_result: Option<serde_json::Value>,
     pub fleet_seen: bool,
     pub fleet_dismissed: bool,
@@ -1053,9 +1052,12 @@ impl TerminalPane {
                 return Err(error);
             }
         };
-        let process_group = super::process_cleanup::PaneProcessGroup::record(backend.child_pid());
+        // The record outlives the pane until its shell is reaped, so host
+        // stop still sees a closing pane's shell (stint 1650).
+        backend.hold_until_reaped(Box::new(
+            super::process_cleanup::PaneProcessGroup::record(backend.child_pid()),
+        ));
         Ok(Self {
-            _process_group: process_group,
             id,
             backend,
             exited: false,

@@ -58,3 +58,7 @@ version = "0.2.0"
 
 [target."cfg(unix)".dependencies.signal-hook]
 version = "0.3.10"
+
+[features]
+# Observation and control of the pane-close worker, for host tests.
+testing = []
