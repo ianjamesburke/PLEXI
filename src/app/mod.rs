@@ -357,10 +357,9 @@ pub struct PlexiApp {
     /// time, cleared on close. Re-read on every open so edits hot-reload without
     /// a restart — same pattern as `palette_notes`.
     pub(crate) palette_commands: Vec<crate::cli::ResolvedUserCommand>,
-    /// Pane-pip decoration of the Commands stop's rows, by row key. Refreshed
-    /// with every answer of the Commands source.
-    pub(crate) palette_row_pips:
-        std::collections::HashMap<crate::host::picker::RowKey, crate::ui::list::ListRowPips>,
+    /// The Commands source's current answer: row pips and owned targets,
+    /// installed with its rows on every logic refresh.
+    pub(crate) palette_answer: Option<crate::overlays::command_palette::PaletteAnswer>,
     /// The palette's input owner: its ordered field, last presented hit
     /// geometry and the input its session claimed.
     pub(crate) palette_input: crate::ui::picker::PickerInput,
@@ -1872,7 +1871,7 @@ impl PlexiApp {
                     palette_workspace_config_exists: false,
                     palette_notes: Vec::new(),
                     palette_commands: Vec::new(),
-                    palette_row_pips: std::collections::HashMap::new(),
+                    palette_answer: None,
                     palette_input: Default::default(),
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
@@ -2164,7 +2163,7 @@ impl PlexiApp {
             palette_workspace_config_exists: false,
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
-            palette_row_pips: std::collections::HashMap::new(),
+            palette_answer: None,
             palette_input: Default::default(),
             context_visit_history: Vec::new(),
             renaming_pane: None,
@@ -3149,7 +3148,7 @@ impl PlexiApp {
             palette_workspace_config_exists: false,
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
-            palette_row_pips: std::collections::HashMap::new(),
+            palette_answer: None,
             palette_input: Default::default(),
             context_visit_history: Vec::new(),
             renaming_pane: None,

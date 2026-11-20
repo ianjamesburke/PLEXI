@@ -1415,6 +1415,28 @@ impl PlexiApp {
             .collect()
     }
 
+    /// The pane whose live editor holds the note at `path`, in any window,
+    /// matched by note identity on the native path (never a serialized,
+    /// display-lossy spelling).
+    pub(crate) fn find_open_note_pane(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<crate::spatial::tiling::PaneId> {
+        let identity = crate::app::text_editor_view::note_path_identity(path);
+        self.windows.iter().find_map(|win| {
+            let mut panes: Vec<_> = win.panes.iter().collect();
+            panes.sort_by_key(|(id, _)| *id);
+            panes.into_iter().find_map(|(id, pane)| {
+                let crate::host::pane::ViewRuntime::Builtin(builtin) = &pane.as_view()?.runtime
+                else {
+                    return None;
+                };
+                let open = builtin.open_note_path()?;
+                (crate::app::text_editor_view::note_path_identity(open) == identity).then_some(*id)
+            })
+        })
+    }
+
     /// Navigate to a pane by id, updating both `focused_pane` on its window and
     /// `active_window`. Returns `true` if the pane was found.
     pub(crate) fn pane_navigate(&mut self, pane_id: u64) -> bool {

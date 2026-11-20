@@ -224,6 +224,28 @@ mod note_identity {
         pane_id
     }
 
+    /// `add_test_pane` attaches only the first pane to the tree; make every
+    /// pane of window 0 a reachable tab so navigation can find it.
+    fn attach_all_panes_as_tabs(h: &mut HostHarness) {
+        let win = &mut h.app.windows[0];
+        let tiles: Vec<_> = win
+            .tree
+            .tiles
+            .iter()
+            .filter(|(_, tile)| matches!(tile, egui_tiles::Tile::Pane(_)))
+            .map(|(id, _)| *id)
+            .collect();
+        win.tree.root = Some(win.tree.tiles.insert_tab_tile(tiles));
+    }
+
+    fn all_panes(h: &HostHarness) -> Vec<PaneId> {
+        h.app
+            .windows
+            .iter()
+            .flat_map(|win| win.panes.keys().copied())
+            .collect()
+    }
+
     fn open_note_path_of(h: &HostHarness, pane: PaneId) -> Option<Vec<u8>> {
         h.app.windows.iter().find_map(|win| {
             let view = win.panes.get(&pane)?.as_view()?;
@@ -291,6 +313,7 @@ mod note_identity {
         let raw_pane = open_editor(&mut h, &raw);
         let lossy_pane = open_editor(&mut h, &lossy);
         let start = h.add_test_pane();
+        attach_all_panes_as_tabs(&mut h);
         h.focus_pane(start);
         h.run_frames(3);
 
@@ -326,14 +349,16 @@ mod note_identity {
             h.run_frames(1);
             run_row_titled(&mut h, title);
             assert_eq!(palette_test_log::take_activations().len(), 1, "{title}");
-            let opened = focused_pane(&h).expect("a pane has focus");
-            assert_ne!(opened, start, "{title}: Enter opened an editor");
-            let bytes = open_note_path_of(&h, opened).expect("the new pane edits a note");
-            assert_eq!(
-                bytes,
-                path.as_os_str().as_bytes().to_vec(),
-                "{title}: native path bytes"
-            );
+            // The listed pane is gone, so the pane editing this exact path
+            // is the one Enter opened.
+            let target = path.as_os_str().as_bytes().to_vec();
+            let editing: Vec<PaneId> = all_panes(&h)
+                .into_iter()
+                .filter(|id| open_note_path_of(&h, *id).as_ref() == Some(&target))
+                .collect();
+            assert_eq!(editing.len(), 1, "{title}: Enter opened its own note");
+            assert!(!editing.contains(&pane), "{title}: in a new pane");
+            let bytes = target;
             let content = std::fs::read_to_string(OsStr::from_bytes(&bytes)).expect("note content");
             assert!(content.contains(body), "{title}: its own file's content");
         }

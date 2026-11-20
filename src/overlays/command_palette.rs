@@ -110,7 +110,7 @@ impl CommandRowId {
             CommandRowId::Unavailable(name) => format!("parked/{name}"),
             CommandRowId::View(id) => format!("view/{id}"),
             CommandRowId::Builtin(id) => format!("builtin/{id}"),
-            CommandRowId::Note(path) => format!("note/{}", path.display()),
+            CommandRowId::Note(path) => format!("note/{}", native_path_key(path)),
             CommandRowId::UserCommand { name, scope } => {
                 format!("run/{}/{name}", user_command_scope_id(*scope))
             }
@@ -120,73 +120,6 @@ impl CommandRowId {
 
     fn key(&self) -> RowKey {
         RowKey::new(COMMANDS_SOURCE, &self.stable_id())
-    }
-
-    /// Resolve a key back to its row. `notes` are the palette's listed notes,
-    /// whose real paths a note key resolves to.
-    fn parse(key: &RowKey, notes: &[crate::notes::NotePickerEntry]) -> Option<Self> {
-        if key.source() != COMMANDS_SOURCE {
-            return None;
-        }
-        let (kind, rest) = key.stable_id().split_once('/')?;
-        Some(match kind {
-            "cmd" => CommandRowId::Command(
-                PALETTE_COMMANDS
-                    .iter()
-                    .find(|entry| entry.name == rest)?
-                    .command
-                    .clone(),
-            ),
-            "focus" => {
-                let mut parts = rest.splitn(3, '/');
-                let context_id = parts.next()?.parse().ok()?;
-                let window_id = parts.next()?.parse().ok()?;
-                let pane_id = match parts.next()? {
-                    "-" => None,
-                    id => Some(id.parse().ok()?),
-                };
-                CommandRowId::Focus(PaletteFocusTarget {
-                    context_id,
-                    window_id,
-                    pane_id,
-                })
-            }
-            "parked" => CommandRowId::Unavailable(rest.to_string()),
-            "view" => CommandRowId::View(rest.to_string()),
-            "builtin" => {
-                CommandRowId::Builtin(BUILTIN_VIEWS.iter().find(|view| view.id == rest)?.id)
-            }
-            // The key spells the path for display; activation carries the
-            // listed note's own PathBuf, so a non-UTF-8 path keeps its bytes.
-            "note" => {
-                let mut matches = notes.iter().filter(|note| {
-                    CommandRowId::Note(note.path.clone())
-                        .stable_id()
-                        .strip_prefix("note/")
-                        == Some(rest)
-                });
-                let found = matches.next()?;
-                if matches.next().is_some() {
-                    log::warn!("palette: two listed notes share one row key; refusing to guess");
-                    return None;
-                }
-                CommandRowId::Note(found.path.clone())
-            }
-            "run" => {
-                let (scope, name) = rest.split_once('/')?;
-                let scope = match scope {
-                    "workspace" => crate::cli::UserCommandScope::Workspace,
-                    "global" => crate::cli::UserCommandScope::Global,
-                    _ => return None,
-                };
-                CommandRowId::UserCommand {
-                    name: name.to_string(),
-                    scope,
-                }
-            }
-            "update" => CommandRowId::UpdateReady(rest.to_string()),
-            _ => return None,
-        })
     }
 
     /// The row's one action: what Enter and a click run.
@@ -208,6 +141,41 @@ impl CommandRowId {
             },
         }
     }
+}
+
+/// A collision-free spelling of a native path for a row key: the tagged hex
+/// of its Unix bytes or Windows wide units. Display text is lossy for
+/// non-UTF-8 names, so it is never an identity; labels and search keep it.
+fn native_path_key(path: &std::path::Path) -> String {
+    use std::fmt::Write;
+    let mut key = String::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        key.push_str("u:");
+        for byte in path.as_os_str().as_bytes() {
+            let _ = write!(key, "{byte:02x}");
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        key.push_str("w:");
+        for unit in path.as_os_str().encode_wide() {
+            let _ = write!(key, "{unit:04x}");
+        }
+    }
+    key
+}
+
+/// One answer of the Commands source: its rows' pane pips and the owned
+/// target behind every row key, installed together with the rows of
+/// `generation`. Activation takes its target from here before close cleanup
+/// drops the answer.
+pub(crate) struct PaletteAnswer {
+    generation: u64,
+    pips: std::collections::HashMap<RowKey, ListRowPips>,
+    targets: std::collections::HashMap<RowKey, CommandRowId>,
 }
 
 fn user_command_scope_id(scope: crate::cli::UserCommandScope) -> &'static str {
@@ -1099,6 +1067,7 @@ impl PlexiApp {
     ) -> (
         Vec<PickerRow>,
         std::collections::HashMap<RowKey, ListRowPips>,
+        std::collections::HashMap<RowKey, CommandRowId>,
     ) {
         #[cfg(test)]
         palette_test_log::source_called();
@@ -1461,18 +1430,21 @@ impl PlexiApp {
         }
         let mut rows = Vec::with_capacity(entries.len());
         let mut pips = std::collections::HashMap::new();
+        let mut targets = std::collections::HashMap::new();
         for entry in entries {
             let shortcut = match &entry {
                 PaletteEntry::Command { command, .. } => self.palette_shortcut(command),
                 _ => None,
             };
+            let target = entry.row_id();
             let (row, row_pips) = entry.into_row(&query, shortcut);
             if let Some(row_pips) = row_pips {
                 pips.insert(row.key.clone(), row_pips);
             }
+            targets.insert(row.key.clone(), target);
             rows.push(row);
         }
-        (rows, pips)
+        (rows, pips, targets)
     }
 
     pub(crate) fn command_palette_open(&self) -> bool {
@@ -1518,27 +1490,31 @@ impl PlexiApp {
                     "palette: {id:?} query generation {generation} ({} chars) waits for source '{source}' in logic",
                     text.chars().count()
                 ),
-                PickerEffect::Activate { row, action, .. } => activation = Some((row, action)),
-                PickerEffect::Closed => self.palette_input.reset(""),
+                PickerEffect::Activate { stamp, row, action } => {
+                    // Owned before `Closed` drops the answer it came from.
+                    let target = self
+                        .palette_answer
+                        .as_ref()
+                        .filter(|answer| answer.generation == stamp.generation)
+                        .and_then(|answer| answer.targets.get(&row))
+                        .cloned();
+                    match target {
+                        Some(target) if target.action().id == action => {
+                            activation = Some(target);
+                        }
+                        Some(_) => log::warn!("palette: row has no action '{action}'"),
+                        None => log::warn!("palette: no target for an activated row"),
+                    }
+                }
+                PickerEffect::Closed => {
+                    self.palette_input.reset("");
+                    self.palette_answer = None;
+                }
             }
         }
         self.sync_command_palette_focus();
-        if let Some((row, action)) = activation {
-            self.activate_palette_row(&row, action);
-        }
-    }
-
-    fn answer_palette_query(&mut self, source: &'static str, text: &str) -> Vec<PickerRow> {
-        match source {
-            COMMANDS_SOURCE => {
-                let (rows, pips) = self.palette_command_rows(text);
-                self.palette_row_pips = pips;
-                rows
-            }
-            other => {
-                log::warn!("palette: no source '{other}'");
-                Vec::new()
-            }
+        if let Some(target) = activation {
+            self.run_palette_selection(target);
         }
     }
 
@@ -1560,7 +1536,23 @@ impl PlexiApp {
         else {
             return;
         };
-        let rows = self.answer_palette_query(source, &query);
+        let rows = match source {
+            COMMANDS_SOURCE => {
+                let (rows, pips, targets) = self.palette_command_rows(&query);
+                // Installed with its rows: an Enter this answer completes
+                // resolves against exactly this table.
+                self.palette_answer = Some(PaletteAnswer {
+                    generation,
+                    pips,
+                    targets,
+                });
+                rows
+            }
+            other => {
+                log::warn!("palette: no source '{other}'");
+                Vec::new()
+            }
+        };
         self.apply_palette_command(PickerCommand::Rows {
             generation,
             rows,
@@ -1734,7 +1726,12 @@ impl PlexiApp {
                 .unwrap_or(0);
             stops[(active + 1) % stops.len()].label.to_lowercase()
         });
-        let pips = |key: &RowKey| self.palette_row_pips.get(key).cloned();
+        let pips = |key: &RowKey| {
+            self.palette_answer
+                .as_ref()
+                .and_then(|answer| answer.pips.get(key))
+                .cloned()
+        };
         let field_state = &self.palette_input.field;
         let mut presented = None;
         // The palette's input is routed before drawing; the scrim's own
@@ -1792,20 +1789,6 @@ impl PlexiApp {
         }
     }
 
-    /// Run a row's action. Keyboard and pointer reach this through the same
-    /// `Activate` effect, so they always resolve the same action.
-    fn activate_palette_row(&mut self, key: &RowKey, action: &'static str) {
-        let Some(id) = CommandRowId::parse(key, &self.palette_notes) else {
-            log::warn!("palette: no row resolves for an activated key");
-            return;
-        };
-        if id.action().id != action {
-            log::warn!("palette: row has no action '{action}'");
-            return;
-        }
-        self.run_palette_selection(id);
-    }
-
     /// Execute a Commands-stop row.
     fn run_palette_selection(&mut self, id: CommandRowId) {
         #[cfg(test)]
@@ -1835,14 +1818,11 @@ impl PlexiApp {
             CommandRowId::View(id) => self.launch_view_by_id(&id),
             CommandRowId::Builtin(id) => self.launch_builtin_by_id(id),
             CommandRowId::Note(path) => {
-                let path_str = path.display().to_string();
-                if let Some(pane_id) = self.find_open_text_editor_pane_any_window(&path) {
+                if let Some(pane_id) = self.find_open_note_pane(&path) {
                     log::info!("palette: note already open in pane {pane_id}, navigating");
                     self.pane_navigate(pane_id);
-                } else {
-                    log::info!("palette: opening note {:?} in new pane", path);
-                    let _ =
-                        self.launch_view_by_id_with_layout("text-editor", None, &[path_str], None);
+                } else if let Err(error) = self.open_text_editor_at_path(path) {
+                    log::error!("palette: opening a note in a new pane failed: {error}");
                 }
             }
         }
@@ -3827,10 +3807,6 @@ mod tests {
             }));
     }
 
-    fn row_id(row: &PickerRow) -> CommandRowId {
-        CommandRowId::parse(&row.key, &[]).expect("commands row key")
-    }
-
     /// The results painter prints a section header each time the group
     /// changes, so a group split into two runs would attach its later rows
     /// to another group's header. Returns the group of each run.
@@ -3899,8 +3875,8 @@ mod tests {
             );
             let rows = state.rows();
             assert_eq!(
-                row_id(&rows[0]),
-                CommandRowId::Command(file_explorer_command()),
+                rows[0].key,
+                CommandRowId::Command(file_explorer_command()).key(),
                 "query {query:?} must rank File Explorer's title match first"
             );
             // A fresh query selects the first displayed row, and Enter acts on it.
@@ -3916,7 +3892,7 @@ mod tests {
             vec![todo, registered_command_entry(file_explorer_command())],
             "file",
         );
-        assert_eq!(row_id(&rows[1]), CommandRowId::View("todo".into()));
+        assert_eq!(rows[1].key, CommandRowId::View("todo".into()).key());
     }
 
     #[test]
@@ -4007,10 +3983,7 @@ mod tests {
             "file",
         );
         let selected = state.selected().expect("selection kept");
-        assert_eq!(
-            CommandRowId::parse(selected, &[]),
-            Some(CommandRowId::View("todo".to_string()))
-        );
+        assert_eq!(*selected, CommandRowId::View("todo".to_string()).key());
     }
 
     #[test]
@@ -4113,10 +4086,10 @@ mod tests {
         );
     }
 
-    /// Activation resolves from the row key alone, so every row kind must
-    /// survive the key round trip, and its action is the one Enter runs.
+    /// Every row kind has its own key, and the Commands answer maps each key
+    /// to the owned target activation runs.
     #[test]
-    fn command_row_ids_round_trip_through_their_keys() {
+    fn command_row_keys_are_distinct_and_answer_their_targets() {
         let ids = [
             CommandRowId::Command(file_explorer_command()),
             CommandRowId::Command(PaletteCommand::StatePreset("okabe-ito")),
@@ -4140,18 +4113,26 @@ mod tests {
             },
             CommandRowId::UpdateReady("0.5.1".into()),
         ];
-        let notes = [note_entry(std::path::PathBuf::from("/tmp/notes/a:b.md"))];
-        for id in ids {
-            assert_eq!(
-                CommandRowId::parse(&id.key(), &notes),
-                Some(id.clone()),
-                "{id:?}"
-            );
-        }
+        let keys: std::collections::HashSet<_> = ids.iter().map(CommandRowId::key).collect();
+        assert_eq!(keys.len(), ids.len());
+
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        let note = std::path::PathBuf::from("/tmp/notes/a:b.md");
+        h.app.palette_notes = vec![note_entry(note.clone())];
+        h.app.open_command_palette("");
+        h.run_frames(1);
+        let answer = h.app.palette_answer.as_ref().expect("an installed answer");
+        let rows = h
+            .app
+            .host
+            .picker(PickerId::Palette)
+            .expect("palette")
+            .rows();
+        assert!(rows.iter().all(|row| answer.targets.contains_key(&row.key)));
         assert_eq!(
-            CommandRowId::parse(&RowKey::new("files", "cmd/Changelog"), &notes),
-            None,
-            "another source's key never resolves here"
+            answer.targets.get(&CommandRowId::Note(note.clone()).key()),
+            Some(&CommandRowId::Note(note))
         );
     }
 
@@ -4191,23 +4172,19 @@ mod tests {
         }
     }
 
-    /// A note key spells its path for display, which is lossy for non-UTF-8
-    /// bytes; activation must still open the listed note's exact path.
+    /// Round 1 and 2: a note key is the native path, never its display.
+    /// `n\xff.md` and the literal `n\u{FFFD}.md` display the same and are two
+    /// keys. Restoring a `display()`-based key fails this.
     #[cfg(unix)]
     #[test]
-    fn note_row_activates_its_exact_non_utf8_path() {
+    fn note_keys_never_collide_on_display_lossy_paths() {
         use std::os::unix::ffi::OsStrExt;
-        let odd = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/notes/n\xff.md"));
-        let notes = [note_entry(odd.clone())];
-        let key = CommandRowId::Note(odd.clone()).key();
-        assert_eq!(
-            CommandRowId::parse(&key, &notes),
-            Some(CommandRowId::Note(odd))
-        );
-        assert_eq!(
-            CommandRowId::parse(&key, &[]),
-            None,
-            "an unlisted note never resolves"
+        let raw = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/notes/n\xff.md"));
+        let lossy = std::path::PathBuf::from("/tmp/notes/n\u{FFFD}.md");
+        assert_eq!(raw.display().to_string(), lossy.display().to_string());
+        assert_ne!(
+            CommandRowId::Note(raw).key(),
+            CommandRowId::Note(lossy).key()
         );
     }
 
