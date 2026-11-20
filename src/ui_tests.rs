@@ -4569,6 +4569,149 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         }
     }
 
+    struct ShortPaneFixture {
+        tree: crate::host::wasm_view::UiTree,
+        size: egui::Vec2,
+        origin: Arc<std::sync::Mutex<egui::Pos2>>,
+        actions: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl crate::app::view_trait::View for ShortPaneFixture {
+        fn type_id(&self) -> &'static str {
+            "short_pane_fixture"
+        }
+        fn display_name(&self) -> String {
+            "Permissions layout".into()
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn ui(
+            &mut self,
+            ui: &mut egui::Ui,
+            ctx: &crate::app::view_trait::ViewRenderContext<'_>,
+            _: Option<crate::host::pane::PendingPaneClick>,
+        ) {
+            let rect = egui::Rect::from_min_size(ui.cursor().min, self.size);
+            *self.origin.lock().unwrap() = rect.min;
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                ui.set_clip_rect(rect);
+                let result = crate::host::wasm_render::render_ui_tree_with_surface(
+                    ui, &self.tree, ctx.colors, None, None, 0,
+                );
+                self.actions.lock().unwrap().extend(result.actions);
+            });
+        }
+    }
+
+    /// Real pointer delivery through the host, with a fixed-size plugin viewport.
+    #[test]
+    fn permissions_short_pane_actions_receive_pointer_clicks() {
+        check_permissions_short_pane(false);
+    }
+
+    #[test]
+    #[ignore = "requires GPU"]
+    fn screenshot_permissions_short_pane() {
+        check_permissions_short_pane(true);
+    }
+
+    fn check_permissions_short_pane(screenshots: bool) {
+        use crate::host::wasm_python::{run_headless_frame, PythonLaunchConfig};
+        use crate::host::wasm_view::UiNodeData;
+        let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/permissions-layout");
+        std::fs::create_dir_all(&output).unwrap();
+        for count in [2, 30] {
+            for height in [130, 240] {
+                let mut h = PlexiUiHarness::new_sized(720.0, 480.0);
+                let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/permissions");
+                let config = PythonLaunchConfig::from_manifest_file(&dir)
+                    .unwrap()
+                    .unwrap();
+                let mut seed: serde_json::Value = serde_json::from_str(include_str!(
+                    "../plugins/permissions/fixtures/state.json"
+                ))
+                .unwrap();
+                let rows = seed["entries"].clone();
+                seed["entries"] = (0..count)
+                    .map(|index| {
+                        let mut row = rows[index % 2].clone();
+                        row["id"] = serde_json::json!(format!("cap:logs:{index}"));
+                        row
+                    })
+                    .collect();
+                seed["selected_id"] = serde_json::json!("cap:logs:0");
+                let tree = run_headless_frame(&config, (320.0, height as f32), Some(seed))
+                    .expect("seeded Permissions tree");
+                let layout =
+                    crate::host::wasm_render::render_ui_tree_layout(&tree, 320.0, height as f32);
+                let buttons: Vec<_> = tree
+                    .nodes
+                    .iter()
+                    .filter_map(|node| {
+                        if let UiNodeData::Button(button) = &node.data {
+                            let fact = layout
+                                .iter()
+                                .find(|fact| fact.id == node.id)
+                                .expect("action must be rendered in the short pane");
+                            Some((button.on_click.clone(), fact.rect.expect("painted button")))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(buttons.len(), 2);
+                let pane = add_focused_pane(&mut h);
+                let origin = Arc::new(std::sync::Mutex::new(egui::Pos2::ZERO));
+                let actions = Arc::new(std::sync::Mutex::new(Vec::new()));
+                h.with_app_mut(|app| {
+                    let Some(Pane::View(pane)) =
+                        app.windows[app.active_window].panes.get_mut(&pane)
+                    else {
+                        panic!("fixture pane");
+                    };
+                    pane.runtime = ViewRuntime::Builtin(Box::new(ShortPaneFixture {
+                        tree,
+                        size: egui::vec2(320.0, height as f32),
+                        origin: origin.clone(),
+                        actions: actions.clone(),
+                    }));
+                });
+                h.run_steps(3);
+                if screenshots {
+                    h.save_screenshot(
+                        output
+                            .join(format!("host-permissions-{count}-320x{height}.png"))
+                            .to_str()
+                            .unwrap(),
+                    )
+                    .unwrap();
+                }
+                for (handler, rect) in buttons {
+                    let pos = rect.center() + origin.lock().unwrap().to_vec2();
+                    for pressed in [true, false] {
+                        h.harness().input_mut().events.extend([
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ]);
+                        h.run_steps(1);
+                    }
+                    assert_eq!(
+                        *actions.lock().unwrap(),
+                        vec![handler],
+                        "{count} rows at 320x{height}"
+                    );
+                    actions.lock().unwrap().clear();
+                }
+            }
+        }
+    }
+
     #[derive(Clone)]
     struct PressSnapshot {
         fill: egui::Color32,

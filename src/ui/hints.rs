@@ -93,6 +93,7 @@ pub(crate) struct HintBarResponse {
 pub(crate) struct HintBar<'a> {
     groups: &'a [HintGroup<'a>],
     mode: HintBarMode,
+    compact: bool,
 }
 
 impl<'a> HintBar<'a> {
@@ -100,12 +101,39 @@ impl<'a> HintBar<'a> {
         Self {
             groups,
             mode: HintBarMode::ModalFooter,
+            compact: false,
         }
     }
 
     pub(crate) fn pane_footer_band(mut self, divider: bool) -> Self {
         self.mode = HintBarMode::PaneFooterBand { divider };
         self
+    }
+
+    /// Reduce band whitespace without shrinking key chips or their labels.
+    pub(crate) fn compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
+    }
+
+    fn band_padding(&self) -> f32 {
+        if self.compact {
+            style::SPACE_XS
+        } else {
+            style::SPACE_SM
+        }
+    }
+
+    fn band_row_height(&self, ui: &egui::Ui) -> f32 {
+        hint_row_height(ui) + if self.compact { 0.0 } else { style::SPACE_XS }
+    }
+
+    fn group_gap(&self) -> f32 {
+        if self.compact {
+            style::SPACE_SM
+        } else {
+            style::SPACE_MD
+        }
     }
 
     pub(crate) fn inline_status_bar(mut self) -> Self {
@@ -119,8 +147,8 @@ impl<'a> HintBar<'a> {
         let avail_w = footer_band_available_width(ui);
         let rows = self.rows(ui, avail_w);
         let n = rows.len().max(1) as f32;
-        let row_h = hint_row_height(ui) + 4.0;
-        let base = style::SPACE_SM + n * row_h + (n - 1.0) * style::SPACE_XS + style::SPACE_SM;
+        let row_h = self.band_row_height(ui);
+        let base = 2.0 * self.band_padding() + n * row_h + (n - 1.0) * style::SPACE_XS;
         if divider {
             1.0 + base
         } else {
@@ -212,10 +240,10 @@ impl<'a> HintBar<'a> {
         divider: bool,
     ) -> HintBarResponse {
         let chip_row_h = hint_row_height(ui);
-        let row_h = chip_row_h + 4.0;
+        let row_h = self.band_row_height(ui);
         let avail_w = footer_band_available_width(ui);
         let widths: Vec<f32> = self.groups.iter().map(|group| group.width(ui)).collect();
-        let rows = hint_rows(&widths, avail_w, style::SPACE_MD);
+        let rows = hint_rows(&widths, avail_w, self.group_gap());
         let total_h = self.band_height(ui, divider);
 
         let (rect, _) = ui.allocate_exact_size(
@@ -243,10 +271,10 @@ impl<'a> HintBar<'a> {
             label_rects: Vec::new(),
         };
 
-        let content_top = full_rect.min.y + if divider { 1.0 } else { 0.0 } + style::SPACE_SM;
+        let content_top = full_rect.min.y + if divider { 1.0 } else { 0.0 } + self.band_padding();
         for (idx, row) in rows.into_iter().enumerate() {
             let row_w = widths[row.clone()].iter().sum::<f32>()
-                + style::SPACE_MD * row.len().saturating_sub(1) as f32;
+                + self.group_gap() * row.len().saturating_sub(1) as f32;
             let row_top = content_top + idx as f32 * (row_h + style::SPACE_XS);
             let row_band = egui::Rect::from_min_size(
                 egui::pos2(full_rect.min.x, row_top),
@@ -263,7 +291,7 @@ impl<'a> HintBar<'a> {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     for (gi, group) in row_slice.iter().enumerate() {
                         if gi > 0 {
-                            ui.add_space(style::SPACE_MD);
+                            ui.add_space(self.group_gap());
                         }
                         let (chips, label) = group.show_inline(ui, colors);
                         resp.chip_rects.extend(chips);
@@ -327,7 +355,7 @@ impl<'a> HintBar<'a> {
 
     pub(crate) fn rows(&self, ui: &egui::Ui, available_width: f32) -> Vec<Range<usize>> {
         let widths: Vec<f32> = self.groups.iter().map(|group| group.width(ui)).collect();
-        hint_rows(&widths, available_width, style::SPACE_MD)
+        hint_rows(&widths, available_width, self.group_gap())
     }
 }
 

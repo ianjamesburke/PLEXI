@@ -2717,6 +2717,154 @@ mod gauntlet_probe_tests {
 mod layout_finding_tests {
     use crate::host::wasm_render::NodeLayout;
     use egui::{pos2, Rect};
+    use std::path::Path;
+
+    #[test]
+    fn permissions_inventory_keeps_actions_visible_without_overlap() {
+        check_permissions_inventory(false);
+    }
+
+    #[test]
+    #[ignore = "requires GPU"]
+    fn screenshot_permissions_inventory() {
+        check_permissions_inventory(true);
+    }
+
+    fn check_permissions_inventory(screenshots: bool) {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/permissions");
+        let (manifest, entry) = super::load_local_plugin(&dir).unwrap();
+        let config = super::python_launch_config(&manifest, &entry, &dir).unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("fixtures/state.json")).unwrap(),
+        )
+        .unwrap();
+        let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/permissions-layout");
+        std::fs::create_dir_all(&output).unwrap();
+        let mut failures = Vec::new();
+        for count in [2, 30] {
+            let mut seed = fixture.clone();
+            seed["selected_id"] = serde_json::json!("cap:logs:0");
+            seed["entries"] = (0..count)
+                .map(|index| {
+                    let mut row = fixture["entries"][index % 2].clone();
+                    row["id"] = serde_json::json!(format!("cap:logs:{index}"));
+                    row
+                })
+                .collect();
+            for (width, height) in [(320, 240), (320, 130)] {
+                let tree = crate::host::wasm_python::run_headless_frame(
+                    &config,
+                    (width as f32, height as f32),
+                    Some(seed.clone()),
+                )
+                .expect("seeded Permissions renders");
+                let layout = crate::host::wasm_render::render_ui_tree_layout(
+                    &tree,
+                    width as f32,
+                    height as f32,
+                );
+                let name = format!("permissions-{count}-{width}x{height}");
+                if screenshots {
+                    let png = crate::host::wasm_render::render_ui_tree_to_png(
+                        &tree,
+                        width as f32,
+                        height as f32,
+                        1.0,
+                    )
+                    .expect("Permissions screenshot");
+                    std::fs::write(output.join(format!("{name}.png")), png).unwrap();
+                }
+                let frame = super::frame_json_with_layout(&tree, &layout);
+                std::fs::write(output.join(format!("{name}.json")), frame.to_string()).unwrap();
+                for finding in super::layout_findings(&tree, &layout, true) {
+                    if finding.is_error || finding.message.contains(" overlap by ") {
+                        failures.push(format!("{name}: {}", finding.message));
+                    }
+                }
+                for label in ["Open", "Reload"] {
+                    let button = tree.nodes.iter().find(|node| matches!(
+                        &node.data, crate::host::wasm_view::UiNodeData::Button(b) if b.label == label
+                    )).expect("action exists");
+                    let Some(fact) = layout.iter().find(|fact| fact.id == button.id) else {
+                        failures.push(format!("{name}: {label} was not rendered"));
+                        continue;
+                    };
+                    if !fact.rect.zip(fact.visible).is_some_and(|(rect, visible)| {
+                        visible.width() > 0.0
+                            && visible.height() > 0.0
+                            && visible.expand(0.5).contains_rect(rect)
+                    }) {
+                        failures.push(format!("{name}: {label} is not hit-testable: {fact:?}"));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn todo_short_pane_keeps_list_actions_visible() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/todo");
+        let (manifest, entry) = super::load_local_plugin(&dir).unwrap();
+        let config = super::python_launch_config(&manifest, &entry, &dir).unwrap();
+        for count in [2, 30] {
+            let items: Vec<_> = (0..count)
+                .map(|i| {
+                    serde_json::json!({
+                        "id": i, "text": format!("Task {i}"), "done": false
+                    })
+                })
+                .collect();
+            for height in [130.0, 240.0] {
+                let tree = crate::host::wasm_python::run_headless_frame(
+                    &config,
+                    (320.0, height),
+                    Some(serde_json::json!({"items": items, "selected": 0, "mode": "list"})),
+                )
+                .unwrap();
+                assert!(tree.nodes.iter().any(|node| matches!(
+                    &node.data, crate::host::wasm_view::UiNodeData::ListView(list) if list.items.len() == count
+                )), "Todo fixture must contain every row");
+                assert_eq!(
+                    tree.nodes
+                        .iter()
+                        .filter(|node| matches!(
+                            node.data,
+                            crate::host::wasm_view::UiNodeData::Button(_)
+                        ))
+                        .count(),
+                    3
+                );
+                let layout = crate::host::wasm_render::render_ui_tree_layout(&tree, 320.0, height);
+                for node in &tree.nodes {
+                    if matches!(node.data, crate::host::wasm_view::UiNodeData::FooterKeys(_)) {
+                        let fact = layout.iter().find(|fact| fact.id == node.id).unwrap();
+                        assert!(!fact.text_cut, "Todo footer labels at {height}: {fact:?}");
+                    }
+
+                    if let crate::host::wasm_view::UiNodeData::Button(button) = &node.data {
+                        let fact = layout
+                            .iter()
+                            .find(|fact| fact.id == node.id)
+                            .expect("Todo action must render");
+                        assert!(
+                            fact.rect
+                                .zip(fact.visible)
+                                .is_some_and(|(rect, visible)| visible
+                                    .expand(0.5)
+                                    .contains_rect(rect)),
+                            "{} at {height}: {fact:?}",
+                            button.label
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     fn tree(json: &str) -> crate::host::wasm_view::UiTree {
         crate::host::wasm_python::decode_ui_tree(json).expect("fixture tree decodes")
