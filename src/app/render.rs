@@ -130,6 +130,9 @@ impl PlexiApp {
             return;
         }
         self.drain_update_events();
+        crate::platform::logging::time_drain("refresh_command_palette", || {
+            self.refresh_command_palette()
+        });
         if self.update_quit_pending {
             crate::app::quit::trace("update_restart_received");
             self.update_quit_pending = false;

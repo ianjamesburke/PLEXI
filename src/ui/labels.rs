@@ -11,6 +11,15 @@ pub(crate) fn section_header(ui: &mut egui::Ui, label: &str, colors: &Colors) {
     );
 }
 
+/// Dim small header above one group of list rows (picker results).
+pub(crate) fn list_group_label(ui: &mut egui::Ui, label: &str, colors: &Colors) {
+    ui.label(
+        RichText::new(label)
+            .size(style::TEXT_HINT)
+            .color(colors.text_dim),
+    );
+}
+
 pub(crate) fn chrome_section<R>(
     ui: &mut egui::Ui,
     title: &str,

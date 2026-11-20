@@ -209,7 +209,7 @@ focus_owner_tokens! {
     Shortcuts => ShortcutsOwner { key: shortcuts_handle_key, draw: draw_shortcuts_overlay },
     ApprovalBanner => ApprovalBannerOwner { key: approval_handle_key, draw: approval_focus_draw },
     ConfirmClose => ConfirmCloseOwner { key: confirm_close_handle_key, draw: draw_confirm_close },
-    CommandPalette => CommandPaletteOwner { key: command_palette_handle_key, draw: draw_command_palette },
+    CommandPalette => CommandPaletteOwner { key: command_palette_keys, draw: draw_command_palette },
     RenamePane => RenamePaneOwner { key: rename_pane_handle_key, draw: draw_rename_pane_overlay },
     ContextRename => ContextRenameOwner { key: context_rename_handle_key, draw: draw_rename_context_overlay },
     ContextDescription => ContextDescriptionOwner { key: context_description_handle_key, draw: draw_edit_description_overlay },
@@ -682,7 +682,7 @@ impl PlexiApp {
     pub(crate) fn dismiss_preemptable_modal(&mut self) {
         if let Some(FocusKind::CommandPalette) = self.focus_stack.last().cloned() {
             log::info!("quick_note: dismissing CommandPalette to open QuickNote");
-            self.show_command_palette = false;
+            self.close_command_palette();
             self.focus_stack.retain(|l| *l != FocusKind::CommandPalette);
         }
     }
@@ -1344,11 +1344,11 @@ impl PlexiApp {
         }
     }
 
-    /// Reconcile the command-palette focus layer with `show_command_palette`.
-    /// Same pattern as the notification modal: boolean visibility flag is the
-    /// source of truth, focus stack follows it deterministically each frame.
+    /// Reconcile the command-palette focus layer with the palette picker's
+    /// open state, the source of truth; the focus stack follows it.
     pub(crate) fn sync_command_palette_focus(&mut self) {
-        self.reconcile_focus_layer(FocusKind::CommandPalette, self.show_command_palette);
+        let open = self.command_palette_open();
+        self.reconcile_focus_layer(FocusKind::CommandPalette, open);
     }
 
     /// Every note currently open in an editor pane, across all windows, newest
