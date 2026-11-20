@@ -1270,7 +1270,6 @@ Use --open to launch it in a split-right pane after scaffolding. See `sdk/python
 | `--lang` | string | no | Plugin language/template: `python` (declarative UI). Use `--wasm <name>` for a Rust WASM component Default: `python`. |
 | `--global` | flag | no | Scaffold into the global plugin registry instead of the workspace |
 | `--open` | flag | no | Open the plugin in a split-right pane after scaffolding |
-| `--no-open` | flag | no | Deprecated compatibility flag. Plugin init no longer opens by default |
 | `--from` | string | no | Open the new pane relative to this pane id or name. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 
 ### `plexi plugin validate`
