@@ -613,3 +613,346 @@ fn hidden_delivery_is_not_replayed_and_logic_still_services_ipc() {
     assert!(probe_log(&mut h, a).is_empty());
     assert!(probe_log(&mut h, b).is_empty(), "hidden input is not replayed on the next draw");
 }
+
+// ── Production oracle over generated deliveries ─────────────────────────────
+//
+// `Model` is an independent reading of the ownership contract: its own owner
+// and instance counter, its own held-edge table, its own presentation flag.
+// It never calls the production matcher, router, palette or hit tester.
+// `run_production` drives the same history through `HostHarness::frame`.
+// Both are compared after every delivery, so a later focus change cannot
+// hide an earlier misroute.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    A,
+    B,
+}
+
+/// One generated input step. Key steps are single edges so a delivery cut
+/// can fall between a press and its release; a click stays whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    Down(Key),
+    Text(char),
+    Up(Key),
+    CmdPDown,
+    Click(Side),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Observed {
+    palette_open: bool,
+    focus: Side,
+    a: Vec<String>,
+    b: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModelOwner {
+    Palette,
+    Pane(Side),
+}
+
+#[derive(Clone, Copy)]
+struct ModelHeld {
+    instance: u64,
+    /// The release goes back to the press's owner while it still holds input.
+    returns: bool,
+}
+
+struct Model {
+    palette_open: bool,
+    presented: bool,
+    focus: Side,
+    instance: u64,
+    last_owner: ModelOwner,
+    held: std::collections::HashMap<Key, ModelHeld>,
+    a: Vec<String>,
+    b: Vec<String>,
+}
+
+impl Model {
+    fn new() -> Self {
+        Self {
+            palette_open: false,
+            presented: false,
+            focus: Side::A,
+            instance: 0,
+            last_owner: ModelOwner::Pane(Side::A),
+            held: Default::default(),
+            a: Vec::new(),
+            b: Vec::new(),
+        }
+    }
+
+    fn owner(&mut self) -> (ModelOwner, u64) {
+        let owner = if self.palette_open {
+            ModelOwner::Palette
+        } else {
+            ModelOwner::Pane(self.focus)
+        };
+        if owner != self.last_owner {
+            self.instance += 1;
+            self.last_owner = owner;
+        }
+        (owner, self.instance)
+    }
+
+    fn log(&mut self, side: Side, entry: String) {
+        match side {
+            Side::A => self.a.push(entry),
+            Side::B => self.b.push(entry),
+        }
+    }
+
+    fn delivery(&mut self, steps: &[Step]) -> Observed {
+        let mut barrier = false;
+        let mut text_owned = false;
+        let mut click_away = false;
+        for step in steps {
+            let (owner, instance) = self.owner();
+            match *step {
+                Step::Down(key) => {
+                    if barrier {
+                        self.held.insert(key, ModelHeld { instance, returns: false });
+                        text_owned = true;
+                        continue;
+                    }
+                    match owner {
+                        ModelOwner::Palette if key == Key::Escape => {
+                            self.palette_open = false;
+                            barrier = true;
+                            self.held.insert(key, ModelHeld { instance, returns: true });
+                            text_owned = true;
+                        }
+                        ModelOwner::Palette => {
+                            self.held.insert(key, ModelHeld { instance, returns: true });
+                            text_owned = false;
+                        }
+                        ModelOwner::Pane(side) => {
+                            self.log(side, format!("down:{key:?}"));
+                            self.held.insert(key, ModelHeld { instance, returns: true });
+                            text_owned = key == Key::Escape;
+                        }
+                    }
+                }
+                Step::CmdPDown => {
+                    self.held.insert(Key::P, ModelHeld { instance, returns: false });
+                    text_owned = true;
+                    if barrier {
+                        continue;
+                    }
+                    if self.palette_open {
+                        self.palette_open = false;
+                        barrier = true;
+                    } else {
+                        self.palette_open = true;
+                        self.presented = false;
+                    }
+                }
+                Step::Up(key) => {
+                    let held = self.held.remove(&key);
+                    let delivered = match held {
+                        Some(held) => !barrier && held.returns && held.instance == instance,
+                        None => !barrier,
+                    };
+                    if delivered {
+                        if let ModelOwner::Pane(side) = owner {
+                            self.log(side, format!("up:{key:?}"));
+                        }
+                    }
+                }
+                Step::Text(c) => {
+                    if barrier || text_owned {
+                        continue;
+                    }
+                    if let ModelOwner::Pane(side) = owner {
+                        self.log(side, format!("text:{c}"));
+                    }
+                }
+                Step::Click(side) => {
+                    if barrier {
+                        continue;
+                    }
+                    match owner {
+                        // A drawn modal's scrim takes the click away.
+                        ModelOwner::Palette if self.presented => click_away = true,
+                        // Before its first draw the modal declines it.
+                        ModelOwner::Palette => {}
+                        ModelOwner::Pane(_) => self.focus = side,
+                    }
+                }
+            }
+        }
+        if click_away {
+            self.palette_open = false;
+        }
+        if self.palette_open {
+            self.presented = true;
+        }
+        Observed {
+            palette_open: self.palette_open,
+            focus: self.focus,
+            a: std::mem::take(&mut self.a),
+            b: std::mem::take(&mut self.b),
+        }
+    }
+}
+
+fn step_events(h: &HostHarness, step: Step, panes: (PaneId, PaneId)) -> Vec<Event> {
+    match step {
+        Step::Down(key) => vec![down(key, Modifiers::NONE)],
+        Step::Up(key) => vec![up(key, Modifiers::NONE)],
+        Step::Text(c) => vec![text(&c.to_string())],
+        Step::CmdPDown => vec![down(Key::P, native_cmd())],
+        Step::Click(side) => click(center(
+            h,
+            match side {
+                Side::A => panes.0,
+                Side::B => panes.1,
+            },
+        )),
+    }
+}
+
+fn run_production(deliveries: &[Vec<Step>]) -> Vec<Observed> {
+    let mut h = HostHarness::new();
+    let (a, b) = two_probes(&mut h);
+    deliveries
+        .iter()
+        .map(|steps| {
+            let events = steps
+                .iter()
+                .flat_map(|step| step_events(&h, *step, (a, b)))
+                .collect();
+            deliver(&mut h, events);
+            Observed {
+                palette_open: h.app.show_command_palette,
+                focus: if focused(&h) == Some(b) { Side::B } else { Side::A },
+                a: probe_log(&mut h, a),
+                b: probe_log(&mut h, b),
+            }
+        })
+        .collect()
+}
+
+fn run_model(deliveries: &[Vec<Step>]) -> Vec<Observed> {
+    let mut model = Model::new();
+    deliveries.iter().map(|steps| model.delivery(steps)).collect()
+}
+
+/// First delivery where production and model disagree.
+fn divergence(deliveries: &[Vec<Step>]) -> Option<(usize, Observed, Observed)> {
+    let production = run_production(deliveries);
+    let model = run_model(deliveries);
+    production
+        .into_iter()
+        .zip(model)
+        .enumerate()
+        .find(|(_, (p, m))| p != m)
+        .map(|(i, (p, m))| (i, p, m))
+}
+
+/// Deterministic xorshift, so every generated history is reproducible.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// A history: steps in order, then cut into deliveries at random points that
+/// are independent of where the palette opens, closes or is presented. A key
+/// is never pressed again before its release.
+fn generate(seed: u64) -> Vec<Vec<Step>> {
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    let mut steps = Vec::new();
+    for _ in 0..(6 + rng.below(8)) {
+        match rng.below(6) {
+            0 | 1 => {
+                let (key, c) = [(Key::X, 'x'), (Key::Y, 'y'), (Key::Z, 'z')][rng.below(3) as usize];
+                steps.extend([Step::Down(key), Step::Text(c), Step::Up(key)]);
+            }
+            2 => steps.extend([Step::CmdPDown, Step::Up(Key::P)]),
+            3 => steps.extend([Step::Down(Key::Escape), Step::Up(Key::Escape)]),
+            _ => steps.push(Step::Click(if rng.below(2) == 0 { Side::A } else { Side::B })),
+        }
+    }
+    let mut deliveries = vec![Vec::new()];
+    for step in steps {
+        if !deliveries.last().is_some_and(Vec::is_empty) && rng.below(3) == 0 {
+            deliveries.push(Vec::new());
+        }
+        deliveries.last_mut().expect("a delivery").push(step);
+    }
+    deliveries
+}
+
+/// Remove one step at a time while the divergence persists.
+fn shrink(mut deliveries: Vec<Vec<Step>>) -> Vec<Vec<Step>> {
+    'outer: loop {
+        for d in 0..deliveries.len() {
+            for s in 0..deliveries[d].len() {
+                let mut candidate = deliveries.clone();
+                candidate[d].remove(s);
+                candidate.retain(|delivery| !delivery.is_empty());
+                if divergence(&candidate).is_some() {
+                    deliveries = candidate;
+                    continue 'outer;
+                }
+            }
+        }
+        return deliveries;
+    }
+}
+
+fn assert_production_matches_model(deliveries: Vec<Vec<Step>>, label: &str) {
+    if divergence(&deliveries).is_some() {
+        let shrunk = shrink(deliveries);
+        let (at, production, model) = divergence(&shrunk).expect("shrinking keeps a divergence");
+        panic!(
+            "{label}: production diverged from the ownership model at delivery {at}\n\
+             history: {shrunk:?}\nproduction: {production:?}\nmodel: {model:?}"
+        );
+    }
+}
+
+/// The mandatory histories from the stint's findings table, seeded directly.
+#[test]
+fn production_oracle_mandatory_histories() {
+    use Step::*;
+    let histories: Vec<(&str, Vec<Vec<Step>>)> = vec![
+        ("escape then click before first draw", vec![vec![CmdPDown, Down(Key::Escape), Click(Side::B)]]),
+        (
+            "escape then click after draw",
+            vec![vec![CmdPDown, Up(Key::P)], vec![Down(Key::Escape), Click(Side::B), Up(Key::Escape)]],
+        ),
+        ("closing chord release retired", vec![vec![CmdPDown, Up(Key::P)], vec![CmdPDown, Up(Key::P)], vec![Down(Key::P), Text('p'), Up(Key::P)]]),
+        ("release in a later delivery", vec![vec![CmdPDown], vec![Up(Key::P)], vec![CmdPDown], vec![Up(Key::P), Down(Key::P), Text('p'), Up(Key::P)]]),
+        ("opening mid delivery", vec![vec![Down(Key::X), Text('x'), CmdPDown, Down(Key::Y), Text('y'), Up(Key::Y), Up(Key::X)]]),
+        ("escape then typing", vec![vec![CmdPDown, Up(Key::P)], vec![Down(Key::Escape), Down(Key::Z), Text('z'), Up(Key::Z), Up(Key::Escape)], vec![Down(Key::Z), Text('z'), Up(Key::Z)]]),
+        ("click away then type", vec![vec![CmdPDown, Up(Key::P)], vec![Click(Side::B), Down(Key::X), Text('x'), Up(Key::X)], vec![Down(Key::X), Text('x'), Up(Key::X)]]),
+        ("pane click then keys", vec![vec![Click(Side::B), Down(Key::Y), Text('y'), Up(Key::Y)]]),
+    ];
+    for (label, history) in histories {
+        assert_production_matches_model(history, label);
+    }
+}
+
+/// Generated histories: openings, closes, releases and clicks at any
+/// position, cut into deliveries independently of those transitions.
+#[test]
+fn production_oracle_generated_histories() {
+    for seed in 1..=120 {
+        assert_production_matches_model(generate(seed), &format!("seed {seed}"));
+    }
+}

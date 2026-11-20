@@ -905,10 +905,10 @@ mod tests {
 
     /// Run `act` on frames flagged synthetic, as pane-IPC injected input is.
     fn injected(h: &mut PlexiUiHarness, act: impl FnOnce(&mut PlexiUiHarness)) {
-        h.with_app_mut(|app| app.synthetic_input_frame = true);
+        h.with_app_mut(|app| app.test_synthetic_ingress = true);
         act(h);
         h.run_steps(3);
-        h.with_app_mut(|app| app.synthetic_input_frame = false);
+        h.with_app_mut(|app| app.test_synthetic_ingress = false);
     }
 
     /// Stint 1513: "Quit without saving" takes only a fresh, real Q: not a Q

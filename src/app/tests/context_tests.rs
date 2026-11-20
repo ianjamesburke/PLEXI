@@ -4363,6 +4363,8 @@ fn host_key_ipc_drives_numbered_context_switch_without_pane_input() {
         key: "cmd+2".to_string(),
         response_file: response_file.to_string_lossy().into_owned(),
     });
+    // Drained in logic, then delivered with the next delivery.
+    h.frame(egui::RawInput::default());
     h.frame(egui::RawInput::default());
 
     assert_eq!(h.app.router.active().context_id, second);

@@ -194,6 +194,18 @@ impl<'a> ModalShell<'a> {
                     .inner
             });
 
+        if !dismissed {
+            let mut layers = vec![egui::LayerId::new(self.order, self.id.with("overlay"))];
+            if self.scrim_strength > 0.0 {
+                let scrim_order = if self.order == egui::Order::Foreground {
+                    egui::Order::Middle
+                } else {
+                    egui::Order::Foreground
+                };
+                layers.push(egui::LayerId::new(scrim_order, self.id.with("scrim")));
+            }
+            note_open_modal_layers(ctx, &layers);
+        }
         ModalResponse { dismissed }
     }
 
@@ -283,4 +295,42 @@ fn within_width<R>(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui
 
 pub(crate) struct ModalResponse {
     pub(crate) dismissed: bool,
+}
+
+const OPEN_MODAL_LAYERS_ID: &str = "plexi_open_modal_layers";
+const KNOWN_MODAL_LAYERS_ID: &str = "plexi_known_modal_layers";
+
+/// Start a pass's record of modal layers drawn and left open. The input
+/// router reads it between passes (see [`stale_modal_layer`]).
+pub(crate) fn begin_modal_layer_pass(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(OPEN_MODAL_LAYERS_ID), Vec::<egui::LayerId>::new()));
+}
+
+fn note_open_modal_layers(ctx: &egui::Context, layers: &[egui::LayerId]) {
+    ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<Vec<egui::LayerId>>(egui::Id::new(OPEN_MODAL_LAYERS_ID))
+            .extend_from_slice(layers);
+        let known = d.get_temp_mut_or_default::<Vec<egui::LayerId>>(egui::Id::new(KNOWN_MODAL_LAYERS_ID));
+        for layer in layers {
+            if !known.contains(layer) {
+                known.push(*layer);
+            }
+        }
+    });
+}
+
+/// True when `layer` belongs to a modal that the last pass did not leave
+/// open. egui keeps a layer hit-testable for a pass after it stops drawing,
+/// so a modal that closed (Escape, click-away) would otherwise still cover
+/// the pane under it for the next press.
+pub(crate) fn stale_modal_layer(ctx: &egui::Context, layer: egui::LayerId) -> bool {
+    ctx.data(|d| {
+        let known = d
+            .get_temp::<Vec<egui::LayerId>>(egui::Id::new(KNOWN_MODAL_LAYERS_ID))
+            .unwrap_or_default();
+        let open = d
+            .get_temp::<Vec<egui::LayerId>>(egui::Id::new(OPEN_MODAL_LAYERS_ID))
+            .unwrap_or_default();
+        known.contains(&layer) && !open.contains(&layer)
+    })
 }

@@ -261,6 +261,10 @@ pub struct PlexiApp {
     pub(crate) approval_buttons: Vec<ApprovalButton>,
     /// This frame's raw input includes socket-injected pane events.
     pub(crate) synthetic_input_frame: bool,
+    /// Test ingress: kittest queues input that `raw_input_hook` cannot tell
+    /// from desktop input, so a test marks those deliveries as injected here.
+    #[cfg(test)]
+    pub(crate) test_synthetic_ingress: bool,
     /// `plexi pane slot wait` requests parked until the watched slot's
     /// value matches, or their caller-supplied deadline passes (stint 0585).
     pub(crate) pending_slot_waits: Vec<crate::app::pane_wait::PendingSlotWait>,
@@ -685,6 +689,10 @@ pub struct PlexiApp {
     /// writing directly into `Context::input_mut` from IPC dispatch can be
     /// acknowledged and then discarded before the widget sees it.
     pub(crate) pending_pane_inputs: HashMap<crate::spatial::tiling::PaneId, Vec<egui::RawInput>>,
+    /// Host-key IPC batches (`HostRequest::HostKey`), joined to the next
+    /// visible delivery in `raw_input_hook` so the input router orders them
+    /// with native input and marks that delivery synthetic.
+    pub(crate) pending_host_inputs: Vec<egui::RawInput>,
     /// Per-frame drag samples for canvas/process/WASM panes queued by
     /// `HostRequest::DragPane` (stint 0510). One sample is promoted into
     /// `pending_pane_clicks` per rendered frame so the target pane sees
@@ -1828,6 +1836,8 @@ impl PlexiApp {
                     pending_screenshots: Vec::new(),
                     approval_buttons: Vec::new(),
                     synthetic_input_frame: false,
+                    #[cfg(test)]
+                    test_synthetic_ingress: false,
                     pending_slot_waits: Vec::new(),
                     pane_mailboxes: HashMap::new(),
                     pending_message_recvs: Vec::new(),
@@ -1981,6 +1991,7 @@ impl PlexiApp {
                     agent_host: crate::agent::AgentHost::production(config.ai, model_modes),
                     pending_pane_clicks: HashMap::new(),
                     pending_pane_inputs: HashMap::new(),
+                    pending_host_inputs: Vec::new(),
                     pending_pane_drags: HashMap::new(),
                     pending_pane_pointer_frames: HashMap::new(),
                     zoom: zoom::ZoomState::default(),
@@ -2124,6 +2135,8 @@ impl PlexiApp {
             pending_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
+            #[cfg(test)]
+            test_synthetic_ingress: false,
             pending_slot_waits: Vec::new(),
             pane_mailboxes: HashMap::new(),
             pending_message_recvs: Vec::new(),
@@ -2275,6 +2288,7 @@ impl PlexiApp {
             agent_host,
             pending_pane_clicks: HashMap::new(),
             pending_pane_inputs: HashMap::new(),
+            pending_host_inputs: Vec::new(),
             pending_pane_drags: HashMap::new(),
             pending_pane_pointer_frames: HashMap::new(),
             zoom: zoom::ZoomState::default(),
@@ -3114,6 +3128,8 @@ impl PlexiApp {
             pending_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
+            #[cfg(test)]
+            test_synthetic_ingress: false,
             pending_slot_waits: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
@@ -3267,6 +3283,7 @@ impl PlexiApp {
             agent_host: crate::agent::AgentHost::inert(),
             pending_pane_clicks: HashMap::new(),
             pending_pane_inputs: HashMap::new(),
+            pending_host_inputs: Vec::new(),
             pending_pane_drags: HashMap::new(),
             pending_pane_pointer_frames: HashMap::new(),
             zoom: zoom::ZoomState::default(),
@@ -3661,6 +3678,10 @@ impl eframe::App for PlexiApp {
             return;
         }
         self.synthetic_input_frame = false;
+        #[cfg(test)]
+        {
+            self.synthetic_input_frame = self.test_synthetic_ingress;
+        }
         self.fulfill_screenshot_events(ctx, raw_input);
         // A hidden window (minimized/occluded) gets logic-only passes with no
         // widget pass to receive events — leave queued pane inputs in place so
@@ -3725,6 +3746,13 @@ impl eframe::App for PlexiApp {
                     // Keep frames coming until the schedule drains.
                     ctx.request_repaint();
                 }
+            }
+        }
+        if !self.pending_host_inputs.is_empty() {
+            self.synthetic_input_frame = true;
+            for batch in std::mem::take(&mut self.pending_host_inputs) {
+                raw_input.modifiers = batch.modifiers;
+                raw_input.events.extend(batch.events);
             }
         }
         // One ordered delivery, native and injected input together: every
@@ -4031,6 +4059,8 @@ impl eframe::App for PlexiApp {
         }
         let _sheet_frame = SheetButtonFrame::begin();
         let ctx = &ui.ctx().clone();
+        crate::ui::overlay::begin_modal_layer_pass(ctx);
+        crate::ui::dialog::begin_dialog_chord_pass(ctx);
         let ui_profile_start = crate::platform::ui_profile::enabled().then(std::time::Instant::now);
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
@@ -4097,6 +4127,11 @@ impl eframe::App for PlexiApp {
         if let Some(kind) = self.focus_stack.last().copied() {
             early_modal_cmds = kind.owner().draw(self, ctx);
             self.sync_overlay_layers();
+            // Drawn whole and still the owner: the next delivery's pointer
+            // input can hit-test what it painted.
+            if self.input_router.observe(self.host_input_owner()) == drawn_owner {
+                self.input_router.note_presented(drawn_owner);
+            }
         }
         // Stint 0688: plugin-command servicing moved to `App::logic` — see
         // `service_view_commands`. Only the modal-render follow-up stays here,
@@ -4239,6 +4274,7 @@ impl eframe::App for PlexiApp {
         self.approval_buttons.clear();
         self.render_panels(ui, focused_terminal_input);
         self.observe_terminal_resize_commits();
+        let before_host_overlays = self.input_router.observe(self.host_input_owner());
         self.draw_attention_queue_and_decision_overlay(ctx);
         self.draw_keychain_recovery_dialog(ctx);
 
@@ -4246,10 +4282,19 @@ impl eframe::App for PlexiApp {
         // same-pane sessions so Stats has live data without keystroke tracking.
         self.reconcile_focus_logging(FOCUS_HEARTBEAT_INTERVAL);
 
-        // The owner drawn this pass stayed the owner through it: its painted
-        // geometry is what the next delivery's pointer input hit-tests.
+        // Host overlays drawn after the panes (Decision Overlay, Attention
+        // Queue, Tree Atlas), when the one drawn is still the owner.
         let presented_owner = self.input_router.observe(self.host_input_owner());
-        if presented_owner == drawn_owner {
+        if presented_owner == before_host_overlays
+            && matches!(
+                presented_owner.owner,
+                input_owner::InputOwner::Overlay(
+                    input_owner::OverlaySurface::DecisionOverlay
+                        | input_owner::OverlaySurface::AttentionQueue
+                        | input_owner::OverlaySurface::TreeAtlas
+                )
+            )
+        {
             self.input_router.note_presented(presented_owner);
         }
 

@@ -317,6 +317,12 @@ impl<'a> ActionModal<'a> {
         field: Option<DialogField<'_>>,
         add_body: impl FnOnce(&mut egui::Ui),
     ) -> DialogResponse<'a> {
+        note_dialog_chords(
+            ctx,
+            self.actions
+                .iter()
+                .flat_map(|action| action.shortcut.iter().chain(action.alternate.iter())),
+        );
         let field_id = field.as_ref().map(|field| field.id);
         let trap_key = self
             .focus_surface
@@ -545,6 +551,55 @@ fn take_fresh_activation(ctx: &egui::Context) -> bool {
 }
 
 /// The shortcut spelled as one compact hint, e.g. `⌘S`, `D`, `Esc`.
+const DIALOG_CHORDS_ID: &str = "plexi_dialog_chords_presented";
+
+/// Start a pass's record of the chords presented dialogs answer to.
+pub(crate) fn begin_dialog_chord_pass(ctx: &egui::Context) {
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            egui::Id::new(DIALOG_CHORDS_ID),
+            Vec::<(egui::Modifiers, egui::Key)>::new(),
+        )
+    });
+}
+
+fn note_dialog_chords<'s>(
+    ctx: &egui::Context,
+    shortcuts: impl Iterator<Item = &'s DialogShortcut<'s>>,
+) {
+    let chords: Vec<_> = shortcuts.map(|s| (s.modifiers, s.key)).collect();
+    if chords.is_empty() {
+        return;
+    }
+    ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<Vec<(egui::Modifiers, egui::Key)>>(egui::Id::new(
+            DIALOG_CHORDS_ID,
+        ))
+        .extend(chords)
+    });
+}
+
+/// True when a dialog drawn in the last pass answers to `event`'s chord.
+/// The input router leaves such a key to the dialog instead of a Global host
+/// binding (a description dialog's Cmd+Enter is its commit, not Zoom In).
+pub(crate) fn presented_dialog_claims(ctx: &egui::Context, event: &egui::Event) -> bool {
+    let egui::Event::Key {
+        key,
+        pressed: true,
+        modifiers,
+        ..
+    } = event
+    else {
+        return false;
+    };
+    ctx.data(|d| {
+        d.get_temp::<Vec<(egui::Modifiers, egui::Key)>>(egui::Id::new(DIALOG_CHORDS_ID))
+            .unwrap_or_default()
+            .iter()
+            .any(|(m, k)| k == key && modifiers.matches_logically(*m))
+    })
+}
+
 fn hint_text(shortcut: &DialogShortcut<'_>) -> String {
     shortcuts::display_tokens(shortcut.keys).concat()
 }

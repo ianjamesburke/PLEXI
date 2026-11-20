@@ -349,9 +349,12 @@ impl PlexiApp {
                 // input router assigned to a pane already moved focus at its
                 // ordinal; history and the click flash start from before it.
                 let canvas_old_window_id = self.windows[self.active_window].window_id;
+                // Taken: a discarded pass re-runs `ui`, and the click's
+                // effects (selection, history) apply once.
                 let routed_press = self
                     .input_router
                     .pane_press
+                    .take()
                     .filter(|press| press.window_id == canvas_old_window_id);
                 let canvas_old_focus = match routed_press {
                     Some(press) => press.prior_focus,
@@ -955,8 +958,7 @@ impl PlexiApp {
                 // needs &mut ctx but behavior holds &mut ctx.panes).
                 let resized = behavior.resized;
                 let new_focused = behavior.new_focused;
-                let clicked_tile = behavior.clicked;
-                let pane_clicked = clicked_tile.is_some();
+                let pane_clicked = behavior.clicked.is_some();
                 if new_focused.is_some() { self.conjoined_parent_focus = None; }
                 let should_close_exited = behavior.close_exited.is_some();
                 let tab_action = behavior.tab_action.take();
@@ -971,29 +973,9 @@ impl PlexiApp {
                 // heal focus and zoom against the tree it left (stint 1230).
                 ctx.reconcile_stale_tiles();
 
-                // A pointer click on a pane replaces any multi-pane selection
-                // with that pane alone (stint 1340); Cmd+Shift+click adds the
-                // clicked pane to it instead, like Cmd+Shift+H/J/K/L (stint
-                // 1458). File-drag hover also moves focus but leaves the
-                // selection.
-                let pane_at = |tile: Option<egui_tiles::TileId>| match tile.and_then(|t| ctx.tree.tiles.get(t)) {
-                    Some(egui_tiles::Tile::Pane(pane)) => Some(*pane),
-                    _ => None,
-                };
-                let extend = routed_press
-                    .is_some_and(|press| press.modifiers.command && press.modifiers.shift);
-                let same_window = ctx.window_id == canvas_old_window_id;
-                if let (true, true, Some(start), Some(next)) = (extend, same_window, pane_at(canvas_old_focus), pane_at(clicked_tile)) {
-                    log::info!("pane_selection: toggled by cmd+shift click window={} pane={next}", ctx.window_id);
-                    self.host.toggle_pane_selection(ctx.window_id, start, next);
-                    ui.ctx().request_repaint();
-                } else if pane_clicked {
-                    let window_id = ctx.window_id;
-                    if self.host.clear_pane_selection(window_id).is_some() {
-                        log::info!("pane_selection: cleared by pane click window={window_id}");
-                        ui.ctx().request_repaint();
-                    }
-                }
+                // A click's selection effects (stints 1340, 1458) were applied
+                // by the input router at the press's ordinal, together with
+                // its focus change; see `PlexiApp::route_pane_press`.
 
                 // Apply canvas focus change now that behavior is dropped and
                 // ctx is freely borrowable again.

@@ -666,13 +666,6 @@ impl PlexiApp {
             .is_some_and(|a| a.runtime.captures_editor_shortcuts())
     }
 
-    /// Returns `true` when the current top focus layer is a non-critical modal
-    /// that QuickNote (Cmd+0) is allowed to dismiss and replace.
-    ///
-    /// Critical modals (`ConfirmClose`, `CapabilityModal`, `ContextCloseConfirm`)
-    /// require explicit user acknowledgement and must NOT be preempted.
-    /// Non-critical modals (`NotificationModal`, `CommandPalette`) can be safely
-    /// dismissed so QuickNote can open on top.
     /// Reconcile every overlay layer with its owning state, so the focus stack
     /// (and therefore the input owner) is current after anything that may
     /// open or close an overlay: a routed key, a host action, an overlay draw.
@@ -690,6 +683,13 @@ impl PlexiApp {
         self.sync_unsaved_changes_focus();
     }
 
+    /// Returns `true` when the current top focus layer is a non-critical modal
+    /// that QuickNote (Cmd+0) is allowed to dismiss and replace.
+    ///
+    /// Critical modals (`ConfirmClose`, `CapabilityModal`, `ContextCloseConfirm`)
+    /// require explicit user acknowledgement and must NOT be preempted.
+    /// Non-critical modals (`NotificationModal`, `CommandPalette`) can be safely
+    /// dismissed so QuickNote can open on top.
     pub(crate) fn is_quick_note_preemptable(&self) -> bool {
         matches!(self.focus_stack.last(), Some(FocusKind::CommandPalette))
     }

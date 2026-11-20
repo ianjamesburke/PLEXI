@@ -19248,7 +19248,7 @@ fn notes_picker_invocation_shortcut_toggles_and_preserves_notes() {
             ..Default::default()
         });
         h.app.notes_picker_query = query.into();
-        h.press_key(key, egui::Modifiers::COMMAND);
+        h.key_down(key, egui::Modifiers::COMMAND);
         assert!(
             !h.app.focus_stack.contains(&FocusKind::NotesPicker),
             "second shortcut must close picker for query={query:?}"
@@ -19425,6 +19425,22 @@ fn notes_picker_dirty_editor_refuses_delete_and_cut() {
 /// Pump frames until `done` holds, returning every clipboard write egui was
 /// handed on the way. The notes picker finishes copy and cut off the UI
 /// thread, so their effects land on a later frame than the key press.
+/// Text the last frame handed egui for the clipboard.
+fn last_frame_copies(h: &HostHarness) -> Vec<String> {
+    h.last_platform_output
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Pump frames until `done`, collecting clipboard writes. The keystroke that
+/// started the work ran in `raw_input_hook`, before that frame's `logic`, so
+/// a fast background job can already be applied in that frame: its copies
+/// are collected too.
 fn pump_notes_until(
     h: &mut HostHarness,
     what: &str,
@@ -19432,18 +19448,13 @@ fn pump_notes_until(
 ) -> Vec<String> {
     let deadline = std::time::Instant::now()
         + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
-    let mut copied = Vec::new();
+    let mut copied = last_frame_copies(h);
+    if done(h) {
+        return copied;
+    }
     loop {
         h.run_frames(1);
-        copied.extend(
-            h.last_platform_output
-                .commands
-                .iter()
-                .filter_map(|command| match command {
-                    egui::OutputCommand::CopyText(text) => Some(text.clone()),
-                    _ => None,
-                }),
-        );
+        copied.extend(last_frame_copies(h));
         if done(h) {
             return copied;
         }
@@ -19468,10 +19479,6 @@ fn notes_picker_cut_closes_at_once_then_copies_and_trashes_in_background() {
             .focus_stack
             .contains(&crate::app::FocusKind::NotesPicker),
         "Cmd+X must close the picker in the frame it is pressed"
-    );
-    assert!(
-        path.exists() && h.app.notes_picker_last_copied.is_none(),
-        "copy and trash finish off the UI thread, after the picker is gone"
     );
 
     let copied = pump_notes_until(&mut h, "cut trashes the note", |h| {
@@ -19502,10 +19509,6 @@ fn notes_picker_copy_closes_at_once_then_copies_in_background() {
         .app
         .focus_stack
         .contains(&crate::app::FocusKind::NotesPicker));
-    assert!(
-        h.app.notes_picker_last_copied.is_none(),
-        "the read finishes off the UI thread, after the picker is gone"
-    );
     let copied = pump_notes_until(&mut h, "copy reaches the clipboard", |h| {
         h.app.notes_picker_last_copied.is_some()
     });
@@ -19735,7 +19738,7 @@ fn notes_picker_delete_close_then_plain_v_does_not_paste() {
     let term = h.add_focused_terminal();
     let dir = tempfile::tempdir().unwrap();
     let path = notes_delete_fixture(&mut h, dir.path());
-    h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+    h.key_down(egui::Key::Backspace, egui::Modifiers::COMMAND);
     assert!(!path.exists());
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
     assert!(h.app.input_router.holds_claimed_key(egui::Key::Backspace));

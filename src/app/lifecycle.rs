@@ -3943,15 +3943,11 @@ impl PlexiApp {
                 );
                 match super::key_str_to_egui_raw_input(key) {
                     Some(raw) => {
-                        let modifiers = raw.modifiers;
-                        // Host-key IPC enters after raw_input_hook, which marks
-                        // queued pane input. Mark this pass too: approval paths
-                        // must never mistake these injected events for desktop input.
-                        self.synthetic_input_frame = true;
-                        self.ctx.input_mut(|input| {
-                            input.modifiers = modifiers;
-                            input.events.extend(raw.events);
-                        });
+                        // Joined to the next delivery by `raw_input_hook`, which
+                        // marks it synthetic: the input router orders it with
+                        // native input, and approval paths never mistake it
+                        // for desktop input.
+                        self.pending_host_inputs.push(raw);
                         self.ctx.request_repaint_of(egui::ViewportId::ROOT);
                         write_json_response(response_file, serde_json::json!({"ok": true}));
                     }

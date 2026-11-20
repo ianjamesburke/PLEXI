@@ -3269,14 +3269,15 @@ mod tests {
                     );
                 }
                 3 => {
-                    // host key IPC (enters after raw_input_hook, inside `logic`).
+                    // host key IPC: drained in `logic`, delivered with the next
+                    // delivery through `raw_input_hook`.
                     for key in [digit_str(option_idx), "enter".to_string()] {
                         let response = self.root.path().join(format!("host-key-{key}.json"));
                         self.h.inject_ipc(crate::protocol::HostRequest::HostKey {
                             key: key.clone(),
                             response_file: response.to_string_lossy().into_owned(),
                         });
-                        self.h.run_frames(1);
+                        self.h.run_frames(2);
                         let body = std::fs::read_to_string(&response)
                             .expect("host-key request was not handled");
                         assert!(
@@ -3303,7 +3304,9 @@ mod tests {
                     self.assert_undecided("key-pane ipc");
                 }
                 5 => {
-                    // Mixed frame: a physical key beside injected input fails closed.
+                    // Mixed delivery: a physical key beside injected input fails
+                    // closed. A hidden pass drains the IPC; its key joins the
+                    // next delivery together with the physical tap.
                     self.h.inject_ipc(crate::protocol::HostRequest::HostKey {
                         key: digit_str(option_idx),
                         response_file: self
@@ -3313,6 +3316,7 @@ mod tests {
                             .to_string_lossy()
                             .into_owned(),
                     });
+                    self.h.hidden_frame();
                     self.h.frame(egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,

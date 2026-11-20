@@ -2054,7 +2054,8 @@ mod tests {
         assert!(!commands
             .iter()
             .any(|command| matches!(command, egui::ViewportCommand::Close)));
-        h.hidden_frame(); // saves and hides; cleanup needs a subsequent pass
+        // The input router runs Cmd+Q in `raw_input_hook`, so this pass's
+        // logic already saved and hid; cleanup needs a subsequent pass.
         assert!(h.app.quit_coordinator.saved);
         assert!(h.app.quit_coordinator.hide_requested);
     }

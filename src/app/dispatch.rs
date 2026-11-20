@@ -156,38 +156,37 @@ impl PlexiApp {
                     );
                 }
             }
-            return;
-        }
-        // Egui releases a TextInput's focus before this dispatch. On the
-        // physical Escape that did so, hand only that bare key to the plugin via
-        // its dedicated bridge path, then consume it before CloseView sees it.
-        // Normal `handle_key` remains Escape-reserving for every other case.
-        let text_input_escape: Vec<egui::Event> = input
-            .events()
-            .iter()
-            .filter(|event| {
-                matches!(
-                    event,
-                    egui::Event::Key {
-                        key: egui::Key::Escape,
-                        pressed: true,
-                        modifiers,
-                        ..
-                    } if modifiers.is_none()
-                )
-            })
-            .cloned()
-            .collect();
-        if previously_focused && !text_input_escape.is_empty() {
-            let synthetic = crate::app::input_router::PlexiInput::synthetic(
-                text_input_escape,
-                input.modifiers(),
-            );
-            let disposition = view_pane.runtime.handle_text_input_escape(&synthetic);
-            input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            log::info!(
-                "app_keys: pane {pane_id} Escape left focused TextInput — dedicated delivery disposition={disposition:?}, CloseView suppressed"
-            );
+            // A bare Escape leaves the field: egui surrenders its focus when
+            // it folds this Escape, and the plugin hears it now, at its
+            // ordinal, through its dedicated bridge. The router keeps it from
+            // CloseView because the field owned it.
+            let text_input_escape: Vec<egui::Event> = input
+                .events()
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        egui::Event::Key {
+                            key: egui::Key::Escape,
+                            pressed: true,
+                            modifiers,
+                            ..
+                        } if modifiers.is_none()
+                    )
+                })
+                .cloned()
+                .collect();
+            if !text_input_escape.is_empty() {
+                let synthetic = crate::app::input_router::PlexiInput::synthetic(
+                    text_input_escape,
+                    input.modifiers(),
+                );
+                let disposition = view_pane.runtime.handle_text_input_escape(&synthetic);
+                ctx.memory_mut(|m| m.data.insert_temp(gate_id, false));
+                log::info!(
+                    "app_keys: pane {pane_id} Escape left focused TextInput — dedicated delivery disposition={disposition:?}, CloseView suppressed"
+                );
+            }
             return;
         }
         // The plugin classifies keys from the frame's ownership-transfer buffer

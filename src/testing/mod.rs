@@ -702,9 +702,33 @@ impl HostHarness {
             .backend
     }
 
-    /// Run one frame delivering a single key press (with modifiers) through the
-    /// production `RawInput` path — the same route a physical keystroke takes.
+    /// Run one frame delivering a single keystroke (with modifiers) through
+    /// the production `RawInput` path — the same route a physical keystroke
+    /// takes: press then release. The input router pairs edges, so a press
+    /// with no release leaves the key held and later presses are repeats.
     pub fn press_key(&mut self, key: egui::Key, modifiers: egui::Modifiers) -> &mut Self {
+        let edge = |pressed| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        };
+        self.frame(RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            modifiers,
+            events: vec![edge(true), edge(false)],
+            ..Default::default()
+        })
+    }
+
+    /// Run one frame delivering only the press edge of `key`: the key stays
+    /// held (the router treats later presses as repeats) until a frame
+    /// delivers its release.
+    pub fn key_down(&mut self, key: egui::Key, modifiers: egui::Modifiers) -> &mut Self {
         self.frame(RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,

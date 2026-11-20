@@ -176,8 +176,12 @@ pub(crate) struct OwnerInstance {
 /// Where a down edge went, so its repeats and release follow it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EdgePath {
-    /// A structured handler or host binding claimed it.
+    /// A host binding claimed it, or it arrived for a departed owner or
+    /// behind the barrier: its release is retired.
     Claimed,
+    /// The owner's structured handler consumed it: its release goes back to
+    /// that owner while it still holds input.
+    Owner,
     /// The owner's egui widgets (left in `RawInput`).
     Egui,
     /// The focused terminal's ordered stream.
@@ -200,17 +204,15 @@ pub(crate) struct PresentedPane {
     pub(crate) layer: egui::LayerId,
 }
 
-/// A press the router assigned to a pane at its ordinal. Rendering applies
-/// the click's selection and history effects from this, never from egui's
-/// global pointer state.
+/// A press the router assigned to a pane at its ordinal (focus and selection
+/// already applied). Rendering applies the click's history and flash from
+/// this, never from egui's global pointer state.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PanePress {
     pub(crate) window_id: u64,
     pub(crate) tile: egui_tiles::TileId,
     /// Focus before the press moved it, for focus history and the click flash.
     pub(crate) prior_focus: Option<egui_tiles::TileId>,
-    /// The press event's own modifiers (Cmd+Shift extends the selection).
-    pub(crate) modifiers: egui::Modifiers,
 }
 
 /// What the router produced for one routed event.
@@ -276,13 +278,13 @@ impl InputRouter {
         self.conjoined_parent_hit = hit;
     }
 
-    /// True while `key`'s press was claimed by a structured owner and its
-    /// release has not arrived: the release will be retired, not delivered.
+    /// True while `key`'s press was consumed by a host binding or a
+    /// structured owner and its release has not arrived yet.
     #[cfg(test)]
     pub(crate) fn holds_claimed_key(&self, key: egui::Key) -> bool {
         self.held_keys
             .get(&key)
-            .is_some_and(|held| held.path == EdgePath::Claimed)
+            .is_some_and(|held| matches!(held.path, EdgePath::Claimed | EdgePath::Owner))
     }
 
     fn presented(&self, instance: OwnerInstance) -> bool {
@@ -339,6 +341,9 @@ impl PlexiApp {
         self.input_router.trap_tab = None;
         self.input_router.pane_press = None;
         self.input_router.scale_actions.clear();
+        // Owner state before ordinal 0: overlay layers reflect what changed
+        // since the last pass (IPC, a decision applied in logic or ui).
+        self.sync_overlay_layers();
         let hidden = raw.viewport().visible() == Some(false);
         let os_focused = raw
             .viewport()
@@ -452,23 +457,34 @@ impl PlexiApp {
                                 Disposition::Consumed
                             }
                             None => {
-                                let (d, by_host) = self.dispatch_key_press(
+                                let (mut d, by_host) = self.dispatch_key_press(
                                     ctx,
                                     owner,
                                     event.clone(),
                                     key_modifiers,
                                     os_focused,
                                 );
+                                if id == egui::Key::Tab && matches!(d, Disposition::Egui) {
+                                    // A focus trap's order is the one Tab order: the
+                                    // reconciler steps it at frame end, and egui's own
+                                    // traversal never sees this Tab once a trap owns.
+                                    self.input_router.trap_tab = Some(key_modifiers.shift);
+                                    if crate::app::input_owner::focus_trap_active(ctx) {
+                                        d = Disposition::Consumed;
+                                    }
+                                }
                                 explicit = by_host;
                                 let path = match d {
-                                    Disposition::Consumed => EdgePath::Claimed,
+                                    Disposition::Consumed if by_host => EdgePath::Claimed,
+                                    Disposition::Consumed => EdgePath::Owner,
                                     Disposition::Egui => EdgePath::Egui,
                                     Disposition::Terminal(_) => EdgePath::Terminal,
                                 };
                                 self.input_router
                                     .held_keys
                                     .insert(id, HeldEdge { owner, path });
-                                text_claimed = path == EdgePath::Claimed;
+                                text_claimed =
+                                    matches!(path, EdgePath::Claimed | EdgePath::Owner);
                                 d
                             }
                         }
@@ -508,7 +524,14 @@ impl PlexiApp {
                         } else if matches!(owner.owner, InputOwner::Overlay(_)) {
                             (Disposition::Egui, owner)
                         } else {
-                            self.route_pane_press(ctx, *pos, *press_modifiers);
+                            // The press's own modifiers, else the delivery's
+                            // (synthetic clicks carry none).
+                            let press_modifiers = if press_modifiers.is_none() {
+                                modifiers
+                            } else {
+                                *press_modifiers
+                            };
+                            self.route_pane_press(ctx, *pos, press_modifiers);
                             let owner = self.input_router.observe(self.host_input_owner());
                             (Disposition::Egui, owner)
                         };
@@ -619,7 +642,7 @@ impl PlexiApp {
                 Some(_) => None,
             }))
             .collect();
-        if matches!(final_owner.owner, InputOwner::Overlay(_)) || barrier {
+        if barrier {
             raw.hovered_files.clear();
             raw.dropped_files.clear();
         }
@@ -670,7 +693,9 @@ impl PlexiApp {
     fn route_pane_press(&mut self, ctx: &egui::Context, pos: egui::Pos2, modifiers: egui::Modifiers) {
         let active = self.active_window;
         let window_id = self.windows[active].window_id;
-        let layer_at = ctx.layer_id_at(pos);
+        let layer_at = ctx
+            .layer_id_at(pos)
+            .filter(|layer| !crate::ui::overlay::stale_modal_layer(ctx, *layer));
         if let Some((parent, rect, layer)) = self.input_router.conjoined_parent_hit {
             if rect.contains(pos) && layer_at.is_none_or(|l| l == layer) {
                 self.conjoined_parent_focus = Some(parent);
@@ -690,13 +715,33 @@ impl PlexiApp {
             return;
         }
         let prior_focus = win.focused_pane;
+        let prior_pane = match prior_focus.and_then(|tile| win.tree.tiles.get(tile)) {
+            Some(egui_tiles::Tile::Pane(pane)) => Some(*pane),
+            _ => None,
+        };
         win.navigate_to(hit.tile);
         self.conjoined_parent_focus = None;
+        // A click replaces any multi-pane selection with the clicked pane
+        // alone (stint 1340); Cmd+Shift+click adds it to the selection
+        // instead, like Cmd+Shift+H/J/K/L (stint 1458).
+        match prior_pane {
+            Some(start) if modifiers.command && modifiers.shift => {
+                log::info!(
+                    "pane_selection: toggled by cmd+shift click window={window_id} pane={}",
+                    hit.pane
+                );
+                self.host.toggle_pane_selection(window_id, start, hit.pane);
+            }
+            _ => {
+                if self.host.clear_pane_selection(window_id).is_some() {
+                    log::info!("pane_selection: cleared by pane click window={window_id}");
+                }
+            }
+        }
         self.input_router.pane_press = Some(PanePress {
             window_id,
             tile: hit.tile,
             prior_focus,
-            modifiers,
         });
     }
 
@@ -729,8 +774,9 @@ impl PlexiApp {
                         *m = egui::Modifiers::NONE;
                     }
                 }
-                let is_tab = matches!(event, egui::Event::Key { key: egui::Key::Tab, .. });
-                if is_tab {
+                // Noted before the owner runs: a modal that claims every key
+                // (unsaved changes) still steps its trap on Tab.
+                if matches!(event, egui::Event::Key { key: egui::Key::Tab, .. }) {
                     self.input_router.trap_tab = Some(modifiers.shift);
                 }
                 let qn = self.key_bindings.open_quick_note;
@@ -747,14 +793,12 @@ impl PlexiApp {
                 if one.is_empty() {
                     return (Disposition::Consumed, false);
                 }
+                if crate::ui::dialog::presented_dialog_claims(ctx, &event) {
+                    return (Disposition::Egui, false);
+                }
                 if let Some(action) = self.match_host_binding(&event, BindingPolicy::overlay()) {
                     self.run_host_action(action, ctx);
                     return (Disposition::Consumed, true);
-                }
-                if is_tab && crate::app::input_owner::focus_trap_active(ctx) {
-                    // The trap's order is the one Tab order: egui's own
-                    // traversal never sees this Tab (reconciled at frame end).
-                    return (Disposition::Consumed, false);
                 }
                 (Disposition::Egui, false)
             }
@@ -780,8 +824,13 @@ impl PlexiApp {
                     self.run_host_action(action, ctx);
                     return (Disposition::Consumed, true);
                 }
+                // A focused text field owns every key it is given, Escape
+                // included (it leaves the field); read before dispatch, which
+                // may release the field.
+                let field_owns = matches!(owner.owner, InputOwner::Pane(pane_id)
+                    if crate::app::input_owner::focused_pane_text_surface(ctx, pane_id));
                 let disposition = self.dispatch_owner_input(ctx, owner, event.clone(), os_focused);
-                if !matches!(disposition, Disposition::Consumed) {
+                if !matches!(disposition, Disposition::Consumed) && !field_owns {
                     // ViewActive bindings (CloseView on Escape) come after the
                     // pane: a plugin or focused field owns bare Escape first.
                     let (view_active, keyboard_capture_active) = self.focused_view_capture_state();
