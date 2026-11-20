@@ -32,6 +32,7 @@ reports are stored under that profile's `sessions/teams/` directory.
 | `context-root-uniqueness-and-rollup.md` | Duplicate-root hard stop + parent-dir todo rollup — design brief awaiting a ruling | 0679 |
 | `context-state-persistence-audit.md` | Why context-scoped app state does not survive a restart — findings and evidence | 0678 |
 | `decision-trust-plane.md` | Superseded: typed decision records on the retired head-agent mesh (`TRUTH.md`) | none yet |
+| `difficulty-and-trust.md` | Proposed, post-1.0, no schedule: measured stint difficulty plus per-agent trust records to allocate models and review depth; trust never gates authority | none yet |
 | `linux-support-plan.md` | Linux x86_64 as a second host platform: phase-by-phase verification contract, platform seam, v0 non-goals | none yet |
 | `marketplace-hosted.md` | Hosted marketplace (Sprint S4) | see file |
 | `marketplace-monetization.md` | Accounts, payments, no-license commercial model | 0338–0341, 0322 |
