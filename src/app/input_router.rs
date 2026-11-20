@@ -241,6 +241,17 @@ enum Disposition {
     Terminal(PaneId),
 }
 
+/// What routing one key edge reads from, and reports to, its delivery.
+struct KeyRoute {
+    os_focused: bool,
+    barrier: bool,
+    /// The text that follows belongs to a consumed key and is consumed too.
+    text_claimed: bool,
+    /// A host binding claimed the key (an explicit transfer if it opened an
+    /// overlay).
+    explicit: bool,
+}
+
 /// A wheel gesture (`TouchPhase::Start` .. `End`/`Cancel`) and its owner.
 #[derive(Clone, Copy, Debug)]
 struct WheelGesture {
@@ -559,15 +570,18 @@ impl PlexiApp {
             }
             let mut explicit = false;
             let routed = match event {
-                egui::Event::Key { .. } => self.route_key(
-                    ctx,
-                    owner,
-                    event,
-                    os_focused,
-                    barrier,
-                    &mut text_claimed,
-                    &mut explicit,
-                ),
+                egui::Event::Key { .. } => {
+                    let mut state = KeyRoute {
+                        os_focused,
+                        barrier,
+                        text_claimed,
+                        explicit: false,
+                    };
+                    let routed = self.route_key(ctx, owner, event, &mut state);
+                    text_claimed = state.text_claimed;
+                    explicit = state.explicit;
+                    routed
+                }
                 egui::Event::Text(_) if barrier || text_claimed => None,
                 egui::Event::Paste(_)
                 | egui::Event::Copy
@@ -761,17 +775,14 @@ impl PlexiApp {
 
     /// Route one key edge at its ordinal. Returns the disposition and the
     /// event as routed (a close chord under a modal becomes its Escape).
-    #[allow(clippy::too_many_arguments)]
     fn route_key(
         &mut self,
         ctx: &egui::Context,
         owner: OwnerInstance,
         event: egui::Event,
-        os_focused: bool,
-        barrier: bool,
-        text_claimed: &mut bool,
-        explicit: &mut bool,
+        state: &mut KeyRoute,
     ) -> Option<(Disposition, egui::Event)> {
+        let (os_focused, barrier) = (state.os_focused, state.barrier);
         let egui::Event::Key {
             key,
             physical_key,
@@ -784,7 +795,7 @@ impl PlexiApp {
         };
         let id = physical_key.unwrap_or(key);
         if !pressed {
-            *text_claimed = false;
+            state.text_claimed = false;
             return match self.input_router.held_keys.remove(&id) {
                 // The press's owner still holds input: the release follows
                 // the press's path.
@@ -833,7 +844,7 @@ impl PlexiApp {
                 if let Some(held) = self.input_router.held_keys.get_mut(&id) {
                     held.path = EdgePath::Retired;
                 }
-                *text_claimed = true;
+                state.text_claimed = true;
                 None
             }
             Some(_) => {
@@ -841,7 +852,7 @@ impl PlexiApp {
                 // and handler rules.
                 let (d, by_host, routed) =
                     self.dispatch_key_press(ctx, owner, event, modifiers, os_focused);
-                *text_claimed = matches!(d, Disposition::Consumed)
+                state.text_claimed = matches!(d, Disposition::Consumed)
                     && (by_host || matches!(owner.owner, InputOwner::Overlay(_)));
                 Some((d, routed))
             }
@@ -849,7 +860,7 @@ impl PlexiApp {
                 self.input_router
                     .held_keys
                     .insert(id, HeldEdge::new(owner, EdgePath::Retired));
-                *text_claimed = true;
+                state.text_claimed = true;
                 None
             }
             None => {
@@ -868,7 +879,7 @@ impl PlexiApp {
                     // egui's own traversal never sees it once a trap owns.
                     d = Disposition::Consumed;
                 }
-                *explicit = by_host;
+                state.explicit = by_host;
                 let path = match d {
                     Disposition::Consumed if by_host => EdgePath::Claimed,
                     Disposition::Consumed => EdgePath::Owner,
@@ -882,7 +893,7 @@ impl PlexiApp {
                 self.input_router.held_keys.insert(id, record);
                 // The text a consumed key types is consumed with it, except
                 // in a pane: a pane's plugin owns its key and its text alike.
-                *text_claimed = path == EdgePath::Claimed
+                state.text_claimed = path == EdgePath::Claimed
                     || (path == EdgePath::Owner && matches!(owner.owner, InputOwner::Overlay(_)));
                 match d {
                     Disposition::Consumed => None,
