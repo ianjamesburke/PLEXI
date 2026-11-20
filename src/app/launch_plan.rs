@@ -165,6 +165,9 @@ pub(crate) struct AgentCallPlan {
     /// The caller's window, or the window active when an outside caller asked.
     pub(crate) origin: WindowMembership,
     pub(crate) worktree: Option<String>,
+    /// A handoff successor's id, reserved from the monotonic allocator at
+    /// admission and carried through construction.
+    pub(crate) successor: Option<PaneId>,
 }
 
 /// An admitted launch, consumed by [`PlexiApp::apply_launch`].
@@ -270,9 +273,7 @@ impl PlexiApp {
             None => None,
         };
         #[cfg(test)]
-        if let Some(wt) = &prepared {
-            probes::checkout_prepared(self, wt);
-        }
+        probes::prepared(self, prepared.as_ref());
         let outcome = match &plan {
             LaunchPlan::Terminal(plan) => self.apply_terminal_launch(plan, prepared.as_ref()),
             LaunchPlan::Agent(plan) => self.apply_agent_call(plan, prepared.as_ref()),
@@ -843,7 +844,7 @@ impl PlexiApp {
     /// Admit an `agent call`: the authenticated caller, the role's grant,
     /// definition and ceiling, and the destination the caller selected.
     pub(crate) fn admit_agent_call(
-        &self,
+        &mut self,
         request: &AgentCallRequest<'_>,
     ) -> Result<AgentCallPlan, String> {
         if request.task.trim().is_empty() {
@@ -901,16 +902,17 @@ impl PlexiApp {
             &lookup_root,
             &task_text,
         )?;
-        if let (true, Some(old)) = (request.handoff, parent) {
-            // The completion must name the successor. Validate its shape now,
-            // with the id the successor is expected to get; commit validates
-            // the real one before anything is published.
-            let raw = handoff_completion(&authority.role, request.task, self.host.next_pane_id());
-            let mut result_state = self.pane_results.get(&old).cloned().unwrap_or_default();
-            result_state
-                .write_payload(&raw)
-                .map_err(|error| format!("handoff completion: {}", error.message()))?;
-        }
+        // The completion names the successor, so reserve the successor's id
+        // before validating it: the worker is constructed under exactly this
+        // id, whatever is allocated in between (stint 1632).
+        let successor = match (request.handoff, parent) {
+            (true, Some(old)) => {
+                let successor = self.host.alloc_pane_id();
+                self.validate_handoff_completion(old, &authority.role, request.task, successor)?;
+                Some(successor)
+            }
+            _ => None,
+        };
         let child_parent = if request.handoff {
             parent_terminal.and_then(|t| t.parent_pane_id)
         } else {
@@ -954,7 +956,25 @@ impl PlexiApp {
             subcontext,
             origin,
             worktree: request.worktree.map(str::to_string),
+            successor,
         })
+    }
+
+    /// The handoff completion `old` would publish for `successor`, checked
+    /// against its current write-once result state without writing it.
+    fn validate_handoff_completion(
+        &self,
+        old: PaneId,
+        role: &str,
+        task: &str,
+        successor: PaneId,
+    ) -> Result<(), String> {
+        let raw = handoff_completion(role, task, successor);
+        let mut result_state = self.pane_results.get(&old).cloned().unwrap_or_default();
+        result_state
+            .write_payload(&raw)
+            .map(|_| ())
+            .map_err(|error| format!("handoff completion: {}", error.message()))
     }
 
     fn apply_agent_call(
@@ -992,6 +1012,11 @@ impl PlexiApp {
                 plan.authority.role
             )));
         }
+        // Immediately before startup: the same completion against the
+        // predecessor's current result state. A refusal starts no worker.
+        if let (Some(old), Some(successor)) = (parent, plan.successor) {
+            self.validate_handoff_completion(old, &plan.authority.role, &plan.task, successor)?;
+        }
         let cwd = prepared
             .map(|wt| wt.path.clone())
             .unwrap_or_else(|| plan.lookup_root.clone());
@@ -1022,7 +1047,7 @@ impl PlexiApp {
         let (pane_id, _) = self.launch_agent_worker(
             crate::pane_ops::create::AgentWorkerLaunch {
                 authority: authority.worker.clone(),
-                pane_id: None,
+                pane_id: plan.successor,
                 spawned_by: None,
                 role: &authority.role,
                 harness: &authority.harness,
@@ -1039,24 +1064,26 @@ impl PlexiApp {
 }
 
 /// The test seam between checkout preparation and revalidation: a callback
-/// that runs synchronously, with the host, once a plan's checkout exists.
+/// that runs synchronously, with the host and the prepared checkout (if the
+/// plan has one), before the plan is revalidated.
 #[cfg(test)]
 pub(crate) mod probes {
     use std::cell::RefCell;
 
-    type CheckoutPrepared =
-        Box<dyn FnMut(&mut super::PlexiApp, &crate::host::worktree::ManagedWorktree)>;
+    type Prepared =
+        Box<dyn FnMut(&mut super::PlexiApp, Option<&crate::host::worktree::ManagedWorktree>)>;
 
     thread_local! {
-        static CHECKOUT_PREPARED: RefCell<Option<CheckoutPrepared>> = RefCell::new(None);
+        static PREPARED: RefCell<Option<Prepared>> = RefCell::new(None);
     }
 
-    /// Run `probe` after each checkout this thread prepares, until the guard
-    /// drops.
-    pub(crate) fn on_checkout_prepared(
-        probe: impl FnMut(&mut super::PlexiApp, &crate::host::worktree::ManagedWorktree) + 'static,
+    /// Run `probe` at that point of every launch this thread applies, until
+    /// the guard drops.
+    pub(crate) fn on_prepared(
+        probe: impl FnMut(&mut super::PlexiApp, Option<&crate::host::worktree::ManagedWorktree>)
+            + 'static,
     ) -> Guard {
-        CHECKOUT_PREPARED.with(|p| *p.borrow_mut() = Some(Box::new(probe)));
+        PREPARED.with(|p| *p.borrow_mut() = Some(Box::new(probe)));
         Guard
     }
 
@@ -1064,18 +1091,18 @@ pub(crate) mod probes {
 
     impl Drop for Guard {
         fn drop(&mut self) {
-            CHECKOUT_PREPARED.with(|p| *p.borrow_mut() = None);
+            PREPARED.with(|p| *p.borrow_mut() = None);
         }
     }
 
-    pub(super) fn checkout_prepared(
+    pub(super) fn prepared(
         app: &mut super::PlexiApp,
-        wt: &crate::host::worktree::ManagedWorktree,
+        wt: Option<&crate::host::worktree::ManagedWorktree>,
     ) {
-        let probe = CHECKOUT_PREPARED.with(|p| p.borrow_mut().take());
+        let probe = PREPARED.with(|p| p.borrow_mut().take());
         if let Some(mut probe) = probe {
             probe(app, wt);
-            CHECKOUT_PREPARED.with(|p| {
+            PREPARED.with(|p| {
                 let mut slot = p.borrow_mut();
                 if slot.is_none() {
                     *slot = Some(probe);
@@ -1525,7 +1552,7 @@ mod tests {
     }
 
     fn admit_tester_call_in(
-        h: &HostHarness,
+        h: &mut HostHarness,
         root: &std::path::Path,
         worktree: Option<&str>,
     ) -> AgentCallPlan {
@@ -1546,7 +1573,7 @@ mod tests {
             .expect("agent call admits")
     }
 
-    fn admit_tester_call(h: &HostHarness, root: &std::path::Path) -> AgentCallPlan {
+    fn admit_tester_call(h: &mut HostHarness, root: &std::path::Path) -> AgentCallPlan {
         admit_tester_call_in(h, root, None)
     }
 
@@ -1637,14 +1664,16 @@ mod tests {
         write_role(&root, "'tool.secret'");
 
         let branch = unique_branch("ceiling");
-        let plan = admit_tester_call_in(&h, &root, Some(&branch));
+        let plan = admit_tester_call_in(&mut h, &root, Some(&branch));
         let checkout = std::rc::Rc::new(std::cell::RefCell::new(None));
         let seen = checkout.clone();
-        let _seam = probes::on_checkout_prepared(move |_, wt| {
+        let _seam = probes::on_prepared(move |_, wt| {
+            let wt = wt.expect("checkout prepared");
             write_role(&wt.path, "");
             *seen.borrow_mut() = Some(wt.path.clone());
         });
         let pane = apply_agent(&mut h, &plan).expect("agent launches in the checkout");
+        drop(_seam);
         let path = checkout.borrow().clone().expect("checkout prepared");
         let term = h.app.windows[window_of(&h, pane)].panes[&pane]
             .as_terminal()
@@ -1662,7 +1691,7 @@ mod tests {
         h.app.close_pane_by_id(pane);
         remove_checkout(&root, &path, &branch);
 
-        let plan = admit_tester_call(&h, &root);
+        let plan = admit_tester_call(&mut h, &root);
         write_role(&root, "");
         let error = apply_agent(&mut h, &plan).expect_err("broadened role refuses");
         assert!(error.contains("changed after admission"), "{error}");
@@ -2080,8 +2109,8 @@ mod tests {
         lay_out(&mut h, win_b, b_panes);
 
         h.app.active_window = second;
-        let plan = admit_tester_call(&h, &root_a);
-        let refused_plan = admit_tester_call(&h, &root_a);
+        let plan = admit_tester_call(&mut h, &root_a);
+        let refused_plan = admit_tester_call(&mut h, &root_a);
         h.app.active_window = win_b;
         let pane = apply_agent(&mut h, &plan)
             .expect("focus elsewhere does not change the admitted origin");
@@ -2189,7 +2218,7 @@ mod tests {
             .app
             .admit_terminal_launch(&spec(&h, "split_h", Some(caller), None))
             .unwrap();
-        let worker = admit_tester_call(&h, &root);
+        let worker = admit_tester_call(&mut h, &root);
         for (label, plan) in [
             ("inherited terminal", LaunchPlan::Terminal(terminal)),
             ("worker", LaunchPlan::Agent(worker)),
@@ -2498,7 +2527,7 @@ mod tests {
         let root = h.workspace_root();
         h.app.set_context_root(root.clone(), None);
         write_role(&root, "'tool.secret'");
-        let plan = admit_tester_call(&h, &root);
+        let plan = admit_tester_call(&mut h, &root);
         let settings = crate::agent::workspace_agents_dir(&root)
             .join("tester")
             .join("settings.toml");
@@ -2526,7 +2555,7 @@ mod tests {
         let second_panes = views(&mut h, 1);
         lay_out(&mut h, second, second_panes);
         h.app.active_window = second;
-        let plan = admit_tester_call(&h, &root);
+        let plan = admit_tester_call(&mut h, &root);
         h.app.active_window = 0;
         let pane = apply_agent(&mut h, &plan).expect("worker launches");
         assert_eq!(window_of(&h, pane), second);
@@ -2638,5 +2667,262 @@ mod tests {
             .and_then(|t| t.agent_role.clone());
         assert_eq!(role.as_deref(), Some("writer"));
         assert!(h.app.find_pane_in_any_window(caller).is_none());
+    }
+
+    /// A lead worker with `can_handoff = ['writer']` and a credential, for
+    /// handoff tests.
+    fn spawn_lead(h: &mut HostHarness, root: &std::path::Path) -> (PaneId, String) {
+        for role in ["lead", "writer"] {
+            let dir = crate::agent::workspace_agents_dir(root).join(role);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("AGENT.md"), "Work").unwrap();
+            std::fs::write(
+                dir.join("settings.toml"),
+                format!("[agent]\nid='{role}'\ndisplay_name='{role}'\n[harness]\ncli='pi'\nephemeral=false\ncan_handoff=['writer']"),
+            )
+            .unwrap();
+        }
+        let (caller, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "lead",
+                "pi",
+                "sleep 30",
+                "Start",
+                None,
+                false,
+                None,
+                Some(root.to_path_buf()),
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let context_id = h.app.windows[window_of(h, caller)].context_id;
+        let token = monitor.issue_credential(Some(caller), context_id, root, "agent:lead");
+        (caller, token)
+    }
+
+    fn require_successor(h: &mut HostHarness, caller: PaneId, successor: Value) {
+        require_successor_in(&mut h.app, caller, successor);
+    }
+
+    fn require_successor_in(app: &mut PlexiApp, caller: PaneId, successor: Value) {
+        app.pane_results.entry(caller).or_default().schema = Some(json!({
+            "type": "object",
+            "properties": {"successor_pane_id": {"const": successor}},
+            "required": ["successor_pane_id"],
+        }));
+    }
+
+    /// Finding 7: the successor's id is reserved at admission. An unrelated
+    /// pane allocated before construction does not move it: the worker, the
+    /// committed completion and the reply all name the reserved id. A
+    /// completion the predecessor's schema rejects starts no worker and
+    /// leaves the predecessor live.
+    #[test]
+    fn launch_plan_handoff_reserves_its_successor() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let (caller, token) = spawn_lead(&mut h, &root);
+        fn request<'a>(caller: PaneId, token: &'a str, response: &'a str) -> AgentCallRequest<'a> {
+            AgentCallRequest {
+                role: "writer",
+                task: "Continue",
+                parent_pane_id: Some(caller),
+                credential: Some(token),
+                peer_ancestry: &[],
+                cwd: None,
+                worktree: None,
+                asynchronous: false,
+                handoff: true,
+                response_file: response,
+            }
+        }
+
+        // A schema that names a different successor, written after admission:
+        // the check immediately before startup refuses it.
+        let rejecting = probes::on_prepared(move |app, _| {
+            require_successor_in(app, caller, json!(u64::MAX));
+        });
+        let starts = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counted = starts.clone();
+        let _entry = crate::pane_ops::construct::probes::on_backend_entry(move |_| {
+            counted.set(counted.get() + 1);
+            Ok(())
+        });
+        let rejected = root.join("handoff-rejected.json");
+        let error = h
+            .app
+            .start_agent_tool_call(request(caller, &token, rejected.to_str().unwrap()))
+            .expect_err("schema mismatch refuses");
+        assert!(error.contains("handoff completion"), "{error}");
+        assert_eq!(starts.get(), 0, "no worker started");
+        assert!(
+            h.app.find_pane_in_any_window(caller).is_some(),
+            "predecessor live"
+        );
+        drop(rejecting);
+        h.app.pane_results.entry(caller).or_default().schema = None;
+
+        // The reserved id survives an unrelated allocation before startup.
+        let reserved = h.app.host.next_pane_id();
+        require_successor(&mut h, caller, json!(reserved));
+        let _seam = probes::on_prepared(|app, _| {
+            let unrelated = app.host.alloc_pane_id();
+            assert_ne!(unrelated, 0);
+        });
+        let response = root.join("handoff-successor.json");
+        h.app
+            .start_agent_tool_call(request(caller, &token, response.to_str().unwrap()))
+            .expect("handoff succeeds");
+        let reply: Value =
+            serde_json::from_str(&std::fs::read_to_string(&response).unwrap()).unwrap();
+        assert_eq!(reply["successor_pane_id"], json!(reserved));
+        assert_eq!(reply["result"]["successor_pane_id"], json!(reserved));
+        let committed = h
+            .app
+            .pane_results
+            .get(&caller)
+            .and_then(|r| r.committed.clone());
+        assert_eq!(
+            committed.map(|p| p["successor_pane_id"].clone()),
+            Some(json!(reserved))
+        );
+        let role = h
+            .app
+            .windows
+            .iter()
+            .find_map(|w| w.panes.get(&reserved))
+            .and_then(|p| p.as_terminal())
+            .and_then(|t| t.agent_role.clone());
+        assert_eq!(
+            role.as_deref(),
+            Some("writer"),
+            "the worker is the reserved pane"
+        );
+        assert!(h.app.find_pane_in_any_window(caller).is_none());
+    }
+
+    fn branch_exists(root: &std::path::Path, branch: &str) -> bool {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["show-ref", "--verify", "--quiet"])
+            .arg(format!("refs/heads/{branch}"))
+            .status()
+            .expect("git runs")
+            .success()
+    }
+
+    /// A refused launch disposes of the checkout prepared for it exactly once,
+    /// for both routes: a clean checkout and its new branch are reclaimed, a
+    /// dirty one is retained with its path and reason, a pre-existing branch
+    /// survives; a successful launch hands the checkout to the pane, and one
+    /// ordinary close reclaims it.
+    #[test]
+    fn launch_plan_refused_launch_disposes_of_its_checkout() {
+        let mut h = HostHarness::new();
+        let panes = views(&mut h, 3);
+        let [a, b, c] = lay_out(&mut h, 0, panes)[..] else {
+            unreachable!()
+        };
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        init_repo(&root);
+        let terminal = |h: &HostHarness, from: PaneId, branch: &str| {
+            let mut spec = spec(h, "split_h", Some(from), None);
+            spec.worktree = Some(branch.to_string());
+            LaunchPlan::Terminal(h.app.admit_terminal_launch(&spec).unwrap())
+        };
+        let refuse = |h: &mut HostHarness, plan: LaunchPlan, invalidate: PaneId| {
+            let _seam = probes::on_prepared(move |app, wt| {
+                assert!(wt.is_some(), "checkout prepared before revalidation");
+                app.close_pane_by_id(invalidate);
+            });
+            h.app
+                .apply_launch(plan)
+                .expect_err("invalidated plan refuses")
+        };
+
+        // Terminal, clean, new branch: reclaimed, branch deleted.
+        let clean = unique_branch("clean");
+        let plan = terminal(&h, a, &clean);
+        let refused = refuse(&mut h, plan, a);
+        let report = refused.worktree.expect("one disposition");
+        assert_eq!(report.action, "reclaimed", "{report:?}");
+        assert!(!report.path.exists(), "checkout removed");
+        assert!(!branch_exists(&root, &clean), "new branch deleted");
+
+        // Terminal, pre-existing branch: the checkout goes, the branch stays.
+        let kept = unique_branch("kept");
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["branch", &kept])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let plan = terminal(&h, b, &kept);
+        let refused = refuse(&mut h, plan, b);
+        let report = refused.worktree.expect("one disposition");
+        assert_eq!(report.action, "reclaimed", "{report:?}");
+        assert!(
+            branch_exists(&root, &kept),
+            "a pre-existing branch survives"
+        );
+
+        // Agent, dirty: retained with its path and reason.
+        write_role(&root, "'tool.secret'");
+        let dirty = unique_branch("dirty");
+        let plan = admit_tester_call_in(&mut h, &root, Some(&dirty));
+        let root_for_seam = root.clone();
+        let _seam = probes::on_prepared(move |_, wt| {
+            let wt = wt.expect("checkout prepared");
+            std::fs::write(wt.path.join("uncommitted.txt"), "work").unwrap();
+            write_role(&root_for_seam, "");
+        });
+        let refused = h
+            .app
+            .apply_launch(LaunchPlan::Agent(plan))
+            .expect_err("broadened role refuses");
+        drop(_seam);
+        assert!(
+            refused.error.contains("changed after admission"),
+            "{}",
+            refused.error
+        );
+        let message = refused.to_string();
+        let report = refused.worktree.expect("one disposition, not an orphan");
+        assert_eq!(report.action, "retained", "{report:?}");
+        assert!(report.reason.is_some(), "{report:?}");
+        assert!(report.path.exists(), "the dirty checkout is kept");
+        assert!(
+            message.contains(&report.path.display().to_string()),
+            "{message}"
+        );
+        remove_checkout(&root, &report.path, &dirty);
+
+        // Success: the pane owns the checkout; one ordinary close reclaims it.
+        let owned = unique_branch("owned");
+        let plan = terminal(&h, c, &owned);
+        let pane = h.app.apply_launch(plan).expect("launches in its checkout");
+        let path = h
+            .app
+            .pane_worktrees
+            .get(&pane)
+            .expect("transferred")
+            .path
+            .clone();
+        assert!(path.exists());
+        h.app.close_pane_by_id(pane);
+        assert!(!h.app.pane_worktrees.contains_key(&pane));
+        assert!(!path.exists(), "the ordinary close reclaimed it");
     }
 }
