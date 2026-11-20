@@ -1442,7 +1442,22 @@ mod tests {
             assert!(error, "{name} is bounded by a deny default: {text}");
             assert!(text.contains("permission_denied"), "{name}: {text}");
         }
-        for bearer in [&token, &denying, &deny_default] {
+        // `agents.*` is admitted by the broker under the pane's ceiling.
+        let agents_denied = bearer_with_ceiling(
+            &token,
+            posture(crate::broker::Decision::Ask, vec!["agents.list".to_string()]),
+        );
+        let (_, text) = tool_call(port, &token, "agents.list", "{}");
+        assert!(
+            text.contains("permission_required"),
+            "fixture: an unrestricted pane is asked: {text}"
+        );
+        let (error, text) = tool_call(port, &agents_denied, "agents.list", "{}");
+        assert!(
+            error && text.contains("permission_denied"),
+            "agents.* is bounded by the pane's explicit deny: {text}"
+        );
+        for bearer in [&token, &denying, &deny_default, &agents_denied] {
             revoke_pane_bearer(bearer);
         }
     }
