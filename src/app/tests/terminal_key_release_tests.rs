@@ -48,7 +48,8 @@ fn other_pane(h: &HostHarness, id: PaneId) -> PaneId {
 }
 
 fn press_page_up(h: &mut HostHarness, id: PaneId) {
-    h.press_key(egui::Key::PageUp, egui::Modifiers::NONE);
+    // Held: the release comes later, from the test.
+    h.key_down(egui::Key::PageUp, egui::Modifiers::NONE);
     h.run_frames(1);
     assert_eq!(
         tap(h, id),
