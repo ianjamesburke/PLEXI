@@ -1851,3 +1851,42 @@ fn a_paint_time_decision_retires_the_rest_of_its_delivery() {
     deliver(&mut h, click(at_b));
     assert_eq!(focused(&h), Some(b), "a fresh click works");
 }
+
+/// Two terminals' streams in one pass stay separate: the pointer moving over
+/// terminal B (its stream) and then a key for the focused terminal A.
+#[test]
+fn each_terminal_keeps_its_own_stream_within_one_pass() {
+    let mut h = HostHarness::new();
+    let (t1, t2) = two_terminals(&mut h);
+    let mut events = vec![moved(center(&h, t2))];
+    events.extend(typed('x'));
+    deliver(&mut h, events);
+    assert_eq!(focused(&h), Some(t1));
+    assert_eq!(tap(&mut h, t1), "x", "A's key stayed in A's stream");
+}
+
+/// A click focuses its pane at its ordinal; a focus change that logic
+/// applies later in the same pass (pane IPC) stands, because paint never
+/// replays the press.
+#[test]
+fn paint_never_replays_a_press_over_logic_focus() {
+    let mut h = HostHarness::new();
+    let (a, b) = two_probes(&mut h);
+    let at_b = center(&h, b);
+    h.inject_ipc(crate::protocol::HostRequest::FocusPane { pane_id: a });
+    h.frame_pass(RawInput {
+        screen_rect: screen(),
+        events: vec![moved(at_b), button(at_b, true)],
+        ..Default::default()
+    });
+    assert_eq!(
+        focused(&h),
+        Some(a),
+        "IPC focus applied after the press stands"
+    );
+    h.frame(RawInput {
+        screen_rect: screen(),
+        events: vec![button(at_b, false)],
+        ..Default::default()
+    });
+}
