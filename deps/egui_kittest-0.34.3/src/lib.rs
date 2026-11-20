@@ -294,12 +294,13 @@ impl<'a, State> Harness<'a, State> {
     /// Run a single step. This will not process any events.
     fn _step(&mut self, sizing_pass: bool) {
         self.input.predicted_dt = self.step_dt;
+        let mut input = self.input.take();
         #[cfg(feature = "eframe")]
         if let AppKind::Eframe((get_app, _)) = &mut self.app {
-            get_app(&mut self.state).raw_input_hook(&self.ctx, &mut self.input);
+            get_app(&mut self.state).raw_input_hook(&self.ctx, &mut input);
         }
 
-        let mut output = self.ctx.run_ui(self.input.take(), |ui| {
+        let mut output = self.ctx.run_ui(input, |ui| {
             self.response = self.app.run(ui, &mut self.state, sizing_pass);
         });
         self.kittest.update(

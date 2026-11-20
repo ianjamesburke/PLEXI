@@ -6,7 +6,7 @@
 //! pass and on every step. Each step is still exactly one pass per delivery:
 //! a test that needs to cut between deliveries steps, never drains.
 
-use egui::{Event, Pos2, RawInput};
+use egui::{Event, Key, Modifiers, RawInput};
 
 /// Records each hook call and each pass, and whether the pass saw the hook's
 /// marker event.
@@ -64,38 +64,49 @@ fn kittest_passes_go_through_raw_input_hook() {
     );
 }
 
-/// Production witness: a `plexi pane drag` batch reaches egui only through
-/// `PlexiApp::raw_input_hook`, one batch per pass. A pass run the way upstream
-/// kittest ran it (no hook) delivers nothing.
-#[test]
-fn kittest_step_delivers_queued_pane_pointer_frames_through_the_hook() {
+/// A focused file browser with `batch` queued the way `plexi pane key`
+/// queues it; only `PlexiApp::raw_input_hook` delivers it.
+fn harness_with_queued_pane_input(batch: RawInput) -> (super::PlexiUiHarness, u64) {
     let mut h = super::PlexiUiHarness::new_sized(1280.0, 800.0);
     h.open_file_browser(h.workspace_root().to_path_buf());
     h.run_steps(2);
     let pane = h
         .with_app(|app| app.active_focused_pane_id())
         .expect("file browser is focused");
-    let at = |x: f32| Pos2::new(x, 300.0);
-    h.with_app_mut(|app| {
-        let frames = app.pending_pane_pointer_frames.entry(pane).or_default();
-        for x in [100.0, 200.0, 300.0] {
-            frames.push_back(RawInput {
-                events: vec![Event::PointerMoved(at(x))],
-                ..Default::default()
-            });
-        }
-    });
-    let queued = |h: &super::PlexiUiHarness| {
-        h.with_app(|app| {
-            app.pending_pane_pointer_frames
-                .get(&pane)
-                .map_or(0, |f| f.len())
-        })
-    };
-    let ctx = h.harness().ctx.clone();
-    let pointer = || ctx.input(|i| i.pointer.latest_pos());
+    h.with_app_mut(|app| app.pending_pane_inputs.entry(pane).or_default().push(batch));
+    (h, pane)
+}
 
-    // Negative control: logic and ui without the hook.
+fn native_cmd() -> Modifiers {
+    Modifiers {
+        mac_cmd: true,
+        command: true,
+        ..Modifiers::NONE
+    }
+}
+
+/// Production witness and negative control: a queued Cmd+P opens the command
+/// palette on a hooked kittest step, and a pass run the way upstream kittest
+/// ran it (logic and ui, no hook) leaves it closed and the batch queued.
+#[test]
+fn kittest_step_opens_the_palette_from_hook_delivered_input() {
+    let cmd_p = |pressed| Event::Key {
+        key: Key::P,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: native_cmd(),
+    };
+    let (mut h, pane) = harness_with_queued_pane_input(RawInput {
+        modifiers: native_cmd(),
+        events: vec![cmd_p(true), cmd_p(false)],
+        ..Default::default()
+    });
+    let queued =
+        |h: &super::PlexiUiHarness| h.with_app(|app| app.pending_pane_inputs.contains_key(&pane));
+    let palette = |h: &super::PlexiUiHarness| h.with_app(|app| app.show_command_palette);
+
+    let ctx = h.harness().ctx.clone();
     h.with_app_mut(|app| {
         use eframe::App;
         let mut frame = eframe::Frame::_new_kittest();
@@ -104,13 +115,26 @@ fn kittest_step_delivers_queued_pane_pointer_frames_through_the_hook() {
             app.ui(ui, &mut frame);
         });
     });
-    assert_eq!(queued(&h), 3, "a pass without the hook delivered a batch");
-    assert_ne!(pointer(), Some(at(100.0)));
+    assert!(queued(&h), "a pass without the hook delivered the batch");
+    assert!(!palette(&h), "the palette opened without the hook");
 
     h.step();
-    assert_eq!(queued(&h), 2, "one step delivers exactly one batch");
-    assert_eq!(pointer(), Some(at(100.0)));
+    assert!(!queued(&h), "the hooked step left the batch queued");
+    assert!(palette(&h), "hook-delivered Cmd+P did not open the palette");
+}
+
+/// The hook sets a queued batch's modifiers on the input it edits. As in
+/// eframe, that is the detached input of one pass, so the next idle step
+/// sees no stale modifier.
+#[test]
+fn hook_modifiers_do_not_carry_into_the_next_step() {
+    let (mut h, _pane) = harness_with_queued_pane_input(RawInput {
+        modifiers: Modifiers::CTRL,
+        ..Default::default()
+    });
+    let modifiers = |h: &mut super::PlexiUiHarness| h.harness().ctx.input(|i| i.modifiers);
     h.step();
-    assert_eq!(queued(&h), 1);
-    assert_eq!(pointer(), Some(at(200.0)));
+    assert_eq!(modifiers(&mut h), Modifiers::CTRL, "the batch's pass");
+    h.step();
+    assert_eq!(modifiers(&mut h), Modifiers::NONE, "the next idle step");
 }
