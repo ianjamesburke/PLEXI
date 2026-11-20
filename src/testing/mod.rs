@@ -497,7 +497,9 @@ impl HostHarness {
     ///
     /// Mirrors eframe's visible-window pass: `raw_input_hook`, then `logic`,
     /// then `ui` inside one egui pass — the same order
-    /// `epi_integration::update` uses.
+    /// `epi_integration::update` uses. Exactly one pass per call: tests cut
+    /// between deliveries here, so it must never drain input held for later
+    /// passes.
     pub fn frame(&mut self, mut input: RawInput) -> &mut Self {
         let app = &mut self.app;
         use eframe::App;

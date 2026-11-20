@@ -29,6 +29,9 @@
 //! `split_focused` and `new_context` spawn real terminal panes. Pass on macOS
 //! local dev; tag `#[ignore]` for headless CI without PTY support.
 
+#[cfg(test)]
+mod harness_hook;
+
 use std::path::Path;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
