@@ -1188,6 +1188,18 @@ mod tests {
         assert_eq!(pending(&mut h), 0, "a real click once armed must allow");
     }
 
+    /// A node's rect in logical points. AccessKit bounds are physical
+    /// pixels, so under a raised UI scale they sit at `zoom` times the
+    /// position pointer events are delivered in.
+    fn logical_label_rect(h: &mut PlexiUiHarness, label: &str) -> egui::Rect {
+        let zoom = h.with_app(|app| app.ctx.zoom_factor());
+        let rect = h.harness().get_by_label(label).rect();
+        egui::Rect::from_min_max(
+            (rect.min.to_vec2() / zoom).to_pos2(),
+            (rect.max.to_vec2() / zoom).to_pos2(),
+        )
+    }
+
     /// A real pointer press and release at `pos`, each in its own frame.
     fn click_at(h: &mut PlexiUiHarness, pos: egui::Pos2) {
         for pressed in [true, false] {
@@ -6326,6 +6338,114 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         h.save_screenshot(&evidence_png!("_project")).expect("render failed");
     }
 
+    /// Stint 1623: the notes picker's scope renders through the shared
+    /// `ScopeSwitcher`: both scopes as chips, the active one selected, and a
+    /// Tab hint. Tab and a chip click both toggle the same state. Screenshots
+    /// cover each scope at normal width, a narrow window and raised UI scale.
+    #[test]
+    fn notes_picker_scope_switcher_states() {
+        for (case, mut h) in [
+            ("normal", PlexiUiHarness::new_sized(900.0, 640.0)),
+            ("narrow", PlexiUiHarness::new_sized(420.0, 640.0)),
+            (
+                "scale2",
+                PlexiUiHarness::new_sized_scaled(1440.0, 900.0, 2.0),
+            ),
+        ] {
+            h.step();
+            add_focused_pane(&mut h);
+            h.step();
+            seed_note_picker(&mut h);
+            h.run_steps(3);
+            h.save_screenshot(&evidence_png!(format!("_{case}_all")))
+                .expect("render failed");
+
+            assert!(
+                h.harness()
+                    .query_by_label("All notes · Tab: current project")
+                    .is_none(),
+                "{case}: no picker draws its own scope header text"
+            );
+            let screen = h.with_app(|app| app.ctx.content_rect());
+            for label in ["All notes", "Current project", "switch"] {
+                let rect = logical_label_rect(&mut h, label);
+                assert_inside(&format!("{case}: {label}"), 1.0, rect, screen);
+            }
+            let all = h.with_app(|app| app.notes_picker_filtered().len());
+
+            h.harness().key_press(egui::Key::Tab);
+            h.run_steps(2);
+            let project = h.with_app(|app| {
+                assert!(app.notes_picker_current_project_only, "{case}: Tab narrows");
+                app.notes_picker_filtered().len()
+            });
+            assert!(project < all, "{case}: the current-project scope filters");
+            h.save_screenshot(&evidence_png!(format!("_{case}_project")))
+                .expect("render failed");
+
+            // A click on the inactive chip is the same toggle as Tab.
+            let chip = logical_label_rect(&mut h, "All notes");
+            click_at(&mut h, chip.center());
+            h.with_app(|app| {
+                assert!(
+                    !app.notes_picker_current_project_only,
+                    "{case}: chip click widens"
+                );
+                assert_eq!(app.notes_picker_filtered().len(), all);
+                assert!(app
+                    .focus_stack
+                    .contains(&crate::app::FocusKind::NotesPicker));
+            });
+        }
+    }
+
+    /// Stint 1623: the three-scope form (the palette's stops) in the UI
+    /// gallery, Dusk and Dawn at scale 1 and 2. A click on an inactive chip
+    /// selects it; the layout report for the switcher has no violations.
+    #[test]
+    fn screenshot_scope_switcher_gallery() {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            for scale in [1.0, 2.0] {
+                let mut h = PlexiUiHarness::new_sized_scaled(1280.0, 1000.0, scale);
+                apply_fixture_theme(&mut h, theme);
+                add_focused_pane(&mut h);
+                h.with_app_mut(|app| app.show_ui_gallery = true);
+                h.run_steps(4);
+                h.harness().get_by_label("Scope switcher").scroll_to_me();
+                h.run_steps(4);
+                for label in ["Commands", "Files", "Agents", "switch"] {
+                    h.harness().get_by_label(label);
+                }
+                let chip = logical_label_rect(&mut h, "Files");
+                click_at(&mut h, chip.center());
+                let active = h.with_app(|app| {
+                    app.ctx.data(|d| {
+                        d.get_temp::<usize>(egui::Id::new("host_ui_gallery_scope_switcher"))
+                    })
+                });
+                assert_eq!(active, Some(1), "{theme} {scale}: chip click selects Files");
+                let reports = h.with_app(|app| crate::ui::layout_report::snapshot(&app.ctx));
+                let switcher: Vec<_> = reports
+                    .iter()
+                    .filter(|r| r.surface == "scope_switcher")
+                    .collect();
+                assert!(
+                    !switcher.is_empty(),
+                    "{theme} {scale}: switcher reports its layout"
+                );
+                for report in switcher {
+                    assert!(
+                        report.violations().is_empty(),
+                        "{theme} {scale}: {:?}",
+                        report.violations()
+                    );
+                }
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}")))
+                    .unwrap();
+            }
+        }
+    }
+
     /// Notes picker overlay: open → step → still visible and renders.
     #[test]
     fn notes_picker_overlay_smoke() {
@@ -6362,11 +6482,11 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let notes_labels = h.harness().get_all_by_label("Notes").count();
         assert_eq!(notes_labels, 1, "the modal title, with no duplicate header");
         assert!(h.harness().query_by_label("global").is_none(), "no tier headers");
-        h.harness().get_by_label("All notes · Tab: current project");
+        h.with_app(|app| assert!(!app.notes_picker_current_project_only));
         h.harness().key_press(egui::Key::Tab);
         h.run_steps(2);
-        h.harness().get_by_label("Current project · Tab: all notes");
         h.with_app(|app| {
+            assert!(app.notes_picker_current_project_only);
             assert_eq!(app.notes_picker_filtered().len(), 1);
             assert_eq!(app.notes_picker_entries[app.notes_picker_filtered()[0]].title, "context-note");
         });

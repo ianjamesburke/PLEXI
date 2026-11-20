@@ -6,6 +6,7 @@ use crate::ui::{
     labels::chrome_section,
     list::{ListRow, ListRowPips},
     overlay::ModalShell,
+    scope_switcher::ScopeSwitcher,
     shortcuts::key_chip,
     surface::{
         color_swatch, compact_copyable_command, copyable_command, empty_state_panel, status_chip,
@@ -680,6 +681,10 @@ impl PlexiApp {
                             gallery_text_area(ui, &colors, &mut multiline_demo);
                         });
 
+                        chrome_section(ui, "Scope switcher", &colors, |ui| {
+                            gallery_scope_switcher(ui, &colors);
+                        });
+
                         chrome_section(ui, "Buttons and chips", &colors, |ui| {
                             draw_button_sizes(ui, &colors);
                             ui.horizontal_wrapped(|ui| {
@@ -751,6 +756,18 @@ impl PlexiApp {
             self.show_ui_gallery = false;
             log::info!("ui_gallery: closed by escape or click-away");
         }
+    }
+}
+
+/// The palette's stops (docs/palette-picker.md) as the three-scope specimen:
+/// past two scopes the hint adds Shift+Tab. Clicking a chip moves it.
+fn gallery_scope_switcher(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
+    let id = egui::Id::new("host_ui_gallery_scope_switcher");
+    let active = ui.ctx().data(|d| d.get_temp::<usize>(id)).unwrap_or(0);
+    if let Some(scope) =
+        ScopeSwitcher::new("ui_gallery", &["Commands", "Files", "Agents"], active).show(ui, colors)
+    {
+        ui.ctx().data_mut(|d| d.insert_temp(id, scope));
     }
 }
 
