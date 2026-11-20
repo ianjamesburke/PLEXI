@@ -112,6 +112,29 @@ pub(crate) fn elided_galley(
     ui.fonts_mut(|f| f.layout_no_wrap(text, font_id, Color32::PLACEHOLDER))
 }
 
+/// Lay out prose that wraps on word boundaries within `max_width`, in at most
+/// `max_rows` rows, the last ending in [`ELLIPSIS`] when the text runs over.
+/// A word wider than a whole row (a URL, a path) is elided in its middle
+/// first, so no token is ever split across rows.
+pub(crate) fn wrapped_galley(
+    ui: &egui::Ui,
+    text: &str,
+    font_id: FontId,
+    color: Color32,
+    max_width: f32,
+    max_rows: usize,
+) -> Arc<Galley> {
+    let fitted = text
+        .split(' ')
+        .map(|word| elide(ui, word, font_id.clone(), max_width, Side::Middle))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut job = egui::text::LayoutJob::simple(fitted, font_id, color, max_width);
+    job.wrap.max_rows = max_rows;
+    job.wrap.overflow_character = Some(ELLIPSIS);
+    ui.fonts_mut(|f| f.layout_job(job))
+}
+
 /// Locale-independent counts for compact host chrome.
 pub(crate) fn format_count(count: usize) -> String {
     let digits = count.to_string();

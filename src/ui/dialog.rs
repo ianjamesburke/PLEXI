@@ -444,8 +444,9 @@ impl<'a> ActionModal<'a> {
                 // A consent dialog draws its approving actions disabled until
                 // it arms (stint 1498).
                 consent: self.consent_input,
+                surface: None,
             };
-            if let Some(id) = row.show(ui, &mut action_ids) {
+            if let Some(id) = row.show(ui, &mut action_ids).selected {
                 selected = Some(id);
             }
         });
@@ -553,10 +554,14 @@ fn confirm_button<'b>(
     action: &'b DialogAction<'_>,
     hint: &'b str,
     colors: &Colors,
+    surface: Option<egui::Color32>,
 ) -> KitButton<'b> {
     let mut button = KitButton::new(action.label, colors)
         .kind(action.kind)
         .size(ButtonSize::Md);
+    if let Some(surface) = surface {
+        button = button.surface(surface);
+    }
     if !hint.is_empty() {
         button = button.hint(hint);
     }
@@ -576,16 +581,48 @@ struct ButtonRow<'a, 'c> {
     colors: &'c Colors,
     focusable: bool,
     consent: Option<crate::app::approval_keyboard::ConsentInput>,
+    /// The fill the row sits on, when it is not the modal shell's.
+    surface: Option<egui::Color32>,
+}
+
+/// What a [`ButtonRow`] drew: the clicked action and each action's report.
+struct RowOutcome<'a> {
+    selected: Option<&'a str>,
+    actions: Vec<super::layout_report::Action>,
+}
+
+/// The `ActionModal` button row outside a modal, for a surface whose
+/// actions belong to it rather than to a dialog (the changelog's update
+/// status). Returns the clicked action id and each action's layout report.
+/// Shortcuts are hint text only here; the caller owns its keys.
+pub(crate) fn action_row<'a>(
+    ui: &mut egui::Ui,
+    id: &str,
+    actions: &'a [DialogAction<'a>],
+    colors: &Colors,
+    surface: egui::Color32,
+) -> (Option<&'a str>, Vec<super::layout_report::Action>) {
+    let outcome = ButtonRow {
+        modal: id,
+        actions,
+        colors,
+        focusable: true,
+        consent: None,
+        surface: Some(surface),
+    }
+    .show(ui, &mut Vec::new());
+    (outcome.selected, outcome.actions)
 }
 
 impl<'a> ButtonRow<'a, '_> {
-    fn show(self, ui: &mut egui::Ui, action_ids: &mut Vec<(String, egui::Id)>) -> Option<&'a str> {
+    fn show(self, ui: &mut egui::Ui, action_ids: &mut Vec<(String, egui::Id)>) -> RowOutcome<'a> {
         let Self {
             modal,
             actions,
             colors,
             focusable,
             consent,
+            surface,
         } = self;
         let hints: Vec<String> = actions
             .iter()
@@ -594,7 +631,7 @@ impl<'a> ButtonRow<'a, '_> {
         let widths: Vec<f32> = actions
             .iter()
             .zip(&hints)
-            .map(|(action, hint)| confirm_button(action, hint, colors).natural_width(ui))
+            .map(|(action, hint)| confirm_button(action, hint, colors, surface).natural_width(ui))
             .collect();
         let needed =
             widths.iter().sum::<f32>() + style::SPACE_SM * widths.len().saturating_sub(1) as f32;
@@ -609,7 +646,7 @@ impl<'a> ButtonRow<'a, '_> {
         let start = ui.cursor().min;
         let mut add = |ui: &mut egui::Ui, action: &'a DialogAction<'a>, hint: &str| {
             let enabled = consent.is_none_or(|input| action.refuses || input.armed);
-            let mut button = confirm_button(action, hint, colors).focusable(focusable);
+            let mut button = confirm_button(action, hint, colors, surface).focusable(focusable);
             if stacked {
                 button = button.min_width(ui.available_width());
             }
@@ -656,8 +693,12 @@ impl<'a> ButtonRow<'a, '_> {
             );
         }
         let rect = egui::Rect::from_min_max(start, ui.min_rect().max);
-        capture.finish(ui.painter(), rect, colors.bg_sidebar, reports, vec![]);
-        selected
+        let backdrop = surface.unwrap_or(colors.bg_sidebar);
+        capture.finish(ui.painter(), rect, backdrop, reports.clone(), vec![]);
+        RowOutcome {
+            selected,
+            actions: reports,
+        }
     }
 }
 
