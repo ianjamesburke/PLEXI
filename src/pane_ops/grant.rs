@@ -226,7 +226,8 @@ impl PlexiApp {
         let mut moved = Vec::new();
         for win in &self.windows {
             for (pane_id, pane) in win.panes.iter() {
-                let Some(authority) = pane.terminal_incarnation().and_then(|t| t.authority()) else {
+                let Some(authority) = pane.terminal_incarnation().and_then(|t| t.authority())
+                else {
                     continue;
                 };
                 if authority.scope().context_id != win.context_id {

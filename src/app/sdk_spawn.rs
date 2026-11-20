@@ -92,14 +92,8 @@ impl PlexiApp {
         let Some(emitter) = emitter else {
             return Err("the request carried no emitting view".to_string());
         };
-        let outcome = self.spawn_from_sdk(
-            emitter,
-            type_id,
-            layout,
-            args,
-            from_pane_id,
-            target_context,
-        );
+        let outcome =
+            self.spawn_from_sdk(emitter, type_id, layout, args, from_pane_id, target_context);
         // Restore the active window if the spawn switched it for placement.
         if original_active_window < self.windows.len() {
             self.active_window = original_active_window;

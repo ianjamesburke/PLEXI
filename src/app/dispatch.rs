@@ -1416,13 +1416,7 @@ impl PlexiApp {
                     let type_id = view_pane.runtime.type_id().to_string();
                     let cmds = view_pane.runtime.take_pending_commands();
                     if !cmds.is_empty() {
-                        per_pane.push((
-                            context_id,
-                            *pane_id,
-                            view_pane.incarnation,
-                            type_id,
-                            cmds,
-                        ));
+                        per_pane.push((context_id, *pane_id, view_pane.incarnation, type_id, cmds));
                     }
                     continue;
                 }

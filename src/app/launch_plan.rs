@@ -1243,10 +1243,8 @@ impl PlexiApp {
         if let Some(destination) = &plan.destination {
             self.bind_agent_destination(&mut placement, destination)?;
         }
-        if let (
-            Some(admitted),
-            crate::pane_ops::create::AgentTarget::Window { win_idx, .. },
-        ) = (&plan.destination_scope, &placement.target)
+        if let (Some(admitted), crate::pane_ops::create::AgentTarget::Window { win_idx, .. }) =
+            (&plan.destination_scope, &placement.target)
         {
             let now = crate::pane_ops::grant::credential_scope(
                 &self.pane_context_env_for_window(*win_idx),
@@ -4434,7 +4432,10 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         let context = secret_context(&mut h, other.path());
         let before = shell_from(&mut h, shell);
-        assert!(h.app.is_human_owned_pane(before), "fixture: the person's shell's child");
+        assert!(
+            h.app.is_human_owned_pane(before),
+            "fixture: the person's shell's child"
+        );
         let win = window_of(&h, shell);
         h.app.windows[win]
             .panes
@@ -4448,9 +4449,15 @@ mod tests {
             detail: None,
             session_id: None,
         });
-        assert!(!h.app.is_human_owned_pane(shell), "fixture: an agent was detected");
+        assert!(
+            !h.app.is_human_owned_pane(shell),
+            "fixture: an agent was detected"
+        );
         let child = shell_from(&mut h, shell);
-        assert!(!h.app.is_human_owned_pane(child), "the child is agent-spawned");
+        assert!(
+            !h.app.is_human_owned_pane(child),
+            "the child is agent-spawned"
+        );
         let pid = pid_of(&mut h, child);
         assert!(
             !lists_other_context(&mut h, &context, pid),
@@ -4474,8 +4481,18 @@ mod tests {
         let (pane, _) = h
             .app
             .spawn_agent_worker_pane(
-                "squad", "team", ":", "Coordinate", None, false, None,
-                Some(root.clone()), None, None, false, None,
+                "squad",
+                "team",
+                ":",
+                "Coordinate",
+                None,
+                false,
+                None,
+                Some(root.clone()),
+                None,
+                None,
+                false,
+                None,
             )
             .expect("team coordinator starts");
         assert!(
@@ -4520,10 +4537,16 @@ mod tests {
             let win = window_of(&h, pane);
             h.app.active_window = win;
             let parent = h.app.windows[win].context_id;
-            assert!(h.app.wrap_panes_to_subcontext(&[pane], pane, Some("wrapped".into())));
+            assert!(h
+                .app
+                .wrap_panes_to_subcontext(&[pane], pane, Some("wrapped".into())));
             let child = h.app.windows[window_of(&h, pane)].context_id;
             assert_ne!(child, parent, "fixture: the pane moved");
-            assert_eq!(bearer_context(&h, pane), Some(child), "the bearer follows the wrap");
+            assert_eq!(
+                bearer_context(&h, pane),
+                Some(child),
+                "the bearer follows the wrap"
+            );
             assert!(h.app.save_workspace_now(), "saved");
             pane
         };
@@ -4535,7 +4558,11 @@ mod tests {
             h.app.dissolve_portal(child);
             let now = h.app.windows[window_of(&h, pane)].context_id;
             assert_ne!(now, child, "fixture: the pane moved back");
-            assert_eq!(bearer_context(&h, pane), Some(now), "the bearer follows the dissolve");
+            assert_eq!(
+                bearer_context(&h, pane),
+                Some(now),
+                "the bearer follows the dissolve"
+            );
             assert!(h.app.save_workspace_now(), "saved");
         }
         let ceiling = restarted_ceiling(pane).expect("a dissolved pane is not sealed on restart");

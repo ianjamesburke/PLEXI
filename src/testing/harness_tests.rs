@@ -4884,8 +4884,13 @@ fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
     queue_pipe_command(&mut h, requester, spawn("replaced", Some(context_b)));
     h.run_hidden_frames(1);
     let (replacement, replacement_heard) = pipe_test_view(requester);
-    h.app.windows[0].take_pane(requester).expect("the emitter's slot");
-    h.app.windows[0].panes.insert(requester, replacement).unwrap();
+    h.app.windows[0]
+        .take_pane(requester)
+        .expect("the emitter's slot");
+    h.app.windows[0]
+        .panes
+        .insert(requester, replacement)
+        .unwrap();
     h.app.attention_queue.open = false;
     h.run_hidden_frames(1);
     assert!(
