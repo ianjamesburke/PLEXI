@@ -224,6 +224,8 @@ egui-wgpu = { path = "deps/egui-wgpu-0.34.3" }
 # Vendored because accesskit_consumer 0.38 still panics when a root-change
 # update removes the stale focused node before global validation.
 accesskit_consumer = { path = "deps/accesskit_consumer-0.38.0" }
+# Vendored so harness passes call `App::raw_input_hook` like eframe does.
+egui_kittest = { path = "deps/egui_kittest-0.34.3" }
 # Vendored because upstream 0.23 still hardcodes egui's compact TextEdit margin,
 # always shows a transparent copy button over code, and omits link underlines.
 egui_commonmark_backend = { path = "deps/egui_commonmark_backend-0.23.0" }

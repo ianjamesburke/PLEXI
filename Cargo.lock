@@ -1726,8 +1726,6 @@ dependencies = [
 [[package]]
 name = "egui_kittest"
 version = "0.34.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cb65436bc6f214ecc8ef4d9056a9344f92e70e22c162dbc3d515913df0fd3c5"
 dependencies = [
  "eframe",
  "egui",

@@ -29,6 +29,9 @@
 //! `split_focused` and `new_context` spawn real terminal panes. Pass on macOS
 //! local dev; tag `#[ignore]` for headless CI without PTY support.
 
+#[cfg(test)]
+mod harness_hook;
+
 use std::path::Path;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -900,12 +903,57 @@ mod tests {
         assert!(h.with_app(|app| app.quit_coordinator.save_failure().is_some()));
     }
 
-    /// Run `act` on frames flagged synthetic, as pane-IPC injected input is.
-    fn injected(h: &mut PlexiUiHarness, act: impl FnOnce(&mut PlexiUiHarness)) {
-        h.with_app_mut(|app| app.synthetic_input_frame = true);
-        act(h);
-        h.run_steps(3);
-        h.with_app_mut(|app| app.synthetic_input_frame = false);
+    /// Queue `events` for the focused pane the way `plexi pane key` and
+    /// `pane click` do, step, and prove `raw_input_hook` delivered the batch
+    /// on a frame it marked synthetic, so a dialog that ignores it refused it
+    /// rather than missed it.
+    fn injected(h: &mut PlexiUiHarness, events: Vec<egui::Event>) {
+        let pane = h
+            .with_app(|app| app.active_focused_pane_id())
+            .expect("pane IPC injects into a pane");
+        h.with_app_mut(|app| {
+            assert!(app.pane_navigate(pane), "pane {pane} could not be focused");
+            app.pending_pane_inputs
+                .entry(pane)
+                .or_default()
+                .push(egui::RawInput {
+                    events,
+                    ..Default::default()
+                });
+        });
+        h.step();
+        assert!(
+            h.with_app(|app| {
+                !app.pending_pane_inputs.contains_key(&pane) && app.synthetic_input_frame
+            }),
+            "the injected batch was not delivered as synthetic input"
+        );
+        h.run_steps(2);
+    }
+
+    fn key_tap(key: egui::Key) -> Vec<egui::Event> {
+        [true, false]
+            .map(|pressed| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            })
+            .into()
+    }
+
+    /// A primary click at the center of a kittest node rect (physical
+    /// pixels), as `pane click` queues it.
+    fn injected_click(h: &PlexiUiHarness, physical: egui::Rect) -> Vec<egui::Event> {
+        let pos = physical.center() / h.with_app(|app| app.ctx.pixels_per_point());
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        vec![egui::Event::PointerMoved(pos), button(true), button(false)]
     }
 
     /// Stint 1513: "Quit without saving" takes only a fresh, real Q: not a Q
@@ -913,6 +961,7 @@ mod tests {
     #[test]
     fn quit_without_saving_takes_only_a_fresh_real_q() {
         let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+        add_focused_pane(&mut h);
         h.harness().key_down(egui::Key::Q);
         h.run_steps(1);
         seed_quit_save_failure(&mut h);
@@ -924,11 +973,11 @@ mod tests {
         assert!(open(&mut h), "a held Q quit without saving");
         h.harness().key_up(egui::Key::Q);
         h.run_steps(1);
-        injected(&mut h, |h| h.harness().key_press(egui::Key::Q));
+        injected(&mut h, key_tap(egui::Key::Q));
         assert!(open(&mut h), "an injected Q quit without saving");
-        injected(&mut h, |h| {
-            h.harness().get_by_label("Quit without saving").click()
-        });
+        let quit = h.harness().get_by_label("Quit without saving").rect();
+        let click = injected_click(&h, quit);
+        injected(&mut h, click);
         assert!(open(&mut h), "an injected click quit without saving");
         h.harness()
             .key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Q);
@@ -5016,15 +5065,16 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         assert!(open(&mut h), "a held Enter closed the dialog");
         h.harness().key_up(egui::Key::Enter);
         h.run_steps(1);
-        injected(&mut h, |h| h.harness().key_press(egui::Key::Enter));
+        injected(&mut h, key_tap(egui::Key::Enter));
         assert!(file.exists(), "an injected Enter trashed the file");
-        injected(&mut h, |h| {
-            h.harness()
-                .query_all_by_label("Move to Trash")
-                .last()
-                .expect("the Move to Trash button")
-                .click()
-        });
+        let trash = h
+            .harness()
+            .query_all_by_label("Move to Trash")
+            .last()
+            .expect("the Move to Trash button")
+            .rect();
+        let click = injected_click(&h, trash);
+        injected(&mut h, click);
         assert!(file.exists(), "an injected click trashed the file");
         h.harness()
             .key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Enter);
@@ -10311,9 +10361,11 @@ open(out + ".done", "w").close()
         assert!(open(&mut h), "a held Enter closed the pane");
         h.harness().key_up(egui::Key::Enter);
         h.run_steps(1);
-        injected(&mut h, |h| h.harness().key_press(egui::Key::Enter));
+        injected(&mut h, key_tap(egui::Key::Enter));
         assert!(open(&mut h), "an injected Enter closed the pane");
-        injected(&mut h, |h| h.harness().get_by_label("Close").click());
+        let close = h.harness().get_by_label("Close").rect();
+        let click = injected_click(&h, close);
+        injected(&mut h, click);
         assert!(open(&mut h), "an injected click closed the pane");
         h.harness()
             .key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Enter);
@@ -10335,6 +10387,7 @@ open(out + ".done", "w").close()
     #[test]
     fn context_close_destructive_actions_take_only_a_fresh_real_press() {
         let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
+        add_focused_pane(&mut h);
         h.harness().key_down(egui::Key::Enter);
         h.run_steps(1);
         seed_context_close_confirm(&mut h, true);
@@ -10346,14 +10399,16 @@ open(out + ".done", "w").close()
         h.harness().key_up(egui::Key::Enter);
         h.run_steps(1);
         for k in [egui::Key::Enter, egui::Key::D] {
-            injected(&mut h, |h| h.harness().key_press(k));
+            injected(&mut h, key_tap(k));
             assert!(open(&mut h), "an injected {k:?} decided the dialog");
             h.harness().key_press_modifiers(egui::Modifiers::SHIFT, k);
             h.run_steps(3);
             assert!(open(&mut h), "Shift+{k:?} decided the dialog");
         }
         for label in ["Close all", "Dissolve"] {
-            injected(&mut h, |h| h.harness().get_by_label(label).click());
+            let button = h.harness().get_by_label(label).rect();
+            let click = injected_click(&h, button);
+            injected(&mut h, click);
             assert!(
                 open(&mut h),
                 "an injected click on {label} decided the dialog"
@@ -10371,9 +10426,11 @@ open(out + ".done", "w").close()
     fn unsaved_changes_discard_takes_only_a_fresh_real_d() {
         let (mut h, _dir) = open_unsaved_prompt();
         let open = |h: &mut PlexiUiHarness| h.harness().query_by_label("Unsaved changes").is_some();
-        injected(&mut h, |h| h.harness().key_press(egui::Key::D));
+        injected(&mut h, key_tap(egui::Key::D));
         assert!(open(&mut h), "an injected D discarded");
-        injected(&mut h, |h| h.harness().get_by_label("Discard").click());
+        let discard = h.harness().get_by_label("Discard").rect();
+        let click = injected_click(&h, discard);
+        injected(&mut h, click);
         assert!(open(&mut h), "an injected click discarded");
         h.harness()
             .key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::D);
