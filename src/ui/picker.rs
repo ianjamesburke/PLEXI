@@ -4,7 +4,7 @@
 //! it. Keys are translated in the focus owner's `handle_key` through
 //! [`key_commands`], never in a draw function.
 
-use crate::host::picker::{PickerCommand, PickerState, RowKey};
+use crate::host::picker::{Hit, PickerCommand, PickerState, RowKey, Step};
 use crate::ui::{
     list::{ListRow, ListRowPips},
     style,
@@ -31,12 +31,12 @@ pub(crate) fn key_commands(input: &mut crate::app::input_router::PlexiInput) -> 
     while input.consume_key(Modifiers::NONE, Key::ArrowDown)
         || input.consume_key(Modifiers::COMMAND, Key::J)
     {
-        commands.push(PickerCommand::Move(1));
+        commands.push(PickerCommand::Move(Step::Down));
     }
     while input.consume_key(Modifiers::NONE, Key::ArrowUp)
         || input.consume_key(Modifiers::COMMAND, Key::K)
     {
-        commands.push(PickerCommand::Move(-1));
+        commands.push(PickerCommand::Move(Step::Up));
     }
     if input.consume_key_exact(Modifiers::NONE, Key::Enter) {
         commands.push(PickerCommand::Accept);
@@ -149,9 +149,15 @@ pub(crate) fn results(
                     continue;
                 }
                 if response.row_clicked() {
-                    commands.push(PickerCommand::Click(row.key.clone()));
+                    commands.push(PickerCommand::Click(Hit {
+                        stamp: state.rows_stamp(),
+                        key: row.key.clone(),
+                    }));
                 } else if response.row_hovered() && pointer_moved && !is_selected {
-                    commands.push(PickerCommand::Hover(row.key.clone()));
+                    commands.push(PickerCommand::Hover(Hit {
+                        stamp: state.rows_stamp(),
+                        key: row.key.clone(),
+                    }));
                 }
             }
         });

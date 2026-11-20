@@ -12120,7 +12120,15 @@ open(out + ".done", "w").close()
         for query in ["plexi-pm", "night-shift"] {
             palette_result_keys(&mut h, query);
             h.with_app_mut(|app| {
-                app.apply_palette_command(crate::host::picker::PickerCommand::Move(-10_000))
+                let rows = app
+                    .host
+                    .picker(crate::host::picker::PickerId::Palette)
+                    .map_or(0, |picker| picker.rows().len());
+                for _ in 0..rows {
+                    app.apply_palette_command(crate::host::picker::PickerCommand::Move(
+                        crate::host::picker::Step::Up,
+                    ));
+                }
             });
             h.run_steps(3);
             h.save_screenshot(&evidence_png!(format!("_{query}")))

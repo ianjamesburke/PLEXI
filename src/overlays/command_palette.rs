@@ -1518,7 +1518,7 @@ impl PlexiApp {
                     self.palette_pending_keys.clear();
                     self.sync_command_palette_focus();
                 }
-                PickerEffect::Activate { row, action } => {
+                PickerEffect::Activate { row, action, .. } => {
                     self.sync_command_palette_focus();
                     self.activate_palette_row(&row, action);
                 }
@@ -3662,7 +3662,14 @@ mod tests {
                 .is_some_and(|picker| picker.rows().iter().any(|row| row.key == key)),
             "{id:?} must be listed in the open palette"
         );
-        h.app.apply_palette_command(PickerCommand::Click(key));
+        let stamp = h
+            .app
+            .host
+            .picker(PickerId::Palette)
+            .expect("palette picker")
+            .rows_stamp();
+        h.app
+            .apply_palette_command(PickerCommand::Click(crate::host::picker::Hit { stamp, key }));
     }
 
     fn row_id(row: &PickerRow) -> CommandRowId {
@@ -3834,7 +3841,7 @@ mod tests {
             "file",
         );
         // The user moves to the incidental Todo row.
-        state.apply(PickerCommand::Move(1));
+        state.apply(PickerCommand::Move(crate::host::picker::Step::Down));
         // A rebuild with the same query, collected in a different order.
         answer(
             &mut state,
