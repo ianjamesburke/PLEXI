@@ -1465,6 +1465,8 @@ mod tests {
             ),
         ];
 
+        // One instant, so equal ages tie and keep their seeded order.
+        let now = std::time::SystemTime::now();
         h.with_app_mut(|app| {
             app.open_notes_picker();
             let entries: Vec<crate::notes::NotePickerEntry> = realistic_notes
@@ -1482,7 +1484,17 @@ mod tests {
                         preview: body.lines().next().unwrap_or("").to_string(),
                         search_text: format!("{title} {body}").to_lowercase(),
                         tier_label: label.map(|s| s.to_string()),
-                        modified: None,
+                        // Stint 1645: ages rise with the index, so the recency
+                        // order keeps the seeded order and the first rows show
+                        // every label form.
+                        modified: Some(
+                            now - std::time::Duration::from_secs(
+                                [20, 7 * 60, 3 * 3600, 30 * 3600, 4 * 86_400, 40 * 86_400]
+                                    .get(i)
+                                    .copied()
+                                    .unwrap_or(i as u64 * 10 * 86_400),
+                            ),
+                        ),
                     }
                 })
                 .collect();
@@ -6540,6 +6552,62 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         h.run_steps(2);
         h.with_app(|app| assert_eq!(app.notes_picker_filtered().len(), 2));
         h.save_screenshot(&evidence_png!("_project")).expect("render failed");
+    }
+
+    /// Stint 1645: the `ListRow` meta text sits flush right in its reserved
+    /// slot, and a long title elides before it rather than running under it.
+    #[test]
+    fn list_row_meta_is_right_aligned_and_title_elides_first() {
+        use crate::ui::{list::ListRow, style};
+        const TITLE: &str = "A very long note title that cannot possibly fit beside its age";
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = crate::ui::theme::Colors::from_config(
+            &crate::ui::theme::preset_colors("plexi-dusk").expect("preset"),
+        );
+        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+        for (width, selected) in [(240.0, false), (420.0, true)] {
+            let mut row_rect = egui::Rect::NOTHING;
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(width);
+                row_rect = ListRow::new(TITLE)
+                    .secondary("first line of the note")
+                    .metadata_chips(&["global"])
+                    .meta("Yesterday")
+                    .selected(selected)
+                    .show(ui, &colors)
+                    .response()
+                    .rect;
+            });
+            let mut texts = Vec::new();
+            for shape in &output.shapes {
+                gallery_text_shapes(&shape.shape, &mut texts);
+            }
+            let meta = painted_rect(&texts, "Yesterday");
+            let title = painted_rect(&texts, "A very long");
+            let (_, title_text) = texts
+                .iter()
+                .find(|(_, t)| t.starts_with("A very long"))
+                .unwrap();
+            let edge = row_rect.right() - style::LIST_ROW_PAD_H - style::SPACE_SM;
+            assert!(
+                (meta.right() - edge).abs() <= 1.0,
+                "meta right-aligned at {width}: {meta:?} vs edge {edge}"
+            );
+            assert!(
+                title_text.ends_with('…'),
+                "title elides at {width}: {title_text:?}"
+            );
+            assert!(
+                title.right() + style::LIST_ROW_GAP <= meta.left() + 0.5,
+                "title {title:?} must stop before meta {meta:?} at {width}"
+            );
+            let errors: Vec<_> = crate::ui::layout_report::snapshot(&ctx)
+                .iter()
+                .flat_map(|r| r.violations())
+                .collect();
+            assert!(errors.is_empty(), "{errors:?}");
+        }
     }
 
     /// Notes picker overlay: open → step → still visible and renders.
