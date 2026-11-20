@@ -35,8 +35,16 @@ impl crate::app::view_trait::View for EdgeProbe {
         "Edge Probe".to_string()
     }
 
+    /// A pointer click egui delivers to the pane's own widgets is recorded
+    /// too: a click that leaks behind a modal is observable here even when
+    /// host focus does not move.
     fn ui(&mut self, ui: &mut egui::Ui, _ctx: &crate::app::view_trait::ViewRenderContext<'_>) {
-        ui.allocate_rect(ui.max_rect(), egui::Sense::hover());
+        if ui
+            .allocate_rect(ui.max_rect(), egui::Sense::click())
+            .clicked()
+        {
+            self.log.push("click".to_string());
+        }
     }
 
     fn handle_key(
@@ -415,6 +423,10 @@ fn escape_then_click_before_first_palette_draw_never_reaches_the_pane() {
             .input(|i| i.pointer.any_pressed() || i.pointer.any_released()),
         "egui never folded the barrier's pointer edges"
     );
+    assert!(
+        probe_log(&mut h, b).is_empty(),
+        "the pane's widgets saw no click"
+    );
 
     deliver(
         &mut h,
@@ -429,6 +441,7 @@ fn escape_then_click_before_first_palette_draw_never_reaches_the_pane() {
         Some(b),
         "a fresh click on the exposed pane focuses it"
     );
+    assert_eq!(probe_log(&mut h, b), ["click"], "and reaches its widgets");
 }
 
 /// The same history against a palette that has been presented.
@@ -502,6 +515,10 @@ fn an_unpresented_palette_declines_the_pointer() {
     deliver(&mut h, events);
     assert!(h.app.show_command_palette);
     assert_eq!(focused(&h), Some(a));
+    assert!(
+        probe_log(&mut h, b).is_empty(),
+        "the pane's own widgets never saw the click"
+    );
 }
 
 // ── R4: release edges follow their press, not current focus ─────────────────
@@ -806,6 +823,9 @@ struct ModelHeld {
 struct Model {
     palette_open: bool,
     presented: bool,
+    /// The palette painted in the last pass: egui hit-tests one more pass
+    /// against that pass's layers, so its scrim still covers pane widgets.
+    drawn_last_pass: bool,
     focus: Side,
     instance: u64,
     last_owner: ModelOwner,
@@ -819,6 +839,7 @@ impl Model {
         Self {
             palette_open: false,
             presented: false,
+            drawn_last_pass: false,
             focus: Side::A,
             instance: 0,
             last_owner: ModelOwner::Pane(Side::A),
@@ -852,6 +873,7 @@ impl Model {
         let mut barrier = false;
         let mut text_owned = false;
         let mut click_away = false;
+        let mut widget_clicks = Vec::new();
         for step in steps {
             let (owner, instance) = self.owner();
             match *step {
@@ -952,11 +974,28 @@ impl Model {
                         ModelOwner::Palette if self.presented => click_away = true,
                         // Before its first draw the modal declines it.
                         ModelOwner::Palette => {}
-                        ModelOwner::Pane(_) => self.focus = side,
+                        ModelOwner::Pane(_) => {
+                            self.focus = side;
+                            // The pane's widgets fold it when they paint,
+                            // after the delivery's structured input.
+                            let (_, instance) = self.owner();
+                            widget_clicks.push((side, instance));
+                        }
                     }
                 }
             }
         }
+        // egui folds only the input of the owner that holds it at the end
+        // of the delivery, and a widget reports at most one click per pass.
+        let (_, final_instance) = self.owner();
+        let mut clicked = Vec::new();
+        for (side, instance) in widget_clicks {
+            if instance == final_instance && !self.drawn_last_pass && !clicked.contains(&side) {
+                clicked.push(side);
+                self.log(side, "click".to_string());
+            }
+        }
+        self.drawn_last_pass = self.palette_open;
         if click_away {
             self.palette_open = false;
         }
