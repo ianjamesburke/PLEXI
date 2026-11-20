@@ -128,7 +128,8 @@ fn command_palette_source_runs_only_from_logic() {
 }
 
 /// Stint 1391 review round 1: text after Enter belongs to the closed
-/// session. The terminal behind the palette receives none of it, and does
+/// session, including the next delivery when the Enter completes in that
+/// pass's logic. The terminal behind the palette receives none of it, and does
 /// receive input once focus is back with it.
 #[test]
 fn command_palette_input_never_leaks_to_the_terminal_behind_it() {
@@ -152,12 +153,13 @@ fn command_palette_input_never_leaks_to_the_terminal_behind_it() {
                 Event::Ime(egui::ImeEvent::Disabled),
             ],
         ),
+        // The Enter waits for its answer, which lands in the next pass's
+        // logic; that pass's paste still belongs to the closing session.
         (
-            "Paste, Enter, Paste",
+            "Paste, Enter | Paste",
             vec![
                 Event::Paste("keyboard".into()),
                 press(Key::Enter, Modifiers::NONE),
-                Event::Paste("leak".into()),
             ],
         ),
     ] {
@@ -165,7 +167,11 @@ fn command_palette_input_never_leaks_to_the_terminal_behind_it() {
         h.run_frames(2);
         open_palette(&mut h);
         h.terminal_backend(term).take_input_tap();
+        let deferred = h.app.command_palette_open() && label.contains('|');
         deliver(&mut h, events);
+        if deferred {
+            deliver(&mut h, vec![Event::Paste("leak".into())]);
+        }
         h.run_frames(3);
         assert!(!h.app.command_palette_open(), "{label}: Enter ran a row");
         assert_eq!(

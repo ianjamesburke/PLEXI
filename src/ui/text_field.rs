@@ -314,6 +314,331 @@ impl<'a> TextField<'a> {
     }
 }
 
+/// What one input event did to an [`OrderedLineField`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FieldEdit {
+    /// Not a field event: its owner decides what it means.
+    Unclaimed,
+    /// The field took the event; the committed text did not change.
+    Claimed,
+    /// The committed text changed to this value.
+    Committed(String),
+}
+
+/// A single-line field that edits one input event at a time (stint 1391), so
+/// its owner can interleave edits with its own keys in arrival order. A
+/// `TextEdit` cannot: it consumes a whole frame's events at once and reports
+/// only the frame-final text. Editing is the native editor's
+/// [`crate::editor::Document`]: caret, selection replacement, undo and IME
+/// preedit behave as they do in the editor pane; preedit is never committed
+/// text.
+#[derive(Debug)]
+pub(crate) struct OrderedLineField {
+    doc: crate::editor::Document,
+}
+
+/// Where the field was painted, for pointer caret placement next frame.
+#[derive(Debug, Clone)]
+pub(crate) struct FieldGeometry {
+    pub rect: egui::Rect,
+    galley: std::sync::Arc<egui::Galley>,
+    galley_pos: egui::Pos2,
+    /// Preedit characters inserted at the caret in the painted galley.
+    preedit_at: Option<(usize, usize)>,
+}
+
+impl FieldGeometry {
+    /// The committed-text char index under `pos`, or `None` inside preedit.
+    fn char_at(&self, pos: egui::Pos2) -> Option<usize> {
+        let index = self.galley.cursor_from_pos(pos - self.galley_pos).index;
+        match self.preedit_at {
+            Some((at, len)) if index > at && index < at + len => None,
+            Some((at, len)) if index >= at + len => Some(index - len),
+            _ => Some(index),
+        }
+    }
+}
+
+impl OrderedLineField {
+    /// A field holding `text` with the caret at its end.
+    pub(crate) fn new(text: &str) -> Self {
+        let mut doc = crate::editor::Document::new(text);
+        let end = crate::editor::movement::char_to_cursor(doc.buffer(), text.chars().count());
+        doc.apply(crate::editor::EditorCommand::SetCursor(end));
+        Self { doc }
+    }
+
+    /// An IME composition is in progress.
+    pub(crate) fn composing(&self) -> bool {
+        self.doc.ime().preedit().is_some_and(|p| !p.is_empty())
+    }
+
+    /// Apply one event. `copy` receives text the person copied or cut.
+    pub(crate) fn apply(&mut self, event: &egui::Event, copy: &mut dyn FnMut(String)) -> FieldEdit {
+        use crate::editor::commands::Movement;
+        use crate::editor::EditorCommand as C;
+        let before = self.doc.text();
+        let command = match event {
+            egui::Event::Text(text) => {
+                if text.is_empty() || text.chars().any(char::is_control) {
+                    return FieldEdit::Claimed;
+                }
+                C::InsertText(text.clone())
+            }
+            egui::Event::Paste(text) => {
+                let line = text.replace(['\r', '\n'], " ");
+                if line.is_empty() {
+                    return FieldEdit::Claimed;
+                }
+                C::InsertText(line)
+            }
+            egui::Event::Copy | egui::Event::Cut => {
+                if !self.doc.selection().is_range() {
+                    return FieldEdit::Claimed;
+                }
+                copy(self.doc.selected_text());
+                if matches!(event, egui::Event::Copy) {
+                    return FieldEdit::Claimed;
+                }
+                C::Backspace
+            }
+            egui::Event::Ime(ime) => match ime {
+                egui::ImeEvent::Enabled => return FieldEdit::Claimed,
+                egui::ImeEvent::Preedit(text) if text == "\n" || text == "\r" => {
+                    return FieldEdit::Claimed
+                }
+                egui::ImeEvent::Preedit(text) if text.is_empty() => C::ImeCancel,
+                egui::ImeEvent::Preedit(text) => C::ImePreedit(text.clone()),
+                egui::ImeEvent::Commit(text) if text == "\n" || text == "\r" => {
+                    return FieldEdit::Claimed
+                }
+                egui::ImeEvent::Commit(text) => C::ImeCommit(text.clone()),
+                egui::ImeEvent::Disabled => C::ImeCancel,
+            },
+            egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } => {
+                let extend = modifiers.shift;
+                let mv = |movement| C::Move { movement, extend };
+                let command_key = modifiers.command && !modifiers.alt;
+                match key {
+                    egui::Key::ArrowLeft if modifiers.command => mv(Movement::LineStart),
+                    egui::Key::ArrowLeft if modifiers.alt => mv(Movement::WordLeft),
+                    egui::Key::ArrowLeft => mv(Movement::Left),
+                    egui::Key::ArrowRight if modifiers.command => mv(Movement::LineEnd),
+                    egui::Key::ArrowRight if modifiers.alt => mv(Movement::WordRight),
+                    egui::Key::ArrowRight => mv(Movement::Right),
+                    egui::Key::Home => mv(Movement::LineStart),
+                    egui::Key::End => mv(Movement::LineEnd),
+                    egui::Key::Backspace if command_key && !modifiers.shift => C::KillToLineStart,
+                    egui::Key::Backspace if modifiers.alt && !modifiers.command => {
+                        C::DeleteWordBackward
+                    }
+                    egui::Key::Backspace => C::Backspace,
+                    egui::Key::Delete if command_key && !modifiers.shift => C::KillToLineEnd,
+                    egui::Key::Delete if modifiers.alt && !modifiers.command => {
+                        C::DeleteWordForward
+                    }
+                    egui::Key::Delete => C::DeleteForward,
+                    egui::Key::A if command_key && !modifiers.shift => C::SelectAll,
+                    egui::Key::Z if command_key && modifiers.shift => C::Redo,
+                    egui::Key::Z if command_key => C::Undo,
+                    egui::Key::Y if command_key => C::Redo,
+                    _ => return FieldEdit::Unclaimed,
+                }
+            }
+            _ => return FieldEdit::Unclaimed,
+        };
+        self.doc.apply(command);
+        let after = self.doc.text();
+        if after == before {
+            FieldEdit::Claimed
+        } else {
+            FieldEdit::Committed(after)
+        }
+    }
+
+    /// A pointer press (`extend` false) or drag (`extend` true) at `pos`.
+    pub(crate) fn place_caret(&mut self, geometry: &FieldGeometry, pos: egui::Pos2, extend: bool) {
+        if self.composing() {
+            return;
+        }
+        let Some(index) = geometry.char_at(pos) else {
+            return;
+        };
+        let cursor = crate::editor::movement::char_to_cursor(self.doc.buffer(), index);
+        self.doc.apply(if extend {
+            crate::editor::EditorCommand::ExtendTo(cursor)
+        } else {
+            crate::editor::EditorCommand::SetCursor(cursor)
+        });
+    }
+
+    /// Paint the field with the look of [`TextField::singleline`] and
+    /// register it as `surface`'s default text surface. Paints only: every
+    /// edit already happened through [`Self::apply`].
+    pub(crate) fn show(
+        &self,
+        ui: &mut egui::Ui,
+        id: egui::Id,
+        hint: &str,
+        surface: crate::ui::focus::SurfaceKey,
+        colors: &Colors,
+    ) -> FieldGeometry {
+        use crate::editor::movement::cursor_to_char;
+        let font_id = egui::TextStyle::Body.resolve(ui.style());
+        let row_height = ui.fonts_mut(|f| f.row_height(&font_id));
+        let margin = egui::vec2(8.0, 5.0);
+        let size = egui::vec2(ui.available_width(), row_height + 2.0 * margin.y);
+        let (_, rect) = ui.allocate_space(size);
+        ui.memory_mut(|m| m.interested_in_focus(id, ui.layer_id()));
+        let response = ui
+            .interact(rect, id, egui::Sense::click())
+            .on_hover_cursor(egui::CursorIcon::Text);
+        crate::ui::focus::register_default_text_surface(ui.ctx(), surface, id);
+        let focused = ui.memory(|m| m.has_focus(id));
+
+        let text = self.doc.text();
+        let buffer = self.doc.buffer();
+        let (start, end) = self.doc.selection().ordered();
+        let (sel_start, sel_end) = (cursor_to_char(buffer, start), cursor_to_char(buffer, end));
+        let caret = cursor_to_char(buffer, self.doc.cursor());
+        let preedit = self.doc.ime().preedit().filter(|p| !p.is_empty());
+        let mut job = egui::text::LayoutJob::default();
+        let plain = egui::TextFormat::simple(font_id.clone(), colors.text_primary);
+        let byte_at = |chars: usize| {
+            text.char_indices()
+                .nth(chars)
+                .map_or(text.len(), |(b, _)| b)
+        };
+        let preedit_at = preedit.map(|p| (caret, p.chars().count()));
+        match preedit {
+            Some(p) => {
+                job.append(&text[..byte_at(caret)], 0.0, plain.clone());
+                let mut underlined = plain.clone();
+                underlined.underline = egui::Stroke::new(1.0_f32, colors.text_primary);
+                job.append(p, 0.0, underlined);
+                job.append(&text[byte_at(caret)..], 0.0, plain.clone());
+            }
+            None if text.is_empty() => job.append(
+                hint,
+                0.0,
+                egui::TextFormat::simple(font_id.clone(), colors.text_primary.gamma_multiply(0.5)),
+            ),
+            None => job.append(&text, 0.0, plain.clone()),
+        }
+        job.wrap.max_rows = 1;
+        let galley = ui.fonts_mut(|f| f.layout_job(job));
+        let inner = rect.shrink2(margin);
+        let caret_display = caret + preedit_at.map_or(0, |(_, len)| len);
+        let caret_x = if text.is_empty() && preedit.is_none() {
+            0.0
+        } else {
+            galley
+                .pos_from_cursor(egui::text::CCursor::new(caret_display))
+                .center()
+                .x
+        };
+        // Keep the caret visible in a long query.
+        let scroll = (caret_x - inner.width() + 2.0).max(0.0);
+        let galley_pos = egui::pos2(
+            inner.min.x - scroll,
+            inner.center().y - galley.size().y / 2.0,
+        );
+
+        let visuals = ui.style().interact(&response);
+        let stroke = if focused {
+            ui.visuals().selection.stroke
+        } else {
+            egui::Stroke::new(1.0_f32, colors.border)
+        };
+        let painter = ui.painter_at(rect);
+        painter.rect(
+            rect,
+            visuals.corner_radius,
+            colors.bg_active,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+        if focused && sel_start != sel_end && preedit.is_none() {
+            let from = galley.pos_from_cursor(egui::text::CCursor::new(sel_start));
+            let to = galley.pos_from_cursor(egui::text::CCursor::new(sel_end));
+            let selection =
+                egui::Rect::from_x_y_ranges(from.min.x..=to.min.x, from.min.y..=from.max.y)
+                    .translate(galley_pos.to_vec2());
+            painter.rect_filled(selection, 0.0, ui.visuals().selection.bg_fill);
+        }
+        painter.galley(galley_pos, galley.clone(), colors.text_primary);
+
+        if focused {
+            let caret_rect = egui::Rect::from_center_size(
+                egui::pos2(galley_pos.x + caret_x, inner.center().y),
+                egui::vec2(1.0, font_id.size + 2.0),
+            );
+            paint_blinking_caret(ui, id, caret_display, &painter, caret_rect, colors.accent);
+            // The OS places its IME candidate window here; without it the
+            // platform never enables composition for this field.
+            let to_global = ui
+                .ctx()
+                .layer_transform_to_global(ui.layer_id())
+                .unwrap_or_default();
+            ui.output_mut(|o| {
+                o.ime = Some(egui::output::IMEOutput {
+                    rect: to_global * rect,
+                    cursor_rect: to_global * caret_rect,
+                });
+            });
+        }
+        response.widget_info(|| {
+            egui::WidgetInfo::text_edit(ui.is_enabled(), text.as_str(), text.as_str(), hint)
+        });
+        FieldGeometry {
+            rect,
+            galley,
+            galley_pos,
+            preedit_at,
+        }
+    }
+}
+
+/// Paint a caret that is solid after any caret move and then blinks, as
+/// [`draw_text_caret`] does for `TextEdit`.
+fn paint_blinking_caret(
+    ui: &egui::Ui,
+    id: egui::Id,
+    index: usize,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    color: egui::Color32,
+) {
+    const ON: f64 = 0.5;
+    const OFF: f64 = 0.5;
+    let now = ui.ctx().input(|i| i.time);
+    let state_id = id.with("caret_blink");
+    let prev: Option<(usize, f64)> = ui.ctx().data(|d| d.get_temp(state_id));
+    let blink_start = match prev {
+        Some((last, start)) if last == index => start,
+        _ => now,
+    };
+    if prev != Some((index, blink_start)) {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(state_id, (index, blink_start)));
+    }
+    if !ui.ctx().input(|i| i.focused) {
+        return;
+    }
+    let t = (now - blink_start) % (ON + OFF);
+    if t < ON {
+        painter.rect_filled(rect, 0.0, color);
+        ui.ctx().request_repaint_after_secs((ON - t) as f32);
+    } else {
+        ui.ctx().request_repaint_after_secs((ON + OFF - t) as f32);
+    }
+}
+
 pub(crate) struct TextArea<'a> {
     id: egui::Id,
     hint: egui::WidgetText,

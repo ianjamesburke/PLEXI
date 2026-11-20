@@ -99,6 +99,12 @@ impl PlexiInput {
         Self { events, modifiers }
     }
 
+    /// Hand an event to this buffer's later consumers. The palette routes
+    /// its delivery itself and returns the keys it does not own here.
+    pub(crate) fn push(&mut self, event: egui::Event) {
+        self.events.push(event);
+    }
+
     /// The frame's owned input-intent events, in arrival order. Consumers that
     /// need the raw event stream (e.g. `App::handle_key` for WASM/Python panes
     /// that forward every key/text edge to their guest) read this instead of

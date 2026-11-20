@@ -361,9 +361,9 @@ pub struct PlexiApp {
     /// with every answer of the Commands source.
     pub(crate) palette_row_pips:
         std::collections::HashMap<crate::host::picker::RowKey, crate::ui::list::ListRowPips>,
-    /// Picker key commands translated this frame, applied after the field
-    /// takes the frame's text (`draw_command_palette`).
-    pub(crate) palette_pending_keys: Vec<crate::host::picker::PickerCommand>,
+    /// The palette's input owner: its ordered field, last presented hit
+    /// geometry and the input its session claimed.
+    pub(crate) palette_input: crate::ui::picker::PickerInput,
     pub(crate) context_visit_history: Vec<u64>,
     pub(crate) renaming_pane: Option<PaneId>,
     /// Active text-input overlay and its dispatch target.
@@ -1873,7 +1873,7 @@ impl PlexiApp {
                     palette_notes: Vec::new(),
                     palette_commands: Vec::new(),
                     palette_row_pips: std::collections::HashMap::new(),
-                    palette_pending_keys: Vec::new(),
+                    palette_input: Default::default(),
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
                     text_overlay: None,
@@ -2165,7 +2165,7 @@ impl PlexiApp {
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
             palette_row_pips: std::collections::HashMap::new(),
-            palette_pending_keys: Vec::new(),
+            palette_input: Default::default(),
             context_visit_history: Vec::new(),
             renaming_pane: None,
             text_overlay: None,
@@ -3150,7 +3150,7 @@ impl PlexiApp {
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
             palette_row_pips: std::collections::HashMap::new(),
-            palette_pending_keys: Vec::new(),
+            palette_input: Default::default(),
             context_visit_history: Vec::new(),
             renaming_pane: None,
             text_overlay: None,
@@ -3723,6 +3723,9 @@ impl eframe::App for PlexiApp {
             &self.ui_phase,
             crate::platform::logging::UiPhase::Logic,
         );
+        // Before anything in this pass can close the palette (a deferred
+        // Enter completing below), its session owns this pass's input.
+        self.note_palette_input_owner(ctx);
         // Everything that services external clients — pane IPC, spawn queue,
         // PTY events, shutdown, event-bus subscriptions, agent turns — must
         // run here, not in `ui`. eframe skips `ui` entirely while the window
@@ -4016,6 +4019,7 @@ impl eframe::App for PlexiApp {
         let ctx = &ui.ctx().clone();
         // Before any overlay owner takes the frame's input buffer.
         input_owner::note_tab_key(ctx);
+        self.claim_palette_boundary(ctx);
         let ui_profile_start = crate::platform::ui_profile::enabled().then(std::time::Instant::now);
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
@@ -4111,7 +4115,17 @@ impl eframe::App for PlexiApp {
             // events out of `ctx` once, hand them to the top `FocusKind`
             // below, then give back whatever it didn't claim before rendering
             // — see `src/app/input_router.rs`.
-            let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
+            // The palette routes its whole delivery itself, in arrival
+            // order (stint 1391); every other owner gets the taken keys.
+            let mut router_input =
+                if self.focus_stack.last() == Some(&FocusKind::CommandPalette) {
+                    crate::app::input_router::PlexiInput::synthetic(
+                        Vec::new(),
+                        ctx.input(|i| i.modifiers),
+                    )
+                } else {
+                    crate::app::input_router::PlexiInput::take_from(ctx)
+                };
             // Step 0: QuickNote preemption (#1626).
             // Cmd+0 is a high-priority action that must fire even when a non-critical
             // modal is open. Consume the key here — before the overlay draw phase can
@@ -4401,6 +4415,7 @@ impl eframe::App for PlexiApp {
         for action in poll_actions_result {
             self.dispatch_host_action(action, ctx);
         }
+        self.settle_palette_carry(ctx);
 
         if self.quit_coordinator.blocks_input() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);

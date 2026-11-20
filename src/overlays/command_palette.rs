@@ -1485,6 +1485,7 @@ impl PlexiApp {
     /// the open-time caches (`palette_workspace_root`, notes, user commands)
     /// first.
     pub(crate) fn open_command_palette(&mut self, query: &str) {
+        self.palette_input.reset(query);
         self.apply_palette_command(PickerCommand::Open {
             stop: PALETTE_STOPS[0].id,
             query: query.to_owned(),
@@ -1495,16 +1496,19 @@ impl PlexiApp {
         self.apply_palette_command(PickerCommand::Close);
     }
 
-    /// Run one picker command through the model and service its effects.
-    /// `Query` is answered from `App::logic` (`refresh_command_palette`), so
-    /// no source I/O runs on the draw path; `Activate` resolves through the
-    /// row's source; the focus layer follows the open state.
+    /// Run one picker command through the model and service its effects in
+    /// order. `Query` is answered from `App::logic` (`refresh_command_palette`),
+    /// so no source I/O runs on the draw path. `Activate` comes before
+    /// `Closed`; the row runs after the close, with focus synchronized once.
     pub(crate) fn apply_palette_command(&mut self, command: PickerCommand) {
-        let mut effects: std::collections::VecDeque<HostEffect> = self
+        let effects = self
             .host
-            .apply(HostAction::Picker(PickerId::Palette, command))
-            .into();
-        while let Some(HostEffect::Picker(id, effect)) = effects.pop_front() {
+            .apply(HostAction::Picker(PickerId::Palette, command));
+        if effects.is_empty() {
+            return;
+        }
+        let mut activation = None;
+        for HostEffect::Picker(id, effect) in effects {
             match effect {
                 PickerEffect::Query {
                     source,
@@ -1514,17 +1518,14 @@ impl PlexiApp {
                     "palette: {id:?} query generation {generation} ({} chars) waits for source '{source}' in logic",
                     text.chars().count()
                 ),
-                PickerEffect::Closed => {
-                    self.palette_pending_keys.clear();
-                    self.sync_command_palette_focus();
-                }
-                PickerEffect::Activate { row, action, .. } => {
-                    self.sync_command_palette_focus();
-                    self.activate_palette_row(&row, action);
-                }
+                PickerEffect::Activate { row, action, .. } => activation = Some((row, action)),
+                PickerEffect::Closed => self.palette_input.reset(""),
             }
         }
         self.sync_command_palette_focus();
+        if let Some((row, action)) = activation {
+            self.activate_palette_row(&row, action);
+        }
     }
 
     fn answer_palette_query(&mut self, source: &'static str, text: &str) -> Vec<PickerRow> {
@@ -1567,21 +1568,144 @@ impl PlexiApp {
         });
     }
 
-    /// Picker keys, translated before any render pass. The opening chord
-    /// closes the palette at once. Every other key command waits until the
-    /// field has taken this frame's text, so Enter after a paste or an IME
-    /// commit in the same frame acts on the edited query, never the old one.
-    pub(crate) fn command_palette_keys(
-        &mut self,
-        input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::view_trait::KeyDisposition {
-        let toggle = self.key_bindings.toggle_command_palette;
-        if input.consume_key(toggle.0, toggle.1) {
-            self.close_command_palette();
-        } else {
-            let commands = crate::ui::picker::key_commands(input);
-            self.palette_pending_keys.extend(commands);
+    /// Note, in `App::logic`, that this pass's input belongs to the open
+    /// session, before a deferred activation can close it and hand the
+    /// input to whatever takes focus next.
+    pub(crate) fn note_palette_input_owner(&mut self, ctx: &egui::Context) {
+        self.palette_input.owned_pass = self
+            .command_palette_open()
+            .then(|| ctx.cumulative_pass_nr());
+    }
+
+    /// At the start of `App::ui`, before any consumer takes input. A
+    /// session that closed in this pass's logic consumes the input it owned.
+    /// A closed palette with a Cmd+P in this delivery keeps the events after
+    /// it, for the session the chord opens.
+    pub(crate) fn claim_palette_boundary(&mut self, ctx: &egui::Context) {
+        let pass = ctx.cumulative_pass_nr();
+        if self.command_palette_open() {
+            return;
         }
+        if self.palette_input.owned_pass.take() == Some(pass) {
+            let dropped = ctx.input_mut(|i| {
+                let before = i.events.len();
+                i.events.retain(|e| !is_keyboard_intent(e));
+                before - i.events.len()
+            });
+            if dropped > 0 {
+                log::info!("palette: closed in logic; its {dropped} input event(s) consumed");
+            }
+            return;
+        }
+        let (modifiers, key) = self.key_bindings.toggle_command_palette;
+        let carry = ctx.input_mut(|i| {
+            let at = i.events.iter().position(|e| {
+                matches!(e, egui::Event::Key { key: k, pressed: true, repeat: false, modifiers: m, .. }
+                    if *k == key && m.matches_logically(modifiers))
+            })?;
+            Some(i.events.split_off(at + 1))
+        });
+        if let Some(carry) = carry.filter(|carry| !carry.is_empty()) {
+            self.palette_input.carry = carry;
+        }
+    }
+
+    /// After host actions ran: events after a Cmd+P belong to the session
+    /// it opened; when it opened nothing they go back to this pass.
+    pub(crate) fn settle_palette_carry(&mut self, ctx: &egui::Context) {
+        if self.palette_input.carry.is_empty() {
+            return;
+        }
+        let carry = std::mem::take(&mut self.palette_input.carry);
+        if self.command_palette_open() {
+            log::info!(
+                "palette: {} event(s) after the opening chord go to the palette",
+                carry.len()
+            );
+            self.palette_input.carry = carry;
+        } else {
+            ctx.input_mut(|i| i.events.extend(carry));
+        }
+    }
+
+    /// The palette's whole delivery, routed one event at a time in arrival
+    /// order, before any other consumer takes input. Host shortcut policy
+    /// (the opening chord, the close chord, Quick Note) runs at the event's
+    /// own position. Once the session closes, the rest of its delivery is
+    /// consumed. Keys the palette does not own go to `unclaimed`, so global
+    /// chords still reach `poll_actions`.
+    pub(crate) fn route_palette_delivery(
+        &mut self,
+        ctx: &egui::Context,
+        unclaimed: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::view_trait::KeyDisposition {
+        let mut events = std::mem::take(&mut self.palette_input.carry);
+        events.extend(ctx.input_mut(|i| std::mem::take(&mut i.events)));
+        let delivery = self.palette_input.ordinals(events);
+        let toggle = self.key_bindings.toggle_command_palette;
+        let close = self.key_bindings.close_pane;
+        let quick_note = self.key_bindings.open_quick_note;
+        let mut pointer_back = Vec::new();
+        for (ordinal, event) in delivery {
+            if !self.command_palette_open() {
+                if !is_keyboard_intent(&event) {
+                    pointer_back.push(event);
+                }
+                continue;
+            }
+            if let egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = &event
+            {
+                if *key == toggle.1 && modifiers.matches_logically(toggle.0) {
+                    log::info!("palette: opening chord closed it at input {ordinal}");
+                    self.close_command_palette();
+                    continue;
+                }
+                if *key == close.1 && modifiers.matches_logically(close.0) {
+                    self.claimed_host_key_releases.insert(close.1);
+                    self.close_command_palette();
+                    continue;
+                }
+                if *key == quick_note.1
+                    && crate::host::keys::modifiers_match_exact_for_os(
+                        modifiers,
+                        &quick_note.0,
+                        cfg!(target_os = "macos"),
+                    )
+                    && self.is_quick_note_preemptable()
+                {
+                    self.dismiss_preemptable_modal();
+                    self.open_quick_note_modal();
+                    self.sync_command_palette_focus();
+                    log::info!("quick_note: opened by preempting the palette at input {ordinal}");
+                    continue;
+                }
+            }
+            let mut copied = None;
+            let routed = self
+                .palette_input
+                .route(&event, &mut |text| copied = Some(text));
+            if let Some(text) = copied {
+                ctx.copy_text(text);
+            }
+            match routed {
+                crate::ui::picker::Routed::Command(command) => {
+                    log::debug!("palette: input {ordinal} -> {command:?}");
+                    self.apply_palette_command(command);
+                }
+                crate::ui::picker::Routed::Claimed => {}
+                crate::ui::picker::Routed::Unclaimed if is_keyboard_intent(&event) => {
+                    unclaimed.push(event);
+                }
+                crate::ui::picker::Routed::Unclaimed => pointer_back.push(event),
+            }
+        }
+        // Pointer state for egui's own hover and scroll painting.
+        ctx.input_mut(|i| i.events.extend(pointer_back));
         crate::app::view_trait::KeyDisposition::Consumed
     }
 
@@ -1611,34 +1735,35 @@ impl PlexiApp {
             stops[(active + 1) % stops.len()].label.to_lowercase()
         });
         let pips = |key: &RowKey| self.palette_row_pips.get(key).cloned();
-        let mut commands = Vec::new();
-        let modal_response = ModalShell::centered("command_palette")
+        let field_state = &self.palette_input.field;
+        let mut presented = None;
+        // The palette's input is routed before drawing; the scrim's own
+        // click-away is ignored for the same reason.
+        ModalShell::centered("command_palette")
             .own_scroll()
             .width(style::MODAL_WIDTH_PALETTE)
             .show(ctx, &colors, |ui| {
-                commands.extend(crate::ui::picker::field(
+                let field = crate::ui::picker::field(
                     ui,
                     picker,
+                    field_state,
                     egui::Id::new("palette_search"),
                     crate::ui::focus::SurfaceKey::Overlay(
                         crate::app::input_owner::OverlaySurface::Layer(
                             crate::app::FocusKind::CommandPalette,
                         ),
                     ),
-                    "command_palette",
                     &colors,
-                ));
-                // The field's edit first, then this frame's keys, in order.
-                commands.append(&mut self.palette_pending_keys);
+                );
                 ui.add_space(style::SPACE_SM);
-                commands.extend(crate::ui::picker::results(
+                let rows = crate::ui::picker::results(
                     ui,
                     picker,
                     max_list_h,
                     "No matching contexts or plugins",
                     &pips,
                     &colors,
-                ));
+                );
                 ui.add_space(style::SPACE_SM);
                 let mut hints = vec![
                     HintGroup::alternatives(&[&["\u{2318}", "j"], &["\u{2318}", "k"]], "navigate"),
@@ -1649,12 +1774,21 @@ impl PlexiApp {
                 }
                 hints.push(HintGroup::new(&["esc"], "dismiss"));
                 HintBar::new(&hints).show(ui, &colors);
+                let modal = ui.min_rect().expand2(egui::vec2(
+                    f32::from(style::MODAL_PADDING_H),
+                    f32::from(style::MODAL_PADDING_V),
+                ));
+                presented = Some(crate::ui::picker::Presented {
+                    stamp: picker.rows_stamp(),
+                    rows,
+                    modal,
+                    field,
+                });
             });
-        if modal_response.dismissed {
-            commands.push(PickerCommand::Close);
-        }
-        for command in commands {
-            self.apply_palette_command(command);
+        // A discarded sizing pass was never seen: keep the last presented
+        // geometry.
+        if let Some(presented) = presented.filter(|_| !ctx.will_discard()) {
+            self.palette_input.present(presented);
         }
     }
 
@@ -2816,10 +2950,27 @@ impl PlexiApp {
         picker.rows().iter().position(|row| row.key == *key)
     }
 
-    /// What the text field sends when the person edits it.
+    /// Replace the field's text as typing would, for tests that set a
+    /// query directly.
+    #[cfg(test)]
     pub(crate) fn set_palette_query(&mut self, query: &str) {
+        self.palette_input.field = crate::ui::text_field::OrderedLineField::new(query);
         self.apply_palette_command(PickerCommand::QueryEdited(query.to_owned()));
     }
+}
+
+/// Keyboard and text intent: what `PlexiInput` routes. Pointer, scroll and
+/// window events are egui's own state and always go back to it.
+fn is_keyboard_intent(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key { .. }
+            | egui::Event::Text(_)
+            | egui::Event::Paste(_)
+            | egui::Event::Copy
+            | egui::Event::Cut
+            | egui::Event::Ime(_)
+    )
 }
 
 /// Test-only observation of the palette's production path: which rows ran,
@@ -3337,10 +3488,11 @@ mod tests {
             Some(&crate::app::FocusKind::Changelog)
         );
 
-        // The second Enter confirms, and the same frame's logic pass takes
-        // the restart. A frame after the window hides would reach
-        // `exit_host`, so the test stops here.
+        // The second Enter confirms; the logic pass it requests takes the
+        // restart. A frame after the window hides would reach `exit_host`,
+        // so the test stops after that logic-only pass.
         h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+        h.hidden_frame();
         assert_eq!(crate::app::quit::test_restart_scheduler::take(), 1);
         assert!(!h.app.update_confirm_prompt);
         assert!(!h.app.update_quit_pending);
@@ -3669,7 +3821,10 @@ mod tests {
             .expect("palette picker")
             .rows_stamp();
         h.app
-            .apply_palette_command(PickerCommand::Click(crate::host::picker::Hit { stamp, key }));
+            .apply_palette_command(PickerCommand::Click(crate::host::picker::Hit {
+                stamp,
+                key,
+            }));
     }
 
     fn row_id(row: &PickerRow) -> CommandRowId {

@@ -209,7 +209,6 @@ focus_owner_tokens! {
     Shortcuts => ShortcutsOwner { key: shortcuts_handle_key, draw: draw_shortcuts_overlay },
     ApprovalBanner => ApprovalBannerOwner { key: approval_handle_key, draw: approval_focus_draw },
     ConfirmClose => ConfirmCloseOwner { key: confirm_close_handle_key, draw: draw_confirm_close },
-    CommandPalette => CommandPaletteOwner { key: command_palette_keys, draw: draw_command_palette },
     RenamePane => RenamePaneOwner { key: rename_pane_handle_key, draw: draw_rename_pane_overlay },
     ContextRename => ContextRenameOwner { key: context_rename_handle_key, draw: draw_rename_context_overlay },
     ContextDescription => ContextDescriptionOwner { key: context_description_handle_key, draw: draw_edit_description_overlay },
@@ -219,6 +218,28 @@ focus_owner_tokens! {
     CapabilityModal => CapabilityModalOwner { key: capability_modal_handle_key, draw: draw_capability_modal },
     EventConsent => EventConsentOwner { key: event_consent_handle_key, draw: draw_event_consent_modal },
     RawWasmReview => RawWasmReviewOwner { key: raw_wasm_review_handle_key, draw: draw_raw_wasm_review_modal },
+}
+
+/// Command palette: routes its whole delivery in arrival order, before any
+/// other consumer takes input (stint 1391); unclaimed keys land in `input`.
+pub(crate) struct CommandPaletteOwner;
+impl FocusOwner for CommandPaletteOwner {
+    fn handle_key(
+        &self,
+        app: &mut PlexiApp,
+        ctx: &egui::Context,
+        input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::view_trait::KeyDisposition {
+        app.route_palette_delivery(ctx, input)
+    }
+    fn draw(
+        &self,
+        app: &mut PlexiApp,
+        ctx: &egui::Context,
+    ) -> Vec<crate::app::view_trait::ViewCommand> {
+        app.draw_command_palette(ctx);
+        Vec::new()
+    }
 }
 
 /// Notes picker — its handler drives selection but never claims the key, so the
