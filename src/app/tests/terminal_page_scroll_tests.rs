@@ -41,6 +41,10 @@ pub(super) fn terminal_with_fixture(h: &mut HostHarness, mode: &str) -> PaneId {
         14.0,
     )
     .expect("start page-scroll fixture");
+    // The fixture replaces the terminal the split started in that slot.
+    h.app.windows[0]
+        .take_pane(id)
+        .expect("the split installed a terminal");
     h.app.windows[0]
         .panes
         .insert(id, Pane::Terminal(Box::new(terminal)))

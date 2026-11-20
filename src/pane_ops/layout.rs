@@ -1425,11 +1425,8 @@ impl PlexiApp {
             _ => return SwapResult::NoFocus,
         };
 
-        if let Some(Tile::Pane(id)) = ctx.tree.tiles.get_mut(focused) {
-            *id = pane_b;
-        }
-        if let Some(Tile::Pane(id)) = ctx.tree.tiles.get_mut(neighbor) {
-            *id = pane_a;
+        if ctx.swap_tile_occupants(focused, neighbor).is_none() {
+            return SwapResult::NoFocus;
         }
 
         // Focus follows content: move focus to the tile now containing this pane.
@@ -1489,11 +1486,8 @@ impl PlexiApp {
             _ => return SwapResult::NoFocus,
         };
 
-        if let Some(Tile::Pane(id)) = ctx.tree.tiles.get_mut(focused) {
-            *id = pane_b;
-        }
-        if let Some(Tile::Pane(id)) = ctx.tree.tiles.get_mut(neighbor) {
-            *id = pane_a;
+        if ctx.swap_tile_occupants(focused, neighbor).is_none() {
+            return SwapResult::NoFocus;
         }
 
         // Focus stays on the original tile (now containing pane_b).

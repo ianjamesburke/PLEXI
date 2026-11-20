@@ -1012,6 +1012,7 @@ impl PlexiApp {
                     // Predict the pane id that will be allocated (next_pane_id peeks without allocating).
                     // A dedup can override this with the real existing pane id (#0336).
                     let mut new_pane_id = self.host.next_pane_id();
+                    let mut spawn_error: Option<String> = None;
                     if type_id == "terminal" {
                         // "terminal" is a builtin pane type, not in the plugin registry.
                         // Resolve target window+tile from from_pane_id (cross-window search)
@@ -1075,7 +1076,9 @@ impl PlexiApp {
                             }),
                             true,
                         );
-                        if let Err(error) = self.spawn_terminal_pane_at(
+                        // The reply names the pane actually installed, or
+                        // why none was (stint 1632).
+                        match self.spawn_terminal_pane_at(
                             crate::pane_ops::create::SplitPlacement {
                                 win_idx: target_win,
                                 target_tile,
@@ -1085,7 +1088,11 @@ impl PlexiApp {
                             },
                             launch,
                         ) {
-                            log::warn!("SpawnPane: terminal not created: {error}");
+                            Ok(pane_id) => new_pane_id = pane_id,
+                            Err(error) => {
+                                log::warn!("SpawnPane: terminal not created: {error}");
+                                spawn_error = Some(error);
+                            }
                         }
                     } else {
                         if let Some(from_id) = from_pane_id {
@@ -1140,12 +1147,18 @@ impl PlexiApp {
                         if let Some(wi) = win_idx {
                             if let Some(pane) = self.windows[wi].panes.get_mut(&req_pane_id) {
                                 if let Some(a) = pane.as_view_mut() {
-                                    a.runtime.queue_outbound_event(
-                                        crate::protocol::PlexiEvent::PaneSpawned {
+                                    a.runtime.queue_outbound_event(match spawn_error {
+                                        Some(reason) => {
+                                            crate::protocol::PlexiEvent::PaneSpawnError {
+                                                reason,
+                                                request_id,
+                                            }
+                                        }
+                                        None => crate::protocol::PlexiEvent::PaneSpawned {
                                             pane_id: new_pane_id,
                                             request_id,
                                         },
-                                    );
+                                    });
                                 }
                             }
                         }

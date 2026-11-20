@@ -1783,6 +1783,55 @@ mod tests {
         assert!(error.contains("changed after admission"), "{error}");
     }
 
+    /// Round 3 item 7: swapping two panes and swapping them back restores
+    /// the same topology digest. The swaps still changed what the container
+    /// held, so a container anchor admitted before them refuses; a pane
+    /// anchor that only moved still launches.
+    #[test]
+    fn launch_plan_container_anchor_refuses_a_swap_and_swap_back() {
+        let mut h = HostHarness::new();
+        let panes = views(&mut h, 2);
+        let [a, _b] = lay_out(&mut h, 0, panes)[..] else {
+            unreachable!()
+        };
+        h.app.active_window = 0;
+        // Laid out, so swaps can find a neighbour by geometry.
+        h.run_frames(2);
+        let a_tile = h.app.windows[0].tree.tiles.find_pane(&a).unwrap();
+        let pane_anchor = h
+            .app
+            .admit_terminal_launch(&spec(&h, "split_h", Some(a), None))
+            .unwrap();
+        h.app.windows[0].focused_pane = None;
+        let node = h
+            .app
+            .admit_terminal_launch(&spec(&h, "split_h", None, None))
+            .unwrap();
+        assert!(matches!(
+            node.destination,
+            TerminalDestination::Split {
+                anchor: SplitAnchor::Node { .. },
+                ..
+            }
+        ));
+        let digest = tree_topology(&h.app.windows[0].tree);
+        h.app.set_window_focused_pane(0, a_tile);
+        for dir in [Direction::Right, Direction::Left] {
+            assert!(matches!(
+                h.app.swap_pane(dir),
+                crate::pane_ops::SwapResult::Swapped { .. }
+            ));
+        }
+        assert_eq!(
+            tree_topology(&h.app.windows[0].tree),
+            digest,
+            "swap and swap back restore the digest"
+        );
+        let error = apply(&mut h, &node).expect_err("the container's occupants changed");
+        assert!(error.contains("changed after admission"), "{error}");
+        apply(&mut h, &pane_anchor).expect("a pane that only moved is still the anchor");
+    }
+
     /// Finding 6: an overlay replaces the occupant of a slot under the same
     /// pane and tile ids. Pushing one, popping one, or both, after admission
     /// make split, tab and container targets stale; so does a plan admitted

@@ -299,7 +299,7 @@ pub struct TreeHistory {
 }
 
 impl TreeHistory {
-    /// Advances on every rebuild and every departure.
+    /// Advances on every rebuild, every departure and every occupant swap.
     pub(crate) fn generation(&self) -> u64 {
         self.generation
     }
@@ -331,6 +331,27 @@ impl Window {
         history.departed_at.insert(pane_id, history.generation);
     }
 
+    /// Exchange the panes occupying tiles `a` and `b`. Both panes stay in the
+    /// window, but every container above them changed what it holds, so the
+    /// edit advances the generation: a container anchor admitted before a
+    /// swap is stale even after a swap back (stint 1632). Returns the panes
+    /// now at `a` and `b`, or `None` (and changes nothing) unless both tiles
+    /// hold panes.
+    pub(crate) fn swap_tile_occupants(&mut self, a: TileId, b: TileId) -> Option<(PaneId, PaneId)> {
+        let pane_at = |tile| match self.tree.tiles.get(tile) {
+            Some(Tile::Pane(pane_id)) => Some(*pane_id),
+            _ => None,
+        };
+        let (pane_a, pane_b) = (pane_at(a)?, pane_at(b)?);
+        for (tile, occupant) in [(a, pane_b), (b, pane_a)] {
+            if let Some(Tile::Pane(pane_id)) = self.tree.tiles.get_mut(tile) {
+                *pane_id = occupant;
+            }
+        }
+        self.tree_history.generation += 1;
+        Some((pane_b, pane_a))
+    }
+
     /// Move every pane of `other` into this window's vacant slots. A pane
     /// whose id is already taken here is refused and dropped.
     pub(crate) fn adopt_panes(&mut self, other: PaneMap) {
@@ -350,7 +371,11 @@ impl Window {
     /// keeps its pane and tile ids, but its occupant changed, so a launch
     /// admitted against it is stale (stint 1632). `false` when the slot is
     /// empty.
-    pub(crate) fn push_overlay(&mut self, pane_id: PaneId, build: impl FnOnce(Pane) -> Pane) -> bool {
+    pub(crate) fn push_overlay(
+        &mut self,
+        pane_id: PaneId,
+        build: impl FnOnce(Pane) -> Pane,
+    ) -> bool {
         let Some(occupant) = self.panes.0.remove(&pane_id) else {
             return false;
         };

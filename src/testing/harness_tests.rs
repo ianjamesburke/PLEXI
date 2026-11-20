@@ -4676,6 +4676,68 @@ fn queue_pipe_command(h: &mut HostHarness, pane_id: u64, cmd: crate::app::view_t
         .push(cmd);
 }
 
+/// An app's terminal `SpawnPane` is answered with the pane that was actually
+/// installed, and a construction failure is answered with `PaneSpawnError`,
+/// never a `PaneSpawned` for an id nothing occupies (stint 1632, round 3 R1).
+#[test]
+fn launch_plan_plugin_spawn_pane_reports_the_installed_terminal_or_its_failure() {
+    use crate::protocol::PlexiEvent;
+    let mut h = HostHarness::new();
+    let (requester, received) = add_pipe_test_pane(&mut h, 0);
+    h.focus_pane(requester);
+    let spawn = |request_id: &str| crate::app::view_trait::ViewCommand::SpawnPane {
+        type_id: "terminal".to_string(),
+        layout: "split_h".to_string(),
+        args: Vec::new(),
+        from_pane_id: None,
+        request_id: Some(request_id.to_string()),
+        target_context: None,
+    };
+    let panes_before = h.app.windows[0].panes.len();
+    {
+        let _entry = crate::pane_ops::construct::probes::on_backend_entry(|_| {
+            Err("injected backend failure".into())
+        });
+        queue_pipe_command(&mut h, requester, spawn("fails"));
+        h.run_hidden_frames(1);
+    }
+    let events = received.lock().expect("event log").clone();
+    assert!(
+        events.iter().any(|event| matches!(event,
+            PlexiEvent::PaneSpawnError { reason, request_id: Some(id) }
+                if id == "fails" && reason.contains("injected backend failure"))),
+        "a failed construction is reported: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|event| matches!(event,
+            PlexiEvent::PaneSpawned { request_id: Some(id), .. } if id == "fails")),
+        "no PaneSpawned for a pane that was never installed: {events:?}"
+    );
+    assert_eq!(h.app.windows[0].panes.len(), panes_before);
+
+    queue_pipe_command(&mut h, requester, spawn("starts"));
+    h.run_hidden_frames(1);
+    let events = received.lock().expect("event log").clone();
+    let spawned = events
+        .iter()
+        .find_map(|event| match event {
+            PlexiEvent::PaneSpawned {
+                pane_id,
+                request_id: Some(id),
+            } if id == "starts" => Some(*pane_id),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("a started terminal is reported: {events:?}"));
+    assert!(
+        h.app.windows[0]
+            .panes
+            .get(&spawned)
+            .and_then(crate::host::pane::Pane::as_terminal)
+            .is_some(),
+        "PaneSpawned names the installed terminal {spawned}"
+    );
+}
+
 /// Falsifying regression #1: before stint 0724 Phase D 2/2, `OpenDirectedPipe`
 /// resolved its target purely by `active_window`, with no check that the
 /// target lives in the caller's own context — a pane in context A could open
