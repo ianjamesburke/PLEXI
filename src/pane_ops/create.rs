@@ -75,7 +75,13 @@ pub(crate) struct AgentPlacement {
 #[derive(Clone, Debug)]
 pub(crate) enum AgentTarget {
     /// An existing window: the parent's own, or an existing sub-context's.
-    Window { win_idx: usize, context_id: u64 },
+    /// The worker splits beside `split_at`, or seeds the empty tree when it
+    /// is `None`; installation never re-reads focus to choose.
+    Window {
+        win_idx: usize,
+        context_id: u64,
+        split_at: Option<egui_tiles::TileId>,
+    },
     /// A sub-context created under `parent_context_id` when the worker is
     /// installed.
     NewSubcontext {
@@ -1924,6 +1930,7 @@ impl PlexiApp {
                     AgentTarget::Window {
                         win_idx,
                         context_id: existing_ctx_id,
+                        split_at: self.agent_split_at(win_idx, parent_pane_id),
                     }
                 }
                 None => {
@@ -1943,6 +1950,7 @@ impl PlexiApp {
             AgentTarget::Window {
                 win_idx: parent_win_idx,
                 context_id: parent_ctx_id,
+                split_at: self.agent_split_at(parent_win_idx, parent_pane_id),
             }
         };
         Ok(AgentPlacement {
@@ -1950,6 +1958,20 @@ impl PlexiApp {
             effective_cwd,
             target,
         })
+    }
+
+    /// Where a worker lands in an existing window now: beside its parent pane
+    /// when that is in the window, else beside the window's focus. A planned
+    /// launch replaces this with the anchor it bound at admission.
+    pub(crate) fn agent_split_at(
+        &self,
+        win_idx: usize,
+        parent_pane_id: Option<u64>,
+    ) -> Option<egui_tiles::TileId> {
+        let win = &self.windows[win_idx];
+        parent_pane_id
+            .and_then(|pid| win.tree.tiles.find_pane(&pid))
+            .or(win.focused_pane)
     }
 
     /// The context identity a worker at `placement` is constructed with,
@@ -1989,14 +2011,15 @@ impl PlexiApp {
         pane: TerminalPane,
     ) -> Result<(usize, u64), String> {
         let new_id = pane.id;
-        let (target_win_idx, target_ctx_id) = match (&placement.target, staged) {
+        let (target_win_idx, target_ctx_id, window_split_at) = match (&placement.target, staged) {
             (
                 AgentTarget::Window {
                     win_idx,
                     context_id,
+                    split_at,
                 },
                 StagedAgentDestination::Window(_),
-            ) => (*win_idx, *context_id),
+            ) => (*win_idx, *context_id, Some(*split_at)),
             (
                 AgentTarget::NewSubcontext {
                     name,
@@ -2068,7 +2091,7 @@ impl PlexiApp {
                     tree_history: Default::default(),
                 });
                 self.context_active_window.insert(ctx_id, window_id);
-                (self.windows.len() - 1, ctx_id)
+                (self.windows.len() - 1, ctx_id, None)
             }
             _ => return Err("agent destination changed between staging and install".into()),
         };
@@ -2076,12 +2099,9 @@ impl PlexiApp {
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)))
             .map_err(|_| format!("agent worker pane {new_id} id is taken"))?;
-        // Beside the parent pane when it is in the target window, else beside
-        // the window's focus (same rule as the subcontext portal above).
-        let split_target = placement
-            .parent_pane_id
-            .and_then(|pid| self.windows[target_win_idx].tree.tiles.find_pane(&pid))
-            .or(self.windows[target_win_idx].focused_pane);
+        // An existing window's anchor was resolved with the placement; a new
+        // sub-context's window is empty.
+        let split_target = window_split_at.flatten();
         let share =
             crate::host::command::ShareRatio::new(1.0, 1.0).expect("1:1 is a valid ShareRatio");
         let new_tile = super::layout::insert_split_tile(

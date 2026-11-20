@@ -155,6 +155,15 @@ pub(crate) struct AgentCallAuthority {
     pub(crate) worker: AgentWorkerAuthority,
 }
 
+/// The existing window an agent worker lands in, and the node it splits
+/// beside, as the caller selected them at admission (stint 1632). `anchor`
+/// is `None` for the empty tree the worker seeds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentAnchor {
+    pub(crate) at: WindowMembership,
+    pub(crate) anchor: Option<SplitAnchor>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum AdmittedSubcontext {
     Existing {
@@ -182,6 +191,10 @@ pub(crate) struct AgentCallPlan {
     pub(crate) subcontext: Option<AdmittedSubcontext>,
     /// The caller's window, or the window active when an outside caller asked.
     pub(crate) origin: WindowMembership,
+    /// Where in an existing window the worker lands: an existing
+    /// sub-context's window, or the origin window of a worker with no
+    /// parent. `None` when the worker creates its sub-context.
+    pub(crate) destination: Option<AgentAnchor>,
     pub(crate) worktree: Option<String>,
     /// A handoff successor's id, reserved from the monotonic allocator at
     /// admission and carried through construction.
@@ -990,8 +1003,22 @@ impl PlexiApp {
             }
             None => None,
         };
+        // The existing window the worker lands in and its anchor, bound now:
+        // commit never picks them from whatever is focused then.
+        let destination = match &subcontext {
+            Some(AdmittedSubcontext::Create { .. }) => None,
+            Some(AdmittedSubcontext::Existing { context_id, .. }) => {
+                let win = self
+                    .windows
+                    .iter()
+                    .position(|w| w.context_id == *context_id)
+                    .ok_or_else(|| format!("sub-context {context_id} has no window"))?;
+                Some(self.agent_anchor(win))
+            }
+            None => Some(self.agent_anchor(origin_win)),
+        };
         log::info!(
-            "launch_plan: admitted agent_call role={} parent={parent:?} child_parent={child_parent:?} origin={origin:?} subcontext={subcontext:?} handoff={} worktree={:?}",
+            "launch_plan: admitted agent_call role={} parent={parent:?} child_parent={child_parent:?} origin={origin:?} subcontext={subcontext:?} destination={destination:?} handoff={} worktree={:?}",
             authority.role,
             request.handoff,
             request.worktree
@@ -1007,9 +1034,23 @@ impl PlexiApp {
             child_parent,
             subcontext,
             origin,
+            destination,
             worktree: request.worktree.map(str::to_string),
             successor,
         })
+    }
+
+    /// `win_idx` and the node a worker splits beside there now: its focus, or
+    /// its root, or nothing for an empty tree.
+    fn agent_anchor(&self, win_idx: usize) -> AgentAnchor {
+        let win = &self.windows[win_idx];
+        AgentAnchor {
+            at: self.window_membership(win_idx),
+            anchor: win
+                .focused_pane
+                .or(win.tree.root)
+                .map(|tile| self.split_anchor(win_idx, tile)),
+        }
     }
 
     /// The handoff completion `old` would publish for `successor`, checked
@@ -1027,6 +1068,40 @@ impl PlexiApp {
             .write_payload(&raw)
             .map(|_| ())
             .map_err(|error| format!("handoff completion: {}", error.message()))
+    }
+
+    /// Revalidate an admitted window and anchor and place the worker exactly
+    /// there. A window that closed, moved context or is not the placement's,
+    /// or an anchor that left, changed or filled, refuses.
+    fn bind_agent_destination(
+        &self,
+        placement: &mut crate::pane_ops::create::AgentPlacement,
+        destination: &AgentAnchor,
+    ) -> Result<(), String> {
+        let at = destination.at;
+        let win_idx = self.locate_window(at)?;
+        let tile = match &destination.anchor {
+            Some(anchor) => Some(self.locate_split_anchor(win_idx, at, anchor)?),
+            None => {
+                self.require_empty_tree(win_idx, at)?;
+                None
+            }
+        };
+        match &mut placement.target {
+            crate::pane_ops::create::AgentTarget::Window {
+                win_idx: target,
+                context_id,
+                split_at,
+            } if *context_id == at.context_id => {
+                *target = win_idx;
+                *split_at = tile;
+                Ok(())
+            }
+            other => Err(refused(format!(
+                "the worker's destination is no longer window {} of context {}: {other:?}",
+                at.window_id, at.context_id
+            ))),
+        }
     }
 
     fn apply_agent_call(
@@ -1085,7 +1160,7 @@ impl PlexiApp {
                 parent_context_id: *parent_context_id,
             },
         });
-        let placement = self.resolve_agent_spawn_location(
+        let mut placement = self.resolve_agent_spawn_location(
             subcontext,
             plan.child_parent,
             Some(cwd),
@@ -1095,6 +1170,9 @@ impl PlexiApp {
                 context_id: plan.origin.context_id,
             },
         )?;
+        if let Some(destination) = &plan.destination {
+            self.bind_agent_destination(&mut placement, destination)?;
+        }
         let authority = &plan.authority;
         let (pane_id, _) = self.launch_agent_worker(
             crate::pane_ops::create::AgentWorkerLaunch {
@@ -2222,6 +2300,118 @@ mod tests {
         h.app.router.get_mut(pos_a).root = moved.path().to_path_buf();
         let error = apply_agent(&mut h, &refused_plan).expect_err("the origin's own root changed");
         assert!(error.contains("changed after admission"), "{error}");
+    }
+
+    /// The pane placed just before `pane` in the split that holds it (its
+    /// tab wrapper, if any, is the split's child).
+    fn placed_after(h: &HostHarness, pane: PaneId) -> Option<PaneId> {
+        let win = &h.app.windows[window_of(h, pane)];
+        let mut unit = win.tree.tiles.find_pane(&pane)?;
+        let split = loop {
+            let parent = win.tree.tiles.parent_of(unit)?;
+            match win.tree.tiles.get(parent) {
+                Some(Tile::Container(egui_tiles::Container::Tabs(_))) => unit = parent,
+                Some(Tile::Container(container)) => break container,
+                _ => return None,
+            }
+        };
+        let children: Vec<TileId> = split.children().copied().collect();
+        let at = children.iter().position(|child| *child == unit)?;
+        let before = win.find_first_pane_in(*children.get(at.checked_sub(1)?)?)?;
+        match win.tree.tiles.get(before) {
+            Some(Tile::Pane(before)) => Some(*before),
+            _ => None,
+        }
+    }
+
+    /// Round 3 item 5: an agent worker lands beside the anchor bound at
+    /// admission, in the window bound then, for an unparented call and for a
+    /// call into an existing sub-context. Focus moving inside that window
+    /// before commit does not move the worker.
+    #[test]
+    fn launch_plan_agent_worker_lands_beside_its_admitted_anchor() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
+        let mut h = HostHarness::new();
+        let panes = views(&mut h, 2);
+        let [a, b] = lay_out(&mut h, 0, panes)[..] else {
+            unreachable!()
+        };
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        write_role(&root, "");
+        h.app.active_window = 0;
+        let a_tile = h.app.windows[0].tree.tiles.find_pane(&a).unwrap();
+        let b_tile = h.app.windows[0].tree.tiles.find_pane(&b).unwrap();
+        h.app.set_window_focused_pane(0, a_tile);
+        let plan = admit_tester_call(&mut h, &root);
+        h.app.set_window_focused_pane(0, b_tile);
+        let worker = apply_agent(&mut h, &plan).expect("launches");
+        assert_eq!(window_of(&h, worker), 0);
+        assert_eq!(
+            placed_after(&h, worker),
+            Some(a),
+            "beside the admitted anchor, not focus"
+        );
+
+        // A caller's second call reuses its sub-context, whose window holds
+        // the first worker and one more pane by then.
+        let caller = spawn_tester(&mut h, &root);
+        let dir = crate::agent::workspace_agents_dir(&root).join("tester");
+        let settings = std::fs::read_to_string(dir.join("settings.toml"))
+            .unwrap()
+            .replace(
+                "ephemeral=false\n",
+                "ephemeral=false\ncan_call=['tester']\n",
+            );
+        std::fs::write(dir.join("settings.toml"), settings).unwrap();
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let token = monitor.issue_credential(
+            Some(caller),
+            h.app.windows[window_of(&h, caller)].context_id,
+            &root,
+            "agent:tester",
+        );
+        let call = |h: &mut HostHarness| {
+            h.app
+                .admit_agent_call(&AgentCallRequest {
+                    role: "tester",
+                    task: "Sub",
+                    parent_pane_id: Some(caller),
+                    credential: Some(&token),
+                    peer_ancestry: &[],
+                    cwd: None,
+                    worktree: None,
+                    asynchronous: true,
+                    handoff: false,
+                    response_file: "",
+                })
+                .expect("child call admits")
+        };
+        let first = call(&mut h);
+        let first_worker = apply_agent(&mut h, &first).expect("first worker");
+        let sub_win = window_of(&h, first_worker);
+        let first_pane = h.app.windows[sub_win].take_pane(first_worker).unwrap();
+        let mut sub_panes = vec![(first_worker, first_pane)];
+        sub_panes.extend(views(&mut h, 1));
+        let [first_worker_again, other] = lay_out(&mut h, sub_win, sub_panes)[..] else {
+            unreachable!()
+        };
+        assert_eq!(first_worker_again, first_worker);
+        let second = call(&mut h);
+        assert!(matches!(
+            second.subcontext,
+            Some(AdmittedSubcontext::Existing { .. })
+        ));
+        let other_tile = h.app.windows[sub_win].tree.tiles.find_pane(&other).unwrap();
+        h.app.set_window_focused_pane(sub_win, other_tile);
+        let second_worker = apply_agent(&mut h, &second).expect("second worker");
+        assert_eq!(window_of(&h, second_worker), sub_win);
+        assert_eq!(
+            placed_after(&h, second_worker),
+            Some(first_worker),
+            "beside the sub-context anchor admitted, not its focus at commit"
+        );
     }
 
     /// Evaluate `target` for `posture` against an empty grant store.
