@@ -654,9 +654,12 @@ fn is_content(path: &[String], id: &str, present: impl Fn(&str) -> bool) -> bool
 /// process, so nothing it sends is kept as written. Clap parses the argv with
 /// the full static grammar (run requirements enforced; `--profile` declared so
 /// a selector parses, and never recorded). A parse yields the label `plexi`,
-/// the subcommand path and the option names actually given; values, and the
-/// positional and forwarded arguments that carry them, are never recorded. An
-/// argv clap rejects yields only `plexi <unparsed>`.
+/// the subcommand path, a placeholder for each positional given, then the
+/// options given, each value-taking option followed by its placeholder. A
+/// placeholder is the argument's grammar id (`<task>`, or `<args>...` for
+/// several values), so the record is a template: no value, and nothing
+/// forwarded to a child, is ever kept. An argv clap rejects yields only
+/// `plexi <unparsed>`.
 pub(crate) fn host_record(argv: &[String]) -> Vec<String> {
     use clap::CommandFactory;
     const LABEL: &str = "plexi";
@@ -672,10 +675,12 @@ pub(crate) fn host_record(argv: &[String]) -> Vec<String> {
         return vec![LABEL.to_string(), "<unparsed>".to_string()];
     };
     let mut record = vec![LABEL.to_string()];
-    let mut options: Vec<String> = Vec::new();
+    let mut positionals: Vec<String> = Vec::new();
+    let mut options: Vec<Vec<String>> = Vec::new();
     let mut node = &command;
     let mut level = Some(&matches);
     while let Some(m) = level {
+        let mut given: Vec<(usize, String)> = Vec::new();
         for id in m.ids() {
             let id = id.as_str();
             if id == "profile" || m.value_source(id) != Some(clap::parser::ValueSource::CommandLine)
@@ -685,7 +690,14 @@ pub(crate) fn host_record(argv: &[String]) -> Vec<String> {
             let Some(arg) = node.get_arguments().find(|arg| arg.get_id() == id) else {
                 continue;
             };
-            if arg.is_positional() {
+            let values = m.try_get_raw(id).ok().flatten().map_or(0, |raw| raw.len());
+            let placeholder = if values > 1 {
+                format!("<{id}>...")
+            } else {
+                format!("<{id}>")
+            };
+            if let Some(index) = arg.get_index() {
+                given.push((index, placeholder));
                 continue;
             }
             let name = match (arg.get_long(), arg.get_short()) {
@@ -693,10 +705,17 @@ pub(crate) fn host_record(argv: &[String]) -> Vec<String> {
                 (None, Some(short)) => format!("-{short}"),
                 (None, None) => continue,
             };
-            if !options.contains(&name) {
-                options.push(name);
+            if options.iter().any(|option| option[0] == name) {
+                continue;
             }
+            options.push(if arg.get_action().takes_values() && values > 0 {
+                vec![name, placeholder]
+            } else {
+                vec![name]
+            });
         }
+        given.sort();
+        positionals.extend(given.into_iter().map(|(_, placeholder)| placeholder));
         level = m.subcommand().map(|(name, sub)| {
             record.push(name.to_string());
             node = node
@@ -705,7 +724,8 @@ pub(crate) fn host_record(argv: &[String]) -> Vec<String> {
             sub
         });
     }
-    record.extend(options);
+    record.extend(positionals);
+    record.extend(options.into_iter().flatten());
     record
 }
 
