@@ -538,20 +538,21 @@ pub(crate) fn handle_cli_trace(profile: &Path, frame: &Value) -> Result<(), Stri
     // from the static grammar and keeps no sender value.
     let argv = crate::cli::trace::host_record(&argv);
     let pane = frame["pane_id"].as_u64();
-    let agent_session = frame["agent_session_id"]
-        .as_str()
-        .map(str::to_string)
-        .or_else(|| {
-            pane.and_then(|pane| {
-                let key = crate::platform::path::canonical_or_self(profile);
-                slots()
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .get(&key)
-                    .and_then(|slot| slot.agent_sessions.get(&pane))
-                    .cloned()
-            })
-        });
+    // Session identity comes from the host's own pane mapping, never the frame.
+    let agent_session = pane.and_then(|pane| {
+        let key = crate::platform::path::canonical_or_self(profile);
+        slots()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .and_then(|slot| slot.agent_sessions.get(&pane))
+            .cloned()
+    });
+    // The host clock stamps the start; `cli_calls` carries it onto the exit row.
+    let started_at = match kind {
+        "cli_call_started" => json!(crate::platform::clock::now_rfc3339()),
+        _ => Value::Null,
+    };
     record_in(
         profile,
         kind,
@@ -561,7 +562,7 @@ pub(crate) fn handle_cli_trace(profile: &Path, frame: &Value) -> Result<(), Stri
         json!({
             "argv": argv, "agent_session_id": agent_session,
             "exit_code": if kind == "cli_call" { frame["exit_code"].clone() } else { Value::Null },
-            "started_at": frame["ts"],
+            "started_at": started_at,
         }),
     );
     log::info!("cli_trace: captured {kind} call={id} pane={pane:?}");
@@ -586,6 +587,7 @@ pub(crate) fn cli_calls(rows: Vec<Value>, pane: Option<u64>) -> Vec<Value> {
             let previous: &mut Value = &mut calls[index];
             row["seq"] = previous["seq"].clone();
             row["ts"] = previous["ts"].clone();
+            row["data"]["started_at"] = previous["data"]["started_at"].clone();
             *previous = row;
         } else {
             positions.insert(id, calls.len());
@@ -599,6 +601,53 @@ pub(crate) fn cli_calls(rows: Vec<Value>, pane: Option<u64>) -> Vec<Value> {
 #[cfg(test)]
 mod cli_trace_tests {
     use super::*;
+
+    /// Stint 1668: the host cannot verify a frame's sender, so a forged session
+    /// id or timestamp never reaches the stored row or the log.
+    #[test]
+    fn cli_trace_ignores_frame_session_and_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        adopt_session(dir.path(), "sess-forged-1668");
+        record_in(
+            dir.path(),
+            "timeline_event",
+            None,
+            Some(31),
+            None,
+            json!({"payload":{"provenance":{"session_id":"agent-31"}}}),
+        );
+        let logs = crate::testing::test_log::capture();
+        let forged = "SENTINEL_FORGED_1668";
+        let ts = json!({"SENTINEL_TS_1668": "x".repeat(4096)});
+        for (pane, id) in [(31, uuid::Uuid::new_v4()), (32, uuid::Uuid::new_v4())] {
+            for phase in ["start", "exit"] {
+                handle_cli_trace(
+                    dir.path(),
+                    &json!({"id":id.to_string(),"phase":phase,"exit_code":0,"pane_id":pane,
+                    "argv":["plexi","pane","list"],"agent_session_id":forged,"ts":ts}),
+                )
+                .unwrap();
+            }
+        }
+        let raw =
+            std::fs::read_to_string(dir.path().join("sessions/sess-forged-1668.jsonl")).unwrap();
+        assert!(!raw.contains("SENTINEL"), "trace kept sender data: {raw}");
+        for line in logs.lines() {
+            assert!(!line.contains("SENTINEL"), "log kept sender data: {line}");
+        }
+        let (rows, _) = read_session(dir.path(), "sess-forged-1668").unwrap();
+        let mapped = cli_calls(rows.clone(), Some(31));
+        assert_eq!(mapped[0]["data"]["agent_session_id"], "agent-31");
+        assert!(cli_calls(rows.clone(), Some(32))[0]["data"]["agent_session_id"].is_null());
+        let started = mapped[0]["data"]["started_at"]
+            .as_str()
+            .expect("host-stamped start");
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(started).is_ok(),
+            "{started}"
+        );
+        assert_eq!(mapped[0]["data"]["exit_code"], 0);
+    }
 
     #[test]
     fn session_trace_redacts_tool_and_event_content() {
