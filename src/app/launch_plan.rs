@@ -4068,4 +4068,175 @@ mod tests {
             "placed beside the focused pane"
         );
     }
+
+    /// Round 4, verified CLI subscription: a raw CLI subscribe from a
+    /// verified pane is admitted under that pane's grant, so an explicit
+    /// pane deny beats an exact allow grant for the same subscriber, as it
+    /// does over MCP. A desktop pane with the same grant is the control.
+    #[test]
+    fn grant_verified_cli_subscription_is_bounded_by_the_pane() {
+        let mut h = HostHarness::new();
+        let desktop = h.add_focused_terminal();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let app_id = format!("cli-1632-app-{}", uuid::Uuid::new_v4().simple());
+        let target = format!("{app_id}::cli.tick");
+        write_role_settings(
+            &root,
+            "watcher",
+            &format!("[permissions]\ndefault_posture='ask'\ndeny=['{target}']\n"),
+        );
+        let watcher = worker(&mut h, &root, "watcher", None, None);
+        let timeline = crate::host::plugin_timeline::global();
+        let mut store = crate::broker::GrantStore::default();
+        for pane in [desktop, watcher] {
+            let context_id = h.app.windows[window_of(&h, pane)].context_id;
+            timeline
+                .lock()
+                .unwrap()
+                .declare_streams(
+                    context_id,
+                    &app_id,
+                    vec![crate::protocol::EventStreamDecl {
+                        name: "cli.tick".to_string(),
+                        schema: json!({"type": "object"}),
+                        description: None,
+                    }],
+                )
+                .unwrap();
+            let scope = h.app.pane_authority(pane).unwrap().scope().workspace_root;
+            store.record(crate::broker::GrantRecord::event_stream_allow(
+                crate::broker::ActorType::Agent,
+                &format!("pane:{pane}"),
+                crate::broker::ActorScope::User,
+                &target,
+                &scope,
+                crate::broker::GrantDuration::Always,
+                crate::broker::GrantSource::User,
+                None,
+            ));
+        }
+        h.app.host_subscriptions =
+            crate::host::event_subscriptions::HostSubscriptionService::new_for_test(store, timeline);
+        let subscribe = |h: &mut HostHarness, pane: PaneId| {
+            let pid = pid_of(h, pane);
+            let (reply, receiver) = std::sync::mpsc::sync_channel(1);
+            h.app
+                .admit_subscribe_request(crate::host::event_subscriptions::HostSubscribeRequest {
+                    publisher_plugin_id: app_id.clone(),
+                    event_names: vec!["cli.tick".into()],
+                    payload_mode: crate::protocol::PayloadMode::Full,
+                    trigger_mode: crate::protocol::TriggerMode::Conversation,
+                    resource_id: None,
+                    from_pane_id: None,
+                    subscriber_override: Some(format!("cli-conn-{pane}")),
+                    subscriber_type_override: None,
+                    broker_actor_override: None,
+                    workspace_root_override: None,
+                    subscriber_authority:
+                        crate::host::event_subscriptions::SubscriberAuthority::External,
+                    context_id_override: None,
+                    peer_ancestry: Some(vec![pid]),
+                    cancelled: Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                        false,
+                    ))),
+                    reply,
+                });
+            receiver.try_recv().expect("answered inline")
+        };
+        assert!(
+            matches!(
+                subscribe(&mut h, desktop),
+                crate::host::event_subscriptions::HostSubscribeReply::Ok { .. }
+            ),
+            "fixture: the exact grant admits a pane with no ceiling"
+        );
+        assert!(
+            matches!(
+                subscribe(&mut h, watcher),
+                crate::host::event_subscriptions::HostSubscribeReply::Err { .. }
+            ),
+            "the watcher's explicit deny beats the exact grant"
+        );
+    }
+
+    /// Round 4, live scope: a covered terminal's call credential and MCP
+    /// bearer resolve one scope through the pane's handle. A context-root
+    /// change publishes a new revision both observe at once, so an exact
+    /// grant bound to root A stops applying and one bound to B starts, on
+    /// either transport.
+    #[test]
+    fn grant_live_scope_change_reaches_both_credentials_at_once() {
+        crate::app::host_mcp::ensure_test_discovery();
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let root_a = tempfile::tempdir().unwrap();
+        let root_b = tempfile::tempdir().unwrap();
+        h.app.set_context_root(root_a.path().to_path_buf(), None);
+        let pane = spawn_tester(&mut h, root_a.path());
+        cover_with_overlay(&mut h, pane);
+        let (call, mcp) = {
+            let credentials = h.app.terminal_incarnation(pane).unwrap().credentials().unwrap();
+            (
+                credentials.call_token().unwrap().to_string(),
+                credentials.mcp_token().unwrap().to_string(),
+            )
+        };
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        // The workspace each transport reports, and the revision behind it.
+        let observe = |h: &HostHarness| {
+            let verified = monitor.authenticate_call(Some(pane), Some(&call), None).unwrap();
+            let over_mcp = crate::app::host_mcp::authenticated_workspace_for_test(&mcp).unwrap();
+            let revision = h.app.pane_authority(pane).unwrap().scope().revision;
+            (verified.workspace_root, over_mcp, revision)
+        };
+        let allowed_in = |workspace: &std::path::Path, granted: &std::path::Path| {
+            let binding = |root: &std::path::Path| crate::broker::ExactBinding {
+                actor_type: crate::broker::ActorType::Agent,
+                actor_id: format!("pane:{pane}"),
+                actor_scope: crate::broker::ActorScope::Workspace,
+                trust_origin: "host".to_string(),
+                workspace_root: root.to_path_buf(),
+                target_type: crate::broker::TargetType::PluginConnector,
+                target_id: "scoped.op".to_string(),
+                resource_scope: crate::broker::ResourceScope::Game,
+                resource_id: Some("game-1".to_string()),
+                args_fingerprint: "fp-scope".to_string(),
+                session_id: None,
+                package_id: "scope-1632".to_string(),
+                instance_id: Some(7),
+                context_id: Some(3),
+                call_id: "scope-1632".to_string(),
+                operation_id: String::new(),
+            };
+            let mut store = crate::broker::GrantStore::default();
+            store.record(crate::broker::GrantRecord::from_binding(
+                &binding(granted),
+                crate::broker::Decision::Allow,
+                crate::broker::GrantDuration::Always,
+                crate::broker::GrantSource::User,
+                "scoped",
+            ));
+            store.evaluate_at(
+                &crate::broker::PermissionRequest::exact(&binding(workspace)),
+                None,
+                0,
+            ) == crate::broker::Decision::Allow
+        };
+        let (a, b) = (
+            crate::platform::path::canonical_or_self(root_a.path()),
+            crate::platform::path::canonical_or_self(root_b.path()),
+        );
+        let (call_ws, mcp_ws, before) = observe(&h);
+        assert_eq!((&call_ws, &mcp_ws), (&a, &a), "both transports start in A");
+        assert!(allowed_in(&call_ws, &a) && allowed_in(&mcp_ws, &a));
+
+        let context = h.app.windows[window_of(&h, pane)].context_id;
+        h.app.set_context_root(root_b.path().to_path_buf(), Some(context));
+        let (call_ws, mcp_ws, after) = observe(&h);
+        assert_eq!(after, before + 1, "one committed revision");
+        assert_eq!((&call_ws, &mcp_ws), (&b, &b), "both transports moved to B");
+        assert!(!allowed_in(&call_ws, &a) && !allowed_in(&mcp_ws, &a), "A's grant no longer applies");
+        assert!(allowed_in(&call_ws, &b) && allowed_in(&mcp_ws, &b), "B's grant applies");
+    }
 }

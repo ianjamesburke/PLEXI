@@ -112,6 +112,94 @@ impl PlexiApp {
     /// deliveries (subscribe) or awaits one reply (publish) afterward. Grants
     /// are reloaded from disk first so a just-granted permission applies without
     /// a host restart.
+    /// Resolve one subscribe request's caller on the host thread and admit
+    /// it. A raw CLI-socket request (no `context_id_override`) is resolved
+    /// from its kernel-verified peer: a verified pane subscribes under its own
+    /// grant at one scope snapshot, exactly as its MCP bearer would (stint
+    /// 1632).
+    pub(crate) fn admit_subscribe_request(
+        &mut self,
+        mut req: crate::host::event_subscriptions::HostSubscribeRequest,
+    ) {
+        if req.context_id_override.is_none() {
+            let (verified_pane_id, context_id, workspace_root) =
+                self.resolve_event_bus_caller(req.from_pane_id, req.peer_ancestry.as_deref());
+            req.from_pane_id = verified_pane_id;
+            req.context_id_override = context_id;
+            req.workspace_root_override = workspace_root;
+            // A verified pane subscribes under its own grant, at one
+            // scope snapshot, exactly as its MCP bearer would (stint 1632).
+            req.subscriber_authority = self.subscriber_authority(verified_pane_id);
+            if let crate::host::event_subscriptions::SubscriberAuthority::Pane(admitted) =
+                &req.subscriber_authority
+            {
+                req.workspace_root_override =
+                    Some(admitted.authority.scope().workspace_root);
+            }
+        }
+        if req.cancelled.is_some() {
+            req.broker_actor_override = Some(
+                crate::host::event_subscriptions::HostSubscriptionService::resolve_cli_subscriber(req.from_pane_id).1,
+            );
+        }
+        // When a parent master pane subscribes to its spawned child worker's
+        // `plexi.pane::lifecycle` stream across a sub-context boundary, bind the
+        // subscription to the child pane's context and grant a session-scoped
+        // allow so Tier 1 escalation (`Worker -> Master`) does not prompt the human.
+        if req.publisher_plugin_id == crate::host::pane_lifecycle::PUBLISHER {
+            if let (Some(caller_id), Some(target_pane_id)) = (
+                req.from_pane_id,
+                req.resource_id
+                    .as_deref()
+                    .and_then(|s| s.parse::<u64>().ok()),
+            ) {
+                let target_parent = self
+                    .windows
+                    .iter()
+                    .find_map(|win| win.panes.get(&target_pane_id))
+                    .and_then(|p| p.as_terminal())
+                    .and_then(|t| t.parent_pane_id)
+                    .or_else(|| {
+                        self.host
+                            .pane_lifecycle
+                            .get(&target_pane_id)
+                            .and_then(|s| s.parent_pane_id)
+                    });
+                if target_parent == Some(caller_id) {
+                    let target_ctx_id = self
+                        .windows
+                        .iter()
+                        .find_map(|win| {
+                            win.panes
+                                .contains_key(&target_pane_id)
+                                .then_some(win.context_id)
+                        })
+                        .or_else(|| {
+                            self.host
+                                .pane_lifecycle
+                                .get(&target_pane_id)
+                                .map(|s| s.context_id)
+                        });
+                    if let Some(t_ctx_id) = target_ctx_id {
+                        req.context_id_override = Some(t_ctx_id);
+                    }
+                    if let Some(ref ws) = req.workspace_root_override {
+                        let actor = req.broker_actor_override.clone().unwrap_or_else(|| {
+                            crate::host::event_subscriptions::HostSubscriptionService::resolve_cli_subscriber(req.from_pane_id).1
+                        });
+                        self.host_subscriptions
+                            .allow_parent_child_lifecycle(&actor, ws);
+                    }
+                }
+            }
+        }
+        // `Allow`/`Deny`/undeclared answer the transport inline; `Ask`
+        // returns a parked consent we surface as a host modal next frame.
+        if let Some(consent) = self.host_subscriptions.classify_subscribe_request(req) {
+            self.pending_event_consents.push_back(consent);
+        }
+    }
+
     fn drain_event_subscribe_channel(&mut self) {
         self.pending_event_consents
             .retain(|consent| !consent.is_cancelled());
@@ -137,84 +225,8 @@ impl PlexiApp {
         // left untouched; only the raw CLI-socket shape (`context_id_override
         // == None`) is resolved here, preferring kernel-verified
         // `peer_ancestry` over the client-forwarded `from_pane_id` claim.
-        for mut req in subscribe_reqs {
-            if req.context_id_override.is_none() {
-                let (verified_pane_id, context_id, workspace_root) =
-                    self.resolve_event_bus_caller(req.from_pane_id, req.peer_ancestry.as_deref());
-                req.from_pane_id = verified_pane_id;
-                req.context_id_override = context_id;
-                req.workspace_root_override = workspace_root;
-                // A verified pane subscribes under its own grant, at one
-                // scope snapshot, exactly as its MCP bearer would (stint 1632).
-                req.subscriber_authority = self.subscriber_authority(verified_pane_id);
-                if let crate::host::event_subscriptions::SubscriberAuthority::Pane(admitted) =
-                    &req.subscriber_authority
-                {
-                    req.workspace_root_override =
-                        Some(admitted.authority.scope().workspace_root);
-                }
-            }
-            if req.cancelled.is_some() {
-                req.broker_actor_override = Some(
-                    crate::host::event_subscriptions::HostSubscriptionService::resolve_cli_subscriber(req.from_pane_id).1,
-                );
-            }
-            // When a parent master pane subscribes to its spawned child worker's
-            // `plexi.pane::lifecycle` stream across a sub-context boundary, bind the
-            // subscription to the child pane's context and grant a session-scoped
-            // allow so Tier 1 escalation (`Worker -> Master`) does not prompt the human.
-            if req.publisher_plugin_id == crate::host::pane_lifecycle::PUBLISHER {
-                if let (Some(caller_id), Some(target_pane_id)) = (
-                    req.from_pane_id,
-                    req.resource_id
-                        .as_deref()
-                        .and_then(|s| s.parse::<u64>().ok()),
-                ) {
-                    let target_parent = self
-                        .windows
-                        .iter()
-                        .find_map(|win| win.panes.get(&target_pane_id))
-                        .and_then(|p| p.as_terminal())
-                        .and_then(|t| t.parent_pane_id)
-                        .or_else(|| {
-                            self.host
-                                .pane_lifecycle
-                                .get(&target_pane_id)
-                                .and_then(|s| s.parent_pane_id)
-                        });
-                    if target_parent == Some(caller_id) {
-                        let target_ctx_id = self
-                            .windows
-                            .iter()
-                            .find_map(|win| {
-                                win.panes
-                                    .contains_key(&target_pane_id)
-                                    .then_some(win.context_id)
-                            })
-                            .or_else(|| {
-                                self.host
-                                    .pane_lifecycle
-                                    .get(&target_pane_id)
-                                    .map(|s| s.context_id)
-                            });
-                        if let Some(t_ctx_id) = target_ctx_id {
-                            req.context_id_override = Some(t_ctx_id);
-                        }
-                        if let Some(ref ws) = req.workspace_root_override {
-                            let actor = req.broker_actor_override.clone().unwrap_or_else(|| {
-                                crate::host::event_subscriptions::HostSubscriptionService::resolve_cli_subscriber(req.from_pane_id).1
-                            });
-                            self.host_subscriptions
-                                .allow_parent_child_lifecycle(&actor, ws);
-                        }
-                    }
-                }
-            }
-            // `Allow`/`Deny`/undeclared answer the transport inline; `Ask`
-            // returns a parked consent we surface as a host modal next frame.
-            if let Some(consent) = self.host_subscriptions.classify_subscribe_request(req) {
-                self.pending_event_consents.push_back(consent);
-            }
+        for req in subscribe_reqs {
+            self.admit_subscribe_request(req);
         }
         for mut req in publish_reqs {
             if req.context_id_override.is_none() {

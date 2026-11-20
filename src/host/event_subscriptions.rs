@@ -1957,4 +1957,134 @@ mod tests {
             "a write grant must not authorize a subscribe"
         );
     }
+
+    /// A pane incarnation under `deny` (exact stream targets).
+    fn pane_scope(pane_id: u64, deny: &[&str]) -> crate::host::plugin_timeline::AdmittedScope {
+        let live = crate::broker::pane_authority::LivePaneAuthority::admitted(
+            crate::broker::pane_authority::PaneAuthority::for_test(
+                pane_id,
+                crate::broker::pane_authority::Ceiling::Posture {
+                    posture: PermissionPosture {
+                        default_posture: Decision::Ask,
+                        allow: Vec::new(),
+                        ask: Vec::new(),
+                        deny: deny.iter().map(|d| d.to_string()).collect(),
+                    },
+                },
+                CTX,
+                PathBuf::from("/tmp/ws"),
+            ),
+        );
+        live.mark_live();
+        crate::host::plugin_timeline::AdmittedScope::of(&live)
+    }
+
+    fn declare(timeline: &Arc<Mutex<PluginTimeline>>, name: &str) {
+        timeline
+            .lock()
+            .unwrap()
+            .declare_streams(
+                CTX,
+                "event-probe",
+                vec![EventStreamDecl {
+                    name: name.to_string(),
+                    schema: serde_json::json!({"type": "object"}),
+                    description: None,
+                }],
+            )
+            .unwrap();
+    }
+
+    fn emit(timeline: &Arc<Mutex<PluginTimeline>>, name: &str) {
+        let mut event = probe_event(1);
+        event.event = name.to_string();
+        timeline
+            .lock()
+            .unwrap()
+            .record_event(CTX, "event-probe", 7, event)
+            .expect("emit records");
+    }
+
+    fn delivered(timeline: &Arc<Mutex<PluginTimeline>>) -> Vec<String> {
+        timeline
+            .lock()
+            .unwrap()
+            .take_deliveries_for(ActorType::Agent, "pane:7")
+            .into_iter()
+            .map(|d| d.event)
+            .collect()
+    }
+
+    /// Round 3 item 4, round 4 aggregate: "all streams" from a pane is
+    /// authorized member by member under its grant, with exact allow grants
+    /// on file for every member. One denied member refuses the whole request
+    /// and nothing is delivered. Allowed members are delivered; a member
+    /// declared later is not; and nothing is delivered once the pane's scope
+    /// revision moves. Consent given after a scope change releases nothing.
+    #[test]
+    fn pane_all_streams_subscription_is_member_exact_and_scope_bound() {
+        let timeline = timeline_with_stream();
+        declare(&timeline, "probe.secret");
+        let mut store = GrantStore::default();
+        for stream in ["probe.tick", "probe.secret", "probe.late"] {
+            store.record(allow_grant("pane:7", &format!("event-probe::{stream}")));
+        }
+        store.record(allow_grant("pane:7", "event-probe::*"));
+        let service = HostSubscriptionService::new_for_test(store, Arc::clone(&timeline));
+
+        let (mut req, rx) = subscribe_request(Vec::new(), PayloadMode::Full, None);
+        req.subscriber_authority =
+            SubscriberAuthority::Pane(pane_scope(7, &["event-probe::probe.secret"]));
+        assert!(service.classify_subscribe_request(req).is_none());
+        assert!(
+            matches!(rx.recv().unwrap(), HostSubscribeReply::Err { .. }),
+            "a denied member refuses the aggregate"
+        );
+        assert!(timeline.lock().unwrap().subscriptions().is_empty());
+        emit(&timeline, "probe.secret");
+        emit(&timeline, "probe.tick");
+        assert_eq!(delivered(&timeline), Vec::<String>::new(), "zero deliveries");
+
+        // Positive control: every member allowed.
+        let admitted = pane_scope(7, &[]);
+        let (mut req, rx) = subscribe_request(Vec::new(), PayloadMode::Full, None);
+        req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
+        assert!(service.classify_subscribe_request(req).is_none());
+        assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+        emit(&timeline, "probe.secret");
+        emit(&timeline, "probe.tick");
+        assert_eq!(delivered(&timeline), vec!["probe.secret", "probe.tick"]);
+        declare(&timeline, "probe.late");
+        emit(&timeline, "probe.late");
+        assert_eq!(
+            delivered(&timeline),
+            Vec::<String>::new(),
+            "a member declared later is not delivered"
+        );
+        admitted.authority.publish_scope(PathBuf::from("/tmp/elsewhere"));
+        emit(&timeline, "probe.tick");
+        assert_eq!(
+            delivered(&timeline),
+            Vec::<String>::new(),
+            "nothing is delivered after the scope revision moves"
+        );
+
+        // Delayed consent: admitted in one scope, answered in another.
+        let mut service = HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
+        let admitted = pane_scope(7, &[]);
+        let (mut req, rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
+        let consent = service
+            .classify_subscribe_request(req)
+            .expect("no grant: consent is asked");
+        let before = timeline.lock().unwrap().subscriptions().len();
+        admitted.authority.publish_scope(PathBuf::from("/tmp/elsewhere"));
+        let config = tempfile::tempdir().unwrap();
+        service.resolve_consent(consent, ConsentChoice::AllowOnce, config.path());
+        assert!(
+            matches!(rx.recv().unwrap(), HostSubscribeReply::Err { .. }),
+            "consent cannot release an effect in another scope"
+        );
+        assert_eq!(timeline.lock().unwrap().subscriptions().len(), before);
+    }
 }

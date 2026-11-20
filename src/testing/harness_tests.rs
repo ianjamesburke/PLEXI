@@ -4742,6 +4742,108 @@ fn launch_plan_plugin_spawn_pane_reports_the_installed_terminal_or_its_failure()
     );
 }
 
+/// Round 3/4 R1: an SDK `spawn_pane` is answered exactly once, with its
+/// request id, to the view that emitted it, whatever window or view has focus
+/// and wherever the pane lands. A background view in context A asks for a
+/// terminal in A's child context B while B's window focuses another view:
+/// success, a construction failure, an invalid target, an empty target
+/// window, and a request held behind an overlay each reach the requester and
+/// no other view.
+#[test]
+fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
+    use crate::protocol::PlexiEvent;
+    let mut h = HostHarness::new();
+    let context_a = h.app.windows[0].context_id;
+    let (requester, received) = add_pipe_test_pane(&mut h, 0);
+    let (_, _) = add_pipe_test_pane(&mut h, 0);
+    let context_b = crate::testing::reserve_test_context_id();
+    let root_b = tempfile::tempdir().expect("root b");
+    let win_b = push_secondary_context(&mut h, context_b, root_b.path());
+    if let Some(index) = h.app.router.position(|c| c.context_id == context_b) {
+        h.app.router.get_mut(index).parent_id = Some(context_a);
+    }
+    h.app.host.add_context(context_b, Some(context_a));
+    let (bystander, overheard) = add_pipe_test_pane(&mut h, win_b);
+    // B's window focuses the bystander, and B is the active window.
+    let focus_bystander = |h: &mut HostHarness| {
+        h.app.active_window = win_b;
+        let tile = h.app.windows[win_b].tree.tiles.find_pane(&bystander).unwrap();
+        h.app.set_window_focused_pane(win_b, tile);
+    };
+    focus_bystander(&mut h);
+    assert_eq!(h.app.windows[h.app.active_window].context_id, context_b);
+    let spawn = |request_id: &str, target: Option<u64>| {
+        crate::app::view_trait::ViewCommand::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: "split_h".to_string(),
+            args: Vec::new(),
+            from_pane_id: None,
+            request_id: Some(request_id.to_string()),
+            target_context: target,
+            emitter: None,
+        }
+    };
+    let replies_to = |log: &std::sync::Arc<std::sync::Mutex<Vec<PlexiEvent>>>, id: &str| {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                matches!(event,
+                    PlexiEvent::PaneSpawned { request_id: Some(r), .. }
+                    | PlexiEvent::PaneSpawnError { request_id: Some(r), .. } if r == id)
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    queue_pipe_command(&mut h, requester, spawn("ok", Some(context_b)));
+    h.run_hidden_frames(1);
+    let ok = replies_to(&received, "ok");
+    assert!(
+        matches!(ok.as_slice(), [PlexiEvent::PaneSpawned { pane_id, .. }]
+            if h.app.windows[win_b].panes.get(pane_id).is_some_and(|p| p.as_terminal().is_some())),
+        "one PaneSpawned naming the installed terminal: {ok:?}"
+    );
+
+    {
+        let _entry = crate::pane_ops::construct::probes::on_backend_entry(|_| {
+            Err("injected backend failure".into())
+        });
+        queue_pipe_command(&mut h, requester, spawn("fails", Some(context_b)));
+        h.run_hidden_frames(1);
+    }
+    assert!(matches!(replies_to(&received, "fails").as_slice(), [PlexiEvent::PaneSpawnError { .. }]));
+
+    queue_pipe_command(&mut h, requester, spawn("invalid", Some(u64::MAX)));
+    h.run_hidden_frames(1);
+    assert!(matches!(replies_to(&received, "invalid").as_slice(), [PlexiEvent::PaneSpawnError { .. }]));
+
+    let context_c = crate::testing::reserve_test_context_id();
+    let root_c = tempfile::tempdir().expect("root c");
+    push_secondary_context(&mut h, context_c, root_c.path());
+    if let Some(index) = h.app.router.position(|c| c.context_id == context_c) {
+        h.app.router.get_mut(index).parent_id = Some(context_a);
+    }
+    h.app.host.add_context(context_c, Some(context_a));
+    queue_pipe_command(&mut h, requester, spawn("empty", Some(context_c)));
+    h.run_hidden_frames(1);
+    assert!(matches!(replies_to(&received, "empty").as_slice(), [PlexiEvent::PaneSpawnError { .. }]));
+
+    // Held behind an overlay, then released.
+    h.app.attention_queue.open = true;
+    queue_pipe_command(&mut h, requester, spawn("held", Some(context_b)));
+    h.run_hidden_frames(1);
+    assert!(replies_to(&received, "held").is_empty(), "held while the overlay owns input");
+    focus_bystander(&mut h);
+    h.app.attention_queue.open = false;
+    h.run_hidden_frames(1);
+    assert!(matches!(replies_to(&received, "held").as_slice(), [PlexiEvent::PaneSpawned { .. }]));
+
+    for id in ["ok", "fails", "invalid", "empty", "held"] {
+        assert!(replies_to(&overheard, id).is_empty(), "the focused bystander heard {id}");
+    }
+}
+
 /// Falsifying regression #1: before stint 0724 Phase D 2/2, `OpenDirectedPipe`
 /// resolved its target purely by `active_window`, with no check that the
 /// target lives in the caller's own context — a pane in context A could open
