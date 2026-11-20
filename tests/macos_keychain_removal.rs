@@ -280,7 +280,7 @@ fn stale_cached_name_in_an_empty_file_is_a_reported_no_match() {
     let account = sandbox.account();
     sandbox.keychain(KEYCHAIN);
     sandbox.index(&[&account]);
-    let (out, log) = sandbox.rm(KEYCHAIN);
+    let (out, _) = sandbox.rm(KEYCHAIN);
     assert!(!out.status.success());
     let err = text(&out.stderr);
     assert!(err.contains("returned no match"), "{err}");
@@ -384,10 +384,16 @@ fn native_delete_refusal_fails_with_its_status_and_keeps_the_item() {
     assert!(!out.status.success(), "{err}");
     assert!(!text(&out.stdout).contains("Removed"));
     assert!(err.contains("delete the selected item (status "), "{err}");
-    let call = log
+    let deletes: Vec<&str> = log
         .lines()
-        .find(|line| line.contains(DELETE_CALL))
-        .unwrap_or_else(|| panic!("no {DELETE_CALL} trace: {log}"));
+        .filter(|line| line.contains(DELETE_CALL))
+        .collect();
+    assert_eq!(
+        deletes.len(),
+        1,
+        "expected exactly one native delete: {log}"
+    );
+    let call = deletes[0];
     let status = call.rsplit('=').next().unwrap().trim();
     assert_ne!(status, "0", "{call}");
     assert!(err.contains(&format!("(status {status})")), "{err}\n{call}");

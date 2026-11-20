@@ -82,7 +82,6 @@ pub(super) trait Native {
         label: &str,
         value: &[u8],
     ) -> i32;
-    /// Whether two handles name the same keychain file.
     /// Whether two handles name the same keychain file. A failed identity
     /// lookup is an error with its native status, never "different".
     fn same_keychain(
@@ -278,6 +277,16 @@ fn create_destination<'d, N: Native>(
             ))
         }
     }
+}
+
+/// Two keychain handles name one file when their paths are equal. A path that
+/// could not be read is its native error, never "different".
+#[cfg(any(test, target_os = "macos"))]
+fn same_path(
+    left: Result<Vec<u8>, SecretError>,
+    right: Result<Vec<u8>, SecretError>,
+) -> Result<bool, SecretError> {
+    Ok(left? == right?)
 }
 
 /// Upsert (`create_only == false`) updates the selected item in place, or
@@ -629,7 +638,7 @@ mod production {
             left: &SecKeychain,
             right: &SecKeychain,
         ) -> Result<bool, SecretError> {
-            Ok(keychain_path(left)? == keychain_path(right)?)
+            super::same_path(keychain_path(left), keychain_path(right))
         }
     }
 }
@@ -664,6 +673,8 @@ mod tests {
         find_override: Option<(i32, bool)>,
         delete_status: Option<i32>,
         identity_status: Option<i32>,
+        /// Distinct handles that name one file, as the OS hands out.
+        same_file: Vec<(u8, u8)>,
     }
 
     impl Fake {
@@ -679,6 +690,7 @@ mod tests {
                 find_override: None,
                 delete_status: None,
                 identity_status: None,
+                same_file: Vec::new(),
             }
         }
 
@@ -818,7 +830,11 @@ mod tests {
                     stage: KeychainStage::Identify,
                     status,
                 }),
-                None => Ok(left == right),
+                None => Ok(left == right
+                    || self
+                        .same_file
+                        .iter()
+                        .any(|pair| *pair == (*left, *right) || *pair == (*right, *left))),
             }
         }
     }
@@ -1116,6 +1132,41 @@ mod tests {
             "{error}"
         );
         assert!(!fake.calls().iter().any(|call| matches!(call, Call::Add(_))));
+    }
+
+    #[test]
+    fn a_default_handle_for_a_member_file_adds_through_the_searched_member_handle() {
+        let mut fake = Fake::new(&[1, 2], 9);
+        fake.same_file = vec![(2, 9)];
+        write(&fake, ACCOUNT, "label", "v", false).unwrap();
+        let adds: Vec<_> = fake
+            .calls()
+            .into_iter()
+            .filter(|call| matches!(call, Call::Add(_)))
+            .collect();
+        assert_eq!(
+            adds,
+            vec![Call::Add(2)],
+            "an add must use the searched member's handle"
+        );
+        assert_eq!(fake.in_keychain(2, ACCOUNT).as_deref(), Some("v"));
+    }
+
+    #[test]
+    fn same_path_compares_equal_paths_and_surfaces_a_path_error_from_either_side() {
+        let path = |text: &str| Ok(text.as_bytes().to_vec());
+        let failed = |status| {
+            Err(SecretError::Keychain {
+                stage: KeychainStage::Identify,
+                status,
+            })
+        };
+        assert!(same_path(path("/a"), path("/a")).unwrap());
+        assert!(!same_path(path("/a"), path("/b")).unwrap());
+        let left = same_path(failed(-1), path("/a")).unwrap_err();
+        assert_eq!(stage_status(&left), (KeychainStage::Identify, -1));
+        let right = same_path(path("/a"), failed(-2)).unwrap_err();
+        assert_eq!(stage_status(&right), (KeychainStage::Identify, -2));
     }
 
     #[test]
