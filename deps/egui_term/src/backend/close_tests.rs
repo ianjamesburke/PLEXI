@@ -205,19 +205,38 @@ fn isolated(name: &str) -> bool {
     if std::env::var_os(CHILD).is_some() {
         return true;
     }
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            &format!("backend::close_tests::{name}"),
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .env(CHILD, "1")
-        .output()
-        .unwrap();
-    let text = String::from_utf8_lossy(&output.stdout).into_owned()
-        + &String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "isolated run failed:\n{text}");
+    let dir = std::env::temp_dir();
+    let log =
+        dir.join(format!("egui-term-1650-{}-{name}.log", std::process::id()));
+    let mut child =
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("backend::close_tests::{name}"),
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .stdout(std::fs::File::create(&log).unwrap())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+    // A watchdog: a hang (say a stop blocked behind a spawn) fails.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("isolated run hung for 60 s: {name}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    assert!(status.success(), "isolated run failed:\n{text}");
     assert!(
         text.contains("1 passed"),
         "isolated test did not run:\n{text}"
@@ -512,7 +531,12 @@ fn host_stop_closes_open_panes_through_their_owner() {
     let (shell, key) =
         (backend.child_pid() as libc::pid_t, backend.launch_key());
     let outcome = shutdown_panes(Instant::now() + Duration::from_secs(2));
-    assert_eq!(outcome, ShutdownOutcome::Complete);
+    assert_eq!(
+        outcome,
+        ShutdownOutcome::Complete {
+            owned: vec![shell as u32]
+        }
+    );
     assert_owned_signals_then_one_reap(key, shell);
     assert!(gone(shell));
     let (tx, _rx2) = mpsc::channel();
@@ -548,7 +572,10 @@ fn host_stop_reports_unresolved_work_and_keeps_owning_it() {
     drop(backend);
     let outcome = shutdown_panes(Instant::now() + Duration::from_millis(300));
     assert!(
-        matches!(&outcome, ShutdownOutcome::Incomplete(left) if left.len() == 1),
+        matches!(
+            &outcome,
+            ShutdownOutcome::Incomplete { unresolved, .. } if unresolved.len() == 1
+        ),
         "{outcome:?}"
     );
     assert!(outcome.unresolved() > 0);
@@ -613,7 +640,83 @@ fn a_pin_lost_on_observation_is_never_used_again() {
     drop(backend);
     std::thread::sleep(Duration::from_millis(900));
     assert_eq!(worker::events(key), seen, "used a lost launch");
+    // The loss stays on record: host stop is never complete with it.
+    let outcome = shutdown_panes(Instant::now() + Duration::from_millis(300));
+    assert!(
+        matches!(&outcome, ShutdownOutcome::Incomplete { unresolved, .. }
+            if unresolved.iter().any(|u| u.contains("pin lost"))),
+        "{outcome:?}"
+    );
+    assert_eq!(worker::events(key), seen, "host stop used a lost launch");
     end_fixture(shell);
+}
+
+/// A launch admitted but not yet spawned when host stop starts is never
+/// missed: the stop does not wait behind the spawn, returns by its
+/// deadline, and is not complete; the launch is then closed by its owner.
+#[test]
+fn host_stop_during_an_admission_returns_on_time_and_is_never_complete() {
+    if !isolated(
+        "host_stop_during_an_admission_returns_on_time_and_is_never_complete",
+    ) {
+        return;
+    }
+    let held = worker::ADMIT_HOLD.lock().unwrap_or_else(|e| e.into_inner());
+    let launching = std::thread::spawn(|| {
+        let (tx, rx) = mpsc::channel();
+        let backend = TerminalBackend::new(
+            1652,
+            egui::Context::default(),
+            tx,
+            settings("/bin/sh", "trap '' HUP; exec sleep 3600"),
+        );
+        (backend, rx)
+    });
+    wait_until("the launch to be admitted", || {
+        worker::ADMITTING.load(Ordering::SeqCst) == 1
+    });
+    let started = Instant::now();
+    let outcome = shutdown_panes(Instant::now() + Duration::from_millis(300));
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "host stop waited {:?} behind a spawn",
+        started.elapsed()
+    );
+    assert!(
+        matches!(&outcome, ShutdownOutcome::Incomplete { unresolved, .. }
+            if unresolved.iter().any(|u| u.contains("being admitted"))),
+        "{outcome:?}"
+    );
+    drop(held);
+    let (backend, _rx) = launching.join().unwrap();
+    let backend = backend.expect("a launch admitted before the stop runs");
+    let (shell, key) =
+        (backend.child_pid() as libc::pid_t, backend.launch_key());
+    // Sealed: the owner closes it without waiting for the pane to drop.
+    assert_owned_signals_then_one_reap(key, shell);
+    drop(backend);
+}
+
+/// Host stop before any pane exists seals admission in the same decision:
+/// it is complete, and no pane is admitted after it.
+#[test]
+fn host_stop_before_any_pane_refuses_later_ones() {
+    if !isolated("host_stop_before_any_pane_refuses_later_ones") {
+        return;
+    }
+    assert_eq!(
+        shutdown_panes(Instant::now() + Duration::from_millis(300)),
+        ShutdownOutcome::Complete { owned: Vec::new() }
+    );
+    let (tx, _rx) = mpsc::channel();
+    let refused = TerminalBackend::new(
+        1653,
+        egui::Context::default(),
+        tx,
+        settings("/bin/sh", "exec sleep 3600"),
+    );
+    assert!(refused.is_err(), "a pane was admitted after host stop");
+    assert_eq!(SPAWNED.with(|s| s.get()), None, "a shell was spawned");
 }
 
 /// R4.3: a wait error right before escalation retires the launch: no KILL,

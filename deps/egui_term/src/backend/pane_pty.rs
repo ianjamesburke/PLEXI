@@ -4,8 +4,9 @@
 //! that pid and waits with the master still open (alacritty_terminal
 //! 0.25.1 `src/tty/unix.rs`, `Pty::drop` and `next_child_event`). That
 //! deadlocked a closing pane and could signal a reused pid. Here the master
-//! closes first, and the shell belongs to the lifecycle worker, which alone
-//! observes, signals and reaps it (`lifecycle`).
+//! closes first, and the shell belongs to the lifecycle worker, which on
+//! the pane lifecycle path alone observes, signals and reaps it
+//! (`lifecycle`).
 //!
 //! Spawning mirrors alacritty's `tty::unix::from_fd` line for line: IUTF8,
 //! the child's env, `setsid`, controlling tty, closed fds and signal resets.
@@ -215,6 +216,8 @@ impl Launch {
             },
         }
         let admission = lifecycle::admit()?;
+        #[cfg(any(test, feature = "testing"))]
+        lifecycle::testing::admission_pause();
         let child = self.command.spawn().map_err(|error| {
             io::Error::new(
                 error.kind(),
@@ -321,20 +324,23 @@ impl EventedReadWrite for PanePty {
             unsafe { poll.add_with_mode(&*self.master, interest, mode) }
                 .and_then(|()| {
                     #[cfg(test)]
-                    if super::close_tests::fail_second_add(self.pane) {
-                        return Err(io::Error::other(
-                            "injected second-add failure",
-                        ))
-                        .inspect_err(|_| self.undo_first_add(poll));
-                    }
-                    unsafe {
-                        poll.add_with_mode(
-                            &self.wake,
-                            Event::readable(PTY_CHILD_EVENT_TOKEN),
-                            PollMode::Level,
-                        )
-                    }
-                    .inspect_err(|_| self.undo_first_add(poll))
+                    let injected =
+                        super::close_tests::fail_second_add(self.pane);
+                    #[cfg(not(test))]
+                    let injected = false;
+                    let second = if injected {
+                        Err(io::Error::other("injected second-add failure"))
+                    } else {
+                        unsafe {
+                            poll.add_with_mode(
+                                &self.wake,
+                                Event::readable(PTY_CHILD_EVENT_TOKEN),
+                                PollMode::Level,
+                            )
+                        }
+                    };
+                    // The one rollback, for a real or an injected failure.
+                    second.inspect_err(|_| self.undo_first_add(poll))
                 });
         if let Some(registered) = self.registered.take() {
             let _ = registered.send(match &result {

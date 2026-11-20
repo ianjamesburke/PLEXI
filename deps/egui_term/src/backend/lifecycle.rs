@@ -9,15 +9,18 @@
 //! pane closes, since its group can still hold jobs.
 //!
 //! Authority: the shell's [`std::process::Child`] moves into this module's
-//! worker at spawn and never leaves it. Only the worker observes the shell
-//! (`waitid` with `WNOWAIT`), signals it, and reaps it; the pane holds a
-//! launch key and can only ask. Exclusive, unreaped parenthood keeps `S`
+//! worker at spawn and never leaves it. On the pane lifecycle path only the
+//! worker observes the shell (`waitid` with `WNOWAIT`), signals it, and
+//! reaps it; the pane holds a launch key and can only ask. (The host's
+//! legacy quit sweep still observes and signals by pid, stint 1660.) Exclusive, unreaped parenthood keeps `S`
 //! from being reused while the worker may signal it. A wait error ends the
 //! worker's authority for that launch for good. After the final group
-//! signal the owner can only be reaped. Host stop is a request to the same
-//! owner ([`shutdown_panes`]): it seals admission, closes every pane, and
-//! reports what is still unresolved at its deadline; the worker keeps its
-//! responsibility while the host lives.
+//! signal the owner can only be reaped. A lost launch stays on record, with
+//! no capability, so host stop never reports it complete. Host stop is a
+//! request to the same owner ([`shutdown_panes`]): it seals admission in
+//! the same decision that finds the worker, closes every pane and every
+//! launch still being admitted, and reports what is unresolved at its
+//! deadline; the worker keeps its responsibility while the host lives.
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -42,6 +45,8 @@ const REAP_PENDING: Duration = Duration::from_secs(1);
 
 enum Job {
     Admit(u64, Box<Entry>),
+    /// An admission ended without a shell (its spawn failed).
+    Abandoned,
     Close(u64),
     MastersClosed(u64),
     Sigchld,
@@ -51,13 +56,18 @@ enum Job {
     },
 }
 
-/// What host stop learned from the owner.
+/// What host stop learned from the owner. `owned` lists every shell pid
+/// the owner held during the stop, resolved or not, so a caller can tell
+/// its own survivors from the owner's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShutdownOutcome {
-    /// Every shell was reaped.
-    Complete,
-    /// Shells still owned at the deadline, described for the log.
-    Incomplete(Vec<String>),
+    /// Every shell was reaped, and none was ever lost.
+    Complete { owned: Vec<u32> },
+    /// Work still owned or lost at the deadline, described for the log.
+    Incomplete {
+        owned: Vec<u32>,
+        unresolved: Vec<String>,
+    },
     /// The owner did not answer by the deadline.
     Unconfirmed,
 }
@@ -66,9 +76,19 @@ impl ShutdownOutcome {
     /// How much work is unresolved or unknown: 0 only when complete.
     pub fn unresolved(&self) -> usize {
         match self {
-            Self::Complete => 0,
-            Self::Incomplete(left) => left.len(),
+            Self::Complete { .. } => 0,
+            Self::Incomplete { unresolved, .. } => unresolved.len(),
             Self::Unconfirmed => 1,
+        }
+    }
+
+    /// The shells the owner held, if it answered.
+    pub fn owned(&self) -> Option<&[u32]> {
+        match self {
+            Self::Complete { owned } | Self::Incomplete { owned, .. } => {
+                Some(owned)
+            },
+            Self::Unconfirmed => None,
         }
     }
 }
@@ -105,19 +125,37 @@ struct Entry {
     signals: Vec<String>,
 }
 
-static WORKER: Mutex<Option<Sender<Job>>> = Mutex::new(None);
-/// Held across a spawn and its admission; set once host stop begins.
-static SEALED: Mutex<bool> = Mutex::new(false);
+/// Admission and the worker, decided together: host stop seals and finds
+/// the worker under this lock, and a launch counts itself in flight under
+/// it, so no launch is admitted unseen. It is never held across a spawn.
+struct Admissions {
+    worker: Option<Sender<Job>>,
+    sealed: bool,
+    /// Launches admitted but not yet in the worker's table.
+    in_flight: usize,
+}
+
+static ADMISSIONS: Mutex<Admissions> = Mutex::new(Admissions {
+    worker: None,
+    sealed: false,
+    in_flight: 0,
+});
 static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
+/// Launches whose pin was lost: (pid, description). Never acted on again,
+/// never forgotten.
+static LOST: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
+
+fn admissions() -> MutexGuard<'static, Admissions> {
+    ADMISSIONS.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// The worker, started on first use; a pty only spawns once this succeeds.
 pub(super) fn worker() -> io::Result<()> {
-    sender().map(drop)
+    sender(&mut admissions()).map(drop)
 }
 
-fn sender() -> io::Result<Sender<Job>> {
-    let mut slot = WORKER.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(worker) = slot.as_ref() {
+fn sender(admissions: &mut Admissions) -> io::Result<Sender<Job>> {
+    if let Some(worker) = admissions.worker.as_ref() {
         return Ok(worker.clone());
     }
     let (worker, jobs) = mpsc::channel();
@@ -125,52 +163,81 @@ fn sender() -> io::Result<Sender<Job>> {
     let (sender, mut sigchld) = UnixStream::pair()?;
     let registration =
         signal_hook::low_level::pipe::register(libc::SIGCHLD, sender)?;
-    let forward = worker.clone();
-    let spawned = std::thread::Builder::new()
-        .name("pty-sigchld".to_string())
-        .spawn(move || {
-            let mut byte = [0u8; 64];
-            while matches!(sigchld.read(&mut byte), Ok(n) if n > 0) {
-                if forward.send(Job::Sigchld).is_err() {
-                    return;
-                }
-            }
+    let started = std::thread::Builder::new()
+        .name("pty-lifecycle".to_string())
+        .spawn(move || run(jobs))
+        .and_then(|_| {
+            let forward = worker.clone();
+            std::thread::Builder::new()
+                .name("pty-sigchld".to_string())
+                .spawn(move || forward_sigchld(&mut sigchld, &forward))
         });
-    if let Err(error) = spawned {
+    if let Err(error) = started {
+        // Unregistering drops the pipe's write end; a started lifecycle
+        // thread ends once `worker` (its last sender) drops here.
         signal_hook::low_level::unregister(registration);
         return Err(error);
     }
-    std::thread::Builder::new()
-        .name("pty-lifecycle".to_string())
-        .spawn(move || run(jobs))?;
-    *slot = Some(worker.clone());
+    admissions.worker = Some(worker.clone());
     Ok(worker)
 }
 
-/// Permission to spawn a shell, held until it is admitted. Host stop cannot
-/// seal admission while one is held, so every spawned shell is owned.
+fn forward_sigchld(sigchld: &mut UnixStream, forward: &Sender<Job>) {
+    let mut bytes = [0u8; 64];
+    loop {
+        match sigchld.read(&mut bytes) {
+            Ok(n) if n > 0 => {
+                if forward.send(Job::Sigchld).is_err() {
+                    return;
+                }
+            },
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {},
+            Ok(_) => {
+                log::error!(target: LOG_TARGET, "the SIGCHLD pipe closed");
+                return;
+            },
+            Err(error) => {
+                log::error!(target: LOG_TARGET, "reading the SIGCHLD pipe failed: {error}");
+                return;
+            },
+        }
+    }
+}
+
+/// Permission to spawn one shell, counted in flight until the worker has
+/// it. Holds no lock, so a slow spawn never delays host stop.
 pub(super) struct Admission {
-    _sealed: MutexGuard<'static, bool>,
     worker: Sender<Job>,
+    admitted: bool,
 }
 
 pub(super) fn admit() -> io::Result<Admission> {
-    let worker = sender()?;
-    let sealed = SEALED.lock().unwrap_or_else(|e| e.into_inner());
-    if *sealed {
+    let mut admissions = admissions();
+    if admissions.sealed {
         return Err(io::Error::other("the host is stopping: no new panes"));
     }
+    let worker = sender(&mut admissions)?;
+    admissions.in_flight += 1;
     Ok(Admission {
-        _sealed: sealed,
         worker,
+        admitted: false,
     })
+}
+
+impl Drop for Admission {
+    fn drop(&mut self) {
+        if !self.admitted {
+            admissions().in_flight -= 1;
+            let _ = self.worker.send(Job::Abandoned);
+        }
+    }
 }
 
 impl Admission {
     /// Hand the spawned shell to the worker. `wake` is the worker's end of
     /// the reader's notification socket; `reader` shuts that reader down.
     pub(super) fn own(
-        self,
+        mut self,
         pane: u64,
         child: Child,
         status: Arc<Mutex<Option<PtyExitStatus>>>,
@@ -191,12 +258,14 @@ impl Admission {
             kill_at: None,
             signals: Vec::new(),
         };
+        // The worker takes it out of flight when it takes it in.
+        self.admitted = true;
         if self.worker.send(Job::Admit(key, Box::new(entry))).is_err() {
             log::error!(target: LOG_TARGET, "pane {pane}: the lifecycle worker is gone");
         }
         LaunchKey {
             key,
-            worker: self.worker,
+            worker: self.worker.clone(),
         }
     }
 }
@@ -243,10 +312,14 @@ impl Drop for LaunchKey {
 /// For host stop: seal admission, close every pane, and collect outcomes
 /// until `deadline`. Never signals anything itself.
 pub fn shutdown_panes(deadline: Instant) -> ShutdownOutcome {
-    let worker = WORKER.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    *SEALED.lock().unwrap_or_else(|e| e.into_inner()) = true;
+    let worker = {
+        let mut admissions = admissions();
+        admissions.sealed = true;
+        admissions.worker.clone()
+    };
+    // No worker under the seal: no launch was ever admitted, and none can be.
     let Some(worker) = worker else {
-        return ShutdownOutcome::Complete;
+        return ShutdownOutcome::Complete { owned: Vec::new() };
     };
     let (reply, outcome) = mpsc::channel();
     if worker.send(Job::Shutdown { deadline, reply }).is_err() {
@@ -260,9 +333,17 @@ pub fn shutdown_panes(deadline: Instant) -> ShutdownOutcome {
         .unwrap_or(ShutdownOutcome::Unconfirmed)
 }
 
+struct Stopping {
+    deadline: Instant,
+    reply: Sender<ShutdownOutcome>,
+    owned: Vec<u32>,
+}
+
 fn run(jobs: mpsc::Receiver<Job>) {
     let mut entries: HashMap<u64, Entry> = HashMap::new();
-    let mut stopping: Option<(Instant, Sender<ShutdownOutcome>)> = None;
+    // Set by the first host stop; launches admitted after it close at once.
+    let mut sealed: Option<Instant> = None;
+    let mut stopping: Option<Stopping> = None;
     loop {
         let now = Instant::now();
         let next = entries
@@ -271,7 +352,7 @@ fn run(jobs: mpsc::Receiver<Job>) {
                 Owner::ReapOnly(..) => Some(now + REAP_RETRY),
                 Owner::Pinned(_) => entry.kill_at,
             })
-            .chain(stopping.as_ref().map(|(deadline, _)| *deadline))
+            .chain(stopping.as_ref().map(|stop| stop.deadline))
             .min();
         let job = match next {
             None => match jobs.recv() {
@@ -288,14 +369,22 @@ fn run(jobs: mpsc::Receiver<Job>) {
         };
         #[cfg(any(test, feature = "testing"))]
         let _held = testing::HOLD.lock().unwrap_or_else(|e| e.into_inner());
-        let shutting_down = stopping.as_ref().map(|(deadline, _)| *deadline);
         match job {
             Some(Job::Admit(key, entry)) => {
+                let pid = entry.owner.pid() as u32;
                 entries.insert(key, *entry);
+                admissions().in_flight -= 1;
+                if let Some(stop) = stopping.as_mut() {
+                    stop.owned.push(pid);
+                }
                 // A shell that exited before admission sent its SIGCHLD
                 // before it was here to be observed.
                 observe(&mut entries, key);
+                if let Some(deadline) = sealed {
+                    close_for_stop(&mut entries, key, deadline);
+                }
             },
+            Some(Job::Abandoned) => {},
             Some(Job::Sigchld) => {
                 let keys: Vec<u64> = entries.keys().copied().collect();
                 for key in keys {
@@ -306,46 +395,76 @@ fn run(jobs: mpsc::Receiver<Job>) {
                 if let Some(entry) = entries.get_mut(&key) {
                     entry.close_requested = true;
                 }
-                hang_up(&mut entries, key, shutting_down);
+                hang_up(&mut entries, key, sealed);
             },
             Some(Job::MastersClosed(key)) => {
                 if let Some(entry) = entries.get_mut(&key) {
                     entry.masters_closed = true;
                 }
-                hang_up(&mut entries, key, shutting_down);
+                hang_up(&mut entries, key, sealed);
             },
             Some(Job::Shutdown { deadline, reply }) => {
+                sealed = Some(deadline);
                 let keys: Vec<u64> = entries.keys().copied().collect();
-                for key in keys {
-                    if let Some(entry) = entries.get_mut(&key) {
-                        entry.close_requested = true;
-                        // The backend may never drop: end its reader so the
-                        // masters close.
-                        let _ = entry.reader.send(Msg::Shutdown);
-                        if let Some(kill_at) = entry.kill_at.as_mut() {
-                            *kill_at = (*kill_at).min(early_kill(deadline));
-                        }
-                    }
-                    hang_up(&mut entries, key, Some(deadline));
+                for key in &keys {
+                    close_for_stop(&mut entries, *key, deadline);
                 }
-                stopping = Some((deadline, reply));
+                let mut owned: Vec<u32> =
+                    entries.values().map(|e| e.owner.pid() as u32).collect();
+                owned.extend(lost().iter().map(|(pid, _)| *pid));
+                stopping = Some(Stopping {
+                    deadline,
+                    reply,
+                    owned,
+                });
             },
             None => {},
         }
         advance(&mut entries);
-        if let Some((deadline, _)) = &stopping {
-            if entries.is_empty() || Instant::now() >= *deadline {
-                let left: Vec<String> = entries.iter().map(describe).collect();
-                if let Some((_, reply)) = stopping.take() {
-                    let _ = reply.send(if left.is_empty() {
-                        ShutdownOutcome::Complete
-                    } else {
-                        ShutdownOutcome::Incomplete(left)
-                    });
-                }
+        let finished = stopping.as_ref().is_some_and(|stop| {
+            (entries.is_empty() && admissions().in_flight == 0)
+                || Instant::now() >= stop.deadline
+        });
+        if let Some(stop) = stopping.take_if(|_| finished) {
+            let mut unresolved: Vec<String> =
+                entries.iter().map(describe).collect();
+            unresolved.extend(lost().iter().map(|(_, lost)| lost.clone()));
+            let in_flight = admissions().in_flight;
+            if in_flight > 0 {
+                unresolved
+                    .push(format!("{in_flight} launches still being admitted"));
             }
+            let _ = stop.reply.send(if unresolved.is_empty() {
+                ShutdownOutcome::Complete { owned: stop.owned }
+            } else {
+                ShutdownOutcome::Incomplete {
+                    owned: stop.owned,
+                    unresolved,
+                }
+            });
         }
     }
+}
+
+fn lost() -> MutexGuard<'static, Vec<(u32, String)>> {
+    LOST.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Host stop closes a launch whatever its backend does: the backend may
+/// never drop, so its reader is ended too, and the grace is cut short.
+fn close_for_stop(
+    entries: &mut HashMap<u64, Entry>,
+    key: u64,
+    deadline: Instant,
+) {
+    if let Some(entry) = entries.get_mut(&key) {
+        entry.close_requested = true;
+        let _ = entry.reader.send(Msg::Shutdown);
+        if let Some(kill_at) = entry.kill_at.as_mut() {
+            *kill_at = (*kill_at).min(early_kill(deadline));
+        }
+    }
+    hang_up(entries, key, Some(deadline));
 }
 
 /// During host stop the grace is cut short so the kill lands before the
@@ -512,12 +631,19 @@ fn lose(entries: &mut HashMap<u64, Entry>, key: u64, error: &io::Error) {
     };
     #[cfg(any(test, feature = "testing"))]
     testing::record(key, testing::Event::Lost);
+    let pid = entry.owner.pid();
     log::error!(
         target: LOG_TARGET,
-        "pane {} launch {key} shell {} lost its pin ({error}); no further signals or waits",
-        entry.pane,
-        entry.owner.pid()
+        "pane {} launch {key} shell {pid} lost its pin ({error}); no further signals or waits",
+        entry.pane
     );
+    lost().push((
+        pid as u32,
+        format!(
+            "pane {} launch {key} pid {pid}: pin lost ({error})",
+            entry.pane
+        ),
+    ));
     let unpublished = entry
         .status
         .lock()
@@ -663,6 +789,16 @@ pub mod testing {
     pub static AFTER_REAP: Mutex<()> = Mutex::new(());
     /// Held, a pty pauses before closing its masters.
     pub static READER_HOLD: Mutex<()> = Mutex::new(());
+    /// Held, a launch pauses after its admission, before its spawn.
+    pub static ADMIT_HOLD: Mutex<()> = Mutex::new(());
+    /// Launches that reached that pause.
+    pub static ADMITTING: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    pub(crate) fn admission_pause() {
+        ADMITTING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        drop(ADMIT_HOLD.lock().unwrap_or_else(|e| e.into_inner()));
+    }
     static EVENTS: Mutex<Vec<(u64, Event)>> = Mutex::new(Vec::new());
     static PENDING: Mutex<Option<HashMap<u64, u32>>> = Mutex::new(None);
     static INJECT: Mutex<Option<HashSet<(u64, Site)>>> = Mutex::new(None);

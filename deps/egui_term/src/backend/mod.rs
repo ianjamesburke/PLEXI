@@ -496,14 +496,20 @@ impl TerminalBackend {
         // create threads is an error here rather than a panic on this
         // thread. If alacritty's own spawn panics on the launcher, the loop
         // drops there and the registration report below never comes.
-        let start_reader = move || drop(pty_event_loop.spawn());
-        match failpoint("launcher") {
-            Ok(()) => std::thread::Builder::new()
-                .name(format!("pty-launch-{id}"))
-                .spawn(start_reader)
-                .map(drop)?,
-            Err(error) => return Err(error),
+        // Unix only: there the registration report proves the reader runs.
+        #[cfg(unix)]
+        {
+            let start_reader = move || drop(pty_event_loop.spawn());
+            match failpoint("launcher") {
+                Ok(()) => std::thread::Builder::new()
+                    .name(format!("pty-launch-{id}"))
+                    .spawn(start_reader)
+                    .map(drop)?,
+                Err(error) => return Err(error),
+            }
         }
+        #[cfg(not(unix))]
+        let _pty_event_loop_thread = pty_event_loop.spawn();
         // The reader is running. Spawn the shell once its registration is
         // known; on any failure, shut the reader down: it drops the pty.
         #[cfg(unix)]
