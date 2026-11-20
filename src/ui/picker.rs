@@ -68,8 +68,21 @@ pub(crate) struct PickerInput {
     next_ordinal: u64,
     /// The pass whose input the open session claimed in `App::logic`.
     pub(crate) owned_pass: Option<u64>,
-    /// Events that followed the Cmd+P which opened the session, in order.
+    /// The session's input not yet routed, in order: what followed the
+    /// Cmd+P that opened it, and deliveries claimed in `raw_input_hook`.
     pub(crate) carry: Vec<egui::Event>,
+    /// How `raw_input_hook` claimed this pass's input, if it did.
+    pub(crate) hook_claim: Option<HookClaim>,
+}
+
+/// What `raw_input_hook` took for the palette before egui folded the
+/// delivery into its pointer and key state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HookClaim {
+    /// The palette owned input: the whole delivery is the session's.
+    Session,
+    /// A Cmd+P from a pane: everything after it is the session's it opens.
+    Opening,
 }
 
 impl Default for PickerInput {
@@ -82,6 +95,7 @@ impl Default for PickerInput {
             next_ordinal: 0,
             owned_pass: None,
             carry: Vec::new(),
+            hook_claim: None,
         }
     }
 }

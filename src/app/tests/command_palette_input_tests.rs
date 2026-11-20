@@ -529,3 +529,45 @@ fn command_palette_closing_consumes_pointer_edges() {
         "closed in logic: the clicks were still the palette's"
     );
 }
+
+/// Stint 1391: in one delivery, text before the Cmd+P that opens the palette
+/// is the terminal's, and text after it is the palette's query. Neither the
+/// opening nor the closing Escape lets a key reach the terminal behind it.
+#[test]
+fn command_palette_opening_splits_the_delivery_at_its_chord() {
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+    h.terminal_backend(term).enable_input_tap();
+    h.focus_pane(term);
+    h.run_frames(3);
+    h.terminal_backend(term).take_input_tap();
+    deliver(
+        &mut h,
+        vec![
+            Event::Text("a".into()),
+            press(Key::P, Modifiers::COMMAND),
+            Event::Text("b".into()),
+        ],
+    );
+    h.run_frames(2);
+    assert!(h.app.command_palette_open());
+    let query = h
+        .app
+        .host
+        .picker(PickerId::Palette)
+        .expect("palette picker")
+        .query()
+        .to_owned();
+    assert_eq!(query, "b", "the text after Cmd+P is the query");
+    deliver(
+        &mut h,
+        vec![press(Key::Escape, Modifiers::NONE), Event::Text("c".into())],
+    );
+    h.run_frames(2);
+    assert!(!h.app.command_palette_open());
+    assert_eq!(
+        String::from_utf8_lossy(&h.terminal_backend(term).take_input_tap()),
+        "a",
+        "only the text before Cmd+P reached the terminal"
+    );
+}

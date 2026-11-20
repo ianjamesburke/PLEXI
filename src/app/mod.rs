@@ -3712,6 +3712,9 @@ impl eframe::App for PlexiApp {
                 }
             }
         }
+        // Last, over the whole delivery: before egui folds it, the palette
+        // claims what its session owns (stint 1391).
+        self.claim_palette_input(raw_input);
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {

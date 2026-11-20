@@ -9,6 +9,7 @@ use crate::ui::{
     hints::{HintBar, HintGroup},
     list::ListRowPips,
     overlay::ModalShell,
+    picker::HookClaim,
     style,
 };
 
@@ -1610,29 +1611,77 @@ impl PlexiApp {
         });
     }
 
+    /// Whether the palette is the surface that owns input: open and on top,
+    /// not merely open beneath an approval it handed focus to.
+    pub(crate) fn palette_owns_input(&self) -> bool {
+        self.command_palette_open()
+            && self.overlay_surface()
+                == Some(crate::app::input_owner::OverlaySurface::Layer(
+                    crate::app::FocusKind::CommandPalette,
+                ))
+    }
+
+    /// In `raw_input_hook`, before egui folds the delivery into its pointer
+    /// and key state. While the palette owns input the whole delivery is its
+    /// session's; from a pane, everything after a Cmd+P is the session's it
+    /// opens. egui never registers a press the palette owns, so a dismissal
+    /// cannot click through to the pane it uncovers (ledger row 152).
+    /// Pointer motion and wheel stay with egui as copies, for hover position
+    /// and the results' scroll area.
+    pub(crate) fn claim_palette_input(&mut self, raw: &mut egui::RawInput) {
+        if self.palette_owns_input() {
+            let taken = take_palette_input(&mut raw.events);
+            raw.events
+                .extend(taken.iter().filter(|e| is_pointer_motion(e)).cloned());
+            self.palette_input.carry.extend(taken);
+            self.palette_input.hook_claim = Some(HookClaim::Session);
+        } else if self.overlay_surface().is_none() {
+            let Some(at) = raw.events.iter().position(|e| self.palette_toggle_chord(e)) else {
+                return;
+            };
+            let mut rest = raw.events.split_off(at + 1);
+            self.palette_input.carry = take_palette_input(&mut rest);
+            raw.events.append(&mut rest);
+            self.palette_input.hook_claim = Some(HookClaim::Opening);
+        }
+    }
+
     /// Note, in `App::logic`, that this pass's input belongs to the open
     /// session, before a deferred activation can close it and hand the
     /// input to whatever takes focus next.
     pub(crate) fn note_palette_input_owner(&mut self, ctx: &egui::Context) {
-        self.palette_input.owned_pass = self
-            .command_palette_open()
-            .then(|| ctx.cumulative_pass_nr());
+        self.palette_input.owned_pass = self.palette_owns_input().then(|| ctx.cumulative_pass_nr());
     }
 
-    /// At the start of `App::ui`, before any consumer takes input. A
-    /// session that closed in this pass's logic consumes the input it owned,
-    /// pointer edges included. A closed palette with a Cmd+P in this delivery
-    /// keeps the events after it, for the session the chord opens.
+    /// At the start of `App::ui`, before any consumer takes input. Input
+    /// the hook claimed for a session that no longer owns input (closed in
+    /// this pass's logic) is consumed, as is the rest of that session's
+    /// pass. A closed palette with a Cmd+P in this delivery keeps the events
+    /// after it, for the session the chord opens.
     pub(crate) fn claim_palette_boundary(&mut self, ctx: &egui::Context) {
         let pass = ctx.cumulative_pass_nr();
-        if self.command_palette_open() {
+        let hook_claim = self.palette_input.hook_claim.take();
+        let owned_pass = self.palette_input.owned_pass.take() == Some(pass);
+        if self.palette_owns_input() {
+            if hook_claim == Some(HookClaim::Session) {
+                // egui has folded the motion copies; the session has the originals.
+                ctx.input_mut(|i| take_palette_input(&mut i.events));
+            }
             return;
         }
-        if self.palette_input.owned_pass.take() == Some(pass) {
-            let dropped = ctx.input_mut(|i| take_palette_input(&mut i.events)).len();
-            if dropped > 0 {
-                log::info!("palette: closed in logic; its {dropped} input event(s) consumed");
+        if hook_claim == Some(HookClaim::Session) || owned_pass {
+            let mut dropped = std::mem::take(&mut self.palette_input.carry);
+            dropped.extend(ctx.input_mut(|i| take_palette_input(&mut i.events)));
+            if !dropped.is_empty() {
+                log::info!(
+                    "palette: closed in logic; its {} input event(s) consumed",
+                    dropped.len()
+                );
             }
+            self.retire_release_claims(&dropped);
+            return;
+        }
+        if self.command_palette_open() || hook_claim == Some(HookClaim::Opening) {
             return;
         }
         let events = ctx.input(|i| i.events.clone());
@@ -1647,6 +1696,21 @@ impl PlexiApp {
         });
         if !carry.is_empty() {
             self.palette_input.carry = carry;
+        }
+    }
+
+    /// A consumed release of a claimed host chord retires its claim: the
+    /// key's next press belongs to whoever owns input then.
+    fn retire_release_claims(&mut self, events: &[egui::Event]) {
+        for event in events {
+            if let egui::Event::Key {
+                key,
+                pressed: false,
+                ..
+            } = event
+            {
+                self.claimed_host_key_releases.remove(key);
+            }
         }
     }
 
@@ -1711,8 +1775,10 @@ impl PlexiApp {
         let delivery = self.palette_input.ordinals(events);
         let close = self.key_bindings.close_pane;
         let quick_note = self.key_bindings.open_quick_note;
+        let mut dropped = Vec::new();
         for (ordinal, event) in delivery {
-            if !self.command_palette_open() {
+            if !self.palette_owns_input() {
+                dropped.push(event);
                 continue;
             }
             if let egui::Event::Key {
@@ -1760,6 +1826,13 @@ impl PlexiApp {
                 log::debug!("palette: input {ordinal} -> {command:?}");
                 self.apply_palette_command(command);
             }
+        }
+        if !dropped.is_empty() {
+            log::info!(
+                "palette: session no longer owns input; the rest of its delivery ({} event(s)) consumed",
+                dropped.len()
+            );
+            self.retire_release_claims(&dropped);
         }
         crate::app::view_trait::KeyDisposition::Consumed
     }
@@ -3044,6 +3117,18 @@ fn is_palette_input(event: &egui::Event) -> bool {
             | egui::Event::PointerGone
             | egui::Event::MouseWheel { .. }
             | egui::Event::Touch { .. }
+    )
+}
+
+/// Motion that egui folds into hover position and scroll state, and that
+/// cannot press anything.
+fn is_pointer_motion(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::PointerMoved(_)
+            | egui::Event::MouseMoved(_)
+            | egui::Event::PointerGone
+            | egui::Event::MouseWheel { .. }
     )
 }
 

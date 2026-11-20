@@ -12710,6 +12710,176 @@ open(out + ".done", "w").close()
         assert_eq!(palette_activations(), vec![expected[1].clone()]);
     }
 
+    /// Two file-browser panes side by side, the left one focused.
+    fn palette_over_two_panes() -> (PlexiUiHarness, PaneId, PaneId) {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+        let left = add_focused_pane(&mut h);
+        let right = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            let w = app.active_window;
+            let tree = &mut app.windows[w].tree;
+            let tiles = [left, right].map(|p| tree.tiles.find_pane(&p).expect("pane tile"));
+            tree.root = Some(tree.tiles.insert_horizontal_tile(tiles.to_vec()));
+            app.windows[w].focused_pane = Some(tiles[0]);
+        });
+        h.run_steps(3);
+        (h, left, right)
+    }
+
+    fn focused_pane_id(h: &PlexiUiHarness) -> Option<PaneId> {
+        h.with_app(|app| {
+            let win = &app.windows[app.active_window];
+            match win.tree.tiles.get(win.focused_pane?)? {
+                egui_tiles::Tile::Pane(id) => Some(*id),
+                egui_tiles::Tile::Container(_) => None,
+            }
+        })
+    }
+
+    fn pane_center(h: &PlexiUiHarness, pane: PaneId) -> egui::Pos2 {
+        h.with_app(|app| {
+            let tiles = &app.windows[app.active_window].tree.tiles;
+            tiles
+                .rect(tiles.find_pane(&pane).expect("pane tile"))
+                .expect("pane laid out")
+                .center()
+        })
+    }
+
+    fn click_events(pos: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            pointer_button(pos, true),
+            pointer_button(pos, false),
+        ]
+    }
+
+    fn focus_left(h: &mut PlexiUiHarness, left: PaneId) {
+        h.with_app_mut(|app| {
+            let w = app.active_window;
+            let tile = app.windows[w].tree.tiles.find_pane(&left);
+            app.windows[w].focused_pane = tile;
+        });
+        h.run_steps(2);
+        assert_eq!(focused_pane_id(h), Some(left));
+    }
+
+    /// Stint 1391, dismissal barrier (ledger row 152): a click in the same
+    /// delivery as the Escape that closes the palette, or in the delivery
+    /// whose logic completes a pending Enter, never reaches the pane the
+    /// palette covered. A fresh click afterwards focuses it as usual.
+    #[test]
+    fn palette_dismissal_never_clicks_through() {
+        let (mut h, left, right) = palette_over_two_panes();
+        let target = pane_center(&h, right);
+        deliver(&mut h, click_events(target));
+        h.run_steps(2);
+        assert_eq!(focused_pane_id(&h), Some(right), "control: the click focuses");
+
+        focus_left(&mut h, left);
+        reopen_palette(&mut h);
+        h.save_screenshot(&evidence_png!()).expect("render failed");
+        let mut events = vec![press(egui::Key::Escape, egui::Modifiers::NONE)];
+        events.extend(click_events(target));
+        deliver(&mut h, events);
+        h.run_steps(2);
+        assert!(!h.with_app(|app| app.command_palette_open()));
+        assert_eq!(focused_pane_id(&h), Some(left), "Escape, click");
+
+        // Opened and dismissed in one delivery: the palette never drew, so
+        // no palette layer stands between the click and the pane.
+        let mut events = vec![
+            press(egui::Key::P, egui::Modifiers::COMMAND),
+            press(egui::Key::Escape, egui::Modifiers::NONE),
+        ];
+        events.extend(click_events(target));
+        deliver(&mut h, events);
+        h.run_steps(2);
+        assert!(!h.with_app(|app| app.command_palette_open()));
+        assert_eq!(focused_pane_id(&h), Some(left), "Cmd+P, Escape, click");
+
+        reopen_palette(&mut h);
+        deliver(
+            &mut h,
+            vec![egui::Event::Paste("reset text size".into()), enter()],
+        );
+        assert!(h.with_app(|app| app.command_palette_open()), "Enter waits");
+        deliver(&mut h, click_events(target));
+        h.run_steps(2);
+        assert_eq!(palette_activations().len(), 1);
+        assert_eq!(focused_pane_id(&h), Some(left), "logic-time close, click");
+
+        deliver(&mut h, click_events(target));
+        h.run_steps(2);
+        assert_eq!(focused_pane_id(&h), Some(right), "a fresh click focuses");
+    }
+
+    /// Stint 1391 review round 4: Cmd+P pressed and released in one delivery
+    /// closes the palette and leaves no host claim on P's release, so the
+    /// next P typed into a pane keeps its key-up.
+    #[test]
+    fn palette_closing_chord_retires_its_release_claim() {
+        let mut h = palette_harness();
+        reopen_palette(&mut h);
+        let cmd = egui::Modifiers::COMMAND;
+        deliver(
+            &mut h,
+            vec![
+                press(egui::Key::P, cmd),
+                egui::Event::Key {
+                    key: egui::Key::P,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: cmd,
+                },
+            ],
+        );
+        assert!(!h.with_app(|app| app.command_palette_open()));
+        assert!(
+            !h.with_app(|app| app.claimed_host_key_releases.contains(&egui::Key::P)),
+            "P's release was delivered with the chord"
+        );
+    }
+
+    /// Stint 1391 review round 4: Focus Approval lifts an actionable approval
+    /// above the open palette. An Enter in the same delivery is not the
+    /// palette's: no row runs and the request stays pending.
+    #[test]
+    fn palette_enter_after_focus_approval_runs_no_row() {
+        let mut h = palette_harness();
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
+        let id = monitor
+            .file_needs_you(crate::broker::gate::NeedsYouFile {
+                kind: crate::broker::gate::NeedsYouKind::Question,
+                actor: "codex".into(),
+                resource: "pane:1".into(),
+                summary: "Continue?".into(),
+                expires_at: None,
+                run_tag: None,
+            })
+            .unwrap();
+        reopen_palette(&mut h);
+        let mut focus_approval = egui::Modifiers::COMMAND;
+        focus_approval.alt = true;
+        deliver(&mut h, vec![press(egui::Key::P, focus_approval), enter()]);
+        h.run_steps(3);
+        assert_eq!(
+            h.with_app(|app| app.focus_stack.last().copied()),
+            Some(FocusKind::ApprovalBanner),
+            "the approval took focus"
+        );
+        assert!(palette_activations().is_empty(), "no palette row ran");
+        assert!(
+            monitor
+                .get_needs_you(&id)
+                .is_some_and(|record| record.resolution.is_none()),
+            "the request is still pending"
+        );
+    }
+
     /// Stint 1391: Cmd+P opens on the Commands stop with today's rows and
     /// the first row selected; Tab and Shift+Tab keep the query (one stop
     /// today, so the stop stays put); Enter runs the selected row.
