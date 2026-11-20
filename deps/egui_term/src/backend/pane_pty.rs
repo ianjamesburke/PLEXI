@@ -4,8 +4,8 @@
 //! that pid and waits with the master still open (alacritty_terminal
 //! 0.25.1 `src/tty/unix.rs`, `Pty::drop` and `next_child_event`). That
 //! deadlocked a closing pane and could signal a reused pid. Here the master
-//! closes first, and the shell stays waitable, pinning its pid and group,
-//! until the lifecycle worker reaps it (`session`).
+//! closes first, and the shell belongs to the lifecycle worker, which alone
+//! observes, signals and reaps it (`lifecycle`).
 //!
 //! Spawning mirrors alacritty's `tty::unix::from_fd` line for line: IUTF8,
 //! the child's env, `setsid`, controlling tty, closed fds and signal resets.
@@ -13,25 +13,24 @@
 //! [`prepare`], then the reader's start and poll registration, which
 //! [`Launch::spawn`] waits for. Only then is the shell spawned and attached.
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::mem::ManuallyDrop;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use alacritty_terminal::event::{OnResize, WindowSize};
+use alacritty_terminal::event_loop::EventLoopSender;
 use alacritty_terminal::tty::{
     ChildEvent, EventedPty, EventedReadWrite, ToWinsize,
 };
 use polling::{Event, PollMode, Poller};
-use signal_hook::low_level::{pipe as signal_pipe, unregister};
-use signal_hook::SigId;
 
-use super::session::{self, CloseOnDrop, Session};
+use super::lifecycle::{self, LaunchKey, MastersNotice};
 use super::settings::BackendSettings;
 use super::tap::TapReader;
 use super::{failpoint, PtyExitStatus};
@@ -48,11 +47,11 @@ const REGISTRATION_WAIT: Duration = Duration::from_secs(5);
 /// borrows a live descriptor for its whole ioctl.
 pub(super) type Foreground = Arc<RwLock<Option<RawFd>>>;
 
-/// The shell, once attached, and whether the masters are closed: whichever
-/// of attach and close comes second tells the session its masters closed.
+/// The launch, once admitted, and whether the masters are closed:
+/// whichever comes second tells the worker the masters closed.
 #[derive(Default)]
 struct Slot {
-    session: Option<Arc<Session>>,
+    notice: Option<MastersNotice>,
     masters_closed: bool,
 }
 
@@ -62,20 +61,11 @@ pub(super) struct PanePty {
     /// The tap reads through a dup of the master so it can own its reader.
     reader: ManuallyDrop<TapReader<File>>,
     foreground: Foreground,
-    signals: UnixStream,
-    _sigchld: SigChld,
+    /// The worker writes here after publishing the shell's exit status.
+    wake: UnixStream,
     slot: Arc<Mutex<Slot>>,
-    registered: Option<Sender<io::Result<()>>>,
+    registered: Option<mpsc::Sender<io::Result<()>>>,
     exit_status: Arc<Mutex<Option<PtyExitStatus>>>,
-}
-
-/// The SIGCHLD pipe registration, removed on drop.
-struct SigChld(SigId);
-
-impl Drop for SigChld {
-    fn drop(&mut self) {
-        unregister(self.0);
-    }
 }
 
 /// What spawning the shell needs, kept until the reader is running.
@@ -83,12 +73,11 @@ pub(super) struct Launch {
     pane: u64,
     shell: String,
     command: Command,
-    worker: Sender<session::Job>,
     slot: Arc<Mutex<Slot>>,
     registered: Receiver<io::Result<()>>,
-    /// A second handle on the SIGCHLD pipe, to make the reader look at a
-    /// shell that exited before it was attached.
+    /// The worker's end of the reader's wake socket.
     wake: UnixStream,
+    exit_status: Arc<Mutex<Option<PtyExitStatus>>>,
     pub(super) foreground: Foreground,
 }
 
@@ -103,7 +92,7 @@ pub(super) fn prepare(
     exit_status: Arc<Mutex<Option<PtyExitStatus>>>,
 ) -> io::Result<(PanePty, Launch)> {
     // The shell's owner exists before the shell does.
-    let worker = session::worker()?;
+    lifecycle::worker()?;
     let pty = rustix_openpty::openpty(None, Some(&size.to_winsize()))?;
     let (master, slave): (OwnedFd, OwnedFd) = (pty.controller, pty.user);
     let (master_fd, slave_fd) = (master.as_raw_fd(), slave.as_raw_fd());
@@ -130,11 +119,10 @@ pub(super) fn prepare(
     }
     let master = File::from(master);
     let tap = master.try_clone()?;
-    let (sender, signals) = UnixStream::pair()?;
-    signals.set_nonblocking(true)?;
-    let wake = sender.try_clone()?;
-    let sigchld = SigChld(signal_pipe::register(libc::SIGCHLD, sender)?);
-    failpoint("sigchld")?;
+    let (worker_wake, wake) = UnixStream::pair()?;
+    wake.set_nonblocking(true)?;
+    worker_wake.set_nonblocking(true)?;
+    failpoint("wake")?;
     let mut command = Command::new(&settings.shell);
     command.args(&settings.args);
     command.stdin(slave.try_clone()?);
@@ -189,20 +177,19 @@ pub(super) fn prepare(
             reply,
         )),
         foreground: foreground.clone(),
-        signals,
-        _sigchld: sigchld,
+        wake,
         slot: slot.clone(),
         registered: Some(registered_tx),
-        exit_status,
+        exit_status: exit_status.clone(),
     };
     let launch = Launch {
         pane,
         shell: settings.shell,
         command,
-        worker,
         slot,
         registered,
-        wake,
+        wake: worker_wake,
+        exit_status,
         foreground,
     };
     Ok((pty, launch))
@@ -210,10 +197,13 @@ pub(super) fn prepare(
 
 impl Launch {
     /// Wait for the running reader's poll registration, then spawn the
-    /// shell and attach it. The returned guard hands the shell to the
-    /// lifecycle worker when dropped. On an error no shell exists, and the
-    /// caller must shut the reader down.
-    pub(super) fn spawn(mut self) -> io::Result<(CloseOnDrop, u32)> {
+    /// shell and hand it to the lifecycle worker, which owns it from here.
+    /// `reader` lets the worker end the reader at host stop. On an error no
+    /// shell exists, and the caller must shut the reader down.
+    pub(super) fn spawn(
+        mut self,
+        reader: EventLoopSender,
+    ) -> io::Result<(LaunchKey, u32)> {
         match self.registered.recv_timeout(REGISTRATION_WAIT) {
             Ok(Ok(())) => {},
             Ok(Err(error)) => return Err(error),
@@ -224,6 +214,7 @@ impl Launch {
                 )))
             },
         }
+        let admission = lifecycle::admit()?;
         let child = self.command.spawn().map_err(|error| {
             io::Error::new(
                 error.kind(),
@@ -232,28 +223,24 @@ impl Launch {
         })?;
         // The parent's slave copies close with the command.
         drop(self.command);
-        let session =
-            Arc::new(Session::new(self.pane, child.id() as libc::pid_t));
-        {
-            let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-            if slot.masters_closed {
-                session.masters_closed();
-            }
-            slot.session = Some(session.clone());
-        }
-        // A shell that already exited sent its SIGCHLD before it was
-        // attached; make the reader look again.
-        let _ = self.wake.write_all(&[0]);
-        let pid = session.pid();
+        let pid = child.id();
         #[cfg(test)]
         super::close_tests::note_spawn(pid);
-        Ok((
-            CloseOnDrop {
-                session,
-                worker: self.worker,
-            },
-            pid,
-        ))
+        let launch = admission.own(
+            self.pane,
+            child,
+            self.exit_status,
+            self.wake,
+            reader,
+        );
+        let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        let notice = launch.notice();
+        if slot.masters_closed {
+            notice.send();
+        }
+        slot.notice = Some(notice);
+        drop(slot);
+        Ok((launch, pid))
     }
 }
 
@@ -291,13 +278,13 @@ fn env_or_passwd(
     Ok(field((text(entry.pw_name), text(entry.pw_dir))))
 }
 
-/// Closes both masters, which hangs up the tty, then tells the session, so
-/// the worker may signal. Runs on the PTY reader thread, or the
+/// Closes both masters, which hangs up the tty, then tells the worker, which
+/// signals nothing before that. Runs on the PTY reader thread, or the
 /// constructor's on a failed start; nothing here waits.
 impl Drop for PanePty {
     fn drop(&mut self) {
         #[cfg(any(test, feature = "testing"))]
-        let _held = session::testing::READER_HOLD
+        let _held = lifecycle::testing::READER_HOLD
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         {
@@ -311,8 +298,8 @@ impl Drop for PanePty {
         }
         let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
         slot.masters_closed = true;
-        if let Some(session) = &slot.session {
-            session.masters_closed();
+        if let Some(notice) = &slot.notice {
+            notice.send();
         }
     }
 }
@@ -334,17 +321,20 @@ impl EventedReadWrite for PanePty {
             unsafe { poll.add_with_mode(&*self.master, interest, mode) }
                 .and_then(|()| {
                     #[cfg(test)]
-                    super::close_tests::registration_failpoint(self.pane)?;
+                    if super::close_tests::fail_second_add(self.pane) {
+                        return Err(io::Error::other(
+                            "injected second-add failure",
+                        ))
+                        .inspect_err(|_| self.undo_first_add(poll));
+                    }
                     unsafe {
                         poll.add_with_mode(
-                            &self.signals,
+                            &self.wake,
                             Event::readable(PTY_CHILD_EVENT_TOKEN),
                             PollMode::Level,
                         )
                     }
-                    .inspect_err(|_| {
-                        let _ = poll.delete(&*self.master);
-                    })
+                    .inspect_err(|_| self.undo_first_add(poll))
                 });
         if let Some(registered) = self.registered.take() {
             let _ = registered.send(match &result {
@@ -367,7 +357,7 @@ impl EventedReadWrite for PanePty {
         interest.key = PTY_READ_WRITE_TOKEN;
         poll.modify_with_mode(&*self.master, interest, mode)?;
         poll.modify_with_mode(
-            &self.signals,
+            &self.wake,
             Event::readable(PTY_CHILD_EVENT_TOKEN),
             PollMode::Level,
         )
@@ -375,7 +365,7 @@ impl EventedReadWrite for PanePty {
 
     fn deregister(&mut self, poll: &Arc<Poller>) -> io::Result<()> {
         poll.delete(&*self.master)?;
-        poll.delete(&self.signals)
+        poll.delete(&self.wake)
     }
 
     fn reader(&mut self) -> &mut TapReader<File> {
@@ -388,41 +378,46 @@ impl EventedReadWrite for PanePty {
 }
 
 impl EventedPty for PanePty {
-    /// Like alacritty's, but observes the exit with `WNOWAIT` instead of
-    /// reaping, so the pid stays pinned until the session ends.
+    /// The worker publishes the shell's exit status, then wakes this
+    /// reader. The reader never waits on the shell itself.
     fn next_child_event(&mut self) -> Option<ChildEvent> {
-        let mut byte = [0u8; 1];
-        if let Err(error) = self.signals.read(&mut byte) {
-            if error.kind() != io::ErrorKind::WouldBlock {
-                log::error!(
-                    "egui_term: reading the SIGCHLD pipe failed: {error}"
-                );
+        let mut bytes = [0u8; 16];
+        loop {
+            match self.wake.read(&mut bytes) {
+                Ok(n) if n > 0 => continue,
+                Ok(_) => break,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    break
+                },
+                Err(error) => {
+                    log::error!(
+                        "egui_term: pane {} wake socket failed: {error}",
+                        self.pane
+                    );
+                    return None;
+                },
             }
-            return None;
         }
-        let session = self
-            .slot
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .session
-            .clone()?;
-        let status = match session.exit_status() {
-            Ok(status) => status?,
-            Err(error) => {
-                log::error!(
-                    "egui_term: pane {} cannot observe shell {}: {error}",
-                    self.pane,
-                    session.pid()
-                );
-                return None;
-            },
-        };
-        *self.exit_status.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(status);
+        let status =
+            (*self.exit_status.lock().unwrap_or_else(|e| e.into_inner()))?;
         Some(ChildEvent::Exited(match status {
             PtyExitStatus::Code(code) => Some(code),
             _ => None,
         }))
+    }
+}
+
+impl PanePty {
+    /// The rollback for a registration that failed after its first add.
+    fn undo_first_add(&self, poll: &Arc<Poller>) {
+        if let Err(error) = poll.delete(&*self.master) {
+            log::warn!(
+                "egui_term: pane {} undoing its master registration failed: {error}",
+                self.pane
+            );
+        }
+        #[cfg(test)]
+        super::close_tests::note_undo(self.pane, poll, &self.master);
     }
 }
 

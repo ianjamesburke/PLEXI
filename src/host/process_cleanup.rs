@@ -241,14 +241,6 @@ pub(crate) fn restore_pane_roots(profile: &Path, marker: &str) -> usize {
 }
 
 #[cfg(all(test, unix))]
-pub(crate) fn pane_root_recorded(pid: u32) -> bool {
-    ROOTS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains_key(&pid)
-}
-
-#[cfg(all(test, unix))]
 pub(crate) fn forget_pane_root_for_test(pid: u32) {
     ROOTS.lock().unwrap_or_else(|e| e.into_inner()).remove(&pid);
 }
@@ -274,29 +266,47 @@ pub(crate) struct KillReport {
 }
 
 /// `default_grace` is the caller's budget between HUP/TERM and SIGKILL;
-/// `PLEXI_QUIT_GRACE_MS` overrides it when set.
+/// `PLEXI_QUIT_GRACE_MS` overrides it when set. Terminal panes are first
+/// closed by their shells' owner (`stop_terminal_panes`); work it reports
+/// unresolved counts as remaining, which withholds the clean stamp.
 pub(crate) fn stop_pane_processes(default_grace: Duration) -> KillReport {
-    finish_closing_panes(Instant::now() + POST_KILL_WAIT);
-    stop_pane_processes_for_marker(session_marker(), default_grace)
+    let unresolved = stop_terminal_panes(Instant::now() + PANE_SHUTDOWN_BUDGET);
+    let mut report = stop_pane_processes_for_marker(session_marker(), default_grace);
+    report.remaining += unresolved;
+    report
 }
 
-/// Hand off from pane close to host stop (stint 1650). Closed panes' shells
-/// are owned by egui_term's lifecycle worker until reaped, and their
-/// `PaneProcessGroup` records live as long. The worker escalates and reaps
-/// them first; any it cannot reap by `deadline` it never reaps, so the
-/// sweep that follows can only signal a pinned pid.
-pub(crate) fn finish_closing_panes(deadline: Instant) {
+/// How long host stop waits for the terminal panes' owner (stint 1650):
+/// enough for each pane's hangup, a shortened grace and the reap.
+const PANE_SHUTDOWN_BUDGET: Duration = Duration::from_millis(750);
+
+/// Ask egui_term's lifecycle worker, the one owner of every terminal
+/// pane's shell, to close them all by `deadline`, and return how much work
+/// it reports unresolved or could not confirm.
+fn stop_terminal_panes(deadline: Instant) -> usize {
     #[cfg(unix)]
     {
         let started = Instant::now();
-        let left = egui_term::finish_pane_closes(deadline);
-        log::info!(
-            "quit: closing panes finished in {}ms, left pinned: {left:?}",
-            started.elapsed().as_millis()
-        );
+        let outcome = egui_term::shutdown_panes(deadline);
+        let unresolved = outcome.unresolved();
+        if unresolved == 0 {
+            log::info!(
+                "quit: terminal panes closed by their owner in {}ms",
+                started.elapsed().as_millis()
+            );
+        } else {
+            log::error!(
+                "quit: terminal panes not all closed after {}ms: {outcome:?}",
+                started.elapsed().as_millis()
+            );
+        }
+        unresolved
     }
     #[cfg(not(unix))]
-    let _ = deadline;
+    {
+        let _ = deadline;
+        0
+    }
 }
 
 /// Stop pane groups belonging to `marker`, bounded across process and tmux

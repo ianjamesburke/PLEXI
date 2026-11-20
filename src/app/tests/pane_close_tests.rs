@@ -175,8 +175,9 @@ fn isolated(name: &str) -> bool {
     false
 }
 
-/// A pane whose shell ignores SIGHUP, ready to close.
-fn hangup_ignoring_pane(h: &mut crate::testing::HostHarness) -> (u64, u32) {
+/// A pane whose shell ignores SIGHUP, ready to close: its id, shell pid and
+/// launch key.
+fn hangup_ignoring_pane(h: &mut crate::testing::HostHarness) -> (u64, i32, u64) {
     let terminal = h.add_focused_terminal();
     let dir = tempfile::tempdir().unwrap();
     let ready = dir.path().join("ready");
@@ -190,34 +191,18 @@ fn hangup_ignoring_pane(h: &mut crate::testing::HostHarness) -> (u64, u32) {
         h.run_frames(1);
         ready.exists()
     });
-    let shell = h.terminal_backend(terminal).child_pid();
-    assert!(crate::host::process_cleanup::pane_root_recorded(shell));
-    (terminal, shell)
+    let backend = h.terminal_backend(terminal);
+    (terminal, backend.child_pid() as i32, backend.launch_key())
 }
 
-/// Host stop right after a close (the real `stop_pane_processes`): the
-/// close is finished first, so the shell is signalled only in its own group
-/// and reaped once, and its process record lasts until that reap.
-#[test]
-#[ignore = "requires-pty"]
-fn host_stop_right_after_a_close_reaps_the_shell_once() {
-    if !isolated("host_stop_right_after_a_close_reaps_the_shell_once") {
-        return;
-    }
-    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
-    let mut h = crate::testing::HostHarness::new();
-    let (terminal, shell) = hangup_ignoring_pane(&mut h);
-    h.app.close_pane_by_id(terminal);
-    assert!(
-        crate::host::process_cleanup::pane_root_recorded(shell),
-        "the closing shell's record was dropped before its reap"
-    );
-    crate::host::process_cleanup::stop_pane_processes(Duration::from_millis(200));
-    assert!(gone(shell as i32), "host stop returned before the reap");
-    assert!(!crate::host::process_cleanup::pane_root_recorded(shell));
-    let sid = shell as i32;
+/// The owner signalled only the shell's group and reaped it exactly once.
+fn assert_one_owned_reap(key: u64, sid: i32) {
     use egui_term::pane_close_testing::{events, Event};
-    let events = events(sid);
+    let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+    wait_for("the owner's reap", deadline, || {
+        events(key).contains(&Event::Reaped)
+    });
+    let events = events(key);
     assert_eq!(events.last(), Some(&Event::Reaped), "{events:?}");
     assert_eq!(events.iter().filter(|e| **e == Event::Reaped).count(), 1);
     assert!(
@@ -228,44 +213,51 @@ fn host_stop_right_after_a_close_reaps_the_shell_once() {
     );
 }
 
-/// Host stop while a close is still releasing its masters: the close is
-/// already registered, so host stop sees it and leaves it pinned; the
-/// sweep then ends the shell, and when the masters finally close the
-/// stopped worker neither signals nor reaps, so no pid is released under
-/// the sweep.
+/// Host stop right after a close (the real `stop_pane_processes`): the
+/// shell's owner closes it, signalling only its group and reaping it once,
+/// and the stop counts nothing unresolved.
 #[test]
 #[ignore = "requires-pty"]
-fn host_stop_during_a_close_keeps_the_shell_pinned() {
-    if !isolated("host_stop_during_a_close_keeps_the_shell_pinned") {
+fn host_stop_right_after_a_close_reaps_the_shell_once() {
+    if !isolated("host_stop_right_after_a_close_reaps_the_shell_once") {
         return;
     }
     let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
     let mut h = crate::testing::HostHarness::new();
-    let (terminal, shell) = hangup_ignoring_pane(&mut h);
+    let (terminal, shell, key) = hangup_ignoring_pane(&mut h);
+    h.app.close_pane_by_id(terminal);
+    let report = crate::host::process_cleanup::stop_pane_processes(Duration::from_millis(200));
+    assert_eq!(report.remaining, 0, "{report:?}");
+    assert_one_owned_reap(key, shell);
+    assert!(gone(shell));
+}
+
+/// Host stop while a closing pane still holds its masters: the owner
+/// signals nothing yet, the stop counts the pane unresolved (so no clean
+/// stamp), and the owner still finishes the close once the masters go.
+#[test]
+#[ignore = "requires-pty"]
+fn host_stop_during_a_close_withholds_the_clean_stamp() {
+    if !isolated("host_stop_during_a_close_withholds_the_clean_stamp") {
+        return;
+    }
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    let mut h = crate::testing::HostHarness::new();
+    let (terminal, shell, key) = hangup_ignoring_pane(&mut h);
     let reader = egui_term::pane_close_testing::READER_HOLD
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     h.app.close_pane_by_id(terminal);
-    crate::host::process_cleanup::stop_pane_processes(Duration::from_millis(200));
-    let sid = shell as i32;
-    // The sweep killed it; it stays our unreaped child.
-    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-    let rc = unsafe {
-        libc::waitid(
-            libc::P_PID,
-            shell as libc::id_t,
-            &mut info,
-            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-        )
-    };
+    let report = crate::host::process_cleanup::stop_pane_processes(Duration::from_millis(200));
     assert!(
-        rc == 0 && unsafe { info.si_pid() } == sid,
-        "the sweep left the shell running"
+        report.remaining > 0,
+        "unresolved close counted clean: {report:?}"
     );
+    let dir = tempfile::tempdir().unwrap();
+    assert!(!crate::app::quit::record_quit_integrity(
+        report.remaining,
+        dir.path()
+    ));
     drop(reader);
-    std::thread::sleep(Duration::from_millis(800));
-    assert!(!gone(sid), "the shell was reaped under the sweep");
-    assert!(crate::host::process_cleanup::pane_root_recorded(shell));
-    let events = egui_term::pane_close_testing::events(sid);
-    assert!(events.is_empty(), "the stopped worker acted: {events:?}");
+    assert_one_owned_reap(key, shell);
 }

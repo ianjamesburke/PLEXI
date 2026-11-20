@@ -4,11 +4,11 @@ mod paste;
 #[cfg(all(test, unix))]
 mod close_tests;
 #[cfg(unix)]
-mod session;
+mod lifecycle;
 #[cfg(unix)]
-pub use session::finish_pane_closes;
+pub use lifecycle::{shutdown_panes, ShutdownOutcome, LOG_TARGET as PANE_LIFECYCLE_LOG_TARGET};
 #[cfg(all(unix, any(test, feature = "testing")))]
-pub use session::testing as pane_close_testing;
+pub use lifecycle::testing as pane_close_testing;
 pub mod settings;
 pub mod tap;
 
@@ -298,10 +298,10 @@ pub struct TerminalBackend {
     notifier: Notifier,
     last_content: RenderableContent,
     child_pid: u32,
-    /// The pane's shell. Dropping this registers the close with the
-    /// lifecycle worker at once, so host stop always sees it (`session`).
+    /// The pane's launch, owned by the lifecycle worker. Dropping this asks
+    /// the worker to close it (`lifecycle`).
     #[cfg(unix)]
-    close: session::CloseOnDrop,
+    _launch: lifecycle::LaunchKey,
     /// The master, for foreground queries, until the pty closes it.
     #[cfg(unix)]
     foreground: pane_pty::Foreground,
@@ -409,6 +409,8 @@ impl TerminalBackend {
             false,
         )?;
         let event_loop_sender = pty_event_loop.channel();
+        #[cfg(unix)]
+        let reader = event_loop_sender.clone();
         let notifier = Notifier(event_loop_sender.clone());
         let event_notifier = Notifier(event_loop_sender);
         let url_regex = RegexSearch::new(r#"(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://)[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩`]+"#).unwrap();
@@ -490,11 +492,22 @@ impl TerminalBackend {
                 }
                 log::info!("egui_term: pty_event_subscription_{id} exited");
             })?;
-        let _pty_event_loop_thread = pty_event_loop.spawn();
+        // A launcher thread starts alacritty's reader, so a failure to
+        // create threads is an error here rather than a panic on this
+        // thread. If alacritty's own spawn panics on the launcher, the loop
+        // drops there and the registration report below never comes.
+        let start_reader = move || drop(pty_event_loop.spawn());
+        match failpoint("launcher") {
+            Ok(()) => std::thread::Builder::new()
+                .name(format!("pty-launch-{id}"))
+                .spawn(start_reader)
+                .map(drop)?,
+            Err(error) => return Err(error),
+        }
         // The reader is running. Spawn the shell once its registration is
         // known; on any failure, shut the reader down: it drops the pty.
         #[cfg(unix)]
-        let (close, child_pid) = launch.spawn().inspect_err(|_| {
+        let (launch, child_pid) = launch.spawn(reader).inspect_err(|_| {
             let _ = notifier.0.send(Msg::Shutdown);
         })?;
 
@@ -508,7 +521,7 @@ impl TerminalBackend {
             last_content: initial_content,
             child_pid,
             #[cfg(unix)]
-            close,
+            _launch: launch,
             #[cfg(unix)]
             foreground,
             lines_written: AtomicU64::new(0),
@@ -720,13 +733,10 @@ impl TerminalBackend {
         self.child_pid
     }
 
-    /// Keep `guard` alive until the shell is reaped, which can be after the
-    /// backend is gone (`session`). Off Unix it drops with the call.
-    pub fn hold_until_reaped(&self, guard: Box<dyn Send>) {
-        #[cfg(unix)]
-        self.close.session.hold_until_reaped(guard);
-        #[cfg(not(unix))]
-        drop(guard);
+    /// The launch key the lifecycle worker knows this pane's shell by.
+    #[cfg(all(unix, any(test, feature = "testing")))]
+    pub fn launch_key(&self) -> u64 {
+        self._launch.key()
     }
 
     /// Process-group id currently in the foreground of this PTY, via
@@ -1642,8 +1652,8 @@ impl Default for RenderableContent {
     }
 }
 
-/// Shuts the PTY loop down; its thread closes the masters. The `close`
-/// field then registers the shell with the lifecycle worker, which signals
+/// Shuts the PTY loop down; its thread closes the masters. The `_launch`
+/// field then asks the lifecycle worker to close the shell, which it does
 /// once the masters are closed. Nothing here waits.
 impl Drop for TerminalBackend {
     fn drop(&mut self) {

@@ -49,10 +49,15 @@ pub fn set_level(level: log::LevelFilter) -> bool {
 }
 
 /// Targets that follow the user-configured level: `plexi::*` (the crate is
-/// named `plexi` on every channel — channels only rename the binary) and
-/// `plugin::<id>` targets emitted by the SDK log bridge. Everything else is
+/// named `plexi` on every channel — channels only rename the binary),
+/// `plugin::<id>` targets emitted by the SDK log bridge, and the vendored
+/// terminal's pane-close outcomes (stint 1650). Everything else is
 /// third-party.
 fn is_plexi_target(target: &str) -> bool {
+    #[cfg(unix)]
+    if target == egui_term::PANE_LIFECYCLE_LOG_TARGET {
+        return true;
+    }
     ["plexi", "app"].iter().any(|prefix| {
         target
             .strip_prefix(prefix)
@@ -889,6 +894,23 @@ mod tests {
             "wgpu_core::device",
             log::Level::Warn,
             log::LevelFilter::Error
+        ));
+    }
+
+    /// Stint 1650: pane-close outcomes from the vendored terminal reach the
+    /// log at info, its other targets stay clamped.
+    #[cfg(unix)]
+    #[test]
+    fn pane_lifecycle_outcomes_follow_the_plexi_level() {
+        assert!(log_allowed(
+            egui_term::PANE_LIFECYCLE_LOG_TARGET,
+            log::Level::Info,
+            log::LevelFilter::Info
+        ));
+        assert!(!log_allowed(
+            "egui_term::backend",
+            log::Level::Info,
+            log::LevelFilter::Info
         ));
     }
 

@@ -25,7 +25,7 @@ pub use backend::{
     TerminalMode,
 };
 #[cfg(unix)]
-pub use backend::finish_pane_closes;
+pub use backend::{shutdown_panes, ShutdownOutcome, PANE_LIFECYCLE_LOG_TARGET};
 #[cfg(all(unix, any(test, feature = "testing")))]
 pub use backend::pane_close_testing;
 pub use bindings::{Binding, BindingAction, InputKind, KeyboardBinding};
