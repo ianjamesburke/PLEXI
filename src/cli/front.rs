@@ -317,9 +317,11 @@ fn missing_value_note(bin: &str, path: &[String], error: &clap::Error) -> Option
         .iter()
         .try_fold(&cmd, |node, name| node.find_subcommand(name))?;
     let usage = node.clone().render_usage().to_string();
-    let example = (id == "folder")
-        .then_some("Example: --folder . (or --folder <DIR> for another directory)\n")
-        .unwrap_or_default();
+    let example = if id == "folder" {
+        "Example: --folder . (or --folder <DIR> for another directory)\n"
+    } else {
+        ""
+    };
     Some(format!(
         "{} {arg}\n{example}--{id}: {}\n",
         usage.trim_end(),
@@ -392,27 +394,35 @@ pub(crate) fn argument_owners(argv: &[String]) -> Option<Vec<Option<Owner>>> {
     if path_disagreement(&r.path, &matches).is_some() {
         return None;
     }
-    let mut recognized: Vec<((Vec<String>, String), Vec<String>)> = Vec::new();
+    // The values recognition assigned to each (path, id), in argv order.
+    let mut recognized: Vec<(&Owner, Vec<&str>)> = Vec::new();
     for (token, owner) in argv.iter().zip(&r.owners) {
         let Some(owner) = owner else { continue };
-        let key = (owner.path.clone(), owner.id.clone());
-        let value = token.get(owner.prefix..)?.to_string();
-        match recognized.iter_mut().find(|(k, _)| *k == key) {
+        let value = token.get(owner.prefix..)?;
+        match recognized
+            .iter_mut()
+            .find(|(seen, _)| seen.path == owner.path && seen.id == owner.id)
+        {
             Some((_, values)) => values.push(value),
-            None => recognized.push((key, vec![value])),
+            None => recognized.push((owner, vec![value])),
         }
     }
-    for ((path, id), values) in &recognized {
-        let at = path
+    for (owner, values) in &recognized {
+        let at = owner
+            .path
             .iter()
             .try_fold(&matches, |m, name| m.subcommand_matches(name))?;
         let parsed: Vec<String> = at
-            .try_get_raw(id)
+            .try_get_raw(&owner.id)
             .ok()??
             .map(|value| value.to_string_lossy().into_owned())
             .collect();
-        if &parsed != values {
-            log::warn!("cli_front: ownership of {path:?} {id} disagrees with clap");
+        if parsed != *values {
+            log::warn!(
+                "cli_front: ownership of {:?} {} disagrees with clap",
+                owner.path,
+                owner.id
+            );
             return None;
         }
     }
