@@ -122,6 +122,8 @@ pub(crate) struct TerminalLaunchPlan {
     /// pane's credential scope; commit refuses if the destination's scope no
     /// longer matches it.
     pub(crate) grant: crate::broker::pane_authority::PaneAuthority,
+    /// The destination context's scope revision at admission.
+    pub(crate) scope_revision: u64,
     pub(crate) caller: Option<AdmittedIncarnation>,
     pub(crate) destination: TerminalDestination,
     /// The working directory, resolved once at admission from the explicit
@@ -206,7 +208,7 @@ pub(crate) struct AgentCallPlan {
     pub(crate) destination: Option<AgentAnchor>,
     /// The credential scope of an existing destination, bound at admission.
     /// Commit refuses if that context's root moved since (stint 1632).
-    pub(crate) destination_scope: Option<crate::broker::pane_authority::CredentialScope>,
+    pub(crate) destination_scope: Option<(crate::broker::pane_authority::CredentialScope, u64)>,
     pub(crate) worktree: Option<String>,
     /// A handoff successor's id, reserved from the monotonic allocator at
     /// admission and carried through construction.
@@ -667,8 +669,10 @@ impl PlexiApp {
             grant.scope,
             worktree.as_ref().map(|(branch, _)| branch)
         );
+        let scope_revision = self.context_scope_revision(grant.scope.context_id);
         Ok(TerminalLaunchPlan {
             grant,
+            scope_revision,
             caller,
             destination,
             cwd,
@@ -844,6 +848,13 @@ impl PlexiApp {
             }
         };
         self.verify_admitted_scope(&plan.grant, &context, plan.cwd.as_deref())?;
+        let revision = self.context_scope_revision(plan.grant.scope.context_id);
+        if revision != plan.scope_revision {
+            return Err(refused(format!(
+                "the destination's scope changed after admission (revision {} -> {revision})",
+                plan.scope_revision
+            )));
+        }
         // The directory is the admitted one, or the checkout prepared for
         // this plan; everything else about the pane is its admitted grant.
         let launch = crate::pane_ops::construct::TerminalLaunch {
@@ -1081,9 +1092,12 @@ impl PlexiApp {
             None => Some(self.agent_anchor(origin_win)),
         };
         let destination_scope = destination.as_ref().map(|anchor| {
-            crate::pane_ops::grant::credential_scope(
-                &self.pane_context_env_for_context(anchor.at.context_id),
-                Some(&lookup_root),
+            (
+                crate::pane_ops::grant::credential_scope(
+                    &self.pane_context_env_for_context(anchor.at.context_id),
+                    Some(&lookup_root),
+                ),
+                self.context_scope_revision(anchor.at.context_id),
             )
         });
         log::info!(
@@ -1243,16 +1257,19 @@ impl PlexiApp {
         if let Some(destination) = &plan.destination {
             self.bind_agent_destination(&mut placement, destination)?;
         }
-        if let (Some(admitted), crate::pane_ops::create::AgentTarget::Window { win_idx, .. }) =
-            (&plan.destination_scope, &placement.target)
+        if let (
+            Some((admitted, admitted_revision)),
+            crate::pane_ops::create::AgentTarget::Window { win_idx, .. },
+        ) = (&plan.destination_scope, &placement.target)
         {
             let now = crate::pane_ops::grant::credential_scope(
                 &self.pane_context_env_for_window(*win_idx),
                 Some(&placement.effective_cwd),
             );
-            if &now != admitted {
+            let revision = self.context_scope_revision(admitted.context_id);
+            if &now != admitted || revision != *admitted_revision {
                 return Err(refused(format!(
-                    "the worker's destination scope changed after admission: root {} -> {}",
+                    "the worker's destination scope changed after admission: root {} -> {} (revision {admitted_revision} -> {revision})",
                     admitted.workspace_root.display(),
                     now.workspace_root.display()
                 )));
@@ -2281,7 +2298,20 @@ mod tests {
             "no secret read"
         );
 
+        // A to B and back to A between admission and commit: refused by
+        // revision, though the path is the admitted one.
         h.app.set_context_root(root_a.path().to_path_buf(), None);
+        let plan = h
+            .app
+            .admit_terminal_launch(&spec(&h, "split_h", Some(a), None))
+            .unwrap();
+        h.app.set_context_root(root_b.path().to_path_buf(), None);
+        h.app.set_context_root(root_a.path().to_path_buf(), None);
+        let error = apply(&mut h, &plan).expect_err("away and back refuses");
+        assert!(error.contains("revision"), "{error}");
+        assert_eq!(issued.get(), 0, "no credential issued");
+        assert_eq!(starts.get(), 0, "no backend started");
+
         let mut in_c = spec(&h, "split_h", Some(a), None);
         in_c.cwd = Some(cwd_c.path().to_path_buf());
         let plan = h.app.admit_terminal_launch(&in_c).unwrap();
@@ -4614,8 +4644,18 @@ mod tests {
             Some(AdmittedSubcontext::Existing { .. })
         ));
         let moved = tempfile::tempdir().unwrap();
+        let sub_root = h
+            .app
+            .router
+            .iter()
+            .find(|c| c.context_id == sub_context)
+            .unwrap()
+            .root
+            .clone();
+        // A to B and back to A: the same path, a later revision.
         h.app
             .set_context_root(moved.path().to_path_buf(), Some(sub_context));
+        h.app.set_context_root(sub_root, Some(sub_context));
         let before = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
         let error = apply_agent(&mut h, &second).expect_err("a moved destination root refuses");
         assert!(error.contains("destination scope changed"), "{error}");
@@ -4626,5 +4666,82 @@ mod tests {
         );
         let third = call(&mut h);
         apply_agent(&mut h, &third).expect("an unchanged destination launches");
+    }
+
+    /// Round 6: an outside call into an empty window binds that window's
+    /// context revision; its root moving away and back refuses.
+    #[test]
+    fn grant_empty_destination_window_binds_its_scope_revision() {
+        let _features =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
+        let mut h = HostHarness::new();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        write_role(&root, "");
+        assert!(
+            h.app.windows[0].tree.root.is_none(),
+            "fixture: an empty window"
+        );
+        let plan = admit_tester_call(&mut h, &root);
+        assert!(matches!(
+            plan.destination,
+            Some(AgentAnchor { anchor: None, .. })
+        ));
+        let elsewhere = tempfile::tempdir().unwrap();
+        h.app.set_context_root(elsewhere.path().to_path_buf(), None);
+        h.app.set_context_root(root.clone(), None);
+        let error = apply_agent(&mut h, &plan).expect_err("away and back refuses");
+        assert!(error.contains("revision"), "{error}");
+        let fresh = admit_tester_call(&mut h, &root);
+        apply_agent(&mut h, &fresh).expect("a fresh admission launches");
+    }
+
+    /// Round 6, regression against alpha: a desktop shell saved while it ran
+    /// a detected agent resumes that agent restricted, with no terminal or
+    /// folder secret; a plain desktop shell saved beside it keeps its
+    /// eligibility.
+    #[test]
+    fn grant_restored_detected_agent_session_resolves_no_secrets() {
+        let profile = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let (agent, plain) = {
+            let mut h = HostHarness::from_profile_dir(profile.path());
+            let plain = h.add_focused_terminal();
+            let agent = h.add_focused_terminal();
+            h.app.set_context_root(root.path().to_path_buf(), None);
+            let win = window_of(&h, agent);
+            let terminal = h.app.windows[win]
+                .panes
+                .get_mut(&agent)
+                .and_then(|p| p.as_terminal_mut())
+                .unwrap();
+            terminal.agent_harness = Some("pi".into());
+            terminal.agent = Some(crate::protocol::PaneAgentState {
+                pane_id: agent,
+                state: crate::protocol::AgentState::Idle,
+                agent: "pi".into(),
+                detail: None,
+                session_id: None,
+            });
+            let saved = grant_of(&h, agent);
+            assert!(
+                saved.is_desktop() && saved.secrets.workspace_terminal_env,
+                "fixture: the shell's grant was desktop and secret-eligible"
+            );
+            assert!(h.app.save_workspace_now(), "saved");
+            (agent, plain)
+        };
+        let h = HostHarness::from_profile_dir(profile.path());
+        let restored = grant_of(&h, agent);
+        assert_eq!(
+            restored.secrets.policy(),
+            crate::host::shell::SecretPolicy::NONE,
+            "a resumed agent resolves no terminal or folder secret"
+        );
+        assert!(!restored.is_desktop(), "a resumed agent is restricted");
+        assert!(
+            grant_of(&h, plain).secrets.workspace_terminal_env,
+            "control"
+        );
     }
 }

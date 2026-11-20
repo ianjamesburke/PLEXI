@@ -4900,6 +4900,65 @@ fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
     assert!(replies_to(&received, "replaced").is_empty());
 }
 
+/// Round 6 P2-2: a request held behind an overlay belongs to the guest that
+/// made it. A hot reload ends that guest: its held requests are retired and
+/// none is carried out or answered for the relaunched guest.
+#[test]
+fn sdk_held_request_is_retired_by_a_guest_reload() {
+    let mut h = HostHarness::new();
+    let pane_id = h.launch_dev_view("node-click-probe");
+    let incarnation = h
+        .app
+        .windows
+        .iter()
+        .find_map(|w| w.panes.get(&pane_id))
+        .and_then(crate::host::pane::Pane::as_view)
+        .unwrap()
+        .incarnation;
+    h.app.attention_queue.open = true;
+    h.app
+        .overlay_held_cmds
+        .push(crate::app::view_trait::ViewCommand::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: "split_h".to_string(),
+            args: Vec::new(),
+            from_pane_id: None,
+            request_id: Some("held".to_string()),
+            target_context: None,
+            emitter: Some(crate::app::view_trait::ViewEmitter {
+                pane_id,
+                incarnation,
+            }),
+        });
+    assert!(h
+        .app
+        .reload_view_pane(pane_id, "test: reload during a held request"));
+    assert!(
+        h.app.overlay_held_cmds.is_empty(),
+        "the old guest's request is retired"
+    );
+    let renewed = h
+        .app
+        .windows
+        .iter()
+        .find_map(|w| w.panes.get(&pane_id))
+        .and_then(crate::host::pane::Pane::as_view)
+        .unwrap()
+        .incarnation;
+    assert_ne!(
+        renewed, incarnation,
+        "the relaunched guest is a new emitter"
+    );
+    let panes = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
+    h.app.attention_queue.open = false;
+    h.run_hidden_frames(2);
+    assert_eq!(
+        h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>(),
+        panes,
+        "nothing launched for the ended guest"
+    );
+}
+
 /// Falsifying regression #1: before stint 0724 Phase D 2/2, `OpenDirectedPipe`
 /// resolved its target purely by `active_window`, with no check that the
 /// target lives in the caller's own context — a pane in context A could open

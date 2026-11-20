@@ -673,6 +673,10 @@ pub struct PlexiApp {
     /// Only overlay-unsafe side effects are held here; safe commands (ShowNotification,
     /// pipes, queries) are dispatched immediately even during overlay ownership.
     pub(crate) overlay_held_cmds: Vec<crate::app::view_trait::ViewCommand>,
+    /// Each context's scope revision: advanced by every host-authorized root
+    /// change. A launch admitted at one revision refuses at another, even if
+    /// the root came back to the same path (stint 1632).
+    pub(crate) context_scope_revisions: HashMap<u64, u64>,
     /// Host agent runtime (Phase C, docs/prm/agent-platform.md). Loaded from
     /// the active workspace's `agents/` dir; ticked once per frame in
     /// `update()` to consume agent event deliveries and finished turns.
@@ -1996,6 +2000,7 @@ impl PlexiApp {
                     terminal_traversal_lock: None,
                     focus_journal_path: profile_dir.join("focus-journal.jsonl"),
                     overlay_held_cmds: Vec::new(),
+            context_scope_revisions: HashMap::new(),
                     agent_host: crate::agent::AgentHost::production(config.ai, model_modes),
                     pending_pane_clicks: HashMap::new(),
                     pending_pane_inputs: HashMap::new(),
@@ -2291,6 +2296,7 @@ impl PlexiApp {
             terminal_traversal_lock: None,
             focus_journal_path: profile_dir.join("focus-journal.jsonl"),
             overlay_held_cmds: Vec::new(),
+            context_scope_revisions: HashMap::new(),
             agent_host,
             pending_pane_clicks: HashMap::new(),
             pending_pane_inputs: HashMap::new(),
@@ -2434,6 +2440,14 @@ impl PlexiApp {
         pane_id: crate::spatial::tiling::PaneId,
     ) -> Option<crate::broker::PermissionPosture> {
         self.pane_ceiling(pane_id).ok().flatten()
+    }
+
+    /// A context's current scope revision.
+    pub(crate) fn context_scope_revision(&self, context_id: u64) -> u64 {
+        self.context_scope_revisions
+            .get(&context_id)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// The principal a verified event-bus caller subscribes as.
@@ -3302,6 +3316,7 @@ impl PlexiApp {
             terminal_traversal_lock: None,
             focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
             overlay_held_cmds: Vec::new(),
+            context_scope_revisions: HashMap::new(),
             agent_host: crate::agent::AgentHost::inert(),
             pending_pane_clicks: HashMap::new(),
             pending_pane_inputs: HashMap::new(),

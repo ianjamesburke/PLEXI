@@ -24,6 +24,22 @@ fn emitter_in(pane: &mut Pane, emitter: ViewEmitter) -> Option<&mut ViewPane> {
 }
 
 impl PlexiApp {
+    /// Drop the requests a view instance left held (behind an overlay) when
+    /// that instance ends: they have no requester to act for or answer.
+    pub(crate) fn retire_commands_from(&mut self, emitter: ViewEmitter) {
+        use super::view_trait::ViewCommand;
+        let before = self.overlay_held_cmds.len();
+        self.overlay_held_cmds.retain(|cmd| {
+            !matches!(cmd,
+                ViewCommand::SpawnPane { emitter: Some(e), .. }
+                | ViewCommand::SpawnView { emitter: Some(e), .. } if *e == emitter)
+        });
+        let retired = before - self.overlay_held_cmds.len();
+        if retired > 0 {
+            log::info!("sdk_reply: retired {retired} held request(s) of ended emitter {emitter:?}");
+        }
+    }
+
     /// The window holding the emitting view instance, if it is still open.
     fn emitter_window(&mut self, emitter: ViewEmitter) -> Option<usize> {
         self.windows.iter_mut().position(|w| {

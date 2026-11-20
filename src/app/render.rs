@@ -1122,7 +1122,16 @@ impl PlexiApp {
 
                 if let Some(parent) = child_agent_dive { self.dive_into_agent_children(parent); }
                 if let Some(sealed) = reopen_sealed {
-                    self.open_pane_beside_sealed(sealed);
+                    // A new pane is the person's own: only physical input
+                    // opens one, never an injected click (stint 1632).
+                    if self.synthetic_input_frame {
+                        log::info!(
+                            "sealed_notice: refused a synthetic request for a new pane beside {sealed}: \
+                             only a physical click on the notice opens a pane the person owns"
+                        );
+                    } else {
+                        self.open_pane_beside_sealed(sealed);
+                    }
                 }
 
                 // Portal double-click zoom — same logic as ToggleZoom on a Portal pane.

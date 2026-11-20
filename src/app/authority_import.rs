@@ -177,7 +177,7 @@ impl Importer<'_> {
     ) -> (PaneAuthority, LiveScope) {
         let scope = self.scope_of(pane, context_id);
         match self.current(pane, context_id) {
-            Some(Ok(saved)) => return (saved.grant, saved.scope),
+            Some(Ok(saved)) => return (agent_session_narrowed(pane, saved.grant), saved.scope),
             Some(Err(problem)) => {
                 log::warn!(
                     "workspace_restore: pane {} grant refused: {problem}; sealed",
@@ -369,4 +369,22 @@ fn legacy_plain_shell(pane_id: u64) -> Restriction {
         "workspace_restore: legacy plain shell {pane_id} has no provable provenance; sealed"
     );
     Restriction::sealed(SealReason::OlderSave)
+}
+
+/// A pane saved with an agent session resumes that agent: it is restricted
+/// and resolves no secret, whatever its grant allowed the shell it started
+/// in (stint 1632, round 6; alpha withheld secrets from every restored
+/// agent session).
+fn agent_session_narrowed(pane: &SavedPane, mut grant: PaneAuthority) -> PaneAuthority {
+    if pane.agent_session.is_some()
+        && (grant.ownership == Ownership::Desktop || grant.secrets != SecretEligibility::none())
+    {
+        log::info!(
+            "workspace_restore: pane {} resumes an agent session; restricted, no secrets",
+            pane.id
+        );
+        grant.ownership = Ownership::Restricted;
+        grant.secrets = SecretEligibility::none();
+    }
+    grant
 }

@@ -1325,7 +1325,19 @@ impl PlexiApp {
             "plugin::{} reload triggered ({reason}) for CPython WASM pane {pane_id}",
             view_pane.manifest_id
         );
-        runtime.relaunch().is_ok()
+        if runtime.relaunch().is_err() {
+            return false;
+        }
+        // A relaunched guest is a new emitter: requests the old guest left
+        // pending are retired, and nothing answers them to the new one
+        // (stint 1632).
+        let retired = crate::app::view_trait::ViewEmitter {
+            pane_id,
+            incarnation: view_pane.incarnation,
+        };
+        view_pane.incarnation = Default::default();
+        self.retire_commands_from(retired);
+        true
     }
 
     /// Drain pending `ReloadRequest`s from the watcher channel and reload

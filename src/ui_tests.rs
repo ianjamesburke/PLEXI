@@ -13530,6 +13530,16 @@ open(out + ".done", "w").close()
         assert!(notice.rect().width() > 0.0, "the notice is painted");
         h.save_screenshot(&evidence_png!())
             .expect("screenshot failed");
+        // An injected click through the pane input queue (`pane click`) is
+        // refused: only physical input opens a pane the person owns.
+        let button = h.harness().get_by_label("Open a new pane").rect();
+        let click = injected_click(&h, button);
+        injected(&mut h, click);
+        assert_eq!(
+            h.with_app(|app| app.windows[app.active_window].panes.len()),
+            1,
+            "a synthetic click opens nothing"
+        );
         h.harness().get_by_label("Open a new pane").click();
         h.run_steps(3);
         let opened = h.with_app(|app| {

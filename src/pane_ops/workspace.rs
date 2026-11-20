@@ -1949,6 +1949,9 @@ impl PlexiApp {
         // the same revision, and anything admitted under the old one is
         // rechecked before it takes effect (stint 1632).
         let scoped_root = crate::platform::path::canonical_or_self(&root);
+        let revision = self.context_scope_revisions.entry(context_id).or_default();
+        *revision += 1;
+        log::info!("set_context_root: context {context_id} scope revision {revision}");
         for terminal in self
             .windows
             .iter()
