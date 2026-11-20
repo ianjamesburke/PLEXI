@@ -4767,13 +4767,17 @@ fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
     // B's window focuses the bystander, and B is the active window.
     let focus_bystander = |h: &mut HostHarness| {
         h.app.active_window = win_b;
-        let tile = h.app.windows[win_b].tree.tiles.find_pane(&bystander).unwrap();
+        let tile = h.app.windows[win_b]
+            .tree
+            .tiles
+            .find_pane(&bystander)
+            .unwrap();
         h.app.set_window_focused_pane(win_b, tile);
     };
     focus_bystander(&mut h);
     assert_eq!(h.app.windows[h.app.active_window].context_id, context_b);
-    let spawn = |request_id: &str, target: Option<u64>| {
-        crate::app::view_trait::ViewCommand::SpawnPane {
+    let spawn =
+        |request_id: &str, target: Option<u64>| crate::app::view_trait::ViewCommand::SpawnPane {
             type_id: "terminal".to_string(),
             layout: "split_h".to_string(),
             args: Vec::new(),
@@ -4781,8 +4785,7 @@ fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
             request_id: Some(request_id.to_string()),
             target_context: target,
             emitter: None,
-        }
-    };
+        };
     let replies_to = |log: &std::sync::Arc<std::sync::Mutex<Vec<PlexiEvent>>>, id: &str| {
         log.lock()
             .unwrap()
@@ -4812,11 +4815,17 @@ fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
         queue_pipe_command(&mut h, requester, spawn("fails", Some(context_b)));
         h.run_hidden_frames(1);
     }
-    assert!(matches!(replies_to(&received, "fails").as_slice(), [PlexiEvent::PaneSpawnError { .. }]));
+    assert!(matches!(
+        replies_to(&received, "fails").as_slice(),
+        [PlexiEvent::PaneSpawnError { .. }]
+    ));
 
     queue_pipe_command(&mut h, requester, spawn("invalid", Some(u64::MAX)));
     h.run_hidden_frames(1);
-    assert!(matches!(replies_to(&received, "invalid").as_slice(), [PlexiEvent::PaneSpawnError { .. }]));
+    assert!(matches!(
+        replies_to(&received, "invalid").as_slice(),
+        [PlexiEvent::PaneSpawnError { .. }]
+    ));
 
     let context_c = crate::testing::reserve_test_context_id();
     let root_c = tempfile::tempdir().expect("root c");
@@ -4827,20 +4836,32 @@ fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
     h.app.host.add_context(context_c, Some(context_a));
     queue_pipe_command(&mut h, requester, spawn("empty", Some(context_c)));
     h.run_hidden_frames(1);
-    assert!(matches!(replies_to(&received, "empty").as_slice(), [PlexiEvent::PaneSpawnError { .. }]));
+    assert!(matches!(
+        replies_to(&received, "empty").as_slice(),
+        [PlexiEvent::PaneSpawnError { .. }]
+    ));
 
     // Held behind an overlay, then released.
     h.app.attention_queue.open = true;
     queue_pipe_command(&mut h, requester, spawn("held", Some(context_b)));
     h.run_hidden_frames(1);
-    assert!(replies_to(&received, "held").is_empty(), "held while the overlay owns input");
+    assert!(
+        replies_to(&received, "held").is_empty(),
+        "held while the overlay owns input"
+    );
     focus_bystander(&mut h);
     h.app.attention_queue.open = false;
     h.run_hidden_frames(1);
-    assert!(matches!(replies_to(&received, "held").as_slice(), [PlexiEvent::PaneSpawned { .. }]));
+    assert!(matches!(
+        replies_to(&received, "held").as_slice(),
+        [PlexiEvent::PaneSpawned { .. }]
+    ));
 
     for id in ["ok", "fails", "invalid", "empty", "held"] {
-        assert!(replies_to(&overheard, id).is_empty(), "the focused bystander heard {id}");
+        assert!(
+            replies_to(&overheard, id).is_empty(),
+            "the focused bystander heard {id}"
+        );
     }
 }
 
@@ -6115,7 +6136,8 @@ fn first_boot_shape_matches_new_context() {
     let boot_has_root = h.app.windows[0].tree.root.is_some();
     let boot_has_focus = h.app.windows[0].focused_pane.is_some();
 
-    h.app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
+    h.app
+        .new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     if h.app.router.len() == 1 {
         return; // new_context degraded (no PTY) — nothing to compare
     }
@@ -6149,9 +6171,7 @@ fn new_context_fixture() -> (HostHarness, tempfile::TempDir, tempfile::TempDir) 
     let mut h = HostHarness::new();
     let root = h.workspace_root();
     let context0 = h.app.pane_context_env_for_window(0);
-    let launch = h
-        .app
-        .desktop_terminal_launch(context0, Some(root), None);
+    let launch = h.app.desktop_terminal_launch(context0, Some(root), None);
     h.app
         .seed_window_root_pane(0, launch)
         .expect("PTY and shell must be available for the new-context root pane");
@@ -6204,15 +6224,22 @@ fn new_context_initialization_records_stage_timing() {
         active
     };
 
-    h.app.new_context_at_path(empty_dir.path().to_path_buf(), crate::broker::pane_authority::GrantSource::DesktopInput);
+    h.app.new_context_at_path(
+        empty_dir.path().to_path_buf(),
+        crate::broker::pane_authority::GrantSource::DesktopInput,
+    );
     check(&mut h, crate::pane_ops::NewContextKind::AtPath, 2);
 
-    h.app.new_context_at_path(project_dir.path().to_path_buf(), crate::broker::pane_authority::GrantSource::DesktopInput);
+    h.app.new_context_at_path(
+        project_dir.path().to_path_buf(),
+        crate::broker::pane_authority::GrantSource::DesktopInput,
+    );
     let project = check(&mut h, crate::pane_ops::NewContextKind::AtPath, 3);
     assert_eq!(project.name.displayed(), "anchor-project");
     assert_eq!(project.description.as_deref(), Some("test anchor project"));
 
-    h.app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
+    h.app
+        .new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     check(&mut h, crate::pane_ops::NewContextKind::Empty, 4);
 }
 
@@ -6227,7 +6254,10 @@ fn perf_gate_new_context_latency() {
 
     for (label, dir) in [("Empty", &empty_dir), ("Project", &project_dir)] {
         let start = std::time::Instant::now();
-        h.app.new_context_at_path(dir.path().to_path_buf(), crate::broker::pane_authority::GrantSource::DesktopInput);
+        h.app.new_context_at_path(
+            dir.path().to_path_buf(),
+            crate::broker::pane_authority::GrantSource::DesktopInput,
+        );
         let host_elapsed = start.elapsed();
         let timing = h
             .app
@@ -6266,8 +6296,10 @@ fn perf_gate_new_context_latency() {
 
     for i in 0..5 {
         let warm_empty_sub = tempfile::tempdir().expect("create warm empty tempdir");
-        h.app
-            .new_context_at_path(warm_empty_sub.path().to_path_buf(), crate::broker::pane_authority::GrantSource::DesktopInput);
+        h.app.new_context_at_path(
+            warm_empty_sub.path().to_path_buf(),
+            crate::broker::pane_authority::GrantSource::DesktopInput,
+        );
         let t_empty = h
             .app
             .last_new_context_timing
@@ -6314,8 +6346,10 @@ fn perf_gate_new_context_latency() {
             format!("id = \"warm-{i}\"\n\n[context]\nname = \"warm-{i}\"\n"),
         )
         .expect("write sub workspace.toml");
-        h.app
-            .new_context_at_path(warm_project_sub.path().to_path_buf(), crate::broker::pane_authority::GrantSource::DesktopInput);
+        h.app.new_context_at_path(
+            warm_project_sub.path().to_path_buf(),
+            crate::broker::pane_authority::GrantSource::DesktopInput,
+        );
         let t_proj = h
             .app
             .last_new_context_timing
@@ -16607,7 +16641,9 @@ fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_an
         Some(pane_id.to_string().as_str())
     );
     let posture = term
-        .permission_ceiling().ok().flatten()
+        .permission_ceiling()
+        .ok()
+        .flatten()
         .expect("permission posture snapshotted from settings.toml");
     assert!(
         posture.allow.iter().any(|s| s == "pane.send"),

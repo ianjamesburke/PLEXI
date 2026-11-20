@@ -771,8 +771,13 @@ impl PlexiApp {
         scope.posture = match ceiling {
             Ok(posture) => posture,
             Err(error) => {
-                log::info!("plugin_call: caller pane {:?} refused: {error}", verified.pane_id);
-                reply(serde_json::json!({"ok":false, "error_code":"permission_denied", "error": error}));
+                log::info!(
+                    "plugin_call: caller pane {:?} refused: {error}",
+                    verified.pane_id
+                );
+                reply(
+                    serde_json::json!({"ok":false, "error_code":"permission_denied", "error": error}),
+                );
                 return;
             }
         };

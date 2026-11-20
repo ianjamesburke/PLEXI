@@ -479,8 +479,8 @@ impl PlexiApp {
         };
         // The seeded panes are admitted from the request's verified source;
         // the anchor pane is placement only.
-        let Some((child_tree, child_panes, child_root_tile, child_pane_ids)) = self
-            .create_context_pane_set(&child_env, path.clone(), &pane_commands, layout, &source)
+        let Some((child_tree, child_panes, child_root_tile, child_pane_ids)) =
+            self.create_context_pane_set(&child_env, path.clone(), &pane_commands, layout, &source)
         else {
             log::error!("new_child_context: failed to create terminals for child context");
             return Err("failed to create terminals for child context".to_string());
@@ -952,8 +952,7 @@ impl PlexiApp {
             tree_history: Default::default(),
         });
         let new_idx = self.windows.len() - 1;
-        let launch =
-            self.terminal_launch(source, context_env.clone(), Some(path.clone()), None);
+        let launch = self.terminal_launch(source, context_env.clone(), Some(path.clone()), None);
         if self.seed_window_root_pane(new_idx, launch).is_none() {
             log::error!(
                 "new_context_at_path: failed to seed root pane for {} — aborting new context",
@@ -2475,7 +2474,9 @@ impl PlexiApp {
                                 crate::broker::pane_authority::SavedPaneAuthority::of(authority),
                             )
                             .inspect_err(|error| {
-                                log::error!("workspace_save: pane {id} grant not serialized: {error}")
+                                log::error!(
+                                    "workspace_save: pane {id} grant not serialized: {error}"
+                                )
                             })
                             .ok()
                         }),

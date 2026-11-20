@@ -49,7 +49,10 @@ impl PlexiApp {
         );
         if let Some(ctx_path) = crate::config::take_adopted_context_path() {
             log::info!("adopted context path: {}", ctx_path.display());
-            self.new_context_at_path(ctx_path, crate::broker::pane_authority::GrantSource::DesktopInput);
+            self.new_context_at_path(
+                ctx_path,
+                crate::broker::pane_authority::GrantSource::DesktopInput,
+            );
             self.mark_workspace_dirty();
         }
         #[cfg(target_os = "macos")]
@@ -63,7 +66,10 @@ impl PlexiApp {
                 if !finder_paths.is_empty() {
                     for path in finder_paths {
                         log::info!("finder_service: opening context for {}", path.display());
-                        self.new_context_at_path(path, crate::broker::pane_authority::GrantSource::DesktopInput);
+                        self.new_context_at_path(
+                            path,
+                            crate::broker::pane_authority::GrantSource::DesktopInput,
+                        );
                     }
                     self.mark_workspace_dirty();
                 }

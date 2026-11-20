@@ -77,7 +77,11 @@ pub(crate) fn import(
     let panes: HashMap<u64, (&SavedPane, u64)> = ws
         .windows
         .iter()
-        .flat_map(|win| win.panes.iter().map(move |pane| (pane.id, (pane, win.context_id))))
+        .flat_map(|win| {
+            win.panes
+                .iter()
+                .map(move |pane| (pane.id, (pane, win.context_id)))
+        })
         .collect();
     let importer = Importer {
         profile,
@@ -95,7 +99,11 @@ pub(crate) fn import(
         let restored = importer.restore(pane, context_id, &mut memo);
         log::info!(
             "workspace_restore: pane {pane_id} grant from {} ownership={:?} ceiling={}",
-            if pane.authority.is_some() { "its record" } else { "legacy import" },
+            if pane.authority.is_some() {
+                "its record"
+            } else {
+                "legacy import"
+            },
             restored.0.ownership,
             match restored.0.ceiling {
                 Ceiling::Baseline => "baseline",
@@ -118,7 +126,11 @@ struct Importer<'a> {
 
 impl Importer<'_> {
     fn scope_of(&self, pane: &SavedPane, context_id: u64) -> CredentialScope {
-        let root = self.roots.get(&context_id).cloned().unwrap_or_else(|| pane.cwd.clone());
+        let root = self
+            .roots
+            .get(&context_id)
+            .cloned()
+            .unwrap_or_else(|| pane.cwd.clone());
         CredentialScope {
             context_id,
             workspace_root: crate::platform::path::canonical_or_self(&root),
@@ -126,7 +138,11 @@ impl Importer<'_> {
     }
 
     /// A current-format record, if it validates for this pane.
-    fn current(&self, pane: &SavedPane, context_id: u64) -> Option<Result<SavedPaneAuthority, String>> {
+    fn current(
+        &self,
+        pane: &SavedPane,
+        context_id: u64,
+    ) -> Option<Result<SavedPaneAuthority, String>> {
         let value = pane.authority.as_ref()?;
         let saved = match serde_json::from_value::<SavedPaneAuthority>(value.clone()) {
             Ok(saved) => saved,
@@ -163,7 +179,10 @@ impl Importer<'_> {
         match self.current(pane, context_id) {
             Some(Ok(saved)) => return (saved.grant, saved.scope),
             Some(Err(problem)) => {
-                log::warn!("workspace_restore: pane {} grant refused: {problem}; sealed", pane.id);
+                log::warn!(
+                    "workspace_restore: pane {} grant refused: {problem}; sealed",
+                    pane.id
+                );
                 return self.sealed(pane, scope);
             }
             None => {}

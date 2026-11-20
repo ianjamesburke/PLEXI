@@ -133,13 +133,15 @@ impl PlexiApp {
             if let crate::host::event_subscriptions::SubscriberAuthority::Pane(admitted) =
                 &req.subscriber_authority
             {
-                req.workspace_root_override =
-                    Some(admitted.authority.scope().workspace_root);
+                req.workspace_root_override = Some(admitted.authority.scope().workspace_root);
             }
         }
         if req.cancelled.is_some() {
             req.broker_actor_override = Some(
-                crate::host::event_subscriptions::HostSubscriptionService::resolve_cli_subscriber(req.from_pane_id).1,
+                crate::host::event_subscriptions::HostSubscriptionService::resolve_cli_subscriber(
+                    req.from_pane_id,
+                )
+                .1,
             );
         }
         // When a parent master pane subscribes to its spawned child worker's

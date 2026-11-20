@@ -4533,7 +4533,9 @@ impl PermissionMonitor {
                     binding,
                 },
             );
-        log::info!("permission_monitor: issued call credential for actor={actor_id} pane={pane_id:?}");
+        log::info!(
+            "permission_monitor: issued call credential for actor={actor_id} pane={pane_id:?}"
+        );
         token
     }
 
@@ -4604,33 +4606,32 @@ impl PermissionMonitor {
                 _,
                 _,
                 Option<u64>,
-            ) =
-                match &cred.binding {
-                    CredentialBinding::Pane(live) => {
-                        if live.is_revoked() {
-                            log::info!(
-                                "permission_monitor: credential of revoked pane {} incarnation {}",
-                                live.pane_id(),
-                                live.incarnation()
-                            );
-                            return Err(IdentityError::StaleCredential);
-                        }
-                        let scope = live.scope();
-                        (
-                            Some(live.pane_id()),
-                            scope.context_id,
-                            crate::platform::path::canonical_or_self(&scope.workspace_root),
-                            Some(live.clone()),
-                            Some(scope.revision),
-                        )
+            ) = match &cred.binding {
+                CredentialBinding::Pane(live) => {
+                    if live.is_revoked() {
+                        log::info!(
+                            "permission_monitor: credential of revoked pane {} incarnation {}",
+                            live.pane_id(),
+                            live.incarnation()
+                        );
+                        return Err(IdentityError::StaleCredential);
                     }
-                    #[cfg(test)]
-                    CredentialBinding::Fixed {
-                        pane_id,
-                        context_id,
-                        workspace_root,
-                    } => (*pane_id, *context_id, workspace_root.clone(), None, None),
-                };
+                    let scope = live.scope();
+                    (
+                        Some(live.pane_id()),
+                        scope.context_id,
+                        crate::platform::path::canonical_or_self(&scope.workspace_root),
+                        Some(live.clone()),
+                        Some(scope.revision),
+                    )
+                }
+                #[cfg(test)]
+                CredentialBinding::Fixed {
+                    pane_id,
+                    context_id,
+                    workspace_root,
+                } => (*pane_id, *context_id, workspace_root.clone(), None, None),
+            };
             if let (Some(cred_pane), Some(claim)) = (cred_pane, claimed_pane) {
                 if cred_pane != claim {
                     log::info!("permission_monitor: credential pane {cred_pane} != claim {claim}");

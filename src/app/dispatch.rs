@@ -4,8 +4,7 @@ use crate::app::notifications::PendingNotification;
 use crate::app::view_trait::ViewCommand;
 
 use super::{
-    is_overlay_unsafe_cmd, overlay_unsafe_cmd_name,
-    register_directed_pipe_on_target, PlexiApp,
+    is_overlay_unsafe_cmd, overlay_unsafe_cmd_name, register_directed_pipe_on_target, PlexiApp,
 };
 
 pub(crate) fn native_wasm_notification_contract_error(icon: Option<&str>) -> Option<&'static str> {

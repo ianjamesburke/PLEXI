@@ -37,7 +37,9 @@ impl PlexiApp {
         match self.pane_authority(caller) {
             Some(live) => GrantSource::VerifiedPane(Box::new(live.grant().clone())),
             None => {
-                log::info!("pane_grant: caller pane {caller} has no grant; its children are sealed");
+                log::info!(
+                    "pane_grant: caller pane {caller} has no grant; its children are sealed"
+                );
                 let scope = CredentialScope {
                     context_id: 0,
                     workspace_root: PathBuf::new(),

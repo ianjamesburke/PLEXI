@@ -379,7 +379,6 @@ impl PlexiApp {
         }
         found
     }
-
 }
 
 /// The workspace a chat belongs to: the nearest project root (`.plexi` or

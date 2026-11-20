@@ -199,7 +199,9 @@ pub(crate) enum GrantSource {
     HostSystem,
     /// The calling pane's own grant: the new pane is bounded by it.
     VerifiedPane(Box<PaneAuthority>),
-    PluginInstance { pane_id: u64 },
+    PluginInstance {
+        pane_id: u64,
+    },
     OutsideProcess,
     SpawnQueue,
     Team,
@@ -295,7 +297,9 @@ impl PaneAuthority {
                 caller.can_handoff,
                 false,
             ),
-            GrantSource::PluginInstance { pane_id } => restricted(Provenance::PluginInstance { pane_id }),
+            GrantSource::PluginInstance { pane_id } => {
+                restricted(Provenance::PluginInstance { pane_id })
+            }
             GrantSource::OutsideProcess => restricted(Provenance::OutsideProcess),
             GrantSource::SpawnQueue => restricted(Provenance::SpawnQueue),
             GrantSource::Team => restricted(Provenance::Team),
@@ -310,13 +314,7 @@ impl PaneAuthority {
                 can_handoff.meet(&Delegation::only(&role.can_handoff)),
                 Some(role.id),
             ),
-            None if agent_command => (
-                Ownership::Restricted,
-                ceiling,
-                can_call,
-                can_handoff,
-                None,
-            ),
+            None if agent_command => (Ownership::Restricted, ceiling, can_call, can_handoff, None),
             None => (ownership, ceiling, can_call, can_handoff, None),
         };
         let secrets = if host_owned && ownership == Ownership::Desktop {
@@ -634,7 +632,8 @@ impl LivePaneAuthority {
     }
 
     pub(crate) fn revoke(&self) {
-        self.state.store(Lifecycle::Revoked as u8, Ordering::Release);
+        self.state
+            .store(Lifecycle::Revoked as u8, Ordering::Release);
     }
 
     pub(crate) fn is_revoked(&self) -> bool {

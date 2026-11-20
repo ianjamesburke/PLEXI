@@ -1866,10 +1866,7 @@ mod tests {
         let root = h.workspace_root();
         h.app.set_context_root(root.clone(), None);
         let caller = spawn_tester(&mut h, &root);
-        let ceiling = h
-            .app
-            .pane_ceiling_or_none(caller)
-            .expect("caller ceiling");
+        let ceiling = h.app.pane_ceiling_or_none(caller).expect("caller ceiling");
         assert_eq!(ceiling.deny, vec!["tool.secret".to_string()]);
         let plan = h
             .app
@@ -1909,10 +1906,7 @@ mod tests {
             .as_terminal()
             .unwrap();
         assert_eq!(term.initial_cwd.as_deref(), Some(path.as_path()));
-        let installed = h
-            .app
-            .pane_ceiling_or_none(pane)
-            .expect("ceiling installed");
+        let installed = h.app.pane_ceiling_or_none(pane).expect("ceiling installed");
         assert_eq!(installed.deny, vec!["tool.secret".to_string()]);
         assert!(
             h.app.pane_worktrees.contains_key(&pane),
@@ -2381,10 +2375,16 @@ mod tests {
                 .grant
         };
         let verified = admit(&mut h, stamp(Some(&[agent_pid]), "").unwrap());
-        assert_eq!(verified.provenance, Provenance::VerifiedPane { pane_id: agent });
+        assert_eq!(
+            verified.provenance,
+            Provenance::VerifiedPane { pane_id: agent }
+        );
         assert_eq!(verified.parent, Some(agent));
         assert_eq!(verified.spawned_by, "agent:tester");
-        assert_eq!(verified.posture().unwrap(), Some(&posture(&["tool.secret"])));
+        assert_eq!(
+            verified.posture().unwrap(),
+            Some(&posture(&["tool.secret"]))
+        );
         let outside = admit(&mut h, stamp(Some(&[u32::MAX]), "").unwrap());
         assert_eq!(
             (outside.provenance.clone(), outside.spawned_by.as_str()),
@@ -3703,24 +3703,48 @@ mod tests {
                 "no ineligible secret resolver read"
             );
             let context = secret_context(&mut h, other.path());
-            for (pane, human) in [(desktop, true), (child, false), (queued, false), (grandchild, false)] {
+            for (pane, human) in [
+                (desktop, true),
+                (child, false),
+                (queued, false),
+                (grandchild, false),
+            ] {
                 assert_eq!(h.app.is_human_owned_pane(pane), human, "pane {pane} live");
                 let pid = pid_of(&mut h, pane);
-                assert_eq!(lists_other_context(&mut h, &context, pid), human, "pane {pane} live");
+                assert_eq!(
+                    lists_other_context(&mut h, &context, pid),
+                    human,
+                    "pane {pane} live"
+                );
             }
             assert!(h.app.save_workspace_now(), "saved");
             (desktop, child, queued, grandchild)
         };
         let mut h = HostHarness::from_profile_dir(profile.path());
         let context = secret_context(&mut h, other.path());
-        for (pane, human) in [(desktop, true), (child, false), (queued, false), (grandchild, false)] {
+        for (pane, human) in [
+            (desktop, true),
+            (child, false),
+            (queued, false),
+            (grandchild, false),
+        ] {
             assert!(
-                h.app.terminal_incarnation(pane).is_some_and(|t| !t.is_agent_pane()),
+                h.app
+                    .terminal_incarnation(pane)
+                    .is_some_and(|t| !t.is_agent_pane()),
                 "fixture: pane {pane} restored with no agent session"
             );
-            assert_eq!(h.app.is_human_owned_pane(pane), human, "pane {pane} restored");
+            assert_eq!(
+                h.app.is_human_owned_pane(pane),
+                human,
+                "pane {pane} restored"
+            );
             let pid = pid_of(&mut h, pane);
-            assert_eq!(lists_other_context(&mut h, &context, pid), human, "pane {pane} restored");
+            assert_eq!(
+                lists_other_context(&mut h, &context, pid),
+                human,
+                "pane {pane} restored"
+            );
         }
         assert_eq!(
             grant_of(&h, child).secrets,
@@ -3745,13 +3769,20 @@ mod tests {
             assert!(decide("tester", false), "{label}: may call tester");
             assert!(!decide("writer", false), "{label}: may not call writer");
             assert!(decide("writer", true), "{label}: may hand off to writer");
-            assert!(!decide("tester", true), "{label}: may not hand off to tester");
+            assert!(
+                !decide("tester", true),
+                "{label}: may not hand off to tester"
+            );
         };
         let (lead, child, grandchild) = {
             let mut h = HostHarness::from_profile_dir(profile.path());
             h.add_test_pane();
             h.app.set_context_root(root.path().to_path_buf(), None);
-            write_role_settings(root.path(), "lead", "can_call=['tester']\ncan_handoff=['writer']\n");
+            write_role_settings(
+                root.path(),
+                "lead",
+                "can_call=['tester']\ncan_handoff=['writer']\n",
+            );
             let lead = worker(&mut h, root.path(), "lead", None, None);
             let child = shell_from(&mut h, lead);
             let grandchild = shell_from(&mut h, child);
@@ -3791,13 +3822,23 @@ mod tests {
             "elder",
             "[permissions]\ndefault_posture='ask'\ndeny=['tool.secret']\n",
         );
-        write_role_settings(root.path(), "helper", "[permissions]\ndefault_posture='ask'\n");
+        write_role_settings(
+            root.path(),
+            "helper",
+            "[permissions]\ndefault_posture='ask'\n",
+        );
         let (grandparent, parent, child, plain) = {
             let mut h = HostHarness::from_profile_dir(profile.path());
             h.add_test_pane();
             h.app.set_context_root(root.path().to_path_buf(), None);
             let grandparent = worker(&mut h, root.path(), "elder", None, None);
-            let parent = worker(&mut h, root.path(), "helper", Some(grandparent), Some("mid"));
+            let parent = worker(
+                &mut h,
+                root.path(),
+                "helper",
+                Some(grandparent),
+                Some("mid"),
+            );
             let child = worker(&mut h, root.path(), "helper", Some(parent), Some("leaf"));
             let plain = h.add_focused_terminal();
             assert_ne!(window_of(&h, grandparent), window_of(&h, child));
@@ -3864,7 +3905,10 @@ mod tests {
             crate::broker::Decision::Deny,
             "the grandparent's deny beats an exact allow at first use"
         );
-        assert!(h.app.pane_ceiling(plain).is_err(), "a legacy plain shell is sealed");
+        assert!(
+            h.app.pane_ceiling(plain).is_err(),
+            "a legacy plain shell is sealed"
+        );
         assert!(!h.app.is_human_owned_pane(plain));
         drop(h);
 
@@ -3873,9 +3917,16 @@ mod tests {
         let broken = crate::agent::workspace_agents_dir(root.path()).join("helper");
         std::fs::write(broken.join("settings.toml"), "not toml [").unwrap();
         let h = HostHarness::from_profile_dir(profile.path());
-        assert!(h.app.pane_ceiling(child).is_err(), "unreadable role: sealed");
+        assert!(
+            h.app.pane_ceiling(child).is_err(),
+            "unreadable role: sealed"
+        );
         drop(h);
-        write_role_settings(root.path(), "helper", "[permissions]\ndefault_posture='ask'\n");
+        write_role_settings(
+            root.path(),
+            "helper",
+            "[permissions]\ndefault_posture='ask'\n",
+        );
 
         // Missing parent: the child names a pane that is not in the save.
         legacy(&|ws| {
@@ -4000,10 +4051,16 @@ mod tests {
         let reopened = reply["pane_id"].as_u64().expect("reopened");
         let grant = grant_of(&h, reopened);
         assert!(
-            grant.posture().unwrap().is_some_and(|p| p.denies("record.only")),
+            grant
+                .posture()
+                .unwrap()
+                .is_some_and(|p| p.denies("record.only")),
             "the recorded restriction is kept: {grant:?}"
         );
-        assert_eq!(grant.can_call, crate::broker::pane_authority::Delegation::none());
+        assert_eq!(
+            grant.can_call,
+            crate::broker::pane_authority::Delegation::none()
+        );
     }
 
     /// Round 3 item 6a, round 4 history parent: an outside caller's history
@@ -4057,12 +4114,17 @@ mod tests {
         });
         let reply: Value =
             serde_json::from_str(&std::fs::read_to_string(&reply_file).unwrap()).unwrap();
-        let reopened = reply["pane_id"].as_u64().unwrap_or_else(|| panic!("{reply}"));
+        let reopened = reply["pane_id"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{reply}"));
         let grant = grant_of(&h, reopened);
         assert_eq!(grant.parent, None, "no authenticated parent");
         assert_eq!(grant.provenance, Provenance::OutsideProcess);
         assert!(
-            !grant.posture().unwrap().is_some_and(|p| p.denies("tool.secret")),
+            !grant
+                .posture()
+                .unwrap()
+                .is_some_and(|p| p.denies("tool.secret")),
             "nothing borrowed from the focused tester: {grant:?}"
         );
         assert_eq!(
@@ -4124,7 +4186,9 @@ mod tests {
             ));
         }
         h.app.host_subscriptions =
-            crate::host::event_subscriptions::HostSubscriptionService::new_for_test(store, timeline);
+            crate::host::event_subscriptions::HostSubscriptionService::new_for_test(
+                store, timeline,
+            );
         let subscribe = |h: &mut HostHarness, pane: PaneId| {
             let pid = pid_of(h, pane);
             let (reply, receiver) = std::sync::mpsc::sync_channel(1);
@@ -4183,7 +4247,12 @@ mod tests {
         let pane = spawn_tester(&mut h, root_a.path());
         cover_with_overlay(&mut h, pane);
         let (call, mcp) = {
-            let credentials = h.app.terminal_incarnation(pane).unwrap().credentials().unwrap();
+            let credentials = h
+                .app
+                .terminal_incarnation(pane)
+                .unwrap()
+                .credentials()
+                .unwrap();
             (
                 credentials.call_token().unwrap().to_string(),
                 credentials.mcp_token().unwrap().to_string(),
@@ -4192,7 +4261,9 @@ mod tests {
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         // The workspace each transport reports, and the revision behind it.
         let observe = |h: &HostHarness| {
-            let verified = monitor.authenticate_call(Some(pane), Some(&call), None).unwrap();
+            let verified = monitor
+                .authenticate_call(Some(pane), Some(&call), None)
+                .unwrap();
             let over_mcp = crate::app::host_mcp::authenticated_workspace_for_test(&mcp).unwrap();
             let revision = h.app.pane_authority(pane).unwrap().scope().revision;
             (verified.workspace_root, over_mcp, revision)
@@ -4239,11 +4310,18 @@ mod tests {
         assert!(allowed_in(&call_ws, &a) && allowed_in(&mcp_ws, &a));
 
         let context = h.app.windows[window_of(&h, pane)].context_id;
-        h.app.set_context_root(root_b.path().to_path_buf(), Some(context));
+        h.app
+            .set_context_root(root_b.path().to_path_buf(), Some(context));
         let (call_ws, mcp_ws, after) = observe(&h);
         assert_eq!(after, before + 1, "one committed revision");
         assert_eq!((&call_ws, &mcp_ws), (&b, &b), "both transports moved to B");
-        assert!(!allowed_in(&call_ws, &a) && !allowed_in(&mcp_ws, &a), "A's grant no longer applies");
-        assert!(allowed_in(&call_ws, &b) && allowed_in(&mcp_ws, &b), "B's grant applies");
+        assert!(
+            !allowed_in(&call_ws, &a) && !allowed_in(&mcp_ws, &a),
+            "A's grant no longer applies"
+        );
+        assert!(
+            allowed_in(&call_ws, &b) && allowed_in(&mcp_ws, &b),
+            "B's grant applies"
+        );
     }
 }

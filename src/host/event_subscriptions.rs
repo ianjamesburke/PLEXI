@@ -302,20 +302,23 @@ fn record_admitted_subscription(
          {event_names:?} admitted_scope={:?}",
         admitted.as_ref().map(|a| a.revision)
     );
-    timeline.lock().unwrap().add_subscription(SubscriptionRecord {
-        subscription_id: subscription_id.clone(),
-        subscriber_type,
-        subscriber_id: subscriber_id.to_string(),
-        plugin_id: publisher_plugin_id.to_string(),
-        event_names,
-        payload_mode,
-        trigger_mode,
-        resource_id,
-        duration: GrantDuration::Session,
-        subscriber_context_id,
-        created_at: event_log::now_timestamp(),
-        admitted,
-    });
+    timeline
+        .lock()
+        .unwrap()
+        .add_subscription(SubscriptionRecord {
+            subscription_id: subscription_id.clone(),
+            subscriber_type,
+            subscriber_id: subscriber_id.to_string(),
+            plugin_id: publisher_plugin_id.to_string(),
+            event_names,
+            payload_mode,
+            trigger_mode,
+            resource_id,
+            duration: GrantDuration::Session,
+            subscriber_context_id,
+            created_at: event_log::now_timestamp(),
+            admitted,
+        });
     subscription_id
 }
 
@@ -2043,7 +2046,11 @@ mod tests {
         assert!(timeline.lock().unwrap().subscriptions().is_empty());
         emit(&timeline, "probe.secret");
         emit(&timeline, "probe.tick");
-        assert_eq!(delivered(&timeline), Vec::<String>::new(), "zero deliveries");
+        assert_eq!(
+            delivered(&timeline),
+            Vec::<String>::new(),
+            "zero deliveries"
+        );
 
         // Positive control: every member allowed.
         let admitted = pane_scope(7, &[]);
@@ -2061,7 +2068,9 @@ mod tests {
             Vec::<String>::new(),
             "a member declared later is not delivered"
         );
-        admitted.authority.publish_scope(PathBuf::from("/tmp/elsewhere"));
+        admitted
+            .authority
+            .publish_scope(PathBuf::from("/tmp/elsewhere"));
         emit(&timeline, "probe.tick");
         assert_eq!(
             delivered(&timeline),
@@ -2070,7 +2079,8 @@ mod tests {
         );
 
         // Delayed consent: admitted in one scope, answered in another.
-        let mut service = HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
+        let mut service =
+            HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
         let admitted = pane_scope(7, &[]);
         let (mut req, rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
         req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
@@ -2078,7 +2088,9 @@ mod tests {
             .classify_subscribe_request(req)
             .expect("no grant: consent is asked");
         let before = timeline.lock().unwrap().subscriptions().len();
-        admitted.authority.publish_scope(PathBuf::from("/tmp/elsewhere"));
+        admitted
+            .authority
+            .publish_scope(PathBuf::from("/tmp/elsewhere"));
         let config = tempfile::tempdir().unwrap();
         service.resolve_consent(consent, ConsentChoice::AllowOnce, config.path());
         assert!(

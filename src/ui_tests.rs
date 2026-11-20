@@ -13288,13 +13288,21 @@ open(out + ".done", "w").close()
                 let pane = app.construct_terminal(launch).expect("terminal starts");
                 ids.push(pane.id);
                 let win = &mut app.windows[app.active_window];
-                win.panes.insert(pane.id, Pane::Terminal(Box::new(pane))).unwrap();
+                win.panes
+                    .insert(pane.id, Pane::Terminal(Box::new(pane)))
+                    .unwrap();
             }
             let win = &mut app.windows[app.active_window];
-            let tiles: Vec<_> = ids.iter().map(|id| win.tree.tiles.insert_pane(*id)).collect();
+            let tiles: Vec<_> = ids
+                .iter()
+                .map(|id| win.tree.tiles.insert_pane(*id))
+                .collect();
             let tab_tile = win.tree.tiles.insert_tab_tile(vec![tiles[0], tiles[1]]);
             let side_tab = win.tree.tiles.insert_tab_tile(vec![tiles[2]]);
-            let root = win.tree.tiles.insert_horizontal_tile(vec![tab_tile, side_tab]);
+            let root = win
+                .tree
+                .tiles
+                .insert_horizontal_tile(vec![tab_tile, side_tab]);
             win.tree.root = Some(root);
             win.focused_pane = Some(tiles[0]);
             (ids[0], ids[1])
@@ -13322,37 +13330,45 @@ open(out + ".done", "w").close()
                 },
             ]);
             h.step();
-            h.harness().input_mut().events.push(egui::Event::PointerMoved(to));
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::PointerMoved(to));
             h.step();
-            h.harness().input_mut().events.push(egui::Event::PointerButton {
-                pos: to,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::NONE,
-            });
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::PointerButton {
+                    pos: to,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
             h.run_steps(3);
         };
-        let spec = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(&crate::protocol::HostRequest::SpawnPane {
-            type_id: "terminal".to_string(),
-            layout: Some("split_h".to_string()),
-            args: Vec::new(),
-            from_pane_id: None,
-            request_id: None,
-            response_file: None,
-            ephemeral: false,
-            cwd: Some(browser_root.to_string_lossy().into_owned()),
-            no_focus: true,
-            path: None,
-            workspace_root: None,
-            target_context: None,
-            context_name: None,
-            name: None,
-            agent_cmd: None,
-            boot_timeout_secs: None,
-            worktree: None,
-            result_schema: None,
-            source: crate::protocol::SpawnSource::InProcess,
-        })
+        let spec = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(
+            &crate::protocol::HostRequest::SpawnPane {
+                type_id: "terminal".to_string(),
+                layout: Some("split_h".to_string()),
+                args: Vec::new(),
+                from_pane_id: None,
+                request_id: None,
+                response_file: None,
+                ephemeral: false,
+                cwd: Some(browser_root.to_string_lossy().into_owned()),
+                no_focus: true,
+                path: None,
+                workspace_root: None,
+                target_context: None,
+                context_name: None,
+                name: None,
+                agent_cmd: None,
+                boot_timeout_secs: None,
+                worktree: None,
+                result_schema: None,
+                source: crate::protocol::SpawnSource::InProcess,
+            },
+        )
         .unwrap();
         // A container anchor: the window's root, admitted with no focus.
         let admit = |h: &mut PlexiUiHarness| {
@@ -13373,8 +13389,10 @@ open(out + ".done", "w").close()
         };
         let apply = |h: &mut PlexiUiHarness, plan: crate::app::launch_plan::TerminalLaunchPlan| {
             h.with_app_mut(|app| {
-                app.apply_launch(crate::app::launch_plan::LaunchPlan::Terminal(Box::new(plan)))
-                    .map_err(|refused| refused.to_string())
+                app.apply_launch(crate::app::launch_plan::LaunchPlan::Terminal(Box::new(
+                    plan,
+                )))
+                .map_err(|refused| refused.to_string())
             })
         };
         let order = |h: &PlexiUiHarness| {
@@ -13408,12 +13426,15 @@ open(out + ".done", "w").close()
             },
         ]);
         h.step();
-        h.harness().input_mut().events.push(egui::Event::PointerButton {
-            pos: at_b,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: egui::Modifiers::NONE,
-        });
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerButton {
+                pos: at_b,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
         h.run_steps(3);
         let divider = h.with_app(|app| {
             app.active_strip_layout()
@@ -13434,7 +13455,11 @@ open(out + ".done", "w").close()
         assert_ne!(order(&h), before, "fixture: the drag reordered the tabs");
         let (at_a, at_b) = (tab_center(&h, a), tab_center(&h, b));
         drag(&mut h, at_a, at_b);
-        assert_eq!(order(&h), before, "fixture: the drag back restored the order");
+        assert_eq!(
+            order(&h),
+            before,
+            "fixture: the drag back restored the order"
+        );
         let error = apply(&mut h, plan).expect_err("a structural edit voids the container anchor");
         assert!(error.contains("changed after admission"), "{error}");
         let fresh = admit(&mut h);

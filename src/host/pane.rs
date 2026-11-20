@@ -1645,8 +1645,10 @@ impl TerminalPane {
     /// baseline. A pane with no grant, or a sealed one, is refused.
     pub(crate) fn permission_ceiling(
         &self,
-    ) -> Result<Option<&crate::broker::PermissionPosture>, crate::broker::pane_authority::SealedAuthority>
-    {
+    ) -> Result<
+        Option<&crate::broker::PermissionPosture>,
+        crate::broker::pane_authority::SealedAuthority,
+    > {
         self.authority()
             .ok_or(crate::broker::pane_authority::SealedAuthority)?
             .grant()
@@ -1668,10 +1670,15 @@ impl TerminalPane {
 
     /// Run this pane under `grant` from now on, with no credential (tests).
     #[cfg(test)]
-    pub(crate) fn replace_grant_for_test(&mut self, grant: crate::broker::pane_authority::PaneAuthority) {
+    pub(crate) fn replace_grant_for_test(
+        &mut self,
+        grant: crate::broker::pane_authority::PaneAuthority,
+    ) {
         let live = crate::broker::pane_authority::LivePaneAuthority::admitted(grant);
         live.mark_live();
-        self.credentials = Some(crate::pane_ops::construct::PaneCredentials::without_tokens(live));
+        self.credentials = Some(crate::pane_ops::construct::PaneCredentials::without_tokens(
+            live,
+        ));
     }
 
     /// Build the persisted [`crate::workspace::SavedAgentSession`] for this pane

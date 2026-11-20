@@ -1,13 +1,13 @@
 pub mod account;
 pub(crate) mod agent_open;
 mod agent_tools;
-pub(crate) mod authority_import;
 pub mod agents_dashboard_view;
 pub(crate) mod agents_view;
 pub(crate) mod approval_keyboard;
 pub(crate) mod assistant_host_tools;
 pub mod attention_queue;
 pub mod audio_player_view;
+pub(crate) mod authority_import;
 pub(crate) mod canvas_bindings;
 pub(crate) mod card_gallery;
 mod cli_actions;
@@ -31,7 +31,6 @@ pub(crate) mod input_router;
 pub(crate) mod install_swap;
 mod launch_notices;
 pub(crate) mod launch_plan;
-mod sdk_spawn;
 pub(crate) mod launch_spec;
 mod lifecycle;
 pub mod marketplace;
@@ -52,6 +51,7 @@ pub(crate) mod registry_views;
 pub mod registry_watcher;
 pub(crate) mod render;
 pub(crate) mod screenshot;
+mod sdk_spawn;
 mod secret_get;
 pub mod secrets_view;
 pub(crate) mod startup_error;
@@ -5882,10 +5882,8 @@ pub(crate) fn restore_workspace(
 
     // Every terminal's grant, decided in one pass over the whole workspace
     // before any pane is built (stint 1632).
-    let mut restored_grants = crate::app::authority_import::import(
-        &ws,
-        collaborators.profile_dir,
-        &|role, cwd| {
+    let mut restored_grants =
+        crate::app::authority_import::import(&ws, collaborators.profile_dir, &|role, cwd| {
             let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(cwd);
             crate::cli::agent::resolve_agent_definition_in(
                 role,
@@ -5899,8 +5897,7 @@ pub(crate) fn restore_workspace(
                 can_call: def.can_call,
                 can_handoff: def.can_handoff,
             })
-        },
-    );
+        });
     // Every saved pane by id, for display provenance only.
     let saved_panes_by_id: HashMap<u64, crate::workspace::SavedPane> = ws
         .windows

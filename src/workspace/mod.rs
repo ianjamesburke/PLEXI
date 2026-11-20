@@ -1991,7 +1991,10 @@ pub(crate) fn archive_saved_completion(
         config_name: session.config_name.clone(),
         permission_posture: session.permission_posture.clone(),
         // The saved pane's grant record, as saved.
-        authority: pane.authority.as_ref().and_then(|saved| saved.get("grant").cloned()),
+        authority: pane
+            .authority
+            .as_ref()
+            .and_then(|saved| saved.get("grant").cloned()),
         session_id: session.session_id.clone(),
         cwd: pane.cwd.clone(),
         ephemeral: session.ephemeral,

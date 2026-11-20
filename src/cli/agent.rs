@@ -1571,8 +1571,11 @@ pub(crate) fn agent_definition_exists(
     if trimmed.is_empty() {
         return false;
     }
-    workspace_root.is_some_and(|ws| crate::agent::workspace_agents_dir(ws).join(trimmed).is_dir())
-        || profile_dir.join("agents").join(trimmed).is_dir()
+    workspace_root.is_some_and(|ws| {
+        crate::agent::workspace_agents_dir(ws)
+            .join(trimmed)
+            .is_dir()
+    }) || profile_dir.join("agents").join(trimmed).is_dir()
         || crate::agent::AgentRegistry::load_with_optional_workspace(profile_dir, workspace_root)
             .active(trimmed)
             .is_some()

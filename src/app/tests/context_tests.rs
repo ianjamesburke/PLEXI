@@ -43,7 +43,8 @@ fn several_contexts_flush_identical_bytes_twice() {
     let context = h.app.router.active().context_id;
     h.app.set_context_columns(context, vec![vec![pane]]);
     for _ in 0..4 {
-        h.app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
+        h.app
+            .new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     }
     h.run_frames(2);
     assert!(
@@ -1475,11 +1476,17 @@ fn contexts_with_matching_auto_names_are_disambiguated() {
     std::fs::create_dir(&second).expect("second project");
 
     let before = h.app.router.len();
-    h.app.new_context_at_path(first, crate::broker::pane_authority::GrantSource::DesktopInput);
+    h.app.new_context_at_path(
+        first,
+        crate::broker::pane_authority::GrantSource::DesktopInput,
+    );
     if h.app.router.len() == before {
         return; // PTY unavailable in this test environment.
     }
-    h.app.new_context_at_path(second, crate::broker::pane_authority::GrantSource::DesktopInput);
+    h.app.new_context_at_path(
+        second,
+        crate::broker::pane_authority::GrantSource::DesktopInput,
+    );
     if h.app.router.len() == before + 1 {
         return; // PTY became unavailable between the two requests.
     }
@@ -1496,7 +1503,8 @@ fn new_context_root_pty_env_uses_its_own_context_identity() {
     let mut h = crate::testing::HostHarness::new();
     let previous_context_id = h.app.router.active().context_id;
 
-    h.app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
+    h.app
+        .new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     h.app.resolve_auto_context_names();
 
     let new_context = h.app.router.active().clone();
@@ -3207,11 +3215,8 @@ fn make_backend_settings_stamps_the_context_it_is_given() {
         root: Some(std::path::PathBuf::from("/tmp/squad")),
         depth: 3,
     };
-    let launch = app.desktop_terminal_launch(
-        context_env,
-        Some(std::path::PathBuf::from("/tmp")),
-        None,
-    );
+    let launch =
+        app.desktop_terminal_launch(context_env, Some(std::path::PathBuf::from("/tmp")), None);
     let pane_id = launch.pane_id();
     struct Settings {
         env: std::collections::HashMap<String, String>,

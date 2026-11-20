@@ -14,8 +14,8 @@
 mod close_batch;
 pub(crate) mod construct;
 pub(crate) mod create;
-pub(crate) mod grant;
 mod events;
+pub(crate) mod grant;
 mod layout;
 mod workspace;
 mod wrap;

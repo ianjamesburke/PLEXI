@@ -132,10 +132,7 @@ pub(crate) fn revoke_pane_bearer(token: &str) {
         );
     }
     if let Some(binding) = run_panes().lock().unwrap().remove(token) {
-        log::info!(
-            "host_mcp: run token released pane={}",
-            binding.pane_id()
-        );
+        log::info!("host_mcp: run token released pane={}", binding.pane_id());
     }
 }
 
@@ -164,7 +161,10 @@ fn authenticate(token: &str) -> Option<McpCaller> {
     let auth = crate::agent::runs::authenticate_run_token(token)?;
     let pane = run_panes().lock().unwrap().get(token).cloned();
     if pane.as_ref().is_some_and(|p| p.is_revoked()) {
-        log::warn!("host_mcp: run {} acts for a revoked pane; refused", auth.run_id);
+        log::warn!(
+            "host_mcp: run {} acts for a revoked pane; refused",
+            auth.run_id
+        );
         return None;
     }
     log::info!(
@@ -595,9 +595,7 @@ fn call_route(
     match route {
         McpRoute::Permissions(op) => tool_permissions(op, arguments, profile, caller),
         McpRoute::ListEventStreams => tool_list_event_streams(caller),
-        McpRoute::SubscribeAndWait => {
-            tool_subscribe_and_wait(arguments, subscribe_tx, caller)
-        }
+        McpRoute::SubscribeAndWait => tool_subscribe_and_wait(arguments, subscribe_tx, caller),
         McpRoute::Agents(tool) => {
             let input_json = serde_json::to_string(arguments)
                 .map_err(|error| format!("serialize tool arguments: {error}"))?;
@@ -1026,11 +1024,22 @@ mod tests {
     #[test]
     fn pane_bearer_carries_its_grant_and_refuses_once_revoked() {
         let root = PathBuf::from("/workspace/unbound");
-        let binding = live(65_300_310, crate::broker::Decision::Deny, &["tool.secret"], &root);
+        let binding = live(
+            65_300_310,
+            crate::broker::Decision::Deny,
+            &["tool.secret"],
+            &root,
+        );
         let token = register_pane_credential(binding.clone());
-        assert_eq!(authenticated_posture_for_test(&token), Some(posture_of(&binding)));
+        assert_eq!(
+            authenticated_posture_for_test(&token),
+            Some(posture_of(&binding))
+        );
         binding.revoke();
-        assert!(authenticate(&token).is_none(), "a revoked incarnation is refused");
+        assert!(
+            authenticate(&token).is_none(),
+            "a revoked incarnation is refused"
+        );
         let fresh = live(65_300_310, crate::broker::Decision::Deny, &[], &root);
         let token = register_pane_credential(fresh);
         revoke_pane_bearer(&token);
@@ -1358,14 +1367,13 @@ mod tests {
     /// A second bearer for the pane `token` belongs to, under `posture`.
     fn bearer_with_ceiling(token: &str, posture: crate::broker::PermissionPosture) -> String {
         let caller = authenticate(token).expect("live bearer");
-        let binding = LivePaneAuthority::admitted(
-            crate::broker::pane_authority::PaneAuthority::for_test(
+        let binding =
+            LivePaneAuthority::admitted(crate::broker::pane_authority::PaneAuthority::for_test(
                 caller.pane_id,
                 crate::broker::pane_authority::Ceiling::Posture { posture },
                 caller.context_id,
                 caller.workspace_root,
-            ),
-        );
+            ));
         register_pane_credential(binding)
     }
 
@@ -1445,7 +1453,10 @@ mod tests {
         // `agents.*` is admitted by the broker under the pane's ceiling.
         let agents_denied = bearer_with_ceiling(
             &token,
-            posture(crate::broker::Decision::Ask, vec!["agents.list".to_string()]),
+            posture(
+                crate::broker::Decision::Ask,
+                vec!["agents.list".to_string()],
+            ),
         );
         let (_, text) = tool_call(port, &token, "agents.list", "{}");
         assert!(

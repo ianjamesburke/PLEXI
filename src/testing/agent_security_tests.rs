@@ -148,18 +148,16 @@ fn agent_pane_env_carries_no_workspace_or_folder_secrets() {
             root: Some(root.clone()),
             depth: 0,
         };
-        let launch = h
-            .app
-            .terminal_launch(
-                if agent_pane {
-                    crate::broker::pane_authority::GrantSource::OutsideProcess
-                } else {
-                    crate::broker::pane_authority::GrantSource::DesktopInput
-                },
-                context_env,
-                Some(root.clone()),
-                None,
-            );
+        let launch = h.app.terminal_launch(
+            if agent_pane {
+                crate::broker::pane_authority::GrantSource::OutsideProcess
+            } else {
+                crate::broker::pane_authority::GrantSource::DesktopInput
+            },
+            context_env,
+            Some(root.clone()),
+            None,
+        );
         crate::pane_ops::construct::probes::env_at_backend_entry(launch)
     };
     let human = settings(false);
