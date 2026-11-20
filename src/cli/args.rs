@@ -15,22 +15,6 @@ fn plexi_styles() -> Styles {
         .invalid(AnsiColor::Red.on_default())
 }
 
-/// Retired commands are errors, never aliases or compatibility dispatch.
-pub fn retired_namespace_message(args: &[String]) -> Option<&'static str> {
-    let mut args = args.iter().skip(1);
-    while let Some(arg) = args.next() {
-        if arg == "--profile" || arg == "--socket" {
-            args.next();
-            continue;
-        }
-        if arg.starts_with('-') {
-            continue;
-        }
-        return (arg == "app").then_some("the `app` namespace was removed; use `plugin` for packages, `view open/render` for views, or `pane action` for a running view");
-    }
-    None
-}
-
 /// A CLI context target: accepts a numeric context id or a context name
 /// (resolved by exact match, then unique prefix match).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -255,10 +239,6 @@ pub fn resolve_target_from_candidates(
     styles = plexi_styles(),
 )]
 pub struct Cli {
-    /// Profile name (e.g. alpha, beta)
-    #[arg(long, global = true, hide = true)]
-    pub profile: Option<String>,
-
     /// Override the host command socket path.
     #[arg(long, global = true, value_hint = ValueHint::FilePath)]
     pub socket: Option<std::path::PathBuf>,
@@ -2850,10 +2830,14 @@ pub struct ConfigScopeArgs {
     /// Use the active workspace's channel-scoped config.toml only (`<repo>/.plexi-<channel>/config.toml`, or `<repo>/.plexi/config.toml` on stable).
     #[arg(short = 'w', long = "workspace", visible_alias = "ws")]
     pub workspace: bool,
+    /// Only with `-w`: completes the `-ws` spelling of `--workspace`.
+    #[arg(short = 's', hide = true, requires = "workspace")]
+    ws_suffix: bool,
 }
 
 impl ConfigScopeArgs {
     pub fn scope(self) -> ConfigScope {
+        debug_assert!(!self.ws_suffix || self.workspace, "clap requires -w with -s");
         if self.global {
             ConfigScope::Global
         } else if self.workspace {
@@ -2869,22 +2853,6 @@ pub enum ConfigScope {
     Effective,
     Global,
     Workspace,
-}
-
-pub fn normalize_config_scope_aliases(args: Vec<String>) -> Vec<String> {
-    let Some(config_idx) = args.iter().position(|arg| arg == "config") else {
-        return args;
-    };
-    args.into_iter()
-        .enumerate()
-        .map(|(idx, arg)| {
-            if idx > config_idx && arg == "-ws" {
-                "--workspace".to_string()
-            } else {
-                arg
-            }
-        })
-        .collect()
 }
 
 #[derive(Subcommand)]
@@ -3478,7 +3446,7 @@ pub enum AiCmd {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_config_scope_aliases, Cli, Commands, ConfigCmd, ConfigScope, NotifyCmd,
+        Cli, Commands, ConfigCmd, ConfigScope, NotifyCmd,
         PluginCmd, SecretCmd, ViewCmd,
     };
     use clap::Parser;
@@ -3504,10 +3472,6 @@ mod tests {
             Err(error) => error.to_string(),
         };
         assert!(!error.is_empty(), "must reject the old namespace");
-        let message =
-            super::retired_namespace_message(&["plexi".into(), "app".into(), "list".into()])
-                .unwrap();
-        assert!(message.contains("plugin") && message.contains("view"));
     }
 
     #[test]
@@ -3899,14 +3863,9 @@ mod tests {
     }
 
     #[test]
-    fn config_check_accepts_single_dash_ws_alias_after_normalization() {
-        let args = normalize_config_scope_aliases(
-            ["plexi", "config", "check", "-ws"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-        );
-        let cli = Cli::try_parse_from(args).unwrap();
+    fn config_check_accepts_single_dash_ws_alias() {
+        assert!(Cli::try_parse_from(["plexi", "config", "check", "-s"]).is_err());
+        let cli = Cli::try_parse_from(["plexi", "config", "check", "-ws"]).unwrap();
 
         let Some(Commands::Config { cmd }) = cli.command else {
             panic!("expected config command");

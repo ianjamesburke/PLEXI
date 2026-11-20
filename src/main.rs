@@ -52,29 +52,31 @@ mod workspace;
 fn main() -> eframe::Result {
     let process_start = std::time::Instant::now();
     let raw_args: Vec<String> = std::env::args().collect();
-    if let Some(message) = cli::args::retired_namespace_message(&raw_args) {
-        eprintln!("error: {message}");
-        cli::trace::exit(2);
-    }
-    // Resolve routing before profile/workspace setup or any pane defaults read
-    // inherited identity. This is still single-threaded process startup.
-    let dropped_identity = {
-        use clap::Parser;
-        let args = cli::args::normalize_config_scope_aliases(strip_profile_args(&raw_args));
-        match cli::args::Cli::try_parse_from(&args) {
-            Ok(parsed) if parsed.command.is_some() => {
-                cli::drop_foreign_channel_identity(parsed.socket.is_some())
-            }
-            _ => Vec::new(),
+    // Installer and renderer entry points are exact argv shapes, outside
+    // ordinary command dispatch.
+    let entry_point = match raw_args.get(1..) {
+        Some([flag]) if matches!(flag.as_str(), "--build-info" | "--distribution-check" | "--render") => {
+            Some(flag.as_str())
         }
+        _ => None,
     };
+    // The one reader of argv. Everything below acts on its outcome.
+    let invocation = entry_point.is_none().then(|| cli::front::parse(&raw_args));
+    let host_startup = matches!(
+        invocation.as_ref().map(|i| &i.outcome),
+        Some(cli::front::Outcome::Launch(_))
+    );
     #[cfg(unix)]
-    if let Err(error) = configure_cli_sigpipe(&raw_args) {
+    if let Err(error) = configure_cli_sigpipe(host_startup) {
         eprintln!("CLI SIGPIPE setup failed: {error}");
         cli::trace::exit(1);
     }
-    if let Some(flag) = std::env::args().nth(1) {
-        if flag == "--build-info" || flag == "--distribution-check" {
+    match entry_point {
+        Some("--render") => {
+            render_cli();
+            cli::trace::exit(0);
+        }
+        Some(flag) => {
             if flag == "--distribution-check" {
                 if let Err(error) = distribution::check_runtime() {
                     eprintln!("package runtime check: {error}");
@@ -84,7 +86,35 @@ fn main() -> eframe::Result {
             println!("{}", distribution::build_info());
             cli::trace::exit(0);
         }
+        None => {}
     }
+    let Some(cli::front::Invocation { bin, outcome }) = invocation else {
+        unreachable!("every argv without an entry point has an invocation")
+    };
+    // Display outcomes and usage errors exit here: no profile read, no
+    // initialization, no tracing, no host contact.
+    let startup = match outcome {
+        cli::front::Outcome::Help(help) => {
+            crate::config::set_profile(help.selection.clone());
+            cli::trace::exit(cli::front::emit_help(&bin, &help))
+        }
+        cli::front::Outcome::Version => cli::trace::exit(cli::front::emit_version(&bin)),
+        cli::front::Outcome::UsageError(error) => {
+            cli::trace::exit(cli::front::emit_usage_error(&bin, &error))
+        }
+        cli::front::Outcome::Completions { shell } => cli::trace::exit(cli::completions_cli(
+            shell.as_deref().unwrap_or("zsh"),
+            &bin,
+        )),
+        cli::front::Outcome::Run(run) => Startup::Run(run),
+        cli::front::Outcome::Launch(launch) => Startup::Launch(launch),
+    };
+    // Resolve routing before profile/workspace setup or any pane defaults read
+    // inherited identity. This is still single-threaded process startup.
+    let dropped_identity = match &startup {
+        Startup::Run(run) => cli::drop_foreign_channel_identity(run.cli.socket.is_some()),
+        Startup::Launch(_) => Vec::new(),
+    };
     let boot_state = crate::workspace::consume_host_boot_state();
 
     fn exit_if_feature_disabled(feature: crate::release::ReleaseFeature) {
@@ -97,51 +127,41 @@ fn main() -> eframe::Result {
         }
     }
 
-    if std::env::args().nth(1).as_deref() == Some("--render") {
-        render_cli();
-        cli::trace::exit(0);
-    }
-    // Parse --profile <name> early so config_dir() resolves correctly for
-    // both logging and all downstream I/O.
-    let is_plugin_prune_command = raw_args
-        .windows(2)
-        .any(|args| args[0] == "plugin" && args[1] == "prune");
+    let surface_path: &[String] = match &startup {
+        Startup::Run(run) => &run.surface.path,
+        Startup::Launch(_) => &[],
+    };
+    let is_plugin_prune_command = surface_path.starts_with(&["plugin".into(), "prune".into()]);
 
-    let profile = parse_profile_flag(&raw_args);
-    crate::config::set_profile(profile);
-
-    // Top-level --help/-h: print grouped subcommand sections before any
-    // logging or profile init, so no noise appears alongside help output. It
-    // runs after set_profile because the help hides every experiment that is
-    // off in this profile's config. Subcommand help (e.g. `plexi plugin --help`)
-    // is handled by clap below.
-    if top_level_help_flag(&raw_args) {
-        cli::help::print_grouped_help();
-        cli::trace::exit(0);
-    }
-    exit_if_profile_free(&raw_args);
-    if let Some(help) = cli::help::unknown_command_help(&raw_args, &cli::help::gated_command()) {
-        eprint!("{help}");
-        cli::trace::exit(2);
-    }
+    crate::config::set_profile(match &startup {
+        Startup::Run(run) => run.selection.clone(),
+        Startup::Launch(launch) => launch.selection.clone(),
+    });
     // A bad [experiments] table fails every command except the ones needed to
     // fix it, so the user is never locked out of repairing the config.
     if let Some(error) = crate::release::experiments_error() {
-        if !experiments_repair_command(&raw_args) {
+        let repair = surface_path
+            .first()
+            .is_some_and(|name| matches!(name.as_str(), "experiments" | "config" | "doctor"));
+        if !repair {
             eprintln!("error: {error}");
             cli::trace::exit(1);
         }
     }
     let profile_init_lock = crate::config::lock_profile_initialization().unwrap_or_else(|error| {
         let show_window =
-            app::startup_error::shows_window(is_host_startup(&raw_args), boot_state.is_background());
+            app::startup_error::shows_window(host_startup, boot_state.is_background());
         app::startup_error::exit_on_profile_init_failure(&error, show_window)
     });
     // Adopt an explicit workspace root from `plexi <path>` if one was given.
     // If the path has no `.plexi/` ancestor, an adopted context path is set
     // instead — the directory opens as a new context on first frame.
     // Bare `plexi` continues to resolve via CWD-walk later in `PlexiApp::new`.
-    let adopted_root = match parse_workspace_path_arg(&raw_args) {
+    let workspace_operand = match &startup {
+        Startup::Launch(launch) => launch.cli.workspace_path.as_deref(),
+        Startup::Run(_) => None,
+    };
+    let adopted_root = match resolve_workspace_operand(workspace_operand) {
         Ok(root) => root,
         Err(e) => {
             eprintln!("error: {e}");
@@ -167,7 +187,7 @@ fn main() -> eframe::Result {
     );
     let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
     let retention_days = log_config.retention_days.unwrap_or(30);
-    let cli_mode = !is_host_startup(&raw_args);
+    let cli_mode = !host_startup;
     crate::platform::logging::init(log_level, retention_days, cli_mode);
     log::info!(
         "startup: logger ready {}ms after main entry",
@@ -287,11 +307,14 @@ fn main() -> eframe::Result {
         app::host_instance::HostLaunch::Cli => None,
         // Plexi-in-Plexi: a bare launch typed in a Plexi pane shows help
         // rather than starting a second GUI, and never claims the profile.
-        app::host_instance::HostLaunch::InsidePlexi => {
-            let _ = cli::help::gated_command().print_help();
-            println!();
-            cli::trace::exit(0);
-        }
+        app::host_instance::HostLaunch::InsidePlexi => cli::trace::exit(cli::front::emit_help(
+            &bin,
+            &cli::front::Help {
+                path: Vec::new(),
+                long: false,
+                selection: crate::config::ProfileSelection::Default,
+            },
+        )),
         // A second launch on a live host hands it the canonical path main
         // resolved above (before the chdir) and exits 0 (stint 1543).
         app::host_instance::HostLaunch::Host => match app::host_instance::claim(
@@ -387,7 +410,6 @@ fn main() -> eframe::Result {
     }
 
     // Handle CLI subcommands before launching the GUI.
-    let args = strip_profile_args(&raw_args);
     use crate::cli::args::{
         AccountCmd, AgentCmd, AgentsDashboardCmd, AiCmd, AssistantCmd, AssistantPermissionCmd,
         ChangesCmd, CliSetupCmd, Commands, ConfigCmd, ContextCmd, DebugCmd, DebugSessionCmd,
@@ -395,15 +417,15 @@ fn main() -> eframe::Result {
         PaneMessageCmd, PaneResultCmd, PaneSlotCmd, PermissionsCmd, PluginCmd, PluginStateCmd,
         RegistryCmd, RoutineCmd, SecretCmd, SkillCmd, ViewCmd, WorkspaceCmd,
     };
-    let args = cli::args::normalize_config_scope_aliases(args);
-
-    // Parse through the gated tree so help and completions agree with the
-    // execution backstop below; hidden commands still parse.
-    let parsed = cli::help::gated_command()
-        .try_get_matches_from(&args)
-        .and_then(|matches| cli::help::decode_matches(matches, crate::release::feature_enabled));
-    match parsed {
-        Ok((cli, blocked)) => {
+    match startup {
+        Startup::Launch(launch) => {
+            if let Some(socket) = launch.cli.socket {
+                cli::set_command_socket_override(socket);
+            }
+        }
+        Startup::Run(run) => {
+            let cli = run.cli;
+            let blocked = cli::help::admission(&run.surface, crate::release::feature_enabled);
             if let Some(feature) = blocked {
                 exit_if_feature_disabled(feature);
             }
@@ -2026,7 +2048,7 @@ fn main() -> eframe::Result {
                         ContextCmd::List => cli::trace::exit(cli::context_list_cli()),
                     },
                     Commands::Completions { .. } => {
-                        unreachable!("completions exit in exit_if_profile_free")
+                        unreachable!("completions are a front-end outcome")
                     }
                     Commands::Cli {
                         cmd,
@@ -2113,35 +2135,6 @@ fn main() -> eframe::Result {
                     Commands::Demo => cli::trace::exit(cli::demo_cli()),
                 }
             }
-            // No subcommand — fall through to workspace path check, then GUI
-        }
-        Err(e) => {
-            if !matches!(
-                e.kind(),
-                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
-            ) {
-                if let Some(feature) =
-                    cli::help::blocked_incomplete_arg(&args, crate::release::feature_enabled)
-                {
-                    exit_if_feature_disabled(feature);
-                }
-            }
-            // --help and --version print and exit 0/2 through this path
-            if raw_args.windows(2).any(|args| args == ["secret", "set"]) {
-                if let Some(socket) = raw_args.windows(2).find(|args| args[0] == "--socket") {
-                    cli::set_command_socket_override(socket[1].clone().into());
-                }
-                cli::trace::begin(&raw_args);
-            }
-            let code = e.exit_code();
-            if code != 0 && e.to_string().contains("--folder <DIR>") {
-                eprintln!("Usage: plexi secret set [OPTIONS] <FRIENDLY_NAME> --folder <DIR>");
-                eprintln!("Example: --folder . (or --folder <DIR> for another directory)");
-            }
-            if let Err(error) = e.print() {
-                log::warn!("cli: help output failed: {error}");
-            }
-            cli::trace::exit(code);
         }
     }
 
@@ -2256,136 +2249,53 @@ fn main() -> eframe::Result {
     )
 }
 
-/// Scan argv for the first positional that points at an existing directory
-/// — the `plexi <path>` "open folder" arg, modelled on VS Code. Returns
-/// `Ok(Some(workspace_root))` when an ancestor `.plexi/` is found,
-/// `Ok(None)` when no path arg was given or the directory has no `.plexi/`
-/// ancestor (in which case an adopted context path is set via
+/// What startup executes once the front end has ruled out display and usage
+/// errors.
+enum Startup {
+    Run(Box<cli::front::Run>),
+    Launch(Box<cli::front::Launch>),
+}
+
+/// The `plexi <path>` "open folder" operand, modelled on VS Code. Returns
+/// `Ok(Some(workspace_root))` when an ancestor `.plexi/` is found, `Ok(None)`
+/// when there is no operand or the directory has no `.plexi/` ancestor (in
+/// which case an adopted context path is set via
 /// `config::set_adopted_context_path`), and `Err(_)` only for invalid paths.
-///
-/// Anything starting with `--` is skipped (flags) and so are values that
-/// follow a known value-bearing flag (`--profile`). Recognized CLI
-/// subcommands (`run`, `secret`, `plugin`, `workspace`, `notify`) are also
-/// skipped — those are dispatched separately later in `main`.
-fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf>, String> {
-    let known = cli::known_subcommands();
-    let mut iter = args.iter().enumerate();
-    // Skip argv[0] (binary name).
-    let _ = iter.next();
-    while let Some((_, a)) = iter.next() {
-        if a == "--profile" || a == "--lang" || a == "--title" || a == "--body" || a == "--socket" {
-            // Skip the value paired with this flag.
-            let _ = iter.next();
-            continue;
-        }
-        if a.starts_with('-') {
-            continue;
-        }
-        if known.contains(a.as_str()) {
-            return Ok(None);
-        }
-        // First positional that isn't a known subcommand — interpret as a
-        // workspace path.
-        let candidate = std::path::PathBuf::from(a);
-        if !candidate.exists() {
-            return Err(format!(
-                "workspace path does not exist: {}",
-                candidate.display()
-            ));
-        }
-        if !candidate.is_dir() {
-            return Err(format!(
-                "workspace path is not a directory: {}",
-                candidate.display()
-            ));
-        }
-        let canonical = match candidate.canonicalize() {
-            Ok(p) => p,
-            Err(e) => return Err(format!("canonicalize {}: {e}", candidate.display())),
-        };
-        match crate::app::registry::resolve_workspace_root(&canonical) {
-            Some(root) => return Ok(Some(root)),
-            None => {
-                crate::config::set_adopted_context_path(canonical);
-                return Ok(None);
-            }
-        }
-    }
-    Ok(None)
-}
-
-/// Commands that must keep working when `[experiments]` is invalid: the ones
-/// that fix it, plus help.
-fn experiments_repair_command(args: &[String]) -> bool {
-    args.iter()
-        .skip(1)
-        .any(|a| matches!(a.as_str(), "--help" | "-h"))
-        || args
-            .iter()
-            .skip(1)
-            .find(|a| !a.starts_with('-'))
-            .is_some_and(|a| matches!(a.as_str(), "experiments" | "config" | "doctor"))
-}
-
-/// Help, version and shell completions describe the CLI, not the profile
-/// (stint 1604). They print and exit here, before profile initialization or
-/// plugin migration, so the installer can generate completions against a
-/// profile another Plexi is still using. Help still reads the experiment
-/// table to hide off experiments; completions read nothing.
-fn exit_if_profile_free(raw_args: &[String]) {
-    use clap::Parser;
-    let args = cli::args::normalize_config_scope_aliases(strip_profile_args(raw_args));
-    if let Ok(cli::args::Cli {
-        command: Some(cli::args::Commands::Completions { shell }),
-        ..
-    }) = cli::args::Cli::try_parse_from(&args)
-    {
-        let binary_name = raw_args
-            .first()
-            .and_then(|p| std::path::Path::new(p).file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("plexi");
-        cli::trace::exit(cli::completions_cli(
-            shell.as_deref().unwrap_or("zsh"),
-            binary_name,
+fn resolve_workspace_operand(operand: Option<&str>) -> Result<Option<std::path::PathBuf>, String> {
+    let Some(operand) = operand else {
+        return Ok(None);
+    };
+    let candidate = std::path::PathBuf::from(operand);
+    if !candidate.exists() {
+        return Err(format!(
+            "workspace path does not exist: {}",
+            candidate.display()
         ));
     }
-    if let Err(error) = cli::help::gated_command().try_get_matches_from(&args) {
-        if matches!(
-            error.kind(),
-            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
-        ) {
-            if let Err(print_error) = error.print() {
-                eprintln!("cli: help output failed: {print_error}");
-            }
-            cli::trace::exit(error.exit_code());
+    if !candidate.is_dir() {
+        return Err(format!(
+            "workspace path is not a directory: {}",
+            candidate.display()
+        ));
+    }
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|e| format!("canonicalize {}: {e}", candidate.display()))?;
+    match crate::app::registry::resolve_workspace_root(&canonical) {
+        Some(root) => Ok(Some(root)),
+        None => {
+            crate::config::set_adopted_context_path(canonical);
+            Ok(None)
         }
     }
-}
-
-/// Drops `--profile` and its value so clap sees only the arguments it models.
-fn strip_profile_args(raw_args: &[String]) -> Vec<String> {
-    raw_args
-        .iter()
-        .enumerate()
-        .filter_map(|(i, a)| {
-            if a == "--profile" {
-                return None;
-            }
-            if i > 0 && raw_args.get(i - 1).map(|x| x.as_str()) == Some("--profile") {
-                return None;
-            }
-            Some(a.clone())
-        })
-        .collect()
 }
 
 /// Rust ignores SIGPIPE by default, so println! panics on a closed pipe.
 /// Restore Unix pipeline behavior before any CLI output, including early
 /// help/build-info paths. Never change the long-lived host's disposition.
 #[cfg(unix)]
-fn configure_cli_sigpipe(raw_args: &[String]) -> std::io::Result<()> {
-    if !is_host_startup(raw_args) {
+fn configure_cli_sigpipe(host_startup: bool) -> std::io::Result<()> {
+    if !host_startup {
         // SAFETY: SIG_DFL is a valid disposition; no Rust signal handler is
         // installed. This runs at startup before application threads exist.
         if unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) } == libc::SIG_ERR {
@@ -2393,60 +2303,6 @@ fn configure_cli_sigpipe(raw_args: &[String]) -> std::io::Result<()> {
         }
     }
     Ok(())
-}
-
-/// True only when argv resolves to launching the GUI host: it parses cleanly
-/// and names no subcommand. `--version`, `--help`, parse errors and every CLI
-/// subcommand are not host startup, so host-only side effects (history
-/// retention, keychain migration) never run for them.
-fn is_host_startup(raw_args: &[String]) -> bool {
-    use clap::Parser;
-    let args = cli::args::normalize_config_scope_aliases(strip_profile_args(raw_args));
-    matches!(
-        cli::args::Cli::try_parse_from(&args),
-        Ok(parsed) if parsed.command.is_none()
-    )
-}
-
-/// Scan argv for `--profile <name>`. Returns the name if present.
-/// Returns true when the only meaningful argument (ignoring `--profile <value>`) is `--help`/`-h`.
-fn top_level_help_flag(args: &[String]) -> bool {
-    let mut skip_next = false;
-    let filtered: Vec<&str> = args
-        .iter()
-        .skip(1)
-        .filter(|a| {
-            if skip_next {
-                skip_next = false;
-                return false;
-            }
-            if a.as_str() == "--profile" || a.starts_with("--profile=") {
-                if a.as_str() == "--profile" {
-                    skip_next = true;
-                }
-                return false;
-            }
-            true
-        })
-        .map(|s| s.as_str())
-        .collect();
-    matches!(
-        filtered.first().copied(),
-        Some("--help") | Some("-h") | Some("help")
-    ) && filtered.len() == 1
-}
-
-fn parse_profile_flag(args: &[String]) -> Option<String> {
-    let mut iter = args.iter();
-    while let Some(a) = iter.next() {
-        if a == "--profile" {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = a.strip_prefix("--profile=") {
-            return Some(rest.to_string());
-        }
-    }
-    None
 }
 
 /// Headless render subcommand: reads `{viewport, draw_commands}` JSON from stdin,
@@ -2498,15 +2354,8 @@ fn render_cli() {
 
 #[cfg(test)]
 mod cli_tests {
-    use super::{parse_workspace_path_arg, top_level_help_flag};
+    use super::resolve_workspace_operand;
     use std::fs;
-
-    fn argv(parts: &[&str]) -> Vec<String> {
-        std::iter::once("plexi")
-            .chain(parts.iter().copied())
-            .map(str::to_string)
-            .collect()
-    }
 
     #[cfg(unix)]
     #[test]
@@ -2588,7 +2437,7 @@ mod cli_tests {
         fs::create_dir_all(workspace.path().join(&channel_dir)).unwrap();
         let path_str = workspace.path().to_string_lossy().to_string();
 
-        let resolved = parse_workspace_path_arg(&argv(&[path_str.as_str()]))
+        let resolved = resolve_workspace_operand(Some(&path_str))
             .expect("path arg should resolve")
             .expect("workspace root should be Some");
         assert_eq!(
@@ -2602,7 +2451,7 @@ mod cli_tests {
         let bare = tempfile::tempdir().unwrap();
         let path_str = bare.path().to_string_lossy().to_string();
 
-        let resolved = parse_workspace_path_arg(&argv(&[path_str.as_str()]))
+        let resolved = resolve_workspace_operand(Some(&path_str))
             .expect("non-workspace dir should not error");
         assert!(
             resolved.is_none(),
@@ -2616,86 +2465,8 @@ mod cli_tests {
     }
 
     #[test]
-    fn host_startup_is_positive_intent_only() {
-        use super::is_host_startup;
-        for host in [
-            &[][..],
-            &["--profile", "alpha"],
-            &["--profile", "doctor"],
-            &["--socket", "/tmp/s.sock"],
-            &["/tmp"],
-        ] {
-            assert!(is_host_startup(&argv(host)), "{host:?} starts a host");
-        }
-        for cli in [
-            &["--version"][..],
-            &["-V"],
-            &["--help"],
-            &["-h"],
-            &["--profile", "alpha", "--version"],
-            &["--bogus-flag"],
-            &["plugin", "list"],
-            &["help"],
-        ] {
-            assert!(
-                !is_host_startup(&argv(cli)),
-                "{cli:?} must not start a host"
-            );
-        }
-    }
-
-    #[test]
-    fn plexi_path_arg_skips_known_subcommands() {
-        // `plexi workspace init` must NOT be interpreted as a path arg.
-        let resolved = parse_workspace_path_arg(&argv(&["workspace", "init"]))
-            .expect("subcommand path should resolve");
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn plexi_with_no_args_returns_none() {
-        let resolved = parse_workspace_path_arg(&argv(&[])).expect("no args should resolve");
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn bare_help_is_top_level_help() {
-        assert!(top_level_help_flag(&argv(&["help"])));
-        assert!(top_level_help_flag(&argv(&["--help"])));
-    }
-
-    #[test]
-    fn plexi_path_arg_skips_profile_flag_value() {
-        // `plexi --profile alpha` must not treat "alpha" as a path.
-        let resolved = parse_workspace_path_arg(&argv(&["--profile", "alpha"]))
-            .expect("flag-only argv should resolve");
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn plexi_path_arg_skips_socket_flag_value() {
-        let sock = std::env::temp_dir().join(format!("plexi-sock-{}", std::process::id()));
-        fs::write(&sock, b"").unwrap();
-        let path = sock.to_string_lossy().to_string();
-        let resolved = parse_workspace_path_arg(&argv(&[
-            "--socket",
-            &path,
-            "assistant",
-            "permission",
-            "list",
-        ]))
-        .expect("a --socket path is not a workspace");
-        assert!(resolved.is_none());
-        let _ = fs::remove_file(&sock);
-    }
-
-    #[test]
-    fn plexi_path_arg_skips_short_flags() {
-        // `plexi -h` must not be treated as a workspace path (fixes issue #1747).
-        let resolved = parse_workspace_path_arg(&argv(&["-h"])).expect("-h should not error");
-        assert!(resolved.is_none());
-
-        let resolved = parse_workspace_path_arg(&argv(&["-V"])).expect("-V should not error");
-        assert!(resolved.is_none());
+    fn no_operand_and_missing_paths() {
+        assert!(resolve_workspace_operand(None).unwrap().is_none());
+        assert!(resolve_workspace_operand(Some("./definitely-not-here-1663")).is_err());
     }
 }

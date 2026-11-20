@@ -45,14 +45,17 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// The clap command tree with every release-gated surface hidden for `enabled`.
-///
-/// Single source for help and parsing so a gated command is never advertised
-/// on a profile whose execution-time gate would refuse it. Completions hide
-/// every experiment without reading the profile (`render_completions`). Hidden
-/// commands still parse, so the `exit_if_feature_disabled` backstop in `main`
-/// keeps producing the standard unavailable message.
-pub fn gated_command() -> clap::Command {
+/// The public command tree: every experiment hidden, whatever any profile
+/// enables. Help, usage, suggestions and completions render from it, so they
+/// never read a profile. Hidden commands still parse; dispatch admission
+/// (`admission`) refuses an experiment that is off.
+pub fn public_command() -> clap::Command {
+    gate_command(Cli::command(), |_| false)
+}
+
+/// Append the active channel's `plexi run` paths to `run`'s help. Pure path
+/// computation from the installed profile selection; it reads no file.
+pub fn with_run_paths(cmd: clap::Command) -> clap::Command {
     let ws_commands = crate::cli::commands_file();
     let global_commands = crate::cli::global_commands_path();
     let global_scripts = crate::config::config_dir().join("scripts");
@@ -61,8 +64,7 @@ pub fn gated_command() -> clap::Command {
         global_commands.display(),
         global_scripts.display()
     );
-    gate_command(Cli::command(), crate::release::feature_enabled)
-        .mut_subcommand("run", |sub| sub.after_help(run_paths))
+    cmd.mut_subcommand("run", |sub| sub.after_help(run_paths))
 }
 
 /// Hide every path owned by an experiment that `enabled` reports off.
@@ -128,102 +130,74 @@ fn hide_arg(cmd: clap::Command, path: &[&str], id: &str, text: &str) -> clap::Co
     cmd.mut_subcommand(*head, |sub| hide_arg(sub, rest, id, text))
 }
 
-/// Capture the gate result before clap's mutable conversion consumes matches.
-pub fn decode_matches(
-    mut matches: clap::ArgMatches,
+/// The command surface an invocation names, captured from intact matches
+/// before typed conversion consumes them: the subcommand path and the ids of
+/// the leaf's arguments given on the command line.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Surface {
+    pub path: Vec<String>,
+    pub explicit: Vec<String>,
+}
+
+impl Surface {
+    pub fn capture(matches: &clap::ArgMatches) -> Self {
+        let mut path = Vec::new();
+        let mut leaf = matches;
+        while let Some((name, sub)) = leaf.subcommand() {
+            path.push(name.to_string());
+            leaf = sub;
+        }
+        let explicit = leaf
+            .ids()
+            .filter(|id| {
+                leaf.value_source(id.as_str()) == Some(clap::parser::ValueSource::CommandLine)
+            })
+            .map(|id| id.as_str().to_string())
+            .collect();
+        Self { path, explicit }
+    }
+}
+
+/// Dispatch admission: the experiment that is off and owns `surface`, if any.
+/// `agent start/spawn/open/reopen` round-trip to the host, which reads
+/// agent_mesh fresh at admission, so the CLI leaves that decision to it.
+pub fn admission(
+    surface: &Surface,
     enabled: impl Fn(ReleaseFeature) -> bool,
-) -> Result<(Cli, Option<ReleaseFeature>), clap::Error> {
-    use clap::FromArgMatches;
-    // These commands round-trip to the host, which reads agent_mesh fresh at
-    // admission. Keep hiding them in help, but leave the decision to the host
-    // rather than this CLI process's configuration.
-    let host_agent_route = matches.subcommand().is_some_and(|(name, args)| {
-        name == "agent"
-            && matches!(
-                args.subcommand_name(),
-                Some("start" | "spawn" | "open" | "reopen")
-            )
-    });
-    let blocked = blocked_feature(&matches, |feature| {
+) -> Option<ReleaseFeature> {
+    let host_agent_route = surface.path.first().is_some_and(|name| name == "agent")
+        && matches!(
+            surface.path.get(1).map(String::as_str),
+            Some("start" | "spawn" | "open" | "reopen")
+        );
+    blocked_feature(surface, |feature| {
         (host_agent_route && feature == ReleaseFeature::AgentMesh) || enabled(feature)
-    });
-    let cli = Cli::from_arg_matches_mut(&mut matches)?;
-    Ok((cli, blocked))
+    })
 }
 
-/// Retry only failed parses with optional experiment-arg values so a missing
-/// value can still receive the experiment diagnostic. Successful parses always
-/// use the original command and its full validation.
-pub fn blocked_incomplete_arg(
-    args: &[String],
-    enabled: impl Fn(ReleaseFeature) -> bool,
-) -> Option<ReleaseFeature> {
-    fn relax(cmd: clap::Command, path: &[&str], id: &str) -> clap::Command {
-        match path.split_first() {
-            Some((head, rest)) => cmd.mut_subcommand(*head, |sub| relax(sub, rest, id)),
-            None => cmd.mut_arg(id, |arg| {
-                arg.num_args(0..=1)
-                    .value_parser(clap::builder::StringValueParser::new())
-                    .default_missing_value("missing-experiment-value")
-            }),
-        }
-    }
-    let mut cmd = Cli::command();
-    for feature in ReleaseFeature::ALL
-        .iter()
-        .copied()
-        .filter(|feature| !enabled(*feature))
-    {
-        for path in feature.owned_paths() {
-            if let GatePath::Arg(path, id) = path {
-                cmd = relax(cmd, path, id);
-            }
-        }
-    }
-    let matches = cmd.try_get_matches_from(args).ok()?;
-    blocked_feature(&matches, enabled)
-}
-
-/// The first experiment that `matches` invokes while `enabled` reports it off.
+/// The first experiment that `surface` invokes while `enabled` reports it off.
 ///
-/// Walks the matched subcommand chain against `ReleaseFeature::owned_paths`,
-/// the same table `gate_command` hides, so the execution backstop cannot drift
-/// from help and completions.
+/// Matches the surface against `ReleaseFeature::owned_paths`, the same table
+/// `gate_command` hides, so dispatch cannot drift from help and completions.
 pub fn blocked_feature(
-    matches: &clap::ArgMatches,
+    surface: &Surface,
     enabled: impl Fn(ReleaseFeature) -> bool,
 ) -> Option<ReleaseFeature> {
-    let mut chain: Vec<(&str, &clap::ArgMatches)> = Vec::new();
-    let mut current = matches;
-    while let Some((name, sub)) = current.subcommand() {
-        chain.push((name, sub));
-        current = sub;
-    }
+    let on_path = |p: &[&str]| surface.path.iter().zip(p).all(|(n, want)| n == want);
     ReleaseFeature::ALL
         .iter()
         .copied()
         .filter(|f| !enabled(*f))
         .find(|f| {
             f.owned_paths().iter().any(|path| match *path {
-                GatePath::Sub(p) => {
-                    chain.len() >= p.len() && chain.iter().zip(p).all(|((n, _), want)| n == want)
-                }
+                GatePath::Sub(p) => surface.path.len() >= p.len() && on_path(p),
                 GatePath::Arg(p, id) => {
-                    chain.len() == p.len()
-                        && chain.iter().zip(p).all(|((n, _), want)| n == want)
-                        && chain.last().is_some_and(|(_, m)| {
-                            m.value_source(id) == Some(clap::parser::ValueSource::CommandLine)
-                        })
+                    surface.path.len() == p.len()
+                        && on_path(p)
+                        && surface.explicit.iter().any(|given| given == id)
                 }
             })
         })
-}
-
-pub fn print_grouped_help() {
-    print!(
-        "{}",
-        grouped_help(&gated_command(), std::env::var_os("NO_COLOR").is_some())
-    );
 }
 
 /// Optimal String Alignment (restricted Damerau-Levenshtein) edit distance:
@@ -254,24 +228,10 @@ fn osa_distance(a: &str, b: &str) -> usize {
     dp[m][n]
 }
 
-/// Extract the invoked binary basename from `args[0]`, stripping `.exe`/`.EXE`
-/// and falling back to `"plexi"`.
-fn invoked_bin_name(args: &[String]) -> &str {
-    args.first()
-        .and_then(|arg0| arg0.rsplit(['/', '\\']).next())
-        .map(|base| {
-            base.strip_suffix(".exe")
-                .or_else(|| base.strip_suffix(".EXE"))
-                .unwrap_or(base)
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or("plexi")
-}
-
 /// Return the single closest visible subcommand or alias using OSA edit distance
 /// with threshold `distance <= max(1, word.len() / 3)`. Ties at the minimum
 /// distance break deterministically by subcommand declaration order.
-fn closest_subcommand_suggestion<'a>(word: &str, cmd: &'a clap::Command) -> Option<&'a str> {
+pub(crate) fn closest_subcommand_suggestion<'a>(word: &str, cmd: &'a clap::Command) -> Option<&'a str> {
     let threshold = (word.chars().count() / 3).max(1);
     let mut best: Option<(usize, &'a str)> = None;
     for sub in cmd.get_subcommands().filter(|sub| !sub.is_hide_set()) {
@@ -285,41 +245,7 @@ fn closest_subcommand_suggestion<'a>(word: &str, cmd: &'a clap::Command) -> Opti
     best.map(|(_, name)| name)
 }
 
-/// Diagnose command-shaped words before the workspace-path fallback consumes them.
-/// Existing directories and explicitly spelled paths retain workspace semantics.
-pub fn unknown_command_help(args: &[String], cmd: &clap::Command) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    let word = loop {
-        let arg = iter.next()?;
-        if matches!(arg.as_str(), "--profile" | "--socket") {
-            iter.next();
-        } else if !arg.starts_with('-') {
-            break arg;
-        }
-    };
-    if cmd
-        .get_subcommands()
-        .any(|sub| sub.get_name() == word || sub.get_all_aliases().any(|alias| alias == word))
-        || word.contains('/')
-        || word.contains('\\')
-        || word.starts_with('.')
-        || std::path::Path::new(word).exists()
-    {
-        return None;
-    }
-    let bin = invoked_bin_name(args);
-    let suggestion = closest_subcommand_suggestion(word, cmd);
-    log::info!("cli:unknown_command: bin={bin} word={word:?} suggestion={suggestion:?}");
-    let headline = match suggestion {
-        Some(matched) => format!("error: unknown command '{word}'. Did you mean `{matched}`?"),
-        None => format!("error: unknown command '{word}'"),
-    };
-    Some(format!(
-        "{headline}\n\nUsage: {bin} [OPTIONS] [COMMAND]\n\nFor more information, try '{bin} --help'.\n"
-    ))
-}
-
-pub fn grouped_help(cmd: &clap::Command, no_color: bool) -> String {
+pub fn grouped_help(cmd: &clap::Command, bin: &str, no_color: bool) -> String {
     use std::fmt::Write;
     let mut output = String::new();
 
@@ -353,7 +279,6 @@ pub fn grouped_help(cmd: &clap::Command, no_color: bool) -> String {
     }
 
     // Usage
-    let bin = cmd.get_name();
     writeln!(output, "{} {bin} [OPTIONS] [COMMAND]", header("Usage")).unwrap();
     writeln!(output).unwrap();
 
@@ -425,38 +350,6 @@ pub fn grouped_help(cmd: &clap::Command, no_color: bool) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn cli_help_snapshots() {
-        let cmd = all_off();
-        for (name, argv) in [
-            ("short", vec!["plexi", "-h"]),
-            ("long", vec!["plexi", "--help"]),
-            ("typo", vec!["plexi", "pnae"]),
-            ("typo-help", vec!["plexi", "pnae", "-h"]),
-        ] {
-            let args: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
-            let error = unknown_command_help(&args, &cmd);
-            let output = error.clone().unwrap_or_else(|| grouped_help(&cmd, true));
-            if name.starts_with("typo") {
-                assert!(error.is_some());
-                assert!(
-                    output.contains("error: unknown command 'pnae'. Did you mean `pane`?"),
-                    "{output}"
-                );
-                assert!(!output.contains("update"), "{output}");
-                assert!(!output.contains("tip:"), "{output}");
-                assert!(!output.contains(&grouped_help(&cmd, true)), "{output}");
-            }
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join(format!("src/cli/snapshots/help-{name}.txt"));
-            if std::env::var_os("UPDATE_HELP_SNAPSHOTS").is_some() {
-                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                std::fs::write(&path, &output).unwrap();
-            }
-            assert_eq!(std::fs::read_to_string(path).unwrap(), output);
-        }
-    }
-
     fn all_off() -> clap::Command {
         gate_command(Cli::command(), |_| false)
     }
@@ -479,9 +372,6 @@ mod tests {
     #[test]
     fn removed_relay_is_not_a_command_or_experiment() {
         assert!(Cli::command().find_subcommand("relay").is_none());
-        let args = vec!["plexi".to_string(), "relay".to_string()];
-        let diagnostic = unknown_command_help(&args, &Cli::command()).unwrap();
-        assert!(diagnostic.contains("unknown command 'relay'"));
         assert!(ReleaseFeature::from_key("relay").is_none());
     }
 
@@ -573,7 +463,7 @@ mod tests {
         let m = Cli::command()
             .try_get_matches_from(args)
             .unwrap_or_else(|e| panic!("{args:?} must parse: {e}"));
-        decode_matches(m, |f| on.contains(&f)).unwrap().1
+        admission(&Surface::capture(&m), |f| on.contains(&f))
     }
 
     #[test]
@@ -589,12 +479,14 @@ mod tests {
                 "--from-env",
             ])
             .unwrap();
-        let (_cli, blocked) = decode_matches(matches, |_| false).unwrap();
-        assert_eq!(blocked, Some(ReleaseFeature::FolderSecrets));
+        let surface = Surface::capture(&matches);
+        let cli = <Cli as clap::FromArgMatches>::from_arg_matches(&matches);
+        assert!(cli.is_ok());
+        assert_eq!(admission(&surface, |_| false), Some(ReleaseFeature::FolderSecrets));
     }
 
     #[test]
-    fn folder_help_and_incomplete_gate_are_actionable() {
+    fn folder_help_is_actionable() {
         for mut command in [all_off(), all_on()] {
             let help = command
                 .find_subcommand_mut("secret")
@@ -606,20 +498,6 @@ mod tests {
             assert!(help.contains("--folder") && help.contains("folder_secrets"));
             assert!(help.contains("plexi experiments enable folder_secrets"));
         }
-        let args: Vec<String> = ["plexi", "secret", "set", "DEMO_TOKEN", "--folder"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        assert_eq!(
-            blocked_incomplete_arg(&args, |_| false),
-            Some(ReleaseFeature::FolderSecrets)
-        );
-        assert_eq!(blocked_incomplete_arg(&args, |_| true), None);
-        let literal: Vec<String> = ["plexi", "secret", "set", "--", "--folder"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        assert_eq!(blocked_incomplete_arg(&literal, |_| false), None);
     }
 
     #[test]
@@ -726,7 +604,7 @@ mod tests {
     #[test]
     fn every_top_level_help_row_fits_80_columns() {
         for cmd in [all_off(), all_on()] {
-            let long: Vec<String> = grouped_help(&cmd, true)
+            let long: Vec<String> = grouped_help(&cmd, "plexi", true)
                 .lines()
                 .filter(|line| line.chars().count() > 80)
                 .map(|line| format!("{} cols: {line}", line.chars().count()))
@@ -783,7 +661,7 @@ mod tests {
     #[test]
     fn run_help_lists_per_channel_commands_toml_paths() {
         let _g = crate::config::set_test_channel("alpha");
-        let mut cmd = gated_command();
+        let mut cmd = with_run_paths(public_command());
         let run_sub = cmd.find_subcommand_mut("run").unwrap();
         let help = run_sub.render_long_help().to_string();
         for needle in [
@@ -801,65 +679,6 @@ mod tests {
             assert!(
                 help.contains(needle),
                 "run --help missing `{needle}`:\n{help}"
-            );
-        }
-    }
-
-    #[test]
-    fn unknown_command_pnae_suggests_pane_only_without_help_dump() {
-        let cmd = all_off();
-        let args = vec!["plexi".to_string(), "pnae".to_string()];
-        let out = unknown_command_help(&args, &cmd).expect("expected unknown command diagnostic");
-        assert_eq!(
-            out,
-            "error: unknown command 'pnae'. Did you mean `pane`?\n\nUsage: plexi [OPTIONS] [COMMAND]\n\nFor more information, try 'plexi --help'.\n"
-        );
-        assert!(!out.contains("update"));
-        assert!(!out.contains("tip:"));
-    }
-
-    #[test]
-    fn unknown_command_far_typo_omits_did_you_mean() {
-        let cmd = all_off();
-        let args = vec!["plexi-alpha".to_string(), "zzzzqx".to_string()];
-        let out = unknown_command_help(&args, &cmd).expect("expected unknown command diagnostic");
-        assert_eq!(
-            out,
-            "error: unknown command 'zzzzqx'\n\nUsage: plexi-alpha [OPTIONS] [COMMAND]\n\nFor more information, try 'plexi-alpha --help'.\n"
-        );
-        assert!(!out.contains("Did you mean"));
-    }
-
-    #[test]
-    fn unknown_command_uses_invoked_binary_basename() {
-        let cmd = all_off();
-        for (arg0, expected_bin) in [
-            ("plexi-alpha", "plexi-alpha"),
-            ("/path/to/plexi-alpha.exe", "plexi-alpha"),
-            ("C:\\bin\\plexi-alpha.EXE", "plexi-alpha"),
-            ("plexi", "plexi"),
-            ("", "plexi"),
-        ] {
-            let args = vec![arg0.to_string(), "pnae".to_string()];
-            let out = unknown_command_help(&args, &cmd).expect("expected diagnostic");
-            assert!(
-                out.contains(&format!("Usage: {expected_bin} [OPTIONS] [COMMAND]")),
-                "arg0={arg0:?} output={out}"
-            );
-            assert!(
-                out.contains(&format!(
-                    "For more information, try '{expected_bin} --help'."
-                )),
-                "arg0={arg0:?} output={out}"
-            );
-        }
-
-        // Workspace-path fallback cases stay untouched (return None).
-        for path_arg in [".", "./nonexistent-workspace", "foo/bar", "src"] {
-            let args = vec!["plexi".to_string(), path_arg.to_string()];
-            assert!(
-                unknown_command_help(&args, &cmd).is_none(),
-                "expected workspace-path arg {path_arg:?} to bypass unknown_command_help"
             );
         }
     }
