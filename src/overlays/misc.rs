@@ -383,6 +383,74 @@ impl PlexiApp {
         crate::app::view_trait::KeyDisposition::Consumed
     }
 
+    /// Running version and update status. Ready and its confirm step share
+    /// the panel's one layout: the confirm swaps the message and the actions
+    /// in place, so the box never jumps. Enter and Esc stay with
+    /// `changelog_handle_key`; the buttons only show them.
+    fn changelog_update_status(&mut self, ui: &mut egui::Ui) {
+        use crate::host::update_status::UpdateLine;
+        use crate::ui::button::ButtonKind;
+        use crate::ui::dialog::{DialogAction, DialogShortcut};
+        use crate::ui::status_panel::{StatusPanel, Tone};
+        use egui::{Key, Modifiers};
+        let line = self.update_status.line();
+        let caption = format!("Running v{}", self.display_version);
+        let now = crate::platform::clock::now_secs();
+        let mut message = crate::host::update_status::status_text(&line, now);
+        let mut tone = match &line {
+            UpdateLine::Failed { .. } => Tone::Danger,
+            _ => Tone::Neutral,
+        };
+        let restart_label;
+        let actions: Vec<DialogAction<'_>> = match &line {
+            UpdateLine::Ready { version } if self.update_confirm_prompt => {
+                message = format!(
+                    "Plexi will restart into v{version}. Running panes will close; \
+                     your workspace will be saved."
+                );
+                tone = Tone::Accent;
+                restart_label = format!("Restart to v{version}");
+                vec![
+                    DialogAction::new("restart", &restart_label, ButtonKind::Primary)
+                        .shortcut(DialogShortcut::new(&["Enter"], Modifiers::NONE, Key::Enter)),
+                    DialogAction::new("cancel", "Cancel", ButtonKind::Ghost)
+                        .shortcut(DialogShortcut::new(&["Esc"], Modifiers::NONE, Key::Escape)),
+                ]
+            }
+            UpdateLine::Ready { .. } => {
+                tone = Tone::Accent;
+                vec![DialogAction::new(
+                    "offer",
+                    "Restart to update",
+                    ButtonKind::Primary,
+                )]
+            }
+            _ => Vec::new(),
+        };
+        let busy = matches!(line, UpdateLine::Checking | UpdateLine::Downloading { .. });
+        let colors = self.colors;
+        let clicked = StatusPanel::new("changelog_update", &caption, &message)
+            .tone(tone)
+            .busy(busy)
+            .actions(&actions)
+            .show(ui, colors.bg_sidebar, &colors);
+        match clicked {
+            Some("offer") => {
+                log::info!("update: restart confirm shown from the changelog");
+                self.update_confirm_prompt = true;
+            }
+            Some("restart") => {
+                self.update_confirm_prompt = false;
+                self.restart_to_update("changelog");
+            }
+            Some("cancel") => {
+                log::info!("update: restart confirm cancelled");
+                self.update_confirm_prompt = false;
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn draw_changelog_overlay(&mut self, ctx: &egui::Context) {
         if !self.show_changelog {
             return;
@@ -393,85 +461,7 @@ impl PlexiApp {
             .title("Changelog")
             .width(560.0)
             .show_scroll_body(ctx, &self.colors.clone(), 420.0, "changelog_body", |ui| {
-                // Running version and update status; the ready state carries
-                // the Restart button with its confirm step.
-                {
-                let line = self.update_status.line();
-                let ready = match &line {
-                    crate::host::update_status::UpdateLine::Ready { version } => Some(version.clone()),
-                    _ => None,
-                };
-                let status =
-                    crate::host::update_status::status_text(&line, crate::platform::clock::now_secs());
-                let tint = if ready.is_some() {
-                    self.colors.accent
-                } else {
-                    self.colors.text_dim
-                };
-                egui::Frame::new()
-                    .fill(tint.gamma_multiply(0.15))
-                    .stroke(Stroke::new(1.0_f32, tint.gamma_multiply(0.4)))
-                    .corner_radius(R6)
-                    .inner_margin(egui::Margin::symmetric(12, 8))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        if let (Some(latest), true) = (&ready, self.update_confirm_prompt) {
-                            ui.vertical(|ui| {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "Plexi will restart into v{latest}. Running panes will close; your workspace will be saved."
-                                    ))
-                                        .size(style::TEXT_HINT)
-                                        .color(self.colors.accent),
-                                );
-                                ui.add_space(4.0);
-                                ui.horizontal(|ui| {
-                                    let restart_label = format!("Restart to v{latest}");
-                                    let confirm_btn = crate::ui::button::KitButton::new(&restart_label, &self.colors)
-                                        .kind(crate::ui::button::ButtonKind::Primary)
-                                        .size(crate::ui::button::ButtonSize::Sm);
-                                    if ui.add(confirm_btn).clicked() {
-                                        self.update_confirm_prompt = false;
-                                        self.restart_to_update("changelog");
-                                    }
-                                    let cancel_btn = crate::ui::button::KitButton::new("Cancel", &self.colors)
-                                        .kind(crate::ui::button::ButtonKind::Ghost)
-                                        .size(crate::ui::button::ButtonSize::Sm);
-                                    if ui.add(cancel_btn).clicked() {
-                                        self.update_confirm_prompt = false;
-                                    }
-                                });
-                                ui.add_space(4.0);
-                                let hints = [
-                                    crate::ui::hints::HintGroup::new(&["\u{21b5}"], "restart"),
-                                    crate::ui::hints::HintGroup::new(&["esc"], "cancel"),
-                                ];
-                                crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
-                            });
-                            return;
-                        }
-                        ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
-                                crate::ui::typography::caption(
-                                    ui,
-                                    format!("Running v{}", self.display_version),
-                                    &self.colors,
-                                );
-                                crate::ui::typography::body(ui, status, &self.colors);
-                            });
-                            if ready.is_some() {
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    let btn = crate::ui::button::KitButton::new("Restart to update", &self.colors)
-                                        .kind(crate::ui::button::ButtonKind::Primary)
-                                        .size(crate::ui::button::ButtonSize::Sm);
-                                    if ui.add(btn).clicked() {
-                                        self.update_confirm_prompt = true;
-                                    }
-                                });
-                            }
-                        });
-                    });
-                }
+                self.changelog_update_status(ui);
                 ui.add_space(style::SPACE_SM);
 
                 for line in CHANGELOG.lines() {

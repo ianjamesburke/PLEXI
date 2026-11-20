@@ -8444,6 +8444,105 @@ open(out + ".done", "w").close()
         println!("Screenshot saved to {}", evidence_png!("_up_to_date"));
     }
 
+    /// Stint 1649: the changelog's update status panel in every state at a
+    /// normal, narrow, scaled and narrow-at-2x window. Every required action
+    /// keeps a full painted label, a hit rect inside the panel and no overlap
+    /// with the panel's text; the confirm step keeps the caption in place.
+    #[test]
+    fn screenshot_update_ui_matrix() {
+        use crate::host::update_status::{UpdateEvent, UpdateStatus};
+        let sizes: [(&str, f32, f32, f32); 4] = [
+            ("normal", 1024.0, 640.0, 1.0),
+            ("narrow", 420.0, 640.0, 1.0),
+            ("scaled", 1024.0, 640.0, 1.5),
+            ("narrow_scaled", 560.0, 640.0, 2.0),
+        ];
+        type Seed = Box<dyn Fn(&mut crate::app::PlexiApp)>;
+        let after = |event: Option<UpdateEvent>| -> Seed {
+            Box::new(move |app| {
+                app.update_confirm_prompt = false;
+                let mut s = UpdateStatus::default();
+                s.begin_check();
+                if let Some(event) = event.clone() {
+                    s.apply(event);
+                }
+                app.update_status = s;
+            })
+        };
+        let states: Vec<(&str, Seed, &[&str])> = vec![
+            ("checking", after(None), &[]),
+            (
+                "downloading",
+                after(Some(UpdateEvent::Downloading { version: "0.5.1".into() })),
+                &[],
+            ),
+            ("ready", after(Some(UpdateEvent::Ready { version: "0.5.1".into() })), &["offer"]),
+            ("confirm", Box::new(|app| app.update_confirm_prompt = true), &["restart", "cancel"]),
+            (
+                "failed_long",
+                after(Some(UpdateEvent::Failed {
+                    reason: "could not fetch releases from https://api.github.com/repos/plexi/plexi/releases/latest: HTTP 503 Service Unavailable".into(),
+                })),
+                &[],
+            ),
+            (
+                "unavailable",
+                after(Some(UpdateEvent::Unavailable {
+                    reason: "Updates are managed by your package manager; run brew upgrade plexi to update.".into(),
+                })),
+                &[],
+            ),
+        ];
+        for (size, w, hh, scale) in sizes {
+            let mut h = PlexiUiHarness::new_sized_scaled(w, hh, scale);
+            add_focused_pane(&mut h);
+            h.step();
+            h.with_app_mut(|app| app.toggle_changelog());
+            let mut ready_caption = None;
+            for (state, seed, expected) in &states {
+                h.with_app_mut(|app| seed(app));
+                h.run_steps(3);
+                let report = h.with_app(|app| {
+                    crate::ui::layout_report::snapshot(&app.ctx)
+                        .into_iter()
+                        .find(|r| r.surface == "status_panel")
+                        .unwrap_or_else(|| panic!("{size}/{state}: no status_panel report"))
+                });
+                let at = format!("{size}/{state}");
+                assert!(report.violations().is_empty(), "{at}: {:?}", report.violations());
+                let ids: Vec<&str> = report.actions.iter().map(|a| a.id.as_str()).collect();
+                assert_eq!(ids.as_slice(), *expected, "{at}: actions");
+                for action in &report.actions {
+                    assert!(!action.painted_label.trim().is_empty(), "{at}: {} label", action.id);
+                    assert!(report.parent.contains_rect(action.hit), "{at}: {} leaves panel", action.id);
+                    for text in report.texts.iter().filter(|t| {
+                        !report.actions.iter().any(|a| a.hit.contains_rect(t.paint))
+                    }) {
+                        assert!(
+                            !action.hit.intersects(text.paint),
+                            "{at}: {} overlaps {:?}",
+                            action.id,
+                            text.text
+                        );
+                    }
+                }
+                let caption = report
+                    .texts
+                    .iter()
+                    .find(|t| t.id == "caption")
+                    .unwrap_or_else(|| panic!("{at}: caption not painted"))
+                    .paint;
+                match *state {
+                    "ready" => ready_caption = Some(caption),
+                    "confirm" => assert_eq!(Some(caption), ready_caption, "{at}: caption moved"),
+                    _ => {}
+                }
+                h.save_screenshot(&evidence_png!(&format!("_{size}_{state}")))
+                    .expect("render failed");
+            }
+        }
+    }
+
     /// Host Assistant pane smoke: open → step → assert visible (epic Phase D).
     #[test]
     fn assistant_pane_opens_and_renders() {
