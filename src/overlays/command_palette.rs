@@ -1100,6 +1100,8 @@ impl PlexiApp {
         Vec<PickerRow>,
         std::collections::HashMap<RowKey, ListRowPips>,
     ) {
+        #[cfg(test)]
+        palette_test_log::source_called();
         let query = normalized_palette_query(raw_query);
 
         // ── Window entries (active context first, then by visit recency) ──
@@ -1672,6 +1674,8 @@ impl PlexiApp {
 
     /// Execute a Commands-stop row.
     fn run_palette_selection(&mut self, id: CommandRowId) {
+        #[cfg(test)]
+        palette_test_log::activated(id.key());
         // Bounded: the result kind only, never the query or row text.
         let kind = match &id {
             CommandRowId::Command(_) => "command",
@@ -2815,6 +2819,37 @@ impl PlexiApp {
     /// What the text field sends when the person edits it.
     pub(crate) fn set_palette_query(&mut self, query: &str) {
         self.apply_palette_command(PickerCommand::QueryEdited(query.to_owned()));
+    }
+}
+
+/// Test-only observation of the palette's production path: which rows ran,
+/// in order, and how often the Commands source answered. Per test thread.
+#[cfg(test)]
+pub(crate) mod palette_test_log {
+    use crate::host::picker::RowKey;
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        static ACTIVATED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        static SOURCE_CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn activated(key: RowKey) {
+        ACTIVATED.with(|log| log.borrow_mut().push(key.as_str().to_owned()));
+    }
+
+    pub(super) fn source_called() {
+        SOURCE_CALLS.with(|calls| calls.set(calls.get() + 1));
+    }
+
+    /// The row keys run since the last take, in activation order.
+    pub(crate) fn take_activations() -> Vec<String> {
+        ACTIVATED.with(|log| std::mem::take(&mut *log.borrow_mut()))
+    }
+
+    /// Commands-source answers since the last take.
+    pub(crate) fn take_source_calls() -> usize {
+        SOURCE_CALLS.with(|calls| calls.replace(0))
     }
 }
 
