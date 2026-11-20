@@ -263,12 +263,63 @@ pub(crate) struct KillReport {
     pub grace_waited: Duration,
     pub kill: Duration,
     pub remaining: usize,
+    /// The pids counted in `remaining`.
+    pub survivors: Vec<u32>,
 }
 
 /// `default_grace` is the caller's budget between HUP/TERM and SIGKILL;
-/// `PLEXI_QUIT_GRACE_MS` overrides it when set.
+/// `PLEXI_QUIT_GRACE_MS` overrides it when set. After the marker sweep, the
+/// terminal panes are closed by their shells' owner (`stop_terminal_panes`);
+/// work it reports unresolved counts as remaining, which withholds the
+/// clean stamp. The sweep runs first so its descendant search can start
+/// from the shells of panes still open; a pane already closing may be
+/// reaped by its owner during the sweep.
 pub(crate) fn stop_pane_processes(default_grace: Duration) -> KillReport {
-    stop_pane_processes_for_marker(session_marker(), default_grace)
+    let mut report = stop_pane_processes_for_marker(session_marker(), default_grace);
+    report.remaining =
+        stop_terminal_panes(&report.survivors, Instant::now() + PANE_SHUTDOWN_BUDGET);
+    report
+}
+
+/// How long host stop waits for the terminal panes' owner (stint 1650):
+/// enough for each pane's hangup, a shortened grace and the reap.
+const PANE_SHUTDOWN_BUDGET: Duration = Duration::from_millis(750);
+
+/// Ask egui_term's lifecycle worker, the one owner of every terminal
+/// pane's shell, to close them all by `deadline`. Returns what is left: the
+/// sweep's `survivors` the owner does not account for, plus the work the
+/// owner reports unresolved or could not confirm.
+fn stop_terminal_panes(survivors: &[u32], deadline: Instant) -> usize {
+    #[cfg(unix)]
+    {
+        let started = Instant::now();
+        let outcome = egui_term::shutdown_panes(deadline);
+        if outcome.unresolved() == 0 {
+            log::info!(
+                "quit: terminal panes closed by their owner in {}ms",
+                started.elapsed().as_millis()
+            );
+        } else {
+            log::error!(
+                "quit: terminal panes not all closed after {}ms: {outcome:?}",
+                started.elapsed().as_millis()
+            );
+        }
+        left_after_owner(survivors, &outcome)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = deadline;
+        survivors.len()
+    }
+}
+
+/// A sweep survivor that is a shell the owner held is the owner's to
+/// report: the owner kept it unreaped, so the pid names the same process.
+#[cfg(unix)]
+fn left_after_owner(survivors: &[u32], owner: &egui_term::ShutdownOutcome) -> usize {
+    let theirs = owner.owned().unwrap_or_default();
+    survivors.iter().filter(|pid| !theirs.contains(pid)).count() + owner.unresolved()
 }
 
 /// Stop pane groups belonging to `marker`, bounded across process and tmux
@@ -616,6 +667,7 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
         grace_waited: waited - signaled,
         kill: waited.elapsed(),
         remaining: remaining.len(),
+        survivors: remaining,
         ..KillReport::default()
     }
 }
@@ -722,6 +774,27 @@ fn stop_marked_processes(_marker: &str, _grace: Duration, _total_deadline: Insta
 mod tests {
     use super::*;
     use std::os::unix::process::CommandExt;
+
+    /// Stint 1650: a shell the sweep counted while it was still exiting,
+    /// and the owner then reaped, is not left; others the sweep counted are,
+    /// and so is everything the owner left unresolved or never confirmed.
+    #[test]
+    fn owner_reaped_shells_are_not_counted_as_sweep_survivors() {
+        use egui_term::ShutdownOutcome::{Complete, Incomplete, Unconfirmed};
+        let complete = Complete {
+            owned: vec![10, 11],
+        };
+        assert_eq!(left_after_owner(&[10], &complete), 0);
+        assert_eq!(left_after_owner(&[10, 99], &complete), 1);
+        let incomplete = Incomplete {
+            owned: vec![10],
+            unresolved: vec!["pane 1".into()],
+            admitting: 2,
+        };
+        // 99, pane 1 and two launches still being admitted.
+        assert_eq!(left_after_owner(&[10, 99], &incomplete), 4);
+        assert_eq!(left_after_owner(&[10], &Unconfirmed), 2);
+    }
 
     #[test]
     fn exited_or_unowned_signal_targets_are_expected() {

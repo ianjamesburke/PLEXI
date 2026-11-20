@@ -24,6 +24,10 @@ pub use backend::{
     BackendCommand, PtyEvent, PtyExitStatus, ResizeOutcome, TerminalBackend,
     TerminalMode,
 };
+#[cfg(unix)]
+pub use backend::{shutdown_panes, ShutdownOutcome, PANE_LIFECYCLE_LOG_TARGET};
+#[cfg(all(unix, any(test, feature = "testing")))]
+pub use backend::pane_close_testing;
 pub use bindings::{Binding, BindingAction, InputKind, KeyboardBinding};
 pub use diag::{set_repaint_diag_hook, set_span_hook};
 pub use contrast::{MIN_CONTRAST_MAX, MIN_CONTRAST_OFF};

@@ -216,6 +216,8 @@ serde_yaml = "0.9"
 # `cargo test --bin plexi` covers every tier. Neither ships in the host binary.
 plexi-daw-model = { path = "crates/daw-model", features = ["gate"] }
 plexi-daw-engine = { path = "crates/daw-engine" }
+# Pane-close worker observation for host tests (stint 1650); not in the host binary.
+egui_term = { path = "deps/egui_term", features = ["testing"] }
 
 [patch.crates-io]
 # Render requested host captures without requiring a composited window drawable.
