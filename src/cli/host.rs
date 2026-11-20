@@ -2799,7 +2799,14 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
                 if line.trim() == "stop" {
                     break;
                 }
-                host.inject_ipc(serde_json::from_str(&line).unwrap());
+                let mut request: crate::protocol::HostRequest =
+                    serde_json::from_str(&line).unwrap();
+                // Stamped as the real socket handler stamps a captured peer:
+                // this test process, which is no pane.
+                if let crate::protocol::HostRequest::SpawnPane { source, .. } = &mut request {
+                    *source = crate::protocol::SpawnSource::SocketPeer(vec![std::process::id()]);
+                }
+                host.inject_ipc(request);
                 host.hidden_frame();
             }
         });

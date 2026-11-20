@@ -910,14 +910,21 @@ fn all_dispatchers_require_monitor() {
         "a subscription without an exact grant is not allowed"
     );
 
-    let credential = monitor().issue_credential(Some(1), context_id, &workspace, "pane:1");
+    // A live caller: a credential is never proof its pane still exists.
+    let caller = h.add_test_pane();
+    let credential = monitor().issue_credential(
+        Some(caller),
+        context_id,
+        &workspace,
+        &format!("pane:{caller}"),
+    );
     let reply = h.workspace_root().join("app-call-blocked.json");
     h.inject_ipc(HostRequest::CallPluginTool {
         wait_approved: false,
         plugin_id: "probe".to_string(),
         tool: "probe.ping".to_string(),
         input_json: args.to_string(),
-        caller_pane_id: Some(1),
+        caller_pane_id: Some(caller),
         call_credential: Some(credential),
         peer_ancestry: Vec::new(),
         target_pane_id: None,
