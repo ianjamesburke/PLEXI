@@ -23,6 +23,7 @@ pub(crate) mod consent_input_guard_tests;
 mod terminal_key_release_tests;
 mod terminal_page_scroll_tests;
 mod command_palette_input_tests;
+mod command_palette_oracle_tests;
 
 #[cfg(unix)]
 mod pane_close_tests;

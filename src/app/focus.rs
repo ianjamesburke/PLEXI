@@ -221,16 +221,17 @@ focus_owner_tokens! {
 }
 
 /// Command palette: routes its whole delivery in arrival order, before any
-/// other consumer takes input (stint 1391); unclaimed keys land in `input`.
+/// other consumer takes input (stint 1391). It takes the delivery from
+/// `ctx` itself, so `input` is always empty here and nothing goes back.
 pub(crate) struct CommandPaletteOwner;
 impl FocusOwner for CommandPaletteOwner {
     fn handle_key(
         &self,
         app: &mut PlexiApp,
         ctx: &egui::Context,
-        input: &mut crate::app::input_router::PlexiInput,
+        _input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::view_trait::KeyDisposition {
-        app.route_palette_delivery(ctx, input)
+        app.route_palette_delivery(ctx)
     }
     fn draw(
         &self,

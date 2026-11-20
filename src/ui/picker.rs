@@ -43,6 +43,9 @@ enum PressOn {
 struct Press {
     origin: egui::Pos2,
     on: PressOn,
+    /// The pointer left the click slop at some point: a drag, never a
+    /// click, even if it comes back before release.
+    dragged: bool,
 }
 
 /// What [`PickerInput::route`] made of one event.
@@ -107,6 +110,22 @@ impl PickerInput {
             .collect()
     }
 
+    /// The presented rows' centers and the modal frame, for tests that
+    /// point at what the person saw.
+    #[cfg(test)]
+    pub(crate) fn presented_layout(&self) -> Option<(Vec<egui::Pos2>, egui::Rect)> {
+        self.presented.as_ref().map(|presented| {
+            (
+                presented
+                    .rows
+                    .iter()
+                    .map(|(rect, _)| rect.center())
+                    .collect(),
+                presented.modal,
+            )
+        })
+    }
+
     fn hit_row(&self, pos: egui::Pos2) -> Option<Hit> {
         let presented = self.presented.as_ref()?;
         presented
@@ -145,18 +164,28 @@ impl PickerInput {
             ..
         } = event
         {
-            let plain = modifiers.is_none();
+            // The host's platform-aware exact matcher: a native Cmd chord
+            // also sets `mac_cmd`, and Shift+Tab must not read as Tab.
+            let is = |pattern: Modifiers| {
+                crate::host::keys::modifiers_match_exact_for_os(
+                    modifiers,
+                    &pattern,
+                    cfg!(target_os = "macos"),
+                )
+            };
             let command = match key {
-                Key::Escape if plain => Some(PickerCommand::Close),
-                Key::Tab if *modifiers == Modifiers::SHIFT => Some(PickerCommand::PrevStop),
-                Key::Tab if plain => Some(PickerCommand::NextStop),
-                Key::ArrowDown if plain => Some(PickerCommand::Move(Step::Down)),
-                Key::ArrowUp if plain => Some(PickerCommand::Move(Step::Up)),
-                Key::J if *modifiers == Modifiers::COMMAND => Some(PickerCommand::Move(Step::Down)),
-                Key::K if *modifiers == Modifiers::COMMAND => Some(PickerCommand::Move(Step::Up)),
+                Key::Escape if is(Modifiers::NONE) => Some(PickerCommand::Close),
+                Key::Tab if is(Modifiers::SHIFT) => Some(PickerCommand::PrevStop),
+                Key::Tab if is(Modifiers::NONE) => Some(PickerCommand::NextStop),
+                Key::ArrowDown if is(Modifiers::NONE) => Some(PickerCommand::Move(Step::Down)),
+                Key::ArrowUp if is(Modifiers::NONE) => Some(PickerCommand::Move(Step::Up)),
+                Key::J if is(Modifiers::COMMAND) => Some(PickerCommand::Move(Step::Down)),
+                Key::K if is(Modifiers::COMMAND) => Some(PickerCommand::Move(Step::Up)),
                 // Enter during composition confirms it and belongs to the IME.
-                Key::Enter if plain && self.field.composing() => return Routed::Claimed,
-                Key::Enter if plain => Some(PickerCommand::Accept),
+                Key::Enter if is(Modifiers::NONE) && self.field.composing() => {
+                    return Routed::Claimed
+                }
+                Key::Enter if is(Modifiers::NONE) => Some(PickerCommand::Accept),
                 _ => None,
             };
             if let Some(command) = command {
@@ -199,6 +228,9 @@ impl PickerInput {
         if !moved {
             return Routed::Unclaimed;
         }
+        if let Some(press) = self.press.as_mut() {
+            press.dragged |= press.origin.distance(pos) > CLICK_SLOP;
+        }
         if let Some(Press {
             on: PressOn::Field, ..
         }) = &self.press
@@ -225,13 +257,17 @@ impl PickerInput {
                     self.field.place_caret(&geometry, pos, false);
                 }
             }
-            self.press = Some(Press { origin: pos, on });
+            self.press = Some(Press {
+                origin: pos,
+                on,
+                dragged: false,
+            });
             return Routed::Claimed;
         }
         let Some(press) = self.press.take() else {
             return Routed::Unclaimed;
         };
-        if press.origin.distance(pos) > CLICK_SLOP {
+        if press.dragged || press.origin.distance(pos) > CLICK_SLOP {
             return Routed::Claimed;
         }
         match (press.on, self.press_on(pos)) {

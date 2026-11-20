@@ -430,3 +430,102 @@ mod note_identity {
         }
     }
 }
+
+fn native_cmd(key: Key, extra: Modifiers) -> Event {
+    let mut modifiers = extra;
+    modifiers.command = true;
+    if cfg!(target_os = "macos") {
+        modifiers.mac_cmd = true;
+    } else {
+        modifiers.ctrl = true;
+    }
+    press(key, modifiers)
+}
+
+fn pointer_edges_left(h: &HostHarness) -> usize {
+    h.app.ctx.input(|i| {
+        i.events
+            .iter()
+            .filter(|e| matches!(e, Event::PointerButton { .. } | Event::MouseWheel { .. }))
+            .count()
+    })
+}
+
+/// Review round 3: a host chord resolves at its own position, while the
+/// palette still owns input. Cmd+B (a Normal chord) before the Escape that
+/// closes the palette never acts; Cmd+Option+P is not the palette's chord.
+#[test]
+fn command_palette_normal_chord_waits_for_no_close() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(2);
+    open_palette(&mut h);
+    deliver(&mut h, vec![native_cmd(Key::P, Modifiers::ALT)]);
+    assert!(
+        h.app.command_palette_open(),
+        "Cmd+Option+P is another global chord, not the palette's"
+    );
+    let sidebar = h.app.sidebar_visible;
+    deliver(
+        &mut h,
+        vec![
+            native_cmd(Key::B, Modifiers::NONE),
+            press(Key::Escape, Modifiers::NONE),
+        ],
+    );
+    assert!(!h.app.command_palette_open());
+    assert_eq!(
+        h.app.sidebar_visible, sidebar,
+        "Cmd+B arrived while the palette owned input"
+    );
+}
+
+/// Review round 3: closing consumes the rest of the session's delivery,
+/// pointer edges included, whether Escape closes it or a deferred Enter
+/// completes in logic.
+#[test]
+fn command_palette_closing_consumes_pointer_edges() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(2);
+    let at = egui::pos2(640.0, 400.0);
+    let click = |pressed| Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    open_palette(&mut h);
+    deliver(
+        &mut h,
+        vec![
+            press(Key::Escape, Modifiers::NONE),
+            click(true),
+            click(false),
+        ],
+    );
+    assert!(!h.app.command_palette_open());
+    assert_eq!(
+        pointer_edges_left(&h),
+        0,
+        "Escape: the clicks were the palette's"
+    );
+
+    open_palette(&mut h);
+    deliver(
+        &mut h,
+        vec![
+            Event::Paste("reset text size".into()),
+            press(Key::Enter, Modifiers::NONE),
+        ],
+    );
+    deliver(&mut h, vec![click(true), click(false)]);
+    assert!(!h.app.command_palette_open());
+    assert_eq!(
+        pointer_edges_left(&h),
+        0,
+        "closed in logic: the clicks were still the palette's"
+    );
+}
