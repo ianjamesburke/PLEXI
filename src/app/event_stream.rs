@@ -228,6 +228,7 @@ pub(super) fn handle_events_subscribe(
         // The host resolves the stable broker actor from the verified caller.
         broker_actor_override: None,
         workspace_root_override: None,
+        posture_ceiling: None,
         context_id_override: None,
         peer_ancestry: peer_ancestry.map(<[u32]>::to_vec),
         cancelled: Some(Arc::clone(&connection.cancelled)),

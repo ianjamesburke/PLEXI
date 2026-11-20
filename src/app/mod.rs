@@ -2859,6 +2859,7 @@ impl PlexiApp {
             subscriber_type_override: Some(crate::broker::ActorType::Plugin),
             broker_actor_override: Some(subscriber_plugin_id),
             workspace_root_override: Some(workspace_root),
+            posture_ceiling: None,
             context_id_override: context_id,
             // This request never travels over the raw event-bus socket — the
             // pane id is already host-known (the WASM/Python plugin dispatch

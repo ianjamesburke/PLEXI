@@ -317,6 +317,11 @@ pub struct HostSubscribeRequest {
     /// connection), in which case the broker check runs with no workspace
     /// context.
     pub workspace_root_override: Option<PathBuf>,
+    /// The subscriber pane's own ceiling, when the transport authenticated
+    /// one (a host-MCP pane bearer, stint 1632). The subscription is
+    /// evaluated under the meet of this and the host posture, so a pane's
+    /// explicit deny is never weakened to a prompt or a grant.
+    pub posture_ceiling: Option<PermissionPosture>,
     /// The subscriber's host-established context id, resolved the same way
     /// as `workspace_root_override` — the viewer side of `evaluate_reach`
     /// for every stream this subscription will ever match against. `None`
@@ -672,9 +677,14 @@ impl HostSubscriptionService {
             });
             return None;
         };
+        let posture = match (&self.posture, &req.posture_ceiling) {
+            (Some(host), Some(pane)) => Some(host.clone().restricted_by(pane)),
+            (host, None) => host.clone(),
+            (None, Some(pane)) => Some(pane.clone()),
+        };
         let decision = evaluate_subscription(
             &self.grant_store,
-            self.posture.as_ref(),
+            posture.as_ref(),
             req.workspace_root_override.as_deref(),
             &req.publisher_plugin_id,
             &subscriber,
@@ -1241,6 +1251,7 @@ mod tests {
             subscriber_type_override: Some(ActorType::Plugin),
             broker_actor_override: Some("notes-app".to_string()),
             workspace_root_override: Some(PathBuf::from("/workspace/notes")),
+            posture_ceiling: None,
             context_id_override: Some(CTX),
             peer_ancestry: None,
             cancelled: None,
@@ -1284,6 +1295,7 @@ mod tests {
             subscriber_type_override: None,
             broker_actor_override: None,
             workspace_root_override: Some(PathBuf::from("/tmp/ws")),
+            posture_ceiling: None,
             context_id_override: Some(CTX),
             peer_ancestry: None,
             cancelled: None,
@@ -1314,6 +1326,7 @@ mod tests {
             subscriber_type_override: None,
             broker_actor_override: Some(broker_actor.to_string()),
             workspace_root_override: Some(PathBuf::from("/tmp/ws")),
+            posture_ceiling: None,
             context_id_override: Some(CTX),
             peer_ancestry: None,
             cancelled: None,

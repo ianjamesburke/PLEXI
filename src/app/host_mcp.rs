@@ -413,7 +413,7 @@ fn handle_connection(
         let dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::from_namespaced_registry(
             crate::plexi_ai::tool_dispatch::DispatchScope {
                 // The pane's ceiling, from the binding its bearer carries.
-                posture: caller.authority.as_ref().and_then(|a| a.posture.clone()),
+                posture: caller.ceiling(),
                 ..crate::plexi_ai::tool_dispatch::DispatchScope::new(
                     caller.pane_id,
                     format!("mcp:pane:{}", caller.pane_id),
@@ -458,57 +458,14 @@ fn handle_connection(
                     caller.pane_id,
                     caller.workspace_root.display()
                 );
-                let result = if tool_name.starts_with("agents.") {
-                    match serde_json::to_string(&arguments) {
-                        Ok(input_json) => {
-                            let auth = crate::agent::runs::McpAuth {
-                                workspace: caller.workspace_root.clone(),
-                                run_id: caller.run_id.clone(),
-                                actor_id: caller.actor_id.clone(),
-                                pane_id: caller.pane_id,
-                                context_id: caller.context_id,
-                            };
-                            crate::agent::runs::mcp_call(&auth, tool_name, &input_json)
-                        }
-                        Err(error) => Err(format!("serialize tool arguments: {error}")),
-                    }
-                } else {
-                    match tool_name {
-                        "permissions_list" => {
-                            tool_permissions("list", &arguments, profile, &caller)
-                        }
-                        "permissions_revoke" => {
-                            tool_permissions("revoke", &arguments, profile, &caller)
-                        }
-                        "permissions_reset" => {
-                            tool_permissions("reset", &arguments, profile, &caller)
-                        }
-                        "permissions_allow" => {
-                            tool_permissions("allow", &arguments, profile, &caller)
-                        }
-                        "list_event_streams" => tool_list_event_streams(&caller),
-                        "subscribe_and_wait" => {
-                            tool_subscribe_and_wait(&arguments, subscribe_tx, &caller)
-                        }
-                        other => {
-                            let input_json = serde_json::to_string(&arguments)
-                                .map_err(|error| format!("serialize tool arguments: {error}"));
-                            match input_json {
-                                Ok(input_json) => {
-                                    let call_id = format!("mcp-{}", uuid::Uuid::new_v4());
-                                    let result =
-                                        dispatcher.dispatch_call(call_id, other, input_json);
-                                    match (result.output_json, result.error) {
-                                        (_, Some(error)) => Err(error),
-                                        (Some(output), None) => Ok(output),
-                                        (None, None) => Ok("null".to_string()),
-                                    }
-                                }
-                                Err(error) => Err(error),
-                            }
-                        }
-                    }
-                };
+                let result = call_route(
+                    McpRoute::parse(tool_name),
+                    &arguments,
+                    &caller,
+                    &dispatcher,
+                    subscribe_tx,
+                    profile,
+                );
                 match result {
                     Ok(text) => serde_json::json!({
                         "jsonrpc": "2.0", "id": id,
@@ -530,16 +487,147 @@ fn handle_connection(
     })
 }
 
+impl McpCaller {
+    /// The pane ceiling every route of this caller is bounded by: the
+    /// posture of the binding its bearer carries. `None` for a run token or
+    /// an unrestricted pane.
+    fn ceiling(&self) -> Option<crate::broker::PermissionPosture> {
+        self.authority.as_ref().and_then(|a| a.posture.clone())
+    }
+}
+
+/// Every `tools/call` route of the host MCP server, and how the caller's
+/// pane ceiling bounds it (stint 1632). [`call_route`] matches it
+/// exhaustively, so a new route cannot be added without deciding:
+///
+/// - A route the broker admits (`subscribe_and_wait`, `agents.*`, every
+///   dispatched tool) takes the ceiling into that admission, where
+///   `GrantStore::evaluate_at` applies it with its grant precedence: an
+///   explicit deny beats every grant; a deny default yields only to an exact
+///   allow grant.
+/// - A route the broker does not admit (`permissions_*`,
+///   `list_event_streams`) is refused when the ceiling denies its tool name,
+///   explicitly or by a deny default; there is no grant for it to yield to.
+///   An `ask` or `allow` leaves it to the route's own rules: it raises no
+///   prompt of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpRoute<'a> {
+    Permissions(PermissionsOp),
+    ListEventStreams,
+    SubscribeAndWait,
+    Agents(&'a str),
+    Dispatched(&'a str),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermissionsOp {
+    List,
+    Revoke,
+    Reset,
+    Allow,
+}
+
+impl<'a> McpRoute<'a> {
+    fn parse(tool: &'a str) -> Self {
+        match tool {
+            "permissions_list" => Self::Permissions(PermissionsOp::List),
+            "permissions_revoke" => Self::Permissions(PermissionsOp::Revoke),
+            "permissions_reset" => Self::Permissions(PermissionsOp::Reset),
+            "permissions_allow" => Self::Permissions(PermissionsOp::Allow),
+            "list_event_streams" => Self::ListEventStreams,
+            "subscribe_and_wait" => Self::SubscribeAndWait,
+            agents if agents.starts_with("agents.") => Self::Agents(agents),
+            other => Self::Dispatched(other),
+        }
+    }
+
+    /// The tool name a ceiling names this route by, when the broker does
+    /// not admit the route; `None` when it does.
+    fn unbrokered_target(self) -> Option<&'static str> {
+        match self {
+            Self::Permissions(PermissionsOp::List) => Some("permissions_list"),
+            Self::Permissions(PermissionsOp::Revoke) => Some("permissions_revoke"),
+            Self::Permissions(PermissionsOp::Reset) => Some("permissions_reset"),
+            Self::Permissions(PermissionsOp::Allow) => Some("permissions_allow"),
+            Self::ListEventStreams => Some("list_event_streams"),
+            Self::SubscribeAndWait | Self::Agents(_) | Self::Dispatched(_) => None,
+        }
+    }
+}
+
+/// The one gate every MCP tool call passes: bound `route` by the caller's
+/// ceiling (see [`McpRoute`]), then run it.
+fn call_route(
+    route: McpRoute<'_>,
+    arguments: &serde_json::Value,
+    caller: &McpCaller,
+    dispatcher: &crate::plexi_ai::tool_dispatch::ToolDispatcher,
+    subscribe_tx: &UiMailbox<HostSubscribeRequest>,
+    profile: &std::path::Path,
+) -> Result<String, String> {
+    let ceiling = caller.ceiling();
+    if let (Some(target), Some(posture)) = (route.unbrokered_target(), ceiling.as_ref()) {
+        if posture.denies(target) {
+            log::info!(
+                "host_mcp: {target} refused by the ceiling of pane {}",
+                caller.pane_id
+            );
+            return Err(
+                serde_json::json!({"ok": false, "error_code": "permission_denied", "tool": target})
+                    .to_string(),
+            );
+        }
+    }
+    match route {
+        McpRoute::Permissions(op) => tool_permissions(op, arguments, profile, caller),
+        McpRoute::ListEventStreams => tool_list_event_streams(caller),
+        McpRoute::SubscribeAndWait => {
+            tool_subscribe_and_wait(arguments, subscribe_tx, caller, ceiling)
+        }
+        McpRoute::Agents(tool) => {
+            let input_json = serde_json::to_string(arguments)
+                .map_err(|error| format!("serialize tool arguments: {error}"))?;
+            let auth = crate::agent::runs::McpAuth {
+                workspace: caller.workspace_root.clone(),
+                run_id: caller.run_id.clone(),
+                actor_id: caller.actor_id.clone(),
+                pane_id: caller.pane_id,
+                context_id: caller.context_id,
+                posture: ceiling,
+            };
+            crate::agent::runs::mcp_call(&auth, tool, &input_json)
+        }
+        // The dispatcher was built with the same ceiling in its scope.
+        McpRoute::Dispatched(tool) => {
+            let input_json = serde_json::to_string(arguments)
+                .map_err(|error| format!("serialize tool arguments: {error}"))?;
+            let call_id = format!("mcp-{}", uuid::Uuid::new_v4());
+            let result = dispatcher.dispatch_call(call_id, tool, input_json);
+            match (result.output_json, result.error) {
+                (_, Some(error)) => Err(error),
+                (Some(output), None) => Ok(output),
+                (None, None) => Ok("null".to_string()),
+            }
+        }
+    }
+}
+
 /// Permission-monitor tools. MCP callers are agents: revoke narrows, reset and
 /// allow file Needs you and change nothing.
 fn tool_permissions(
-    op: &str,
+    op: PermissionsOp,
     arguments: &serde_json::Value,
     profile: &std::path::Path,
     caller: &McpCaller,
 ) -> Result<String, String> {
     let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile)
         .map_err(|error| error.to_string())?;
+    let op = match op {
+        PermissionsOp::List => "list",
+        PermissionsOp::Revoke => "revoke",
+        PermissionsOp::Reset => "reset",
+        PermissionsOp::Allow => "allow",
+    };
     if op == "list" {
         let entries = monitor.list_entries();
         log::info!(
@@ -604,6 +692,7 @@ fn tool_subscribe_and_wait(
     args: &serde_json::Value,
     subscribe_tx: &UiMailbox<HostSubscribeRequest>,
     caller: &McpCaller,
+    ceiling: Option<crate::broker::PermissionPosture>,
 ) -> Result<String, String> {
     let plugin_id = args
         .get("plugin_id")
@@ -650,6 +739,7 @@ fn tool_subscribe_and_wait(
         subscriber_type_override: None,
         broker_actor_override: Some(actor_id),
         workspace_root_override: Some(caller.workspace_root.clone()),
+        posture_ceiling: ceiling,
         context_id_override: Some(caller.context_id),
         // The authenticated bearer credential already establishes this
         // caller's identity (bound to `caller.pane_id`/`context_id` at
@@ -1252,6 +1342,102 @@ mod tests {
         assert_eq!(event["event"], stream);
         assert_eq!(event["summary"], "it tick 1");
         assert_eq!(event["payload"]["count"], 1);
+    }
+
+    /// A second bearer for the pane `token` belongs to, under `posture`.
+    fn bearer_with_ceiling(token: &str, posture: crate::broker::PermissionPosture) -> String {
+        let caller = authenticate(token).expect("live bearer");
+        let binding = Arc::new(crate::broker::pane_authority::PaneAuthority {
+            pane_id: caller.pane_id,
+            posture: Some(posture),
+            spawned_by: None,
+            context_id: caller.context_id,
+            workspace_root: caller.workspace_root.clone(),
+        });
+        register_pane_credential(
+            Some(binding),
+            caller.pane_id,
+            caller.context_id,
+            caller.workspace_root,
+        )
+    }
+
+    fn tool_call(port: u16, token: &str, name: &str, arguments: &str) -> (bool, String) {
+        let call = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
+        );
+        let (status, body) = post(port, Some(token), call.as_bytes());
+        assert_eq!(status, 200);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        (
+            json["result"]["isError"] == true,
+            json["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    }
+
+    /// Round 3 item 4: the pane ceiling bounds every MCP route, not only the
+    /// dispatcher. A subscription the host has granted is still refused
+    /// when the pane's ceiling explicitly denies its stream; the routes the
+    /// broker does not admit are refused under a deny default.
+    #[test]
+    fn mcp_ceiling_bounds_every_route() {
+        use crate::protocol::EventStreamDecl;
+        let app = "mcp-ceiling-app";
+        let stream = "ceiling.tick";
+        let target = format!("{app}::{stream}");
+        crate::host::plugin_timeline::global()
+            .lock()
+            .unwrap()
+            .declare_streams(
+                1,
+                app,
+                vec![EventStreamDecl {
+                    name: stream.to_string(),
+                    schema: serde_json::json!({"type": "object"}),
+                    description: None,
+                }],
+            )
+            .unwrap();
+        let (port, token, _profile) = start_test_server(Some(&target));
+        let posture = |default_posture, deny: Vec<String>| crate::broker::PermissionPosture {
+            default_posture,
+            allow: Vec::new(),
+            ask: Vec::new(),
+            deny,
+        };
+        let subscribe = format!(r#"{{"plugin_id":"{app}","stream":"{stream}","timeout_secs":1}}"#);
+
+        let (error, text) = tool_call(port, &token, "subscribe_and_wait", &subscribe);
+        assert!(
+            !error,
+            "fixture: the grant admits an unrestricted pane: {text}"
+        );
+        let denying = bearer_with_ceiling(
+            &token,
+            posture(crate::broker::Decision::Ask, vec![target.clone()]),
+        );
+        let (error, text) = tool_call(port, &denying, "subscribe_and_wait", &subscribe);
+        assert!(error, "an explicit pane deny beats the host grant: {text}");
+        assert!(text.contains("deny"), "{text}");
+
+        let deny_default =
+            bearer_with_ceiling(&token, posture(crate::broker::Decision::Deny, vec![]));
+        for name in ["list_event_streams", "permissions_list"] {
+            let (error, text) = tool_call(port, &token, name, "{}");
+            assert!(
+                !error,
+                "fixture: {name} serves an unrestricted pane: {text}"
+            );
+            let (error, text) = tool_call(port, &deny_default, name, "{}");
+            assert!(error, "{name} is bounded by a deny default: {text}");
+            assert!(text.contains("permission_denied"), "{name}: {text}");
+        }
+        for bearer in [&token, &denying, &deny_default] {
+            revoke_pane_bearer(bearer);
+        }
     }
 
     #[test]

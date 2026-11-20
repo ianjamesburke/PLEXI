@@ -724,6 +724,16 @@ impl PermissionPosture {
         meet
     }
 
+    /// True when this posture denies `target` before any grant is consulted
+    /// or, under a deny default, with no grant to yield to: an explicit deny,
+    /// or a deny default the target is not excepted from.
+    pub(crate) fn denies(&self, target: &str) -> bool {
+        matches!(
+            self.rule_for(target),
+            TargetRule::FallbackDeny | TargetRule::ExplicitDeny
+        )
+    }
+
     /// The rule this posture applies to `target`, decoded with
     /// `evaluate_at`'s precedence: explicit deny, ask, allow, then default.
     fn rule_for(&self, target: &str) -> TargetRule {
