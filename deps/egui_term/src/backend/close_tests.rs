@@ -760,6 +760,80 @@ fn a_pin_lost_before_escalation_is_never_used_again() {
     end_fixture(shell);
 }
 
+/// Host stop never waits behind the first worker's start: that start holds
+/// no admission lock, so the stop seals at once, returns by its deadline,
+/// and the launch that was starting the worker is then refused.
+#[test]
+fn host_stop_does_not_wait_behind_a_first_worker_start() {
+    if !isolated("host_stop_does_not_wait_behind_a_first_worker_start") {
+        return;
+    }
+    let held = worker::WORKER_START_HOLD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let launching = std::thread::spawn(|| {
+        let (tx, _rx) = mpsc::channel();
+        TerminalBackend::new(
+            1654,
+            egui::Context::default(),
+            tx,
+            settings("/bin/sh", "exec sleep 3600"),
+        )
+        .map(drop)
+    });
+    wait_until("the first worker start", || {
+        worker::WORKER_STARTING.load(Ordering::SeqCst) == 1
+    });
+    let started = Instant::now();
+    let outcome = shutdown_panes(started + Duration::from_millis(200));
+    assert!(
+        started.elapsed() < Duration::from_millis(200) + EPSILON,
+        "host stop waited {:?} behind a worker start",
+        started.elapsed()
+    );
+    assert_eq!(outcome, ShutdownOutcome::Complete { owned: Vec::new() });
+    drop(held);
+    assert!(
+        launching.join().unwrap().is_err(),
+        "a launch was admitted after the seal"
+    );
+}
+
+/// An answer the worker queues after the caller's deadline is no answer,
+/// even when the caller only resumes to find it waiting.
+#[test]
+fn an_answer_queued_after_the_deadline_is_unconfirmed() {
+    if !isolated("an_answer_queued_after_the_deadline_is_unconfirmed") {
+        return;
+    }
+    // A worker exists and its table is empty.
+    let (backend, rx) = spawn("exec sleep 3600");
+    let (shell, key) =
+        (backend.child_pid() as libc::pid_t, backend.launch_key());
+    drop(backend);
+    wait_retired(&rx);
+    assert_owned_signals_then_one_reap(key, shell);
+    let held = worker::HOLD.lock().unwrap_or_else(|e| e.into_inner());
+    let caller = worker::CALLER_HOLD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let deadline = Instant::now() + Duration::from_millis(200);
+    let stop = std::thread::spawn(move || shutdown_panes(deadline));
+    wait_until("the caller to wait", || {
+        worker::CALLER_WAITING.load(Ordering::SeqCst) == 1
+    });
+    std::thread::sleep(
+        deadline.saturating_duration_since(Instant::now())
+            + Duration::from_millis(50),
+    );
+    drop(held);
+    wait_until("the worker's late answer", || {
+        worker::REPLIES.load(Ordering::SeqCst) == 1
+    });
+    drop(caller);
+    assert_eq!(stop.join().unwrap(), ShutdownOutcome::Unconfirmed);
+}
+
 /// A pty whose final bytes become readable only once its exit is seen.
 struct ExitFirstPty {
     master: UnixStream,

@@ -159,18 +159,36 @@ fn admissions() -> MutexGuard<'static, Admissions> {
 
 /// The worker, started on first use; a pty only spawns once this succeeds.
 pub(super) fn worker() -> io::Result<()> {
-    sender(&mut admissions()).map(drop)
+    sender().map(drop)
 }
 
-fn sender(admissions: &mut Admissions) -> io::Result<Sender<Job>> {
-    if let Some(worker) = admissions.worker.as_ref() {
-        return Ok(worker.clone());
+/// The worker's sender. Starting a worker happens outside `ADMISSIONS`, so
+/// host stop never waits behind it; only publishing takes the lock. Of two
+/// racing starts, the one published first wins and the other is unwound.
+fn sender() -> io::Result<Sender<Job>> {
+    if let Some(worker) = admissions().worker.clone() {
+        return Ok(worker);
     }
+    let (worker, registration) = start_worker()?;
+    let mut admissions = admissions();
+    if let Some(published) = admissions.worker.clone() {
+        // Unregistering ends the spare's SIGCHLD thread, and with it the
+        // last sender its worker thread was waiting on.
+        signal_hook::low_level::unregister(registration);
+        return Ok(published);
+    }
+    admissions.worker = Some(worker.clone());
+    Ok(worker)
+}
+
+fn start_worker() -> io::Result<(Sender<Job>, signal_hook::SigId)> {
     let (worker, jobs) = mpsc::channel();
     // SIGCHLD arrives on a pipe; a small thread turns it into jobs.
     let (sender, mut sigchld) = UnixStream::pair()?;
     let registration =
         signal_hook::low_level::pipe::register(libc::SIGCHLD, sender)?;
+    #[cfg(any(test, feature = "testing"))]
+    testing::worker_start_pause();
     let started = std::thread::Builder::new()
         .name("pty-lifecycle".to_string())
         .spawn(move || run(jobs))
@@ -186,8 +204,7 @@ fn sender(admissions: &mut Admissions) -> io::Result<Sender<Job>> {
         signal_hook::low_level::unregister(registration);
         return Err(error);
     }
-    admissions.worker = Some(worker.clone());
-    Ok(worker)
+    Ok((worker, registration))
 }
 
 fn forward_sigchld(sigchld: &mut UnixStream, forward: &Sender<Job>) {
@@ -220,11 +237,13 @@ pub(super) struct Admission {
 }
 
 pub(super) fn admit() -> io::Result<Admission> {
+    let worker = sender()?;
     let mut admissions = admissions();
+    // Sealed after the worker was found or started: host stop may not have
+    // seen it, so this launch must not start.
     if admissions.sealed {
         return Err(io::Error::other("the host is stopping: no new panes"));
     }
-    let worker = sender(&mut admissions)?;
     admissions.in_flight += 1;
     Ok(Admission {
         worker,
@@ -333,11 +352,16 @@ pub fn shutdown_panes(deadline: Instant) -> ShutdownOutcome {
     if worker.send(Job::Shutdown { deadline, reply }).is_err() {
         return ShutdownOutcome::Unconfirmed;
     }
-    // The worker answers by its own, earlier deadline; an answer that
-    // misses the caller's is no answer.
-    outcome
+    #[cfg(any(test, feature = "testing"))]
+    testing::caller_pause();
+    // The worker answers by its own, earlier deadline. An answer that
+    // misses the caller's is no answer, even one already queued.
+    match outcome
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .unwrap_or(ShutdownOutcome::Unconfirmed)
+    {
+        Ok(answer) if Instant::now() <= deadline => answer,
+        _ => ShutdownOutcome::Unconfirmed,
+    }
 }
 
 struct Stopping {
@@ -440,6 +464,8 @@ fn run(jobs: mpsc::Receiver<Job>) {
                 entries.iter().map(describe).collect();
             unresolved.extend(lost().iter().map(|(_, lost)| lost.clone()));
             let admitting = admissions().in_flight;
+            #[cfg(any(test, feature = "testing"))]
+            testing::REPLIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let _ =
                 stop.reply.send(if unresolved.is_empty() && admitting == 0 {
                     ShutdownOutcome::Complete { owned: stop.owned }
@@ -851,6 +877,28 @@ pub mod testing {
     /// Launches that reached that pause.
     pub static ADMITTING: std::sync::atomic::AtomicUsize =
         std::sync::atomic::AtomicUsize::new(0);
+
+    /// Held, a first worker start pauses after its SIGCHLD registration.
+    pub static WORKER_START_HOLD: Mutex<()> = Mutex::new(());
+    pub static WORKER_STARTING: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    /// Held, a host stop pauses before receiving the worker's answer.
+    pub static CALLER_HOLD: Mutex<()> = Mutex::new(());
+    pub static CALLER_WAITING: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    /// Answers the worker has queued for host stops.
+    pub static REPLIES: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    pub(crate) fn worker_start_pause() {
+        WORKER_STARTING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        drop(WORKER_START_HOLD.lock().unwrap_or_else(|e| e.into_inner()));
+    }
+
+    pub(crate) fn caller_pause() {
+        CALLER_WAITING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        drop(CALLER_HOLD.lock().unwrap_or_else(|e| e.into_inner()));
+    }
 
     pub(crate) fn admission_pause() {
         ADMITTING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
