@@ -458,9 +458,6 @@ pub fn begin(argv: &[String], owners: &[Option<super::front::Owner>]) {
             &known_secret_names(&crate::config::config_dir()),
             capture_content(),
         ),
-        // Redacted here from this invocation's captured ownership; the host
-        // records it as sent.
-        "redacted": true,
         "pane_id": std::env::var("PLEXI_PANE_ID").ok().and_then(|v| v.parse::<u64>().ok()),
         "agent_session_id": std::env::var("PLEXI_AGENT_SESSION_ID").ok(),
         "ts": crate::platform::clock::now_rfc3339(),
@@ -641,54 +638,68 @@ fn is_content(path: &[String], id: &str, present: impl Fn(&str) -> bool) -> bool
             && (id == "second" || (id == "first" && !present("second"))))
 }
 
-/// argv the host cannot vouch for: a frame from a client that did not redact
-/// it, or ownership that does not match it. Nothing is recognized. Keep the
-/// leading subcommand names the static grammar declares and option spellings
-/// it declares; every other token, and every `=` value, is masked.
-pub(crate) fn mask_untrusted(argv: &[String]) -> Vec<String> {
+/// The host's record of a traced invocation. A trace frame can come from any
+/// process, so nothing it sends is kept as written: a host-owned label stands
+/// for the binary; the command path keeps tokens that exactly name
+/// subcommands along a valid path in the static grammar, stopping at the first
+/// other token and at `--`; after it, an option the path declares keeps its
+/// spelling. Every other token, and every value, is masked.
+pub(crate) fn host_record(argv: &[String]) -> Vec<String> {
     use clap::CommandFactory;
-    fn flags(command: &clap::Command, out: &mut Vec<String>) {
-        for arg in command.get_arguments() {
-            if let Some(long) = arg.get_long() {
-                out.push(format!("--{long}"));
+    const MASK: &str = "<redacted>";
+    let mut command = super::args::Cli::command();
+    command.build();
+    let mut node = &command;
+    let mut path_nodes = vec![&command];
+    let mut tokens = argv.iter().skip(1);
+    let mut record = vec!["plexi".to_string()];
+    let mut rest: Vec<&String> = Vec::new();
+    for token in tokens.by_ref() {
+        match node
+            .find_subcommand(token)
+            .filter(|sub| sub.get_name() == token)
+        {
+            Some(sub) if token != "--" => {
+                record.push(token.clone());
+                node = sub;
+                path_nodes.push(sub);
             }
-            if let Some(short) = arg.get_short() {
-                out.push(format!("-{short}"));
+            _ => {
+                rest.push(token);
+                break;
             }
-        }
-        for child in command.get_subcommands() {
-            flags(child, out);
         }
     }
-    let command = super::args::Cli::command();
-    let mut known = vec!["--".to_string()];
-    flags(&command, &mut known);
-    let mut node = &command;
-    let mut prefix = true;
-    argv.iter()
-        .enumerate()
-        .map(|(index, arg)| {
-            if index == 0 {
-                return arg.clone();
-            }
-            if prefix {
-                if let Some(child) = node.find_subcommand(arg) {
-                    node = child;
-                    return arg.clone();
-                }
-                prefix = false;
-            }
-            if known.contains(arg) {
-                return arg.clone();
-            }
-            match arg.split_once('=') {
-                Some((flag, _)) if known.iter().any(|known| known == flag) => {
-                    format!("{flag}=<redacted>")
-                }
-                _ => "<redacted>".to_string(),
-            }
+    rest.extend(tokens);
+    let declared = |name: &str| {
+        path_nodes.iter().any(|node| {
+            node.get_arguments().any(|arg| {
+                arg.get_long()
+                    .is_some_and(|long| name == format!("--{long}"))
+            })
         })
-        .collect()
+    };
+    let mut escaped = false;
+    for token in rest {
+        if escaped || token == "--" {
+            escaped = true;
+            record.push(MASK.to_string());
+            continue;
+        }
+        let flag = token
+            .split_once('=')
+            .map_or(token.as_str(), |(flag, _)| flag);
+        record.push(if declared(flag) {
+            if flag.len() == token.len() {
+                flag.to_string()
+            } else {
+                format!("{flag}={MASK}")
+            }
+        } else {
+            MASK.to_string()
+        });
+    }
+    record
 }
 
 /// Content values by this invocation's captured ownership.
@@ -722,7 +733,7 @@ pub(crate) fn redact_owned(
 ) -> Vec<String> {
     if owners.len() != argv.len() {
         log::warn!("cli_trace: ownership does not match argv; masking every value");
-        return mask_untrusted(argv);
+        return host_record(argv);
     }
     let content = redact_content(argv, owners);
     redact_owned_tail(argv, content, known, capture)
@@ -736,7 +747,7 @@ pub(crate) fn recorded_argv(argv: &[String], known: &[String], capture: bool) ->
     let os: Vec<std::ffi::OsString> = argv.iter().map(Into::into).collect();
     match super::front::parse(&os).outcome {
         super::front::Outcome::Run(run) => redact_owned(&run.tokens, &run.owners, known, capture),
-        _ => mask_untrusted(argv),
+        _ => host_record(argv),
     }
 }
 

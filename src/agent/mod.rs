@@ -2006,8 +2006,8 @@ default = "ask"
                     &profile,
                     &serde_json::json!({
                         "id": uuid::Uuid::new_v4().to_string(), "phase": "exit", "exit_code": 0,
-                        "pane_id": 42, "redacted": true,
-                        "argv": crate::cli::trace::recorded_argv(&argv, &[], false)
+                        // A sender's claim to have redacted changes nothing.
+                        "pane_id": 42, "redacted": true, "argv": argv
                     }),
                 )
                 .unwrap();
@@ -2035,6 +2035,24 @@ default = "ask"
                     crate::cli::front::Outcome::UsageError(_)
                 ));
             }
+            // argv that is not a list of strings, and a line that is not
+            // JSON at all: the diagnostics name a kind and a size only.
+            let wrong_type = serde_json::json!({
+                "id": uuid::Uuid::new_v4().to_string(), "phase": "exit", "exit_code": 0,
+                "argv": SENTINEL,
+            });
+            assert!(crate::host::flight_recorder::handle_cli_trace(&profile, &wrong_type).is_err());
+            let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
+                egui::Context::default(),
+            ));
+            let (mailbox, _receiver) =
+                crate::app::ui_mailbox::UiMailbox::channel(wake, "sentinel_test");
+            for line in [
+                wrong_type.to_string(),
+                format!("{{\"type\":\"cli_trace\",\"argv\":[\"{SENTINEL}\""),
+            ] {
+                crate::app::handle_socket_line_in(&profile, &line, &mailbox, None, &mut Vec::new());
+            }
             log::logger().flush();
             let log = std::fs::read_to_string(profile.join("plexi.log")).unwrap();
             let trace =
@@ -2043,7 +2061,8 @@ default = "ask"
             assert!(!trace.contains(SENTINEL), "sentinel leaked to session");
             assert!(log.contains(&format!("len={}", SENTINEL.chars().count())));
             assert!(log.contains(&format!("payload_len={}", SENTINEL.chars().count() + 1)));
-            assert!(trace.contains(&format!("len={}", SENTINEL.chars().count())));
+            // The host records traced calls with every value masked.
+            assert!(trace.contains("<redacted>"));
             return;
         }
         let profile = tempfile::tempdir().unwrap();

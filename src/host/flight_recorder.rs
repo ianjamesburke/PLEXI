@@ -527,16 +527,16 @@ pub(crate) fn handle_cli_trace(profile: &Path, frame: &Value) -> Result<(), Stri
         Some("exit") if frame["exit_code"].as_i64().is_some() => "cli_call",
         _ => return Err("cli_trace: invalid phase or exit code".into()),
     };
-    let argv: Vec<String> = serde_json::from_value(frame["argv"].clone())
-        .map_err(|error| format!("cli_trace: invalid argv: {error}"))?;
-    // The host never recognizes argv another process sent. A client that
-    // redacted it from its own captured ownership says so; anything else is
-    // reduced to its command path and option names.
-    let argv = if frame["redacted"].as_bool() == Some(true) {
-        argv
-    } else {
-        crate::cli::trace::mask_untrusted(&argv)
-    };
+    // A static kind and a size only: the field is sender data.
+    let argv: Vec<String> = serde_json::from_value(frame["argv"].clone()).map_err(|_| {
+        format!(
+            "cli_trace: argv is not a list of strings ({} bytes)",
+            frame["argv"].to_string().len()
+        )
+    })?;
+    // The host cannot tell who sent a frame, so it builds every record itself
+    // from the static grammar and keeps no sender value.
+    let argv = crate::cli::trace::host_record(&argv);
     let pane = frame["pane_id"].as_u64();
     let agent_session = frame["agent_session_id"]
         .as_str()
@@ -675,7 +675,7 @@ mod cli_trace_tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0]["data"]["argv"],
-            json!(["plexi-alpha", "pane", "new", "--right"])
+            json!(["plexi", "pane", "new", "--right"])
         );
         assert_eq!(calls[0]["data"]["exit_code"], 2);
         assert_eq!(calls[0]["data"]["agent_session_id"], "agent-19");

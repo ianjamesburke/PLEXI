@@ -1221,7 +1221,10 @@ fn main() -> eframe::Result {
                             png_dir,
                         } => {
                             log::info!(
-                                "plugin_check:cli: path={path} sizes={sizes:?} png_dir={png_dir:?}"
+                                "plugin_check:cli: path_given={} sizes={} png_dir_given={}",
+                                !path.is_empty(),
+                                sizes.len(),
+                                png_dir.is_some()
                             );
                             cli::trace::exit(cli::plugin_check_cli(
                                 &path,

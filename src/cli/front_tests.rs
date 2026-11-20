@@ -951,11 +951,11 @@ fn non_utf8_argv_is_a_usage_error() {
     ));
 }
 
-/// Argv received from another process is never recognized: everything but
-/// its command path and option names is masked, including selector values
-/// the front end would reject.
+/// The host builds every trace record from the static grammar: a host-owned
+/// label, the exact subcommand path, and declared option names; no sender
+/// value survives, including argv[0] and anything after `--`.
 #[test]
-fn received_argv_keeps_only_the_command_path_and_option_names() {
+fn the_host_record_keeps_no_sender_value() {
     for argv in [
         &["plexi", "pane", "send", "SENTINEL"][..],
         &["plexi", "--profile", "SENTINEL", "host", "stop"],
@@ -969,14 +969,25 @@ fn received_argv_keeps_only_the_command_path_and_option_names() {
             "SENTINEL",
         ],
         &["plexi", "pane", "send", "42", "--text=SENTINEL"],
+        &["/home/SENTINEL/bin/plexi-x", "pane", "list"],
+        &["plexi", "run", "example", "--", "--SENTINEL", "--json"],
     ] {
         let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
-        let masked = crate::cli::trace::mask_untrusted(&argv);
-        assert!(!masked.join(" ").contains("SENTINEL"), "{masked:?}");
+        let record = crate::cli::trace::host_record(&argv);
+        assert!(!record.join(" ").contains("SENTINEL"), "{record:?}");
+        assert_eq!(record[0], "plexi", "{record:?}");
     }
-    let masked =
-        crate::cli::trace::mask_untrusted(&["plexi", "pane", "new", "--right"].map(str::to_string));
-    assert_eq!(masked, ["plexi", "pane", "new", "--right"]);
+    let tail = crate::cli::trace::host_record(
+        &["plexi", "run", "example", "--", "--json"].map(str::to_string),
+    );
+    assert_eq!(
+        tail,
+        ["plexi", "run", "<redacted>", "<redacted>", "<redacted>"]
+    );
+    let kept = crate::cli::trace::host_record(
+        &["plexi-alpha", "pane", "new", "--right"].map(str::to_string),
+    );
+    assert_eq!(kept, ["plexi", "pane", "new", "--right"]);
 }
 
 #[test]
