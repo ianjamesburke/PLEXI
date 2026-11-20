@@ -744,6 +744,55 @@ mod reply_error_tests {
     }
 }
 
+/// Stint 1655: caller identity compares the objects endpoints name, never
+/// their spelling.
+#[cfg(all(test, unix))]
+mod caller_relation_tests {
+    use super::{endpoint_relation, CallerRelation};
+
+    #[test]
+    fn one_object_under_two_spellings_is_the_same_endpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("team/notify.sock");
+        std::fs::create_dir(dir.path().join("team")).unwrap();
+        let _listener = std::os::unix::net::UnixListener::bind(&real).unwrap();
+        let alias = dir.path().join("alias.sock");
+        std::fs::hard_link(&real, &alias).unwrap();
+        assert_eq!(endpoint_relation(Some(&real), &real), CallerRelation::Same);
+        assert_eq!(endpoint_relation(Some(&alias), &real), CallerRelation::Same);
+        // On a case-insensitive volume a case alias is the same object; on a
+        // case-sensitive one it does not exist and is another endpoint.
+        let case_alias = dir.path().join("TEAM/notify.sock");
+        let expected = if case_alias.exists() {
+            CallerRelation::Same
+        } else {
+            CallerRelation::Unknown
+        };
+        assert_eq!(endpoint_relation(Some(&case_alias), &real), expected);
+    }
+
+    #[test]
+    fn distinct_missing_or_absent_sources_are_never_the_same() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.sock");
+        let b = dir.path().join("b.sock");
+        let _a = std::os::unix::net::UnixListener::bind(&a).unwrap();
+        let _b = std::os::unix::net::UnixListener::bind(&b).unwrap();
+        let gone = dir.path().join("gone.sock");
+        assert_eq!(endpoint_relation(Some(&a), &b), CallerRelation::Different);
+        assert_eq!(
+            endpoint_relation(Some(&a), &gone),
+            CallerRelation::Different
+        );
+        assert_eq!(endpoint_relation(Some(&gone), &a), CallerRelation::Unknown);
+        assert_eq!(
+            endpoint_relation(Some(&gone), &gone),
+            CallerRelation::Unknown
+        );
+        assert_eq!(endpoint_relation(None, &a), CallerRelation::Unknown);
+    }
+}
+
 #[cfg(test)]
 mod socket_resolution_tests {
     use super::{command_socket_available_from, resolve_command_socket_from, NO_COMMAND_SOCKET, endpoint_in};
@@ -923,8 +972,9 @@ pub(super) const NO_COMMAND_SOCKET: &str = "error: no Plexi host to talk to: PLE
 
 /// Resolve the command socket endpoint from target-routing inputs.
 ///
-/// Precedence: explicit `--socket` > binary channel identity (`plexi-<channel>`)
-/// > ambient `PLEXI_SOCKET` (bare `plexi` only) > `None`.
+/// Precedence: explicit `--socket` > target profile (an explicit `--profile`,
+/// else the binary channel identity `plexi-<channel>`) > ambient
+/// `PLEXI_SOCKET` (bare `plexi` with no `--profile` only) > `None`.
 ///
 /// See `src/cli/AGENTS.md` ("Environment classification (`self-identity` vs
 /// `target-routing`)") for the canonical precedence table. Self-identity env
@@ -932,34 +982,130 @@ pub(super) const NO_COMMAND_SOCKET: &str = "error: no Plexi host to talk to: PLE
 /// `PLEXI_RUNNING`) are never consulted for socket routing.
 fn resolve_command_socket_from(
     explicit_socket: Option<&std::path::Path>,
-    binary_channel: Option<&str>,
+    target_profile: Option<&str>,
     ambient_socket: Option<&std::ffi::OsStr>,
     home_dir: &std::path::Path,
 ) -> Option<std::path::PathBuf> {
     if let Some(socket) = explicit_socket {
         return Some(socket.to_path_buf());
     }
-    // Binary identity outranks inherited routing env: a channel-named shim
-    // self-binds to its own profile endpoint and ignores an ambient
-    // PLEXI_SOCKET stamped by whichever host spawned the pane.
-    if let Some(channel) = binary_channel {
-        return Some(endpoint_in(&home_dir.join(format!(".plexi-{channel}"))));
+    // An explicit `--profile` or the binary's own channel outranks inherited
+    // routing env: the CLI addresses that profile's endpoint and ignores an
+    // ambient PLEXI_SOCKET stamped by whichever host spawned the pane.
+    if let Some(profile) = target_profile {
+        return Some(endpoint_in(&home_dir.join(format!(".plexi-{profile}"))));
     }
     ambient_socket.map(std::path::PathBuf::from)
 }
 
-/// Remove self-identity stamped by another host before CLI defaults are read.
-/// An explicit socket is outside this rule: it chooses routing independently.
-pub(crate) fn drop_foreign_channel_identity(explicit_socket: bool) -> Vec<String> {
-    let Some(channel) = command_binary_channel() else {
-        return Vec::new();
+/// How the calling process relates to the host this invocation addresses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CallerRelation {
+    /// The caller's own host (`PLEXI_SOCKET`) is the target host.
+    Same,
+    /// The caller belongs to another host.
+    Different,
+    /// The relationship cannot be established (no source endpoint, or one
+    /// that cannot be inspected). Identity defaults are withheld and
+    /// destructive own-host decisions refuse.
+    Unknown,
+}
+
+/// Compare a caller's source endpoint with the target endpoint by the object
+/// they name, never by spelling: on a case-insensitive volume `.plexi-Team`
+/// and `.plexi-team` are one socket.
+pub(crate) fn endpoint_relation(
+    source: Option<&std::path::Path>,
+    target: &std::path::Path,
+) -> CallerRelation {
+    let Some(source) = source else {
+        return CallerRelation::Unknown;
     };
-    let Some(ambient) = std::env::var_os("PLEXI_SOCKET") else {
-        return Vec::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let identity =
+            |path: &std::path::Path| std::fs::metadata(path).map(|meta| (meta.dev(), meta.ino()));
+        match (identity(source), identity(target)) {
+            (Ok(a), Ok(b)) => {
+                if a == b {
+                    CallerRelation::Same
+                } else {
+                    CallerRelation::Different
+                }
+            }
+            // A live source and no target cannot be one object.
+            (Ok(_), Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                CallerRelation::Different
+            }
+            (source_result, target_result) => {
+                log::warn!(
+                    "cli: caller endpoint identity unknown source={source:?} ({:?}) target={target:?} ({:?})",
+                    source_result.err(),
+                    target_result.err()
+                );
+                CallerRelation::Unknown
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        // Named-pipe names are case-insensitive and carry no file identity.
+        if source
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&target.to_string_lossy())
+        {
+            CallerRelation::Same
+        } else {
+            CallerRelation::Different
+        }
+    }
+}
+
+static CALLER_RELATION: std::sync::OnceLock<Option<CallerRelation>> = std::sync::OnceLock::new();
+
+/// The relation computed once by [`settle_caller_identity`]; `None` for a
+/// caller that is not a Plexi pane.
+pub(crate) fn caller_relation() -> Option<CallerRelation> {
+    CALLER_RELATION.get().copied().flatten()
+}
+
+/// Compute the caller's relation to the effective endpoint once, before any
+/// pane default or trace reads inherited identity, and remove that identity
+/// unless the caller is a pane of the target host. `lifecycle` commands
+/// address their profile's host (`host::host_target`); every other command
+/// addresses its command socket, an explicit `--socket` included, compared
+/// by endpoint object like any other target.
+pub(crate) fn settle_caller_identity(
+    explicit_socket: Option<&std::path::Path>,
+    lifecycle: bool,
+) -> Vec<String> {
+    let pane = std::env::var("PLEXI_PANE_ID").is_ok_and(|id| !id.is_empty());
+    let source = std::env::var_os("PLEXI_SOCKET").map(std::path::PathBuf::from);
+    let target = if lifecycle {
+        Some(host::host_target().socket())
+    } else {
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        resolve_command_socket_from(
+            explicit_socket,
+            command_target_profile().as_deref(),
+            None,
+            &home,
+        )
     };
-    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    let target = resolve_command_socket_from(None, Some(&channel), None, &home);
-    if explicit_socket || target.as_deref() == Some(std::path::Path::new(&ambient)) {
+    // Without a target of its own, bare `plexi` addresses the caller's own
+    // socket.
+    let relation = match &target {
+        Some(target) => endpoint_relation(source.as_deref(), target),
+        None => CallerRelation::Same,
+    };
+    log::info!(
+        "cli: caller relation={relation:?} pane={pane} source={source:?} target={target:?} lifecycle={lifecycle}"
+    );
+    if CALLER_RELATION.set(pane.then_some(relation)).is_err() {
+        log::error!("cli: caller relation was already settled; keeping the first");
+    }
+    if relation == CallerRelation::Same || (source.is_none() && !pane) {
         return Vec::new();
     }
     const IDENTITY: &[&str] = &[
@@ -1189,36 +1335,46 @@ fn command_binary_channel() -> Option<String> {
     channel
 }
 
+/// The profile a CLI invocation addresses: an explicit `--profile`, else the
+/// binary's own channel. `None` only for the bare `plexi` binary without one.
+fn command_target_profile() -> Option<String> {
+    crate::config::explicit_profile()
+        .map(str::to_string)
+        .or_else(command_binary_channel)
+}
+
 pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {
-    let channel = command_binary_channel();
+    let profile = command_target_profile();
     let ambient = std::env::var_os("PLEXI_SOCKET");
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
     let explicit = COMMAND_SOCKET_OVERRIDE.lock().ok().and_then(|g| g.clone());
     let socket = resolve_command_socket_from(
         explicit.as_deref(),
-        channel.as_deref(),
+        profile.as_deref(),
         ambient.as_deref(),
         &home,
     );
     if let Some(path) = socket.as_ref() {
         let source = if explicit.is_some() {
             "--socket"
-        } else if channel.is_some() {
+        } else if crate::config::explicit_profile().is_some() {
+            "--profile"
+        } else if profile.is_some() {
             "binary-channel"
         } else {
             "PLEXI_SOCKET"
         };
-        if explicit.is_none() && channel.is_some() {
+        if explicit.is_none() && profile.is_some() {
             if let Some(ignored) = ambient.as_ref() {
                 if ignored.as_os_str() != path.as_os_str() {
                     log::info!(
-                        "cli: ignored ambient PLEXI_SOCKET={ignored:?} because binary identity names channel {channel:?}"
+                        "cli: ignored ambient PLEXI_SOCKET={ignored:?} because {source} names profile {profile:?}"
                     );
                 }
             }
         }
         log::info!(
-            "cli: resolved command socket source={source} binary_channel={channel:?} path={path:?}"
+            "cli: resolved command socket source={source} profile={profile:?} path={path:?}"
         );
     }
     socket

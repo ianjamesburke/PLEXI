@@ -333,8 +333,8 @@ pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: b
                 return Err("Uninstall cancelled.".into());
             }
         }
-        super::host::stop_for_uninstall()?;
-        remove_then_delete_data(&crate::config::config_dir(), delete_data, || {
+        let profile = super::host::stop_for_uninstall()?;
+        remove_then_delete_data(&profile, delete_data, || {
             #[cfg(not(windows))]
             plexi_distribution::transaction::uninstall(&receipt.root).map_err(|e| e.to_string())?;
             #[cfg(windows)]
@@ -412,13 +412,44 @@ fn remove_then_delete_data(
 }
 
 fn remove_channel_data(profile: &Path) -> Result<(), String> {
-    // Never resolve an integrity account through a profile/host symlink into
-    // another channel. Interior data symlinks are unlinked by remove_dir_all.
+    ensure_real_profile_dir(profile)?;
+    crate::broker::seal::remove_profile_credentials(profile)?;
+    match std::fs::remove_dir_all(profile) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("remove profile {}: {error}", profile.display())),
+    }
+    log::info!("uninstall: deleted channel profile {}", profile.display());
+    Ok(())
+}
+
+/// Refuse a profile dir (or its `host` dir) that is a symlink or not a dir,
+/// and a host endpoint that is a symlink: resolving a host socket or
+/// integrity account through one would reach another profile. Interior data
+/// symlinks are unlinked by `remove_dir_all`. A missing entry is fine.
+pub(crate) fn ensure_real_profile_dir(profile: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let endpoint = plexi_distribution::host_presence::endpoint_in(profile);
+        match std::fs::symlink_metadata(&endpoint) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                log::error!("uninstall: refusing linked host endpoint {endpoint:?}");
+                return Err(format!(
+                    "refusing to uninstall through linked host endpoint {}",
+                    endpoint.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("inspect {}: {error}", endpoint.display())),
+        }
+    }
     for path in [profile.to_path_buf(), profile.join("host")] {
         match std::fs::symlink_metadata(&path) {
             Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+                log::error!("uninstall: refusing profile through non-directory {path:?}");
                 return Err(format!(
-                    "refusing data removal through non-directory {}",
+                    "refusing to uninstall through non-directory profile path {}",
                     path.display()
                 ));
             }
@@ -427,13 +458,6 @@ fn remove_channel_data(profile: &Path) -> Result<(), String> {
             Err(error) => return Err(format!("inspect {}: {error}", path.display())),
         }
     }
-    crate::broker::seal::remove_profile_credentials(profile)?;
-    match std::fs::remove_dir_all(profile) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("remove profile {}: {error}", profile.display())),
-    }
-    log::info!("uninstall: deleted channel profile {}", profile.display());
     Ok(())
 }
 

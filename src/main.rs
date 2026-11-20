@@ -109,10 +109,22 @@ fn main() -> eframe::Result {
         cli::front::Outcome::Run(run) => Startup::Run(run),
         cli::front::Outcome::Launch(launch) => Startup::Launch(launch),
     };
-    // Resolve routing before profile/workspace setup or any pane defaults read
-    // inherited identity. This is still single-threaded process startup.
+    // Install the validated selection, then settle the caller's identity
+    // against the endpoint this command addresses, before profile/workspace
+    // setup or any pane default reads inherited identity. This is still
+    // single-threaded process startup.
+    crate::config::set_profile(match &startup {
+        Startup::Run(run) => run.selection.clone(),
+        Startup::Launch(launch) => launch.selection.clone(),
+    });
     let dropped_identity = match &startup {
-        Startup::Run(run) => cli::drop_foreign_channel_identity(run.cli.socket.is_some()),
+        Startup::Run(run) => cli::settle_caller_identity(
+            run.cli.socket.as_deref(),
+            run.cli
+                .command
+                .as_ref()
+                .is_some_and(cli::host::addresses_profile_host),
+        ),
         Startup::Launch(_) => Vec::new(),
     };
     let boot_state = crate::workspace::consume_host_boot_state();
@@ -133,10 +145,6 @@ fn main() -> eframe::Result {
     };
     let is_plugin_prune_command = surface_path.starts_with(&["plugin".into(), "prune".into()]);
 
-    crate::config::set_profile(match &startup {
-        Startup::Run(run) => run.selection.clone(),
-        Startup::Launch(launch) => launch.selection.clone(),
-    });
     // A bad [experiments] table fails every command except the ones needed to
     // fix it, so the user is never locked out of repairing the config.
     if let Some(error) = crate::release::experiments_error() {

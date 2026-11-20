@@ -466,19 +466,22 @@ pub(crate) enum StreamReply {
     Closed,
 }
 
-/// Send `payload` to `socket_path` and read the reply from the same
-/// connection, never a fallback file: a peer that closes without answering
-/// returns [`StreamReply::Closed`] at once instead of waiting out `timeout`.
+/// Send `payload` to the host of `profile_dir` and read the reply from the
+/// same connection, never a fallback file: a peer that closes without
+/// answering returns [`StreamReply::Closed`] at once instead of waiting out
+/// `timeout`. The endpoint and the `response_file` token both come from
+/// `profile_dir`, so a request never carries another profile's token.
 pub(crate) fn request_on_stream(
-    socket_path: &Path,
+    profile_dir: &Path,
     mut payload: serde_json::Value,
     prefix: &str,
     timeout: Duration,
 ) -> Result<StreamReply, PollError> {
+    let socket_path = &plexi_distribution::host_presence::endpoint_in(profile_dir);
     if let Some(obj) = payload.as_object_mut() {
         obj.insert(
             "response_file".to_string(),
-            serde_json::Value::String(response_file(prefix, "json")),
+            serde_json::Value::String(response_file_in(profile_dir, prefix, "json")),
         );
     }
     #[cfg(unix)]

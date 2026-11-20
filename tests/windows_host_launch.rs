@@ -60,7 +60,7 @@ mod tests {
             "HOST01_REPORT".into(),
             report.to_string_lossy().into_owned(),
         ));
-        let pid = spawn(&binary, &env).unwrap();
+        let pid = spawn(&binary, &[], &env).unwrap();
         // Always release the stand-in, even if an assertion fails.
         // SAFETY: open only the newly launched test PID for wait/cleanup.
         let raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
