@@ -951,20 +951,47 @@ fn non_utf8_argv_is_a_usage_error() {
     ));
 }
 
-/// Round 2: argv received from another process is confirmed only by the full
-/// grammar; an incomplete invocation stays fully redacted.
+/// Argv received from another process is never recognized: everything but
+/// its command path and option names is masked, including selector values
+/// the front end would reject.
 #[test]
-fn received_argv_is_confirmed_only_when_it_could_run() {
-    let incomplete: Vec<String> = ["plexi", "pane", "send", "SENTINEL"]
-        .map(str::to_string)
-        .to_vec();
-    assert!(argument_owners(&incomplete).is_none());
-    let safe = crate::cli::trace::redact_argv(&incomplete, &[]);
-    assert!(!safe.join(" ").contains("SENTINEL"), "{safe:?}");
-    let complete: Vec<String> = ["plexi", "pane", "send", "42", "hello"]
-        .map(str::to_string)
-        .to_vec();
-    assert!(argument_owners(&complete).is_some());
+fn received_argv_keeps_only_the_command_path_and_option_names() {
+    for argv in [
+        &["plexi", "pane", "send", "SENTINEL"][..],
+        &["plexi", "--profile", "SENTINEL", "host", "stop"],
+        &[
+            "plexi",
+            "--profile",
+            "one",
+            "host",
+            "stop",
+            "--profile",
+            "SENTINEL",
+        ],
+        &["plexi", "pane", "send", "42", "--text=SENTINEL"],
+    ] {
+        let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
+        let masked = crate::cli::trace::mask_untrusted(&argv);
+        assert!(!masked.join(" ").contains("SENTINEL"), "{masked:?}");
+    }
+    let masked =
+        crate::cli::trace::mask_untrusted(&["plexi", "pane", "new", "--right"].map(str::to_string));
+    assert_eq!(masked, ["plexi", "pane", "new", "--right"]);
+}
+
+#[test]
+fn the_rebinding_diagnostic_names_no_values() {
+    let assigned = |id: &str, value: &str| Assigned {
+        path: path(&["pane", "info"]),
+        id: id.to_string(),
+        values: vec![value.to_string()],
+    };
+    let line = rebinding_diagnostic(
+        &[assigned("pane_id", "SENTINEL_A")],
+        &[assigned("previous", "SENTINEL_B")],
+    );
+    assert!(!line.contains("SENTINEL"), "{line}");
+    assert!(line.contains("pane info:pane_id") && line.contains("pane info:previous"));
 }
 
 #[test]

@@ -465,28 +465,20 @@ impl Owner {
     }
 }
 
-/// Which argument owns each argv token's value, for a complete invocation
-/// clap confirms. `None` when recognition stops or clap's reading differs:
-/// callers fail closed. For argv received from another process; an
-/// invocation's own ownership travels in [`Run`].
-pub(crate) fn argument_owners(argv: &[String]) -> Option<Vec<Option<Owner>>> {
-    let bin = "plexi";
-    let public = grammar(bin);
-    let mut tree = public.clone();
-    tree.build();
-    let r = recognize(&tree, argv);
-    if r.stop.is_some() || r.help_subcommand.is_some() || r.help.is_some() || r.version {
-        return None;
-    }
-    // The full grammar, run requirements included: only an invocation that
-    // could have run is confirmed. Anything incomplete fails closed.
-    let matches = public.try_get_matches_from(&r.kept).ok()?;
-    if path_disagreement(&r.path, &matches).is_some()
-        || rebinding(&tree, &r, argv, &matches).is_some()
-    {
-        return None;
-    }
-    Some(r.owners)
+/// The rebinding log line: command paths and argument ids only, because
+/// argument values are user data.
+fn rebinding_diagnostic(ours: &[Assigned], theirs: &[Assigned]) -> String {
+    let ids = |assigned: &[Assigned]| -> Vec<String> {
+        assigned
+            .iter()
+            .map(|a| format!("{}:{}", a.path.join(" "), a.id))
+            .collect()
+    };
+    format!(
+        "cli_front: removal would rebind values: recognized={:?} clap={:?}",
+        ids(ours),
+        ids(theirs)
+    )
 }
 
 /// The values one non-global argument received at one command path.
@@ -606,7 +598,7 @@ fn rebinding(
         .find(|a| !ours.contains(a) || !theirs.contains(a))
         .map(|a| a.id.clone())
         .unwrap_or_default();
-    log::info!("cli_front: removal would rebind values: ours={ours:?} clap={theirs:?}");
+    log::info!("{}", rebinding_diagnostic(&ours, &theirs));
     Some(UsageError::Rebound {
         argument: differing,
     })
@@ -1124,7 +1116,8 @@ pub fn emit_version(bin: &str) -> i32 {
 /// Print a usage error to stderr. Exit 2, with nothing on stdout.
 pub fn emit_usage_error(bin: &str, error: &UsageError) -> i32 {
     use std::io::Write;
-    log::info!("cli_front: usage error: {}", usage_error_text(bin, error));
+    // The kind only: the message can quote argument values.
+    log::info!("cli_front: usage error: {}", usage_error_kind(error));
     if let UsageError::Grammar { error, note } = error {
         if let Err(print_error) = error.print() {
             log::warn!("cli_front: error output failed: {print_error}");
@@ -1145,6 +1138,19 @@ pub fn emit_usage_error(bin: &str, error: &UsageError) -> i32 {
         log::warn!("cli_front: error output failed: {print_error}");
     }
     2
+}
+
+fn usage_error_kind(error: &UsageError) -> &'static str {
+    match error {
+        UsageError::Profile(_) => "profile",
+        UsageError::Retired(_) => "retired",
+        UsageError::UnknownCommand { .. } => "unknown_command",
+        UsageError::MissingCommand { .. } => "missing_command",
+        UsageError::Rebound { .. } => "rebound",
+        UsageError::NotUtf8 { .. } => "not_utf8",
+        UsageError::Grammar { .. } => "grammar",
+        UsageError::Internal(_) => "internal",
+    }
 }
 
 /// The plain text of a usage error.

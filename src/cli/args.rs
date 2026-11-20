@@ -1490,7 +1490,6 @@ pub enum PluginCmd {
     PLEXI_CHANNEL=alpha plexi plugin test .
     PLEXI_CHANNEL=alpha plexi plugin check . --png-dir render-output/check
     PLEXI_CHANNEL=pr-123 plexi plugin check . --png-dir render-output/check
-    plexi-pr-123 plugin check . --png-dir render-output/check
 
   State and behavior probes:
     PLEXI_CHANNEL=alpha plexi view render . --state fixtures/state.json

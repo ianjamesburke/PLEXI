@@ -2006,10 +2006,34 @@ default = "ask"
                     &profile,
                     &serde_json::json!({
                         "id": uuid::Uuid::new_v4().to_string(), "phase": "exit", "exit_code": 0,
-                        "pane_id": 42, "argv": crate::cli::trace::redact_argv(&argv, &[])
+                        "pane_id": 42, "redacted": true,
+                        "argv": crate::cli::trace::recorded_argv(&argv, &[], false)
                     }),
                 )
                 .unwrap();
+            }
+            // Frames from a client that did not redact them, carrying invalid
+            // and repeated selectors, and this process's own front end on the
+            // same argv: neither the trace nor the log may hold the values.
+            for args in [
+                vec!["plexi", "--profile", SENTINEL, "host", "stop"],
+                vec!["plexi", "--profile", "one", "host", "stop", "--profile", SENTINEL],
+                vec!["plexi", "pane", "send", SENTINEL],
+            ] {
+                let argv: Vec<String> = args.into_iter().map(str::to_string).collect();
+                crate::host::flight_recorder::handle_cli_trace(
+                    &profile,
+                    &serde_json::json!({
+                        "id": uuid::Uuid::new_v4().to_string(), "phase": "exit", "exit_code": 2,
+                        "pane_id": 42, "argv": argv
+                    }),
+                )
+                .unwrap();
+                let os: Vec<std::ffi::OsString> = argv.iter().map(Into::into).collect();
+                assert!(matches!(
+                    crate::cli::front::parse(&os).outcome,
+                    crate::cli::front::Outcome::UsageError(_)
+                ));
             }
             log::logger().flush();
             let log = std::fs::read_to_string(profile.join("plexi.log")).unwrap();

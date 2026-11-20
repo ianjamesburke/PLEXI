@@ -529,8 +529,14 @@ pub(crate) fn handle_cli_trace(profile: &Path, frame: &Value) -> Result<(), Stri
     };
     let argv: Vec<String> = serde_json::from_value(frame["argv"].clone())
         .map_err(|error| format!("cli_trace: invalid argv: {error}"))?;
-    let argv =
-        crate::cli::trace::redact_argv(&argv, &crate::cli::trace::known_secret_names(profile));
+    // The host never recognizes argv another process sent. A client that
+    // redacted it from its own captured ownership says so; anything else is
+    // reduced to its command path and option names.
+    let argv = if frame["redacted"].as_bool() == Some(true) {
+        argv
+    } else {
+        crate::cli::trace::mask_untrusted(&argv)
+    };
     let pane = frame["pane_id"].as_u64();
     let agent_session = frame["agent_session_id"]
         .as_str()
