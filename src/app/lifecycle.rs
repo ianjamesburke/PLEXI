@@ -371,6 +371,11 @@ impl PlexiApp {
                 return serde_json::json!({ "ok": false, "error": error });
             }
         };
+        // A worker under a parent reads as that parent's, as its grant does.
+        let spawned_by = match effective_parent {
+            Some(parent) => self.derive_spawned_by_for_parent(Some(parent)),
+            None => spawned_by,
+        };
         log::info!(
             "pane_ipc: kind=agent_spawn role={role} harness={harness} subcontext={subcontext:?} ephemeral={ephemeral} parent_pane_id={effective_parent:?} spawned_by={spawned_by}"
         );

@@ -481,12 +481,7 @@ impl PlexiApp {
                 (None, GrantSource::PluginInstance { pane_id: *pane_id })
             }
         };
-        // Display provenance: an in-process launch under a named pane reads
-        // as that pane's.
-        let spawned_by = match (source, caller_pane) {
-            (SpawnSource::InProcess, Some(pane)) => self.derive_spawned_by_for_parent(Some(pane)),
-            _ => self.spawned_by_for(&grant_source),
-        };
+        let spawned_by = self.spawned_by_for(&grant_source);
         log::info!(
             "launch_plan: resolved source {source:?} claimed={claimed:?} -> caller={caller_pane:?} spawned_by={spawned_by}"
         );
