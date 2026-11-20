@@ -34,7 +34,9 @@ pub(crate) fn notes_picker_chip_label<'a>(
         if crate::notes::context_notes_dir(root) == global_notes {
             "global"
         } else {
-            root.file_name().and_then(|name| name.to_str()).unwrap_or("project")
+            root.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("project")
         }
     })
 }
@@ -326,7 +328,9 @@ impl PlexiApp {
                 .map(|(i, _)| i)
                 .collect();
             indices.sort_by(|&a, &b| {
-                self.notes_picker_entries[b].modified.cmp(&self.notes_picker_entries[a].modified)
+                self.notes_picker_entries[b]
+                    .modified
+                    .cmp(&self.notes_picker_entries[a].modified)
                     .then_with(|| a.cmp(&b))
             });
             return indices;
@@ -1246,7 +1250,9 @@ impl PlexiApp {
                                         entry.preview.chars().take(50).collect()
                                     };
                                     let chip = notes_picker_chip_label(
-                                        entry, &self.router.active().root, &crate::notes::global_notes_dir(),
+                                        entry,
+                                        &self.router.active().root,
+                                        &crate::notes::global_notes_dir(),
                                     );
                                     let row_response = ListRow::new(&entry.title)
                                         .metadata_chips(std::slice::from_ref(&chip))

@@ -26,8 +26,8 @@ impl PlexiApp {
         // Block key delivery when the OS has focus elsewhere. `active_window` is not
         // cleared on blur, so without this guard keys route to the last-active pane
         // even while a different plugin (or Plexi window) owns the keyboard.
-        // `viewport().focused` is window-focus state, not an event, so it is
-        // untouched by the router's `take_from` — read it from `ctx` directly.
+        // `viewport().focused` is window-focus state, not an event — read it
+        // from `ctx` directly.
         if !ctx.input(|i| i.viewport().focused.unwrap_or(true)) {
             return;
         }
@@ -189,12 +189,12 @@ impl PlexiApp {
             }
             return;
         }
-        // The plugin classifies keys from the frame's ownership-transfer buffer
-        // (stint 0387) rather than a second read of `ctx`. Bare Escape while
-        // zoomed reaches `handle_key` without un-zooming (stint 0898). If the
-        // plugin consumed the key, also claim Escape/ArrowUp out of the buffer so
-        // `poll_actions` (which takes the same buffer later this frame) can't
-        // re-fire CloseView for keys the plugin already handled — e.g. Escape
+        // The plugin classifies the event the input router handed it rather
+        // than a read of `ctx`. Bare Escape while zoomed reaches `handle_key`
+        // without un-zooming (stint 0898). If the plugin consumed the key, also
+        // claim Escape/ArrowUp so the router's ViewActive match (which runs
+        // after the pane) can't re-fire CloseView for keys the plugin already
+        // handled — e.g. Escape
         // exiting search mode in the file browser rather than closing the
         // pane, or ArrowUp recalling a prior message in the assistant.
         let disposition = view_pane.runtime.handle_key(input);

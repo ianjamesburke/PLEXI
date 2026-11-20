@@ -582,7 +582,12 @@ impl CliRendererView {
                     } else {
                         "▶  Run"
                     };
-                    if ui.add(button::KitButton::new(run_text, colors).kind(ButtonKind::Primary).min_width(120.0))
+                    if ui
+                        .add(
+                            button::KitButton::new(run_text, colors)
+                                .kind(ButtonKind::Primary)
+                                .min_width(120.0),
+                        )
                         .clicked()
                     {
                         should_execute = true;
@@ -747,11 +752,7 @@ impl View for CliRendererView {
         }
     }
 
-    fn ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &ViewRenderContext<'_>,
-    ) {
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &ViewRenderContext<'_>) {
         // Request terminal on first render
         if !self.terminal_requested && self.descriptor.is_some() {
             self.request_terminal();

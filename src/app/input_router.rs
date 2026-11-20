@@ -419,7 +419,9 @@ impl PlexiApp {
                             }
                             Some(_) => Disposition::Consumed,
                             None if barrier => Disposition::Consumed,
-                            None => self.dispatch_owner_input(ctx, owner, event.clone(), os_focused),
+                            None => {
+                                self.dispatch_owner_input(ctx, owner, event.clone(), os_focused)
+                            }
                         }
                     } else {
                         let held = self.input_router.held_keys.get(&id).copied();
@@ -483,8 +485,7 @@ impl PlexiApp {
                                 self.input_router
                                     .held_keys
                                     .insert(id, HeldEdge { owner, path });
-                                text_claimed =
-                                    matches!(path, EdgePath::Claimed | EdgePath::Owner);
+                                text_claimed = matches!(path, EdgePath::Claimed | EdgePath::Owner);
                                 d
                             }
                         }
@@ -545,7 +546,14 @@ impl PlexiApp {
                         match d {
                             Disposition::Egui => {
                                 out.push((event, Some(owner)));
-                                self.note_owner_change(delivery, ordinal, "pointer_button", owner, false, &mut barrier);
+                                self.note_owner_change(
+                                    delivery,
+                                    ordinal,
+                                    "pointer_button",
+                                    owner,
+                                    false,
+                                    &mut barrier,
+                                );
                                 continue;
                             }
                             other => other,
@@ -553,7 +561,9 @@ impl PlexiApp {
                     } else {
                         match self.input_router.held_buttons[*button as usize].take() {
                             Some(held)
-                                if held.path == EdgePath::Egui && held.owner == owner && !barrier =>
+                                if held.path == EdgePath::Egui
+                                    && held.owner == owner
+                                    && !barrier =>
                             {
                                 Disposition::Egui
                             }
@@ -599,7 +609,14 @@ impl PlexiApp {
                 }
             }
             let _ = stack_before;
-            self.note_owner_change(delivery, ordinal, event_kind(&event), owner, explicit, &mut barrier);
+            self.note_owner_change(
+                delivery,
+                ordinal,
+                event_kind(&event),
+                owner,
+                explicit,
+                &mut barrier,
+            );
         }
 
         let final_owner = self.input_router.observe(self.host_input_owner());
@@ -690,7 +707,12 @@ impl PlexiApp {
 
     /// A press with a pane-level owner: hit-test the last presented layout and
     /// move focus to the pressed pane at this ordinal.
-    fn route_pane_press(&mut self, ctx: &egui::Context, pos: egui::Pos2, modifiers: egui::Modifiers) {
+    fn route_pane_press(
+        &mut self,
+        ctx: &egui::Context,
+        pos: egui::Pos2,
+        modifiers: egui::Modifiers,
+    ) {
         let active = self.active_window;
         let window_id = self.windows[active].window_id;
         let layer_at = ctx
@@ -776,11 +798,18 @@ impl PlexiApp {
                 }
                 // Noted before the owner runs: a modal that claims every key
                 // (unsaved changes) still steps its trap on Tab.
-                if matches!(event, egui::Event::Key { key: egui::Key::Tab, .. }) {
+                if matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::Tab,
+                        ..
+                    }
+                ) {
                     self.input_router.trap_tab = Some(modifiers.shift);
                 }
                 let qn = self.key_bindings.open_quick_note;
-                if keys::event_matches_exact(&event, qn.0, qn.1) && self.is_quick_note_preemptable() {
+                if keys::event_matches_exact(&event, qn.0, qn.1) && self.is_quick_note_preemptable()
+                {
                     self.dismiss_preemptable_modal();
                     self.open_quick_note_modal();
                     self.sync_overlay_layers();
@@ -807,19 +836,24 @@ impl PlexiApp {
                     self.run_host_action(action, ctx);
                     return (Disposition::Consumed, true);
                 }
-                (self.dispatch_owner_input(ctx, owner, event, os_focused), false)
+                (
+                    self.dispatch_owner_input(ctx, owner, event, os_focused),
+                    false,
+                )
             }
             InputOwner::Pane(_) | InputOwner::Nobody | InputOwner::OsUnfocused => {
                 if egui::Popup::is_any_open(ctx)
                     && keys::event_matches_exact(&event, egui::Modifiers::NONE, egui::Key::Escape)
                 {
                     egui::Popup::close_all(ctx);
-                    log::info!("input_router: Escape dismissed native popup before pane key dispatch");
+                    log::info!(
+                        "input_router: Escape dismissed native popup before pane key dispatch"
+                    );
                     return (Disposition::Consumed, false);
                 }
                 let (_, keyboard_capture_active) = self.focused_view_capture_state();
-                if let Some(action) =
-                    self.match_host_binding(&event, BindingPolicy::pane(false, keyboard_capture_active))
+                if let Some(action) = self
+                    .match_host_binding(&event, BindingPolicy::pane(false, keyboard_capture_active))
                 {
                     self.run_host_action(action, ctx);
                     return (Disposition::Consumed, true);

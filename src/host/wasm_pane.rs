@@ -2729,7 +2729,7 @@ impl LiveWasmPane {
                     // Bare Escape is reserved for the host CloseView binding
                     // (keys.rs, `BindingContext::ViewActive`). Reporting it
                     // consumed claims Escape out of the frame's input buffer
-                    // before `poll_actions` can fire CloseView, so the focused
+                    // before the host binding match (`keys::match_binding`) can fire CloseView, so the focused
                     // WASM pane never closes on Escape. Skip it — never forward
                     // to the guest, never count toward `consumed`. Cmd+Escape
                     // (context zoom-out) is already dropped by
@@ -5307,7 +5307,7 @@ mod tests {
 
     /// Stint 0430: bare Escape is reserved for the host CloseView binding
     /// (keys.rs, `BindingContext::ViewActive`). A focused WASM pane must report
-    /// `Passthrough` for it so `poll_actions` can fire CloseView; before the fix
+    /// `Passthrough` for it so the host binding match (`keys::match_binding`) can fire CloseView; before the fix
     /// `handle_key` reported `Consumed` for every key event, claiming Escape out
     /// of the frame buffer and starving the close. Normal keys stay `Consumed`.
     #[test]

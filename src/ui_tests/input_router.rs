@@ -45,10 +45,9 @@ impl crate::app::view_trait::View for EdgeProbe {
     ) -> crate::app::view_trait::KeyDisposition {
         for event in input.events() {
             match event {
-                Event::Key { key, pressed, .. } => self.log.push(format!(
-                    "{}:{key:?}",
-                    if *pressed { "down" } else { "up" }
-                )),
+                Event::Key { key, pressed, .. } => self
+                    .log
+                    .push(format!("{}:{key:?}", if *pressed { "down" } else { "up" })),
                 Event::Text(text) => self.log.push(format!("text:{text}")),
                 Event::Paste(_) => self.log.push("paste".to_string()),
                 _ => {}
@@ -212,7 +211,10 @@ fn open_palette(h: &mut HostHarness) {
 
 fn pending_request(
     root: &std::path::Path,
-) -> (std::sync::Arc<crate::broker::gate::PermissionMonitor>, String) {
+) -> (
+    std::sync::Arc<crate::broker::gate::PermissionMonitor>,
+    String,
+) {
     let monitor =
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
     let result = crate::workspace::secrets::read_pane_secret(
@@ -250,22 +252,58 @@ fn palette_delivery_settles_pane_chords_before_escape_restores_focus() {
     let sidebar = h.app.sidebar_visible;
 
     open_palette(&mut h);
-    deliver(&mut h, vec![down(Key::T, native_cmd()), down(Key::Escape, Modifiers::NONE)]);
+    deliver(
+        &mut h,
+        vec![
+            down(Key::T, native_cmd()),
+            down(Key::Escape, Modifiers::NONE),
+        ],
+    );
     assert!(!h.app.show_command_palette, "Escape closed the palette");
-    assert_eq!(h.pane_count(), panes, "Cmd+T was the palette's, not the pane's");
-    deliver(&mut h, vec![up(Key::T, Modifiers::NONE), up(Key::Escape, Modifiers::NONE)]);
+    assert_eq!(
+        h.pane_count(),
+        panes,
+        "Cmd+T was the palette's, not the pane's"
+    );
+    deliver(
+        &mut h,
+        vec![
+            up(Key::T, Modifiers::NONE),
+            up(Key::Escape, Modifiers::NONE),
+        ],
+    );
 
     open_palette(&mut h);
-    deliver(&mut h, vec![down(Key::B, native_cmd()), down(Key::Escape, Modifiers::NONE)]);
+    deliver(
+        &mut h,
+        vec![
+            down(Key::B, native_cmd()),
+            down(Key::Escape, Modifiers::NONE),
+        ],
+    );
     assert!(!h.app.show_command_palette);
     assert_eq!(h.app.sidebar_visible, sidebar, "Cmd+B was the palette's");
     assert_eq!(focused(&h), Some(a));
-    deliver(&mut h, vec![up(Key::B, Modifiers::NONE), up(Key::Escape, Modifiers::NONE)]);
-    assert!(probe_log(&mut h, a).iter().all(|e| !e.ends_with(":T") && !e.ends_with(":B")));
+    deliver(
+        &mut h,
+        vec![
+            up(Key::B, Modifiers::NONE),
+            up(Key::Escape, Modifiers::NONE),
+        ],
+    );
+    assert!(probe_log(&mut h, a)
+        .iter()
+        .all(|e| !e.ends_with(":T") && !e.ends_with(":B")));
 
     // Positive control: the same chord, owned by the pane, runs.
-    deliver(&mut h, vec![down(Key::B, native_cmd()), up(Key::B, native_cmd())]);
-    assert_eq!(h.app.sidebar_visible, !sidebar, "a pane-owned Cmd+B toggles the sidebar");
+    deliver(
+        &mut h,
+        vec![down(Key::B, native_cmd()), up(Key::B, native_cmd())],
+    );
+    assert_eq!(
+        h.app.sidebar_visible, !sidebar,
+        "a pane-owned Cmd+B toggles the sidebar"
+    );
 }
 
 // ── R3/R4: exact matching and explicit transfer ─────────────────────────────
@@ -278,13 +316,19 @@ fn native_cmd_j_moves_the_palette_row_before_enter() {
     open_palette(&mut h);
     h.run_frames(1);
     let before = h.app.palette_selected;
-    deliver(&mut h, vec![down(Key::J, native_cmd()), up(Key::J, native_cmd())]);
+    deliver(
+        &mut h,
+        vec![down(Key::J, native_cmd()), up(Key::J, native_cmd())],
+    );
     assert_eq!(
         h.app.palette_selected,
         before + 1,
         "native Cmd+J (command + mac_cmd) must match the palette's next-row chord"
     );
-    deliver(&mut h, vec![down(Key::K, native_cmd()), up(Key::K, native_cmd())]);
+    deliver(
+        &mut h,
+        vec![down(Key::K, native_cmd()), up(Key::K, native_cmd())],
+    );
     assert_eq!(h.app.palette_selected, before);
 }
 
@@ -315,7 +359,10 @@ fn focus_approval_transfer_takes_the_next_event_from_the_palette() {
     );
     assert!(h.app.show_command_palette, "no palette row ran");
     assert_eq!(focused(&h), Some(a));
-    assert!(monitor.show_pending(&id).is_some(), "the unarmed request stays pending");
+    assert!(
+        monitor.show_pending(&id).is_some(),
+        "the unarmed request stays pending"
+    );
 }
 
 /// The same chord with no actionable approval leaves the palette eligible:
@@ -335,7 +382,10 @@ fn focus_approval_without_a_request_leaves_the_palette_owner() {
         ],
     );
     assert_ne!(h.app.focus_stack.last(), Some(&FocusKind::ApprovalBanner));
-    assert!(!h.app.show_command_palette, "the palette kept Enter and ran its row");
+    assert!(
+        !h.app.show_command_palette,
+        "the palette kept Enter and ran its row"
+    );
 }
 
 // ── R3/R4: immediate and deferred click-through ─────────────────────────────
@@ -348,19 +398,37 @@ fn escape_then_click_before_first_palette_draw_never_reaches_the_pane() {
     let mut h = HostHarness::new();
     let (a, b) = two_probes(&mut h);
     let target = center(&h, b);
-    let mut events = vec![down(Key::P, native_cmd()), down(Key::Escape, Modifiers::NONE)];
+    let mut events = vec![
+        down(Key::P, native_cmd()),
+        down(Key::Escape, Modifiers::NONE),
+    ];
     events.extend(click(target));
     deliver(&mut h, events);
     assert!(!h.app.show_command_palette);
-    assert_eq!(focused(&h), Some(a), "the click belonged to the dismissed palette");
+    assert_eq!(
+        focused(&h),
+        Some(a),
+        "the click belonged to the dismissed palette"
+    );
     assert!(
-        !h.egui_ctx().input(|i| i.pointer.any_pressed() || i.pointer.any_released()),
+        !h.egui_ctx()
+            .input(|i| i.pointer.any_pressed() || i.pointer.any_released()),
         "egui never folded the barrier's pointer edges"
     );
 
-    deliver(&mut h, vec![up(Key::P, Modifiers::NONE), up(Key::Escape, Modifiers::NONE)]);
+    deliver(
+        &mut h,
+        vec![
+            up(Key::P, Modifiers::NONE),
+            up(Key::Escape, Modifiers::NONE),
+        ],
+    );
     deliver(&mut h, click(target));
-    assert_eq!(focused(&h), Some(b), "a fresh click on the exposed pane focuses it");
+    assert_eq!(
+        focused(&h),
+        Some(b),
+        "a fresh click on the exposed pane focuses it"
+    );
 }
 
 /// The same history against a palette that has been presented.
@@ -392,7 +460,10 @@ fn a_pointer_gesture_started_before_opening_cannot_continue_behind_the_palette()
     deliver(&mut h, vec![moved(start), button(start, true)]);
     assert!(h.egui_ctx().input(|i| i.pointer.primary_down()));
 
-    deliver(&mut h, vec![down(Key::P, native_cmd()), up(Key::P, native_cmd())]);
+    deliver(
+        &mut h,
+        vec![down(Key::P, native_cmd()), up(Key::P, native_cmd())],
+    );
     assert!(h.app.show_command_palette);
     assert!(
         !h.egui_ctx().input(|i| i.pointer.primary_down()),
@@ -402,7 +473,10 @@ fn a_pointer_gesture_started_before_opening_cannot_continue_behind_the_palette()
     let over_b = center(&h, b);
     deliver(&mut h, vec![moved(over_b), button(over_b, false)]);
     assert_eq!(focused(&h), Some(a));
-    assert!(h.app.show_command_palette, "the retired release did not click the palette away");
+    assert!(
+        h.app.show_command_palette,
+        "the retired release did not click the palette away"
+    );
 
     deliver(
         &mut h,
@@ -440,11 +514,18 @@ fn a_closing_chord_retires_its_release_and_the_next_key_reaches_the_pane_whole()
     let mut h = HostHarness::new();
     let (a, _b) = two_probes(&mut h);
     open_palette(&mut h);
-    deliver(&mut h, vec![down(Key::P, native_cmd()), up(Key::P, Modifiers::NONE)]);
+    deliver(
+        &mut h,
+        vec![down(Key::P, native_cmd()), up(Key::P, Modifiers::NONE)],
+    );
     assert!(!h.app.show_command_palette);
     deliver(
         &mut h,
-        vec![down(Key::P, Modifiers::NONE), text("p"), up(Key::P, Modifiers::NONE)],
+        vec![
+            down(Key::P, Modifiers::NONE),
+            text("p"),
+            up(Key::P, Modifiers::NONE),
+        ],
     );
     assert_eq!(probe_log(&mut h, a), ["down:P", "text:p", "up:P"]);
 }
@@ -458,10 +539,17 @@ fn a_closing_chord_release_in_a_later_delivery_is_still_retired() {
     deliver(&mut h, vec![down(Key::P, native_cmd())]);
     deliver(&mut h, vec![up(Key::P, Modifiers::NONE)]);
     assert!(!h.app.show_command_palette);
-    assert!(probe_log(&mut h, a).is_empty(), "the chord's release is not the pane's");
+    assert!(
+        probe_log(&mut h, a).is_empty(),
+        "the chord's release is not the pane's"
+    );
     deliver(
         &mut h,
-        vec![down(Key::P, Modifiers::NONE), text("p"), up(Key::P, Modifiers::NONE)],
+        vec![
+            down(Key::P, Modifiers::NONE),
+            text("p"),
+            up(Key::P, Modifiers::NONE),
+        ],
     );
     assert_eq!(probe_log(&mut h, a), ["down:P", "text:p", "up:P"]);
 }
@@ -477,7 +565,11 @@ fn blur_before_release_leaves_no_stale_claim() {
     deliver(&mut h, vec![Event::WindowFocused(true)]);
     deliver(
         &mut h,
-        vec![down(Key::P, Modifiers::NONE), text("p"), up(Key::P, Modifiers::NONE)],
+        vec![
+            down(Key::P, Modifiers::NONE),
+            text("p"),
+            up(Key::P, Modifiers::NONE),
+        ],
     );
     assert_eq!(probe_log(&mut h, a), ["down:P", "text:p", "up:P"]);
 }
@@ -506,12 +598,22 @@ fn opening_mid_delivery_splits_the_delivery_at_the_chord() {
     assert_eq!(probe_log(&mut h, a), ["down:X", "text:x", "up:X"]);
 
     // Cmd+P first: nothing reaches the pane.
-    deliver(&mut h, vec![up(Key::P, Modifiers::NONE), down(Key::Escape, Modifiers::NONE)]);
+    deliver(
+        &mut h,
+        vec![
+            up(Key::P, Modifiers::NONE),
+            down(Key::Escape, Modifiers::NONE),
+        ],
+    );
     deliver(&mut h, vec![up(Key::Escape, Modifiers::NONE)]);
     probe_log(&mut h, a);
     deliver(
         &mut h,
-        vec![down(Key::P, native_cmd()), down(Key::Y, Modifiers::NONE), text("y")],
+        vec![
+            down(Key::P, native_cmd()),
+            down(Key::Y, Modifiers::NONE),
+            text("y"),
+        ],
     );
     assert!(h.app.show_command_palette);
     assert!(probe_log(&mut h, a).is_empty());
@@ -527,7 +629,10 @@ fn enter_acts_on_the_row_selected_at_its_ordinal() {
         open_palette(&mut h);
         h.run_frames(1);
         deliver(&mut h, events);
-        assert!(!h.app.show_command_palette, "Enter ran a row and closed the palette");
+        assert!(
+            !h.app.show_command_palette,
+            "Enter ran a row and closed the palette"
+        );
         let f = focused(&h);
         (f == Some(a), f == Some(b), h.app.palette_selected)
     };
@@ -562,8 +667,18 @@ fn quick_note_preempt_transfers_the_rest_of_the_delivery() {
     let (a, _b) = two_probes(&mut h);
     open_palette(&mut h);
     let (m, k) = h.app.key_bindings.open_quick_note;
-    let m = if m.command { Modifiers { mac_cmd: cfg!(target_os = "macos"), ..m } } else { m };
-    deliver(&mut h, vec![down(k, m), down(Key::Z, Modifiers::NONE), text("z")]);
+    let m = if m.command {
+        Modifiers {
+            mac_cmd: cfg!(target_os = "macos"),
+            ..m
+        }
+    } else {
+        m
+    };
+    deliver(
+        &mut h,
+        vec![down(k, m), down(Key::Z, Modifiers::NONE), text("z")],
+    );
     assert!(!h.app.show_command_palette);
     assert_eq!(h.app.focus_stack.last(), Some(&FocusKind::QuickNote));
     assert!(probe_log(&mut h, a).is_empty());
@@ -578,21 +693,37 @@ fn a_held_approval_decision_key_never_reaches_the_pane() {
     let root = tempfile::tempdir().unwrap();
     let (a, _b) = two_probes(&mut h);
     let (monitor, id) = pending_request(root.path());
-    deliver(&mut h, vec![down(Key::P, native_cmd_alt()), up(Key::P, native_cmd_alt())]);
+    deliver(
+        &mut h,
+        vec![down(Key::P, native_cmd_alt()), up(Key::P, native_cmd_alt())],
+    );
     assert_eq!(h.app.focus_stack.last(), Some(&FocusKind::ApprovalBanner));
     h.app
         .approval_keyboard
         .backdate_focus(crate::app::approval_keyboard::ARM_DELAY);
 
     deliver(&mut h, vec![down(Key::A, Modifiers::NONE), text("a")]);
-    assert!(monitor.show_pending(&id).is_none(), "the armed approval decided");
+    assert!(
+        monitor.show_pending(&id).is_none(),
+        "the armed approval decided"
+    );
     assert_ne!(h.app.focus_stack.last(), Some(&FocusKind::ApprovalBanner));
     deliver(&mut h, vec![down(Key::A, Modifiers::NONE), text("a")]);
     deliver(&mut h, vec![down(Key::A, Modifiers::NONE), text("a")]);
     deliver(&mut h, vec![up(Key::A, Modifiers::NONE)]);
-    assert!(probe_log(&mut h, a).is_empty(), "the held decision key stayed the approval's");
+    assert!(
+        probe_log(&mut h, a).is_empty(),
+        "the held decision key stayed the approval's"
+    );
 
-    deliver(&mut h, vec![down(Key::A, Modifiers::NONE), text("a"), up(Key::A, Modifiers::NONE)]);
+    deliver(
+        &mut h,
+        vec![
+            down(Key::A, Modifiers::NONE),
+            text("a"),
+            up(Key::A, Modifiers::NONE),
+        ],
+    );
     assert_eq!(probe_log(&mut h, a), ["down:A", "text:a", "up:A"]);
 }
 
@@ -605,13 +736,24 @@ fn hidden_delivery_is_not_replayed_and_logic_still_services_ipc() {
     h.inject_ipc(crate::protocol::HostRequest::FocusPane { pane_id: b });
     h.hidden_frame_with(RawInput {
         screen_rect: screen(),
-        events: vec![down(Key::H, Modifiers::NONE), text("h"), up(Key::H, Modifiers::NONE)],
+        events: vec![
+            down(Key::H, Modifiers::NONE),
+            text("h"),
+            up(Key::H, Modifiers::NONE),
+        ],
         ..Default::default()
     });
-    assert_eq!(focused(&h), Some(b), "the hidden pass serviced pane IPC in logic");
+    assert_eq!(
+        focused(&h),
+        Some(b),
+        "the hidden pass serviced pane IPC in logic"
+    );
     h.run_frames(2);
     assert!(probe_log(&mut h, a).is_empty());
-    assert!(probe_log(&mut h, b).is_empty(), "hidden input is not replayed on the next draw");
+    assert!(
+        probe_log(&mut h, b).is_empty(),
+        "hidden input is not replayed on the next draw"
+    );
 }
 
 // ── Production oracle over generated deliveries ─────────────────────────────
@@ -715,7 +857,13 @@ impl Model {
             match *step {
                 Step::Down(key) => {
                     if barrier {
-                        self.held.insert(key, ModelHeld { instance, returns: false });
+                        self.held.insert(
+                            key,
+                            ModelHeld {
+                                instance,
+                                returns: false,
+                            },
+                        );
                         text_owned = true;
                         continue;
                     }
@@ -723,22 +871,46 @@ impl Model {
                         ModelOwner::Palette if key == Key::Escape => {
                             self.palette_open = false;
                             barrier = true;
-                            self.held.insert(key, ModelHeld { instance, returns: true });
+                            self.held.insert(
+                                key,
+                                ModelHeld {
+                                    instance,
+                                    returns: true,
+                                },
+                            );
                             text_owned = true;
                         }
                         ModelOwner::Palette => {
-                            self.held.insert(key, ModelHeld { instance, returns: true });
+                            self.held.insert(
+                                key,
+                                ModelHeld {
+                                    instance,
+                                    returns: true,
+                                },
+                            );
                             text_owned = false;
                         }
                         ModelOwner::Pane(side) => {
                             self.log(side, format!("down:{key:?}"));
-                            self.held.insert(key, ModelHeld { instance, returns: true });
+                            self.held.insert(
+                                key,
+                                ModelHeld {
+                                    instance,
+                                    returns: true,
+                                },
+                            );
                             text_owned = key == Key::Escape;
                         }
                     }
                 }
                 Step::CmdPDown => {
-                    self.held.insert(Key::P, ModelHeld { instance, returns: false });
+                    self.held.insert(
+                        Key::P,
+                        ModelHeld {
+                            instance,
+                            returns: false,
+                        },
+                    );
                     text_owned = true;
                     if barrier {
                         continue;
@@ -829,7 +1001,11 @@ fn run_production(deliveries: &[Vec<Step>]) -> Vec<Observed> {
             deliver(&mut h, events);
             Observed {
                 palette_open: h.app.show_command_palette,
-                focus: if focused(&h) == Some(b) { Side::B } else { Side::A },
+                focus: if focused(&h) == Some(b) {
+                    Side::B
+                } else {
+                    Side::A
+                },
                 a: probe_log(&mut h, a),
                 b: probe_log(&mut h, b),
             }
@@ -839,7 +1015,10 @@ fn run_production(deliveries: &[Vec<Step>]) -> Vec<Observed> {
 
 fn run_model(deliveries: &[Vec<Step>]) -> Vec<Observed> {
     let mut model = Model::new();
-    deliveries.iter().map(|steps| model.delivery(steps)).collect()
+    deliveries
+        .iter()
+        .map(|steps| model.delivery(steps))
+        .collect()
 }
 
 /// First delivery where production and model disagree.
@@ -884,7 +1063,11 @@ fn generate(seed: u64) -> Vec<Vec<Step>> {
             }
             2 => steps.extend([Step::CmdPDown, Step::Up(Key::P)]),
             3 => steps.extend([Step::Down(Key::Escape), Step::Up(Key::Escape)]),
-            _ => steps.push(Step::Click(if rng.below(2) == 0 { Side::A } else { Side::B })),
+            _ => steps.push(Step::Click(if rng.below(2) == 0 {
+                Side::A
+            } else {
+                Side::B
+            })),
         }
     }
     let mut deliveries = vec![Vec::new()];
@@ -931,17 +1114,72 @@ fn assert_production_matches_model(deliveries: Vec<Vec<Step>>, label: &str) {
 fn production_oracle_mandatory_histories() {
     use Step::*;
     let histories: Vec<(&str, Vec<Vec<Step>>)> = vec![
-        ("escape then click before first draw", vec![vec![CmdPDown, Down(Key::Escape), Click(Side::B)]]),
+        (
+            "escape then click before first draw",
+            vec![vec![CmdPDown, Down(Key::Escape), Click(Side::B)]],
+        ),
         (
             "escape then click after draw",
-            vec![vec![CmdPDown, Up(Key::P)], vec![Down(Key::Escape), Click(Side::B), Up(Key::Escape)]],
+            vec![
+                vec![CmdPDown, Up(Key::P)],
+                vec![Down(Key::Escape), Click(Side::B), Up(Key::Escape)],
+            ],
         ),
-        ("closing chord release retired", vec![vec![CmdPDown, Up(Key::P)], vec![CmdPDown, Up(Key::P)], vec![Down(Key::P), Text('p'), Up(Key::P)]]),
-        ("release in a later delivery", vec![vec![CmdPDown], vec![Up(Key::P)], vec![CmdPDown], vec![Up(Key::P), Down(Key::P), Text('p'), Up(Key::P)]]),
-        ("opening mid delivery", vec![vec![Down(Key::X), Text('x'), CmdPDown, Down(Key::Y), Text('y'), Up(Key::Y), Up(Key::X)]]),
-        ("escape then typing", vec![vec![CmdPDown, Up(Key::P)], vec![Down(Key::Escape), Down(Key::Z), Text('z'), Up(Key::Z), Up(Key::Escape)], vec![Down(Key::Z), Text('z'), Up(Key::Z)]]),
-        ("click away then type", vec![vec![CmdPDown, Up(Key::P)], vec![Click(Side::B), Down(Key::X), Text('x'), Up(Key::X)], vec![Down(Key::X), Text('x'), Up(Key::X)]]),
-        ("pane click then keys", vec![vec![Click(Side::B), Down(Key::Y), Text('y'), Up(Key::Y)]]),
+        (
+            "closing chord release retired",
+            vec![
+                vec![CmdPDown, Up(Key::P)],
+                vec![CmdPDown, Up(Key::P)],
+                vec![Down(Key::P), Text('p'), Up(Key::P)],
+            ],
+        ),
+        (
+            "release in a later delivery",
+            vec![
+                vec![CmdPDown],
+                vec![Up(Key::P)],
+                vec![CmdPDown],
+                vec![Up(Key::P), Down(Key::P), Text('p'), Up(Key::P)],
+            ],
+        ),
+        (
+            "opening mid delivery",
+            vec![vec![
+                Down(Key::X),
+                Text('x'),
+                CmdPDown,
+                Down(Key::Y),
+                Text('y'),
+                Up(Key::Y),
+                Up(Key::X),
+            ]],
+        ),
+        (
+            "escape then typing",
+            vec![
+                vec![CmdPDown, Up(Key::P)],
+                vec![
+                    Down(Key::Escape),
+                    Down(Key::Z),
+                    Text('z'),
+                    Up(Key::Z),
+                    Up(Key::Escape),
+                ],
+                vec![Down(Key::Z), Text('z'), Up(Key::Z)],
+            ],
+        ),
+        (
+            "click away then type",
+            vec![
+                vec![CmdPDown, Up(Key::P)],
+                vec![Click(Side::B), Down(Key::X), Text('x'), Up(Key::X)],
+                vec![Down(Key::X), Text('x'), Up(Key::X)],
+            ],
+        ),
+        (
+            "pane click then keys",
+            vec![vec![Click(Side::B), Down(Key::Y), Text('y'), Up(Key::Y)]],
+        ),
     ];
     for (label, history) in histories {
         assert_production_matches_model(history, label);

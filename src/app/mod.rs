@@ -4247,16 +4247,13 @@ impl eframe::App for PlexiApp {
             return;
         }
 
-        // Ownership-transfer (stint 0387): if the focused pane is a terminal
-        // and no overlay owns input, take this frame's keyboard events out of
-        // `ctx` *before* the render pass and hand them to that terminal. Doing
-        // this before `render_panels` is what prevents egui's own render-time
-        // widget machinery (allocate_painter's built-in Cmd+A select-all) from
-        // swallowing a key before the terminal processes it. `poll_actions`
-        // above already claimed global hotkeys from the same buffer, so the
-        // terminal only ever sees what the global allowlist left behind.
-        // Bare Escape while zoomed goes to the pane with no layout change
-        // (stint 0898: Cmd+Enter is the only zoom toggle).
+        // The terminal's ordered keyboard stream, assigned by the input router
+        // before egui folded the delivery, so egui's own render-time widget
+        // machinery (allocate_painter's built-in Cmd+A select-all) can never
+        // swallow a key first. Host bindings were matched at each key's
+        // ordinal, so the terminal only sees what they left. Bare Escape
+        // while zoomed goes to the pane with no layout change (stint 0898:
+        // Cmd+Enter is the only zoom toggle).
         let focused_terminal_input = self.input_router.terminal_stream.take();
         // egui focus still belongs to last frame until `reconcile_egui_focus`
         // at the end of `ui`. Publish the owner whose input egui folded this

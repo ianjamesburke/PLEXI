@@ -1824,7 +1824,10 @@ mod tests {
         let table = build_binding_table(&KeyBindings::default());
         let b = KeyBindings::default();
         let chord = press(b.new_tab.1, false, b.new_tab.0);
-        assert_eq!(match_binding(&chord, &table, BindingPolicy::overlay()), None);
+        assert_eq!(
+            match_binding(&chord, &table, BindingPolicy::overlay()),
+            None
+        );
         assert_eq!(
             match_binding(&chord, &table, BindingPolicy::pane(false, false)),
             Some(Action::NewTab)

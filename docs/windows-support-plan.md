@@ -145,7 +145,7 @@ egui maps `Modifiers::COMMAND` to ⌘ on macOS but to **Ctrl** everywhere else.
 Plexi's host shortcuts are all defined with `cmd()` (= `COMMAND`), so off
 macOS every one of them becomes a bare `Ctrl+<key>` chord — exactly the
 namespace a terminal uses for control codes (Ctrl+I = Tab, Ctrl+R =
-reverse-search, Ctrl+W = delete-word, Ctrl+[ = ESC). `poll_actions` runs
+reverse-search, Ctrl+W = delete-word, Ctrl+[ = ESC). the host binding match (`keys::match_binding`) runs
 before the terminal view reads input and consumes the event, so neovim and
 readline never receive those keys.
 
@@ -183,7 +183,7 @@ deliberate keymap, not an extrapolation.
 Windows/Linux, which move key, and which are dropped to the command palette.
 Once that exists, the implementation is small: `cfg`-split the `cmd*()` helpers
 in `src/host/keys.rs`, fix `modifiers_match_exact` for non-macOS, and cover it
-with `poll_actions` unit tests — which run headlessly on Linux and therefore
+with the host binding match (`keys::match_binding`) unit tests — which run headlessly on Linux and therefore
 prove the Windows path.
 
 ## Phase 5 — Not yet replayed

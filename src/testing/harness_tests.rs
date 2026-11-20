@@ -2075,12 +2075,7 @@ impl crate::app::view_trait::View for KeyBurstProbe {
         "Key Burst Probe".to_string()
     }
 
-    fn ui(
-        &mut self,
-        _ui: &mut egui::Ui,
-        _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-    ) {
-    }
+    fn ui(&mut self, _ui: &mut egui::Ui, _ctx: &crate::app::view_trait::ViewRenderContext<'_>) {}
 
     fn handle_key(
         &mut self,
@@ -2131,11 +2126,7 @@ impl crate::app::view_trait::View for TextInputProbe {
     // probe panes flips egui focus mid-pass so that neither TextEdit ever
     // draws while focused, and typed/injected text lands in neither.
     #[allow(clippy::disallowed_methods)]
-    fn ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-    ) {
+    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &crate::app::view_trait::ViewRenderContext<'_>) {
         if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
             self.enter_rendered = true;
         }
@@ -2365,7 +2356,7 @@ fn raw_key_event_reaches_focused_view_via_router() {
 /// Host command chords are a higher input layer tha plugin shortcuts. A single
 /// Cmd+D may split the focused pane, but its `D` edge must already be gone when
 /// the focused plugin's raw-key handler runs. Before stint 0692 plugin dispatch ran
-/// before `poll_actions`, so the probe observed `d` as well as the host action.
+/// before the host binding match (`keys::match_binding`), so the probe observed `d` as well as the host action.
 #[test]
 fn host_command_chord_is_removed_before_focused_view_dispatch() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -3649,7 +3640,8 @@ fn notification_modal_handle_key_returns_consumed() {
     h.app
         .enqueue_ask("ask-1", pane_id, "rm -rf /tmp/foo", 1000, Vec::new());
     h.app.open_decision_overlay_for_ask("ask-1");
-    let mut input = crate::app::input_router::PlexiInput::synthetic(Vec::new(), egui::Modifiers::NONE);
+    let mut input =
+        crate::app::input_router::PlexiInput::synthetic(Vec::new(), egui::Modifiers::NONE);
     let disposition = h.app.handle_decision_overlay_input(&mut input);
     assert_eq!(
         disposition,
@@ -3790,7 +3782,7 @@ fn quick_note_paste_inserts_into_note_text() {
 
 /// After a paste event with QuickNote open, `quick_note_text` must be
 /// updated AND the `Paste` event must not be present in the queue for
-/// downstream readers (terminal backends, poll_actions).
+/// downstream readers (terminal backends, host binding match).
 #[test]
 fn quick_note_paste_consumed_from_queue() {
     let mut h = HostHarness::new();
@@ -4467,7 +4459,14 @@ fn drag_pane_node_endpoints_fail_loudly_without_bounds() {
         .and_then(|n| n.r#ref)
         .expect("canvas root ref");
     let response_file = temp_response(tmp.path(), "drag-node-no-bounds");
-    h.inject_node_drag(pane_id, &root_ref, &root_ref, 4, "left", Some(response_file.clone()));
+    h.inject_node_drag(
+        pane_id,
+        &root_ref,
+        &root_ref,
+        4,
+        "left",
+        Some(response_file.clone()),
+    );
     h.run_frames(1);
     let response = read_json_response(&response_file);
     let error = response["error"].as_str().unwrap_or_default();
@@ -4479,7 +4478,14 @@ fn drag_pane_node_endpoints_fail_loudly_without_bounds() {
     // A ref that names nothing in the current tree.
     let response_file = temp_response(tmp.path(), "drag-node-missing");
     let missing = "9999.0123456789abcdef";
-    h.inject_node_drag(pane_id, missing, missing, 4, "left", Some(response_file.clone()));
+    h.inject_node_drag(
+        pane_id,
+        missing,
+        missing,
+        4,
+        "left",
+        Some(response_file.clone()),
+    );
     h.run_frames(1);
     let response = read_json_response(&response_file);
     let error = response["error"].as_str().unwrap_or_default();
@@ -4593,12 +4599,7 @@ impl crate::app::view_trait::View for PipeTestView {
         self
     }
 
-    fn ui(
-        &mut self,
-        _ui: &mut egui::Ui,
-        _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-    ) {
-    }
+    fn ui(&mut self, _ui: &mut egui::Ui, _ctx: &crate::app::view_trait::ViewRenderContext<'_>) {}
 
     fn take_pending_commands(&mut self) -> Vec<crate::app::view_trait::ViewCommand> {
         std::mem::take(&mut self.outgoing)
@@ -4898,12 +4899,11 @@ fn node_ref_of(h: &HostHarness, pane_id: PaneId, role: &str, label: &str) -> Str
 fn activate_now(h: &mut HostHarness, pane_id: PaneId, node_ref: &str) -> serde_json::Value {
     let dir = tempfile::tempdir().expect("tempdir");
     let response_file = temp_response(dir.path(), "activate");
-    h.app
-        .handle_pane_ipc_request(HostRequest::ClickPaneNode {
-            pane_id,
-            node_ref: node_ref.to_string(),
-            response_file: Some(response_file.clone()),
-        });
+    h.app.handle_pane_ipc_request(HostRequest::ClickPaneNode {
+        pane_id,
+        node_ref: node_ref.to_string(),
+        response_file: Some(response_file.clone()),
+    });
     read_json_response(&response_file)
 }
 
@@ -4929,7 +4929,8 @@ fn tick_view_until(
             return;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "timed out waiting for {what}: {:?}",
             view.semantic_state()
                 .nodes
@@ -4942,7 +4943,10 @@ fn tick_view_until(
 }
 
 fn has_label(state: &crate::host::pane::SemanticPaneState, label: &str) -> bool {
-    state.nodes.iter().any(|n| n.label.as_deref() == Some(label))
+    state
+        .nodes
+        .iter()
+        .any(|n| n.label.as_deref() == Some(label))
 }
 
 /// Swap the probe's "Approve A" for "Delete B" through a host key event.
@@ -4956,7 +4960,8 @@ fn swap_approve_for_delete(h: &mut HostHarness, pane_id: PaneId) {
     while !has_label(&pane_semantics(h, pane_id), "Delete B") {
         h.run_frames(1);
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "the probe never swapped Approve A for Delete B"
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -4974,28 +4979,44 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
     let pane_id = h.launch_dev_view("node-click-probe");
 
     let state = pane_semantics(&h, pane_id);
-    assert_eq!(state.schema_version, crate::host::pane::SEMANTIC_PANE_STATE_SCHEMA_VERSION);
-    let count = state.nodes.iter().find(|n| n.role == "text").expect("count");
+    assert_eq!(
+        state.schema_version,
+        crate::host::pane::SEMANTIC_PANE_STATE_SCHEMA_VERSION
+    );
+    let count = state
+        .nodes
+        .iter()
+        .find(|n| n.role == "text")
+        .expect("count");
     assert_eq!(count.label.as_deref(), Some("0"), "count starts at 0");
 
     // A bare node id is not a ref.
     let bare = activate_now(&mut h, pane_id, &count.id);
     assert!(
-        bare["error"].as_str().unwrap_or_default().contains("malformed node ref"),
+        bare["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("malformed node ref"),
         "{bare:?}"
     );
     // A ref to a non-interactive node is refused by name.
     let text_ref = count.r#ref.clone().expect("text node ref");
     let text = activate_now(&mut h, pane_id, &text_ref);
     assert!(
-        text["error"].as_str().unwrap_or_default().contains("not interactive"),
+        text["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not interactive"),
         "{text:?}"
     );
 
     // The answer is written with no frame run, and the guest already holds
     // the action: servicing it through the logic path alone shows the result.
     let increment = node_ref_of(&h, pane_id, "button", "Increment");
-    assert_eq!(activate_now(&mut h, pane_id, &increment), serde_json::json!({"ok": true}));
+    assert_eq!(
+        activate_now(&mut h, pane_id, &increment),
+        serde_json::json!({"ok": true})
+    );
     tick_view_until(&mut h, pane_id, "count 1", |state| has_label(state, "1"));
 }
 
@@ -5028,7 +5049,10 @@ fn stale_node_ref_is_refused_and_delivers_nothing() {
 
     // Not vacuous: the fresh ref for the control now shown does deliver.
     let delete = node_ref_of(&h, pane_id, "button", "Delete B");
-    assert_eq!(activate_now(&mut h, pane_id, &delete), serde_json::json!({"ok": true}));
+    assert_eq!(
+        activate_now(&mut h, pane_id, &delete),
+        serde_json::json!({"ok": true})
+    );
     wait_for_text_label(&mut h, pane_id, "approved:", "approved:0 deleted:1");
 }
 
@@ -5058,7 +5082,10 @@ fn node_activation_reaches_a_pane_that_is_not_painted() {
     let pane_id = h.launch_dev_view("node-click-probe");
 
     let approve = node_ref_of(&h, pane_id, "button", "Approve A");
-    assert_eq!(activate_now(&mut h, pane_id, &approve), serde_json::json!({"ok": true}));
+    assert_eq!(
+        activate_now(&mut h, pane_id, &approve),
+        serde_json::json!({"ok": true})
+    );
     tick_view_until(&mut h, pane_id, "approved:1", |state| {
         has_label(state, "approved:1 deleted:0")
     });
@@ -5075,12 +5102,16 @@ fn node_activation_during_hot_reload_is_refused_and_old_refs_go_stale() {
 
     let before = node_ref_of(&h, pane_id, "button", "Increment");
     assert!(
-        h.app.reload_view_pane(pane_id, "test: activation during reload"),
+        h.app
+            .reload_view_pane(pane_id, "test: activation during reload"),
         "reload_view_pane must relaunch the Python pane"
     );
     let during = activate_now(&mut h, pane_id, &before);
     assert!(
-        during["error"].as_str().unwrap_or_default().contains("no committed tree"),
+        during["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no committed tree"),
         "{during:?}"
     );
 
@@ -5088,19 +5119,26 @@ fn node_activation_during_hot_reload_is_refused_and_old_refs_go_stale() {
     while !has_label(&pane_semantics(&h, pane_id), "Increment") {
         h.run_frames(1);
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "the relaunched pane never rendered"
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let after = activate_now(&mut h, pane_id, &before);
     assert!(
-        after["error"].as_str().unwrap_or_default().contains("stale"),
+        after["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("stale"),
         "{after:?}"
     );
     let fresh = node_ref_of(&h, pane_id, "button", "Increment");
     assert_ne!(fresh, before);
-    assert_eq!(activate_now(&mut h, pane_id, &fresh), serde_json::json!({"ok": true}));
+    assert_eq!(
+        activate_now(&mut h, pane_id, &fresh),
+        serde_json::json!({"ok": true})
+    );
     wait_for_text_label(&mut h, pane_id, "1", "1");
 }
 
@@ -5134,7 +5172,10 @@ fn builtin_pane_refuses_node_refs_and_takes_position_clicks() {
         .as_deref()
     );
     assert!(
-        pane_semantics(&h, pane_id).nodes.iter().all(|n| n.r#ref.is_none()),
+        pane_semantics(&h, pane_id)
+            .nodes
+            .iter()
+            .all(|n| n.r#ref.is_none()),
         "builtin nodes carry no ref"
     );
 
@@ -5174,7 +5215,12 @@ fn builtin_pane_refuses_node_refs_and_takes_position_clicks() {
     let click_at_bounds = |h: &mut HostHarness, role: &str, label: &str| {
         let bounds = settled_bounds(h, role, label);
         let (win, tile) = h.app.find_pane_in_any_window(pane_id).expect("pane tile");
-        let origin = h.app.windows[win].tree.tiles.rect(tile).expect("pane rect").min;
+        let origin = h.app.windows[win]
+            .tree
+            .tiles
+            .rect(tile)
+            .expect("pane rect")
+            .min;
         let x = ((bounds[0] + bounds[2]) / 2.0) as f32 - origin.x;
         let y = ((bounds[1] + bounds[3]) / 2.0) as f32 - origin.y;
         let response = temp_response(tmp.path(), "position-click");
@@ -5186,7 +5232,10 @@ fn builtin_pane_refuses_node_refs_and_takes_position_clicks() {
     assert!(!read_show_hidden(&mut h), "show_hidden must start disabled");
     click_at_bounds(&mut h, "button", "View \u{2304}");
     click_at_bounds(&mut h, "checkbox", "Show hidden files");
-    assert!(read_show_hidden(&mut h), "a position click on the checkbox toggles it");
+    assert!(
+        read_show_hidden(&mut h),
+        "a position click on the checkbox toggles it"
+    );
 }
 
 /// Stint 0426: `plexi pane key` / `HostRequest::KeyPane` targeting a real
@@ -5258,10 +5307,10 @@ fn key_pane_delivers_key_event_and_mutates_guest_view() {
 
 /// Stint 0430: bare Escape on a focused WASM/Python pane must close it. The
 /// Escape→CloseView binding (keys.rs, `BindingContext::ViewActive`) fires in
-/// `poll_actions` only when the focused plugin's `handle_key` did NOT consume the
+/// the host binding match (`keys::match_binding`) only when the focused plugin's `handle_key` did NOT consume the
 /// key. `LivePythonPane::handle_key` used to report `Consumed` for bare Escape
 /// (`python_key_events` forwarded it), which claimed Escape out of the frame's
-/// input buffer before `poll_actions` ran — so the pane never closed. Drive a
+/// input buffer before the host binding match (`keys::match_binding`) ran — so the pane never closed. Drive a
 /// real subprocess pane and a genuine Escape `RawInput` through a live frame
 /// and assert the pane closes.
 #[test]
@@ -5277,7 +5326,7 @@ fn bare_escape_closes_focused_python_wasm_pane() {
     );
 
     // Drive a genuine bare Escape through a real frame's RawInput. The focused
-    // Python pane's handle_key returns Passthrough for it, so poll_actions fires
+    // Python pane's handle_key returns Passthrough for it, so the host binding match fires
     // CloseView within this same frame.
     h.frame(egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
@@ -19177,11 +19226,17 @@ fn notes_picker_tab_filters_current_project_and_restores_all() {
     h.app.open_notes_picker();
     let mk = |title: &str, label: Option<&str>, seconds| crate::notes::NotePickerEntry {
         path: std::path::PathBuf::from(format!("/test/{title}.md")),
-        title: title.to_string(), preview: String::new(), search_text: title.to_string(),
+        title: title.to_string(),
+        preview: String::new(),
+        search_text: title.to_string(),
         tier_label: label.map(str::to_string),
         modified: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds)),
     };
-    h.app.notes_picker_entries = vec![mk("project", None, 1), mk("global", Some("global"), 2), mk("nested", Some("nested"), 3)];
+    h.app.notes_picker_entries = vec![
+        mk("project", None, 1),
+        mk("global", Some("global"), 2),
+        mk("nested", Some("nested"), 3),
+    ];
     let root = std::path::Path::new("/test/project");
     let global = std::path::Path::new("/test/global-notes");
     let chip = |entry| crate::overlays::notes_picker::notes_picker_chip_label(entry, root, global);
@@ -19194,10 +19249,16 @@ fn notes_picker_tab_filters_current_project_and_restores_all() {
     assert_eq!(h.app.notes_picker_filtered(), [0]);
     h.app.notes_picker_query = "global".into();
     assert!(h.app.notes_picker_filtered().is_empty());
-    h.frame(egui::RawInput { events: vec![egui::Event::Key {
-        key: egui::Key::Tab, physical_key: None, pressed: false,
-        repeat: false, modifiers: egui::Modifiers::NONE,
-    }], ..Default::default() });
+    h.frame(egui::RawInput {
+        events: vec![egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        ..Default::default()
+    });
     h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
     assert!(!h.app.notes_picker_current_project_only);
     assert_eq!(h.app.notes_picker_filtered(), [1]);
@@ -19352,6 +19413,7 @@ fn notes_picker_delete_immediately_removes_index_entry_and_cmd_z_restores() {
     }];
     h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
     h.run_frames(1);
+    let _index = hold_notes_index_refresh(&mut h);
     h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
     assert!(
         !path.exists(),
@@ -19361,6 +19423,18 @@ fn notes_picker_delete_immediately_removes_index_entry_and_cmd_z_restores() {
     h.press_key(egui::Key::Z, egui::Modifiers::COMMAND);
     assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
     assert_eq!(h.app.notes_picker_entries[0].path, path);
+}
+
+/// Hold the notes index refresh in flight, so a background index build cannot
+/// publish over the fixture's injected picker rows mid-test. The keystroke
+/// runs in `raw_input_hook`, before the same frame's `logic` polls the index,
+/// so without this a fast build races the assertion. Keep the sender alive.
+fn hold_notes_index_refresh(
+    h: &mut HostHarness,
+) -> std::sync::mpsc::Sender<crate::notes::NotesIndexBuild> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    h.app.notes_index_rx = Some(rx);
+    tx
 }
 
 fn notes_delete_fixture(h: &mut HostHarness, dir: &std::path::Path) -> std::path::PathBuf {
@@ -19705,6 +19779,7 @@ fn notes_picker_toast_undo_restores_original_bytes_and_position() {
         },
     );
     h.app.notes_picker_selected = 1;
+    let _index = hold_notes_index_refresh(&mut h);
     h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
     h.app.notes_picker_shown_paths.clear();
     h.run_frames(2);

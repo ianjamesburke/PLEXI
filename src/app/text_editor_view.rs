@@ -2571,7 +2571,7 @@ impl View for TextEditorView {
         // post-frame reconciler grants it focus while the pane owns input.
         // While released to pane-level navigation (Escape), it deliberately
         // does NOT register — so the reconciler surrenders its focus and host
-        // pane-nav keys reach `poll_actions` instead of the editor.
+        // pane-nav keys reach the host binding match (`keys::match_binding`) instead of the editor.
         if !self.input_released {
             crate::ui::focus::register_default_text_surface(
                 ui.ctx(),

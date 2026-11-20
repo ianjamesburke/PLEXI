@@ -161,7 +161,8 @@ impl PlexiApp {
         self.conjoined_parent_rect = Some((parent, left));
         let right = egui::Rect::from_min_max(egui::pos2(split + gap / 2.0, rect.top()), rect.max);
         // The router focuses the parent when a press lands on this rect.
-        self.input_router.set_conjoined_parent_hit(Some((parent, left, ui.layer_id())));
+        self.input_router
+            .set_conjoined_parent_hit(Some((parent, left, ui.layer_id())));
         let focused = self.visual_owner_pane() == Some(parent);
         let pane_input = input
             .take_if(|input| input.pane_id == parent)

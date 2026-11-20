@@ -9,8 +9,8 @@
 //! background — only the exit-message rect, which gets its own fill to cover
 //! any stale terminal glyphs underneath.
 
-use crate::protocol::AgentState;
 use crate::host::pane::TerminalPane;
+use crate::protocol::AgentState;
 use crate::spatial::tiling::{
     paint_tab_bar, PaneId, TabBarAction, TabBarPaintParams, TabGroupInfo, TAB_BAR_HEIGHT,
 };
@@ -111,14 +111,14 @@ pub fn render(
     let pane_agent_state = (terminal.agent.is_some()
         || terminal.reported_7501.is_some()
         || terminal.observed_agent.is_some())
-        .then(|| terminal.effective_agent_state().0)
-        .or_else(|| {
-            terminal
-                .standby_session
-                .as_ref()
-                .map(|_| AgentState::NeedsYou)
-        })
-        .or_else(|| tab_activities.get(pane_id).map(|(state, _)| state.clone()));
+    .then(|| terminal.effective_agent_state().0)
+    .or_else(|| {
+        terminal
+            .standby_session
+            .as_ref()
+            .map(|_| AgentState::NeedsYou)
+    })
+    .or_else(|| tab_activities.get(pane_id).map(|(state, _)| state.clone()));
     let needs_you = matches!(pane_agent_state, Some(AgentState::NeedsYou));
     let spawned_by_badge = terminal.spawned_by_badge();
     let waiting_results_badge = (!terminal.pending_child_results.is_empty()).then(|| {
@@ -167,7 +167,14 @@ pub fn render(
                 ui.colored_label(exit_color, "[process exited]");
             });
         });
-        crate::ui::activity::paint_attention_effect(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you, false);
+        crate::ui::activity::paint_attention_effect(
+            ui.painter(),
+            pane_rect,
+            colors.state_needs_you,
+            egui::Id::new(("terminal_attention", pane_id)),
+            needs_you,
+            false,
+        );
         // Auto-close on any keypress. Keyboard events were taken out of `ctx`
         // before the render pass (stint 0387), so read them from the
         // host-supplied buffer rather than `ui.input()`.
@@ -226,12 +233,19 @@ pub fn render(
             .and_then(|session| session.standby_scrollback_tail.clone())
             .unwrap_or_default()
             .join("\n");
-        let (banner, hint) = banner.rsplit_once('\n').unwrap_or((&banner, "[Enter] resume"));
+        let (banner, hint) = banner
+            .rsplit_once('\n')
+            .unwrap_or((&banner, "[Enter] resume"));
         let content_rect = rect.shrink2(Vec2::new(16.0, 12.0));
         let font = egui::FontId::monospace(terminal.font_size);
         let banner_height = ui.fonts_mut(|fonts| {
             fonts
-                .layout(banner.to_owned(), font.clone(), colors.accent, content_rect.width())
+                .layout(
+                    banner.to_owned(),
+                    font.clone(),
+                    colors.accent,
+                    content_rect.width(),
+                )
                 .size()
                 .y
         });
@@ -243,18 +257,15 @@ pub fn render(
         });
         let (banner_rect, tail_rect, hint_rect) =
             standby_view_rects(content_rect, banner_height, hint_height);
-        ui.scope_builder(
-            egui::UiBuilder::new().max_rect(banner_rect),
-            |ui| {
-                ui.set_clip_rect(banner_rect.intersect(ui.clip_rect()));
-                ui.label(
-                    egui::RichText::new(banner)
-                        .monospace()
-                        .size(terminal.font_size)
-                        .color(colors.accent),
-                );
-            },
-        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(banner_rect), |ui| {
+            ui.set_clip_rect(banner_rect.intersect(ui.clip_rect()));
+            ui.label(
+                egui::RichText::new(banner)
+                    .monospace()
+                    .size(terminal.font_size)
+                    .color(colors.accent),
+            );
+        });
         ui.scope_builder(egui::UiBuilder::new().max_rect(hint_rect), |ui| {
             ui.set_clip_rect(hint_rect.intersect(ui.clip_rect()));
             ui.label(
@@ -264,23 +275,27 @@ pub fn render(
                     .color(colors.accent),
             );
         });
-        ui.scope_builder(
-            egui::UiBuilder::new().max_rect(tail_rect),
-            |ui| {
-                ui.set_clip_rect(tail_rect.intersect(ui.clip_rect()));
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    if !tail.is_empty() {
-                        ui.label(
-                            egui::RichText::new(&tail)
-                                .monospace()
-                                .size((terminal.font_size - 1.0).max(9.0))
-                                .color(colors.text_dim),
-                        );
-                    }
-                });
-            },
+        ui.scope_builder(egui::UiBuilder::new().max_rect(tail_rect), |ui| {
+            ui.set_clip_rect(tail_rect.intersect(ui.clip_rect()));
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                if !tail.is_empty() {
+                    ui.label(
+                        egui::RichText::new(&tail)
+                            .monospace()
+                            .size((terminal.font_size - 1.0).max(9.0))
+                            .color(colors.text_dim),
+                    );
+                }
+            });
+        });
+        crate::ui::activity::paint_attention_effect(
+            ui.painter(),
+            pane_rect,
+            colors.state_needs_you,
+            egui::Id::new(("terminal_attention", pane_id)),
+            needs_you,
+            false,
         );
-        crate::ui::activity::paint_attention_effect(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you, false);
         return (false, tab_action);
     }
 
@@ -309,7 +324,14 @@ pub fn render(
         .with_input(input.keyboard_events, input.modifiers);
     ui.add(view);
 
-    crate::ui::activity::paint_attention_effect(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you, false);
+    crate::ui::activity::paint_attention_effect(
+        ui.painter(),
+        pane_rect,
+        colors.state_needs_you,
+        egui::Id::new(("terminal_attention", pane_id)),
+        needs_you,
+        false,
+    );
 
     (false, tab_action)
 }
@@ -330,7 +352,9 @@ pub(crate) fn last_rendered_tab_bar_layout(
     ctx: &egui::Context,
     pane_id: PaneId,
 ) -> Option<TerminalTabBarLayout> {
-    ctx.data(|d| d.get_temp::<TerminalTabBarLayout>(egui::Id::new(("terminal_tab_bar_layout", pane_id))))
+    ctx.data(|d| {
+        d.get_temp::<TerminalTabBarLayout>(egui::Id::new(("terminal_tab_bar_layout", pane_id)))
+    })
 }
 
 static LOG_WORKING_NO_ESCALATION: Once = Once::new();
@@ -381,7 +405,8 @@ pub(crate) fn render_name_bar_and_tabs(
     ui.set_opacity(1.0);
     if body_opacity < 1.0 {
         static LEGIBLE_HEADER: std::sync::Once = std::sync::Once::new();
-        LEGIBLE_HEADER.call_once(|| log::info!("ui: preserving header contrast while dimming pane content"));
+        LEGIBLE_HEADER
+            .call_once(|| log::info!("ui: preserving header contrast while dimming pane content"));
     }
     let NameBarParams {
         tile_id,
@@ -402,15 +427,25 @@ pub(crate) fn render_name_bar_and_tabs(
     let has_name = pane_names.contains_key(pane_id);
     let tab_group = tab_info.get(&tile_id);
     let mut tab_action = None;
-    let agent_state = pane_agent_state.or_else(|| tab_activities.get(pane_id).map(|(state, _)| state));
+    let agent_state =
+        pane_agent_state.or_else(|| tab_activities.get(pane_id).map(|(state, _)| state));
     let escalation_col = crate::ui::activity::escalation_color(agent_state, is_error, colors)
-        .filter(|_| !matches!(agent_state, Some(AgentState::NeedsYou)) || crate::ui::activity::attention(ui.ctx()).alpha > 0.0);
+        .filter(|_| {
+            !matches!(agent_state, Some(AgentState::NeedsYou))
+                || crate::ui::activity::attention(ui.ctx()).alpha > 0.0
+        });
     let escalation_col = escalation_col.map(|color| colors.status_badge_color(color));
     let escalation_lbl = crate::ui::activity::escalation_label(agent_state, is_error);
     let has_escalation = is_error
         || matches!(
             agent_state,
-            Some(AgentState::Blocked | AgentState::NeedsYou | AgentState::Interrupted | AgentState::Failed | AgentState::ExitedUnreported)
+            Some(
+                AgentState::Blocked
+                    | AgentState::NeedsYou
+                    | AgentState::Interrupted
+                    | AgentState::Failed
+                    | AgentState::ExitedUnreported
+            )
         );
     if matches!(agent_state, Some(AgentState::Working)) && !is_error {
         LOG_WORKING_NO_ESCALATION.call_once(|| {
@@ -429,22 +464,27 @@ pub(crate) fn render_name_bar_and_tabs(
         let mut capture = crate::ui::layout_report::Capture::begin(ui.painter(), "pane_header");
         advance_past_header(ui, bar_rect);
         let extent = header_pip_extent(ui.ctx(), agent_state);
-        let leading = if agent_state.is_some() || is_error { TAB_PIP_MARGIN + TAB_PIP_RADIUS + extent } else { 0.0 };
+        let leading = if agent_state.is_some() || is_error {
+            TAB_PIP_MARGIN + TAB_PIP_RADIUS + extent
+        } else {
+            0.0
+        };
         let labels = crate::ui::pane_header::Labels {
-            outside: outside_workspace, waiting: waiting_results_badge, provenance: spawned_by_badge,
+            outside: outside_workspace,
+            waiting: waiting_results_badge,
+            provenance: spawned_by_badge,
             state: escalation_lbl.zip(escalation_col),
         };
-        let layout = crate::ui::pane_header::PaneHeader::measure(ui, bar_rect, leading, &labels, colors);
+        let layout =
+            crate::ui::pane_header::PaneHeader::measure(ui, bar_rect, leading, &labels, colors);
         ui.painter()
             .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
 
         layout.record_slots(&mut capture);
         let outside_badge_rect = layout.outside;
         let tabs_right = layout.text.right().max(bar_rect.left());
-        let tabs_bar_rect = egui::Rect::from_min_max(
-            bar_rect.min,
-            egui::pos2(tabs_right, bar_rect.bottom()),
-        );
+        let tabs_bar_rect =
+            egui::Rect::from_min_max(bar_rect.min, egui::pos2(tabs_right, bar_rect.bottom()));
 
         let tab_count = group.members.len().max(1);
         let tab_width = tabs_bar_rect.width() / tab_count as f32;
@@ -455,7 +495,10 @@ pub(crate) fn render_name_bar_and_tabs(
 
         for (idx, &member_id) in group.members.iter().enumerate() {
             let tab_rect = egui::Rect::from_min_size(
-                egui::pos2(tabs_bar_rect.left() + idx as f32 * tab_width, tabs_bar_rect.top()),
+                egui::pos2(
+                    tabs_bar_rect.left() + idx as f32 * tab_width,
+                    tabs_bar_rect.top(),
+                ),
                 egui::vec2(tab_width, TAB_BAR_HEIGHT),
             );
             let pip_space = if tab_activities.contains_key(&member_id) {
@@ -477,7 +520,11 @@ pub(crate) fn render_name_bar_and_tabs(
                 max_text_width,
                 crate::ui::text::Side::Trailing,
             );
-            capture.text_slot(format!("tab-{member_id}"), &galley, egui::Rect::from_min_max(egui::pos2(content_left, tab_rect.top()), tab_rect.max));
+            capture.text_slot(
+                format!("tab-{member_id}"),
+                &galley,
+                egui::Rect::from_min_max(egui::pos2(content_left, tab_rect.top()), tab_rect.max),
+            );
             let elided_str = galley.job.text.clone();
             if idx == group.active_idx {
                 let text_pos = egui::pos2(
@@ -508,7 +555,13 @@ pub(crate) fn render_name_bar_and_tabs(
 
         layout.paint(ui, &labels, *pane_id, colors.pane_header_bg());
 
-        capture.finish(ui.painter(), bar_rect, colors.pane_header_bg(), vec![], vec![]);
+        capture.finish(
+            ui.painter(),
+            bar_rect,
+            colors.pane_header_bg(),
+            vec![],
+            vec![],
+        );
         ui.ctx().data_mut(|d| {
             d.insert_temp(
                 egui::Id::new(("terminal_tab_bar_layout", *pane_id)),
@@ -531,12 +584,19 @@ pub(crate) fn render_name_bar_and_tabs(
         );
         let mut capture = crate::ui::layout_report::Capture::begin(ui.painter(), "pane_header");
         advance_past_header(ui, bar_rect);
-                let leading = if agent_state.is_some() || is_error { crate::ui::style::PANE_CONTENT_INSET + crate::ui::style::PANE_HEADER_GLYPH } else { 0.0 };
+        let leading = if agent_state.is_some() || is_error {
+            crate::ui::style::PANE_CONTENT_INSET + crate::ui::style::PANE_HEADER_GLYPH
+        } else {
+            0.0
+        };
         let labels = crate::ui::pane_header::Labels {
-            outside: outside_workspace, waiting: waiting_results_badge, provenance: spawned_by_badge,
+            outside: outside_workspace,
+            waiting: waiting_results_badge,
+            provenance: spawned_by_badge,
             state: escalation_lbl.zip(escalation_col),
         };
-        let layout = crate::ui::pane_header::PaneHeader::measure(ui, bar_rect, leading, &labels, colors);
+        let layout =
+            crate::ui::pane_header::PaneHeader::measure(ui, bar_rect, leading, &labels, colors);
         ui.painter()
             .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
         if let Some(esc_col) = escalation_col {
@@ -555,14 +615,31 @@ pub(crate) fn render_name_bar_and_tabs(
 
         if is_error && bar_rect.width() >= pip_space {
             let cx = header_pip_center_x(bar_rect);
-            crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), HEADER_PIP_RADIUS, Some(&AgentState::Failed), colors.state_error);
+            crate::ui::activity::paint_pip(
+                ui.painter(),
+                egui::pos2(cx, bar_rect.center().y),
+                HEADER_PIP_RADIUS,
+                Some(&AgentState::Failed),
+                colors.state_error,
+            );
         } else if bar_rect.width() >= pip_space {
-            if let Some(state) = agent_state { paint_activity_dot(ui, bar_rect, state, colors); }
+            if let Some(state) = agent_state {
+                paint_activity_dot(ui, bar_rect, state, colors);
+            }
         }
 
         layout.record_slots(&mut capture);
         let outside_badge_rect = layout.outside;
-        layout.paint(ui, &labels, *pane_id, colors.pane_header_bg().blend(escalation_col.map(|c| egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 28)).unwrap_or(egui::Color32::TRANSPARENT)));
+        layout.paint(
+            ui,
+            &labels,
+            *pane_id,
+            colors.pane_header_bg().blend(
+                escalation_col
+                    .map(|c| egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 28))
+                    .unwrap_or(egui::Color32::TRANSPARENT),
+            ),
+        );
 
         let title_text = if has_name {
             Some(pane_names[pane_id].as_str())
@@ -596,7 +673,13 @@ pub(crate) fn render_name_bar_and_tabs(
             if !galley.is_empty() {
                 let title_col = if matches!(
                     agent_state,
-                    Some(AgentState::Blocked | AgentState::NeedsYou | AgentState::Interrupted | AgentState::Failed | AgentState::ExitedUnreported)
+                    Some(
+                        AgentState::Blocked
+                            | AgentState::NeedsYou
+                            | AgentState::Interrupted
+                            | AgentState::Failed
+                            | AgentState::ExitedUnreported
+                    )
                 ) || is_error
                 {
                     colors.text_primary
@@ -613,7 +696,13 @@ pub(crate) fn render_name_bar_and_tabs(
             }
         }
 
-        capture.finish(ui.painter(), bar_rect, colors.pane_header_bg(), vec![], vec![]);
+        capture.finish(
+            ui.painter(),
+            bar_rect,
+            colors.pane_header_bg(),
+            vec![],
+            vec![],
+        );
         ui.ctx().data_mut(|d| {
             d.insert_temp(
                 egui::Id::new(("terminal_tab_bar_layout", *pane_id)),
@@ -646,9 +735,14 @@ fn paint_activity_dot(
     let t = ui.input(|i| i.time);
     let color = crate::ui::activity::dot_color_from_time(state, colors, t, 0);
     let cx = header_pip_center_x(bar_rect);
-    crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), HEADER_PIP_RADIUS, Some(state), color);
+    crate::ui::activity::paint_pip(
+        ui.painter(),
+        egui::pos2(cx, bar_rect.center().y),
+        HEADER_PIP_RADIUS,
+        Some(state),
+        color,
+    );
 }
-
 
 /// True when the terminal's child PID has a CWD that is not an ancestor of
 /// the workspace root. Returns false when there is no workspace root, when
@@ -669,9 +763,7 @@ fn is_terminal_outside_workspace(
     if terminal.outside_workspace_root.as_deref() == Some(root)
         && terminal
             .outside_workspace_checked_at
-            .is_some_and(|checked_at| {
-                checked_at.elapsed() < OUTSIDE_WORKSPACE_CHECK_INTERVAL
-            })
+            .is_some_and(|checked_at| checked_at.elapsed() < OUTSIDE_WORKSPACE_CHECK_INTERVAL)
     {
         return terminal.outside_workspace_cached;
     }
@@ -704,36 +796,78 @@ mod tests {
         let mut names = HashMap::new();
         names.insert(7, "A long agent pane title".to_owned());
         let status_color = colors.status_badge_color(colors.state_needs_you);
-        let fill = egui::Color32::from_rgba_unmultiplied(status_color.r(), status_color.g(), status_color.b(), 36);
+        let fill = egui::Color32::from_rgba_unmultiplied(
+            status_color.r(),
+            status_color.g(),
+            status_color.b(),
+            36,
+        );
         for width in [30.0, 50.0, 80.0, 120.0, 200.0, 400.0] {
             let ctx = egui::Context::default();
             let output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, TAB_BAR_HEIGHT))), |ui| {
-                    render_name_bar_and_tabs(ui, NameBarParams {
-                        tile_id: TileId::from_u64(1), pane_id: &7, tab_info: &HashMap::new(), tab_labels: &HashMap::new(), tab_activities: &HashMap::new(), pane_names: &names,
-                        pane_agent_state: Some(&state), is_error: false, colors: &colors, outside_workspace: false, name_font_size: 12.0, spawned_by_badge: Some("human"), waiting_results_badge: None, overtake_hint: false,
-                    });
-                });
+                ui.scope_builder(
+                    egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, TAB_BAR_HEIGHT),
+                    )),
+                    |ui| {
+                        render_name_bar_and_tabs(
+                            ui,
+                            NameBarParams {
+                                tile_id: TileId::from_u64(1),
+                                pane_id: &7,
+                                tab_info: &HashMap::new(),
+                                tab_labels: &HashMap::new(),
+                                tab_activities: &HashMap::new(),
+                                pane_names: &names,
+                                pane_agent_state: Some(&state),
+                                is_error: false,
+                                colors: &colors,
+                                outside_workspace: false,
+                                name_font_size: 12.0,
+                                spawned_by_badge: Some("human"),
+                                waiting_results_badge: None,
+                                overtake_hint: false,
+                            },
+                        );
+                    },
+                );
             });
-            let badge = output.shapes.iter().find_map(|s| match &s.shape { egui::Shape::Rect(r) if r.fill == fill => Some(r.rect), _ => None });
+            let badge = output.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if r.fill == fill => Some(r.rect),
+                _ => None,
+            });
             if let Some(rect) = badge {
                 assert!(rect.left() >= TAB_PIP_MARGIN + TAB_PIP_RADIUS * 2.0 && rect.right() <= width, "status badge overlaps the state icon or escapes header at width {width}: {rect:?}");
             }
             let title = last_rendered_tab_bar_layout(&ctx, 7).and_then(|layout| layout.label_rect);
-            let provenance: Option<egui::Rect> = ctx.data(|d| d.get_temp(egui::Id::new(("provenance_icon_rect", 7_u64))));
+            let provenance: Option<egui::Rect> =
+                ctx.data(|d| d.get_temp(egui::Id::new(("provenance_icon_rect", 7_u64))));
             if let (Some(title), Some(badge)) = (title, badge) {
-                assert!(!title.intersects(badge), "title and state chip overlap at width {width}");
+                assert!(
+                    !title.intersects(badge),
+                    "title and state chip overlap at width {width}"
+                );
             }
             if let (Some(title), Some(icon)) = (title, provenance) {
-                assert!(!title.intersects(icon), "title and provenance icon overlap at width {width}");
+                assert!(
+                    !title.intersects(icon),
+                    "title and provenance icon overlap at width {width}"
+                );
             }
             if let (Some(badge), Some(icon)) = (badge, provenance) {
-                assert!(!badge.intersects(icon), "state chip and provenance icon overlap at width {width}");
+                assert!(
+                    !badge.intersects(icon),
+                    "state chip and provenance icon overlap at width {width}"
+                );
             }
-            if width == 400.0 { assert!(badge.is_some(), "wide header retains the full chip"); }
-            if width == 30.0 { assert!(badge.is_none(), "minimal header hides the chip"); }
+            if width == 400.0 {
+                assert!(badge.is_some(), "wide header retains the full chip");
+            }
+            if width == 30.0 {
+                assert!(badge.is_none(), "minimal header hides the chip");
+            }
         }
-
     }
 
     #[test]
@@ -742,21 +876,52 @@ mod tests {
         for width in [120.0, 200.0, 400.0, 1200.0] {
             let ctx = egui::Context::default();
             let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-                ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, TAB_BAR_HEIGHT))), |ui| {
-                    render_name_bar_and_tabs(ui, NameBarParams {
-                        tile_id: TileId::from_u64(1), pane_id: &7, tab_info: &HashMap::new(), tab_labels: &HashMap::new(), tab_activities: &HashMap::new(), pane_names: &HashMap::new(),
-                        pane_agent_state: None, is_error: false, colors: &colors, outside_workspace: false, name_font_size: 12.0, spawned_by_badge: Some("human"), waiting_results_badge: None, overtake_hint: false,
-                    });
-                });
+                ui.scope_builder(
+                    egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, TAB_BAR_HEIGHT),
+                    )),
+                    |ui| {
+                        render_name_bar_and_tabs(
+                            ui,
+                            NameBarParams {
+                                tile_id: TileId::from_u64(1),
+                                pane_id: &7,
+                                tab_info: &HashMap::new(),
+                                tab_labels: &HashMap::new(),
+                                tab_activities: &HashMap::new(),
+                                pane_names: &HashMap::new(),
+                                pane_agent_state: None,
+                                is_error: false,
+                                colors: &colors,
+                                outside_workspace: false,
+                                name_font_size: 12.0,
+                                spawned_by_badge: Some("human"),
+                                waiting_results_badge: None,
+                                overtake_hint: false,
+                            },
+                        );
+                    },
+                );
             });
-            let icon: egui::Rect = ctx.data(|d| d.get_temp(egui::Id::new(("provenance_icon_rect", 7_u64)))).expect("header paints provenance icon");
-            assert!(icon.right() <= width - crate::ui::style::PANE_CONTENT_INSET, "provenance icon {icon:?} crosses the content inset at width {width}");
+            let icon: egui::Rect = ctx
+                .data(|d| d.get_temp(egui::Id::new(("provenance_icon_rect", 7_u64))))
+                .expect("header paints provenance icon");
+            assert!(
+                icon.right() <= width - crate::ui::style::PANE_CONTENT_INSET,
+                "provenance icon {icon:?} crosses the content inset at width {width}"
+            );
         }
     }
 
     /// Ink bounds of the shapes whose center satisfies `pick`, ignoring bar-wide fills.
-    fn header_ink(shapes: &[egui::epaint::ClippedShape], pick: impl Fn(egui::Pos2) -> bool) -> egui::Rect {
-        shapes.iter().map(|s| s.shape.visual_bounding_rect())
+    fn header_ink(
+        shapes: &[egui::epaint::ClippedShape],
+        pick: impl Fn(egui::Pos2) -> bool,
+    ) -> egui::Rect {
+        shapes
+            .iter()
+            .map(|s| s.shape.visual_bounding_rect())
             .filter(|r| r.is_positive() && r.width() <= 20.0 && pick(r.center()))
             .fold(egui::Rect::NOTHING, |a, r| a.union(r))
     }
@@ -770,35 +935,73 @@ mod tests {
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let mut names = HashMap::new();
         names.insert(7, "title".to_owned());
-        for badge in ["spawned by you", "spawned by researcher", "spawned by system"] {
+        for badge in [
+            "spawned by you",
+            "spawned by researcher",
+            "spawned by system",
+        ] {
             for scale in [1.0, 1.5] {
                 for width in [140.0, 400.0] {
                     let ctx = egui::Context::default();
                     ctx.set_zoom_factor(scale);
                     let output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, TAB_BAR_HEIGHT))), |ui| {
-                            render_name_bar_and_tabs(ui, NameBarParams {
-                                tile_id: TileId::from_u64(1), pane_id: &7, tab_info: &HashMap::new(), tab_labels: &HashMap::new(), tab_activities: &HashMap::new(), pane_names: &names,
-                                pane_agent_state: Some(&AgentState::Idle), is_error: false, colors: &colors, outside_workspace: false, name_font_size: 12.0, spawned_by_badge: Some(badge), waiting_results_badge: None, overtake_hint: false,
-                            });
-                        });
+                        ui.scope_builder(
+                            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(width, TAB_BAR_HEIGHT),
+                            )),
+                            |ui| {
+                                render_name_bar_and_tabs(
+                                    ui,
+                                    NameBarParams {
+                                        tile_id: TileId::from_u64(1),
+                                        pane_id: &7,
+                                        tab_info: &HashMap::new(),
+                                        tab_labels: &HashMap::new(),
+                                        tab_activities: &HashMap::new(),
+                                        pane_names: &names,
+                                        pane_agent_state: Some(&AgentState::Idle),
+                                        is_error: false,
+                                        colors: &colors,
+                                        outside_workspace: false,
+                                        name_font_size: 12.0,
+                                        spawned_by_badge: Some(badge),
+                                        waiting_results_badge: None,
+                                        overtake_hint: false,
+                                    },
+                                );
+                            },
+                        );
                     });
                     let ctx_msg = format!("{badge}, scale {scale}, width {width}");
                     let pip = header_ink(&output.shapes, |c| c.x < 30.0);
                     let icon = header_ink(&output.shapes, |c| c.x > width - 30.0);
-                    assert!(pip.is_positive() && icon.is_positive(), "pip and icon must paint: {ctx_msg}");
+                    assert!(
+                        pip.is_positive() && icon.is_positive(),
+                        "pip and icon must paint: {ctx_msg}"
+                    );
                     // Slot-to-ring gap on each side: pip slot is centered on the pip, icon slot on the icon.
                     let pip_slot = pip.center().x - PANE_HEADER_GLYPH / 2.0 - PANE_RING_WIDTH;
-                    let icon_slot = (width - PANE_RING_WIDTH) - (icon.center().x + PANE_HEADER_GLYPH / 2.0);
-                    assert!((pip_slot - icon_slot).abs() <= 0.5, "pip slot gap {pip_slot} vs icon slot gap {icon_slot}: {ctx_msg}");
+                    let icon_slot =
+                        (width - PANE_RING_WIDTH) - (icon.center().x + PANE_HEADER_GLYPH / 2.0);
+                    assert!(
+                        (pip_slot - icon_slot).abs() <= 0.5,
+                        "pip slot gap {pip_slot} vs icon slot gap {icon_slot}: {ctx_msg}"
+                    );
                     let side = width - icon.right();
                     let top = icon.top();
                     let bottom = PANE_HEADER_HEIGHT - icon.bottom();
                     assert!((top - bottom).abs() <= 0.5 && side >= top - 0.5, "icon gaps from outer edge: side {side}, above {top}, below {bottom}: {ctx_msg}");
                     let (ptop, pbottom) = (pip.top(), PANE_HEADER_HEIGHT - pip.bottom());
-                    assert!((ptop - pbottom).abs() <= 0.5, "pip vertical gaps {ptop} vs {pbottom}: {ctx_msg}");
+                    assert!(
+                        (ptop - pbottom).abs() <= 0.5,
+                        "pip vertical gaps {ptop} vs {pbottom}: {ctx_msg}"
+                    );
                     let pside = pip.left();
-                    assert!(pside >= ptop - 0.5, "pip side gap {pside} must be at least vertical {ptop}: {ctx_msg}");
+                    assert!(
+                        pside >= ptop - 0.5,
+                        "pip side gap {pside} must be at least vertical {ptop}: {ctx_msg}"
+                    );
                     println!("{ctx_msg}: icon side {side:.2} top {top:.2} bottom {bottom:.2}; pip side {pside:.2} top {ptop:.2} bottom {pbottom:.2}; slot gaps {pip_slot:.2}/{icon_slot:.2}");
                 }
             }
@@ -817,24 +1020,96 @@ mod tests {
             let ctx = egui::Context::default();
             ctx.set_zoom_factor(scale);
             let output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, TAB_BAR_HEIGHT))), |ui| {
-                    render_name_bar_and_tabs(ui, NameBarParams {
-                        tile_id: TileId::from_u64(1), pane_id: &7, tab_info: &HashMap::new(), tab_labels: &HashMap::new(), tab_activities: &HashMap::new(), pane_names: &names,
-                        pane_agent_state: None, is_error: false, colors: &colors, outside_workspace: true, name_font_size: 12.0, spawned_by_badge: None, waiting_results_badge: None, overtake_hint: false,
-                    });
-                });
+                ui.scope_builder(
+                    egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(500.0, TAB_BAR_HEIGHT),
+                    )),
+                    |ui| {
+                        render_name_bar_and_tabs(
+                            ui,
+                            NameBarParams {
+                                tile_id: TileId::from_u64(1),
+                                pane_id: &7,
+                                tab_info: &HashMap::new(),
+                                tab_labels: &HashMap::new(),
+                                tab_activities: &HashMap::new(),
+                                pane_names: &names,
+                                pane_agent_state: None,
+                                is_error: false,
+                                colors: &colors,
+                                outside_workspace: true,
+                                name_font_size: 12.0,
+                                spawned_by_badge: None,
+                                waiting_results_badge: None,
+                                overtake_hint: false,
+                            },
+                        );
+                    },
+                );
             });
-            let chip = ctx.data(|d| d.get_temp::<TerminalTabBarLayout>(egui::Id::new(("terminal_tab_bar_layout", 7_u64)))).and_then(|l| l.outside_workspace_badge_rect).expect("chip rect");
-            assert!((chip.height() - PANE_HEADER_CHIP_HEIGHT).abs() < 0.01, "chip height {}", chip.height());
+            let chip = ctx
+                .data(|d| {
+                    d.get_temp::<TerminalTabBarLayout>(egui::Id::new((
+                        "terminal_tab_bar_layout",
+                        7_u64,
+                    )))
+                })
+                .and_then(|l| l.outside_workspace_badge_rect)
+                .expect("chip rect");
+            assert!(
+                (chip.height() - PANE_HEADER_CHIP_HEIGHT).abs() < 0.01,
+                "chip height {}",
+                chip.height()
+            );
             let (top, bottom) = (chip.top(), PANE_HEADER_HEIGHT - chip.bottom());
-            assert!((top - bottom).abs() <= 0.5 && top >= 2.0, "chip margins top {top} bottom {bottom} at scale {scale}");
-            let text = output.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(_) if chip.contains(s.shape.visual_bounding_rect().center()) => Some(s.shape.visual_bounding_rect()), _ => None }).next().expect("chip text");
-            let pts: Vec<egui::Pos2> = output.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::LineSegment { points, .. } if chip.contains(points[0]) => Some(points.to_vec()), _ => None }).flatten().collect();
+            assert!(
+                (top - bottom).abs() <= 0.5 && top >= 2.0,
+                "chip margins top {top} bottom {bottom} at scale {scale}"
+            );
+            let text = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(_)
+                        if chip.contains(s.shape.visual_bounding_rect().center()) =>
+                    {
+                        Some(s.shape.visual_bounding_rect())
+                    }
+                    _ => None,
+                })
+                .next()
+                .expect("chip text");
+            let pts: Vec<egui::Pos2> = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::LineSegment { points, .. } if chip.contains(points[0]) => {
+                        Some(points.to_vec())
+                    }
+                    _ => None,
+                })
+                .flatten()
+                .collect();
             assert!(pts.len() >= 6, "arrow is three painted segments");
             let arrow = egui::Rect::from_points(&pts);
-            assert!((arrow.center().y - text.center().y).abs() <= 0.5, "arrow centre {} vs text centre {}", arrow.center().y, text.center().y);
-            assert!((arrow.left() - chip.left() - (chip.right() - text.right())).abs() <= 0.5, "left pad {} vs right pad {}", arrow.left() - chip.left(), chip.right() - text.right());
-            assert!((text.left() - arrow.right() - CHIP_ICON_GAP).abs() <= 0.5, "arrow-to-text gap {}", text.left() - arrow.right());
+            assert!(
+                (arrow.center().y - text.center().y).abs() <= 0.5,
+                "arrow centre {} vs text centre {}",
+                arrow.center().y,
+                text.center().y
+            );
+            assert!(
+                (arrow.left() - chip.left() - (chip.right() - text.right())).abs() <= 0.5,
+                "left pad {} vs right pad {}",
+                arrow.left() - chip.left(),
+                chip.right() - text.right()
+            );
+            assert!(
+                (text.left() - arrow.right() - CHIP_ICON_GAP).abs() <= 0.5,
+                "arrow-to-text gap {}",
+                text.left() - arrow.right()
+            );
             println!("chip scale {scale}: margins {top:.2}/{bottom:.2}, arrow-text dy {:.2}, pads {:.2}/{:.2}", arrow.center().y - text.center().y, arrow.left() - chip.left(), chip.right() - text.right());
         }
     }
@@ -845,13 +1120,26 @@ mod tests {
         let pad = terminal_content_padding();
         assert_eq!(pad.x, pad.y, "x and y share one inset token");
         assert_eq!(pad.x, PANE_CONTENT_INSET);
-        assert_eq!(pad.x, PANE_FOCUS_WIDTH + PANE_STATE_WIDTH + crate::ui::style::PANE_CONTENT_GAP);
-        assert_eq!(crate::ui::style::PANE_CONTENT_GAP, 2.0, "split the difference: 2pt of air beyond the rings");
-        assert!(pad.x > PANE_FOCUS_WIDTH + PANE_STATE_WIDTH, "inset leaves a gap beyond both rings");
+        assert_eq!(
+            pad.x,
+            PANE_FOCUS_WIDTH + PANE_STATE_WIDTH + crate::ui::style::PANE_CONTENT_GAP
+        );
+        assert_eq!(
+            crate::ui::style::PANE_CONTENT_GAP,
+            2.0,
+            "split the difference: 2pt of air beyond the rings"
+        );
+        assert!(
+            pad.x > PANE_FOCUS_WIDTH + PANE_STATE_WIDTH,
+            "inset leaves a gap beyond both rings"
+        );
         let frame = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(300.0, 200.0));
         let grid = egui::Rect::from_min_max(frame.min + pad, frame.max - pad);
         let inside_rings = frame.shrink(PANE_FOCUS_WIDTH + PANE_STATE_WIDTH);
-        assert!(inside_rings.contains_rect(grid), "grid {grid:?} overlaps rings; frame {frame:?}");
+        assert!(
+            inside_rings.contains_rect(grid),
+            "grid {grid:?} overlaps rings; frame {frame:?}"
+        );
     }
 
     #[test]
@@ -859,15 +1147,43 @@ mod tests {
         let ctx = egui::Context::default();
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(55.0, TAB_BAR_HEIGHT))), |ui| {
-                render_name_bar_and_tabs(ui, NameBarParams {
-                    tile_id: TileId::from_u64(1), pane_id: &7, tab_info: &HashMap::new(), tab_labels: &HashMap::new(), tab_activities: &HashMap::new(), pane_names: &HashMap::new(),
-                    pane_agent_state: None, is_error: true, colors: &colors, outside_workspace: false, name_font_size: 12.0, spawned_by_badge: None, waiting_results_badge: None, overtake_hint: false,
-                });
-            });
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(55.0, TAB_BAR_HEIGHT),
+                )),
+                |ui| {
+                    render_name_bar_and_tabs(
+                        ui,
+                        NameBarParams {
+                            tile_id: TileId::from_u64(1),
+                            pane_id: &7,
+                            tab_info: &HashMap::new(),
+                            tab_labels: &HashMap::new(),
+                            tab_activities: &HashMap::new(),
+                            pane_names: &HashMap::new(),
+                            pane_agent_state: None,
+                            is_error: true,
+                            colors: &colors,
+                            outside_workspace: false,
+                            name_font_size: 12.0,
+                            spawned_by_badge: None,
+                            waiting_results_badge: None,
+                            overtake_hint: false,
+                        },
+                    );
+                },
+            );
         });
-        let lines = output.shapes.iter().filter(|s| matches!(s.shape, egui::Shape::LineSegment { .. })).count();
-        assert_eq!(lines, 3, "one leading failed cross plus the divider; no duplicate state glyph");
+        let lines = output
+            .shapes
+            .iter()
+            .filter(|s| matches!(s.shape, egui::Shape::LineSegment { .. }))
+            .count();
+        assert_eq!(
+            lines, 3,
+            "one leading failed cross plus the divider; no duplicate state glyph"
+        );
     }
 
     #[test]
@@ -880,6 +1196,9 @@ mod tests {
         assert_eq!(banner.height(), 56.0);
         assert_eq!(tail.min.y, banner.max.y);
         assert_eq!(tail.max.y, hint.min.y);
-        assert_eq!(hint.max, content.max, "Enter hint has its own reserved line");
+        assert_eq!(
+            hint.max, content.max,
+            "Enter hint has its own reserved line"
+        );
     }
 }

@@ -5045,7 +5045,7 @@ impl View for AssistantView {
 
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         // The model/agent picker and permissions manager own Escape while
-        // open: this runs before `poll_actions`, which binds plain Escape to
+        // open: this runs before the host binding match (`keys::match_binding`), which binds plain Escape to
         // `CloseView` when the assistant's plugin surface is focused
         // (`src/host/keys.rs` `ViewActive` context). Without claiming it here
         // first, Escape falls through and destroys the pane instead of just

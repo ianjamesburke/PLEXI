@@ -137,7 +137,7 @@ Chords checked in `KeyBindings::default`.
 | Cmd+Enter | list the selected row's actions | none |
 | Esc | close | back to results, query and selection kept |
 
-`/` and `>` are ordinary characters; no prefix switches a stop. Cmd+Enter is `zoom_in` among host bindings; the modal wins because `poll_actions` skips `Normal` bindings while an overlay is open.
+`/` and `>` are ordinary characters; no prefix switches a stop. Cmd+Enter is `zoom_in` among host bindings; the modal wins because the host binding match (`keys::match_binding`) skips `Normal` bindings while an overlay is open.
 
 ## Deleted
 

@@ -303,14 +303,20 @@ const KNOWN_MODAL_LAYERS_ID: &str = "plexi_known_modal_layers";
 /// Start a pass's record of modal layers drawn and left open. The input
 /// router reads it between passes (see [`stale_modal_layer`]).
 pub(crate) fn begin_modal_layer_pass(ctx: &egui::Context) {
-    ctx.data_mut(|d| d.insert_temp(egui::Id::new(OPEN_MODAL_LAYERS_ID), Vec::<egui::LayerId>::new()));
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            egui::Id::new(OPEN_MODAL_LAYERS_ID),
+            Vec::<egui::LayerId>::new(),
+        )
+    });
 }
 
 fn note_open_modal_layers(ctx: &egui::Context, layers: &[egui::LayerId]) {
     ctx.data_mut(|d| {
         d.get_temp_mut_or_default::<Vec<egui::LayerId>>(egui::Id::new(OPEN_MODAL_LAYERS_ID))
             .extend_from_slice(layers);
-        let known = d.get_temp_mut_or_default::<Vec<egui::LayerId>>(egui::Id::new(KNOWN_MODAL_LAYERS_ID));
+        let known =
+            d.get_temp_mut_or_default::<Vec<egui::LayerId>>(egui::Id::new(KNOWN_MODAL_LAYERS_ID));
         for layer in layers {
             if !known.contains(layer) {
                 known.push(*layer);

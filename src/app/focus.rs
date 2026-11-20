@@ -45,12 +45,11 @@ impl FocusSegmentReason {
 /// boolean/Option flag that decides ownership *before* the owner is pushed —
 /// so that state cannot move into the owner without duplicating it.
 ///
-/// When any kind is on top, `input_captured_by_overlay()` is `true` for the
-/// rest of the frame: `dispatch_plugin_key_events` does not run, and the top
-/// owner's `handle_key` (called before its `draw`) gets first access to the
-/// frame's keyboard input. Global keybinds (Cmd+Q, Cmd+W, Cmd+Shift+A) are
-/// handled in `keys::poll_actions`, which always runs (see
-/// `src/app/input_router.rs`).
+/// When any kind is on top, the input router assigns it each key event at
+/// that event's ordinal: `dispatch_plugin_key_events` does not run, and the
+/// top owner's `handle_key` gets first access. Global keybinds (Cmd+Q, Cmd+W,
+/// Cmd+Shift+A) are matched by `keys::match_binding` after the owner declines
+/// (see `src/app/input_router.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum FocusKind {
     ApprovalBanner,
@@ -623,14 +622,14 @@ impl PlexiApp {
     /// running a plugin surface at all; `keyboard_capture_active` mirrors that
     /// pane's own declared `App::keyboard_capture()` (e.g. file-browser
     /// rename/quick-look mode, a CLI-backed plugin's Form view) — an advisory
-    /// policy flag `keys::poll_actions` reads to suppress global shortcuts
+    /// policy flag the router's `keys::match_binding` reads to suppress global shortcuts
     /// while the plugin owns text input. This is intentionally separate from
     /// `focus_stack`/`FocusKind`: overlay layers are exclusive (they block
     /// `dispatch_plugin_key_events` entirely), while plugin-declared capture must
     /// NOT block the plugin from still receiving its own keys — folding the two
     /// into one stack would make a plugin go deaf on the frame it starts
     /// capturing. Deduplicates what was previously an inline block
-    /// re-computed at the `poll_actions` call site.
+    /// re-computed at each binding match.
     pub(crate) fn focused_view_capture_state(&self) -> (bool, bool) {
         let context = &self.windows[self.active_window];
         let focused_pane = context.focused_pane.and_then(|tile_id| {
