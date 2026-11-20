@@ -13268,6 +13268,179 @@ open(out + ".done", "w").close()
             .expect("screenshot failed");
     }
 
+    /// Round 3 item 7, round 4 drag: a real pointer drag of a tab to a new
+    /// position and back restores the tree's shape but is still a
+    /// structural edit, so a container anchor admitted before it refuses.
+    /// A tab switch (focus only) and a divider resize do not invalidate it,
+    /// and a fresh admission after the drag launches.
+    #[test]
+    fn launch_plan_tab_drag_and_back_invalidates_a_container_anchor() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.step();
+        let browser_root = h.workspace.path().to_path_buf();
+        let (a, b) = h.with_app_mut(|app| {
+            // Terminals: their headers carry the draggable tab bar.
+            let context = app.pane_context_env_for_window(app.active_window);
+            let mut ids = Vec::new();
+            for _ in 0..3 {
+                let launch =
+                    app.desktop_terminal_launch(context.clone(), Some(browser_root.clone()), None);
+                let pane = app.construct_terminal(launch).expect("terminal starts");
+                ids.push(pane.id);
+                let win = &mut app.windows[app.active_window];
+                win.panes.insert(pane.id, Pane::Terminal(Box::new(pane))).unwrap();
+            }
+            let win = &mut app.windows[app.active_window];
+            let tiles: Vec<_> = ids.iter().map(|id| win.tree.tiles.insert_pane(*id)).collect();
+            let tab_tile = win.tree.tiles.insert_tab_tile(vec![tiles[0], tiles[1]]);
+            let side_tab = win.tree.tiles.insert_tab_tile(vec![tiles[2]]);
+            let root = win.tree.tiles.insert_horizontal_tile(vec![tab_tile, side_tab]);
+            win.tree.root = Some(root);
+            win.focused_pane = Some(tiles[0]);
+            (ids[0], ids[1])
+        });
+        h.run_steps(3);
+        let tab_center = |h: &PlexiUiHarness, pane: u64| {
+            h.with_app(|app| {
+                crate::ui::layout_report::snapshot(&app.ctx)
+                    .iter()
+                    .flat_map(|r| r.texts.iter())
+                    .filter(|t| t.id == format!("tab-{pane}"))
+                    .last()
+                    .map(|t| t.allocated.min + egui::vec2(6.0, 6.0))
+                    .unwrap_or_else(|| panic!("tab of pane {pane} painted"))
+            })
+        };
+        let drag = |h: &mut PlexiUiHarness, from: egui::Pos2, to: egui::Pos2| {
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(from),
+                egui::Event::PointerButton {
+                    pos: from,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            h.step();
+            h.harness().input_mut().events.push(egui::Event::PointerMoved(to));
+            h.step();
+            h.harness().input_mut().events.push(egui::Event::PointerButton {
+                pos: to,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(3);
+        };
+        let spec = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(&crate::protocol::HostRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("split_h".to_string()),
+            args: Vec::new(),
+            from_pane_id: None,
+            request_id: None,
+            response_file: None,
+            ephemeral: false,
+            cwd: Some(browser_root.to_string_lossy().into_owned()),
+            no_focus: true,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+            context_name: None,
+            name: None,
+            agent_cmd: None,
+            boot_timeout_secs: None,
+            worktree: None,
+            result_schema: None,
+            source: crate::protocol::SpawnSource::InProcess,
+        })
+        .unwrap();
+        // A container anchor: the window's root, admitted with no focus.
+        let admit = |h: &mut PlexiUiHarness| {
+            h.with_app_mut(|app| {
+                let win = app.active_window;
+                let focus = app.windows[win].focused_pane.take();
+                let plan = app.admit_terminal_launch(&spec).unwrap();
+                app.windows[win].focused_pane = focus;
+                assert!(matches!(
+                    plan.destination,
+                    crate::app::launch_plan::TerminalDestination::Split {
+                        anchor: crate::app::launch_plan::SplitAnchor::Node { .. },
+                        ..
+                    }
+                ));
+                plan
+            })
+        };
+        let apply = |h: &mut PlexiUiHarness, plan: crate::app::launch_plan::TerminalLaunchPlan| {
+            h.with_app_mut(|app| {
+                app.apply_launch(crate::app::launch_plan::LaunchPlan::Terminal(Box::new(plan)))
+                    .map_err(|refused| refused.to_string())
+            })
+        };
+        let order = |h: &PlexiUiHarness| {
+            h.with_app(|app| {
+                let win = &app.windows[app.active_window];
+                win.tree
+                    .tiles
+                    .iter()
+                    .find_map(|(_, tile)| match tile {
+                        egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))
+                            if tabs.children.len() == 2 =>
+                        {
+                            Some(tabs.children.clone())
+                        }
+                        _ => None,
+                    })
+                    .unwrap()
+            })
+        };
+
+        // Positive controls: a tab switch and a divider resize.
+        let plan = admit(&mut h);
+        let at_b = tab_center(&h, b);
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(at_b),
+            egui::Event::PointerButton {
+                pos: at_b,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        h.step();
+        h.harness().input_mut().events.push(egui::Event::PointerButton {
+            pos: at_b,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(3);
+        let divider = h.with_app(|app| {
+            app.active_strip_layout()
+                .dividers
+                .iter()
+                .find(|d| d.is_vertical)
+                .map(|d| d.rect.center())
+                .expect("a divider between the columns")
+        });
+        drag(&mut h, divider, divider + egui::vec2(-60.0, 0.0));
+        apply(&mut h, plan).expect("focus and resize leave the anchor valid");
+
+        // A drag and a drag back.
+        let plan = admit(&mut h);
+        let before = order(&h);
+        let (at_a, at_b) = (tab_center(&h, a), tab_center(&h, b));
+        drag(&mut h, at_a, at_b);
+        assert_ne!(order(&h), before, "fixture: the drag reordered the tabs");
+        let (at_a, at_b) = (tab_center(&h, a), tab_center(&h, b));
+        drag(&mut h, at_a, at_b);
+        assert_eq!(order(&h), before, "fixture: the drag back restored the order");
+        let error = apply(&mut h, plan).expect_err("a structural edit voids the container anchor");
+        assert!(error.contains("changed after admission"), "{error}");
+        let fresh = admit(&mut h);
+        apply(&mut h, fresh).expect("a fresh admission after the edit launches");
+    }
+
     /// Stint 0755: when `outside_workspace` is active on a terminal pane,
     /// `render_name_bar_and_tabs` must reserve the `outside workspace` badge's
     /// width plus `SPACE_XS` on both single-tab and multi-tab paths and elide

@@ -704,6 +704,9 @@ impl PlexiApp {
         let moved = tabs.children.remove(from_idx);
         tabs.children.insert(to_idx, moved);
         log::info!("tab_reorder: container={container_tile:?} from_idx={from_idx} to_idx={to_idx}");
+        // A committed drag is a structural edit: a container anchor admitted
+        // before it is stale even after a drag back (stint 1632).
+        ctx.note_structural_edit();
         true
     }
 
