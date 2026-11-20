@@ -226,10 +226,9 @@ fn tick(entries: &mut Vec<Entry>, finishing: bool) {
             if now < kill_at && !finishing {
                 return true;
             }
-            match unless_stopped(|| pinned(&session).map(|exited| {
-                signal(sid, libc::SIGKILL);
-                exited
-            })) {
+            match unless_stopped(|| {
+                pinned(&session).inspect(|_| signal(sid, libc::SIGKILL))
+            }) {
                 None => return true,
                 Some(Err(())) => return false,
                 Some(Ok(exited)) => entry.exited_on_hangup = Some(exited),
