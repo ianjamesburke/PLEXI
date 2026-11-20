@@ -703,6 +703,28 @@ impl HostHarness {
         })
     }
 
+    /// Run one frame delivering the release of `key`. A physical key is
+    /// released before it is pressed again; a second press with no release
+    /// between is a repeat of the first, which the host input router (stint
+    /// 1659) and egui both treat as such.
+    pub fn release_key(&mut self, key: egui::Key, modifiers: egui::Modifiers) -> &mut Self {
+        self.frame(RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            modifiers,
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        })
+    }
+
     /// Render the current frame's output to a PNG file using wgpu offscreen rendering.
     pub fn render_png(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), String> {
         let full_output = self

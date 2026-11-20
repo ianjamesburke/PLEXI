@@ -181,15 +181,10 @@ impl PlexiApp {
         self.host_router = router;
         if let Some(modifiers) = injected_modifiers {
             // This frame took socket-injected input; legacy consumers read
-            // the frame-wide flag, the router reads each event's source.
+            // the frame-wide flag and the batch's modifiers, the router each
+            // event's source.
             self.synthetic_input_frame = true;
-            if routed
-                .egui
-                .iter()
-                .any(|event| event.source == Source::Injected)
-            {
-                raw_input.modifiers = modifiers;
-            }
+            raw_input.modifiers = modifiers;
         }
         raw_input.events = routed.egui.into_iter().map(|event| event.event).collect();
         if routed.held {
