@@ -952,8 +952,8 @@ fn non_utf8_argv_is_a_usage_error() {
 }
 
 /// The host's trace record comes from clap's own parse of the argv: the
-/// subcommand path and the options given, never a value, never argv[0], and
-/// nothing forwarded to a child.
+/// subcommand path, then grammar-named placeholders and the options given,
+/// never a value, never argv[0], and nothing forwarded to a child.
 #[test]
 fn the_host_record_keeps_no_sender_value() {
     let record = |argv: &[&str]| {
@@ -991,11 +991,11 @@ fn the_host_record_keeps_no_sender_value() {
     // Forwarded child arguments are values: their options are never recorded.
     assert_eq!(
         record(&["plexi", "run", "example", "arg", "--json"]),
-        ["plexi", "run"]
+        ["plexi", "run", "<command>", "<extra_args>..."]
     );
     assert_eq!(
         record(&["plexi", "run", "example", "--", "--json"]),
-        ["plexi", "run"]
+        ["plexi", "run", "<command>", "<extra_args>"]
     );
     assert_eq!(
         record(&[
@@ -1006,16 +1006,42 @@ fn the_host_record_keeps_no_sender_value() {
             "arg",
             "--json"
         ]),
-        ["plexi", "run", "--socket"]
+        [
+            "plexi",
+            "run",
+            "<command>",
+            "<extra_args>...",
+            "--socket",
+            "<socket>"
+        ]
     );
-    // Real options after positionals are kept.
+    // Real options after positionals are kept, each value as its placeholder.
     assert_eq!(
         record(&["plexi", "pane", "send", "42", "hello", "--submit"]),
-        ["plexi", "pane", "send", "--submit"]
+        ["plexi", "pane", "send", "<pane_id>", "<text>", "--submit"]
     );
     assert_eq!(
         record(&["plexi", "pane", "new", "--name", "worker", "--right"]),
-        ["plexi", "pane", "new", "--name", "--right"]
+        ["plexi", "pane", "new", "--name", "<name>", "--right"]
+    );
+    // An optional value that requires `=`: bare stays bare and runnable, and
+    // a given value keeps the `=` form. A space-separated optional value
+    // cannot be told from bare, so it is always a placeholder.
+    assert_eq!(
+        record(&["plexi", "context", "new", "x", "--parent"]),
+        ["plexi", "context", "new", "<name>", "--parent"]
+    );
+    assert_eq!(
+        record(&["plexi", "context", "new", "x", "--parent=SENTINEL"]),
+        ["plexi", "context", "new", "<name>", "--parent=<parent>"]
+    );
+    assert_eq!(
+        record(&["plexi", "pane", "info", "--previous"]),
+        ["plexi", "pane", "info", "--previous", "<previous>"]
+    );
+    assert_eq!(
+        record(&["plexi", "pane", "info", "--previous", "3"]),
+        ["plexi", "pane", "info", "--previous", "<previous>"]
     );
     // An argv clap rejects records only the fixed label.
     assert_eq!(

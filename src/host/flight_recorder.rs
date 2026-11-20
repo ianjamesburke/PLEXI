@@ -560,7 +560,8 @@ pub(crate) fn handle_cli_trace(profile: &Path, frame: &Value) -> Result<(), Stri
         pane,
         Some(id),
         json!({
-            "argv": argv, "agent_session_id": agent_session,
+            "argv": argv, "argv_format": crate::cli::trace::RECORD_FORMAT,
+            "agent_session_id": agent_session,
             "exit_code": if kind == "cli_call" { frame["exit_code"].clone() } else { Value::Null },
             "started_at": started_at,
         }),

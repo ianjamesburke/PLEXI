@@ -57,11 +57,38 @@ fn write_draft(draft: &str, out: Option<&Path>, stdout: &mut impl Write) -> Resu
     }
 }
 
+/// A host-written stand-in for a value the trace never kept: `<id>` or
+/// `<id>...`, named from the grammar, or `<unparsed>`.
+fn is_placeholder(arg: &str) -> bool {
+    let name = arg.strip_suffix("...").unwrap_or(arg);
+    name.strip_prefix('<')
+        .and_then(|rest| rest.strip_suffix('>'))
+        .is_some_and(|id| {
+            !id.is_empty()
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_-".contains(c))
+        })
+}
+
+/// A placeholder, alone or as the value of an `--opt=<id>` template token.
+fn is_template_token(arg: &str) -> bool {
+    is_placeholder(arg)
+        || arg.split_once('=').is_some_and(|(option, value)| {
+            option.starts_with("--")
+                && option[2..]
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && is_placeholder(value)
+        })
+}
+
 fn quote(arg: &str) -> String {
-    if !arg.is_empty()
-        && arg
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_./:-".contains(c))
+    if is_template_token(arg)
+        || (!arg.is_empty()
+            && arg
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_./:-".contains(c)))
     {
         arg.to_string()
     } else {
@@ -116,7 +143,10 @@ fn internal_call(row: &Value) -> bool {
     )
 }
 
-fn command_for(row: &Value) -> Result<(String, bool), String> {
+/// The shell form of a recorded call, whether a `--subcontext` was suggested,
+/// and whether it is a template: a call with any placeholder or other
+/// angle-bracketed marker is never runnable as written.
+fn command_for(row: &Value) -> Result<(String, bool, bool), String> {
     let mut argv: Vec<String> = serde_json::from_value(row["data"]["argv"].clone())
         .map_err(|error| format!("invalid captured argv: {error}"))?;
     if argv.is_empty() {
@@ -137,7 +167,8 @@ fn command_for(row: &Value) -> Result<(String, bool), String> {
             ["--subcontext".into(), "review-me".into()],
         );
     }
-    Ok((shell_command(&argv), suggest))
+    let template = argv.iter().skip(1).any(|arg| arg.contains('<'));
+    Ok((shell_command(&argv), suggest, template))
 }
 
 fn build_draft(
@@ -169,6 +200,7 @@ fn build_draft(
         }
         if let Some((last, count)) = groups.last_mut() {
             if last["data"]["argv"] == row["data"]["argv"]
+                && last["data"]["argv_format"] == row["data"]["argv_format"]
                 && last["data"]["exit_code"] == row["data"]["exit_code"]
             {
                 *count += 1;
@@ -178,7 +210,7 @@ fn build_draft(
         groups.push((row, 1));
     }
     for (row, count) in groups {
-        let (command, suggested) = command_for(&row)?;
+        let (command, suggested, template) = command_for(&row)?;
         let repeat = if count > 1 {
             format!(" # repeated {count}x")
         } else {
@@ -191,13 +223,20 @@ fn build_draft(
                     .to_string(),
             );
         }
-        let withheld = status != Some(0) || command.contains("<redacted>") || command.contains("<text len=");
-        if withheld {
+        // A row without the template marker dropped its values unmarked
+        // (`pane close 42` became `pane close`), so it is never runnable.
+        let legacy = row["data"]["argv_format"] != crate::cli::trace::RECORD_FORMAT;
+        if status != Some(0) || template || legacy {
             notes.push(format!(
-                "Review-only call (exit={}): {command}{repeat}",
+                "Review-only call (exit={}{}): {command}{repeat}",
                 status
                     .map(|n| n.to_string())
-                    .unwrap_or_else(|| "unknown".into())
+                    .unwrap_or_else(|| "unknown".into()),
+                if legacy {
+                    ", recorded before templates"
+                } else {
+                    ""
+                }
             ));
         } else {
             if !repeat.is_empty() {
@@ -213,7 +252,7 @@ fn build_draft(
                 description = "Draft from a recorded session; review before installing"
                 steps = steps
             };
-            let mut output = "# Draft only. Review paths, pane ids and suggested subcontext names.\n# Failed, incomplete and redacted calls are comments, never executable steps.\n".to_string();
+            let mut output = "# Draft only. Review paths, pane ids and suggested subcontext names.\n# Failed, incomplete and templated calls are comments, never executable steps.\n# Fill each <placeholder> before running a templated call.\n".to_string();
             for note in notes {
                 for line in note.lines() {
                     output.push_str(&format!("# {line}\n"));
@@ -223,7 +262,7 @@ fn build_draft(
             Ok(output)
         }
         "skill" => {
-            let mut output = "---\nname: session-draft\ndescription: Reviewed workflow drafted from a Plexi CLI session\n---\n\n# Session workflow draft\n\nReview paths, pane ids and subcontext names before accepting. Replace redacted values through the secret workflow. Nothing has been installed.\n\n".to_string();
+            let mut output = "---\nname: session-draft\ndescription: Reviewed workflow drafted from a Plexi CLI session\n---\n\n# Session workflow draft\n\nReview paths, pane ids and subcontext names before accepting. Fill each <placeholder> before running a review-only call. Nothing has been installed.\n\n".to_string();
             for note in notes {
                 for line in note.lines() {
                     output.push_str(&format!("    # {line}\n"));
@@ -272,7 +311,9 @@ mod tests {
         )
         .unwrap();
         assert!(draft.starts_with("---\nname:"));
+        assert!(draft.contains("Fill each <placeholder>"));
         assert!(draft.contains("--subcontext review-me"));
+        assert!(!draft.contains("danger"));
         let mut stdout = Vec::new();
         write_draft(&draft, None, &mut stdout).unwrap();
         assert_eq!(stdout, draft.as_bytes());
@@ -286,7 +327,10 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
-        assert!(command.contains("Review-only call"));
+        assert!(command.contains(
+            "Review-only call (exit=0): plexi agent spawn <name> --task <task> --subcontext review-me\n"
+        ));
+        assert!(!command.contains("danger"));
         let path = dir.path().join("draft.md");
         write_draft(&draft, Some(&path), &mut stdout).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), draft);
@@ -329,14 +373,22 @@ mod tests {
             )
             .unwrap();
         };
-        record(20, &["plexi", "run", "other-pane"], 0);
+        record(20, &["plexi", "pane", "new", "--left"], 0);
         for args in [
-            vec!["plexi", "agent", "done"],
-            vec!["plexi", "agent", "report"],
+            vec!["plexi", "agent", "done", "--result", "{}"],
+            vec!["plexi", "agent", "report", "--state", "working"],
             vec!["plexi", "pane", "list"],
-            vec!["plexi", "pane", "capture"],
-            vec!["plexi", "pane", "wait"],
-            vec!["plexi", "pane", "slot", "wait"],
+            vec!["plexi", "pane", "capture", "19"],
+            vec!["plexi", "pane", "wait", "19", "--until", "idle"],
+            vec![
+                "plexi",
+                "pane",
+                "slot",
+                "wait",
+                "completed",
+                "--until",
+                "yes",
+            ],
         ] {
             record(19, &args, 0);
         }
@@ -352,25 +404,34 @@ mod tests {
         for _ in 0..3 {
             record(19, &["plexi", "pane", "new", "--right"], 0);
         }
+        record(
+            19,
+            &["plexi", "pane", "new", "--name", "worker", "--right"],
+            0,
+        );
+        // An argv the grammar rejects is recorded as `plexi <unparsed>`.
+        record(19, &["plexi", "pane", "send"], 0);
         let options = DraftOptions {
             pane: resolve_pane(None, false, Some("19")),
             ..Default::default()
         };
         let draft = build_draft(dir.path(), "latest", options, "command").unwrap();
         let parsed: toml::Value = toml::from_str(&draft).unwrap();
+        // Only a call with no values is runnable; a template is review-only
+        // and never merges with a different template.
         assert_eq!(
             parsed["commands"]["session_draft"]["steps"]
                 .as_array()
-                .unwrap()
-                .len(),
-            1
+                .unwrap(),
+            &vec![toml::Value::from("plexi pane new --right")]
         );
-        assert!(!draft.contains("other-pane"));
-        assert!(!draft.contains("run hi"));
-        assert!(!draft.contains("run incomplete"));
+        assert!(draft.contains("# plexi pane new --right # repeated 3x"));
+        assert!(draft.contains("Review-only call (exit=0): plexi pane new --name <name> --right\n"));
+        assert!(draft.contains("Review-only call (exit=0): plexi <unparsed>\n"));
+        assert!(!draft.contains("--left"));
+        assert!(!draft.contains("run <command>"));
         assert!(!draft.contains("agent done"));
         assert!(!draft.contains("pane slot wait"));
-        assert!(draft.contains("# repeated 3x"));
         let inclusive = build_draft(
             dir.path(),
             "latest",
@@ -382,12 +443,12 @@ mod tests {
             "skill",
         )
         .unwrap();
-        assert!(inclusive.contains("Review-only call (exit=unknown): plexi run incomplete"));
-        assert!(inclusive.contains("agent done"));
-        assert!(inclusive.contains("pane slot wait"));
+        assert!(inclusive.contains("Review-only call (exit=unknown): plexi run <command>\n"));
+        assert!(inclusive.contains("plexi agent done --result <result>"));
+        assert!(inclusive.contains("plexi pane slot wait <name> --until <until>"));
         assert_eq!(
             inclusive
-                .matches("Review-only call (exit=1): plexi run hi # repeated 4x")
+                .matches("Review-only call (exit=1): plexi run <command> # repeated 4x")
                 .count(),
             1
         );
@@ -396,16 +457,75 @@ mod tests {
         assert_eq!(resolve_pane(None, false, None), None);
         assert_eq!(resolve_pane(None, false, Some("invalid")), None);
         let all = build_draft(dir.path(), "latest", DraftOptions::default(), "skill").unwrap();
-        assert!(all.contains("other-pane"));
+        assert!(all.contains("--left"));
     }
 
     #[test]
     fn cli_trace_draft_preserves_existing_subcontext_and_quotes_shell_text() {
         let row = json!({"data":{"argv":["plexi","agent","spawn","researcher","--task","a'b; $(oops)","--subcontext=auth"]}});
-        let (command, suggested) = command_for(&row).unwrap();
+        let (command, suggested, template) = command_for(&row).unwrap();
+        assert!(!template);
         assert!(!suggested);
         assert!(command.contains("'a'\"'\"'b; $(oops)'"));
         assert!(!command.contains("review-me"));
+    }
+
+    #[test]
+    fn rows_recorded_before_templates_are_never_runnable() {
+        let dir = tempfile::tempdir().unwrap();
+        recorder::adopt_session(dir.path(), "sess-legacy");
+        // #3269 stored `pane close 42` as `pane close`, which run as written
+        // would close the current pane.
+        for argv in [["plexi", "pane", "close"], ["plexi", "pane", "list"]] {
+            recorder::record_in(
+                dir.path(),
+                "cli_call",
+                None,
+                Some(19),
+                Some(&uuid::Uuid::new_v4().to_string()),
+                json!({"argv": argv, "exit_code": 0}),
+            );
+        }
+        recorder::handle_cli_trace(
+            dir.path(),
+            &json!({"id":uuid::Uuid::new_v4().to_string(), "phase":"exit", "exit_code":0,
+            "pane_id":19, "argv":["plexi", "pane", "list"]}),
+        )
+        .unwrap();
+        for argv in [
+            ["plexi", "context", "new", "--parent"],
+            ["plexi", "context", "new", "--parent=other"],
+        ] {
+            recorder::handle_cli_trace(
+                dir.path(),
+                &json!({"id":uuid::Uuid::new_v4().to_string(), "phase":"exit",
+                "exit_code":0, "pane_id":19, "argv":argv}),
+            )
+            .unwrap();
+        }
+        let options = DraftOptions {
+            pane: Some(19),
+            include_internal: true,
+            ..Default::default()
+        };
+        let draft = build_draft(dir.path(), "sess-legacy", options, "command").unwrap();
+        let parsed: toml::Value = toml::from_str(&draft).unwrap();
+        assert_eq!(
+            parsed["commands"]["session_draft"]["steps"]
+                .as_array()
+                .unwrap(),
+            &vec![
+                toml::Value::from("plexi pane list"),
+                toml::Value::from("plexi context new --parent"),
+            ]
+        );
+        assert!(draft.contains("Review-only call (exit=0): plexi context new --parent=<parent>\n"));
+        assert!(!draft.contains("other"));
+        assert!(draft
+            .contains("Review-only call (exit=0, recorded before templates): plexi pane close\n"));
+        assert!(draft
+            .contains("Review-only call (exit=0, recorded before templates): plexi pane list\n"));
+        assert!(!draft.contains("repeated"));
     }
 
     #[test]
@@ -418,9 +538,19 @@ mod tests {
             "argv":["plexi", "pane", "send", "19", "<text len=9 sha256=deadbeef>"]}),
         )
         .unwrap();
-        let draft = build_draft(dir.path(), "sess-content-redacted", DraftOptions::default(), "command").unwrap();
+        let draft = build_draft(
+            dir.path(),
+            "sess-content-redacted",
+            DraftOptions::default(),
+            "command",
+        )
+        .unwrap();
         let parsed: toml::Value = toml::from_str(&draft).unwrap();
-        assert!(parsed["commands"]["session_draft"]["steps"].as_array().unwrap().is_empty());
-        assert!(draft.contains("Review-only call"));
+        assert!(parsed["commands"]["session_draft"]["steps"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(draft.contains("Review-only call (exit=0): plexi pane send <pane_id> <text>\n"));
+        assert!(!draft.contains("deadbeef"));
     }
 }
