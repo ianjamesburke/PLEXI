@@ -208,6 +208,8 @@ fn isolated(name: &str) -> bool {
     let dir = std::env::temp_dir();
     let log =
         dir.join(format!("egui-term-1650-{}-{name}.log", std::process::id()));
+    // One open file for both streams, so they share an offset.
+    let out = std::fs::File::create(&log).unwrap();
     let mut child =
         std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -217,8 +219,8 @@ fn isolated(name: &str) -> bool {
                 "--test-threads=1",
             ])
             .env(CHILD, "1")
-            .stdout(std::fs::File::create(&log).unwrap())
-            .stderr(std::process::Stdio::null())
+            .stdout(out.try_clone().unwrap())
+            .stderr(out)
             .spawn()
             .unwrap();
     // A watchdog: a hang (say a stop blocked behind a spawn) fails.
