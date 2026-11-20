@@ -523,12 +523,13 @@ pub struct PlexiBehavior<'a> {
     pub pane_corner_radius: Option<u8>,
     /// Resolved pane title bar font size (from config, default 11.0).
     pub pane_title_font_size: f32,
-    /// Keyboard input the host took from `ctx` before the render pass, destined
-    /// for the focused terminal pane (stint 0387). Consumed (via `take`) by the
-    /// pane whose `is_focused` is true, so egui's render-time widget machinery
-    /// can't swallow a key (Cmd+A) first. `None` when the focused pane is not a
-    /// terminal (or an overlay owns input).
-    pub focused_terminal_input: Option<crate::render::terminal_pane::TerminalInput>,
+    /// Each terminal pane's ordered input stream (keys and pointer), assigned
+    /// by the input router before egui folded the delivery, so egui's
+    /// render-time widget machinery can't swallow a key (Cmd+A) first. Each
+    /// is taken by the pane it names.
+    pub terminal_inputs: Vec<crate::render::terminal_pane::TerminalInput>,
+    /// False while an overlay owns input: panes take no file drops.
+    pub panes_take_drops: bool,
     /// The tile the input router assigned this delivery's pane press to.
     pub routed_press: Option<TileId>,
     /// The window being presented, for the router's press hit map.
@@ -607,7 +608,11 @@ impl PlexiBehavior<'_> {
                 });
         }
         let is_click = self.routed_press == Some(tile_id);
-        let is_drag_hovering = if sole_drop_target {
+        // A modal that owns input owns file drops too: no pane under it
+        // takes the paths.
+        let is_drag_hovering = if !self.panes_take_drops {
+            false
+        } else if sole_drop_target {
             ui.input(|i| !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty())
         } else {
             match self.drag_cursor_pos {
@@ -617,7 +622,9 @@ impl PlexiBehavior<'_> {
                 None => self.hovered_files && pointer_in_hit_rect,
             }
         };
-        if is_click || is_drag_hovering {
+        // A click's focus change was applied by the input router at the
+        // press's ordinal; only a file drag moves focus here.
+        if is_drag_hovering {
             self.new_focused = Some(tile_id);
         }
         if is_click {
@@ -769,12 +776,13 @@ impl PlexiBehavior<'_> {
                 .rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
             let mut terminal_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
             terminal_ui.set_clip_rect(clip_rect);
-            // The terminal the router assigned this delivery's keyboard
-            // stream to consumes it; every other terminal gets an empty one
-            // (pointer/wheel only).
+            // The stream the router assigned this terminal; none, when this
+            // delivery gave it nothing.
             let terminal_input = self
-                .focused_terminal_input
-                .take_if(|input| input.pane_id == *pane_id)
+                .terminal_inputs
+                .iter()
+                .position(|input| input.pane_id == *pane_id)
+                .map(|index| self.terminal_inputs.swap_remove(index))
                 .unwrap_or_else(|| render::terminal_pane::TerminalInput {
                     pane_id: *pane_id,
                     keyboard_events: Vec::new(),

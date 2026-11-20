@@ -1596,7 +1596,6 @@ impl PlexiApp {
         }
         let colors = self.colors;
         let entries = self.command_palette_entries();
-        let prev_selected = self.palette_selected;
 
         // ── Render ─────────────────────────────────────────────────────────
         // 0.8: the palette is a launcher, not a workspace — filling nearly
@@ -1644,7 +1643,10 @@ impl PlexiApp {
                 let mut click_action: Option<PaletteAction> = None;
                 let mut hover_select: Option<usize> = None;
                 let mouse_moved = ctx.input(|i| i.pointer.delta().length_sq() > 0.5);
-                let should_scroll = self.palette_selected != prev_selected;
+                // Keyboard moves the selection in the input router, before
+                // this draw: scroll when it differs from the last drawn row.
+                let should_scroll = Some(self.palette_selected) != self.palette_drawn_selected;
+                self.palette_drawn_selected = Some(self.palette_selected);
                 let mut shown_contexts_header = false;
                 let mut shown_agents_header = false;
                 let mut shown_apps_header = false;
@@ -1974,6 +1976,8 @@ impl PlexiApp {
                     if mouse_moved {
                         self.palette_selected = i;
                         self.palette_selected_key = Some(entries[i].selection_key());
+                        // Hovered rows are already on screen.
+                        self.palette_drawn_selected = Some(i);
                     }
                 }
 

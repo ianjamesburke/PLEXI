@@ -47,6 +47,15 @@ pub(crate) trait NotesTrash: Send + Sync {
     fn trash(&self, path: &std::path::Path) -> Result<std::path::PathBuf, String>;
 }
 
+/// A notes picker request whose filesystem work waits for `App::logic`.
+#[derive(Clone, Debug)]
+pub(crate) enum NotesPickerEffect {
+    /// Move the note at this path to Trash.
+    Delete(std::path::PathBuf),
+    /// Restore the most recently trashed note.
+    Undo,
+}
+
 pub(crate) struct DeletedNote {
     entry: crate::notes::NotePickerEntry,
     index: usize,
@@ -728,14 +737,26 @@ impl PlexiApp {
         true
     }
 
-    fn notes_picker_request_delete(&mut self) {
-        let Some(idx) = self.notes_picker_selected_entry() else {
-            return;
-        };
-        let entry = &self.notes_picker_entries[idx];
-        let (path, title) = (entry.path.clone(), entry.title.clone());
-        if !self.notes_picker_refuse_if_dirty(&path, &title, false) {
-            self.notes_picker_delete_entry(idx);
+    /// Carry out the picker's queued trash and restore requests, in order.
+    /// Runs from `App::logic`, never from input routing.
+    pub(crate) fn service_notes_picker_effects(&mut self) {
+        for effect in std::mem::take(&mut self.notes_picker_effects) {
+            match effect {
+                NotesPickerEffect::Delete(path) => {
+                    let Some(idx) = self
+                        .notes_picker_entries
+                        .iter()
+                        .position(|entry| entry.path == path)
+                    else {
+                        continue;
+                    };
+                    let title = self.notes_picker_entries[idx].title.clone();
+                    if !self.notes_picker_refuse_if_dirty(&path, &title, false) {
+                        self.notes_picker_delete_entry(idx);
+                    }
+                }
+                NotesPickerEffect::Undo => self.notes_picker_undo_delete(),
+            }
         }
     }
 
@@ -1055,10 +1076,16 @@ impl PlexiApp {
                 );
             }
             Some(PickerKey::Enter) => self.notes_picker_open_selected(),
+            // Trash and restore are filesystem work: decided here, at the
+            // key's ordinal, and carried out in `App::logic`.
             Some(PickerKey::Delete) => {
-                self.notes_picker_request_delete();
+                if let Some(idx) = self.notes_picker_selected_entry() {
+                    let path = self.notes_picker_entries[idx].path.clone();
+                    self.notes_picker_effects
+                        .push(NotesPickerEffect::Delete(path));
+                }
             }
-            Some(PickerKey::Undo) => self.notes_picker_undo_delete(),
+            Some(PickerKey::Undo) => self.notes_picker_effects.push(NotesPickerEffect::Undo),
             Some(PickerKey::Copy) => self.notes_picker_clip_selected(ClipKind::Copy),
             Some(PickerKey::Cut) => self.notes_picker_clip_selected(ClipKind::Cut),
             Some(PickerKey::OpenNew) => self.notes_picker_open_in_new(),
@@ -1484,6 +1511,7 @@ mod tests {
             crate::app::input_router::PlexiInput::synthetic(input.events.clone(), input.modifiers);
         let _ = ctx.run_ui(input, |ui| {
             app.notes_picker_handle_key(&mut owned);
+            app.service_notes_picker_effects();
             app.notes_picker_flush_copy(ui.ctx());
         });
     }
@@ -1933,6 +1961,7 @@ mod tests {
             crate::app::input_router::PlexiInput::synthetic(input.events.clone(), input.modifiers);
         let _ = ctx.run_ui(input, |ui| {
             app.notes_picker_handle_key(&mut owned);
+            app.service_notes_picker_effects();
             app.notes_picker_flush_copy(ui.ctx());
         });
     }

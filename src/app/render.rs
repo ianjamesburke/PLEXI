@@ -259,12 +259,12 @@ impl PlexiApp {
     pub(super) fn render_panels(
         &mut self,
         ui: &mut egui::Ui,
-        focused_terminal_input: Option<crate::render::terminal_pane::TerminalInput>,
+        terminal_inputs: Vec<crate::render::terminal_pane::TerminalInput>,
     ) {
         let ctx = ui.ctx().clone();
-        // Taken exactly once by whichever production path renders the focused
-        // terminal this frame: the tiling behavior or the zoom overlay.
-        let mut focused_terminal_input = focused_terminal_input;
+        // Each terminal's ordered stream, taken exactly once by whichever
+        // production path renders that terminal this frame.
+        let mut terminal_inputs = terminal_inputs;
         // The native button area is in macOS points; egui coordinates also
         // include Plexi's zoom, so reserve it in logical points here.
         let safe_area = crate::platform::titlebar::logical_safe_area(&ctx);
@@ -613,7 +613,7 @@ impl PlexiApp {
                     ui.ctx().data_mut(|d| d.insert_temp(lineage_log_id, pane_lineage.clone()));
                 }
                 let focus_painter = ui.painter().clone();
-                let right = self.render_conjoined_parent(ui, &mut focused_terminal_input);
+                let right = self.render_conjoined_parent(ui, &mut terminal_inputs);
                 let owner_pane = self.visual_owner_pane();
                 let mut child_ui;
                 let ui = if let Some(rect) = right {
@@ -806,7 +806,7 @@ impl PlexiApp {
                     pane_corner_radius: self.config.pane_corner_radius,
                     pane_title_font_size: self.config.pane_title_font_size.unwrap_or(12.0).clamp(6.0, 32.0),
                     portal_zoom_request: None,
-                    focused_terminal_input: focused_terminal_input.take(),
+                    terminal_inputs: std::mem::take(&mut terminal_inputs),
                     frame_modifiers: ui.input(|i| i.modifiers),
                     pending_pane_clicks: &mut pending_pane_clicks,
                     off_strip_panes: Default::default(),
@@ -814,6 +814,10 @@ impl PlexiApp {
                     strip_layout: None,
                     resized: false,
                     routed_press: routed_press.map(|press| press.tile),
+                    panes_take_drops: !matches!(
+                        self.input_router.egui_owner,
+                        Some(crate::app::input_owner::InputOwner::Overlay(_))
+                    ),
                     window_id: canvas_old_window_id,
                     presented_panes: Vec::new(),
                 };
@@ -977,22 +981,34 @@ impl PlexiApp {
                 // by the input router at the press's ordinal, together with
                 // its focus change; see `PlexiApp::route_pane_press`.
 
-                // Apply canvas focus change now that behavior is dropped and
-                // ctx is freely borrowable again.
-                let clicked_pane_id = new_focused.and_then(|new_tile| {
-                    match ctx.tree.tiles.get(new_tile) {
+                // A file drag hovering a pane moves focus here. A click moved
+                // focus in the input router at its ordinal; paint never moves
+                // it again, so a later focus change in the same delivery
+                // stands. The click's flash, history and strip scroll apply
+                // only while its pane still holds focus.
+                fn pane_at(tree: &egui_tiles::Tree<crate::spatial::tiling::PaneId>, tile: egui_tiles::TileId) -> Option<crate::spatial::tiling::PaneId> {
+                    match tree.tiles.get(tile) {
                         Some(egui_tiles::Tile::Pane(pid)) => Some(*pid),
                         _ => None,
                     }
-                });
-                let canvas_focus_changed = if let Some(new) = new_focused {
-                    let changed = Some(new) != canvas_old_focus;
+                }
+                let mut focus_target = None;
+                let mut canvas_focus_changed = false;
+                if let Some(new) = new_focused {
+                    canvas_focus_changed = Some(new) != canvas_old_focus;
                     ctx.navigate_to(new);
-                    changed
-                } else {
-                    false
-                };
-
+                    if let Some(pid) = pane_at(&ctx.tree, new) {
+                        // The drag keeps the selection (stint 1340); its
+                        // cursor follows.
+                        self.host.set_pane_selection_cursor(ctx.window_id, pid);
+                        focus_target = Some(pid);
+                    }
+                } else if let Some(press) = routed_press.filter(|_| pane_clicked) {
+                    if ctx.focused_pane == Some(press.tile) {
+                        canvas_focus_changed = press.prior_focus != Some(press.tile);
+                        focus_target = pane_at(&ctx.tree, press.tile);
+                    }
+                }
                 if canvas_focus_changed {
                     if let Some(new_tile) = ctx.focused_pane {
                         let win_id = ctx.window_id;
@@ -1000,13 +1016,7 @@ impl PlexiApp {
                         self.click_flash = Some(ClickFlash { window_id: win_id, tile: new_tile, started_at: std::time::Instant::now() });
                     }
                 }
-
-                if let Some(pid) = clicked_pane_id {
-                    // A file drag hovering a pane moves focus but keeps the
-                    // selection (stint 1340), so its cursor follows.
-                    if !pane_clicked {
-                        self.host.set_pane_selection_cursor(ctx.window_id, pid);
-                    }
+                if let Some(pid) = focus_target {
                     self.focus_pane_in_strip(pid);
                 }
                 if resized {

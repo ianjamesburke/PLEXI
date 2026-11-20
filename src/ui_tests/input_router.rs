@@ -38,11 +38,32 @@ impl crate::app::view_trait::View for EdgeProbe {
     /// A pointer click egui delivers to the pane's own widgets is recorded
     /// too: a click that leaks behind a modal is observable here even when
     /// host focus does not move.
-    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &crate::app::view_trait::ViewRenderContext<'_>) {
-        if ui
-            .allocate_rect(ui.max_rect(), egui::Sense::click())
-            .clicked()
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &crate::app::view_trait::ViewRenderContext<'_>) {
+        // Keyboard input egui hands this pane's widgets while it owns input:
+        // after the plugin consumed an event, any copy here is a second
+        // delivery.
+        if crate::app::input_owner::published_frame_owner_is_pane(ui.ctx(), ctx.pane_id)
+            == Some(true)
         {
+            let leaked: Vec<String> = ui.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|event| match event {
+                        // Releases are folded for key-state balance when egui
+                        // folded the press, whoever owns input now.
+                        Event::Key {
+                            key, pressed: true, ..
+                        } => Some(format!("egui:down:{key:?}")),
+                        Event::Text(text) => Some(format!("egui:text:{text}")),
+                        Event::Paste(_) => Some("egui:paste".to_string()),
+                        _ => None,
+                    })
+                    .collect()
+            });
+            self.log.extend(leaked);
+        }
+        let r = ui.allocate_rect(ui.max_rect(), egui::Sense::click());
+        if r.clicked() {
             self.log.push("click".to_string());
         }
     }
@@ -57,7 +78,8 @@ impl crate::app::view_trait::View for EdgeProbe {
                     .log
                     .push(format!("{}:{key:?}", if *pressed { "down" } else { "up" })),
                 Event::Text(text) => self.log.push(format!("text:{text}")),
-                Event::Paste(_) => self.log.push("paste".to_string()),
+                Event::Paste(text) => self.log.push(format!("paste:{text}")),
+                Event::Ime(egui::ImeEvent::Commit(text)) => self.log.push(format!("ime:{text}")),
                 _ => {}
             }
         }
@@ -148,6 +170,15 @@ fn deliver(h: &mut HostHarness, events: Vec<Event>) {
         events,
         ..Default::default()
     });
+    // A split delivery finishes on the following passes (the router requests
+    // them at once in production).
+    for _ in 0..16 {
+        if !h.app.input_router.has_held_input() {
+            return;
+        }
+        h.run_frames(1);
+    }
+    panic!("held input never drained");
 }
 
 fn probe_pane(h: &mut HostHarness) -> PaneId {
@@ -789,14 +820,29 @@ enum Side {
 }
 
 /// One generated input step. Key steps are single edges so a delivery cut
-/// can fall between a press and its release; a click stays whole.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// can fall between a press and its release; `Click` is a whole click, and
+/// `Press`, `MoveFar`, `Release` are a gesture's parts (drag-return).
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Step {
     Down(Key),
     Text(char),
     Up(Key),
     CmdPDown,
     Click(Side),
+    Paste(String),
+    ImeCommit(String),
+    Press(Side),
+    /// Beyond click slop, within the pressed pane.
+    MoveFar(Side),
+    Release(Side),
+}
+
+impl Step {
+    /// Decisive in the router's sense: it can decide something, so it waits
+    /// for the next pass when an egui run already holds this one.
+    fn decisive(&self) -> bool {
+        !matches!(self, Step::Text(_) | Step::Up(_) | Step::MoveFar(_))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -820,18 +866,57 @@ struct ModelHeld {
     returns: bool,
 }
 
+/// Where a pointer press landed, in the model.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PressTarget {
+    Pane(Side),
+    Scrim,
+    Retired,
+}
+
+#[derive(Clone, Copy)]
+struct ModelPress {
+    target: PressTarget,
+    /// Where it was pressed: a release elsewhere is beyond click slop.
+    at: Side,
+    instance: u64,
+    moved_far: bool,
+    /// egui hit-tested the press against a scrim painted the pass before.
+    swallowed: bool,
+}
+
 struct Model {
     palette_open: bool,
     presented: bool,
-    /// The palette painted in the last pass: egui hit-tests one more pass
-    /// against that pass's layers, so its scrim still covers pane widgets.
+    /// The palette painted in the last pass of the previous delivery: egui
+    /// hit-tests one more pass against that pass's layers.
     drawn_last_pass: bool,
     focus: Side,
     instance: u64,
     last_owner: ModelOwner,
     held: std::collections::HashMap<Key, ModelHeld>,
+    press: Option<ModelPress>,
     a: Vec<String>,
     b: Vec<String>,
+}
+
+/// Per-delivery model state: the pass structure the run-splitting rule
+/// imposes.
+#[derive(Default)]
+struct Pass {
+    /// An egui run holds this pass: the next decisive step waits for a new
+    /// pass, after this one paints.
+    egui_run: bool,
+    /// Still the delivery's first pass (egui may see a stale scrim).
+    first: bool,
+    /// A widget click egui reports when this pass paints.
+    click: Option<Side>,
+    /// The palette closes when this pass paints (scrim click-away).
+    closing: bool,
+    /// The dismissal barrier, or the retirement of held input whose owner
+    /// left while painting: the rest of the delivery acts on nothing.
+    barrier: bool,
+    text_owned: bool,
 }
 
 impl Model {
@@ -844,6 +929,7 @@ impl Model {
             instance: 0,
             last_owner: ModelOwner::Pane(Side::A),
             held: Default::default(),
+            press: None,
             a: Vec::new(),
             b: Vec::new(),
         }
@@ -869,16 +955,133 @@ impl Model {
         }
     }
 
+    /// The current pass paints; the next step starts a new pass.
+    fn paint(&mut self, pass: &mut Pass) {
+        if let Some(side) = pass.click.take() {
+            self.log(side, "click".to_string());
+        }
+        if pass.closing {
+            pass.closing = false;
+            self.palette_open = false;
+            // Held input was held for the palette, which is gone: retired.
+            pass.barrier = true;
+        }
+        if self.palette_open {
+            self.presented = true;
+        }
+        pass.egui_run = false;
+        pass.first = false;
+    }
+
+    /// A press of a key still held is a repeat. Its press's owner gone (or
+    /// the key retired): the repeat, and its text, go with it.
+    fn repeat_retired(&mut self, key: Key, instance: u64, pass: &mut Pass) -> bool {
+        let Some(held) = self.held.get(&key).copied() else {
+            return false;
+        };
+        if held.instance != instance || !held.returns || pass.barrier {
+            self.held.insert(
+                key,
+                ModelHeld {
+                    instance: u64::MAX,
+                    returns: false,
+                },
+            );
+            pass.text_owned = true;
+            return true;
+        }
+        false
+    }
+
+    fn press(&mut self, pass: &mut Pass, side: Side, owner: ModelOwner, instance: u64) {
+        let target = if pass.barrier {
+            PressTarget::Retired
+        } else {
+            match owner {
+                ModelOwner::Palette if self.presented => PressTarget::Scrim,
+                // Before its first draw the modal declines the press.
+                ModelOwner::Palette => PressTarget::Retired,
+                ModelOwner::Pane(_) => {
+                    self.focus = side;
+                    PressTarget::Pane(side)
+                }
+            }
+        };
+        if target != PressTarget::Retired {
+            pass.egui_run = true;
+        }
+        let (_, instance_after) = self.owner();
+        self.press = Some(ModelPress {
+            target,
+            at: side,
+            instance: if matches!(target, PressTarget::Pane(_)) {
+                instance_after
+            } else {
+                instance
+            },
+            moved_far: false,
+            swallowed: pass.first && self.drawn_last_pass,
+        });
+    }
+
+    fn release(&mut self, pass: &mut Pass, side: Side, instance: u64) {
+        let Some(press) = self.press.take() else {
+            return;
+        };
+        if pass.barrier || press.instance != instance {
+            return;
+        }
+        match press.target {
+            PressTarget::Pane(pressed)
+                if pressed == side && !press.moved_far && !press.swallowed =>
+            {
+                pass.egui_run = true;
+                pass.click = Some(side);
+            }
+            PressTarget::Pane(_) => pass.egui_run = true,
+            PressTarget::Scrim if !press.moved_far && press.at == side => {
+                pass.egui_run = true;
+                pass.closing = true;
+            }
+            PressTarget::Scrim => pass.egui_run = true,
+            PressTarget::Retired => {}
+        }
+    }
+
     fn delivery(&mut self, steps: &[Step]) -> Observed {
-        let mut barrier = false;
-        let mut text_owned = false;
-        let mut click_away = false;
-        let mut widget_clicks = Vec::new();
+        let mut pass = Pass {
+            first: true,
+            ..Pass::default()
+        };
         for step in steps {
+            if step.decisive() && pass.egui_run {
+                self.paint(&mut pass);
+            }
             let (owner, instance) = self.owner();
-            match *step {
+            let field_input = matches!(
+                step,
+                Step::Down(_)
+                    | Step::Up(_)
+                    | Step::Text(_)
+                    | Step::CmdPDown
+                    | Step::Paste(_)
+                    | Step::ImeCommit(_)
+            );
+            if owner == ModelOwner::Palette && !self.presented && field_input && !pass.barrier {
+                // Held until the palette has painted and its field has focus.
+                self.paint(&mut pass);
+            }
+            let (owner, instance) = if self.owner() != (owner, instance) {
+                self.owner()
+            } else {
+                (owner, instance)
+            };
+            match step.clone() {
                 Step::Down(key) => {
-                    if barrier {
+                    if self.repeat_retired(key, instance, &mut pass) {
+                        continue;
+                    }
+                    if pass.barrier {
                         self.held.insert(
                             key,
                             ModelHeld {
@@ -886,13 +1089,13 @@ impl Model {
                                 returns: false,
                             },
                         );
-                        text_owned = true;
+                        pass.text_owned = true;
                         continue;
                     }
                     match owner {
                         ModelOwner::Palette if key == Key::Escape => {
                             self.palette_open = false;
-                            barrier = true;
+                            pass.barrier = true;
                             self.held.insert(
                                 key,
                                 ModelHeld {
@@ -900,9 +1103,10 @@ impl Model {
                                     returns: true,
                                 },
                             );
-                            text_owned = true;
+                            pass.text_owned = true;
                         }
                         ModelOwner::Palette => {
+                            // The query field's: an egui edit.
                             self.held.insert(
                                 key,
                                 ModelHeld {
@@ -910,7 +1114,8 @@ impl Model {
                                     returns: true,
                                 },
                             );
-                            text_owned = false;
+                            pass.text_owned = false;
+                            pass.egui_run = true;
                         }
                         ModelOwner::Pane(side) => {
                             self.log(side, format!("down:{key:?}"));
@@ -921,11 +1126,14 @@ impl Model {
                                     returns: true,
                                 },
                             );
-                            text_owned = key == Key::Escape;
+                            pass.text_owned = false;
                         }
                     }
                 }
                 Step::CmdPDown => {
+                    if self.repeat_retired(Key::P, instance, &mut pass) {
+                        continue;
+                    }
                     self.held.insert(
                         Key::P,
                         ModelHeld {
@@ -933,13 +1141,13 @@ impl Model {
                             returns: false,
                         },
                     );
-                    text_owned = true;
-                    if barrier {
+                    pass.text_owned = true;
+                    if pass.barrier {
                         continue;
                     }
                     if self.palette_open {
                         self.palette_open = false;
-                        barrier = true;
+                        pass.barrier = true;
                     } else {
                         self.palette_open = true;
                         self.presented = false;
@@ -948,8 +1156,8 @@ impl Model {
                 Step::Up(key) => {
                     let held = self.held.remove(&key);
                     let delivered = match held {
-                        Some(held) => !barrier && held.returns && held.instance == instance,
-                        None => !barrier,
+                        Some(held) => !pass.barrier && held.returns && held.instance == instance,
+                        None => !pass.barrier,
                     };
                     if delivered {
                         if let ModelOwner::Pane(side) = owner {
@@ -958,50 +1166,52 @@ impl Model {
                     }
                 }
                 Step::Text(c) => {
-                    if barrier || text_owned {
-                        continue;
-                    }
-                    if let ModelOwner::Pane(side) = owner {
-                        self.log(side, format!("text:{c}"));
-                    }
-                }
-                Step::Click(side) => {
-                    if barrier {
+                    if pass.barrier || pass.text_owned {
                         continue;
                     }
                     match owner {
-                        // A drawn modal's scrim takes the click away.
-                        ModelOwner::Palette if self.presented => click_away = true,
-                        // Before its first draw the modal declines it.
-                        ModelOwner::Palette => {}
-                        ModelOwner::Pane(_) => {
-                            self.focus = side;
-                            // The pane's widgets fold it when they paint,
-                            // after the delivery's structured input.
-                            let (_, instance) = self.owner();
-                            widget_clicks.push((side, instance));
-                        }
+                        ModelOwner::Pane(side) => self.log(side, format!("text:{c}")),
+                        ModelOwner::Palette => pass.egui_run = true,
                     }
                 }
-            }
-        }
-        // egui folds only the input of the owner that holds it at the end
-        // of the delivery, and a widget reports at most one click per pass.
-        let (_, final_instance) = self.owner();
-        let mut clicked = Vec::new();
-        for (side, instance) in widget_clicks {
-            if instance == final_instance && !self.drawn_last_pass && !clicked.contains(&side) {
-                clicked.push(side);
-                self.log(side, "click".to_string());
+                Step::Paste(text) => {
+                    if pass.barrier {
+                        continue;
+                    }
+                    match owner {
+                        ModelOwner::Pane(side) => self.log(side, format!("paste:{text}")),
+                        ModelOwner::Palette => pass.egui_run = true,
+                    }
+                }
+                Step::ImeCommit(text) => {
+                    if pass.barrier {
+                        continue;
+                    }
+                    match owner {
+                        ModelOwner::Pane(side) => self.log(side, format!("ime:{text}")),
+                        ModelOwner::Palette => pass.egui_run = true,
+                    }
+                }
+                Step::Click(side) => {
+                    self.press(&mut pass, side, owner, instance);
+                    // The release is decisive: it waits for the next pass.
+                    if pass.egui_run {
+                        self.paint(&mut pass);
+                    }
+                    let (_, instance) = self.owner();
+                    self.release(&mut pass, side, instance);
+                }
+                Step::Press(side) => self.press(&mut pass, side, owner, instance),
+                Step::MoveFar(_) => {
+                    if let Some(press) = self.press.as_mut() {
+                        press.moved_far = true;
+                    }
+                }
+                Step::Release(side) => self.release(&mut pass, side, instance),
             }
         }
         self.drawn_last_pass = self.palette_open;
-        if click_away {
-            self.palette_open = false;
-        }
-        if self.palette_open {
-            self.presented = true;
-        }
+        self.paint(&mut pass);
         Observed {
             palette_open: self.palette_open,
             focus: self.focus,
@@ -1012,18 +1222,27 @@ impl Model {
 }
 
 fn step_events(h: &HostHarness, step: Step, panes: (PaneId, PaneId)) -> Vec<Event> {
-    match step {
-        Step::Down(key) => vec![down(key, Modifiers::NONE)],
-        Step::Up(key) => vec![up(key, Modifiers::NONE)],
-        Step::Text(c) => vec![text(&c.to_string())],
-        Step::CmdPDown => vec![down(Key::P, native_cmd())],
-        Step::Click(side) => click(center(
+    let at = |side: Side| {
+        center(
             h,
             match side {
                 Side::A => panes.0,
                 Side::B => panes.1,
             },
-        )),
+        )
+    };
+    match step {
+        Step::Down(key) => vec![down(key, Modifiers::NONE)],
+        Step::Up(key) => vec![up(key, Modifiers::NONE)],
+        Step::Text(c) => vec![text(&c.to_string())],
+        Step::CmdPDown => vec![down(Key::P, native_cmd())],
+        Step::Click(side) => click(at(side)),
+        Step::Paste(text) => vec![Event::Paste(text)],
+        Step::ImeCommit(text) => vec![Event::Ime(egui::ImeEvent::Commit(text))],
+        Step::Press(side) => vec![moved(at(side)), button(at(side), true)],
+        // Beyond click slop, within the same large pane.
+        Step::MoveFar(side) => vec![moved(at(side) + egui::vec2(0.0, 120.0))],
+        Step::Release(side) => vec![moved(at(side)), button(at(side), false)],
     }
 }
 
@@ -1035,7 +1254,7 @@ fn run_production(deliveries: &[Vec<Step>]) -> Vec<Observed> {
         .map(|steps| {
             let events = steps
                 .iter()
-                .flat_map(|step| step_events(&h, *step, (a, b)))
+                .flat_map(|step| step_events(&h, step.clone(), (a, b)))
                 .collect();
             deliver(&mut h, events);
             Observed {
@@ -1093,20 +1312,33 @@ impl Rng {
 /// is never pressed again before its release.
 fn generate(seed: u64) -> Vec<Vec<Step>> {
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    let side = |rng: &mut Rng| if rng.below(2) == 0 { Side::A } else { Side::B };
     let mut steps = Vec::new();
     for _ in 0..(6 + rng.below(8)) {
-        match rng.below(6) {
+        match rng.below(9) {
             0 | 1 => {
                 let (key, c) = [(Key::X, 'x'), (Key::Y, 'y'), (Key::Z, 'z')][rng.below(3) as usize];
                 steps.extend([Step::Down(key), Step::Text(c), Step::Up(key)]);
             }
             2 => steps.extend([Step::CmdPDown, Step::Up(Key::P)]),
             3 => steps.extend([Step::Down(Key::Escape), Step::Up(Key::Escape)]),
-            _ => steps.push(Step::Click(if rng.below(2) == 0 {
-                Side::A
-            } else {
-                Side::B
-            })),
+            4 => steps.push(Step::Paste("pasted".to_string())),
+            5 => steps.push(Step::ImeCommit("ime".to_string())),
+            6 => {
+                // A gesture: press, maybe cross the slop, release on either pane.
+                let pressed = side(&mut rng);
+                steps.push(Step::Press(pressed));
+                if rng.below(2) == 0 {
+                    steps.push(Step::MoveFar(pressed));
+                }
+                let released = if rng.below(3) == 0 {
+                    side(&mut rng)
+                } else {
+                    pressed
+                };
+                steps.push(Step::Release(released));
+            }
+            _ => steps.push(Step::Click(side(&mut rng))),
         }
     }
     let mut deliveries = vec![Vec::new()];
@@ -1282,4 +1514,348 @@ fn kittest_harness_steps_go_through_raw_input_hook() {
         h.with_app(|app| app.show_command_palette),
         "a kittest key press reaches the router and opens the palette"
     );
+}
+
+// ── Round 2: ordered runs, held input, edges, drops, paint-time decisions ───
+
+fn tap(h: &mut HostHarness, pane: PaneId) -> String {
+    String::from_utf8_lossy(&h.terminal_backend(pane).take_input_tap()).into_owned()
+}
+
+fn two_terminals(h: &mut HostHarness) -> (PaneId, PaneId) {
+    let t1 = h.add_focused_terminal();
+    let t2 = h.add_focused_terminal();
+    h.focus_pane(t1);
+    h.run_frames(3);
+    h.terminal_backend(t1).enable_input_tap();
+    h.terminal_backend(t2).enable_input_tap();
+    (t1, t2)
+}
+
+fn typed(c: char) -> Vec<Event> {
+    let key = Key::from_name(&c.to_ascii_uppercase().to_string()).expect("letter key");
+    vec![
+        down(key, Modifiers::NONE),
+        text(&c.to_string()),
+        up(key, Modifiers::NONE),
+    ]
+}
+
+/// `x`, click terminal B, `y` in one delivery: each terminal gets exactly
+/// its own keys, in order, from its own stream.
+#[test]
+fn typing_around_a_click_reaches_each_terminal_in_order() {
+    let mut h = HostHarness::new();
+    let (t1, t2) = two_terminals(&mut h);
+    let mut events = typed('x');
+    events.extend(click(center(&h, t2)));
+    events.extend(typed('y'));
+    deliver(&mut h, events);
+    assert_eq!(focused(&h), Some(t2));
+    assert_eq!(tap(&mut h, t1), "x");
+    assert_eq!(tap(&mut h, t2), "y");
+}
+
+/// A fast burst of terminal keys is one pass: terminals take their ordered
+/// stream structurally, so the run-splitting rule never delays them.
+#[test]
+fn a_terminal_key_burst_stays_in_one_pass() {
+    let mut h = HostHarness::new();
+    let (t1, _t2) = two_terminals(&mut h);
+    let burst: Vec<Event> = "abcdefghij".chars().flat_map(typed).collect();
+    let before = h.app.input_router.deliveries();
+    h.frame(RawInput {
+        screen_rect: screen(),
+        events: burst,
+        ..Default::default()
+    });
+    assert!(
+        !h.app.input_router.has_held_input(),
+        "nothing waited for a later pass"
+    );
+    assert_eq!(h.app.input_router.deliveries(), before + 1);
+    assert_eq!(tap(&mut h, t1), "abcdefghij");
+}
+
+fn name_pane(h: &mut HostHarness, pane: PaneId, name: &str) {
+    h.app.windows[0]
+        .panes
+        .get_mut(&pane)
+        .and_then(|p| p.as_view_mut())
+        .expect("view pane")
+        .name = name.to_string();
+}
+
+/// `Cmd+P, Paste, Enter` in one delivery: the paste edits the new palette's
+/// query once its field exists, and Enter runs the row matching it, with
+/// nothing reaching the pane.
+#[test]
+fn opening_carry_pastes_into_the_query_and_enter_runs_the_matching_row() {
+    for commit in [
+        Event::Paste("zebra".into()),
+        Event::Ime(egui::ImeEvent::Commit("zebra".into())),
+    ] {
+        let mut h = HostHarness::new();
+        let (a, b) = two_probes(&mut h);
+        name_pane(&mut h, a, "alpha probe");
+        name_pane(&mut h, b, "zebra probe");
+        h.run_frames(1);
+        deliver(
+            &mut h,
+            vec![
+                down(Key::P, native_cmd()),
+                commit.clone(),
+                down(Key::Enter, Modifiers::NONE),
+            ],
+        );
+        assert!(!h.app.show_command_palette, "Enter ran a row");
+        assert_eq!(
+            focused(&h),
+            Some(b),
+            "the row matching the pasted query ran"
+        );
+        assert!(
+            probe_log(&mut h, a).is_empty(),
+            "no suffix reached the pane"
+        );
+    }
+}
+
+/// An already-open palette: a paste then Enter in one delivery acts on the
+/// query as of Enter's ordinal (after the paste).
+#[test]
+fn enter_acts_on_the_query_as_of_its_ordinal() {
+    let mut h = HostHarness::new();
+    let (a, b) = two_probes(&mut h);
+    name_pane(&mut h, a, "alpha probe");
+    name_pane(&mut h, b, "zebra probe");
+    open_palette(&mut h);
+    h.run_frames(2);
+    deliver(
+        &mut h,
+        vec![
+            Event::Paste("zebra".into()),
+            down(Key::Enter, Modifiers::NONE),
+        ],
+    );
+    assert_eq!(focused(&h), Some(b));
+}
+
+/// After a blur the outstanding release of a chord pressed before it reaches
+/// nobody, and the next ordinary key reaches the pane whole.
+#[test]
+fn blur_retires_an_outstanding_release() {
+    let mut h = HostHarness::new();
+    let (a, _b) = two_probes(&mut h);
+    open_palette(&mut h);
+    deliver(&mut h, vec![down(Key::P, native_cmd())]);
+    deliver(&mut h, vec![Event::WindowFocused(false)]);
+    deliver(&mut h, vec![Event::WindowFocused(true)]);
+    deliver(&mut h, vec![up(Key::P, Modifiers::NONE)]);
+    assert!(
+        probe_log(&mut h, a).is_empty(),
+        "the late release reached nobody"
+    );
+    deliver(&mut h, typed('p'));
+    assert_eq!(probe_log(&mut h, a), ["down:P", "text:p", "up:P"]);
+}
+
+/// A key pressed behind the barrier stays consumed through its repeats and
+/// its release, even though the revealed pane now owns input.
+#[test]
+fn a_key_pressed_behind_the_barrier_stays_consumed_until_released() {
+    let mut h = HostHarness::new();
+    let (a, _b) = two_probes(&mut h);
+    open_palette(&mut h);
+    h.run_frames(1);
+    deliver(
+        &mut h,
+        vec![
+            down(Key::Escape, Modifiers::NONE),
+            down(Key::B, Modifiers::NONE),
+            text("b"),
+        ],
+    );
+    assert!(!h.app.show_command_palette);
+    deliver(&mut h, vec![down(Key::B, Modifiers::NONE), text("b")]);
+    deliver(
+        &mut h,
+        vec![
+            up(Key::B, Modifiers::NONE),
+            up(Key::Escape, Modifiers::NONE),
+        ],
+    );
+    assert!(
+        probe_log(&mut h, a).is_empty(),
+        "the barrier's key never reached the pane"
+    );
+    deliver(&mut h, typed('b'));
+    assert_eq!(probe_log(&mut h, a), ["down:B", "text:b", "up:B"]);
+}
+
+/// Click B, then navigate back to A, in one delivery: paint never replays
+/// the earlier press, so the later focus change stands.
+#[test]
+fn paint_never_replays_a_press_over_a_later_focus_change() {
+    let mut h = HostHarness::new();
+    let (a, b) = two_probes(&mut h);
+    let (m, k) = h.app.key_bindings.navigate_left;
+    let m = Modifiers {
+        mac_cmd: m.command && cfg!(target_os = "macos"),
+        ..m
+    };
+    let mut events = click(center(&h, b));
+    events.extend([down(k, m), up(k, m)]);
+    deliver(&mut h, events);
+    assert_eq!(focused(&h), Some(a));
+}
+
+/// A modal owns file drops: a zoomed terminal under the palette never gets
+/// the dropped path; without the palette it does.
+#[test]
+fn file_drops_follow_modal_ownership() {
+    let mut h = HostHarness::new();
+    let (t1, _t2) = two_terminals(&mut h);
+    h.app.toggle_pane_zoom();
+    h.run_frames(2);
+    let drop = |h: &mut HostHarness| {
+        h.frame(RawInput {
+            screen_rect: screen(),
+            dropped_files: vec![egui::DroppedFile {
+                path: Some(std::path::PathBuf::from("/tmp/plexi-router-drop.txt")),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        h.run_frames(1);
+    };
+    open_palette(&mut h);
+    h.run_frames(1);
+    tap(&mut h, t1);
+    drop(&mut h);
+    assert!(
+        !tap(&mut h, t1).contains("plexi-router-drop"),
+        "the palette owned the drop"
+    );
+    deliver(
+        &mut h,
+        vec![
+            down(Key::Escape, Modifiers::NONE),
+            up(Key::Escape, Modifiers::NONE),
+        ],
+    );
+    h.run_frames(1);
+    tap(&mut h, t1);
+    drop(&mut h);
+    assert!(
+        tap(&mut h, t1).contains("plexi-router-drop"),
+        "positive control"
+    );
+}
+
+/// A pointer release that arrives while the window is hidden still reaches
+/// egui, so no button stays down when drawing resumes.
+#[test]
+fn a_hidden_release_still_releases_the_button() {
+    let mut h = HostHarness::new();
+    let (a, _b) = two_probes(&mut h);
+    let at = center(&h, a);
+    deliver(&mut h, vec![moved(at), button(at, true)]);
+    assert!(h.egui_ctx().input(|i| i.pointer.primary_down()));
+    h.hidden_frame_with(RawInput {
+        screen_rect: screen(),
+        events: vec![button(at, false)],
+        ..Default::default()
+    });
+    h.run_frames(1);
+    assert!(!h.egui_ctx().input(|i| i.pointer.primary_down()));
+}
+
+fn egui_folded_wheel(h: &HostHarness) -> bool {
+    h.egui_ctx().input(|i| {
+        i.raw
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::MouseWheel { .. }))
+    })
+}
+
+fn wheel(phase: egui::TouchPhase) -> Event {
+    Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -40.0),
+        phase,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+/// A wheel gesture begun over the palette keeps its owner: once Escape has
+/// closed the palette, its continuation never scrolls the pane revealed; a
+/// fresh gesture does.
+#[test]
+fn a_wheel_gesture_keeps_its_owner() {
+    let mut h = HostHarness::new();
+    let (a, _b) = two_probes(&mut h);
+    open_palette(&mut h);
+    h.run_frames(2);
+    let over_a = center(&h, a);
+    deliver(&mut h, vec![moved(over_a), wheel(egui::TouchPhase::Start)]);
+    deliver(
+        &mut h,
+        vec![
+            down(Key::Escape, Modifiers::NONE),
+            up(Key::Escape, Modifiers::NONE),
+        ],
+    );
+    assert!(!h.app.show_command_palette);
+    deliver(&mut h, vec![wheel(egui::TouchPhase::Move)]);
+    assert!(
+        !egui_folded_wheel(&h),
+        "the palette's gesture never reached the pane"
+    );
+    deliver(&mut h, vec![wheel(egui::TouchPhase::End)]);
+    deliver(&mut h, vec![wheel(egui::TouchPhase::Start)]);
+    assert!(egui_folded_wheel(&h), "a fresh gesture scrolls");
+}
+
+/// Cmd+W under Confirm Close is that dialog's Escape: the dialog cancels,
+/// and the original W never reaches egui.
+#[test]
+fn close_chord_under_confirm_close_cancels_it() {
+    let mut h = HostHarness::new();
+    let (_a, _b) = two_probes(&mut h);
+    let panes = h.pane_count();
+    h.app.pending_close = true;
+    h.app.sync_confirm_close_focus();
+    h.run_frames(3);
+    let (m, k) = h.app.key_bindings.close_pane;
+    let m = Modifiers {
+        mac_cmd: m.command && cfg!(target_os = "macos"),
+        ..m
+    };
+    deliver(&mut h, vec![down(k, m), up(k, m)]);
+    assert!(!h.app.pending_close, "the close chord cancelled the dialog");
+    assert_eq!(h.pane_count(), panes);
+}
+
+/// A dialog that decides while painting (Description's Cmd+Enter commit):
+/// the click that followed it in the same delivery was held for the dialog
+/// and is retired, not replayed against the pane it revealed.
+#[test]
+fn a_paint_time_decision_retires_the_rest_of_its_delivery() {
+    let mut h = HostHarness::new();
+    let (a, b) = two_probes(&mut h);
+    h.app.open_description_edit(0);
+    h.app.description_buffer = "described".into();
+    h.run_frames(3);
+    assert!(h.app.editing_description.is_some());
+    let mut events = vec![down(Key::Enter, native_cmd()), up(Key::Enter, native_cmd())];
+    events.extend(click(center(&h, b)));
+    deliver(&mut h, events);
+    assert!(h.app.editing_description.is_none(), "Cmd+Enter committed");
+    assert_eq!(focused(&h), Some(a), "the click went with the dialog");
+    assert!(probe_log(&mut h, b).is_empty());
+    let at_b = center(&h, b);
+    deliver(&mut h, click(at_b));
+    assert_eq!(focused(&h), Some(b), "a fresh click works");
 }

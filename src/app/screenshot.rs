@@ -195,26 +195,36 @@ impl PlexiApp {
                     });
             self.pending_screenshots = remaining;
             let pixels_per_point = ctx.pixels_per_point();
+            // Writing files is external I/O: it waits for `App::logic`.
             for request in matched {
-                let result = self.write_screenshot(&request, image, pixels_per_point);
-                let response = match &result {
-                    Ok((width, height)) => serde_json::json!({
-                        "ok": true,
-                        "path": request.output_path,
-                        "width": width,
-                        "height": height,
-                    }),
-                    Err(error) => {
-                        log::warn!(
-                            "screenshot: pane_id={:?} output={} failed: {error}",
-                            request.pane_id,
-                            request.output_path
-                        );
-                        serde_json::json!({ "error": error })
-                    }
-                };
-                crate::rpc::write_json_response(&request.response_file, response);
+                self.completed_screenshots
+                    .push((request, image.clone(), pixels_per_point));
             }
+        }
+    }
+
+    /// Write the screenshots matched by this pass's delivery and answer
+    /// their requests. Runs from `App::logic`, never from input routing.
+    pub(crate) fn write_completed_screenshots(&mut self) {
+        for (request, image, pixels_per_point) in std::mem::take(&mut self.completed_screenshots) {
+            let result = self.write_screenshot(&request, &image, pixels_per_point);
+            let response = match &result {
+                Ok((width, height)) => serde_json::json!({
+                    "ok": true,
+                    "path": request.output_path,
+                    "width": width,
+                    "height": height,
+                }),
+                Err(error) => {
+                    log::warn!(
+                        "screenshot: pane_id={:?} output={} failed: {error}",
+                        request.pane_id,
+                        request.output_path
+                    );
+                    serde_json::json!({ "error": error })
+                }
+            };
+            crate::rpc::write_json_response(&request.response_file, response);
         }
     }
 

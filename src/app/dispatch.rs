@@ -191,16 +191,17 @@ impl PlexiApp {
         }
         // The plugin classifies the event the input router handed it rather
         // than a read of `ctx`. Bare Escape while zoomed reaches `handle_key`
-        // without un-zooming (stint 0898). If the plugin consumed the key, also
-        // claim Escape/ArrowUp so the router's ViewActive match (which runs
+        // without un-zooming (stint 0898). If the plugin consumed the event,
+        // it is claimed outright, so the router's ViewActive match (which runs
         // after the pane) can't re-fire CloseView for keys the plugin already
         // handled — e.g. Escape
         // exiting search mode in the file browser rather than closing the
         // pane, or ArrowUp recalling a prior message in the assistant.
         let disposition = view_pane.runtime.handle_key(input);
         if disposition == crate::app::view_trait::KeyDisposition::Consumed {
-            input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
+            // Consumed is exclusive: the plugin took the event, so neither
+            // egui widgets nor a later ViewActive binding see it again.
+            input.clear();
         }
     }
 

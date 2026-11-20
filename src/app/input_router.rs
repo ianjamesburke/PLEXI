@@ -176,22 +176,41 @@ pub(crate) struct OwnerInstance {
 /// Where a down edge went, so its repeats and release follow it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EdgePath {
-    /// A host binding claimed it, or it arrived for a departed owner or
-    /// behind the barrier: its release is retired.
+    /// A host binding claimed it: repeats re-match while its owner holds
+    /// input, and the release is retired.
     Claimed,
-    /// The owner's structured handler consumed it: its release goes back to
-    /// that owner while it still holds input.
+    /// The owner's structured handler consumed it: repeats and the release
+    /// go back to that owner while it still holds input.
     Owner,
     /// The owner's egui widgets (left in `RawInput`).
     Egui,
-    /// The focused terminal's ordered stream.
+    /// A terminal pane's ordered stream.
     Terminal,
+    /// Behind the dismissal barrier, for a departed owner, or across a blur:
+    /// repeats, text and the release are consumed.
+    Retired,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct HeldEdge {
     owner: OwnerInstance,
     path: EdgePath,
+    /// The terminal pane whose stream carried the press, if any.
+    terminal: Option<PaneId>,
+    /// Retired by a window blur: no release may follow, so a later press of
+    /// the same key starts fresh instead of reading as a repeat.
+    blurred: bool,
+}
+
+impl HeldEdge {
+    fn new(owner: OwnerInstance, path: EdgePath) -> Self {
+        Self {
+            owner,
+            path,
+            terminal: None,
+            blurred: false,
+        }
+    }
 }
 
 /// A pane as last presented: where a press can land on it.
@@ -205,8 +224,8 @@ pub(crate) struct PresentedPane {
 }
 
 /// A press the router assigned to a pane at its ordinal (focus and selection
-/// already applied). Rendering applies the click's history and flash from
-/// this, never from egui's global pointer state.
+/// already applied). Rendering applies only the click's history and flash
+/// from this; it never moves focus again.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PanePress {
     pub(crate) window_id: u64,
@@ -222,6 +241,13 @@ enum Disposition {
     Terminal(PaneId),
 }
 
+/// A wheel gesture (`TouchPhase::Start` .. `End`/`Cancel`) and its owner.
+#[derive(Clone, Copy, Debug)]
+struct WheelGesture {
+    owner: OwnerInstance,
+    terminal: Option<PaneId>,
+}
+
 /// Router state that outlives a delivery.
 #[derive(Default)]
 pub(crate) struct InputRouter {
@@ -230,6 +256,13 @@ pub(crate) struct InputRouter {
     current: Option<InputOwner>,
     held_keys: HashMap<egui::Key, HeldEdge>,
     held_buttons: [Option<HeldEdge>; egui::NUM_POINTER_BUTTONS],
+    wheel: Option<WheelGesture>,
+    last_pointer: Option<egui::Pos2>,
+    /// The rest of a split delivery, routed by the next pass, and the owner
+    /// instance it was held for. Retired, never replayed, if that owner is
+    /// gone by then.
+    held_input: Vec<egui::Event>,
+    held_for: Option<OwnerInstance>,
     /// Epoch of the overlay instance most recently drawn in full.
     presented_epoch: Option<u64>,
     /// Pane hit areas from the last visible pass.
@@ -239,9 +272,9 @@ pub(crate) struct InputRouter {
     /// Font and UI-scale actions already run in this delivery: one physical
     /// press can arrive as both `Equals` and `Plus`.
     scale_actions: Vec<crate::host::keys::Action>,
-    /// This delivery's outputs, read by the pass that folds it.
+    /// This pass's outputs, read by the pass that folds it.
     pub(crate) egui_owner: Option<InputOwner>,
-    pub(crate) terminal_stream: Option<crate::render::terminal_pane::TerminalInput>,
+    pub(crate) terminal_streams: Vec<crate::render::terminal_pane::TerminalInput>,
     pub(crate) trap_tab: Option<bool>,
     pub(crate) pane_press: Option<PanePress>,
 }
@@ -278,6 +311,11 @@ impl InputRouter {
         self.conjoined_parent_hit = hit;
     }
 
+    /// True while part of a split delivery waits for the next pass.
+    pub(crate) fn has_held_input(&self) -> bool {
+        !self.held_input.is_empty()
+    }
+
     /// Deliveries routed so far: a test proves a harness step reached
     /// `raw_input_hook`.
     #[cfg(test)]
@@ -285,17 +323,52 @@ impl InputRouter {
         self.delivery
     }
 
-    /// True while `key`'s press was consumed by a host binding or a
-    /// structured owner and its release has not arrived yet.
+    /// True while `key`'s press was consumed by a host binding, a structured
+    /// owner or the barrier, and its release has not arrived yet.
     #[cfg(test)]
     pub(crate) fn holds_claimed_key(&self, key: egui::Key) -> bool {
-        self.held_keys
-            .get(&key)
-            .is_some_and(|held| matches!(held.path, EdgePath::Claimed | EdgePath::Owner))
+        self.held_keys.get(&key).is_some_and(|held| {
+            matches!(
+                held.path,
+                EdgePath::Claimed | EdgePath::Owner | EdgePath::Retired
+            )
+        })
     }
 
     fn presented(&self, instance: OwnerInstance) -> bool {
         self.presented_epoch == Some(instance.epoch)
+    }
+
+    /// Append `event` to `pane`'s terminal stream, keeping the order of every
+    /// stream and of events within it.
+    fn push_terminal(&mut self, pane: PaneId, event: egui::Event, modifiers: egui::Modifiers) {
+        match self
+            .terminal_streams
+            .iter_mut()
+            .find(|stream| stream.pane_id == pane)
+        {
+            Some(stream) => {
+                stream.keyboard_events.push(event);
+                stream.modifiers = modifiers;
+            }
+            None => self
+                .terminal_streams
+                .push(crate::render::terminal_pane::TerminalInput {
+                    pane_id: pane,
+                    keyboard_events: vec![event],
+                    modifiers,
+                }),
+        }
+    }
+
+    /// A window blur: no release will follow for keys held now. Their
+    /// records stay, retired, so a late release reaches nobody, and a fresh
+    /// press of the same key starts over.
+    fn retire_for_blur(&mut self) {
+        for held in self.held_keys.values_mut() {
+            held.path = EdgePath::Retired;
+            held.blurred = true;
+        }
     }
 }
 
@@ -336,15 +409,60 @@ fn is_actionable(event: &egui::Event) -> bool {
     )
 }
 
+/// An event that can decide something: a key press, a pointer edge, a
+/// paste, clipboard command, IME commit or accessibility action. Once an
+/// egui run holds input in a pass, the next decisive event waits for the
+/// next pass, after egui has applied the run (the run-splitting rule).
+fn is_decisive(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key { pressed: true, .. }
+            | egui::Event::PointerButton { .. }
+            | egui::Event::Paste(_)
+            | egui::Event::Copy
+            | egui::Event::Cut
+            | egui::Event::Ime(egui::ImeEvent::Commit(_))
+            | egui::Event::AccessKitActionRequest(_)
+    )
+}
+
+/// An event that changes what an egui widget holds (an edit, a press, a
+/// release). Folding one opens the pass's egui run.
+fn changes_egui_state(event: &egui::Event) -> bool {
+    is_decisive(event) || matches!(event, egui::Event::Text(_))
+}
+
+/// Keyboard-side input an overlay's egui fields take: held, not dropped,
+/// while that overlay has not been drawn yet (its field has no focus).
+fn is_field_input(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key { .. }
+            | egui::Event::Text(_)
+            | egui::Event::Paste(_)
+            | egui::Event::Copy
+            | egui::Event::Cut
+            | egui::Event::Ime(_)
+    )
+}
+
+fn event_pos(event: &egui::Event) -> Option<egui::Pos2> {
+    match event {
+        egui::Event::PointerMoved(pos) | egui::Event::PointerButton { pos, .. } => Some(*pos),
+        _ => None,
+    }
+}
+
 impl PlexiApp {
     /// Route one native delivery (see the module docs). Called from
     /// `raw_input_hook` after queued pane IPC input has been appended, so
-    /// injected and native events share one order.
+    /// injected and native events share one order. Input held from a split
+    /// delivery is routed first, ahead of anything new.
     pub(crate) fn route_delivery(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.input_router.delivery += 1;
         let delivery = self.input_router.delivery;
         self.input_router.egui_owner = None;
-        self.input_router.terminal_stream = None;
+        self.input_router.terminal_streams.clear();
         self.input_router.trap_tab = None;
         self.input_router.pane_press = None;
         self.input_router.scale_actions.clear();
@@ -357,269 +475,166 @@ impl PlexiApp {
             .focused
             .unwrap_or_else(|| ctx.input(|i| i.viewport().focused.unwrap_or(true)));
         let modifiers = raw.modifiers;
+        let incoming = std::mem::take(&mut raw.events);
         let mut out: Vec<(egui::Event, Option<OwnerInstance>)> = Vec::new();
-        let mut terminal: Vec<egui::Event> = Vec::new();
-        let mut terminal_pane = None;
+
+        // Held input first. A hidden pass leaves it waiting; a blur, a hide
+        // or a different owner retires it under the barrier's rules.
+        let mut queue = Vec::new();
+        if self.input_router.has_held_input() && !hidden {
+            let current = self.input_router.observe(self.host_input_owner());
+            let blur = incoming
+                .iter()
+                .any(|event| matches!(event, egui::Event::WindowFocused(false)));
+            let held = std::mem::take(&mut self.input_router.held_input);
+            if blur || self.input_router.held_for != Some(current) {
+                log::info!(
+                    "input_router: delivery={delivery} retired {} held event(s): their owner is gone",
+                    held.len()
+                );
+                for event in held {
+                    self.retire_event(event, &mut out);
+                }
+            } else {
+                queue.extend(held);
+            }
+            self.input_router.held_for = None;
+        }
+        queue.extend(incoming);
+
         let mut barrier = false;
         let mut text_claimed = false;
-
-        for (ordinal, mut event) in std::mem::take(&mut raw.events).into_iter().enumerate() {
+        let mut egui_run = false;
+        let mut events = queue.into_iter().enumerate();
+        while let Some((ordinal, event)) = events.next() {
             if matches!(event, egui::Event::WindowFocused(false)) {
-                // egui clears its keys_down on blur; no release will follow.
-                self.input_router.held_keys.clear();
+                self.input_router.retire_for_blur();
+                self.input_router.wheel = None;
             }
             if !is_actionable(&event) {
                 out.push((event, None));
                 continue;
             }
-            let owner = self.input_router.observe(self.host_input_owner());
             if hidden {
-                // Nothing is drawn, so nobody can act on it; retire edges only.
-                if let egui::Event::Key {
-                    key,
-                    physical_key,
-                    pressed: false,
-                    ..
-                } = &event
-                {
-                    self.input_router
-                        .held_keys
-                        .remove(&physical_key.unwrap_or(*key));
-                }
-                if let egui::Event::PointerButton {
-                    button,
-                    pressed: false,
-                    ..
-                } = &event
-                {
-                    self.input_router.held_buttons[*button as usize] = None;
-                }
+                // Nothing is drawn, so nobody can act on it. Edges still
+                // retire, and egui still folds releases of what it holds.
+                self.retire_event(event, &mut out);
                 continue;
             }
-            let stack_before = self.focus_stack.len();
-            let mut explicit = false;
-            let disposition = match &mut event {
-                egui::Event::Key {
-                    key,
-                    physical_key,
-                    pressed,
-                    repeat,
-                    modifiers: key_modifiers,
-                } => {
-                    let id = physical_key.unwrap_or(*key);
-                    if !*pressed {
-                        match self.input_router.held_keys.remove(&id) {
-                            // The press's owner still holds input: the release
-                            // follows the press's path.
-                            Some(held)
-                                if held.path != EdgePath::Claimed
-                                    && !barrier
-                                    && held.owner == owner =>
-                            {
-                                self.dispatch_owner_input(ctx, owner, event.clone(), os_focused)
-                            }
-                            Some(held) if held.path == EdgePath::Egui => {
-                                // egui folded the down; it must fold the up to
-                                // keep its key state balanced. No owner acts.
-                                out.push((event, Some(held.owner)));
-                                continue;
-                            }
-                            Some(_) => Disposition::Consumed,
-                            None if barrier => Disposition::Consumed,
-                            None => {
-                                self.dispatch_owner_input(ctx, owner, event.clone(), os_focused)
-                            }
-                        }
+            let owner = self.input_router.observe(self.host_input_owner());
+            let unpresented_overlay = matches!(owner.owner, InputOwner::Overlay(_))
+                && !self.input_router.presented(owner);
+            let hold_for_field = unpresented_overlay && is_field_input(&event) && !barrier;
+            if (egui_run && is_decisive(&event)) || hold_for_field {
+                // The run-splitting rule: this event, and the rest, wait for
+                // the next pass, held for the owner that holds input now.
+                let mut held = vec![event];
+                for (_, rest) in events.by_ref() {
+                    if is_actionable(&rest) {
+                        held.push(rest);
                     } else {
-                        let held = self.input_router.held_keys.get(&id).copied();
-                        *repeat = held.is_some();
-                        let key_modifiers = *key_modifiers;
-                        match held {
-                            Some(held) if held.owner != owner || barrier => {
-                                // The key's owner is gone: its repeats and
-                                // their text are retired with it.
-                                text_claimed = true;
-                                Disposition::Consumed
-                            }
-                            Some(_) => {
-                                // A repeat goes where its press went, with
-                                // the same binding and handler rules.
-                                let (d, _) = self.dispatch_key_press(
-                                    ctx,
-                                    owner,
-                                    event.clone(),
-                                    key_modifiers,
-                                    os_focused,
-                                );
-                                text_claimed = matches!(d, Disposition::Consumed);
-                                d
-                            }
-                            None if barrier => {
-                                self.input_router.held_keys.insert(
-                                    id,
-                                    HeldEdge {
-                                        owner,
-                                        path: EdgePath::Claimed,
-                                    },
-                                );
-                                text_claimed = true;
-                                Disposition::Consumed
-                            }
-                            None => {
-                                let (mut d, by_host) = self.dispatch_key_press(
-                                    ctx,
-                                    owner,
-                                    event.clone(),
-                                    key_modifiers,
-                                    os_focused,
-                                );
-                                if id == egui::Key::Tab && matches!(d, Disposition::Egui) {
-                                    // A focus trap's order is the one Tab order: the
-                                    // reconciler steps it at frame end, and egui's own
-                                    // traversal never sees this Tab once a trap owns.
-                                    self.input_router.trap_tab = Some(key_modifiers.shift);
-                                    if crate::app::input_owner::focus_trap_active(ctx) {
-                                        d = Disposition::Consumed;
-                                    }
-                                }
-                                explicit = by_host;
-                                let path = match d {
-                                    Disposition::Consumed if by_host => EdgePath::Claimed,
-                                    Disposition::Consumed => EdgePath::Owner,
-                                    Disposition::Egui => EdgePath::Egui,
-                                    Disposition::Terminal(_) => EdgePath::Terminal,
-                                };
-                                self.input_router
-                                    .held_keys
-                                    .insert(id, HeldEdge { owner, path });
-                                text_claimed = matches!(path, EdgePath::Claimed | EdgePath::Owner);
-                                d
-                            }
-                        }
+                        out.push((rest, None));
                     }
                 }
-                egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Ime(_)
-                    if barrier || text_claimed =>
+                log::info!(
+                    "input_router: delivery={delivery} split at ordinal={ordinal} held={} reason={}",
+                    held.len(),
+                    if hold_for_field { "owner_not_drawn" } else { "egui_run" }
+                );
+                self.input_router.held_input = held;
+                self.input_router.held_for = Some(owner);
+                ctx.request_repaint();
+                break;
+            }
+            if let egui::Event::PointerMoved(pos) | egui::Event::PointerButton { pos, .. } = &event
+            {
+                self.input_router.last_pointer = Some(*pos);
+            }
+            let mut explicit = false;
+            let routed = match event {
+                egui::Event::Key { .. } => self.route_key(
+                    ctx,
+                    owner,
+                    event,
+                    os_focused,
+                    barrier,
+                    &mut text_claimed,
+                    &mut explicit,
+                ),
+                egui::Event::Text(_) if barrier || text_claimed => None,
+                egui::Event::Paste(_)
+                | egui::Event::Copy
+                | egui::Event::Cut
+                | egui::Event::Ime(_)
+                | egui::Event::Text(_)
+                    if barrier =>
                 {
-                    Disposition::Consumed
+                    None
                 }
                 egui::Event::Text(_)
                 | egui::Event::Paste(_)
                 | egui::Event::Copy
                 | egui::Event::Cut
                 | egui::Event::Ime(_) => {
-                    if barrier {
-                        Disposition::Consumed
-                    } else {
-                        self.dispatch_owner_input(ctx, owner, event.clone(), os_focused)
-                    }
+                    let d = self.dispatch_owner_input(ctx, owner, event.clone(), os_focused);
+                    Some((d, event))
                 }
-                egui::Event::PointerButton {
-                    pos,
-                    button,
-                    pressed,
-                    modifiers: press_modifiers,
-                } => {
-                    if *pressed {
-                        let (d, owner) = if barrier {
-                            (Disposition::Consumed, owner)
-                        } else if matches!(owner.owner, InputOwner::Overlay(_))
-                            && !self.input_router.presented(owner)
-                        {
-                            // Before its first draw a modal cannot hit-test;
-                            // it declines the press rather than leak it.
-                            (Disposition::Consumed, owner)
-                        } else if matches!(owner.owner, InputOwner::Overlay(_)) {
-                            (Disposition::Egui, owner)
-                        } else {
-                            // The press's own modifiers, else the delivery's
-                            // (synthetic clicks carry none).
-                            let press_modifiers = if press_modifiers.is_none() {
-                                modifiers
-                            } else {
-                                *press_modifiers
-                            };
-                            self.route_pane_press(ctx, *pos, press_modifiers);
-                            let owner = self.input_router.observe(self.host_input_owner());
-                            (Disposition::Egui, owner)
-                        };
-                        let path = if matches!(d, Disposition::Egui) {
-                            EdgePath::Egui
-                        } else {
-                            EdgePath::Claimed
-                        };
-                        self.input_router.held_buttons[*button as usize] =
-                            Some(HeldEdge { owner, path });
-                        match d {
-                            Disposition::Egui => {
-                                out.push((event, Some(owner)));
-                                self.note_owner_change(
-                                    delivery,
-                                    ordinal,
-                                    "pointer_button",
-                                    owner,
-                                    false,
-                                    &mut barrier,
-                                );
-                                continue;
-                            }
-                            other => other,
-                        }
-                    } else {
-                        match self.input_router.held_buttons[*button as usize].take() {
-                            Some(held)
-                                if held.path == EdgePath::Egui
-                                    && held.owner == owner
-                                    && !barrier =>
-                            {
-                                Disposition::Egui
-                            }
-                            Some(held) if held.path == EdgePath::Egui => {
-                                // Its owner lost egui input: cancel, never click.
-                                let button = *button;
-                                out.push((egui::Event::PointerMoved(CANCEL_POS), None));
-                                out.push((
-                                    egui::Event::PointerButton {
-                                        pos: CANCEL_POS,
-                                        button,
-                                        pressed: false,
-                                        modifiers: egui::Modifiers::NONE,
-                                    },
-                                    None,
-                                ));
-                                continue;
-                            }
-                            Some(_) => Disposition::Consumed,
-                            None if barrier => Disposition::Consumed,
-                            None => Disposition::Egui,
-                        }
-                    }
+                egui::Event::PointerButton { .. } => {
+                    self.route_pointer_button(ctx, owner, event, modifiers, barrier, &mut out)
                 }
-                egui::Event::PointerGone => Disposition::Egui,
-                _ => {
-                    if barrier
-                        || (matches!(owner.owner, InputOwner::Overlay(_))
-                            && !self.input_router.presented(owner))
-                    {
-                        Disposition::Consumed
+                egui::Event::MouseWheel { phase, .. } => {
+                    self.route_wheel(owner, event, phase, barrier, unpresented_overlay)
+                }
+                egui::Event::PointerGone => Some((Disposition::Egui, event)),
+                other => {
+                    // Pointer motion, zoom, rotate, touch, accessibility.
+                    if barrier || unpresented_overlay {
+                        None
                     } else {
-                        Disposition::Egui
+                        Some((Disposition::Egui, other))
                     }
                 }
             };
-            match disposition {
-                Disposition::Consumed => {}
-                Disposition::Egui => out.push((event.clone(), Some(owner))),
-                Disposition::Terminal(pane) => {
-                    terminal_pane = Some(pane);
-                    terminal.push(event.clone());
+            let Some((disposition, routed_event)) = routed else {
+                self.note_owner_change(delivery, ordinal, "consumed", owner, false, &mut barrier);
+                continue;
+            };
+            // A pane's terminal under the pointer sees pointer input in its
+            // own ordered stream too (selection, mouse reporting, wheel).
+            // (Button edges were placed by `route_pointer_button`, which
+            // keeps a gesture in the terminal that took its press.)
+            if matches!(disposition, Disposition::Egui)
+                && !matches!(owner.owner, InputOwner::Overlay(_))
+                && !matches!(routed_event, egui::Event::PointerButton { .. })
+            {
+                if let Some(pane) = self.pointer_terminal(&routed_event) {
+                    self.input_router
+                        .push_terminal(pane, routed_event.clone(), modifiers);
                 }
             }
-            let _ = stack_before;
+            match disposition {
+                Disposition::Consumed => {}
+                Disposition::Egui => {
+                    if changes_egui_state(&routed_event) {
+                        egui_run = true;
+                    }
+                    // A press on a pane belongs to the pane it focused.
+                    let folded_for = if matches!(routed_event, egui::Event::PointerButton { .. }) {
+                        self.input_router.observe(self.host_input_owner())
+                    } else {
+                        owner
+                    };
+                    out.push((routed_event.clone(), Some(folded_for)));
+                }
+                Disposition::Terminal(pane) => {
+                    self.input_router
+                        .push_terminal(pane, routed_event.clone(), modifiers);
+                }
+            }
             self.note_owner_change(
                 delivery,
                 ordinal,
-                event_kind(&event),
+                event_kind(&routed_event),
                 owner,
                 explicit,
                 &mut barrier,
@@ -631,7 +646,6 @@ impl PlexiApp {
         // A gesture whose owner no longer holds egui input ends here,
         // off-screen, so it cannot drag or click behind the new owner.
         let mut cancels = Vec::new();
-        let mut cancelled = Vec::new();
         for (index, slot) in self.input_router.held_buttons.iter_mut().enumerate() {
             let Some(held) = slot else { continue };
             if held.path == EdgePath::Egui && held.owner != final_owner {
@@ -643,15 +657,12 @@ impl PlexiApp {
                     modifiers: egui::Modifiers::NONE,
                 });
                 // Its physical release is retired when it arrives.
-                held.path = EdgePath::Claimed;
-                cancelled.push(button);
+                held.path = EdgePath::Retired;
+                log::info!(
+                    "input_router: cancelled held pointer {button:?} delivery={delivery} — its owner lost input to {:?}",
+                    final_owner.owner
+                );
             }
-        }
-        for button in cancelled {
-            log::info!(
-                "input_router: cancelled held pointer {button:?} delivery={delivery} — its owner lost input to {:?}",
-                final_owner.owner
-            );
         }
         if !cancels.is_empty() {
             cancels.insert(0, egui::Event::PointerMoved(CANCEL_POS));
@@ -666,17 +677,372 @@ impl PlexiApp {
                 Some(_) => None,
             }))
             .collect();
-        if barrier {
-            raw.hovered_files.clear();
-            raw.dropped_files.clear();
+        if barrier || hidden || matches!(final_owner.owner, InputOwner::Overlay(_)) {
+            // A modal owns file drops: no pane under it may take the paths.
+            // The modal itself reads them through `ctx` when it accepts drops.
+            if barrier || hidden {
+                raw.hovered_files.clear();
+                raw.dropped_files.clear();
+            }
         }
-        if let Some(pane_id) = terminal_pane {
-            self.input_router.terminal_stream = Some(crate::render::terminal_pane::TerminalInput {
-                pane_id,
-                keyboard_events: terminal,
+    }
+
+    /// An event retired without an owner: a key release finishes its edge
+    /// record (egui folds it when it folded the press); a pointer release
+    /// that egui holds becomes an off-screen cancel; everything else drops.
+    fn retire_event(
+        &mut self,
+        event: egui::Event,
+        out: &mut Vec<(egui::Event, Option<OwnerInstance>)>,
+    ) {
+        match event {
+            egui::Event::Key {
+                key,
+                physical_key,
+                pressed: false,
+                ..
+            } => {
+                let held = self
+                    .input_router
+                    .held_keys
+                    .remove(&physical_key.unwrap_or(key));
+                if held.is_some_and(|held| held.path == EdgePath::Egui) {
+                    out.push((event, None));
+                }
+            }
+            egui::Event::PointerButton {
+                button,
+                pressed: false,
                 modifiers,
-            });
+                ..
+            } => {
+                let held = self.input_router.held_buttons[button as usize].take();
+                if held.is_some_and(|held| held.path == EdgePath::Egui) {
+                    out.push((egui::Event::PointerMoved(CANCEL_POS), None));
+                    out.push((
+                        egui::Event::PointerButton {
+                            pos: CANCEL_POS,
+                            button,
+                            pressed: false,
+                            modifiers,
+                        },
+                        None,
+                    ));
+                }
+            }
+            egui::Event::Key { .. } => {
+                // A press with nobody to act on it: its release is retired.
+                if let egui::Event::Key {
+                    key, physical_key, ..
+                } = &event
+                {
+                    let id = physical_key.unwrap_or(*key);
+                    let owner = self.input_router.observe(self.host_input_owner());
+                    self.input_router
+                        .held_keys
+                        .insert(id, HeldEdge::new(owner, EdgePath::Retired));
+                }
+            }
+            egui::Event::PointerButton { button, .. } => {
+                let owner = self.input_router.observe(self.host_input_owner());
+                self.input_router.held_buttons[button as usize] =
+                    Some(HeldEdge::new(owner, EdgePath::Retired));
+            }
+            _ => {}
         }
+    }
+
+    /// Route one key edge at its ordinal. Returns the disposition and the
+    /// event as routed (a close chord under a modal becomes its Escape).
+    #[allow(clippy::too_many_arguments)]
+    fn route_key(
+        &mut self,
+        ctx: &egui::Context,
+        owner: OwnerInstance,
+        event: egui::Event,
+        os_focused: bool,
+        barrier: bool,
+        text_claimed: &mut bool,
+        explicit: &mut bool,
+    ) -> Option<(Disposition, egui::Event)> {
+        let egui::Event::Key {
+            key,
+            physical_key,
+            pressed,
+            modifiers,
+            ..
+        } = event
+        else {
+            return None;
+        };
+        let id = physical_key.unwrap_or(key);
+        if !pressed {
+            *text_claimed = false;
+            return match self.input_router.held_keys.remove(&id) {
+                // The press's owner still holds input: the release follows
+                // the press's path.
+                Some(held)
+                    if matches!(
+                        held.path,
+                        EdgePath::Owner | EdgePath::Egui | EdgePath::Terminal
+                    ) && !barrier
+                        && held.owner == owner =>
+                {
+                    match held.path {
+                        EdgePath::Terminal => Some((Disposition::Terminal(held.terminal?), event)),
+                        _ => Some((
+                            self.dispatch_owner_input(ctx, owner, event.clone(), os_focused),
+                            event,
+                        )),
+                    }
+                }
+                // egui folded the down; it must fold the up to keep its key
+                // state balanced. No owner acts on it.
+                Some(held) if held.path == EdgePath::Egui => Some((Disposition::Egui, event)),
+                Some(_) => None,
+                None if barrier => None,
+                None => Some((
+                    self.dispatch_owner_input(ctx, owner, event.clone(), os_focused),
+                    event,
+                )),
+            };
+        }
+        let held = self
+            .input_router
+            .held_keys
+            .get(&id)
+            .copied()
+            .filter(|held| !held.blurred);
+        let mut event = event;
+        if let egui::Event::Key { repeat, .. } = &mut event {
+            // egui-winit reports every press as `repeat: false`; the router's
+            // own down set decides.
+            *repeat = held.is_some();
+        }
+        match held {
+            Some(held) if held.path == EdgePath::Retired || held.owner != owner || barrier => {
+                // Retired, or its owner is gone: repeats and their text go
+                // with the press.
+                if let Some(held) = self.input_router.held_keys.get_mut(&id) {
+                    held.path = EdgePath::Retired;
+                }
+                *text_claimed = true;
+                None
+            }
+            Some(_) => {
+                // A repeat goes where its press went, under the same binding
+                // and handler rules.
+                let (d, by_host, routed) =
+                    self.dispatch_key_press(ctx, owner, event, modifiers, os_focused);
+                *text_claimed = matches!(d, Disposition::Consumed)
+                    && (by_host || matches!(owner.owner, InputOwner::Overlay(_)));
+                Some((d, routed))
+            }
+            None if barrier => {
+                self.input_router
+                    .held_keys
+                    .insert(id, HeldEdge::new(owner, EdgePath::Retired));
+                *text_claimed = true;
+                None
+            }
+            None => {
+                let (mut d, by_host, routed) =
+                    self.dispatch_key_press(ctx, owner, event, modifiers, os_focused);
+                if id == egui::Key::Tab && matches!(d, Disposition::Egui) {
+                    // A focus trap's order is the one Tab order: the reconciler
+                    // steps it at frame end, and egui's own traversal never
+                    // sees this Tab once a trap owns input.
+                    self.input_router.trap_tab = Some(modifiers.shift);
+                    if crate::app::input_owner::focus_trap_active(ctx) {
+                        d = Disposition::Consumed;
+                    }
+                }
+                *explicit = by_host;
+                let path = match d {
+                    Disposition::Consumed if by_host => EdgePath::Claimed,
+                    Disposition::Consumed => EdgePath::Owner,
+                    Disposition::Egui => EdgePath::Egui,
+                    Disposition::Terminal(_) => EdgePath::Terminal,
+                };
+                let mut record = HeldEdge::new(owner, path);
+                if let Disposition::Terminal(pane) = d {
+                    record.terminal = Some(pane);
+                }
+                self.input_router.held_keys.insert(id, record);
+                // The text a consumed key types is consumed with it, except
+                // in a pane: a pane's plugin owns its key and its text alike.
+                *text_claimed = path == EdgePath::Claimed
+                    || (path == EdgePath::Owner && matches!(owner.owner, InputOwner::Overlay(_)));
+                match d {
+                    Disposition::Consumed => None,
+                    d => Some((d, routed)),
+                }
+            }
+        }
+    }
+
+    /// Route one pointer button edge at its ordinal.
+    fn route_pointer_button(
+        &mut self,
+        ctx: &egui::Context,
+        owner: OwnerInstance,
+        event: egui::Event,
+        modifiers: egui::Modifiers,
+        barrier: bool,
+        out: &mut Vec<(egui::Event, Option<OwnerInstance>)>,
+    ) -> Option<(Disposition, egui::Event)> {
+        let egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: press_modifiers,
+        } = event
+        else {
+            return None;
+        };
+        let slot = button as usize;
+        if pressed {
+            if barrier
+                || (matches!(owner.owner, InputOwner::Overlay(_))
+                    && !self.input_router.presented(owner))
+            {
+                // Behind the barrier, or a modal not yet drawn (it cannot
+                // hit-test): declined, and its release is retired with it.
+                self.input_router.held_buttons[slot] =
+                    Some(HeldEdge::new(owner, EdgePath::Retired));
+                return None;
+            }
+            let owner = if matches!(owner.owner, InputOwner::Overlay(_)) {
+                owner
+            } else {
+                // The press's own modifiers, else the delivery's (synthetic
+                // clicks carry none).
+                let press_modifiers = if press_modifiers.is_none() {
+                    modifiers
+                } else {
+                    press_modifiers
+                };
+                self.route_pane_press(ctx, pos, press_modifiers);
+                self.input_router.observe(self.host_input_owner())
+            };
+            let mut record = HeldEdge::new(owner, EdgePath::Egui);
+            if !matches!(owner.owner, InputOwner::Overlay(_)) {
+                record.terminal = self.pointer_terminal(&event);
+            }
+            self.input_router.held_buttons[slot] = Some(record);
+            if let Some(pane) = record.terminal {
+                self.input_router
+                    .push_terminal(pane, event.clone(), modifiers);
+            }
+            return Some((Disposition::Egui, event));
+        }
+        match self.input_router.held_buttons[slot].take() {
+            Some(held) if held.path == EdgePath::Egui && held.owner == owner && !barrier => {
+                if let Some(pane) = held.terminal {
+                    // The release ends the gesture in the terminal that took
+                    // the press, wherever the pointer is now.
+                    self.input_router
+                        .push_terminal(pane, event.clone(), modifiers);
+                }
+                Some((Disposition::Egui, event))
+            }
+            Some(held) if held.path == EdgePath::Egui => {
+                // Its owner lost egui input: cancel, never click. egui still
+                // gets a release, so no button stays down.
+                self.retire_event_release(button, out);
+                None
+            }
+            Some(_) => None,
+            None if barrier => None,
+            None => Some((Disposition::Egui, event)),
+        }
+    }
+
+    fn retire_event_release(
+        &mut self,
+        button: egui::PointerButton,
+        out: &mut Vec<(egui::Event, Option<OwnerInstance>)>,
+    ) {
+        out.push((egui::Event::PointerMoved(CANCEL_POS), None));
+        out.push((
+            egui::Event::PointerButton {
+                pos: CANCEL_POS,
+                button,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            None,
+        ));
+    }
+
+    /// Route a wheel event: a gesture (`Start` .. `End`) keeps the owner it
+    /// began under until it ends; a continuation whose owner is gone is
+    /// retired.
+    fn route_wheel(
+        &mut self,
+        owner: OwnerInstance,
+        event: egui::Event,
+        phase: egui::TouchPhase,
+        barrier: bool,
+        unpresented_overlay: bool,
+    ) -> Option<(Disposition, egui::Event)> {
+        let gesture = match phase {
+            egui::TouchPhase::Start => {
+                self.input_router.wheel = None;
+                let terminal = if matches!(owner.owner, InputOwner::Overlay(_)) {
+                    None
+                } else {
+                    self.pointer_terminal(&event)
+                };
+                self.input_router.wheel = Some(WheelGesture { owner, terminal });
+                self.input_router.wheel
+            }
+            egui::TouchPhase::Move => self.input_router.wheel,
+            egui::TouchPhase::End | egui::TouchPhase::Cancel => self.input_router.wheel.take(),
+        };
+        if barrier || unpresented_overlay {
+            if let Some(wheel) = self.input_router.wheel.as_mut() {
+                wheel.owner.epoch = u64::MAX; // retired with its owner
+            }
+            return None;
+        }
+        match gesture {
+            Some(wheel) if wheel.owner != owner => {
+                if let Some(active) = self.input_router.wheel.as_mut() {
+                    active.owner.epoch = u64::MAX;
+                }
+                None
+            }
+            _ => Some((Disposition::Egui, event)),
+        }
+    }
+
+    /// The terminal pane a pointer event is over, by the last presented
+    /// layout (or the terminal holding the primary button, during a drag).
+    fn pointer_terminal(&self, event: &egui::Event) -> Option<PaneId> {
+        if matches!(event, egui::Event::MouseWheel { .. }) {
+            if let Some(wheel) = self.input_router.wheel {
+                // A wheel gesture stays with the terminal it began over.
+                return wheel.terminal;
+            }
+        }
+        if matches!(event, egui::Event::PointerMoved(_)) {
+            if let Some(held) =
+                self.input_router.held_buttons[egui::PointerButton::Primary as usize]
+            {
+                if held.path == EdgePath::Egui {
+                    return held.terminal;
+                }
+            }
+        }
+        let pos = event_pos(event).or(self.input_router.last_pointer)?;
+        let window_id = self.windows[self.active_window].window_id;
+        self.input_router
+            .presented_panes
+            .iter()
+            .find(|p| p.window_id == window_id && p.hit_rect.contains(pos))
+            .map(|p| p.pane)
+            .filter(|pane| self.pane_is_terminal(*pane))
     }
 
     /// Trace and classify an owner change committed by the event at `ordinal`.
@@ -783,7 +1149,7 @@ impl PlexiApp {
         mut event: egui::Event,
         modifiers: egui::Modifiers,
         os_focused: bool,
-    ) -> (Disposition, bool) {
+    ) -> (Disposition, bool, egui::Event) {
         use crate::host::keys::{self, BindingPolicy};
         match owner.owner {
             InputOwner::Overlay(crate::app::input_owner::OverlaySurface::Layer(kind)) => {
@@ -821,31 +1187,32 @@ impl PlexiApp {
                     self.open_quick_note_modal();
                     self.sync_overlay_layers();
                     log::info!("quick_note: opened by preempting non-critical modal");
-                    return (Disposition::Consumed, true);
+                    return (Disposition::Consumed, true, event);
                 }
                 let mut one = PlexiInput::synthetic(vec![event.clone()], modifiers);
                 kind.owner().handle_key(self, ctx, &mut one);
                 self.sync_overlay_layers();
                 if one.is_empty() {
-                    return (Disposition::Consumed, false);
+                    return (Disposition::Consumed, false, event);
                 }
                 if crate::ui::dialog::presented_dialog_claims(ctx, &event) {
-                    return (Disposition::Egui, false);
+                    return (Disposition::Egui, false, event);
                 }
                 if let Some(action) = self.match_host_binding(&event, BindingPolicy::overlay()) {
                     self.run_host_action(action, ctx);
-                    return (Disposition::Consumed, true);
+                    return (Disposition::Consumed, true, event);
                 }
-                (Disposition::Egui, false)
+                (Disposition::Egui, false, event)
             }
             InputOwner::Overlay(_) => {
                 if let Some(action) = self.match_host_binding(&event, BindingPolicy::overlay()) {
                     self.run_host_action(action, ctx);
-                    return (Disposition::Consumed, true);
+                    return (Disposition::Consumed, true, event);
                 }
                 (
-                    self.dispatch_owner_input(ctx, owner, event, os_focused),
+                    self.dispatch_owner_input(ctx, owner, event.clone(), os_focused),
                     false,
+                    event,
                 )
             }
             InputOwner::Pane(_) | InputOwner::Nobody | InputOwner::OsUnfocused => {
@@ -856,14 +1223,14 @@ impl PlexiApp {
                     log::info!(
                         "input_router: Escape dismissed native popup before pane key dispatch"
                     );
-                    return (Disposition::Consumed, false);
+                    return (Disposition::Consumed, false, event);
                 }
                 let (_, keyboard_capture_active) = self.focused_view_capture_state();
                 if let Some(action) = self
                     .match_host_binding(&event, BindingPolicy::pane(false, keyboard_capture_active))
                 {
                     self.run_host_action(action, ctx);
-                    return (Disposition::Consumed, true);
+                    return (Disposition::Consumed, true, event);
                 }
                 // A focused text field owns every key it is given, Escape
                 // included (it leaves the field); read before dispatch, which
@@ -881,11 +1248,11 @@ impl PlexiApp {
                             BindingPolicy::pane(true, keyboard_capture_active),
                         ) {
                             self.run_host_action(action, ctx);
-                            return (Disposition::Consumed, true);
+                            return (Disposition::Consumed, true, event);
                         }
                     }
                 }
-                (disposition, false)
+                (disposition, false, event)
             }
         }
     }

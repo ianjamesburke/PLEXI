@@ -257,6 +257,12 @@ pub struct PlexiApp {
     /// Screenshot requests (`plexi host screenshot`) awaiting the viewport
     /// capture that `HostRequest::Screenshot` triggered (stint 0461).
     pub(crate) pending_screenshots: Vec<crate::app::screenshot::PendingScreenshot>,
+    /// Screenshots matched in `raw_input_hook`, written by `App::logic`.
+    pub(crate) completed_screenshots: Vec<(
+        crate::app::screenshot::PendingScreenshot,
+        std::sync::Arc<egui::ColorImage>,
+        f32,
+    )>,
     /// Banner buttons drawn last frame. `assistant permission list` publishes them.
     pub(crate) approval_buttons: Vec<ApprovalButton>,
     /// This frame's raw input includes socket-injected pane events.
@@ -352,6 +358,9 @@ pub struct PlexiApp {
     pub(crate) show_command_palette: bool,
     pub(crate) palette_query: String,
     pub(crate) palette_selected: usize,
+    /// The palette row selected when the palette last drew, so a selection
+    /// moved by the router since then scrolls into view.
+    pub(crate) palette_drawn_selected: Option<usize>,
     /// Stable identity of the selected palette result. The numeric index is
     /// only a rendering/navigation position and may change on live updates.
     pub(crate) palette_selected_key: Option<String>,
@@ -430,6 +439,9 @@ pub struct PlexiApp {
     pub(crate) notes_picker_preview_job: Option<crate::overlays::notes_picker::NotePreviewJob>,
     /// Last recoverable notes picker deletion.
     pub(crate) notes_picker_undo: Option<crate::overlays::notes_picker::DeletedNote>,
+    /// Trash and restore requests the notes picker's keys made in
+    /// `raw_input_hook`; their filesystem work runs in `App::logic`.
+    pub(crate) notes_picker_effects: Vec<crate::overlays::notes_picker::NotesPickerEffect>,
     pub(crate) notes_trash: std::sync::Arc<dyn crate::overlays::notes_picker::NotesTrash>,
     /// Notes picker Cmd+C / Cmd+X still finishing off the UI thread. Drained
     /// from `App::logic`.
@@ -1834,6 +1846,7 @@ impl PlexiApp {
                     prev_screen_rect: None,
                     drag_window_last_seen: None,
                     pending_screenshots: Vec::new(),
+                    completed_screenshots: Vec::new(),
                     approval_buttons: Vec::new(),
                     synthetic_input_frame: false,
                     #[cfg(test)]
@@ -1879,6 +1892,7 @@ impl PlexiApp {
                     show_command_palette: false,
                     palette_query: String::new(),
                     palette_selected: 0,
+                    palette_drawn_selected: None,
                     palette_selected_key: None,
                     palette_workspace_root: None,
                     palette_config_workspace_root: None,
@@ -1911,6 +1925,7 @@ impl PlexiApp {
                     notes_picker_preview: None,
                     notes_picker_preview_job: None,
                     notes_picker_undo: None,
+                    notes_picker_effects: Vec::new(),
                     notes_trash: crate::overlays::notes_picker::default_notes_trash(),
                     notes_clip_jobs: Vec::new(),
                     notes_picker_notice: None,
@@ -2133,6 +2148,7 @@ impl PlexiApp {
             prev_screen_rect: None,
             drag_window_last_seen: None,
             pending_screenshots: Vec::new(),
+            completed_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
             #[cfg(test)]
@@ -2178,6 +2194,7 @@ impl PlexiApp {
             show_command_palette: false,
             palette_query: String::new(),
             palette_selected: 0,
+            palette_drawn_selected: None,
             palette_selected_key: None,
             palette_workspace_root: None,
             palette_config_workspace_root: None,
@@ -2210,6 +2227,7 @@ impl PlexiApp {
             notes_picker_preview: None,
             notes_picker_preview_job: None,
             notes_picker_undo: None,
+            notes_picker_effects: Vec::new(),
             notes_trash: crate::overlays::notes_picker::default_notes_trash(),
             notes_clip_jobs: Vec::new(),
             notes_picker_notice: None,
@@ -3126,6 +3144,7 @@ impl PlexiApp {
             prev_screen_rect: None,
             drag_window_last_seen: None,
             pending_screenshots: Vec::new(),
+            completed_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
             #[cfg(test)]
@@ -3170,6 +3189,7 @@ impl PlexiApp {
             show_command_palette: false,
             palette_query: String::new(),
             palette_selected: 0,
+            palette_drawn_selected: None,
             palette_selected_key: None,
             palette_workspace_root: None,
             palette_config_workspace_root: None,
@@ -3207,6 +3227,7 @@ impl PlexiApp {
             notes_picker_preview: None,
             notes_picker_preview_job: None,
             notes_picker_undo: None,
+            notes_picker_effects: Vec::new(),
             notes_trash: crate::overlays::notes_picker::default_notes_trash(),
             notes_clip_jobs: Vec::new(),
             notes_picker_notice: None,
@@ -3779,6 +3800,7 @@ impl eframe::App for PlexiApp {
         if self.service_pending_notification_decision() {
             ctx.request_repaint();
         }
+        self.write_completed_screenshots();
         self.update_preamble(ctx);
         if self.service_quit(frame) {
             return;
@@ -3888,6 +3910,7 @@ impl eframe::App for PlexiApp {
         // Notes picker copy/cut results from their worker threads; then the
         // undo and notice toasts expire here, not in the draw, so Cmd+Z in a
         // reopened picker cannot undo a delete whose toast is already gone.
+        self.service_notes_picker_effects();
         self.drain_notes_clip_jobs(ctx);
         self.drain_notes_preview_read();
         self.expire_notes_toasts();
@@ -4254,7 +4277,7 @@ impl eframe::App for PlexiApp {
         // ordinal, so the terminal only sees what they left. Bare Escape
         // while zoomed goes to the pane with no layout change (stint 0898:
         // Cmd+Enter is the only zoom toggle).
-        let focused_terminal_input = self.input_router.terminal_stream.take();
+        let terminal_inputs = std::mem::take(&mut self.input_router.terminal_streams);
         // egui focus still belongs to last frame until `reconcile_egui_focus`
         // at the end of `ui`. Publish the owner whose input egui folded this
         // pass, so an editor that just lost the pane (or sits under an overlay
@@ -4269,7 +4292,7 @@ impl eframe::App for PlexiApp {
         // Every surface that paints an approval-capable button (sidebar
         // Needs-you row, approval banner) registers its bounds this frame.
         self.approval_buttons.clear();
-        self.render_panels(ui, focused_terminal_input);
+        self.render_panels(ui, terminal_inputs);
         self.observe_terminal_resize_commits();
         let before_host_overlays = self.input_router.observe(self.host_input_owner());
         self.draw_attention_queue_and_decision_overlay(ctx);

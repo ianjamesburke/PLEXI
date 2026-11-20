@@ -147,7 +147,7 @@ impl PlexiApp {
     pub(crate) fn render_conjoined_parent(
         &mut self,
         ui: &mut egui::Ui,
-        input: &mut Option<crate::render::terminal_pane::TerminalInput>,
+        inputs: &mut Vec<crate::render::terminal_pane::TerminalInput>,
     ) -> Option<egui::Rect> {
         let parent = self.conjoined_parent()?;
         let (window, tile) = self.find_pane_in_any_window(parent)?;
@@ -164,8 +164,10 @@ impl PlexiApp {
         self.input_router
             .set_conjoined_parent_hit(Some((parent, left, ui.layer_id())));
         let focused = self.visual_owner_pane() == Some(parent);
-        let pane_input = input
-            .take_if(|input| input.pane_id == parent)
+        let pane_input = inputs
+            .iter()
+            .position(|input| input.pane_id == parent)
+            .map(|index| inputs.swap_remove(index))
             .unwrap_or_default();
         let names = self.windows[window]
             .panes

@@ -314,39 +314,20 @@ impl<'a> TerminalView<'a> {
             return self;
         }
 
-        // Keyboard/text/copy/paste events come from the host-supplied
-        // ownership buffer (stint 0387), never from `ctx` — so egui's own
-        // render-time widget machinery can't swallow a key (e.g. Cmd+A) before
-        // the terminal sees it. Pointer + wheel events stay on the normal
-        // ctx path and are appended after the supplied keyboard events. When no
-        // input was supplied the terminal simply processes no keyboard this
+        // Input never comes from `ctx` — so egui's own render-time widget
+        // machinery can't swallow a key (e.g. Cmd+A) before the terminal sees
+        // it. When no input was supplied the terminal processes none this
         // frame (no silent ctx fallback).
         let supplied = self.supplied_input.take();
         let modifiers = supplied
             .as_ref()
             .map(|s| s.modifiers)
             .unwrap_or_else(|| layout.ctx.input(|i| i.modifiers));
+        // Every event, keyboard and pointer, comes from the host-supplied
+        // ordered stream: the host's input router assigns this terminal its
+        // own events in delivery order, and the shared context's events
+        // belong to whichever owner holds egui input this pass.
         let mut events = supplied.map(|s| s.events).unwrap_or_default();
-        // Keyboard input arrives only through the supplied stream: the shared
-        // context's keyboard events belong to whichever owner holds egui input
-        // this pass, which may not be this terminal.
-        events.extend(layout.ctx.input(|i| {
-            i.events
-                .iter()
-                .filter(|event| {
-                    !matches!(
-                        event,
-                        egui::Event::Text(_)
-                            | egui::Event::Key { .. }
-                            | egui::Event::Copy
-                            | egui::Event::Cut
-                            | egui::Event::Paste(_)
-                            | egui::Event::Ime(_)
-                    )
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        }));
         // An unfocused terminal (here for the pointer) is given no keyboard
         // input, so its encoder must never record a hold from it.
         if !has_focus {
