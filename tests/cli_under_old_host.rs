@@ -83,9 +83,8 @@ fn assert_profile_unchanged(
     );
 }
 
-/// A plugin checkout outside the profile, for `plugin init --adopt`.
-fn plugin_checkout(home: &Path) -> PathBuf {
-    let dir = home.join("checkout");
+/// A plugin checkout at `dir`, for `plugin init --adopt`.
+fn plugin_checkout(dir: PathBuf) -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("manifest.toml"),
@@ -121,10 +120,11 @@ fn stderr(output: &Output) -> String {
 fn cli_under_an_old_host_runs_without_migrating_and_refuses_only_profile_commands() {
     let home = tempfile::tempdir().unwrap();
     let profile = old_build_profile(home.path());
+    let installed = plugin_checkout(profile.join("plugins/installed"));
     let host = hold_host_lock(&profile);
 
     let before = snapshot(&profile);
-    let checkout = plugin_checkout(home.path());
+    let checkout = plugin_checkout(home.path().join("checkout"));
 
     // Each allowed command reaches its real work and leaves the profile alone.
     let output = run(home.path(), &["config", "list"], &[]);
@@ -142,7 +142,7 @@ fn cli_under_an_old_host_runs_without_migrating_and_refuses_only_profile_command
     let output = run(home.path(), &["pane", "list"], &[]);
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     assert!(
-        stderr(&output).contains("no Plexi host to talk to"),
+        stderr(&output).contains("could not connect to PLEXI_SOCKET"),
         "{}",
         stderr(&output)
     );
@@ -154,13 +154,36 @@ fn cli_under_an_old_host_runs_without_migrating_and_refuses_only_profile_command
     assert!(checkout.join("plexi.scaffold.toml").is_file());
     assert_profile_unchanged(&before, &profile, &adopt);
 
+    // Completing `cli:` and `mcp:` names never reads the profile's plugins.
+    for prefix in ["cli:", "mcp:"] {
+        let args = ["_complete-open", prefix];
+        let output = run(home.path(), &args, &[]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{prefix}: {}",
+            stderr(&output)
+        );
+        assert_profile_unchanged(&before, &profile, &args);
+    }
+
     let log = std::fs::read_to_string(profile.join("plexi.log")).unwrap();
     assert!(
         log.contains("deferred to the next host start") && log.contains("pid=Some(4312)"),
         "the deferral was not logged:\n{log}"
     );
 
-    for args in [&["plugin", "list"][..], &["view", "list"], &["doctor"]] {
+    let adopt_installed = ["plugin", "init", "--adopt", installed.to_str().unwrap()];
+    for args in [
+        &["plugin", "list"][..],
+        &["view", "list"],
+        &["doctor"],
+        // These list installed plugin IDs from the profile's plugins/.
+        &["_complete-open", "view:"],
+        &["_complete-open", ""],
+        // Adopting an installed plugin writes into the profile.
+        &adopt_installed,
+    ] {
         let output = run(home.path(), args, &[]);
         let message = stderr(&output);
         assert_eq!(output.status.code(), Some(1), "{args:?}: {message}");
@@ -168,7 +191,8 @@ fn cli_under_an_old_host_runs_without_migrating_and_refuses_only_profile_command
             REFUSAL,
             "pid 4312",
             "old-build",
-            &format!("host restart --profile {PROFILE}"),
+            // The hint addresses this profile's host (stint 1655).
+            &format!("plexi --profile {PROFILE} host restart"),
         ] {
             assert!(
                 message.contains(needle),

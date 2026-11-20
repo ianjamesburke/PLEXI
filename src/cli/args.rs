@@ -750,13 +750,34 @@ pub enum Commands {
     CompleteRun,
 }
 
+/// Whether `plugin init --adopt <path>` would write inside `profile_dir`, as
+/// it does for an installed plugin. A path that does not resolve cannot be
+/// adopted, so it writes nowhere.
+fn adopt_target_in(path: &str, profile_dir: &std::path::Path) -> bool {
+    match (
+        std::fs::canonicalize(path),
+        std::fs::canonicalize(profile_dir),
+    ) {
+        (Ok(target), Ok(profile)) => target.starts_with(profile),
+        _ => false,
+    }
+}
+
+/// Whether `_complete-open <prefix>` lists installed plugin IDs, which reads
+/// the profile's `plugins/`. Only the `cli:` and `mcp:` branches of
+/// `complete_open_cli` skip them.
+fn completes_plugin_ids(prefix: &str) -> bool {
+    !matches!(prefix, "cli:" | "cli" | "mcp:" | "mcp")
+}
+
 impl Commands {
     /// Whether the command reads or writes the profile's plugin tree or SDK
     /// in this process, so it cannot run while the profile still belongs to
     /// a live host of another build (stint 1609). Everything else talks to
     /// the running host or touches state migration never changes. The match
-    /// is exhaustive so every new command is classified.
-    pub fn needs_current_profile(&self) -> bool {
+    /// is exhaustive so every new command is classified. `profile_dir` is
+    /// the profile the command addresses.
+    pub fn needs_current_profile(&self, profile_dir: &std::path::Path) -> bool {
         match self {
             Self::Plugin { cmd } => match cmd {
                 PluginCmd::Install { .. }
@@ -769,9 +790,11 @@ impl Commands {
                 | PluginCmd::State { .. }
                 | PluginCmd::Freeze { .. }
                 | PluginCmd::Update { .. } => true,
-                // `--adopt` writes scaffold metadata into the given checkout,
-                // never the profile.
-                PluginCmd::Init { adopt, .. } => !adopt,
+                // `--adopt` writes scaffold metadata into the checkout it
+                // names, which may be an installed plugin in the profile.
+                PluginCmd::Init { adopt, name, .. } => {
+                    !adopt || adopt_target_in(name.as_deref().unwrap_or("."), profile_dir)
+                }
                 PluginCmd::Validate { .. }
                 | PluginCmd::Inspect { .. }
                 | PluginCmd::Package { .. }
@@ -818,8 +841,8 @@ impl Commands {
             | Self::Uninstall { .. }
             | Self::Host { .. }
             | Self::Descriptor { .. }
-            | Self::CompleteOpen { .. }
             | Self::CompleteRun => false,
+            Self::CompleteOpen { prefix } => completes_plugin_ids(prefix),
         }
     }
 }

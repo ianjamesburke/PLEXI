@@ -298,20 +298,25 @@ fn main() -> eframe::Result {
                     eprintln!("{refusal}");
                     std::process::exit(app::host_instance::ALREADY_RUNNING_EXIT);
                 }
-                Err(failure) => app::startup_error::exit_with_startup_error(
-                    app::startup_error::StartupErrorView::host_lock_failure(
-                        &failure.to_string(),
-                        &crate::platform::logging::log_path(),
-                    ),
-                    app::startup_error::shows_window(true, boot_state.is_background()),
-                ),
+                Err(failure) => {
+                    // Not across the error window, which waits for dismissal.
+                    drop(profile_init_lock);
+                    app::startup_error::exit_with_startup_error(
+                        app::startup_error::StartupErrorView::host_lock_failure(
+                            &failure.to_string(),
+                            &crate::platform::logging::log_path(),
+                        ),
+                        app::startup_error::shows_window(true, boot_state.is_background()),
+                    )
+                }
             };
             match crate::config::initialize_claimed_profile(&profile_init_lock) {
                 Ok(true) => seed_initialized_profile(is_plugin_prune_command),
                 Ok(false) => {}
-                Err(error) => app::startup_error::report_profile_init_failure(
+                Err(error) => app::startup_error::report_claimed_profile_init_failure(
                     &error,
                     app::startup_error::shows_window(true, boot_state.is_background()),
+                    (profile_init_lock, instance),
                 ),
             }
             drop(profile_init_lock);
@@ -452,7 +457,7 @@ fn main() -> eframe::Result {
                 // SDK cannot run until that host restarts.
                 if let Some(host) = foreign_host
                     .as_ref()
-                    .filter(|_| cmd.needs_current_profile())
+                    .filter(|_| cmd.needs_current_profile(&config::config_dir()))
                 {
                     log::info!(
                         "profile: refused a command that needs the migrated profile; {host}"
