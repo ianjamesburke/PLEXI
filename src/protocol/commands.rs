@@ -137,6 +137,23 @@ pub fn removed_host_request(kind: &str) -> Option<&'static str> {
     }
 }
 
+/// The host-established submitter of a `spawn_pane` (stint 1632). Only the
+/// host constructs it; no wire field selects or omits it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum SpawnSource {
+    /// A host code path. A `from_pane_id` it sets names a pane the host
+    /// already verified.
+    InProcess,
+    /// A command-socket peer and the ancestor pids the kernel reported.
+    SocketPeer(Vec<u32>),
+    /// A command-socket request whose peer identity was not captured.
+    #[default]
+    Unverified,
+    /// A file in the profile's spawn queue: an outside caller with no
+    /// verifiable identity.
+    SpawnQueue,
+}
+
 /// App-to-host requests — go to `route_command`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -556,12 +573,11 @@ pub enum HostRequest {
         /// (`plexi pane new --result-schema <json-or-path>`, stint 0666).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         result_schema: Option<serde_json::Value>,
-        /// Host-stamped ancestor pids of the socket peer. The client cannot
-        /// set this: `handle_socket_line` overwrites it from the kernel
-        /// credential captured at accept. `None` means the request did not
-        /// arrive on the command socket (spawn queue, in-process).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        peer_ancestry: Option<Vec<u32>>,
+        /// Who submitted this launch, stamped by the host and never read from
+        /// the wire. A deserialized request is `Unverified` until the socket
+        /// handler stamps the peer it captured (stint 1632).
+        #[serde(skip)]
+        source: SpawnSource,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`

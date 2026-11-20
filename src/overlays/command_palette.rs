@@ -2691,7 +2691,7 @@ impl PlexiApp {
                         boot_timeout_secs: boot_timeout,
                         worktree,
                         result_schema: parsed_result_schema,
-                        peer_ancestry: None,
+                        source: crate::protocol::SpawnSource::InProcess,
                     };
                     self.handle_pane_ipc_request(req);
                     let mut created_pane_id = self.user_command_focused_pane(command);
@@ -3016,7 +3016,7 @@ impl PlexiApp {
                     boot_timeout_secs: None,
                     worktree: None,
                     result_schema: None,
-                    peer_ancestry: None,
+                    source: crate::protocol::SpawnSource::InProcess,
                 };
                 self.handle_pane_ipc_request(req);
                 if let Ok(content) = std::fs::read_to_string(&resp_path) {

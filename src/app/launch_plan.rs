@@ -29,6 +29,7 @@ use crate::broker::PermissionPosture;
 use crate::host::pane::PaneLaunchAuthority;
 use crate::host::worktree::ManagedWorktree;
 use crate::pane_ops::create::{AgentOrigin, AgentWorkerAuthority, SubcontextTarget};
+use crate::protocol::SpawnSource;
 use crate::spatial::tiling::PaneId;
 
 /// A window as the caller selected it, at its tree generation then.
@@ -320,30 +321,35 @@ impl PlexiApp {
     ) -> Result<TerminalLaunchPlan, String> {
         let layout = spec.layout.as_deref().unwrap_or("split_h");
         let active = self.active_window;
-        let ancestry = spec
-            .peer_ancestry
-            .as_deref()
-            .filter(|pids| !pids.is_empty());
-        let peer_pane =
-            ancestry.and_then(|pids| self.resolve_socket_peer_pane(pids).map(|(pid, _, _)| pid));
-        let requester_is_pane = peer_pane.is_some();
-        let requester_is_agent = peer_pane.is_some_and(|pid| !self.is_human_owned_pane(pid))
+        // Provenance, the posture ceiling and secret eligibility come from the
+        // host-stamped source. A wire `from_pane_id` is a placement origin; it
+        // names the caller only for an in-process request (stint 1632).
+        let (caller_pane, requester_is_pane, secrets_eligible) = match &spec.source {
+            SpawnSource::Unverified => {
+                return Err(refused(
+                    "spawn_pane arrived without a verified socket peer identity".into(),
+                ))
+            }
+            SpawnSource::InProcess => (spec.from_pane_id, false, true),
+            SpawnSource::SocketPeer(pids) => {
+                let peer = self.resolve_socket_peer_pane(pids).map(|(pid, _, _)| pid);
+                (peer, peer.is_some(), peer.is_none())
+            }
+            // Anyone who can write the profile's queue directory: no identity,
+            // so no caller pane and no folder secrets.
+            SpawnSource::SpawnQueue => (None, false, false),
+        };
+        let spawned_by = self.derive_spawned_by_for_parent(caller_pane);
+        let requester_is_agent = caller_pane.is_some_and(|pid| !self.is_human_owned_pane(pid))
             || spec
                 .from_pane_id
                 .is_some_and(|pid| !self.is_human_owned_pane(pid));
         let agent_pane = spec.agent.is_some() || requester_is_agent;
         if requester_is_pane {
             log::info!(
-                "pane_ipc: spawn_pane requester is a pane (peer_pane={peer_pane:?}, is_agent_pane={agent_pane}); withholding folder secrets"
+                "pane_ipc: spawn_pane requester is a pane (peer_pane={caller_pane:?}, is_agent_pane={agent_pane}); withholding folder secrets"
             );
         }
-        // Provenance and the posture ceiling come from the verified socket
-        // peer. A wire `from_pane_id` is a placement origin only; it names
-        // the caller just for in-process requests that have no peer.
-        let (caller_pane, spawned_by) = match ancestry {
-            Some(_) => (peer_pane, self.derive_spawned_by_for_parent(peer_pane)),
-            None => self.resolve_unspoofable_spawner(spec.from_pane_id, None),
-        };
         let inherited_posture = caller_pane.and_then(|id| self.pane_permission_posture(id));
 
         let vertical = matches!(layout, "split_h" | "split_right" | "split_left");
@@ -390,7 +396,8 @@ impl PlexiApp {
                         grid_y: self.windows[win].grid_y,
                         restore_active: spec.no_focus.then_some(self.windows[active].window_id),
                     },
-                    Some(self.router.active().root.clone()),
+                    // The origin window's context, not whichever is active.
+                    Some(context_root(win).unwrap_or_else(home)),
                 )
             } else if layout == "tab" {
                 let win = origin.map_or(active, |(win, _)| win);
@@ -441,7 +448,7 @@ impl PlexiApp {
                         TerminalDestination::SeedEmptyRoot {
                             at: self.window_membership(active),
                         },
-                        Some(self.router.active().root.clone()),
+                        Some(context_root(active).unwrap_or_else(home)),
                     ),
                 }
             };
@@ -452,7 +459,7 @@ impl PlexiApp {
             .map(|branch| (branch.clone(), self.resolve_worktree_anchor(spec)));
         // Folder secrets belong to one directory decided now: the bound cwd or
         // the checkout prepared for this plan. No directory, no secrets.
-        let inject_folder_secrets = !requester_is_pane
+        let inject_folder_secrets = secrets_eligible
             && (cwd.is_some() || worktree.is_some())
             && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets);
         log::info!(
@@ -664,12 +671,14 @@ impl PlexiApp {
     fn agent_call_authority(
         &self,
         parent: Option<PaneId>,
+        origin_context_id: u64,
         role: &str,
         handoff: bool,
         lookup_root: &std::path::Path,
         task_text: &str,
     ) -> Result<AgentCallAuthority, String> {
-        let grant_root = self.check_agent_tool_permission(parent, role, handoff)?;
+        let grant_root =
+            self.check_agent_tool_permission(parent, origin_context_id, role, handoff)?;
         let workspace = crate::app::registry::resolve_agent_lookup_workspace_root(lookup_root);
         let (def, _) = crate::cli::agent::resolve_agent_definition_in(
             role,
@@ -720,7 +729,19 @@ impl PlexiApp {
         if request.handoff && parent.is_none() {
             return Err("handoff requires a live caller pane".into());
         }
-        let grant_root = self.check_agent_tool_permission(parent, request.role, request.handoff)?;
+        // The caller's own window, or for an outside caller the window the
+        // user had active. Bound before the first permission check; nothing
+        // after admission re-derives it from focus.
+        let origin_win = parent
+            .and_then(|id| self.find_pane_in_any_window(id))
+            .map_or(self.active_window, |(win, _)| win);
+        let origin = self.window_membership(origin_win);
+        let grant_root = self.check_agent_tool_permission(
+            parent,
+            origin.context_id,
+            request.role,
+            request.handoff,
+        )?;
         let lookup_root = match (parent, request.cwd) {
             (None, Some(cwd)) => PathBuf::from(cwd),
             _ => grant_root,
@@ -741,6 +762,7 @@ impl PlexiApp {
         };
         let authority = self.agent_call_authority(
             parent,
+            origin.context_id,
             request.role,
             request.handoff,
             &lookup_root,
@@ -761,12 +783,6 @@ impl PlexiApp {
         } else {
             parent
         };
-        // The caller's own window, or for an outside caller the window the
-        // user had active: never re-derived from focus at commit.
-        let origin_win = parent
-            .and_then(|id| self.find_pane_in_any_window(id))
-            .map_or(self.active_window, |(win, _)| win);
-        let origin = self.window_membership(origin_win);
         let subcontext = match child_parent {
             Some(id) => {
                 let name = format!("agent-tools-{id}");
@@ -831,6 +847,7 @@ impl PlexiApp {
         }
         let now = self.agent_call_authority(
             parent,
+            plan.origin.context_id,
             &plan.requested_role,
             plan.handoff,
             &plan.lookup_root,
@@ -1012,7 +1029,7 @@ mod tests {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         })
         .expect("valid terminal spec")
     }
@@ -1547,10 +1564,148 @@ mod tests {
             .unwrap()
             .agent_role = Some("lead".into());
         let mut outside = spec(&h, "split_h", Some(agent), None);
-        outside.peer_ancestry = Some(vec![u32::MAX]);
+        outside.source = SpawnSource::SocketPeer(vec![u32::MAX]);
         let plan = h.app.admit_terminal_launch(&outside).unwrap();
         assert_eq!(plan.authority.caller_pane, None);
         assert_eq!(plan.authority.spawned_by, "human");
+    }
+
+    /// Finding 4: a launch's source is stamped by the socket handler. A
+    /// missing peer capture refuses before anything is built, whatever the
+    /// wire names as origin, and no wire field selects or forges a source. A
+    /// verified pane, a captured outside peer and a genuine in-process call
+    /// each get their own provenance.
+    #[test]
+    fn launch_plan_socket_source_is_host_stamped() {
+        let mut h = HostHarness::new();
+        let agent = h.add_focused_terminal();
+        let term = h.app.windows[0]
+            .panes
+            .get_mut(&agent)
+            .and_then(|p| p.as_terminal_mut())
+            .unwrap();
+        term.agent_role = Some("lead".into());
+        term.agent_permission_posture = Some(posture(&["tool.secret"]));
+        let agent_pid = term.backend.child_pid();
+        let wake = std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+        let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::channel(wake, "launch-plan-test");
+        let response = h.workspace_root().join("unverified-spawn.json");
+        let line = |extra: &str| {
+            format!(
+                r#"{{"type":"spawn_pane","type_id":"terminal","layout":"split_h","from_pane_id":{agent},"response_file":"{}"{extra}}}"#,
+                response.display()
+            )
+        };
+        let profile = h.profile_dir().to_path_buf();
+        let stamp = |ancestry: Option<&[u32]>, extra: &str| {
+            super::super::handle_socket_line_in(
+                &profile,
+                &line(extra),
+                &mailbox,
+                ancestry,
+                &mut Vec::new(),
+            );
+            rx.try_recv().ok()
+        };
+
+        for forged in [r#","source":"in_process""#, r#","peer_ancestry":[1]"#] {
+            assert!(
+                stamp(None, forged).is_none(),
+                "wire field {forged} is rejected"
+            );
+        }
+        let unverified = stamp(None, "").expect("queued");
+        let stamped_unverified = matches!(
+            &unverified,
+            HostRequest::SpawnPane {
+                source: SpawnSource::Unverified,
+                ..
+            }
+        );
+        let before = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
+        h.app.handle_pane_ipc_request(unverified);
+        let reply: Value =
+            serde_json::from_str(&std::fs::read_to_string(&response).unwrap()).unwrap();
+        assert!(
+            reply["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("without a verified socket peer")),
+            "{reply}"
+        );
+        let after = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
+        assert_eq!(before, after, "a refused launch builds nothing");
+        assert!(
+            stamped_unverified,
+            "an uncaptured peer is stamped Unverified"
+        );
+
+        let admit = |h: &HostHarness, request: HostRequest| {
+            h.app
+                .admit_terminal_launch(&PaneLaunchSpec::from_spawn_pane(&request).unwrap())
+                .unwrap()
+                .authority
+        };
+        let verified = admit(&h, stamp(Some(&[agent_pid]), "").unwrap());
+        assert_eq!(verified.caller_pane, Some(agent));
+        assert_eq!(verified.spawned_by, "agent:lead");
+        assert_eq!(verified.inherited_posture, Some(posture(&["tool.secret"])));
+        let outside = admit(&h, stamp(Some(&[u32::MAX]), "").unwrap());
+        assert_eq!(
+            (outside.caller_pane, outside.spawned_by.as_str()),
+            (None, "human")
+        );
+        assert_eq!(outside.inherited_posture, None);
+        let internal = h
+            .app
+            .admit_terminal_launch(&spec(&h, "split_h", Some(agent), None))
+            .unwrap()
+            .authority;
+        assert_eq!(internal.caller_pane, Some(agent));
+        assert_eq!(internal.spawned_by, "agent:lead");
+    }
+
+    /// Finding 5: an outside caller's call is admitted under its origin
+    /// window's context. Focus moving to a context with a different root does
+    /// not change its grant or its placement; a change to the origin's own
+    /// authority root refuses.
+    #[test]
+    fn launch_plan_outside_agent_keeps_its_origin_across_focus() {
+        let mut h = HostHarness::new();
+        let first = views(&mut h, 1);
+        lay_out(&mut h, 0, first);
+        let root_a = h.workspace_root();
+        h.app.set_context_root(root_a.clone(), None);
+        write_role(&root_a, "");
+        let ctx_a = h.app.windows[0].context_id;
+        let second = push_window(&mut h, ctx_a, 1);
+        let second_panes = views(&mut h, 1);
+        lay_out(&mut h, second, second_panes);
+        let root_b = tempfile::tempdir().unwrap();
+        let ctx_b = push_context(&mut h, "b", None);
+        let pos_b = h.app.router.position(|c| c.context_id == ctx_b).unwrap();
+        h.app.router.get_mut(pos_b).root = root_b.path().to_path_buf();
+        let win_b = push_window(&mut h, ctx_b, 0);
+        let b_panes = views(&mut h, 1);
+        lay_out(&mut h, win_b, b_panes);
+
+        h.app.active_window = second;
+        let plan = admit_tester_call(&h, &root_a);
+        let refused_plan = admit_tester_call(&h, &root_a);
+        h.app.active_window = win_b;
+        let pane = h
+            .app
+            .apply_launch(LaunchPlan::Agent(&plan), None)
+            .expect("focus elsewhere does not change the admitted origin");
+        assert_eq!(window_of(&h, pane), second);
+
+        let moved = tempfile::tempdir().unwrap();
+        let pos_a = h.app.router.position(|c| c.context_id == ctx_a).unwrap();
+        h.app.router.get_mut(pos_a).root = moved.path().to_path_buf();
+        let error = h
+            .app
+            .apply_launch(LaunchPlan::Agent(&refused_plan), None)
+            .expect_err("the origin's own root changed");
+        assert!(error.contains("changed after admission"), "{error}");
     }
 
     /// Finding 1: the creation primitives construct the pane with its

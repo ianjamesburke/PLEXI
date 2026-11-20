@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::protocol::HostRequest;
+use crate::protocol::{HostRequest, SpawnSource};
 
 /// How long a `pane new --agent` spawn waits for the agent's first idle
 /// self-report when the caller does not say. Generous on purpose: a cold agent
@@ -42,8 +42,8 @@ pub(crate) struct PaneLaunchSpec {
     pub(crate) agent: Option<AgentBootSpec>,
     pub(crate) worktree: Option<String>,
     pub(crate) result_schema: Option<serde_json::Value>,
-    /// Host-stamped. See `HostRequest::SpawnPane::peer_ancestry`.
-    pub(crate) peer_ancestry: Option<Vec<u32>>,
+    /// Host-stamped. See `HostRequest::SpawnPane::source`.
+    pub(crate) source: SpawnSource,
 }
 
 impl PaneLaunchSpec {
@@ -68,7 +68,7 @@ impl PaneLaunchSpec {
             agent: None,
             worktree: None,
             result_schema: None,
-            peer_ancestry: None,
+            source: SpawnSource::InProcess,
         })
     }
 
@@ -91,7 +91,7 @@ impl PaneLaunchSpec {
             boot_timeout_secs,
             worktree,
             result_schema,
-            peer_ancestry,
+            source,
             ..
         } = request
         else {
@@ -196,7 +196,7 @@ impl PaneLaunchSpec {
             agent,
             worktree,
             result_schema,
-            peer_ancestry: peer_ancestry.clone(),
+            source: source.clone(),
         })
     }
 
@@ -246,7 +246,7 @@ impl PaneLaunchSpec {
             boot_timeout_secs: self.agent.as_ref().map(|agent| agent.timeout.as_secs_f64()),
             worktree: self.worktree.clone(),
             result_schema: self.result_schema.clone(),
-            peer_ancestry: self.peer_ancestry.clone(),
+            source: self.source.clone(),
         }
     }
 
@@ -284,7 +284,7 @@ mod tests {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         }
     }
 

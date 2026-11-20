@@ -888,10 +888,18 @@ pub(crate) fn handle_socket_line_in(
                     *p = peer_ancestry.unwrap_or(&[]).to_vec();
                     log::info!("pane_ipc: stamped peer ancestry ({} pid(s))", p.len());
                 }
-                crate::protocol::HostRequest::SpawnPane {
-                    peer_ancestry: p, ..
+                crate::protocol::HostRequest::SpawnPane { source, .. } => {
+                    // An uncaptured peer stays `Unverified`: it can never pass
+                    // for an in-process caller (stint 1632).
+                    *source = match peer_ancestry {
+                        Some(pids) if !pids.is_empty() => {
+                            crate::protocol::SpawnSource::SocketPeer(pids.to_vec())
+                        }
+                        _ => crate::protocol::SpawnSource::Unverified,
+                    };
+                    log::info!("pane_ipc: stamped spawn_pane source {source:?}");
                 }
-                | crate::protocol::HostRequest::SetAgentState {
+                crate::protocol::HostRequest::SetAgentState {
                     peer_ancestry: p, ..
                 }
                 | crate::protocol::HostRequest::AgentDone {

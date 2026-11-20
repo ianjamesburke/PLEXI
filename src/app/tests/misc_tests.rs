@@ -964,7 +964,7 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     app.drain_pane_cmd_channel();
 
@@ -1051,7 +1051,7 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     app.drain_pane_cmd_channel();
 
@@ -1145,7 +1145,7 @@ fn spawn_pane_seeds_root_in_empty_window() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     app.drain_pane_cmd_channel();
 
@@ -1516,7 +1516,7 @@ fn external_spawn_uses_supplied_cwd_for_plugin_workspace() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let browser = h.app.windows[0]
@@ -1606,7 +1606,7 @@ fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let browser = h.app.windows[0]
@@ -1791,7 +1791,7 @@ fn file_browser_explicit_directory_artifact_keeps_requested_root() {
                     boot_timeout_secs: None,
                     worktree: None,
                     result_schema: None,
-                    peer_ancestry: None,
+                    source: crate::protocol::SpawnSource::InProcess,
                 });
                 h.hidden_frame();
             }

@@ -56,27 +56,35 @@ impl PlexiApp {
         Ok(verified.pane_id)
     }
 
+    /// The caller's `can_call`/`can_handoff` grant, read under the admitted
+    /// origin context's root. The origin is explicit: an outside caller is
+    /// never re-resolved against whatever window is active now (stint 1632).
     pub(crate) fn check_agent_tool_permission(
         &self,
         caller: Option<u64>,
+        origin_context_id: u64,
         role: &str,
         handoff: bool,
     ) -> Result<std::path::PathBuf, String> {
-        let win = match caller {
-            Some(id) => self
+        if let Some(id) = caller {
+            let (win, _) = self
                 .find_pane_in_any_window(id)
-                .map(|(w, _)| w)
-                .ok_or_else(|| format!("caller pane {id} not found"))?,
-            None => self.active_window,
-        };
+                .ok_or_else(|| format!("caller pane {id} not found"))?;
+            let now = self.windows[win].context_id;
+            if now != origin_context_id {
+                return Err(format!(
+                    "caller pane {id} is in context {now}, not its admitted context {origin_context_id}"
+                ));
+            }
+        }
         let root = self
             .router
             .iter()
-            .find(|c| c.context_id == self.windows[win].context_id)
+            .find(|c| c.context_id == origin_context_id)
             .map(|c| c.root.clone())
-            .unwrap_or_else(|| self.windows[win].path.clone());
+            .ok_or_else(|| format!("origin context {origin_context_id} no longer exists"))?;
         let caller_role = caller
-            .and_then(|id| self.windows[win].panes.get(&id))
+            .and_then(|id| self.windows.iter().find_map(|w| w.panes.get(&id)))
             .and_then(|p| p.as_terminal())
             .and_then(|t| t.agent_role.as_deref());
         if let Some(caller_role) = caller_role {
@@ -779,27 +787,28 @@ mod tests {
             .as_terminal_mut()
             .unwrap()
             .agent_role = Some("lead".into());
+        let ctx = h.app.windows[0].context_id;
         assert!(h
             .app
-            .check_agent_tool_permission(Some(parent), "tester", false)
+            .check_agent_tool_permission(Some(parent), ctx, "tester", false)
             .is_ok());
         assert!(h
             .app
-            .check_agent_tool_permission(Some(parent), "writer", true)
+            .check_agent_tool_permission(Some(parent), ctx, "writer", true)
             .is_ok());
         assert!(h
             .app
-            .check_agent_tool_permission(Some(parent), "writer", false)
+            .check_agent_tool_permission(Some(parent), ctx, "writer", false)
             .unwrap_err()
             .contains("can_call"));
         assert!(h
             .app
-            .check_agent_tool_permission(Some(parent), "tester", true)
+            .check_agent_tool_permission(Some(parent), ctx, "tester", true)
             .unwrap_err()
             .contains("can_handoff"));
         assert!(h
             .app
-            .check_agent_tool_permission(Some(u64::MAX), "tester", false)
+            .check_agent_tool_permission(Some(u64::MAX), ctx, "tester", false)
             .is_err());
     }
 }

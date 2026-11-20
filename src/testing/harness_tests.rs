@@ -8309,7 +8309,7 @@ fn blank_text_editor_open_acquires_input_focus() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     // R3 moved IPC draining into logic so the editor can be opened while eframe
     // skips ui for an occluded window. At this point no text surface has
@@ -10394,7 +10394,7 @@ mod routine_firing {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
 
         let reply = read_json_response(&response);
@@ -10446,7 +10446,7 @@ mod routine_firing {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
 
         let reply = read_json_response(&response);
@@ -10890,7 +10890,7 @@ mod agent_boot {
             boot_timeout_secs,
             worktree: None,
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         response
     }
@@ -11107,7 +11107,7 @@ mod agent_boot {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.run_frames(1);
 
@@ -14014,7 +14014,7 @@ mod pane_worktree_tests {
             boot_timeout_secs: None,
             worktree: Some("feature/0668-clean".to_string()),
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.run_frames(1);
 
@@ -14093,7 +14093,7 @@ mod pane_worktree_tests {
             boot_timeout_secs: None,
             worktree: Some("feature/0668-dirty".to_string()),
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.run_frames(1);
 
@@ -14168,7 +14168,7 @@ mod pane_worktree_tests {
             boot_timeout_secs: None,
             worktree: Some("feature/0668-ahead".to_string()),
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.run_frames(1);
 
@@ -14254,7 +14254,7 @@ mod pane_result_harness_tests {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: Some(schema),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.run_frames(1);
 

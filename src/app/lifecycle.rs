@@ -6312,7 +6312,7 @@ impl PlexiApp {
                 boot_timeout_secs: None,
                 worktree: val["worktree"].as_str().map(str::to_string),
                 result_schema: val.get("result_schema").cloned().filter(|v| !v.is_null()),
-                peer_ancestry: None,
+                source: crate::protocol::SpawnSource::SpawnQueue,
             };
             let Ok(spec) = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(&request)
             else {
