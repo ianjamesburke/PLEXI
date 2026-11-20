@@ -230,10 +230,10 @@ pub(crate) fn show(view: StartupErrorView, colors: Colors) -> eframe::Result {
     )
 }
 
-/// Report a failed profile initialization and exit with status 1. Startup
-/// failures happen before the logger exists, so this brings it up, replays the
-/// buffered failure into `plexi.log`, then prints the CLI line and, for a GUI
-/// launch, opens the window.
+/// Report a failed profile initialization and exit with status 1. A CLI
+/// command's (and a host lock's) failure happens before the logger exists, so
+/// this brings it up, replays the buffered failure into `plexi.log`, then
+/// prints the CLI line and, for a GUI launch, opens the window.
 pub(crate) fn exit_on_profile_init_failure(error: &ProfileInitError, show_window: bool) -> ! {
     let config = crate::config::PlexiConfig::load();
     let log_config = config.log.clone().unwrap_or_default();
@@ -243,6 +243,12 @@ pub(crate) fn exit_on_profile_init_failure(error: &ProfileInitError, show_window
         !show_window,
     );
     crate::app::plugin_migration::replay_early_traces();
+    report_profile_init_failure(error, show_window)
+}
+
+/// Report a failed profile initialization once logging is running (a host
+/// initializes after its claim, with the logger up) and exit with status 1.
+pub(crate) fn report_profile_init_failure(error: &ProfileInitError, show_window: bool) -> ! {
     log::error!(
         "startup: profile initialization failed, exiting with status 1 (window={show_window})"
     );
@@ -250,7 +256,7 @@ pub(crate) fn exit_on_profile_init_failure(error: &ProfileInitError, show_window
     eprintln!("profile initialization: {error}");
     if show_window {
         let view = StartupErrorView::from_error(error, &crate::platform::logging::log_path());
-        let colors = crate::ui::theme::colors_from_config(&config);
+        let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::load());
         if let Err(window_error) = show(view, colors) {
             log::error!("startup_error: cannot open the error window: {window_error}");
             log::logger().flush();

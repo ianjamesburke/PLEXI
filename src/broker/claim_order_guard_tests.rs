@@ -3,6 +3,11 @@
 //! custody, retention, the rpc sweep and the window, parsed with `syn` in the
 //! style of `custody_guard_tests`.
 //!
+//! Stint 1609: the host takes the initialization lock
+//! (`config::lock_profile_for_host_launch`) before the claim and initializes
+//! the profile (`config::initialize_claimed_profile`) only after it, so a CLI
+//! of another build never migrates the profile under a live host.
+//!
 //! The claim must appear exactly once in `fn main`, inside the
 //! `HostLaunch::Host` arm, and every later startup step must come after it in
 //! source order. `eframe::run_native` builds the window and the app, whose
@@ -71,8 +76,12 @@ impl<'ast> Visit<'ast> for MainVisitor {
             let names = path_names(&node.path);
             let last = names.last().map(String::as_str).unwrap_or("");
             let host_instance = names.iter().any(|n| n == "host_instance");
+            let config = names.iter().any(|n| n == "config");
             let what = match last {
                 "claim" | "host_launch" if host_instance => Some(last.to_string()),
+                "lock_profile_for_host_launch" | "initialize_claimed_profile" if config => {
+                    Some(last.to_string())
+                }
                 _ => LATER_STEPS
                     .iter()
                     .find(|(name, _)| *name == last)
@@ -121,6 +130,24 @@ fn violations(events: &[Event]) -> Vec<String> {
     if launch_at > claim_at {
         bad.push("host_launch must classify the launch before the claim".to_string());
     }
+    let only = |what: &str| {
+        let found: Vec<_> = events.iter().filter(|e| e.what == what).collect();
+        (found.len() == 1).then(|| events.iter().position(|e| e.what == what).unwrap_or(0))
+    };
+    match only("lock_profile_for_host_launch") {
+        Some(at) if at < claim_at && events[at].arms.last().map(String::as_str) == Some("Host") => {}
+        _ => bad.push(
+            "a host launch must take config::lock_profile_for_host_launch once, in a Host arm, before the claim"
+                .to_string(),
+        ),
+    }
+    match only("initialize_claimed_profile") {
+        Some(at) if at > claim_at => {}
+        _ => bad.push(
+            "the host must call config::initialize_claimed_profile once, after the claim"
+                .to_string(),
+        ),
+    }
     for (_, label) in LATER_STEPS {
         match events.iter().position(|e| e.what == *label) {
             None => bad.push(format!("fn main no longer names the {label} step")),
@@ -145,12 +172,20 @@ fn main_claims_the_profile_before_every_later_startup_step() {
 
 const MAIN_FIXTURE: &str = r#"
 fn main() {
-    let _instance = match app::host_instance::host_launch(cli_mode, None) {
-        app::host_instance::HostLaunch::Cli => None,
-        app::host_instance::HostLaunch::Host => match app::host_instance::claim(&a, &b) {
-            Ok(instance) => Some(instance),
-            Err(_) => std::process::exit(3),
-        },
+    let launch = match app::host_instance::host_launch(cli_mode, None) {
+        app::host_instance::HostLaunch::Cli => LaunchProfile::Cli(config::lock_profile_initialization()),
+        app::host_instance::HostLaunch::Host => LaunchProfile::Host(config::lock_profile_for_host_launch()),
+    };
+    let _instance = match launch {
+        LaunchProfile::Cli(_) => None,
+        LaunchProfile::Host(lock) => {
+            let instance = match app::host_instance::claim(&a, &b) {
+                Ok(instance) => instance,
+                Err(_) => std::process::exit(3),
+            };
+            config::initialize_claimed_profile(&lock);
+            Some(instance)
+        }
     };
     if !cli_mode { crate::broker::custody::install_for_host_start(); }
     crate::cloud::retention::run_at_startup();
@@ -188,8 +223,37 @@ fn guard_fails_when_custody_moves_above_the_claim() {
 #[test]
 fn guard_fails_when_the_claim_leaves_the_host_arm() {
     let src = MAIN_FIXTURE.replace(
-        "app::host_instance::HostLaunch::Host =>",
-        "app::host_instance::HostLaunch::InsidePlexi =>",
+        "LaunchProfile::Host(lock) =>",
+        "LaunchProfile::Other(lock) =>",
     );
     assert!(!violations(&main_events(&src)).is_empty());
+}
+
+#[test]
+fn guard_fails_when_the_host_claims_without_the_initialization_lock() {
+    let src = MAIN_FIXTURE.replace(
+        "LaunchProfile::Host(config::lock_profile_for_host_launch())",
+        "LaunchProfile::Host(open())",
+    );
+    let bad = violations(&main_events(&src));
+    assert!(
+        bad.iter()
+            .any(|b| b.contains("lock_profile_for_host_launch")),
+        "{bad:?}"
+    );
+}
+
+#[test]
+fn guard_fails_when_the_host_initializes_before_the_claim() {
+    let src = MAIN_FIXTURE
+        .replace("            config::initialize_claimed_profile(&lock);\n", "")
+        .replace(
+            "            let instance = match",
+            "            config::initialize_claimed_profile(&lock);\n            let instance = match",
+        );
+    let bad = violations(&main_events(&src));
+    assert!(
+        bad.iter().any(|b| b.contains("initialize_claimed_profile")),
+        "{bad:?}"
+    );
 }

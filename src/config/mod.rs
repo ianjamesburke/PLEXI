@@ -1624,15 +1624,22 @@ pub fn named_profile_dir_name(profile: &str) -> String {
     format!(".plexi-{profile}")
 }
 
-/// Read-only freshness check shared by both sides of the initialization lock.
-fn profile_initialization_needed() -> Result<bool, String> {
-    let dir = config_dir();
+/// The profile belongs to another build: its plugin tree or SDK is missing,
+/// or the SDK stamp names a different build. Changing that is a migration,
+/// which never runs under a live host of another build (stint 1609).
+fn profile_build_is_stale(dir: &Path) -> bool {
     let sdk = dir.join("sdk");
-    Ok(!dir.join("plugins").is_dir()
+    !dir.join("plugins").is_dir()
         || !sdk.join("plexi_sdk").is_dir()
         || !sdk.join("pyproject.toml").is_file()
         || !std::fs::read_to_string(sdk.join(".sdk_version"))
             .is_ok_and(|version| version.trim() == env!("PLEXI_BUILD_ID"))
+}
+
+/// Read-only freshness check shared by both sides of the initialization lock.
+fn profile_initialization_needed() -> Result<bool, String> {
+    let dir = config_dir();
+    Ok(profile_build_is_stale(&dir)
         || crate::cli::install_host::core_pack_needs_seeding(&dir.join("plugins"))
         || !crate::cli::install_host::orphaned_pre_v3_first_party_apps(&dir.join("plugins"))
             .is_empty()
@@ -1663,23 +1670,156 @@ impl From<String> for ProfileInitError {
     }
 }
 
+/// Exclusive hold on the profile's `initialization.lock`. Profile migration
+/// and seeding happen only while one is held, and a host claims `host.lock`
+/// only while holding one, so a CLI's host check and its migration can never
+/// straddle a host's claim (stint 1609).
+#[derive(Debug)]
+pub struct ProfileInitLock {
+    /// The OS releases the lock when this file closes.
+    _file: std::fs::File,
+}
+
+/// A host of another build that owns this profile, or a probe that could not
+/// rule one out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForeignHost {
+    Running {
+        pid: Option<u32>,
+        evidence: plexi_distribution::host_presence::Evidence,
+        /// The live host's build, from the SDK stamp it wrote at launch.
+        profile_build: Option<String>,
+    },
+    Unknown(String),
+}
+
+impl ForeignHost {
+    /// The refusal for a command that reads or writes the profile's plugins
+    /// or SDK while the profile still belongs to the live host's build.
+    pub fn command_refusal(&self, restart: &str) -> String {
+        let fix = format!("Quit and reopen Plexi to finish the upgrade, or run: {restart}");
+        match self {
+            Self::Running {
+                pid, profile_build, ..
+            } => {
+                let pid = pid.map_or_else(|| "pid unknown".to_string(), |pid| format!("pid {pid}"));
+                let build = profile_build.as_deref().unwrap_or("an older build");
+                format!(
+                    "Plexi ({pid}) is still running {build} on this profile, and this command needs the profile upgraded to {}. {fix}",
+                    env!("PLEXI_BUILD_ID")
+                )
+            }
+            Self::Unknown(reason) => format!(
+                "cannot tell whether Plexi is running on this profile ({reason}), and this command needs the profile upgraded to {}. {fix}",
+                env!("PLEXI_BUILD_ID")
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for ForeignHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Running {
+                pid,
+                evidence,
+                profile_build,
+            } => write!(
+                f,
+                "live host pid={pid:?} evidence={evidence:?} profile_build={profile_build:?}"
+            ),
+            Self::Unknown(reason) => write!(f, "host presence unknown: {reason}"),
+        }
+    }
+}
+
+/// What a CLI command's profile initialization did.
+#[derive(Debug)]
+pub enum ProfileInit {
+    /// The profile is current; nothing was locked.
+    Current,
+    /// Migration ran; seed the profile, then drop the lock.
+    Initialize(ProfileInitLock),
+    /// The profile belongs to a live host of another build and was left
+    /// untouched; the migration waits for the next host start.
+    Deferred(ForeignHost),
+}
+
 // Fresh-profile seeding took 1.8–3.6 seconds in stint 1567 (PR #3226).
 const PROFILE_INITIALIZATION_LOCK_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(120);
 const PROFILE_INITIALIZATION_WAIT_NOTICE: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a CLI's host check waits for a pre-lock host's endpoint.
+const FOREIGN_HOST_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// Fresh profiles need no writable files. Re-check after acquiring the lock:
-/// another process may have completed initialization while we waited.
-pub fn lock_profile_initialization() -> Result<Option<std::fs::File>, ProfileInitError> {
+/// CLI commands: fresh profiles need no writable files. Re-check after
+/// acquiring the lock: another process may have completed initialization while
+/// we waited. A profile of another build is migrated only when no host is
+/// running on it (stint 1609).
+pub fn lock_profile_initialization() -> Result<ProfileInit, ProfileInitError> {
     lock_profile_initialization_with_timeout(PROFILE_INITIALIZATION_LOCK_TIMEOUT)
 }
 
 fn lock_profile_initialization_with_timeout(
     timeout: std::time::Duration,
-) -> Result<Option<std::fs::File>, ProfileInitError> {
+) -> Result<ProfileInit, ProfileInitError> {
     if !profile_initialization_needed()? {
-        return Ok(None);
+        return Ok(ProfileInit::Current);
     }
+    let lock = open_initialization_lock(timeout)?;
+    if !profile_initialization_needed()? {
+        return Ok(ProfileInit::Current);
+    }
+    let dir = config_dir();
+    if profile_build_is_stale(&dir) {
+        if let Some(host) = foreign_host(&dir) {
+            return Ok(ProfileInit::Deferred(host));
+        }
+    }
+    crate::app::plugin_migration::migrate(&dir).map_err(ProfileInitError::Migration)?;
+    Ok(ProfileInit::Initialize(lock))
+}
+
+/// Host launches: always take the lock, before claiming `host.lock`, even on
+/// a current profile; a CLI of another build may be about to check for a host.
+pub fn lock_profile_for_host_launch() -> Result<ProfileInitLock, ProfileInitError> {
+    open_initialization_lock(PROFILE_INITIALIZATION_LOCK_TIMEOUT)
+}
+
+/// Migrate the profile for this build if it needs it. Only the claimed host
+/// calls this, still holding the lock it claimed under. Returns whether the
+/// profile needs seeding.
+pub fn initialize_claimed_profile(
+    _claimed_under: &ProfileInitLock,
+) -> Result<bool, ProfileInitError> {
+    if !profile_initialization_needed()? {
+        return Ok(false);
+    }
+    crate::app::plugin_migration::migrate(&config_dir()).map_err(ProfileInitError::Migration)?;
+    Ok(true)
+}
+
+/// A live host on `dir`, or a probe that cannot rule one out. Called inside
+/// the initialization lock, so no host of this design can claim meanwhile.
+fn foreign_host(dir: &Path) -> Option<ForeignHost> {
+    use plexi_distribution::host_presence::{probe, Presence};
+    match probe(dir, std::time::Instant::now() + FOREIGN_HOST_PROBE_TIMEOUT) {
+        Presence::NotRunning => None,
+        Presence::Running { pid, evidence } => Some(ForeignHost::Running {
+            pid,
+            evidence,
+            profile_build: std::fs::read_to_string(dir.join("sdk/.sdk_version"))
+                .ok()
+                .map(|build| build.trim().to_string())
+                .filter(|build| !build.is_empty()),
+        }),
+        Presence::Unknown(reason) => Some(ForeignHost::Unknown(reason)),
+    }
+}
+
+fn open_initialization_lock(
+    timeout: std::time::Duration,
+) -> Result<ProfileInitLock, ProfileInitError> {
     let dir = config_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let path = dir.join("initialization.lock");
@@ -1694,7 +1834,7 @@ fn lock_profile_initialization_with_timeout(
     let mut notified = false;
     loop {
         match lock.try_lock() {
-            Ok(()) => break,
+            Ok(()) => return Ok(ProfileInitLock { _file: lock }),
             Err(std::fs::TryLockError::WouldBlock) => {
                 let elapsed = start.elapsed();
                 if elapsed >= timeout {
@@ -1722,11 +1862,6 @@ fn lock_profile_initialization_with_timeout(
             }
         }
     }
-    if !profile_initialization_needed()? {
-        return Ok(None);
-    }
-    crate::app::plugin_migration::migrate(&dir).map_err(ProfileInitError::Migration)?;
-    Ok(Some(lock))
 }
 
 /// Ensure the plugins directory and embedded SDK exist. Caller holds the initialization lock.
@@ -4478,7 +4613,7 @@ mod distribution_profile_tests {
         #[cfg(unix)]
         std::fs::set_permissions(dir.path(), original_permissions).unwrap();
         assert!(
-            matches!(result, Ok(None)),
+            matches!(result, Ok(super::ProfileInit::Current)),
             "fresh profile attempted a write lock: {result:?}"
         );
     }
@@ -4487,15 +4622,209 @@ mod distribution_profile_tests {
     fn stale_profile_still_requires_exclusive_initialization() {
         let dir = tempfile::tempdir().unwrap();
         let _guard = super::set_test_profile_dir(dir.path().to_path_buf());
-        assert!(super::lock_profile_initialization().unwrap().is_some());
+        assert!(matches!(
+            super::lock_profile_initialization().unwrap(),
+            super::ProfileInit::Initialize(_)
+        ));
         super::ensure_profile_initialized();
         crate::cli::install_host::apply_core_pack_always(
             &crate::cli::install_host::GitCloner::default(),
             &dir.path().join("plugins"),
         );
-        assert!(super::lock_profile_initialization().unwrap().is_none());
+        assert!(matches!(
+            super::lock_profile_initialization().unwrap(),
+            super::ProfileInit::Current
+        ));
         std::fs::write(dir.path().join("sdk/.sdk_version"), "old-build").unwrap();
-        assert!(super::lock_profile_initialization().unwrap().is_some());
+        assert!(matches!(
+            super::lock_profile_initialization().unwrap(),
+            super::ProfileInit::Initialize(_)
+        ));
+    }
+
+    /// A profile initialized for this build whose SDK stamp then names
+    /// `old-build`: what a profile looks like under an older live host after
+    /// a new build is installed.
+    fn profile_of_another_build(dir: &std::path::Path) {
+        super::ensure_profile_initialized();
+        crate::cli::install_host::apply_core_pack_always(
+            &crate::cli::install_host::GitCloner::default(),
+            &dir.join("plugins"),
+        );
+        std::fs::write(dir.join("sdk/.sdk_version"), "old-build").unwrap();
+    }
+
+    /// The live host's lock, held through a separate open file as another
+    /// process would hold it.
+    fn hold_host_lock(dir: &std::path::Path, pid: u32) -> std::fs::File {
+        let path = dir.join(plexi_distribution::host_presence::LOCK_FILE);
+        std::fs::write(&path, pid.to_string()).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        file.lock().unwrap();
+        file
+    }
+
+    fn assert_untouched(dir: &std::path::Path) {
+        assert_eq!(
+            std::fs::read_to_string(dir.join("sdk/.sdk_version")).unwrap(),
+            "old-build",
+            "the SDK was swapped under the live host"
+        );
+        assert!(
+            !dir.join("migration-plugin-v2.lock").exists(),
+            "plugin migration ran under the live host"
+        );
+    }
+
+    /// Stint 1609, ruling B: a new build's CLI under a live host of another
+    /// build leaves the profile alone and says why.
+    #[test]
+    fn stale_profile_under_a_live_host_is_deferred_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = super::set_test_profile_dir(dir.path().to_path_buf());
+        profile_of_another_build(dir.path());
+        let _host = hold_host_lock(dir.path(), 4312);
+        match super::lock_profile_initialization().unwrap() {
+            super::ProfileInit::Deferred(super::ForeignHost::Running {
+                pid,
+                evidence,
+                profile_build,
+            }) => {
+                assert_eq!(pid, Some(4312));
+                assert_eq!(evidence, plexi_distribution::host_presence::Evidence::Lock);
+                assert_eq!(profile_build.as_deref(), Some("old-build"));
+            }
+            other => panic!("expected a deferral for the live host: {other:?}"),
+        }
+        assert_untouched(dir.path());
+    }
+
+    /// A host from before `host.lock` shows only by answering on its socket.
+    #[cfg(unix)]
+    #[test]
+    fn stale_profile_under_a_pre_lock_host_is_deferred_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = super::set_test_profile_dir(dir.path().to_path_buf());
+        profile_of_another_build(dir.path());
+        let _listener = std::os::unix::net::UnixListener::bind(
+            plexi_distribution::host_presence::endpoint_in(dir.path()),
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                super::lock_profile_initialization().unwrap(),
+                super::ProfileInit::Deferred(super::ForeignHost::Running {
+                    evidence: plexi_distribution::host_presence::Evidence::Endpoint,
+                    ..
+                })
+            ),
+            "a pre-lock host's profile was not deferred"
+        );
+        assert_untouched(dir.path());
+    }
+
+    /// A probe that cannot rule a host out never migrates.
+    #[cfg(unix)]
+    #[test]
+    fn stale_profile_with_an_unreadable_host_lock_is_deferred_untouched() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = super::set_test_profile_dir(dir.path().to_path_buf());
+        profile_of_another_build(dir.path());
+        let lock = dir
+            .path()
+            .join(plexi_distribution::host_presence::LOCK_FILE);
+        std::fs::write(&lock, "").unwrap();
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = super::lock_profile_initialization();
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
+        match result.unwrap() {
+            super::ProfileInit::Deferred(host @ super::ForeignHost::Unknown(_)) => {
+                let refusal = host.command_refusal("plexi-alpha host restart");
+                assert!(
+                    refusal.contains("cannot tell whether Plexi is running"),
+                    "{refusal}"
+                );
+                assert!(refusal.contains("Quit and reopen Plexi"), "{refusal}");
+            }
+            other => panic!("expected an unknown-host deferral: {other:?}"),
+        }
+        assert_untouched(dir.path());
+    }
+
+    /// Seeding a profile already stamped for this build (a deleted core
+    /// plugin) is not a migration and still runs beside a live host.
+    #[test]
+    fn current_profile_reseeds_beside_a_live_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = super::set_test_profile_dir(dir.path().to_path_buf());
+        profile_of_another_build(dir.path());
+        std::fs::write(dir.path().join("sdk/.sdk_version"), env!("PLEXI_BUILD_ID")).unwrap();
+        let plugins = dir.path().join("plugins");
+        let core = std::fs::read_dir(&plugins)
+            .unwrap()
+            .flatten()
+            .find(|entry| entry.path().is_dir())
+            .expect("the core pack seeded a plugin")
+            .path();
+        std::fs::remove_dir_all(&core).unwrap();
+        let _host = hold_host_lock(dir.path(), 4312);
+        assert!(matches!(
+            super::lock_profile_initialization().unwrap(),
+            super::ProfileInit::Initialize(_)
+        ));
+    }
+
+    /// The refusal names the live host, its build and the fix.
+    #[test]
+    fn refusal_names_the_live_host_and_the_fix() {
+        let refusal = super::ForeignHost::Running {
+            pid: Some(4312),
+            evidence: plexi_distribution::host_presence::Evidence::Lock,
+            profile_build: Some("old-build".into()),
+        }
+        .command_refusal("plexi-alpha host restart");
+        for needle in [
+            "pid 4312",
+            "old-build",
+            env!("PLEXI_BUILD_ID"),
+            "Quit and reopen Plexi",
+            "plexi-alpha host restart",
+        ] {
+            assert!(refusal.contains(needle), "{needle:?} missing: {refusal}");
+        }
+    }
+
+    /// The race design-1609 closes: a host launch claims `host.lock` only
+    /// inside the initialization lock, so a CLI that checked for a host
+    /// inside that lock cannot migrate after a claim it did not see.
+    #[test]
+    fn host_launch_claims_only_inside_the_initialization_lock() {
+        use plexi_distribution::host_presence::{endpoint_in, probe, Presence};
+        use std::time::{Duration, Instant};
+        let dir = tempfile::tempdir().unwrap();
+        let held = std::fs::File::create(dir.path().join("initialization.lock")).unwrap();
+        held.lock().unwrap();
+        let profile = dir.path().to_path_buf();
+        let launch = std::thread::spawn(move || {
+            let _guard = super::set_test_profile_dir(profile.clone());
+            let lock = super::lock_profile_for_host_launch().unwrap();
+            // Returned, not dropped, so the claimed host stays alive.
+            let claimed = crate::app::host_instance::claim(&profile, &endpoint_in(&profile), None);
+            (lock, claimed)
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            probe(dir.path(), Instant::now() + Duration::from_millis(100)),
+            Presence::NotRunning,
+            "the host claimed while a CLI held the initialization lock"
+        );
+        drop(held);
+        let (_lock, claimed) = launch.join().unwrap();
+        assert!(
+            matches!(claimed, Ok(crate::app::host_instance::Launch::Host(_))),
+            "the host did not claim after the lock was released"
+        );
     }
 
     #[test]

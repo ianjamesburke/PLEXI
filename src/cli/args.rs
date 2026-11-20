@@ -750,6 +750,80 @@ pub enum Commands {
     CompleteRun,
 }
 
+impl Commands {
+    /// Whether the command reads or writes the profile's plugin tree or SDK
+    /// in this process, so it cannot run while the profile still belongs to
+    /// a live host of another build (stint 1609). Everything else talks to
+    /// the running host or touches state migration never changes. The match
+    /// is exhaustive so every new command is classified.
+    pub fn needs_current_profile(&self) -> bool {
+        match self {
+            Self::Plugin { cmd } => match cmd {
+                PluginCmd::Install { .. }
+                | PluginCmd::Uninstall { .. }
+                | PluginCmd::List
+                | PluginCmd::Prune { .. }
+                | PluginCmd::Check { .. }
+                | PluginCmd::Test { .. }
+                | PluginCmd::Info { .. }
+                | PluginCmd::State { .. }
+                | PluginCmd::Freeze { .. }
+                | PluginCmd::Update { .. } => true,
+                // `--adopt` writes scaffold metadata into the given checkout,
+                // never the profile.
+                PluginCmd::Init { adopt, .. } => !adopt,
+                PluginCmd::Validate { .. }
+                | PluginCmd::Inspect { .. }
+                | PluginCmd::Package { .. }
+                | PluginCmd::Publish { .. }
+                | PluginCmd::Browse
+                | PluginCmd::Search { .. }
+                | PluginCmd::Call { .. }
+                | PluginCmd::Tools { .. } => false,
+            },
+            Self::View { cmd } => match cmd {
+                ViewCmd::List | ViewCmd::Render { .. } => true,
+                ViewCmd::Open { .. } => false,
+            },
+            Self::Doctor => true,
+            Self::Lease { .. }
+            | Self::Assistant { .. }
+            | Self::AgentsDashboard { .. }
+            | Self::Run { .. }
+            | Self::Workspace { .. }
+            | Self::Changes { .. }
+            | Self::Secret { .. }
+            | Self::Routine { .. }
+            | Self::Agent { .. }
+            | Self::Context { .. }
+            | Self::Account { .. }
+            | Self::Registry { .. }
+            | Self::Pane { .. }
+            | Self::Events { .. }
+            | Self::NeedsYou { .. }
+            | Self::Permissions { .. }
+            | Self::Notify { .. }
+            | Self::Ai { .. }
+            | Self::Ledger { .. }
+            | Self::Debug { .. }
+            | Self::Experiments { .. }
+            | Self::Skill { .. }
+            | Self::Completions { .. }
+            | Self::Cli { .. }
+            | Self::Config { .. }
+            | Self::Note { .. }
+            | Self::Notes { .. }
+            | Self::Demo
+            | Self::Update { .. }
+            | Self::Uninstall { .. }
+            | Self::Host { .. }
+            | Self::Descriptor { .. }
+            | Self::CompleteOpen { .. }
+            | Self::CompleteRun => false,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 pub enum AgentsDashboardCmd {
     /// Open the command view pane in the active context.

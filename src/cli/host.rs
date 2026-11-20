@@ -1870,7 +1870,7 @@ fn installed_identity() -> Option<(String, String)> {
     Some((receipt.active.tag, receipt.active.build_id))
 }
 
-fn restart_hint(target: &HostTarget) -> String {
+pub(crate) fn restart_hint(target: &HostTarget) -> String {
     target.command_line(&crate::config::current_exe_basename(), "host restart")
 }
 

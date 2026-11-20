@@ -172,11 +172,38 @@ fn main() -> eframe::Result {
             cli::trace::exit(1);
         }
     }
-    let profile_init_lock = crate::config::lock_profile_initialization().unwrap_or_else(|error| {
-        let show_window =
-            app::startup_error::shows_window(host_startup, boot_state.is_background());
+    let cli_mode = !host_startup;
+    // Classify the launch before the profile is touched. A CLI command
+    // initializes the profile only when no host of another build runs on it
+    // (stint 1609). A host launch takes the initialization lock here and
+    // claims the profile under it below, before it initializes anything.
+    let profile_init_failed = |error: crate::config::ProfileInitError| -> ! {
+        let show_window = app::startup_error::shows_window(!cli_mode, boot_state.is_background());
         app::startup_error::exit_on_profile_init_failure(&error, show_window)
-    });
+    };
+    let launch_profile = match app::host_instance::host_launch(
+        cli_mode,
+        std::env::var("PLEXI_RUNNING").ok().as_deref(),
+    ) {
+        app::host_instance::HostLaunch::Cli => LaunchProfile::Cli(
+            crate::config::lock_profile_initialization()
+                .unwrap_or_else(|error| profile_init_failed(error)),
+        ),
+        // Plexi-in-Plexi: a bare launch typed in a Plexi pane shows help
+        // rather than starting a second GUI, and never touches the profile.
+        app::host_instance::HostLaunch::InsidePlexi => cli::trace::exit(cli::front::emit_help(
+            &bin,
+            &cli::front::Help {
+                path: Vec::new(),
+                long: false,
+                selection: crate::config::ProfileSelection::Default,
+            },
+        )),
+        app::host_instance::HostLaunch::Host => LaunchProfile::Host(
+            crate::config::lock_profile_for_host_launch()
+                .unwrap_or_else(|error| profile_init_failed(error)),
+        ),
+    };
     // Adopt an explicit workspace root from `plexi <path>` if one was given.
     // If the path has no `.plexi/` ancestor, an adopted context path is set
     // instead — the directory opens as a new context on first frame.
@@ -211,7 +238,6 @@ fn main() -> eframe::Result {
     );
     let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
     let retention_days = log_config.retention_days.unwrap_or(30);
-    let cli_mode = !host_startup;
     crate::platform::logging::init(log_level, retention_days, cli_mode);
     log::info!(
         "startup: logger ready {}ms after main entry",
@@ -221,92 +247,77 @@ fn main() -> eframe::Result {
         "cli_front: {} {surface_path:?}",
         if host_startup { "launch" } else { "run" }
     );
-    // Migration ran inside `lock_profile_initialization`, before the logger.
+    // A CLI command's migration ran inside `lock_profile_initialization`,
+    // before the logger.
     crate::app::plugin_migration::replay_early_traces();
 
+    // One host per profile (stint 1459). A host claims `host.lock` while it
+    // holds the initialization lock and only then migrates and seeds the
+    // profile, so a CLI of another build can never migrate under it (stint
+    // 1609). Custody, retention, the rpc sweep, the window and the socket
+    // have not run yet. A launch from any path (the install, a generation,
+    // the app icon) that finds a live host stops here. Held until the
+    // process exits.
+    //
     // Profile seeding (example and core packs, Python plugin venvs) can take
     // seconds on a fresh profile, so it runs after the logger is up
-    // (stint 1567). It still runs before the workspace chdir and the claim.
-    if let Some(profile_init_lock) = profile_init_lock {
-        let seeding_start = std::time::Instant::now();
-        let is_first_launch = crate::config::ensure_profile_initialized();
-
-        if !crate::config::PlexiConfig::load()
-            .core_only
-            .unwrap_or(false)
-        {
-            let plugins_dir = crate::app::registry::plugins_dir();
-            let cloner = crate::cli::install_host::GitCloner::default();
-
-            // On first launch, also seed the example plugins.
-            if is_first_launch {
-                if let Some(outcomes) =
-                    crate::cli::install_host::apply_examples_pack_if_empty(&cloner, &plugins_dir)
-                {
-                    let n_ok = outcomes
-                        .iter()
-                        .filter(|o| {
-                            matches!(
-                                o.status,
-                                crate::cli::install_host::InstallStatus::Installed(_)
-                            )
-                        })
-                        .count();
-                    log::info!(
-                        "examples pack: seeded {n_ok} plugins to {}",
-                        plugins_dir.display()
-                    );
-                }
-            }
-
-            // Always re-seed any deleted core plugins.
-            let core_outcomes =
-                crate::cli::install_host::apply_core_pack_always(&cloner, &plugins_dir);
-            let n_installed = core_outcomes
-                .iter()
-                .filter(|o| {
-                    matches!(
-                        o.status,
-                        crate::cli::install_host::InstallStatus::Installed(_)
-                    )
-                })
-                .count();
-            if n_installed > 0 {
-                log::info!(
-                    "core pack: re-seeded {n_installed} missing plugins to {}",
-                    plugins_dir.display()
-                );
-            }
-            for o in &core_outcomes {
-                if let crate::cli::install_host::InstallStatus::Failed(msg) = &o.status {
-                    log::warn!("core pack: FAILED {}: {msg}", o.id);
-                }
-            }
-            if !is_plugin_prune_command {
-                let pruned = crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(
-                    &plugins_dir,
-                );
-                if !pruned.is_empty() {
-                    log::info!(
-                        "core pack: quarantined {} orphaned pre-v3 plugin(s) from {}",
-                        pruned.len(),
-                        plugins_dir.display()
-                    );
-                }
-            }
-            // Packaged plugin definitions stay untouched in core-only mode too.
-            if let Err(error) = crate::distribution::seed_profile() {
-                log::error!("package profile initialization: {error}");
-                eprintln!("package profile initialization: {error}");
-                cli::trace::exit(1);
-            }
+    // (stint 1567), before the workspace chdir.
+    let (_host_instance, foreign_host) = match launch_profile {
+        LaunchProfile::Cli(crate::config::ProfileInit::Current) => (None, None),
+        LaunchProfile::Cli(crate::config::ProfileInit::Initialize(profile_init_lock)) => {
+            seed_initialized_profile(is_plugin_prune_command);
+            drop(profile_init_lock);
+            (None, None)
         }
-        log::info!(
-            "startup: profile initialization took {}ms first_launch={is_first_launch}",
-            seeding_start.elapsed().as_millis()
-        );
-        drop(profile_init_lock);
-    }
+        LaunchProfile::Cli(crate::config::ProfileInit::Deferred(host)) => {
+            log::info!(
+                "profile: migration to build {} deferred to the next host start; {host}",
+                env!("PLEXI_BUILD_ID")
+            );
+            (None, Some(host))
+        }
+        // A second launch on a live host hands it the canonical path main
+        // resolved above (before the chdir) and exits 0 (stint 1543).
+        LaunchProfile::Host(profile_init_lock) => {
+            let instance = match app::host_instance::claim(
+                &config::config_dir(),
+                &crate::platform::ipc::endpoint_path(),
+                crate::config::adopted_context_path()
+                    .or_else(|| adopted_root.clone())
+                    .as_deref(),
+            ) {
+                Ok(app::host_instance::Launch::Host(instance)) => instance,
+                Ok(app::host_instance::Launch::HandedOff(line)) => {
+                    log::logger().flush();
+                    println!("{line}");
+                    std::process::exit(0);
+                }
+                Err(refusal) if refusal.is_another_host() => {
+                    log::info!("host_startup: refused second host: {refusal}");
+                    log::logger().flush();
+                    eprintln!("{refusal}");
+                    std::process::exit(app::host_instance::ALREADY_RUNNING_EXIT);
+                }
+                Err(failure) => app::startup_error::exit_with_startup_error(
+                    app::startup_error::StartupErrorView::host_lock_failure(
+                        &failure.to_string(),
+                        &crate::platform::logging::log_path(),
+                    ),
+                    app::startup_error::shows_window(true, boot_state.is_background()),
+                ),
+            };
+            match crate::config::initialize_claimed_profile(&profile_init_lock) {
+                Ok(true) => seed_initialized_profile(is_plugin_prune_command),
+                Ok(false) => {}
+                Err(error) => app::startup_error::report_profile_init_failure(
+                    &error,
+                    app::startup_error::shows_window(true, boot_state.is_background()),
+                ),
+            }
+            drop(profile_init_lock);
+            (Some(instance), None)
+        }
+    };
     crate::config::set_adopted_workspace_root(adopted_root.clone());
 
     // When the user runs `plexi <path>`, treat that path as the new CWD so
@@ -322,57 +333,6 @@ fn main() -> eframe::Result {
         }
     }
 
-    // One host per profile (stint 1459). Profile initialization (migration,
-    // core pack seeding, under its own lock), config load and logging have
-    // run by now; custody, retention, the rpc sweep, the window and the
-    // socket have not. A launch from any path (the install, a generation, the
-    // app icon) that finds a live host stops here. Held until the process
-    // exits.
-    let _host_instance = match app::host_instance::host_launch(
-        cli_mode,
-        std::env::var("PLEXI_RUNNING").ok().as_deref(),
-    ) {
-        app::host_instance::HostLaunch::Cli => None,
-        // Plexi-in-Plexi: a bare launch typed in a Plexi pane shows help
-        // rather than starting a second GUI, and never claims the profile.
-        app::host_instance::HostLaunch::InsidePlexi => cli::trace::exit(cli::front::emit_help(
-            &bin,
-            &cli::front::Help {
-                path: Vec::new(),
-                long: false,
-                selection: crate::config::ProfileSelection::Default,
-            },
-        )),
-        // A second launch on a live host hands it the canonical path main
-        // resolved above (before the chdir) and exits 0 (stint 1543).
-        app::host_instance::HostLaunch::Host => match app::host_instance::claim(
-            &config::config_dir(),
-            &crate::platform::ipc::endpoint_path(),
-            crate::config::adopted_context_path()
-                .or_else(|| adopted_root.clone())
-                .as_deref(),
-        ) {
-            Ok(app::host_instance::Launch::Host(instance)) => Some(instance),
-            Ok(app::host_instance::Launch::HandedOff(line)) => {
-                log::logger().flush();
-                println!("{line}");
-                std::process::exit(0);
-            }
-            Err(refusal) if refusal.is_another_host() => {
-                log::info!("host_startup: refused second host: {refusal}");
-                log::logger().flush();
-                eprintln!("{refusal}");
-                std::process::exit(app::host_instance::ALREADY_RUNNING_EXIT);
-            }
-            Err(failure) => app::startup_error::exit_with_startup_error(
-                app::startup_error::StartupErrorView::host_lock_failure(
-                    &failure.to_string(),
-                    &crate::platform::logging::log_path(),
-                ),
-                app::startup_error::shows_window(true, boot_state.is_background()),
-            ),
-        },
-    };
     // Host start only (foreground, background and headless hosts all start
     // here). Every CLI command, `host start` included, stays without custody.
     if !cli_mode {
@@ -486,6 +446,24 @@ fn main() -> eframe::Result {
                 };
                 if !matches!(&cmd, Commands::Debug { .. } | Commands::Skill { .. }) {
                     cli::trace::begin(&tokens, &owners, lifecycle_socket.clone());
+                }
+                // The profile still belongs to a live host of another build
+                // (stint 1609): commands that read or write its plugins or
+                // SDK cannot run until that host restarts.
+                if let Some(host) = foreign_host
+                    .as_ref()
+                    .filter(|_| cmd.needs_current_profile())
+                {
+                    log::info!(
+                        "profile: refused a command that needs the migrated profile; {host}"
+                    );
+                    // The hint addresses this command's profile host (stint 1655).
+                    let refusal = match cli::host::host_target() {
+                        Ok(target) => host.command_refusal(&cli::host::restart_hint(&target)),
+                        Err(error) => error,
+                    };
+                    eprintln!("error: {refusal}");
+                    cli::trace::exit(1);
                 }
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
@@ -2340,6 +2318,94 @@ fn configure_cli_sigpipe(host_startup: bool) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// How this process holds the profile after the launch is classified.
+enum LaunchProfile {
+    /// A CLI command, and what its profile initialization did.
+    Cli(crate::config::ProfileInit),
+    /// A host launch, holding the initialization lock it will claim under.
+    Host(crate::config::ProfileInitLock),
+}
+
+/// Seed a profile this process just initialized. The caller holds the
+/// initialization lock.
+fn seed_initialized_profile(is_plugin_prune_command: bool) {
+    let seeding_start = std::time::Instant::now();
+    let is_first_launch = crate::config::ensure_profile_initialized();
+
+    if !crate::config::PlexiConfig::load()
+        .core_only
+        .unwrap_or(false)
+    {
+        let plugins_dir = crate::app::registry::plugins_dir();
+        let cloner = crate::cli::install_host::GitCloner::default();
+
+        // On first launch, also seed the example plugins.
+        if is_first_launch {
+            if let Some(outcomes) =
+                crate::cli::install_host::apply_examples_pack_if_empty(&cloner, &plugins_dir)
+            {
+                let n_ok = outcomes
+                    .iter()
+                    .filter(|o| {
+                        matches!(
+                            o.status,
+                            crate::cli::install_host::InstallStatus::Installed(_)
+                        )
+                    })
+                    .count();
+                log::info!(
+                    "examples pack: seeded {n_ok} plugins to {}",
+                    plugins_dir.display()
+                );
+            }
+        }
+
+        // Always re-seed any deleted core plugins.
+        let core_outcomes = crate::cli::install_host::apply_core_pack_always(&cloner, &plugins_dir);
+        let n_installed = core_outcomes
+            .iter()
+            .filter(|o| {
+                matches!(
+                    o.status,
+                    crate::cli::install_host::InstallStatus::Installed(_)
+                )
+            })
+            .count();
+        if n_installed > 0 {
+            log::info!(
+                "core pack: re-seeded {n_installed} missing plugins to {}",
+                plugins_dir.display()
+            );
+        }
+        for o in &core_outcomes {
+            if let crate::cli::install_host::InstallStatus::Failed(msg) = &o.status {
+                log::warn!("core pack: FAILED {}: {msg}", o.id);
+            }
+        }
+        if !is_plugin_prune_command {
+            let pruned =
+                crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(&plugins_dir);
+            if !pruned.is_empty() {
+                log::info!(
+                    "core pack: quarantined {} orphaned pre-v3 plugin(s) from {}",
+                    pruned.len(),
+                    plugins_dir.display()
+                );
+            }
+        }
+        // Packaged plugin definitions stay untouched in core-only mode too.
+        if let Err(error) = crate::distribution::seed_profile() {
+            log::error!("package profile initialization: {error}");
+            eprintln!("package profile initialization: {error}");
+            cli::trace::exit(1);
+        }
+    }
+    log::info!(
+        "startup: profile initialization took {}ms first_launch={is_first_launch}",
+        seeding_start.elapsed().as_millis()
+    );
 }
 
 /// Headless render subcommand: reads `{viewport, draw_commands}` JSON from stdin,
