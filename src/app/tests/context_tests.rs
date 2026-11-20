@@ -2255,15 +2255,8 @@ fn create_context_with_windows_adds_extra_pages() {
         .map(|x| x + 1)
         .unwrap_or(1);
     for cmd in &cmds {
-        app.create_page_at(
-            new_x,
-            active_y,
-            ctx_id,
-            crate::pane_ops::create::TerminalSpawnOptions {
-                initial_cmd: Some(cmd.as_str()),
-                ..Default::default()
-            },
-        );
+        let launch = app.test_terminal_launch(ctx_id, None, Some(cmd.as_str()));
+        app.create_page_at(new_x, active_y, ctx_id, launch);
         new_x += 1;
     }
 
@@ -3154,7 +3147,7 @@ fn context_sub_child_is_registered_one_level_below_parent() {
 fn make_backend_settings_stamps_the_context_it_is_given() {
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let (app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
     let context_env = crate::pane_ops::create::PaneContextEnv {
         context_id: 4242,
         name: "agentsquad".to_string(),
@@ -3162,13 +3155,19 @@ fn make_backend_settings_stamps_the_context_it_is_given() {
         root: Some(std::path::PathBuf::from("/tmp/squad")),
         depth: 3,
     };
-    let (settings, _pending_credential) = PlexiApp::make_backend_settings(
-        7,
+    let launch = app.host_terminal_launch(
+        context_env,
         Some(std::path::PathBuf::from("/tmp")),
-        &app.colors,
-        &context_env,
+        None,
         false,
     );
+    let pane_id = launch.pane_id;
+    struct Settings {
+        env: std::collections::HashMap<String, String>,
+    }
+    let settings = Settings {
+        env: crate::pane_ops::construct::probes::env_at_backend_entry(launch),
+    };
     assert_eq!(
         settings.env.get("PLEXI_CONTEXT_ID"),
         Some(&"4242".to_string())
@@ -3181,7 +3180,10 @@ fn make_backend_settings_stamps_the_context_it_is_given() {
         settings.env.get("PLEXI_CONTEXT_DEPTH"),
         Some(&"3".to_string())
     );
-    assert_eq!(settings.env.get("PLEXI_PANE_ID"), Some(&"7".to_string()));
+    assert_eq!(
+        settings.env.get("PLEXI_PANE_ID"),
+        Some(&pane_id.to_string())
+    );
 }
 
 /// An unresolvable parent fails before any pane is spawned — no orphan context,

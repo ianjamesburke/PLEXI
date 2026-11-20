@@ -360,7 +360,7 @@ impl PlexiApp {
         );
         let payload = match result {
             Ok((new_pane_id, target_ctx_id)) => {
-                self.set_pane_spawned_by(new_pane_id, spawned_by.clone(), effective_parent);
+                self.record_pane_provenance(new_pane_id);
                 if *focus {
                     self.focus_started_agent_pane(new_pane_id, effective_parent);
                 }
@@ -4874,15 +4874,18 @@ impl PlexiApp {
                         log::info!(
                             "pane_ipc: create_context window ctx_id={new_ctx_id} grid_x={new_x}"
                         );
-                        self.create_page_at(
-                            new_x,
-                            active_y,
-                            new_ctx_id,
-                            crate::pane_ops::create::TerminalSpawnOptions {
-                                initial_cmd: Some(cmd.as_str()),
-                                ..Default::default()
-                            },
+                        let context = self.pane_context_env_for_context(new_ctx_id);
+                        let cwd = self.default_page_cwd();
+                        let launch = self.host_terminal_launch(
+                            context,
+                            Some(cwd),
+                            Some(crate::pane_ops::construct::LaunchCommand {
+                                command: cmd.clone(),
+                                close_on_exit: false,
+                            }),
+                            false,
                         );
+                        self.create_page_at(new_x, active_y, new_ctx_id, launch);
                     }
                 }
                 // Write JSON response for callers that passed a response_file path.
@@ -6224,26 +6227,39 @@ impl PlexiApp {
         // (stint 0574; "Don't switch global state to thread data" trap).
         let target_ctx_id = self.router.get(target_ctx_idx).context_id;
         let cwd = Some(self.router.get(target_ctx_idx).root.clone());
-        let spawned = self.context_spawn_target(target_ctx_id).map(|(win, tile)| {
-            // vertical=true → side-by-side, matching the previous
-            // split_focused(false, ..) behavior (its LinearDir is inverted).
-            self.spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
-                win_idx: win,
-                target_tile: tile,
-                vertical: true,
-                new_pane_first: false,
-                keep_focus: false,
-                options: crate::pane_ops::create::TerminalSpawnOptions {
-                    initial_cmd: Some(command),
-                    close_on_exit: ephemeral,
-                    cwd_override: cwd,
-                    ..Default::default()
-                },
-            })
-        });
+        let spawned = self
+            .context_spawn_target(target_ctx_id)
+            .and_then(|(win, tile)| {
+                let context = self.pane_context_env_for_window(win);
+                let mut launch = self.host_terminal_launch(
+                    context,
+                    cwd,
+                    Some(crate::pane_ops::construct::LaunchCommand {
+                        command: command.to_string(),
+                        close_on_exit: ephemeral,
+                    }),
+                    false,
+                );
+                // The scheduler is the spawner: system provenance from the start.
+                launch.spawned_by = Some("system".to_string());
+                // vertical=true → side-by-side, matching the previous
+                // split_focused(false, ..) behavior (its LinearDir is inverted).
+                self.spawn_terminal_pane_at(
+                    crate::pane_ops::create::SplitPlacement {
+                        win_idx: win,
+                        target_tile: tile,
+                        vertical: true,
+                        new_pane_first: false,
+                        keep_focus: false,
+                    },
+                    launch,
+                )
+                .map_err(|error| log::warn!("scheduler: routine '{name}' pane: {error}"))
+                .ok()
+            });
 
         if let Some(pid) = spawned {
-            self.set_pane_spawned_by(pid, "system".to_string(), None);
+            self.record_pane_provenance(pid);
         }
         if spawned.is_none() {
             log::warn!("scheduler: routine '{name}' — failed to spawn a pane");

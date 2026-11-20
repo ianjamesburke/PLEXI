@@ -1233,11 +1233,16 @@ mod tests {
             "this test must use the in-memory folder store"
         );
 
-        let mut withheld = inside;
-        crate::host::shell::withhold_folder_secrets(&mut withheld, Some(&folder_a));
+        let withheld = crate::host::shell::build_env_with_secrets(
+            Some(&folder_a),
+            crate::host::shell::SecretPolicy {
+                terminal: true,
+                folder: false,
+            },
+        );
         assert!(
             !withheld.contains_key(name),
-            "a pane-requested spawn must not keep the folder secret"
+            "a pane-requested spawn must not receive the folder secret"
         );
         assert!(withheld
             .keys()
@@ -1475,8 +1480,14 @@ mod lazy_startup_tests {
             };
             let _features = crate::release::set_test_experiments(&features);
             super::super::store::take_test_value_reads();
-            let mut env = crate::host::shell::build_env_with_secrets(Some(&folder), !enabled);
-            crate::host::shell::withhold_folder_secrets(&mut env, Some(&folder));
+            // Disabled: every class allowed but the experiment off. Enabled:
+            // an agent's policy, which resolves no class at all.
+            let policy = if enabled {
+                crate::host::shell::SecretPolicy::NONE
+            } else {
+                crate::host::shell::SecretPolicy::ALL
+            };
+            let env = crate::host::shell::build_env_with_secrets(Some(&folder), policy);
             assert!(!env.contains_key("DEMO_TOKEN_0957"));
             assert_eq!(
                 super::super::store::take_test_value_reads(),

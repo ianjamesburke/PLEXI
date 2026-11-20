@@ -522,14 +522,11 @@ fn new_tab_leaves_window_settled() {
     let (a, _b, _c) = two_window_fixture(&mut h);
     assert!(h.app.windows[0].tree.tiles.find_pane(&a).is_some());
     let anchor = h.app.focused_tab_anchor(0);
-    h.app.new_tab(
-        0,
-        anchor,
-        crate::pane_ops::create::TerminalSpawnOptions {
-            inject_folder_secrets: false,
-            ..Default::default()
-        },
-    );
+    let context_id = h.app.windows[0].context_id;
+    let launch = h
+        .app
+        .test_terminal_launch(context_id, Some(h.workspace_root()), None);
+    let _ = h.app.new_tab(0, anchor, launch);
     assert_eq!(h.app.windows[0].panes.len(), 3, "new_tab adds a pane");
     h.assert_window_settled(0, "new_tab");
 }

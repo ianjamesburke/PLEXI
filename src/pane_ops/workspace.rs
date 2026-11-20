@@ -3,6 +3,7 @@
 
 use crate::app::PlexiApp;
 use crate::host::context::{ContextName, Window};
+use crate::host::pane::TerminalPane;
 use crate::host::shell;
 use crate::spatial::tiling::PaneId;
 use crate::workspace::WorkspaceFile;
@@ -753,15 +754,8 @@ impl PlexiApp {
             tree_history: Default::default(),
         });
         let new_idx = self.windows.len() - 1;
-        if self
-            .seed_window_root_pane(
-                new_idx,
-                &context_env,
-                cwd.clone(),
-                super::create::TerminalSpawnOptions::default(),
-            )
-            .is_none()
-        {
+        let launch = self.host_terminal_launch(context_env.clone(), Some(cwd.clone()), None, false);
+        if self.seed_window_root_pane(new_idx, launch).is_none() {
             log::error!("new_context_empty: failed to seed root pane — aborting new context");
             self.windows.pop();
             return;
@@ -885,15 +879,9 @@ impl PlexiApp {
             tree_history: Default::default(),
         });
         let new_idx = self.windows.len() - 1;
-        if self
-            .seed_window_root_pane(
-                new_idx,
-                &context_env,
-                path.clone(),
-                super::create::TerminalSpawnOptions::default(),
-            )
-            .is_none()
-        {
+        let launch =
+            self.host_terminal_launch(context_env.clone(), Some(path.clone()), None, false);
+        if self.seed_window_root_pane(new_idx, launch).is_none() {
             log::error!(
                 "new_context_at_path: failed to seed root pane for {} — aborting new context",
                 path.display()
@@ -953,159 +941,146 @@ impl PlexiApp {
             Some(x) => x + 1,
             None => 1,
         };
-        self.create_page_at(
-            new_x,
-            active_y,
-            ws_id,
-            super::create::TerminalSpawnOptions::default(),
-        );
+        let context = self.pane_context_env_for_context(ws_id);
+        let cwd = self.default_page_cwd();
+        let launch = self.host_terminal_launch(context, Some(cwd), None, false);
+        self.create_page_at(new_x, active_y, ws_id, launch);
     }
 
-    /// Shared creation helper: create a single-pane window at `(grid_x, grid_y)` in
-    /// `context_id` and make it the active window.
+    /// The directory a user-opened page starts in: the active context's
+    /// root, or home in place of `/`. Decided by the caller as admission;
+    /// [`Self::create_page_at`] takes the launch's directory as given.
+    pub(crate) fn default_page_cwd(&self) -> PathBuf {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        self.resolve_new_pane_cwd(None)
+            .filter(|p| p != &PathBuf::from("/"))
+            .unwrap_or(home)
+    }
+
+    /// Shared creation helper: construct `launch` into a single-pane window at
+    /// `(grid_x, grid_y)` in `context_id` and make it the active window. The
+    /// launch's directory is used as given.
     pub(crate) fn create_page_at(
         &mut self,
         grid_x: u32,
         grid_y: u32,
         context_id: u64,
-        options: super::create::TerminalSpawnOptions<'_>,
+        launch: super::construct::TerminalLaunch,
     ) -> Option<PaneId> {
-        let close_on_exit = options.close_on_exit;
+        let pane_id = launch.pane_id;
+        let pane = match self.construct_terminal(launch) {
+            Ok(pane) => pane,
+            Err(error) => {
+                log::error!("create_page_at({grid_x},{grid_y}): pane {pane_id}: {error}");
+                return None;
+            }
+        };
+        Some(self.install_new_window(grid_x, grid_y, context_id, pane))
+    }
+
+    /// Install a constructed terminal as the only pane of a new window at
+    /// `(grid_x, grid_y)` in `context_id` and make it the active window. The
+    /// window's path is the pane's directory (home for a backend default).
+    pub(crate) fn install_new_window(
+        &mut self,
+        grid_x: u32,
+        grid_y: u32,
+        context_id: u64,
+        pane: TerminalPane,
+    ) -> PaneId {
+        let pane_id = pane.id;
+        let path = pane
+            .initial_cwd
+            .clone()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("/"));
+        log::info!(
+            "install_new_window({grid_x},{grid_y}): pane_id={pane_id} cwd={} context_id={context_id}",
+            path.display()
+        );
         let old_window_id = self.windows[self.active_window].window_id;
         let old_focus = self.windows[self.active_window].focused_pane;
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let cwd = options
-            .cwd_override
-            .clone()
-            .or_else(|| self.resolve_new_pane_cwd(None))
-            .filter(|p| p != &PathBuf::from("/"))
-            .unwrap_or(home);
-        log::info!(
-            "create_page_at({grid_x},{grid_y}): cwd={} context_id={context_id} close_on_exit={close_on_exit}",
-            cwd.display()
-        );
-        let context_env = self.pane_context_env_for_context(context_id);
-        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(
-            &context_env,
-            super::create::TerminalSpawnOptions {
-                cwd_override: Some(cwd.clone()),
-                ..options
-            },
-        ) else {
-            log::error!("Failed to create terminal for new page at ({grid_x}, {grid_y})");
-            return None;
-        };
-        let pane_id = panes.keys().next().copied();
-        let name = String::new();
-        let ctx_id = context_id;
+        let mut tiles = egui_tiles::Tiles::default();
+        let root_tile = tiles.insert_pane(pane_id);
+        let panes: crate::host::context::PaneMap =
+            [(pane_id, crate::host::pane::Pane::Terminal(Box::new(pane)))]
+                .into_iter()
+                .collect();
         let win_id = self.next_window_id;
         self.next_window_id += 1;
         self.push_focus_history(old_window_id, old_focus);
         self.windows.push(Window {
-            name,
-            path: cwd,
-            tree,
-            panes: panes.into(),
+            name: String::new(),
+            path,
+            tree: egui_tiles::Tree::new("plexi", root_tile, tiles),
+            panes,
             focused_pane: Some(root_tile),
             zoomed_pane: None,
             grid_x,
             grid_y,
             window_id: win_id,
-            context_id: ctx_id,
+            context_id,
             tree_history: Default::default(),
         });
         self.active_window = self.windows.len() - 1;
-        self.context_active_window.insert(ctx_id, win_id);
-        log::info!("window: created window={win_id} context={ctx_id}");
+        self.context_active_window.insert(context_id, win_id);
+        log::info!("window: created window={win_id} context={context_id}");
         self.minimap.visible = true;
         pane_id
     }
 
-    /// The single install point for a context's base root terminal pane. Creates
-    /// a fresh single-pane terminal tree via
-    /// [`create_single_pane_tree`](Self::create_single_pane_tree) and installs it
-    /// into window `win_idx` in place — replacing its tree/panes, focusing the
-    /// root tile, and clearing any zoom. Every path that must leave a context
-    /// with a live root terminal funnels here: fresh-profile first boot,
-    /// [`new_context_empty`](Self::new_context_empty),
-    /// [`new_context_at_path`](Self::new_context_at_path), and the spawn-queue
-    /// fallback ([`seed_root_pane`](Self::seed_root_pane)).
+    /// The single install point for a context's base root terminal pane:
+    /// constructs `launch` and installs it as window `win_idx`'s only pane.
+    /// Every path that must leave a context with a live root terminal funnels
+    /// here: fresh-profile first boot,
+    /// [`new_context_empty`](Self::new_context_empty) and
+    /// [`new_context_at_path`](Self::new_context_at_path).
     ///
-    /// Context metadata for the terminal's backend settings is read from the
-    /// *active* window (see `create_single_pane_tree`). New-context callers seed
-    /// before switching `active_window`, so that historical env-var context is
-    /// preserved unchanged.
-    ///
-    /// Returns `(pane_id, root_tile)`, or `None` if the PTY-backed terminal
-    /// failed to spawn — the caller decides how to degrade.
+    /// Returns `(pane_id, root_tile)`, or `None` if the terminal failed to
+    /// construct — the caller decides how to degrade.
     pub(crate) fn seed_window_root_pane(
         &mut self,
         win_idx: usize,
-        context: &super::create::PaneContextEnv,
-        cwd: PathBuf,
-        options: super::create::TerminalSpawnOptions<'_>,
+        launch: super::construct::TerminalLaunch,
     ) -> Option<(PaneId, egui_tiles::TileId)> {
         let spawn_start = std::time::Instant::now();
-        let (tree, panes, root_tile) = self.create_single_pane_tree(
-            context,
-            super::create::TerminalSpawnOptions {
-                cwd_override: Some(cwd),
-                ..options
-            },
-        )?;
-        let spawn_duration = spawn_start.elapsed();
-        let pane_id = *panes
-            .keys()
-            .next()
-            .expect("create_single_pane_tree always yields exactly one pane");
+        let pane_id = launch.pane_id;
+        let pane = match self.construct_terminal(launch) {
+            Ok(pane) => pane,
+            Err(error) => {
+                log::error!("seed_window_root_pane: pane {pane_id}: {error}");
+                return None;
+            }
+        };
+        let root_tile = self.install_window_root(win_idx, pane);
         log::info!(
-            "seed_window_root_pane: spawned root pane {pane_id} in {spawn_duration:?} (win_idx={win_idx}, context_id={})",
-            context.context_id
+            "seed_window_root_pane: spawned root pane {pane_id} in {:?} (win_idx={win_idx})",
+            spawn_start.elapsed()
         );
-        let win = &mut self.windows[win_idx];
-        win.tree = tree;
-        win.panes = panes.into();
-        win.focused_pane = Some(root_tile);
-        win.zoomed_pane = None;
-        win.note_tree_rebuilt();
         Some((pane_id, root_tile))
     }
 
-    /// Seed a root terminal pane into window `win_idx` when it has no tree root
-    /// and no focused pane yet (the windowless-boot state). Returns the id of the
-    /// pane actually created, or `None` if terminal creation failed.
-    ///
-    /// The spawn_pane IPC fallback needs this because `split_focused` returns
-    /// early when there is no focused pane to split, silently dropping the spawn.
-    /// Unlike `create_page_at`, this populates the *existing* active window in
-    /// place rather than pushing a new one, so a seeded/queued `pane new` lands
-    /// in the window the host booted with.
-    pub(crate) fn seed_root_pane(
+    /// Install a constructed terminal as window `win_idx`'s whole tree,
+    /// replacing its tree and panes, focusing it and clearing any zoom.
+    pub(crate) fn install_window_root(
         &mut self,
         win_idx: usize,
-        options: super::create::TerminalSpawnOptions<'_>,
-    ) -> Option<crate::spatial::tiling::PaneId> {
-        let (close_on_exit, inject_folder_secrets) =
-            (options.close_on_exit, options.inject_folder_secrets);
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let cwd = options
-            .cwd_override
-            .clone()
-            .or_else(|| self.resolve_new_pane_cwd(None))
-            .filter(|p| p != &PathBuf::from("/"))
-            .unwrap_or(home);
-        let context = self.pane_context_env_for_window(win_idx);
-        let Some((pane_id, _root_tile)) =
-            self.seed_window_root_pane(win_idx, &context, cwd, options)
-        else {
-            log::error!("seed_root_pane: failed to create terminal for empty window idx={win_idx}");
-            return None;
-        };
-        let window_id = self.windows[win_idx].window_id;
-        log::info!(
-            "seed_root_pane: seeded root pane_id={pane_id} into empty window_id={window_id} (windowless-boot spawn fallback) close_on_exit={close_on_exit} inject_folder_secrets={inject_folder_secrets}"
-        );
-        Some(pane_id)
+        pane: TerminalPane,
+    ) -> egui_tiles::TileId {
+        let pane_id = pane.id;
+        let mut tiles = egui_tiles::Tiles::default();
+        let root_tile = tiles.insert_pane(pane_id);
+        let panes: crate::host::context::PaneMap =
+            [(pane_id, crate::host::pane::Pane::Terminal(Box::new(pane)))]
+                .into_iter()
+                .collect();
+        let win = &mut self.windows[win_idx];
+        win.tree = egui_tiles::Tree::new("plexi", root_tile, tiles);
+        win.panes = panes;
+        win.focused_pane = Some(root_tile);
+        win.zoomed_pane = None;
+        win.note_tree_rebuilt();
+        root_tile
     }
 
     pub(crate) fn reset_active_context(&mut self) {
@@ -1116,13 +1091,8 @@ impl PlexiApp {
             self.router.active().root
         );
         let context = self.pane_context_env_for_window(self.active_window);
-        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(
-            &context,
-            super::create::TerminalSpawnOptions {
-                cwd_override: Some(cwd),
-                ..Default::default()
-            },
-        ) else {
+        let launch = self.host_terminal_launch(context, Some(cwd), None, false);
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(launch) else {
             log::error!("Failed to create terminal for reset context");
             return;
         };

@@ -14,6 +14,7 @@ pub mod gate;
 pub(crate) mod host_key;
 pub mod integrity;
 mod needs_you_store;
+pub(crate) mod pane_authority;
 pub mod principal;
 pub(crate) mod seal;
 

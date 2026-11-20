@@ -3367,7 +3367,7 @@ impl HeadlessBackend {
                 let cwd = self.h.workspace_root().to_path_buf();
                 self.h.with_app_mut(|app| {
                     let pane_id = app.host.alloc_pane_id();
-                    let mut terminal = crate::host::pane::TerminalPane::new(
+                    let mut terminal = crate::host::pane::TerminalPane::fixture(
                         pane_id,
                         app.ctx.clone(),
                         app.pty_event_tx.clone(),

@@ -829,9 +829,10 @@ pub struct TerminalPane {
     pub agent_session_id: Option<String>,
     /// Optional agent role config name (`.plexi/agents/<name>.toml`).
     pub agent_role: Option<String>,
-    /// Permission posture copied from the agent definition at spawn. Editing
-    /// settings.toml cannot widen a live worker's authority.
-    pub agent_permission_posture: Option<crate::broker::PermissionPosture>,
+    /// The pane's credentials and the authority binding they were issued
+    /// from (posture, provenance), fixed at construction (stint 1632).
+    /// `None` only for a credential-free fixture.
+    credentials: Option<crate::pane_ops::construct::PaneCredentials>,
     /// Latest blocked reason reported by hook or `plexi agent ask`.
     pub last_blocked_reason: Option<crate::protocol::AgentBlockedReason>,
     /// Cached tail preview preserved across Standby / Interrupted restore.
@@ -973,43 +974,41 @@ impl std::fmt::Display for TerminalSpawnError {
 
 impl std::error::Error for TerminalSpawnError {}
 
-/// The restrictions and provenance a terminal pane holds from the moment it
-/// exists. Passed into construction so no pane value, and no backend command
-/// or credential behind it, is ever reachable without them (stint 1632).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PaneLaunchAuthority {
-    /// Permission ceiling; `None` leaves the pane to its role or Ask.
-    pub posture: Option<crate::broker::PermissionPosture>,
-    /// Verified provenance, over any `PLEXI_SPAWNED_BY` in the environment.
-    pub spawned_by: Option<String>,
-}
-
 impl TerminalPane {
-    pub fn new(
+    /// Start a constructed terminal under `credentials` (see
+    /// `PlexiApp::construct_terminal`, the only production caller).
+    pub(crate) fn start(
+        id: u64,
+        ctx: egui::Context,
+        tx: Sender<(u64, PtyEvent)>,
+        settings: BackendSettings,
+        default_font_size: f32,
+        credentials: crate::pane_ops::construct::PaneCredentials,
+    ) -> Result<Self, TerminalSpawnError> {
+        Self::spawn(id, ctx, tx, settings, default_font_size, Some(credentials))
+    }
+
+    /// A terminal with no credentials and no authority binding, for test and
+    /// scene fixtures that need a live PTY. Its posture is the broker
+    /// default; nothing can authenticate as it.
+    #[cfg(test)]
+    pub(crate) fn fixture(
         id: u64,
         ctx: egui::Context,
         tx: Sender<(u64, PtyEvent)>,
         settings: BackendSettings,
         default_font_size: f32,
     ) -> Result<Self, TerminalSpawnError> {
-        Self::with_authority(
-            id,
-            ctx,
-            tx,
-            settings,
-            default_font_size,
-            PaneLaunchAuthority::default(),
-        )
+        Self::spawn(id, ctx, tx, settings, default_font_size, None)
     }
 
-    /// Construct a terminal holding `authority` before its backend starts.
-    pub fn with_authority(
+    fn spawn(
         id: u64,
         ctx: egui::Context,
         tx: Sender<(u64, PtyEvent)>,
         mut settings: BackendSettings,
         default_font_size: f32,
-        authority: PaneLaunchAuthority,
+        credentials: Option<crate::pane_ops::construct::PaneCredentials>,
     ) -> Result<Self, TerminalSpawnError> {
         settings.env.insert(
             super::process_cleanup::SESSION_ENV.into(),
@@ -1023,8 +1022,9 @@ impl TerminalPane {
             .env
             .get("PLEXI_PARENT_PANE")
             .and_then(|v| v.parse::<u64>().ok());
-        let spawned_by = authority
-            .spawned_by
+        let spawned_by = credentials
+            .as_ref()
+            .and_then(|c| c.authority().spawned_by.clone())
             .or_else(|| settings.env.get("PLEXI_SPAWNED_BY").cloned())
             .filter(|s| !s.trim().is_empty())
             // A pane nobody stamped (new window/split/first shell) was opened by the
@@ -1069,6 +1069,17 @@ impl TerminalPane {
         ));
         let program = settings.shell.clone();
         let working_directory = settings.working_directory.clone();
+        #[cfg(test)]
+        if let Err(cause) = crate::pane_ops::construct::probes::backend_entry(&settings) {
+            let error = TerminalSpawnError {
+                pane_id: id,
+                program,
+                working_directory,
+                cause,
+            };
+            log::error!("{error}");
+            return Err(error);
+        }
         let backend = match TerminalBackend::new(id, ctx, tx, settings) {
             Ok(b) => b,
             Err(e) => {
@@ -1101,7 +1112,7 @@ impl TerminalPane {
             agent_harness,
             agent_session_id: None,
             agent_role,
-            agent_permission_posture: authority.posture,
+            credentials,
             last_blocked_reason: None,
             tail_preview: None,
             agent_completed: false,
@@ -1603,6 +1614,18 @@ impl TerminalPane {
 
     /// Build the persisted [`crate::workspace::SavedAgentSession`] for this pane
     /// if it is an agent pane.
+    /// The authority binding this pane was constructed under, if it has one.
+    pub(crate) fn authority(
+        &self,
+    ) -> Option<&std::sync::Arc<crate::broker::pane_authority::PaneAuthority>> {
+        self.credentials.as_ref().map(|c| c.authority())
+    }
+
+    /// The pane's permission ceiling, fixed at construction.
+    pub(crate) fn permission_posture(&self) -> Option<&crate::broker::PermissionPosture> {
+        self.authority().and_then(|a| a.posture.as_ref())
+    }
+
     pub fn build_saved_agent_session(&self) -> Option<crate::workspace::SavedAgentSession> {
         self.build_saved_agent_session_with_scrollback(20)
     }
@@ -1623,8 +1646,8 @@ impl TerminalPane {
             if let Some(ref role) = self.agent_role {
                 s.config_name = Some(role.clone());
             }
-            if self.agent_permission_posture.is_some() {
-                s.permission_posture = self.agent_permission_posture.clone();
+            if let Some(posture) = self.permission_posture() {
+                s.permission_posture = Some(posture.clone());
             }
             (s.last_state, s.last_detail) = self.effective_agent_state();
             if self.last_blocked_reason.is_some() {
@@ -1671,7 +1694,7 @@ impl TerminalPane {
             fleet_since: self.fleet_since,
             harness,
             config_name: self.agent_role.clone(),
-            permission_posture: self.agent_permission_posture.clone(),
+            permission_posture: self.permission_posture().cloned(),
             session_id,
             last_state,
             last_blocked_reason: self.last_blocked_reason,
@@ -1816,7 +1839,7 @@ mod spawn_error_tests {
     #[test]
     fn terminal_spawn_failure_names_the_program_and_the_cause() {
         let (tx, _rx) = std::sync::mpsc::channel();
-        let error = match TerminalPane::new(
+        let error = match TerminalPane::fixture(
             7,
             egui::Context::default(),
             tx,

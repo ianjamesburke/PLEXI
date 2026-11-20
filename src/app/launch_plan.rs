@@ -26,7 +26,6 @@ use super::agent_tools::{AgentCallRequest, AgentCaller};
 use super::launch_spec::PaneLaunchSpec;
 use super::PlexiApp;
 use crate::broker::PermissionPosture;
-use crate::host::pane::PaneLaunchAuthority;
 use crate::host::worktree::ManagedWorktree;
 use crate::pane_ops::create::{AgentOrigin, AgentWorkerAuthority, SubcontextTarget};
 use crate::protocol::SpawnSource;
@@ -168,10 +167,68 @@ pub(crate) struct AgentCallPlan {
     pub(crate) worktree: Option<String>,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum LaunchPlan<'a> {
-    Terminal(&'a TerminalLaunchPlan),
-    Agent(&'a AgentCallPlan),
+/// An admitted launch, consumed by [`PlexiApp::apply_launch`].
+#[derive(Clone, Debug)]
+pub(crate) enum LaunchPlan {
+    Terminal(TerminalLaunchPlan),
+    Agent(AgentCallPlan),
+}
+
+impl LaunchPlan {
+    /// `(branch, repository anchor)` of the checkout this plan runs in.
+    fn checkout(&self) -> Option<(&str, &std::path::Path)> {
+        match self {
+            Self::Terminal(plan) => plan
+                .worktree
+                .as_ref()
+                .map(|(branch, anchor)| (branch.as_str(), anchor.as_path())),
+            Self::Agent(plan) => plan
+                .worktree
+                .as_deref()
+                .map(|branch| (branch, plan.lookup_root.as_path())),
+        }
+    }
+}
+
+/// A launch that did not install a pane, and what became of the checkout
+/// prepared for it.
+#[derive(Debug)]
+pub(crate) struct LaunchRefused {
+    pub(crate) error: String,
+    pub(crate) worktree: Option<crate::host::worktree::WorktreeCloseReport>,
+}
+
+impl std::fmt::Display for LaunchRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.error)?;
+        if let Some(report) = &self.worktree {
+            write!(f, "; worktree {} {}", report.action, report.path.display())?;
+            if let Some(reason) = &report.reason {
+                write!(f, " ({reason})")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Where a revalidated terminal plan installs, resolved in the same turn as
+/// construction: window indices and tiles never outlive it.
+enum TerminalPlacement {
+    Split(crate::pane_ops::create::SplitPlacement),
+    Tab {
+        win_idx: usize,
+        anchor: Option<PaneId>,
+        keep_focus: bool,
+    },
+    Root {
+        win_idx: usize,
+    },
+    NewWindow {
+        grid_x: u32,
+        grid_y: u32,
+        context_id: u64,
+        restore_active: Option<u64>,
+    },
 }
 
 fn refused(what: String) -> String {
@@ -190,22 +247,60 @@ pub(crate) fn handoff_completion(role: &str, task: &str, successor_pane_id: Pane
 }
 
 impl PlexiApp {
-    /// Commit an admitted plan with its prepared resource (a created
-    /// checkout). One path for every terminal and agent launch.
-    pub(crate) fn apply_launch(
-        &mut self,
-        plan: LaunchPlan<'_>,
-        prepared: Option<&ManagedWorktree>,
-    ) -> Result<PaneId, String> {
-        let outcome = match plan {
-            LaunchPlan::Terminal(plan) => self.apply_terminal_launch(plan, prepared),
-            LaunchPlan::Agent(plan) => self.apply_agent_call(plan, prepared),
+    /// Commit an admitted plan: the one owner from admission through
+    /// installation for every terminal and agent launch. It prepares the
+    /// plan's checkout, revalidates the caller, authority and destination,
+    /// constructs the pane under its admitted authority, installs it, and
+    /// only then hands the checkout to the pane. A refusal at any step after
+    /// preparation reclaims or retains the checkout and reports which.
+    pub(crate) fn apply_launch(&mut self, plan: LaunchPlan) -> Result<PaneId, LaunchRefused> {
+        let prepared = match plan.checkout() {
+            Some((branch, anchor)) => {
+                match crate::host::worktree::create_worktree(anchor, branch) {
+                    Ok(wt) => Some(wt),
+                    Err(error) => {
+                        log::info!("launch_plan: checkout '{branch}' not prepared: {error}");
+                        return Err(LaunchRefused {
+                            error,
+                            worktree: None,
+                        });
+                    }
+                }
+            }
+            None => None,
         };
-        match &outcome {
-            Ok(pane_id) => log::info!("launch_plan: applied pane_id={pane_id}"),
-            Err(error) => log::info!("launch_plan: refused at commit: {error}"),
+        #[cfg(test)]
+        if let Some(wt) = &prepared {
+            probes::checkout_prepared(self, wt);
         }
-        outcome
+        let outcome = match &plan {
+            LaunchPlan::Terminal(plan) => self.apply_terminal_launch(plan, prepared.as_ref()),
+            LaunchPlan::Agent(plan) => self.apply_agent_call(plan, prepared.as_ref()),
+        };
+        match outcome {
+            Ok(pane_id) => {
+                if let Some(wt) = prepared {
+                    log::info!(
+                        "pane_worktree: registered pane_id={pane_id} branch='{}' path='{}'",
+                        wt.branch,
+                        wt.path.display()
+                    );
+                    self.pane_worktrees.insert(pane_id, wt);
+                }
+                log::info!("launch_plan: applied pane_id={pane_id}");
+                Ok(pane_id)
+            }
+            Err(error) => {
+                let worktree = prepared.map(|wt| {
+                    let report = crate::host::worktree::reclaim_or_retain_worktree(&wt);
+                    log::info!("pane_worktree: launch refused; worktree disposition {report:?}");
+                    report
+                });
+                let refused = LaunchRefused { error, worktree };
+                log::info!("launch_plan: refused at commit: {refused}");
+                Err(refused)
+            }
+        }
     }
 
     fn window_membership(&self, win_idx: usize) -> WindowMembership {
@@ -489,9 +584,8 @@ impl PlexiApp {
         })
     }
 
-    /// Serve a terminal `spawn_pane`: admit it, prepare its checkout when it
-    /// asked for one, commit, and answer the caller. The checkout belongs to
-    /// the pane only once the pane exists; a refused commit reclaims it.
+    /// Serve a terminal `spawn_pane`: admit it, commit it, and answer the
+    /// caller. A refusal reports what became of a prepared checkout.
     pub(crate) fn launch_terminal_spec(&mut self, spec: &PaneLaunchSpec) {
         let plan = match self.admit_terminal_launch(spec) {
             Ok(plan) => plan,
@@ -501,37 +595,19 @@ impl PlexiApp {
                 return;
             }
         };
-        let prepared = match &plan.worktree {
-            Some((branch, anchor)) => {
-                match crate::host::worktree::create_worktree(anchor, branch) {
-                    Ok(wt) => Some(wt),
-                    Err(error) => {
-                        log::warn!("pane_ipc: spawn_pane worktree rejected: {error}");
-                        self.reply_spawn_pane(spec, &Err(error));
-                        return;
+        match self.apply_launch(LaunchPlan::Terminal(plan)) {
+            Ok(pane_id) => self.reply_spawn_pane(spec, &Ok(pane_id)),
+            Err(refused) => {
+                log::warn!("pane_ipc: spawn_pane refused: {refused}");
+                if let Some(rf) = &spec.response_file {
+                    let mut reply = json!({ "error": refused.to_string() });
+                    if let Some(report) = &refused.worktree {
+                        reply["worktree"] = serde_json::to_value(report).unwrap_or(Value::Null);
                     }
-                }
-            }
-            None => None,
-        };
-        let outcome = self.apply_launch(LaunchPlan::Terminal(&plan), prepared.as_ref());
-        if let Some(wt) = prepared {
-            match outcome {
-                Ok(pane_id) => {
-                    log::info!(
-                        "pane_worktree: registered pane_id={pane_id} branch='{}' path='{}'",
-                        wt.branch,
-                        wt.path.display()
-                    );
-                    self.pane_worktrees.insert(pane_id, wt);
-                }
-                Err(_) => {
-                    let report = crate::host::worktree::reclaim_or_retain_worktree(&wt);
-                    log::info!("pane_worktree: launch refused; worktree disposition {report:?}");
+                    crate::rpc::write_json_response(rf, reply);
                 }
             }
         }
-        self.reply_spawn_pane(spec, &outcome);
     }
 
     /// The posture ceiling a live caller grants now. A caller that closed
@@ -552,28 +628,14 @@ impl PlexiApp {
         Ok(())
     }
 
-    fn apply_terminal_launch(
-        &mut self,
-        plan: &TerminalLaunchPlan,
-        prepared: Option<&ManagedWorktree>,
-    ) -> Result<PaneId, String> {
-        self.verify_terminal_authority(&plan.authority)?;
-        let authority = &plan.authority;
-        let cwd = prepared.map(|wt| wt.path.clone()).or(plan.cwd.clone());
-        // The ceiling and provenance are part of construction, so the shell
-        // and its credential never run under a pane without them.
-        let options = crate::pane_ops::create::TerminalSpawnOptions {
-            initial_cmd: plan.initial_cmd.as_deref(),
-            close_on_exit: plan.ephemeral,
-            cwd_override: cwd,
-            agent_pane: authority.agent_pane,
-            inject_folder_secrets: authority.inject_folder_secrets,
-            authority: PaneLaunchAuthority {
-                posture: authority.inherited_posture.clone(),
-                spawned_by: Some(authority.spawned_by.clone()),
-            },
-        };
-        let pane_id = match &plan.destination {
+    /// Revalidate a terminal plan's destination and resolve where it installs,
+    /// changing nothing. Every stale target refuses here, before anything is
+    /// constructed or any credential exists.
+    fn resolve_terminal_placement(
+        &self,
+        destination: &TerminalDestination,
+    ) -> Result<TerminalPlacement, String> {
+        Ok(match destination {
             TerminalDestination::Split {
                 at,
                 anchor,
@@ -583,13 +645,12 @@ impl PlexiApp {
             } => {
                 let win_idx = self.locate_window(*at)?;
                 let target_tile = self.locate_split_anchor(win_idx, *at, anchor)?;
-                self.spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
+                TerminalPlacement::Split(crate::pane_ops::create::SplitPlacement {
                     win_idx,
                     target_tile,
                     vertical: *vertical,
                     new_pane_first: *new_pane_first,
                     keep_focus: *keep_focus,
-                    options,
                 })
             }
             TerminalDestination::Tab {
@@ -608,22 +669,16 @@ impl PlexiApp {
                         None
                     }
                 };
-                let original_focus = self.windows[win_idx].focused_pane;
-                let pane_id = self
-                    .new_tab(win_idx, anchor, options)
-                    .ok_or_else(|| "failed to open the terminal tab".to_string())?;
-                // active_window is left alone: a tab never steals the user's
-                // window, only the target window's own focus.
-                if *keep_focus {
-                    self.restore_window_focused_pane(win_idx, original_focus);
+                TerminalPlacement::Tab {
+                    win_idx,
+                    anchor,
+                    keep_focus: *keep_focus,
                 }
-                pane_id
             }
             TerminalDestination::SeedEmptyRoot { at } => {
                 let win_idx = self.locate_window(*at)?;
                 self.require_empty_tree(win_idx, *at)?;
-                self.seed_root_pane(win_idx, options)
-                    .ok_or_else(|| "failed to seed root pane".to_string())?
+                TerminalPlacement::Root { win_idx }
             }
             TerminalDestination::NewWindow {
                 context_id,
@@ -641,12 +696,91 @@ impl PlexiApp {
                     .map(|w| w.grid_x)
                     .max()
                     .map_or(1, |x| x + 1);
-                let pane_id = self
-                    .create_page_at(grid_x, grid_y, context_id, options)
-                    .ok_or_else(|| "failed to create the terminal window".to_string())?;
+                TerminalPlacement::NewWindow {
+                    grid_x,
+                    grid_y,
+                    context_id,
+                    restore_active: *restore_active,
+                }
+            }
+        })
+    }
+
+    fn apply_terminal_launch(
+        &mut self,
+        plan: &TerminalLaunchPlan,
+        prepared: Option<&ManagedWorktree>,
+    ) -> Result<PaneId, String> {
+        self.verify_terminal_authority(&plan.authority)?;
+        let placement = self.resolve_terminal_placement(&plan.destination)?;
+        let authority = &plan.authority;
+        let context = match &placement {
+            TerminalPlacement::Split(at) => self.pane_context_env_for_window(at.win_idx),
+            TerminalPlacement::Tab { win_idx, .. } | TerminalPlacement::Root { win_idx } => {
+                self.pane_context_env_for_window(*win_idx)
+            }
+            TerminalPlacement::NewWindow { context_id, .. } => {
+                self.pane_context_env_for_context(*context_id)
+            }
+        };
+        // The directory is the admitted one, or the checkout prepared for
+        // this plan; the secret classes are the admitted ones for it.
+        let launch = crate::pane_ops::construct::TerminalLaunch {
+            pane_id: self.host.alloc_pane_id(),
+            posture: authority.inherited_posture.clone(),
+            spawned_by: Some(authority.spawned_by.clone()),
+            context,
+            cwd: prepared.map(|wt| wt.path.clone()).or(plan.cwd.clone()),
+            secrets: crate::host::shell::SecretPolicy {
+                terminal: !authority.agent_pane,
+                folder: !authority.agent_pane && authority.inject_folder_secrets,
+            },
+            agent_pane: authority.agent_pane,
+            command: plan.initial_cmd.clone().map(|command| {
+                crate::pane_ops::construct::LaunchCommand {
+                    command,
+                    close_on_exit: plan.ephemeral,
+                }
+            }),
+            ephemeral: plan.ephemeral,
+            env: Vec::new(),
+            mcp: crate::pane_ops::construct::McpBearer::Pane,
+            profile_dir: crate::config::config_dir(),
+        };
+        let pane = self
+            .construct_terminal(launch)
+            .map_err(|error| format!("terminal failed to start: {error}"))?;
+        let pane_id = match placement {
+            TerminalPlacement::Split(at) => self.install_split(at, pane)?,
+            TerminalPlacement::Tab {
+                win_idx,
+                anchor,
+                keep_focus,
+            } => {
+                let original_focus = self.windows[win_idx].focused_pane;
+                let pane_id = self.install_tab(win_idx, anchor, pane)?;
+                // active_window is left alone: a tab never steals the user's
+                // window, only the target window's own focus.
+                if keep_focus {
+                    self.restore_window_focused_pane(win_idx, original_focus);
+                }
+                pane_id
+            }
+            TerminalPlacement::Root { win_idx } => {
+                let pane_id = pane.id;
+                self.install_window_root(win_idx, pane);
+                pane_id
+            }
+            TerminalPlacement::NewWindow {
+                grid_x,
+                grid_y,
+                context_id,
+                restore_active,
+            } => {
+                let pane_id = self.install_new_window(grid_x, grid_y, context_id, pane);
                 if let Some(window_id) = restore_active {
                     if let Some(win_idx) =
-                        self.windows.iter().position(|w| w.window_id == *window_id)
+                        self.windows.iter().position(|w| w.window_id == window_id)
                     {
                         self.active_window = win_idx;
                     }
@@ -654,15 +788,10 @@ impl PlexiApp {
                 pane_id
             }
         };
-        if self.find_pane_in_any_window(pane_id).is_none() {
-            return Err(format!("terminal pane {pane_id} failed to start"));
-        }
         if let Some(ref name) = plan.name {
             self.apply_inline_pane_name(pane_id, name);
         }
-        // Stamped at construction; this records it in the session trace. The
-        // parent link is left alone so no result delivery is implied.
-        self.set_pane_spawned_by(pane_id, authority.spawned_by.clone(), None);
+        self.record_pane_provenance(pane_id);
         if let Some(ref schema) = plan.result_schema {
             self.pane_results.entry(pane_id).or_default().schema = Some(schema.clone());
             log::info!("pane_result: registered schema at spawn for pane_id={pane_id}");
@@ -879,26 +1008,80 @@ impl PlexiApp {
                 parent_context_id: *parent_context_id,
             },
         });
-        let authority = &plan.authority;
-        let (pane_id, _) = self.spawn_prepared_agent_worker_pane(
-            authority.worker.clone(),
-            &authority.role,
-            &authority.harness,
-            &authority.command,
-            &plan.task,
+        let placement = self.resolve_agent_spawn_location(
             subcontext,
-            authority.ephemeral,
             plan.child_parent,
             Some(cwd),
-            authority.result_schema.clone(),
-            None,
             true,
             AgentOrigin::Window {
                 window_id: plan.origin.window_id,
                 context_id: plan.origin.context_id,
             },
         )?;
+        let authority = &plan.authority;
+        let (pane_id, _) = self.launch_agent_worker(
+            crate::pane_ops::create::AgentWorkerLaunch {
+                authority: authority.worker.clone(),
+                pane_id: None,
+                spawned_by: None,
+                role: &authority.role,
+                harness: &authority.harness,
+                command: &authority.command,
+                task: &plan.task,
+                ephemeral: authority.ephemeral,
+                result_schema: authority.result_schema.clone(),
+                run_token: None,
+            },
+            placement,
+        )?;
         Ok(pane_id)
+    }
+}
+
+/// The test seam between checkout preparation and revalidation: a callback
+/// that runs synchronously, with the host, once a plan's checkout exists.
+#[cfg(test)]
+pub(crate) mod probes {
+    use std::cell::RefCell;
+
+    type CheckoutPrepared =
+        Box<dyn FnMut(&mut super::PlexiApp, &crate::host::worktree::ManagedWorktree)>;
+
+    thread_local! {
+        static CHECKOUT_PREPARED: RefCell<Option<CheckoutPrepared>> = RefCell::new(None);
+    }
+
+    /// Run `probe` after each checkout this thread prepares, until the guard
+    /// drops.
+    pub(crate) fn on_checkout_prepared(
+        probe: impl FnMut(&mut super::PlexiApp, &crate::host::worktree::ManagedWorktree) + 'static,
+    ) -> Guard {
+        CHECKOUT_PREPARED.with(|p| *p.borrow_mut() = Some(Box::new(probe)));
+        Guard
+    }
+
+    pub(crate) struct Guard;
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            CHECKOUT_PREPARED.with(|p| *p.borrow_mut() = None);
+        }
+    }
+
+    pub(super) fn checkout_prepared(
+        app: &mut super::PlexiApp,
+        wt: &crate::host::worktree::ManagedWorktree,
+    ) {
+        let probe = CHECKOUT_PREPARED.with(|p| p.borrow_mut().take());
+        if let Some(mut probe) = probe {
+            probe(app, wt);
+            CHECKOUT_PREPARED.with(|p| {
+                let mut slot = p.borrow_mut();
+                if slot.is_none() {
+                    *slot = Some(probe);
+                }
+            });
+        }
     }
 }
 
@@ -1049,7 +1232,15 @@ mod tests {
     }
 
     fn apply(h: &mut HostHarness, plan: &TerminalLaunchPlan) -> Result<PaneId, String> {
-        h.app.apply_launch(LaunchPlan::Terminal(plan), None)
+        h.app
+            .apply_launch(LaunchPlan::Terminal(plan.clone()))
+            .map_err(|refused| refused.to_string())
+    }
+
+    fn apply_agent(h: &mut HostHarness, plan: &AgentCallPlan) -> Result<PaneId, String> {
+        h.app
+            .apply_launch(LaunchPlan::Agent(plan.clone()))
+            .map_err(|refused| refused.to_string())
     }
 
     fn window_of(h: &HostHarness, pane_id: PaneId) -> usize {
@@ -1092,13 +1283,11 @@ mod tests {
         // Rebuild both trees in place through the production seed path.
         for win_idx in [0, work_win] {
             let context = h.app.pane_context_env_for_window(win_idx);
+            let launch = h
+                .app
+                .host_terminal_launch(context, Some(h.workspace_root()), None, false);
             h.app
-                .seed_window_root_pane(
-                    win_idx,
-                    &context,
-                    h.workspace_root(),
-                    crate::pane_ops::create::TerminalSpawnOptions::default(),
-                )
+                .seed_window_root_pane(win_idx, launch)
                 .expect("rebuilt root terminal");
         }
         assert_eq!(h.app.windows[0].context_id, main_ctx);
@@ -1202,18 +1391,11 @@ mod tests {
 
         // Fill and empty window 0 in place: an empty-window tab inserts into
         // the existing tree, and closing it leaves the tree empty again.
-        let filler = h
+        let context = h.app.pane_context_env_for_window(0);
+        let launch = h
             .app
-            .new_tab(
-                0,
-                None,
-                crate::pane_ops::create::TerminalSpawnOptions {
-                    cwd_override: Some(h.workspace_root()),
-                    inject_folder_secrets: false,
-                    ..Default::default()
-                },
-            )
-            .expect("filler tab");
+            .host_terminal_launch(context, Some(h.workspace_root()), None, false);
+        let filler = h.app.new_tab(0, None, launch).expect("filler tab");
         h.app.close_pane_by_id(filler);
         assert!(
             h.app.windows[0].tree.root.is_none(),
@@ -1306,43 +1488,6 @@ mod tests {
         }
     }
 
-    /// Finding 6, terminal: a caller's posture is the new pane's ceiling. A
-    /// posture that changes between admission and commit refuses; an
-    /// unchanged one is installed as admitted.
-    #[test]
-    fn launch_plan_terminal_authority_does_not_widen_after_admission() {
-        let mut h = HostHarness::new();
-        let caller = h.add_focused_terminal();
-        let set_posture = |h: &mut HostHarness, p: PermissionPosture| {
-            h.app.windows[0]
-                .panes
-                .get_mut(&caller)
-                .and_then(|p| p.as_terminal_mut())
-                .unwrap()
-                .agent_permission_posture = Some(p);
-        };
-        set_posture(&mut h, posture(&["tool.secret"]));
-        let widened = h
-            .app
-            .admit_terminal_launch(&spec(&h, "split_h", Some(caller), None))
-            .unwrap();
-        let kept = h
-            .app
-            .admit_terminal_launch(&spec(&h, "split_h", Some(caller), None))
-            .unwrap();
-
-        set_posture(&mut h, posture(&[]));
-        let error = apply(&mut h, &widened).expect_err("broadened caller refuses");
-        assert!(error.contains("posture changed"), "{error}");
-
-        set_posture(&mut h, posture(&["tool.secret"]));
-        let pane = apply(&mut h, &kept).expect("unchanged authority launches");
-        assert_eq!(
-            h.app.pane_permission_posture(pane),
-            Some(posture(&["tool.secret"]))
-        );
-    }
-
     fn write_role(root: &std::path::Path, deny: &str) {
         let dir = crate::agent::workspace_agents_dir(root).join("tester");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1356,7 +1501,34 @@ mod tests {
         .unwrap();
     }
 
-    fn admit_tester_call(h: &HostHarness, root: &std::path::Path) -> AgentCallPlan {
+    /// A tester worker constructed under its role's ceiling (deny
+    /// `tool.secret`) through the production worker path.
+    fn spawn_tester(h: &mut HostHarness, root: &std::path::Path) -> PaneId {
+        write_role(root, "'tool.secret'");
+        h.app
+            .spawn_agent_worker_pane(
+                "tester",
+                "pi",
+                "sleep 30",
+                "Run",
+                None,
+                false,
+                None,
+                Some(root.to_path_buf()),
+                None,
+                None,
+                false,
+                None,
+            )
+            .expect("tester worker")
+            .0
+    }
+
+    fn admit_tester_call_in(
+        h: &HostHarness,
+        root: &std::path::Path,
+        worktree: Option<&str>,
+    ) -> AgentCallPlan {
         h.app
             .admit_agent_call(&AgentCallRequest {
                 role: "tester",
@@ -1366,12 +1538,89 @@ mod tests {
                 // An outside-pane caller: authenticated socket, no pane.
                 peer_ancestry: &[u32::MAX],
                 cwd: Some(root.to_str().unwrap()),
-                worktree: None,
+                worktree,
                 asynchronous: true,
                 handoff: false,
                 response_file: "",
             })
             .expect("agent call admits")
+    }
+
+    fn admit_tester_call(h: &HostHarness, root: &std::path::Path) -> AgentCallPlan {
+        admit_tester_call_in(h, root, None)
+    }
+
+    /// A branch name no other test run uses: `wtp` places checkouts in a
+    /// directory shared by every repository under the same parent.
+    fn unique_branch(stem: &str) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        format!("{stem}-{}-{nanos}", std::process::id())
+    }
+
+    /// Remove a checkout a test left on disk (a retained, dirty one).
+    fn remove_checkout(root: &std::path::Path, path: &std::path::Path, branch: &str) {
+        for args in [
+            vec!["worktree", "remove", "--force", path.to_str().unwrap()],
+            vec!["branch", "-D", branch],
+        ] {
+            let _ = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(&args)
+                .status();
+        }
+    }
+
+    /// A git repository at `root` with one commit, for real checkouts.
+    fn init_repo(root: &std::path::Path) {
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ][..],
+        ] {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {args:?}");
+        }
+    }
+
+    /// Finding 1, terminal: a caller's ceiling is the new pane's, installed
+    /// at construction from the caller's own binding.
+    #[test]
+    fn launch_plan_terminal_inherits_the_callers_constructed_ceiling() {
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let caller = spawn_tester(&mut h, &root);
+        let ceiling = h
+            .app
+            .pane_permission_posture(caller)
+            .expect("caller ceiling");
+        assert_eq!(ceiling.deny, vec!["tool.secret".to_string()]);
+        let plan = h
+            .app
+            .admit_terminal_launch(&spec(&h, "split_h", Some(caller), None))
+            .unwrap();
+        assert_eq!(plan.authority.inherited_posture.as_ref(), Some(&ceiling));
+        let pane = apply(&mut h, &plan).expect("inherited terminal launches");
+        assert_eq!(h.app.pane_permission_posture(pane), Some(ceiling));
     }
 
     /// Finding 6, agent call: the worker's ceiling is the one admitted. A
@@ -1384,34 +1633,38 @@ mod tests {
         h.add_test_pane();
         let root = h.workspace_root();
         h.app.set_context_root(root.clone(), None);
+        init_repo(&root);
         write_role(&root, "'tool.secret'");
-        let checkout = tempfile::tempdir().unwrap();
-        write_role(checkout.path(), "");
-        let prepared = ManagedWorktree {
-            branch: "feature".into(),
-            path: checkout.path().to_path_buf(),
-            repo_root: root.clone(),
-            base_head: "0".repeat(40),
-            created_branch: true,
-        };
 
-        let plan = admit_tester_call(&h, &root);
-        let pane = h
-            .app
-            .apply_launch(LaunchPlan::Agent(&plan), Some(&prepared))
-            .expect("agent launches in the checkout");
+        let branch = unique_branch("ceiling");
+        let plan = admit_tester_call_in(&h, &root, Some(&branch));
+        let checkout = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let seen = checkout.clone();
+        let _seam = probes::on_checkout_prepared(move |_, wt| {
+            write_role(&wt.path, "");
+            *seen.borrow_mut() = Some(wt.path.clone());
+        });
+        let pane = apply_agent(&mut h, &plan).expect("agent launches in the checkout");
+        let path = checkout.borrow().clone().expect("checkout prepared");
+        let term = h.app.windows[window_of(&h, pane)].panes[&pane]
+            .as_terminal()
+            .unwrap();
+        assert_eq!(term.initial_cwd.as_deref(), Some(path.as_path()));
         let installed = h
             .app
             .pane_permission_posture(pane)
             .expect("ceiling installed");
         assert_eq!(installed.deny, vec!["tool.secret".to_string()]);
+        assert!(
+            h.app.pane_worktrees.contains_key(&pane),
+            "the pane owns its checkout"
+        );
+        h.app.close_pane_by_id(pane);
+        remove_checkout(&root, &path, &branch);
 
         let plan = admit_tester_call(&h, &root);
         write_role(&root, "");
-        let error = h
-            .app
-            .apply_launch(LaunchPlan::Agent(&plan), None)
-            .expect_err("broadened role refuses");
+        let error = apply_agent(&mut h, &plan).expect_err("broadened role refuses");
         assert!(error.contains("changed after admission"), "{error}");
     }
 
@@ -1716,15 +1969,15 @@ mod tests {
     #[test]
     fn launch_plan_socket_source_is_host_stamped() {
         let mut h = HostHarness::new();
-        let agent = h.add_focused_terminal();
-        let term = h.app.windows[0]
-            .panes
-            .get_mut(&agent)
-            .and_then(|p| p.as_terminal_mut())
-            .unwrap();
-        term.agent_role = Some("lead".into());
-        term.agent_permission_posture = Some(posture(&["tool.secret"]));
-        let agent_pid = term.backend.child_pid();
+        h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let agent = spawn_tester(&mut h, &root);
+        let agent_pid = h.app.windows[window_of(&h, agent)].panes[&agent]
+            .as_terminal()
+            .unwrap()
+            .backend
+            .child_pid();
         let wake = std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
         let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::channel(wake, "launch-plan-test");
         let response = h.workspace_root().join("unverified-spawn.json");
@@ -1785,7 +2038,7 @@ mod tests {
         };
         let verified = admit(&h, stamp(Some(&[agent_pid]), "").unwrap());
         assert_eq!(verified.caller_pane, Some(agent));
-        assert_eq!(verified.spawned_by, "agent:lead");
+        assert_eq!(verified.spawned_by, "agent:tester");
         assert_eq!(verified.inherited_posture, Some(posture(&["tool.secret"])));
         let outside = admit(&h, stamp(Some(&[u32::MAX]), "").unwrap());
         assert_eq!(
@@ -1799,7 +2052,7 @@ mod tests {
             .unwrap()
             .authority;
         assert_eq!(internal.caller_pane, Some(agent));
-        assert_eq!(internal.spawned_by, "agent:lead");
+        assert_eq!(internal.spawned_by, "agent:tester");
     }
 
     /// Finding 5: an outside caller's call is admitted under its origin
@@ -1830,57 +2083,214 @@ mod tests {
         let plan = admit_tester_call(&h, &root_a);
         let refused_plan = admit_tester_call(&h, &root_a);
         h.app.active_window = win_b;
-        let pane = h
-            .app
-            .apply_launch(LaunchPlan::Agent(&plan), None)
+        let pane = apply_agent(&mut h, &plan)
             .expect("focus elsewhere does not change the admitted origin");
         assert_eq!(window_of(&h, pane), second);
 
         let moved = tempfile::tempdir().unwrap();
         let pos_a = h.app.router.position(|c| c.context_id == ctx_a).unwrap();
         h.app.router.get_mut(pos_a).root = moved.path().to_path_buf();
-        let error = h
-            .app
-            .apply_launch(LaunchPlan::Agent(&refused_plan), None)
-            .expect_err("the origin's own root changed");
+        let error = apply_agent(&mut h, &refused_plan).expect_err("the origin's own root changed");
         assert!(error.contains("changed after admission"), "{error}");
     }
 
-    /// Finding 1: the creation primitives construct the pane with its
-    /// ceiling and provenance, so no pane exists, even inside one call,
-    /// without them.
-    #[test]
-    fn launch_plan_terminal_is_constructed_with_its_authority() {
-        let mut h = HostHarness::new();
-        let panes = views(&mut h, 1);
-        let [a] = lay_out(&mut h, 0, panes)[..] else {
-            unreachable!()
-        };
-        let tile = h.app.windows[0].tree.tiles.find_pane(&a).unwrap();
-        let pane = h
-            .app
-            .spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
-                win_idx: 0,
-                target_tile: tile,
-                vertical: true,
-                new_pane_first: false,
-                keep_focus: true,
-                options: crate::pane_ops::create::TerminalSpawnOptions {
-                    cwd_override: Some(h.workspace_root()),
-                    inject_folder_secrets: false,
-                    authority: PaneLaunchAuthority {
-                        posture: Some(posture(&["tool.secret"])),
-                        spawned_by: Some("agent:lead".into()),
-                    },
-                    ..Default::default()
-                },
-            });
-        let term = h.app.windows[0].panes[&pane].as_terminal().unwrap();
-        assert_eq!(
-            term.agent_permission_posture,
-            Some(posture(&["tool.secret"]))
+    /// Evaluate `target` for `posture` against an empty grant store.
+    fn decide(target: &str, posture: Option<&PermissionPosture>) -> crate::broker::Decision {
+        let request = crate::broker::PermissionRequest::new(
+            crate::broker::ActorType::Agent,
+            "probe",
+            crate::broker::TargetType::HostTool,
+            target,
+            None,
         );
-        assert_eq!(term.spawned_by.as_deref(), Some("agent:lead"));
+        crate::broker::GrantStore::default().evaluate_at(&request, posture, 0)
+    }
+
+    /// What the construction probes saw for one pane.
+    #[derive(Default)]
+    struct Observed {
+        published: Option<(PaneId, String, Option<String>)>,
+        backend: Option<(Option<PathBuf>, HashMap<String, String>)>,
+    }
+
+    /// Install probes that, at the instant credentials publish, authenticate
+    /// both through the real call and MCP authenticators and decide an
+    /// explicitly denied operation under the binding they resolve; and that
+    /// record the backend's cwd and environment at entry. `fail_backend`
+    /// fails the start after recording.
+    fn observe_construction(
+        h: &HostHarness,
+        fail_backend: bool,
+    ) -> (
+        std::rc::Rc<std::cell::RefCell<Observed>>,
+        [crate::pane_ops::construct::probes::Guard; 2],
+    ) {
+        let observed = std::rc::Rc::new(std::cell::RefCell::new(Observed::default()));
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let publish = observed.clone();
+        let published = crate::pane_ops::construct::probes::on_publish(move |pane_id, env| {
+            let call = env["PLEXI_CALL_CREDENTIAL"].clone();
+            let verified = monitor
+                .authenticate_call(Some(pane_id), Some(&call), None)
+                .expect("the call credential authenticates at publication");
+            assert_eq!(verified.pane_id, Some(pane_id));
+            let binding = monitor
+                .credential_authority(&call)
+                .expect("the call credential carries the pane's authority binding");
+            assert_eq!(binding.pane_id, pane_id);
+            assert_eq!(
+                decide("tool.secret", binding.posture.as_ref()),
+                crate::broker::Decision::Deny,
+                "an explicitly denied operation is denied at the first instant"
+            );
+            let mcp = env.get("PLEXI_HOST_MCP_TOKEN").cloned();
+            let mcp_posture = crate::app::host_mcp::authenticated_posture_for_test(
+                mcp.as_deref().expect("a pane bearer is published"),
+            )
+            .expect("the bearer authenticates at publication");
+            assert_eq!(mcp_posture, binding.posture);
+            publish.borrow_mut().published = Some((pane_id, call, mcp));
+        });
+        let backend = observed.clone();
+        let entered = crate::pane_ops::construct::probes::on_backend_entry(move |settings| {
+            backend.borrow_mut().backend =
+                Some((settings.working_directory.clone(), settings.env.clone()));
+            if fail_backend {
+                Err("injected backend failure".into())
+            } else {
+                Ok(())
+            }
+        });
+        (observed, [published, entered])
+    }
+
+    fn start_mcp(h: &HostHarness) {
+        let (tx, _rx) = crate::app::ui_mailbox::UiMailbox::channel(
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new()),
+            "launch-plan-mcp",
+        );
+        crate::app::host_mcp::start_host_mcp_server(tx, h.profile_dir()).expect("mcp server");
+    }
+
+    /// Finding 1: credentials authenticate only under the authority binding
+    /// installed for the real pane id, from the first instant they exist, and
+    /// the backend starts in the bound directory with them. Covered for an
+    /// inherited terminal and for a worker.
+    #[test]
+    fn launch_plan_credentials_publish_under_installed_authority() {
+        let mut h = HostHarness::new();
+        start_mcp(&h);
+        h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let caller = spawn_tester(&mut h, &root);
+
+        let terminal = h
+            .app
+            .admit_terminal_launch(&spec(&h, "split_h", Some(caller), None))
+            .unwrap();
+        let worker = admit_tester_call(&h, &root);
+        for (label, plan) in [
+            ("inherited terminal", LaunchPlan::Terminal(terminal)),
+            ("worker", LaunchPlan::Agent(worker)),
+        ] {
+            let (observed, _guard) = observe_construction(&h, false);
+            crate::host::shell::secret_reads::take();
+            let pane = h.app.apply_launch(plan).expect(label);
+            assert_eq!(
+                crate::host::shell::secret_reads::take(),
+                Vec::new(),
+                "{label}: an agent-requested pane resolves no secret value"
+            );
+            let observed = observed.borrow();
+            let (published, call, _) = observed.published.clone().expect("published");
+            assert_eq!(
+                published, pane,
+                "{label}: credentials of the installed pane"
+            );
+            let (cwd, env) = observed.backend.clone().expect("backend entered");
+            assert_eq!(cwd.as_deref(), Some(root.as_path()), "{label}: bound cwd");
+            assert_eq!(env.get("PLEXI_PANE_ID"), Some(&pane.to_string()), "{label}");
+            assert_eq!(env.get("PLEXI_CALL_CREDENTIAL"), Some(&call), "{label}");
+        }
+    }
+
+    /// Finding 1: a backend that fails to start leaves nothing behind: both
+    /// credentials captured at publication are stale, the binding is gone,
+    /// and no pane, sub-context, window or portal was installed.
+    #[test]
+    fn launch_plan_failed_backend_revokes_both_credentials() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
+        let mut h = HostHarness::new();
+        start_mcp(&h);
+        h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let caller = spawn_tester(&mut h, &root);
+        let dir = crate::agent::workspace_agents_dir(&root).join("tester");
+        let settings = std::fs::read_to_string(dir.join("settings.toml"))
+            .unwrap()
+            .replace(
+                "ephemeral=false\n",
+                "ephemeral=false\ncan_call=['tester']\n",
+            );
+        std::fs::write(dir.join("settings.toml"), settings).unwrap();
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let token = monitor.issue_credential(
+            Some(caller),
+            h.app.windows[window_of(&h, caller)].context_id,
+            &root,
+            "agent:tester",
+        );
+        let plan = h
+            .app
+            .admit_agent_call(&AgentCallRequest {
+                role: "tester",
+                task: "Sub",
+                parent_pane_id: Some(caller),
+                credential: Some(&token),
+                peer_ancestry: &[],
+                cwd: None,
+                worktree: None,
+                asynchronous: true,
+                handoff: false,
+                response_file: "",
+            })
+            .expect("child call admits");
+        assert!(matches!(
+            plan.subcontext,
+            Some(AdmittedSubcontext::Create { .. })
+        ));
+        let panes_before = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
+        let (windows_before, contexts_before) = (h.app.windows.len(), h.app.router.len());
+
+        let (observed, _guard) = observe_construction(&h, true);
+        let error = apply_agent(&mut h, &plan).expect_err("backend failure refuses");
+        assert!(error.contains("injected backend failure"), "{error}");
+        let observed = observed.borrow();
+        let (pane, call, mcp) = observed
+            .published
+            .clone()
+            .expect("credentials were published");
+        assert!(matches!(
+            monitor.authenticate_call(Some(pane), Some(&call), None),
+            Err(crate::broker::gate::IdentityError::StaleCredential)
+        ));
+        assert_eq!(
+            crate::app::host_mcp::authenticated_posture_for_test(&mcp.unwrap()),
+            None,
+            "the pane bearer is revoked"
+        );
+        assert!(monitor.credential_authority(&call).is_none());
+        assert!(h.app.find_pane_in_any_window(pane).is_none());
+        let panes_after = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
+        assert_eq!(panes_before, panes_after, "no worker and no portal");
+        assert_eq!(
+            (h.app.windows.len(), h.app.router.len()),
+            (windows_before, contexts_before),
+            "no provisional sub-context or window"
+        );
     }
 
     /// Finding 3: an edit that changes what the worker runs (a harness flag)
@@ -1901,10 +2311,7 @@ mod tests {
             "ephemeral=false\nmodel='edited-model'\n",
         );
         std::fs::write(&settings, edited).unwrap();
-        let error = h
-            .app
-            .apply_launch(LaunchPlan::Agent(&plan), None)
-            .expect_err("changed definition refuses");
+        let error = apply_agent(&mut h, &plan).expect_err("changed definition refuses");
         assert!(error.contains("changed after admission"), "{error}");
     }
 
@@ -1925,10 +2332,7 @@ mod tests {
         h.app.active_window = second;
         let plan = admit_tester_call(&h, &root);
         h.app.active_window = 0;
-        let pane = h
-            .app
-            .apply_launch(LaunchPlan::Agent(&plan), None)
-            .expect("worker launches");
+        let pane = apply_agent(&mut h, &plan).expect("worker launches");
         assert_eq!(window_of(&h, pane), second);
     }
 

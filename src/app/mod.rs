@@ -146,13 +146,13 @@ pub(crate) struct TextInputOverlay {
 use crate::config;
 use crate::host::context::Window;
 use crate::host::keys::{self, Action};
-use crate::host::pane::{Pane, TerminalPane};
+use crate::host::pane::Pane;
 use crate::host::shell;
 use crate::spatial::tiling::PaneId;
 use crate::ui::theme::{self, Colors};
 use crate::workspace::router::ContextMove;
 use crate::workspace::WorkspaceFile;
-use egui_term::{BackendSettings, PtyEvent, TerminalTheme};
+use egui_term::{PtyEvent, TerminalTheme};
 use egui_tiles::{Tile, Tree};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -2310,15 +2310,8 @@ impl PlexiApp {
         // still renders for any genuinely-empty window elsewhere.
         let seed_cwd = app.windows[0].path.clone();
         let seed_context = app.pane_context_env_for_window(0);
-        if app
-            .seed_window_root_pane(
-                0,
-                &seed_context,
-                seed_cwd,
-                crate::pane_ops::create::TerminalSpawnOptions::default(),
-            )
-            .is_some()
-        {
+        let seed = app.host_terminal_launch(seed_context, Some(seed_cwd), None, false);
+        if app.seed_window_root_pane(0, seed).is_some() {
             log::info!("first boot: seeded base root pane in context 1");
         } else {
             log::warn!(
@@ -2396,45 +2389,22 @@ impl PlexiApp {
             .is_some_and(|term| term.is_human_owned())
     }
 
-    /// The posture belongs to the pane, not the mutable agent registry. It is
-    /// therefore safe to use at admission time after the worker has changed
-    /// directory or its settings.toml has been edited.
+    /// The pane's ceiling from its authority binding, installed when it was
+    /// constructed (stint 1632). The binding belongs to the pane, not the
+    /// mutable agent registry: a worker that changed directory or whose
+    /// settings.toml was edited keeps it. A legacy restored session's role
+    /// posture is resolved at restore, into the binding.
     pub(crate) fn pane_permission_posture(
         &self,
         pane_id: crate::spatial::tiling::PaneId,
     ) -> Option<crate::broker::PermissionPosture> {
-        let (window, _) = self.find_pane_in_any_window(pane_id)?;
-        let pane = self.windows[window].panes.get(&pane_id)?.as_terminal()?;
-        if let Some(posture) = pane.agent_permission_posture.clone() {
-            return Some(posture);
-        }
-        if let Some(posture) = pane
-            .standby_session
-            .as_ref()
-            .and_then(|s| s.permission_posture.clone())
-        {
-            return Some(posture);
-        }
-        let role = pane.agent_role.as_deref().or_else(|| {
-            pane.standby_session
-                .as_ref()
-                .and_then(|s| s.config_name.as_deref())
-        })?;
-        let lookup_root = self.pane_context_authority_root(pane_id);
-        let profile_dir = crate::config::config_dir();
-        let posture = crate::cli::agent::resolve_agent_definition_in(
-            role,
-            &profile_dir,
-            lookup_root.as_deref(),
-        )
-        .ok()
-        .map(|(def, _)| def.posture)?;
-        if let Some(parent_id) = pane.parent_pane_id.filter(|&pid| pid != pane_id) {
-            if let Some(parent_posture) = self.pane_permission_posture(parent_id) {
-                return Some(posture.restricted_by(&parent_posture));
-            }
-        }
-        Some(posture)
+        let (win_idx, _) = self.find_pane_in_any_window(pane_id)?;
+        self.windows[win_idx]
+            .panes
+            .get(&pane_id)?
+            .as_terminal()?
+            .permission_posture()
+            .cloned()
     }
 
     /// Canonical context root that bounds a pane's authority.
@@ -3306,6 +3276,26 @@ impl PlexiApp {
 
     /// Add a minimal builtin pane directly to window 0 for unit tests.
     /// Returns `(tile_id, pane_id)` — `tile_id` is suitable for `focused_pane` assignments.
+    /// A host-admitted terminal launch into `context_id` for tests.
+    #[cfg(test)]
+    pub(crate) fn test_terminal_launch(
+        &mut self,
+        context_id: u64,
+        cwd: Option<PathBuf>,
+        command: Option<&str>,
+    ) -> crate::pane_ops::construct::TerminalLaunch {
+        let context = self.pane_context_env_for_context(context_id);
+        self.host_terminal_launch(
+            context,
+            cwd,
+            command.map(|command| crate::pane_ops::construct::LaunchCommand {
+                command: command.to_string(),
+                close_on_exit: false,
+            }),
+            false,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn add_test_pane(&mut self) -> (egui_tiles::TileId, u64) {
         let pane_id = self.host.alloc_pane_id();
@@ -3384,112 +3374,6 @@ impl PlexiApp {
             self.windows[win_idx].tree.root = Some(tile_id);
         }
         (tile_id, pane_id)
-    }
-
-    pub(crate) fn make_backend_settings(
-        pane_id: u64,
-        working_directory: Option<PathBuf>,
-        colors: &Colors,
-        context: &crate::pane_ops::create::PaneContextEnv,
-        agent_pane: bool,
-    ) -> (BackendSettings, host_mcp::PendingPaneCredential) {
-        Self::make_backend_settings_in_profile(
-            &crate::config::config_dir(),
-            pane_id,
-            working_directory,
-            colors,
-            context,
-            agent_pane,
-        )
-    }
-
-    pub(crate) fn make_backend_settings_in_profile(
-        profile_dir: &std::path::Path,
-        pane_id: u64,
-        working_directory: Option<PathBuf>,
-        colors: &Colors,
-        context: &crate::pane_ops::create::PaneContextEnv,
-        agent_pane: bool,
-    ) -> (BackendSettings, host_mcp::PendingPaneCredential) {
-        let crate::pane_ops::create::PaneContextEnv {
-            context_id,
-            name: context_name,
-            description: context_description,
-            root: context_root,
-            depth: context_depth,
-        } = context;
-        let context_id = *context_id;
-        let context_depth = *context_depth;
-        log::info!(
-            "make_backend_settings: pane_id={pane_id} context_id={context_id} \
-             context_name={context_name:?} context_root={context_root:?} context_depth={context_depth} \
-             agent_pane={agent_pane}"
-        );
-        let mut env = shell::build_env_with_secrets(working_directory.as_deref(), !agent_pane);
-        env.remove("PLEXI_PARENT_PANE");
-        env.remove("PLEXI_EPHEMERAL");
-        env.remove("PLEXI_AGENT_HARNESS");
-        env.remove("PLEXI_AGENT_ROLE");
-        env.remove("PLEXI_AGENT_ID");
-        env.remove("PLEXI_AGENT_SPAWNED");
-        env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
-        env.insert("PLEXI_SOCKET".into(), crate::platform::ipc::endpoint());
-        // Host MCP discovery. The bearer is registered against this trusted
-        // pane/context identity; requests cannot supply their own workspace.
-        let workspace_root = context_root
-            .clone()
-            .or_else(|| working_directory.clone())
-            .unwrap_or_default();
-        match crate::broker::gate::PermissionMonitor::for_profile(profile_dir) {
-            Ok(monitor) => {
-                let call_credential = monitor.issue_credential(
-                    Some(pane_id),
-                    context_id,
-                    &workspace_root,
-                    &format!("pane:{pane_id}"),
-                );
-                env.insert("PLEXI_CALL_CREDENTIAL".into(), call_credential);
-            }
-            Err(error) => log::error!("pane_env: no call credential for pane {pane_id}: {error}"),
-        }
-        if let Some((port, token)) =
-            host_mcp::discovery_for_pane(pane_id, context_id, workspace_root)
-        {
-            env.insert("PLEXI_HOST_MCP_PORT".into(), port.to_string());
-            env.insert("PLEXI_HOST_MCP_TOKEN".into(), token);
-        }
-        env.insert("PLEXI_CONTEXT_ID".into(), context_id.to_string());
-        env.insert("PLEXI_CONTEXT_NAME".into(), context_name.to_string());
-        env.insert(
-            "PLEXI_CONTEXT_DESCRIPTION".into(),
-            context_description.to_string(),
-        );
-        if let Some(root) = context_root {
-            env.insert(
-                "PLEXI_CONTEXT_ROOT".into(),
-                root.to_string_lossy().into_owned(),
-            );
-        }
-        env.insert("PLEXI_CONTEXT_DEPTH".into(), context_depth.to_string());
-        if agent_pane {
-            env.insert("PLEXI_AGENT_SPAWNED".into(), "1".into());
-            shell::withhold_terminal_secrets(&mut env, working_directory.as_deref());
-        }
-        crate::broker::seal::scrub_pane_env(&mut env, agent_pane);
-        let shell_path = shell::detect_shell();
-        let args = shell::default_shell_args(&shell_path, agent_pane);
-        (
-            BackendSettings {
-                shell: shell_path,
-                args,
-                env,
-                dynamic_colors: theme::terminal_dynamic_colors(colors),
-                working_directory,
-                // `TerminalPane::new` installs the program-status tap.
-                byte_tap: None,
-            },
-            host_mcp::PendingPaneCredential::new(pane_id),
-        )
     }
 
     /// Single entry point for Cmd+R. Opens the pane rename modal for the
@@ -4726,8 +4610,14 @@ impl PlexiApp {
                 self.step_focus_history_forward();
             }
             Action::NewTab => {
-                let anchor = self.focused_tab_anchor(self.active_window);
-                self.new_tab(self.active_window, anchor, Default::default());
+                let win_idx = self.active_window;
+                let anchor = self.focused_tab_anchor(win_idx);
+                let context = self.pane_context_env_for_window(win_idx);
+                let cwd = self.tab_cwd(win_idx, anchor);
+                let launch = self.host_terminal_launch(context, Some(cwd), None, false);
+                if let Err(error) = self.new_tab(win_idx, anchor, launch) {
+                    log::warn!("new_tab: {error}");
+                }
                 self.mark_workspace_dirty();
             }
             Action::ToggleZoom => self.toggle_pane_zoom(),
@@ -6173,29 +6063,18 @@ pub(crate) fn restore_workspace(
                         depth: ctx_depth,
                     };
                     let mut auto_resume_launched = false;
-                    let (mut settings, pending_credential) =
-                        PlexiApp::make_backend_settings_in_profile(
-                            collaborators.profile_dir,
-                            saved_pane.id,
-                            cwd.clone(),
-                            collaborators.colors,
-                            &context_env,
-                            effective_session.is_some(),
-                        );
+                    let mut worker_env: Vec<(String, String)> = Vec::new();
+                    let mut launch_command = None;
                     let mut effective_session = effective_session;
                     if let Some(ref mut session) = effective_session {
-                        settings
-                            .env
-                            .insert("PLEXI_AGENT_HARNESS".to_string(), session.harness.clone());
+                        worker_env
+                            .push(("PLEXI_AGENT_HARNESS".to_string(), session.harness.clone()));
                         if let Some(ref role) = session.config_name {
-                            settings
-                                .env
-                                .insert("PLEXI_AGENT_ROLE".to_string(), role.clone());
+                            worker_env.push(("PLEXI_AGENT_ROLE".to_string(), role.clone()));
                         }
                         if let Some(parent_id) = session.parent_pane_id {
-                            settings
-                                .env
-                                .insert("PLEXI_PARENT_PANE".to_string(), parent_id.to_string());
+                            worker_env
+                                .push(("PLEXI_PARENT_PANE".to_string(), parent_id.to_string()));
                         }
                         let resolved_spawned_by = session
                             .spawned_by
@@ -6219,13 +6098,9 @@ pub(crate) fn restore_workspace(
                             })
                             .unwrap_or_else(|| "human".to_string());
                         session.spawned_by = Some(resolved_spawned_by.clone());
-                        settings
-                            .env
-                            .insert("PLEXI_SPAWNED_BY".to_string(), resolved_spawned_by);
+                        worker_env.push(("PLEXI_SPAWNED_BY".to_string(), resolved_spawned_by));
                         if session.ephemeral {
-                            settings
-                                .env
-                                .insert("PLEXI_EPHEMERAL".to_string(), "1".to_string());
+                            worker_env.push(("PLEXI_EPHEMERAL".to_string(), "1".to_string()));
                         }
                         if should_auto_resume {
                             if let Some(harness) = crate::cli::AgentHarness::parse(&session.harness)
@@ -6254,14 +6129,12 @@ pub(crate) fn restore_workspace(
                                     session.session_id,
                                     session.last_state.as_str()
                                 );
-                                settings
-                                    .env
-                                    .insert("PLEXI_RESUME_COMMAND".to_string(), resume_cmd.clone());
-                                crate::pane_ops::apply_initial_cmd(
-                                    &mut settings,
-                                    &resume_cmd,
-                                    session.ephemeral,
-                                );
+                                worker_env
+                                    .push(("PLEXI_RESUME_COMMAND".to_string(), resume_cmd.clone()));
+                                launch_command = Some(crate::pane_ops::construct::LaunchCommand {
+                                    command: resume_cmd.clone(),
+                                    close_on_exit: session.ephemeral,
+                                });
                                 auto_resume_launched = true;
                             }
                         }
@@ -6285,12 +6158,62 @@ pub(crate) fn restore_workspace(
                             })
                         })
                         .flatten();
-                    match TerminalPane::new(
-                        saved_pane.id,
-                        egui_ctx.clone(),
-                        pty_event_tx.clone(),
-                        settings,
+                    // The ceiling is resolved before construction, including
+                    // the legacy fallback for a session saved without one: the
+                    // role's posture under its lookup root, narrowed by the
+                    // parent's saved ceiling (stint 1632).
+                    let posture = effective_session.as_ref().and_then(|session| {
+                        session.permission_posture.clone().or_else(|| {
+                            let role = session.config_name.as_deref()?;
+                            let lookup_root = cwd
+                                .as_deref()
+                                .and_then(crate::app::registry::resolve_agent_lookup_workspace_root)
+                                .or_else(|| ctx_root.cloned());
+                            let role_posture = crate::cli::agent::resolve_agent_definition_in(
+                                role,
+                                collaborators.profile_dir,
+                                lookup_root.as_deref(),
+                            )
+                            .ok()
+                            .map(|(def, _)| def.posture)?;
+                            let parent_posture = session
+                                .parent_pane_id
+                                .and_then(|pid| saved_win.panes.iter().find(|p| p.id == pid))
+                                .and_then(|p| p.agent_session.as_ref())
+                                .and_then(|s| s.permission_posture.as_ref());
+                            Some(match parent_posture {
+                                Some(parent) => role_posture.restricted_by(parent),
+                                None => role_posture,
+                            })
+                        })
+                    });
+                    let agent_pane = effective_session.is_some();
+                    let launch = crate::pane_ops::construct::TerminalLaunch {
+                        pane_id: saved_pane.id,
+                        posture,
+                        spawned_by: effective_session
+                            .as_ref()
+                            .and_then(|session| session.spawned_by.clone()),
+                        context: context_env,
+                        cwd: cwd.clone(),
+                        secrets: if agent_pane {
+                            shell::SecretPolicy::NONE
+                        } else {
+                            shell::SecretPolicy::ALL
+                        },
+                        agent_pane,
+                        command: launch_command,
+                        ephemeral: false,
+                        env: worker_env,
+                        mcp: crate::pane_ops::construct::McpBearer::Pane,
+                        profile_dir: collaborators.profile_dir.to_path_buf(),
+                    };
+                    match PlexiApp::construct_terminal_in(
+                        egui_ctx,
+                        pty_event_tx,
+                        collaborators.colors,
                         default_font_size,
+                        launch,
                     ) {
                         Ok(mut pane) => {
                             if auto_resume_launched {
@@ -6322,23 +6245,6 @@ pub(crate) fn restore_workspace(
                                 pane.agent_harness = Some(session.harness.clone());
                                 pane.agent_session_id = session.session_id.clone();
                                 pane.agent_role = session.config_name.clone();
-                                pane.agent_permission_posture = session
-                                    .permission_posture
-                                    .clone()
-                                    .or_else(|| {
-                                        let role = session.config_name.as_deref()?;
-                                        let lookup_root = cwd
-                                            .as_deref()
-                                            .and_then(crate::app::registry::resolve_agent_lookup_workspace_root)
-                                            .or_else(|| ctx_root.cloned());
-                                        crate::cli::agent::resolve_agent_definition_in(
-                                            role,
-                                            collaborators.profile_dir,
-                                            lookup_root.as_deref(),
-                                        )
-                                        .ok()
-                                        .map(|(def, _)| def.posture)
-                                    });
                                 pane.last_blocked_reason = session.last_blocked_reason;
                                 pane.tail_preview = session.tail_preview.clone();
                                 pane.agent_completed = session.last_state
@@ -6363,7 +6269,6 @@ pub(crate) fn restore_workspace(
                                 }
                             }
                             pane_entry = Some(Pane::Terminal(Box::new(pane)));
-                            pending_credential.mark_live();
                         }
                         Err(error) => log::error!(
                             "workspace_restore: terminal pane {} not restored: {error}",

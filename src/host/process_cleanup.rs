@@ -1626,7 +1626,7 @@ wait
                     ..Default::default()
                 };
                 let id = h.app.host.alloc_pane_id();
-                let terminal = crate::host::pane::TerminalPane::new(
+                let terminal = crate::host::pane::TerminalPane::fixture(
                     id,
                     h.app.ctx.clone(),
                     h.app.pty_event_tx.clone(),

@@ -5911,15 +5911,8 @@ fn first_boot_seam_seeds_base_root_pane() {
 
     let cwd = std::env::temp_dir();
     let context = h.app.pane_context_env_for_window(0);
-    if h.app
-        .seed_window_root_pane(
-            0,
-            &context,
-            cwd,
-            crate::pane_ops::create::TerminalSpawnOptions::default(),
-        )
-        .is_none()
-    {
+    let launch = h.app.host_terminal_launch(context, Some(cwd), None, false);
+    if h.app.seed_window_root_pane(0, launch).is_none() {
         // No PTY in this env — the installer degrades to the welcome screen,
         // matching first boot's documented fallback. Nothing more to assert.
         return;
@@ -5946,15 +5939,8 @@ fn first_boot_shape_matches_new_context() {
     let mut h = HostHarness::new();
     let cwd = std::env::temp_dir();
     let context = h.app.pane_context_env_for_window(0);
-    if h.app
-        .seed_window_root_pane(
-            0,
-            &context,
-            cwd,
-            crate::pane_ops::create::TerminalSpawnOptions::default(),
-        )
-        .is_none()
-    {
+    let launch = h.app.host_terminal_launch(context, Some(cwd), None, false);
+    if h.app.seed_window_root_pane(0, launch).is_none() {
         return; // no PTY in this env
     }
     let boot_pane_count = h.app.windows[0].panes.len();
@@ -5995,13 +5981,11 @@ fn new_context_fixture() -> (HostHarness, tempfile::TempDir, tempfile::TempDir) 
     let mut h = HostHarness::new();
     let root = h.workspace_root();
     let context0 = h.app.pane_context_env_for_window(0);
+    let launch = h
+        .app
+        .host_terminal_launch(context0, Some(root), None, false);
     h.app
-        .seed_window_root_pane(
-            0,
-            &context0,
-            root,
-            crate::pane_ops::create::TerminalSpawnOptions::default(),
-        )
+        .seed_window_root_pane(0, launch)
         .expect("PTY and shell must be available for the new-context root pane");
     let empty_dir = tempfile::tempdir().expect("create empty tempdir");
     let project_dir = tempfile::tempdir().expect("create project tempdir");
@@ -16444,8 +16428,7 @@ fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_an
         Some(pane_id.to_string().as_str())
     );
     let posture = term
-        .agent_permission_posture
-        .as_ref()
+        .permission_posture()
         .expect("permission posture snapshotted from settings.toml");
     assert!(
         posture.allow.iter().any(|s| s == "pane.send"),
@@ -19127,14 +19110,11 @@ mod tiled_navigation_frame_tests {
             );
         }
         let anchor = h.app.focused_tab_anchor(0);
-        h.app.new_tab(
-            0,
-            anchor,
-            crate::pane_ops::create::TerminalSpawnOptions {
-                inject_folder_secrets: false,
-                ..Default::default()
-            },
-        );
+        let context_id = h.app.windows[0].context_id;
+        let launch = h
+            .app
+            .test_terminal_launch(context_id, Some(h.workspace_root()), None);
+        let _ = h.app.new_tab(0, anchor, launch);
         let events = crate::host::event_log::test_take_events();
         assert!(
             !events
@@ -20952,14 +20932,11 @@ mod zoomed_pane_input_tests {
         h.focus_pane(first);
         h.run_frames(1);
         let anchor = h.app.focused_tab_anchor(0);
-        h.app.new_tab(
-            0,
-            anchor,
-            crate::pane_ops::create::TerminalSpawnOptions {
-                inject_folder_secrets: false,
-                ..Default::default()
-            },
-        );
+        let context_id = h.app.windows[0].context_id;
+        let launch = h
+            .app
+            .test_terminal_launch(context_id, Some(h.workspace_root()), None);
+        let _ = h.app.new_tab(0, anchor, launch);
         h.run_frames(2);
         let focused = h.app.windows[0].focused_pane.expect("focused tab");
         h.app.windows[0].zoom_to(focused);

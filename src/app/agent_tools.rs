@@ -115,39 +115,21 @@ impl PlexiApp {
     ) -> Result<(), String> {
         super::agent_open::admit_agent_mesh_route("AgentCall")?;
         let plan = self.admit_agent_call(&request)?;
-        let managed = plan
-            .worktree
-            .as_deref()
-            .map(|branch| crate::host::worktree::create_worktree(&plan.lookup_root, branch))
-            .transpose()?;
         let child_parent = plan.child_parent;
         let parent = plan.authority.parent;
-        let pane_id = match self.apply_launch(
-            super::launch_plan::LaunchPlan::Agent(&plan),
-            managed.as_ref(),
-        ) {
-            Ok(pane_id) => pane_id,
-            Err(error) => {
-                if let Some(wt) = managed {
-                    log::warn!(
-                        "agent_call: launch failed; retaining worktree {}: {error}",
-                        wt.path.display()
-                    );
-                }
-                return Err(error);
-            }
-        };
-        if let Some(wt) = managed {
-            self.pane_worktrees.insert(pane_id, wt);
-        }
+        let (role, task) = (plan.authority.role.clone(), plan.task.clone());
+        // `apply_launch` owns any checkout from preparation to the pane, and
+        // reclaims or retains it on refusal (stint 1632).
+        let pane_id = self
+            .apply_launch(super::launch_plan::LaunchPlan::Agent(plan))
+            .map_err(|refused| refused.to_string())?;
         self.agent_tool_children.insert(pane_id, child_parent);
-        log::info!("agent_call: spawned role={} parent={child_parent:?} child={pane_id} async={} handoff={}", plan.authority.role, request.asynchronous, request.handoff);
+        log::info!("agent_call: spawned role={role} parent={child_parent:?} child={pane_id} async={} handoff={}", request.asynchronous, request.handoff);
         if let (true, Some(old)) = (request.handoff, parent) {
             // The caller's completion names its successor and is published
             // before the caller closes; the reply carries both ids.
-            let raw =
-                super::launch_plan::handoff_completion(&plan.authority.role, &plan.task, pane_id);
-            let summary = format!("Handed off to {}", plan.authority.role);
+            let raw = super::launch_plan::handoff_completion(&role, &task, pane_id);
+            let summary = format!("Handed off to {role}");
             let mut reply = self.complete_agent_pane(old, Some(&raw), Some(&summary));
             if reply["ok"] != true {
                 log::warn!(

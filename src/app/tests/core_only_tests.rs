@@ -240,16 +240,14 @@ fn core_only_terminal_executes_and_splits() {
     let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
     let profile = profile(true);
     let mut h = HostHarness::from_profile_dir(profile.path());
-    let terminal = h
+    let win_idx = h.app.active_window;
+    let context_id = h.app.windows[win_idx].context_id;
+    let launch =
+        h.app
+            .test_terminal_launch(context_id, Some(h.workspace_root().to_path_buf()), None);
+    let (terminal, _) = h
         .app
-        .seed_root_pane(
-            h.app.active_window,
-            crate::pane_ops::create::TerminalSpawnOptions {
-                cwd_override: Some(h.workspace_root().to_path_buf()),
-                inject_folder_secrets: false,
-                ..Default::default()
-            },
-        )
+        .seed_window_root_pane(win_idx, launch)
         .expect("core-only startup must create a terminal");
     h.focus_pane(terminal);
     h.run_frames(3);

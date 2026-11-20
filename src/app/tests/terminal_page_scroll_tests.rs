@@ -28,7 +28,7 @@ time.sleep(120)
 
 pub(super) fn terminal_with_fixture(h: &mut HostHarness, mode: &str) -> PaneId {
     let id = h.add_focused_terminal();
-    let terminal = crate::host::pane::TerminalPane::new(
+    let terminal = crate::host::pane::TerminalPane::fixture(
         id,
         h.app.ctx.clone(),
         h.app.pty_event_tx.clone(),

@@ -2436,25 +2436,31 @@ impl PlexiApp {
         let target_tile = self.windows[win_idx]
             .find_ancestor_tabs(tile)
             .map_or(tile, |(tabs, _)| tabs);
-        let pane_id = self.spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
-            win_idx,
-            target_tile,
-            vertical: true,
-            new_pane_first: false,
-            keep_focus: false,
-            options: crate::pane_ops::create::TerminalSpawnOptions {
-                initial_cmd: Some(shell_cmd),
+        let context = self.pane_context_env_for_window(win_idx);
+        let mut launch = self.host_terminal_launch(
+            context,
+            ws_root,
+            Some(crate::pane_ops::construct::LaunchCommand {
+                command: shell_cmd.to_string(),
                 close_on_exit: false,
-                cwd_override: ws_root,
-                agent_pane: false,
-                inject_folder_secrets: false,
-                authority: Default::default(),
+            }),
+            false,
+        );
+        // A user command runs the workspace's command, not a shell for its
+        // folder: no folder secrets.
+        launch.secrets.folder = false;
+        self.spawn_terminal_pane_at(
+            crate::pane_ops::create::SplitPlacement {
+                win_idx,
+                target_tile,
+                vertical: true,
+                new_pane_first: false,
+                keep_focus: false,
             },
-        });
-        self.windows[win_idx]
-            .panes
-            .contains_key(&pane_id)
-            .then_some(pane_id)
+            launch,
+        )
+        .map_err(|error| log::warn!("user_command: terminal not created: {error}"))
+        .ok()
     }
 
     fn idle_shell_pane_id(&self, pane_id: u64) -> Option<u64> {

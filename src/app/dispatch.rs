@@ -1062,21 +1062,31 @@ impl PlexiApp {
                         // SDK-spawned terminal with a cmd closes on exit (matches historical behavior).
                         // CLI terminal uses the ephemeral flag exclusively — cmd alone does not close.
                         // keep_focus=true: coordinator plugin always retains focus after spawning a terminal.
-                        let _ = self.spawn_terminal_pane_at(
-                            crate::pane_ops::create::SpawnTerminalAtSpec {
+                        // Directory as the anchor shows it now: this plugin
+                        // spawn is admitted and applied in this turn.
+                        let cwd = self.windows[target_win].get_focused_pane_cwd(target_tile);
+                        let context = self.pane_context_env_for_window(target_win);
+                        let launch = self.host_terminal_launch(
+                            context,
+                            cwd,
+                            initial_cmd.map(|command| crate::pane_ops::construct::LaunchCommand {
+                                command,
+                                close_on_exit,
+                            }),
+                            true,
+                        );
+                        if let Err(error) = self.spawn_terminal_pane_at(
+                            crate::pane_ops::create::SplitPlacement {
                                 win_idx: target_win,
                                 target_tile,
                                 vertical,
                                 new_pane_first,
                                 keep_focus: true,
-                                options: crate::pane_ops::create::TerminalSpawnOptions {
-                                    initial_cmd: initial_cmd.as_deref(),
-                                    close_on_exit,
-                                    agent_pane: true,
-                                    ..Default::default()
-                                },
                             },
-                        );
+                            launch,
+                        ) {
+                            log::warn!("SpawnPane: terminal not created: {error}");
+                        }
                     } else {
                         if let Some(from_id) = from_pane_id {
                             // When target_context already selected a window, restrict from_pane_id

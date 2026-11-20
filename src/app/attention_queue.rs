@@ -4752,7 +4752,7 @@ mod tests {
         spawned_by: Option<&str>,
     ) -> u64 {
         let id = h.app.host.alloc_pane_id();
-        let mut term = crate::host::pane::TerminalPane::new(
+        let mut term = crate::host::pane::TerminalPane::fixture(
             id,
             h.app.ctx.clone(),
             h.app.pty_event_tx.clone(),

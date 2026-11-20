@@ -1958,23 +1958,21 @@ fn agent_spawned_pane_does_not_get_human_authority() {
 
     // 1. Spawn an agent pane (`agent_pane: true`).
     let (_, human_tile) = h.app.find_pane_in_any_window(human_pane).unwrap();
+    let context = h.app.pane_context_env_for_window(0);
+    let launch = h.app.host_terminal_launch(context, None, None, true);
     let agent_pane = h
         .app
-        .spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
-            win_idx: 0,
-            target_tile: human_tile,
-            vertical: true,
-            new_pane_first: false,
-            keep_focus: true,
-            options: crate::pane_ops::create::TerminalSpawnOptions {
-                initial_cmd: None,
-                close_on_exit: false,
-                cwd_override: None,
-                agent_pane: true,
-                inject_folder_secrets: false,
-                authority: Default::default(),
+        .spawn_terminal_pane_at(
+            crate::pane_ops::create::SplitPlacement {
+                win_idx: 0,
+                target_tile: human_tile,
+                vertical: true,
+                new_pane_first: false,
+                keep_focus: true,
             },
-        });
+            launch,
+        )
+        .expect("agent pane");
     assert!(
         !h.app.is_human_owned_pane(agent_pane),
         "agent pane must not be human-owned"

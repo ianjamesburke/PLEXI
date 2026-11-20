@@ -322,9 +322,9 @@ impl PlexiApp {
             // standard terminal split path which will no-op for now.
             if self.windows[active].panes.is_empty() {
                 let context = self.pane_context_env_for_window(active);
-                if let Some((tree, panes, root_tile)) =
-                    self.create_single_pane_tree(&context, Default::default())
-                {
+                let cwd = context.root.clone();
+                let launch = self.host_terminal_launch(context, cwd, None, false);
+                if let Some((tree, panes, root_tile)) = self.create_single_pane_tree(launch) {
                     self.windows[active].tree = tree;
                     self.windows[active].panes = panes.into();
                     self.windows[active].note_tree_rebuilt();
@@ -412,8 +412,6 @@ impl PlexiApp {
         {
             return None;
         }
-        let new_id = self.host.alloc_pane_id();
-
         let cwd = self.resolve_new_pane_cwd(cwd_override);
         log::info!(
             "split_focused: cwd={cwd:?} context_root={:?}",
@@ -425,22 +423,21 @@ impl PlexiApp {
             .map(|w| w.context_id)
             .unwrap_or(0);
         let context_env = self.pane_context_env_for_context(ctx_id);
-        let (mut settings, pending_credential) =
-            Self::make_backend_settings(new_id, cwd, &self.colors, &context_env, false);
-        if let Some(cmd) = initial_cmd {
-            log::info!(
-                "split_focused: initial_cmd_chars={} close_on_exit={close_on_exit}",
-                cmd.chars().count()
-            );
-            super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
-        }
-        let mut pane = match TerminalPane::new(
-            new_id,
-            self.ctx.clone(),
-            self.pty_event_tx.clone(),
-            settings,
-            self.default_font_size,
-        ) {
+        let launch = self.host_terminal_launch(
+            context_env,
+            cwd,
+            initial_cmd.map(|command| super::construct::LaunchCommand {
+                command: command.to_string(),
+                close_on_exit,
+            }),
+            false,
+        );
+        let launch = super::construct::TerminalLaunch {
+            ephemeral: close_on_exit,
+            ..launch
+        };
+        let new_id = launch.pane_id;
+        let pane = match self.construct_terminal(launch) {
             Ok(pane) => pane,
             Err(error) => {
                 log::error!("Failed to create new terminal pane: {error}");
@@ -457,7 +454,6 @@ impl PlexiApp {
             },
             Some(&self.router.active().root),
         );
-        pane.ephemeral = close_on_exit;
         if self.windows[self.active_window]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)))
@@ -465,7 +461,6 @@ impl PlexiApp {
         {
             return None;
         }
-        pending_credential.mark_live();
 
         let split_target = match self.windows[self.active_window].find_ancestor_tabs(focused) {
             Some((tabs_id, _)) => tabs_id,
@@ -494,162 +489,68 @@ impl PlexiApp {
         Some(new_id)
     }
 
-    /// Open a terminal tab beside `anchor` in `target_win_idx` and return the
-    /// pane it created. `anchor` is the pane the caller selected, never the
-    /// window's focus at call time; `None` is only valid for an empty window,
-    /// whose first pane becomes the tree root.
+    /// Construct `launch` and open it as a tab beside `anchor`; see
+    /// [`Self::install_tab`].
     pub(crate) fn new_tab(
         &mut self,
         target_win_idx: usize,
         anchor: Option<PaneId>,
-        options: super::create::TerminalSpawnOptions<'_>,
-    ) -> Option<PaneId> {
-        let super::create::TerminalSpawnOptions {
-            initial_cmd,
-            close_on_exit,
-            cwd_override,
-            agent_pane,
-            inject_folder_secrets,
-            authority,
-        } = options;
-        self.windows.get(target_win_idx)?;
-        // Empty context (welcome screen): create the first pane as tree root.
+        launch: super::construct::TerminalLaunch,
+    ) -> Result<PaneId, String> {
+        self.windows
+            .get(target_win_idx)
+            .ok_or_else(|| format!("window idx {target_win_idx} does not exist"))?;
+        let pane = self
+            .construct_terminal(launch)
+            .map_err(|error| error.to_string())?;
+        self.install_tab(target_win_idx, anchor, pane)
+    }
+
+    /// Install a constructed terminal as a tab beside `anchor` in
+    /// `target_win_idx`. `anchor` is the pane the caller selected, never the
+    /// window's focus at call time; `None` is only valid for an empty window,
+    /// whose first pane becomes the tree root.
+    pub(crate) fn install_tab(
+        &mut self,
+        target_win_idx: usize,
+        anchor: Option<PaneId>,
+        pane: TerminalPane,
+    ) -> Result<PaneId, String> {
+        let new_id = pane.id;
+        // Empty context (welcome screen): the first pane becomes the tree root.
         if anchor.is_none() && self.windows[target_win_idx].panes.is_empty() {
-            let new_id = self.host.alloc_pane_id();
-            let ctx_id = self
-                .windows
-                .get(target_win_idx)
-                .map(|w| w.context_id)
-                .unwrap_or(0);
-            let context_env = self.pane_context_env_for_context(ctx_id);
-            // Resolve against the target window's own context, not the ambient
-            // active context — target_win_idx may differ from self.active_window.
-            let cwd = cwd_override
-                .or_else(|| context_env.root.clone())
-                .unwrap_or_else(|| {
-                    dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"))
-                });
             log::info!(
-                "new_tab (empty context): target_win_idx={target_win_idx} cwd={cwd:?} context_root={:?}",
-                context_env.root
+                "install_tab (empty context): target_win_idx={target_win_idx} pane_id={new_id}"
             );
-            let (mut settings, pending_credential) = Self::make_backend_settings(
-                new_id,
-                Some(cwd),
-                &self.colors,
-                &context_env,
-                agent_pane,
-            );
-            if let Some(cmd) = initial_cmd {
-                log::info!(
-                    "new_tab (empty context): initial_cmd_chars={} close_on_exit={close_on_exit}",
-                    cmd.chars().count()
-                );
-                super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
-            }
-            crate::host::shell::apply_folder_secret_injection(
-                &mut settings.env,
-                settings.working_directory.as_deref(),
-                inject_folder_secrets,
-            );
-            let mut pane = match TerminalPane::with_authority(
-                new_id,
-                self.ctx.clone(),
-                self.pty_event_tx.clone(),
-                settings,
-                self.default_font_size,
-                authority,
-            ) {
-                Ok(pane) => pane,
-                Err(error) => {
-                    log::error!("Failed to create first terminal pane in empty context: {error}");
-                    return None;
-                }
-            };
-            pane.ephemeral = close_on_exit;
             let ctx = &mut self.windows[target_win_idx];
-            if ctx
-                .panes
+            ctx.panes
                 .insert(new_id, Pane::Terminal(Box::new(pane)))
-                .is_err()
-            {
-                return None;
-            }
-            pending_credential.mark_live();
+                .map_err(|_| format!("pane id {new_id} is already installed"))?;
             let pane_tile = ctx.tree.tiles.insert_pane(new_id);
             let tab_tile = ctx.tree.tiles.insert_tab_tile(vec![pane_tile]);
             ctx.tree.root = Some(tab_tile);
             ctx.navigate_to(pane_tile);
             ctx.simplify_and_reconcile();
-            return Some(new_id);
+            return Ok(new_id);
         }
-
+        let anchor = anchor.ok_or("a tab needs an anchor pane in a non-empty window")?;
+        if !self.windows[target_win_idx].panes.contains_key(&anchor) {
+            return Err(format!(
+                "anchor pane {anchor} is not in window idx={target_win_idx}"
+            ));
+        }
+        let focused = self.windows[target_win_idx]
+            .tree
+            .tiles
+            .find_pane(&anchor)
+            .ok_or_else(|| format!("anchor pane {anchor} has no tile"))?;
         let old_window_id = self.windows[target_win_idx].window_id;
         let old_focus = self.windows[target_win_idx].focused_pane;
-        let anchor = anchor?;
-        if !self.windows[target_win_idx].panes.contains_key(&anchor) {
-            log::info!("new_tab: anchor pane {anchor} is not in window idx={target_win_idx}");
-            return None;
-        }
-        let focused = self.windows[target_win_idx].tree.tiles.find_pane(&anchor)?;
-
-        let new_id = self.host.alloc_pane_id();
-
-        let ctx_id = self
-            .windows
-            .get(target_win_idx)
-            .map(|w| w.context_id)
-            .unwrap_or(0);
-        let context_env = self.pane_context_env_for_context(ctx_id);
-
-        // Resolve against the target window's own context/pane, not the ambient
-        // active window — target_win_idx may differ from self.active_window when
-        // anchored to a caller pane in another window.
-        let cwd = cwd_override
-            .or_else(|| context_env.root.clone())
-            .or_else(|| self.windows[target_win_idx].get_focused_pane_cwd(focused))
-            .or_else(dirs::home_dir);
-        log::info!(
-            "new_tab: target_win_idx={target_win_idx} cwd={cwd:?} context_root={:?}",
-            context_env.root
-        );
-        let (mut settings, pending_credential) =
-            Self::make_backend_settings(new_id, cwd, &self.colors, &context_env, agent_pane);
-        if let Some(cmd) = initial_cmd {
-            log::info!(
-                "new_tab: initial_cmd_chars={} close_on_exit={close_on_exit}",
-                cmd.chars().count()
-            );
-            super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
-        }
-        crate::host::shell::apply_folder_secret_injection(
-            &mut settings.env,
-            settings.working_directory.as_deref(),
-            inject_folder_secrets,
-        );
-        let mut pane = match TerminalPane::with_authority(
-            new_id,
-            self.ctx.clone(),
-            self.pty_event_tx.clone(),
-            settings,
-            self.default_font_size,
-            authority,
-        ) {
-            Ok(pane) => pane,
-            Err(error) => {
-                log::error!("Failed to create new terminal pane: {error}");
-                return None;
-            }
-        };
-        pane.ephemeral = close_on_exit;
-        if self.windows[target_win_idx]
+        log::info!("install_tab: target_win_idx={target_win_idx} anchor={anchor} pane_id={new_id}");
+        self.windows[target_win_idx]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)))
-            .is_err()
-        {
-            return None;
-        }
-        pending_credential.mark_live();
+            .map_err(|_| format!("pane id {new_id} is already installed"))?;
         self.push_focus_history(old_window_id, old_focus);
 
         let ctx = &mut self.windows[target_win_idx];
@@ -679,7 +580,21 @@ impl PlexiApp {
 
         ctx.navigate_to(new_tile);
         ctx.simplify_and_reconcile();
-        Some(new_id)
+        Ok(new_id)
+    }
+
+    /// The directory a tab in `win_idx` beside `anchor` starts in: the
+    /// window's context root, else the anchor's directory, else home.
+    pub(crate) fn tab_cwd(&self, win_idx: usize, anchor: Option<PaneId>) -> std::path::PathBuf {
+        let window = &self.windows[win_idx];
+        self.pane_context_env_for_context(window.context_id)
+            .root
+            .or_else(|| {
+                let tile = window.tree.tiles.find_pane(&anchor?)?;
+                window.get_focused_pane_cwd(tile)
+            })
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| std::path::PathBuf::from("/"))
     }
 
     /// The pane the keyboard "new tab" acts on: the first pane under the

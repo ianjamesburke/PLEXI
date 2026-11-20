@@ -790,25 +790,35 @@ impl PlexiApp {
                 quote(&child_run),
                 quote(&serde_json::to_string(&run.team.options).map_err(|e| e.to_string())?)
             );
-            let (pane, _) = self.spawn_agent_worker_pane(
-                &member.role,
-                &member.harness,
-                &command,
-                &task,
+            let placement = self.resolve_agent_spawn_location(
                 None,
-                false,
                 Some(run.root_pane),
                 Some(run.execution_cwd.clone()),
-                Some(run.team.schema()),
-                Some(&field(&child, "run_token")?),
                 false,
-                None,
+                crate::pane_ops::create::AgentOrigin::Active,
             )?;
-            self.set_pane_spawned_by(
-                pane,
-                format!("team:{}/{}", run.team_name, run.run_ids[0]),
-                Some(run.root_pane),
+            let authority = self.agent_worker_authority(
+                &member.role,
+                &placement.effective_cwd,
+                placement.parent_pane_id,
             );
+            let run_token = field(&child, "run_token")?;
+            let (pane, _) = self.launch_agent_worker(
+                crate::pane_ops::create::AgentWorkerLaunch {
+                    authority,
+                    pane_id: None,
+                    spawned_by: Some(format!("team:{}/{}", run.team_name, run.run_ids[0])),
+                    role: &member.role,
+                    harness: &member.harness,
+                    command: &command,
+                    task: &task,
+                    ephemeral: false,
+                    result_schema: Some(run.team.schema()),
+                    run_token: Some(&run_token),
+                },
+                placement,
+            )?;
+            self.record_pane_provenance(pane);
             run.members.push((pane, member_agent));
             crate::host::flight_recorder::record(
                 "team_member_spawn",

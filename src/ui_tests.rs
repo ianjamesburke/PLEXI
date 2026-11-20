@@ -1702,7 +1702,7 @@ mod tests {
             app.sidebar_visible = false;
             let workspace_root = app.router.active().root.clone();
             let id = app.host.alloc_pane_id();
-            let terminal = crate::host::pane::TerminalPane::new(
+            let terminal = crate::host::pane::TerminalPane::fixture(
                 id,
                 app.ctx.clone(),
                 app.pty_event_tx.clone(),
@@ -1793,7 +1793,7 @@ mod tests {
             let workspace_root = app.router.active().root.clone();
 
             let id_a = app.host.alloc_pane_id();
-            let term_a = crate::host::pane::TerminalPane::new(
+            let term_a = crate::host::pane::TerminalPane::fixture(
                 id_a,
                 app.ctx.clone(),
                 app.pty_event_tx.clone(),
@@ -1807,7 +1807,7 @@ mod tests {
             .expect("spawn terminal pane A");
 
             let id_b = app.host.alloc_pane_id();
-            let term_b = crate::host::pane::TerminalPane::new(
+            let term_b = crate::host::pane::TerminalPane::fixture(
                 id_b,
                 app.ctx.clone(),
                 app.pty_event_tx.clone(),
@@ -1973,7 +1973,7 @@ mod tests {
             let root = app.router.active().root.clone();
             let ctx_a = app.router.active().context_id;
             let id_a = app.host.alloc_pane_id();
-            let term_a = crate::host::pane::TerminalPane::new(
+            let term_a = crate::host::pane::TerminalPane::fixture(
                 id_a,
                 app.ctx.clone(),
                 app.pty_event_tx.clone(),
@@ -1999,7 +1999,7 @@ mod tests {
             let ctx_b = app.create_context_without_pty("context-b", None);
             let win_b_idx = app.windows.len() - 1;
             let id_b = app.host.alloc_pane_id();
-            let term_b = crate::host::pane::TerminalPane::new(
+            let term_b = crate::host::pane::TerminalPane::fixture(
                 id_b,
                 app.ctx.clone(),
                 app.pty_event_tx.clone(),
@@ -2726,7 +2726,7 @@ mod tests {
             let fixture = "0123456789".repeat(10);
             h.with_app_mut(|app| {
                 app.sidebar_visible = false;
-                let terminal = TerminalPane::new(
+                let terminal = TerminalPane::fixture(
                     id,
                     app.ctx.clone(),
                     app.pty_event_tx.clone(),
@@ -3619,7 +3619,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let workspace_root = h.workspace_root().to_path_buf();
         let terminal = h.with_app_mut(|app| {
             let id = app.host.alloc_pane_id();
-            let mut term = crate::host::pane::TerminalPane::new(
+            let mut term = crate::host::pane::TerminalPane::fixture(
                 id,
                 app.ctx.clone(),
                 app.pty_event_tx.clone(),
@@ -3732,7 +3732,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let pane = h.with_app_mut(|app| {
             app.sidebar_visible = false;
             let id = app.host.alloc_pane_id();
-            let mut term = crate::host::pane::TerminalPane::new(
+            let mut term = crate::host::pane::TerminalPane::fixture(
                 id,
                 app.ctx.clone(),
                 app.pty_event_tx.clone(),
@@ -4291,7 +4291,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     app.sidebar_visible = false;
                     let workspace_root = app.router.active().root.clone();
                     let id = app.host.alloc_pane_id();
-                    let mut terminal = crate::host::pane::TerminalPane::new(
+                    let mut terminal = crate::host::pane::TerminalPane::fixture(
                         id,
                         app.ctx.clone(),
                         app.pty_event_tx.clone(),
@@ -5803,7 +5803,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let pane_error = split_pane(&mut h, "lane-error");
         let pane_program = h.with_app_mut(|app| {
             let id = app.host.alloc_pane_id();
-            let mut terminal = crate::host::pane::TerminalPane::new(
+            let mut terminal = crate::host::pane::TerminalPane::fixture(
                 id,
                 app.ctx.clone(),
                 app.pty_event_tx.clone(),
@@ -5988,7 +5988,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             app.sidebar_visible = false;
             let workspace_root = app.router.active().root.clone();
             let id = app.host.alloc_pane_id();
-            let mut terminal = crate::host::pane::TerminalPane::new(
+            let mut terminal = crate::host::pane::TerminalPane::fixture(
                 id,
                 app.ctx.clone(),
                 app.pty_event_tx.clone(),
@@ -7263,7 +7263,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             let id = add_focused_pane(&mut h);
             let workspace = h.workspace_root().to_path_buf();
             h.with_app_mut(|app| {
-                let terminal = crate::host::pane::TerminalPane::new(
+                let terminal = crate::host::pane::TerminalPane::fixture(
                     id,
                     app.ctx.clone(),
                     app.pty_event_tx.clone(),
@@ -7339,7 +7339,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let id = add_focused_pane(&mut h);
         let workspace = h.workspace_root().to_path_buf();
         h.with_app_mut(|app| {
-            let terminal = crate::host::pane::TerminalPane::new(
+            let terminal = crate::host::pane::TerminalPane::fixture(
                 id,
                 app.ctx.clone(),
                 app.pty_event_tx.clone(),
@@ -7406,7 +7406,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let id = add_focused_pane(&mut h);
         let workspace = h.workspace_root().to_path_buf();
         h.with_app_mut(|app| {
-            let terminal = crate::host::pane::TerminalPane::new(
+            let terminal = crate::host::pane::TerminalPane::fixture(
                 id,
                 app.ctx.clone(),
                 app.pty_event_tx.clone(),
@@ -7550,7 +7550,7 @@ open(out + ".done", "w").close()
         let id = add_focused_pane(&mut h);
         let out_arg = out.to_string_lossy().to_string();
         h.with_app_mut(|app| {
-            let terminal = crate::host::pane::TerminalPane::new(
+            let terminal = crate::host::pane::TerminalPane::fixture(
                 id,
                 app.ctx.clone(),
                 app.pty_event_tx.clone(),
@@ -7641,7 +7641,7 @@ open(out + ".done", "w").close()
         h.step();
         let id = add_focused_pane(&mut h);
         h.with_app_mut(|app| {
-            let terminal = crate::host::pane::TerminalPane::new(
+            let terminal = crate::host::pane::TerminalPane::fixture(
                 id,
                 app.ctx.clone(),
                 app.pty_event_tx.clone(),
@@ -9301,7 +9301,7 @@ open(out + ".done", "w").close()
         let root = h.workspace_root().to_path_buf();
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
-            let term = crate::host::pane::TerminalPane::new(
+            let term = crate::host::pane::TerminalPane::fixture(
                 first,
                 app.ctx.clone(),
                 app.pty_event_tx.clone(),
@@ -9331,7 +9331,7 @@ open(out + ".done", "w").close()
         let root = h.workspace_root().to_path_buf();
         h.with_app_mut(|app| {
             let script = "i=0; while [ $i -lt 120 ]; do printf '%0300d\\n' 0 | tr 0 W; i=$((i+1)); done; while IFS= read -r line; do eval \"$line\"; done";
-            let mut term = crate::host::pane::TerminalPane::new(pane, app.ctx.clone(), app.pty_event_tx.clone(),
+            let mut term = crate::host::pane::TerminalPane::fixture(pane, app.ctx.clone(), app.pty_event_tx.clone(),
                 egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), script.into()], working_directory: Some(root), ..Default::default() }, 14.0).expect("spawn test terminal");
             term.outside_workspace_cached = false;
             term.outside_workspace_checked_at = Some(Instant::now());
@@ -9650,7 +9650,7 @@ open(out + ".done", "w").close()
         let (mut h1, first, second) = pane_chrome_fixture_sized(1.0, 1200.0);
         let root = h1.workspace_root().to_path_buf();
         h1.with_app_mut(|app| {
-            let term = crate::host::pane::TerminalPane::new(
+            let term = crate::host::pane::TerminalPane::fixture(
                 second,
                 app.ctx.clone(),
                 app.pty_event_tx.clone(),
@@ -9832,7 +9832,7 @@ open(out + ".done", "w").close()
                     );
                     crate::ui::theme::setup_style(&app.ctx, &app.colors);
                     app.sidebar_visible = false;
-                    let mut term = crate::host::pane::TerminalPane::new(
+                    let mut term = crate::host::pane::TerminalPane::fixture(
                         pane,
                         app.ctx.clone(),
                         app.pty_event_tx.clone(),
@@ -11389,7 +11389,7 @@ open(out + ".done", "w").close()
                         let id = add_focused_pane(&mut h);
                         ids.push(id);
                         h.with_app_mut(|app| {
-                        let mut term = crate::host::pane::TerminalPane::new(id, app.ctx.clone(), app.pty_event_tx.clone(),
+                        let mut term = crate::host::pane::TerminalPane::fixture(id, app.ctx.clone(), app.pty_event_tx.clone(),
                             egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), "printf 'Agent task\\nReviewing changes and tests.\\n'; sleep 300".into()], working_directory: Some(root.clone()), ..Default::default() }, 14.0).expect("spawn test terminal");
                         term.name = Some(format!("{name}: review implementation"));
                         term.outside_workspace_cached = false;
@@ -11949,7 +11949,7 @@ open(out + ".done", "w").close()
             let id = add_focused_pane(&mut h);
             ids.push(id);
             h.with_app_mut(|app| {
-                let mut term = crate::host::pane::TerminalPane::new(
+                let mut term = crate::host::pane::TerminalPane::fixture(
                     id,
                     app.ctx.clone(),
                     app.pty_event_tx.clone(),
@@ -13281,7 +13281,7 @@ open(out + ".done", "w").close()
             let pane_id = h.with_app_mut(|app| {
                 app.sidebar_visible = false;
                 let id = app.host.alloc_pane_id();
-                let mut terminal = crate::host::pane::TerminalPane::new(
+                let mut terminal = crate::host::pane::TerminalPane::fixture(
                     id,
                     app.ctx.clone(),
                     app.pty_event_tx.clone(),
@@ -13353,7 +13353,7 @@ open(out + ".done", "w").close()
                 app.sidebar_visible = false;
                 let id_a = app.host.alloc_pane_id();
                 let id_b = app.host.alloc_pane_id();
-                let mut term_a = crate::host::pane::TerminalPane::new(
+                let mut term_a = crate::host::pane::TerminalPane::fixture(
                     id_a,
                     app.ctx.clone(),
                     app.pty_event_tx.clone(),
@@ -13370,7 +13370,7 @@ open(out + ".done", "w").close()
                 term_a.outside_workspace_checked_at = Some(Instant::now());
                 term_a.outside_workspace_root = Some(workspace_root.clone());
 
-                let mut term_b = crate::host::pane::TerminalPane::new(
+                let mut term_b = crate::host::pane::TerminalPane::fixture(
                     id_b,
                     app.ctx.clone(),
                     app.pty_event_tx.clone(),
@@ -15416,7 +15416,7 @@ open(out + ".done", "w").close()
         spawned_by: Option<&str>,
     ) -> PaneId {
         let pane_id = app.host.alloc_pane_id();
-        let mut terminal = TerminalPane::new(
+        let mut terminal = TerminalPane::fixture(
             pane_id,
             app.ctx.clone(),
             app.pty_event_tx.clone(),
@@ -16384,19 +16384,13 @@ open(out + ".done", "w").close()
         .unwrap();
         let (terminal, first_editor) = h.with_app_mut(|app| {
             let context = app.router.active().context_id;
-            app.create_page_at(
-                1,
-                0,
+            let mut launch = app.test_terminal_launch(
                 context,
-                crate::pane_ops::create::TerminalSpawnOptions {
-                    initial_cmd: Some("printf 'Second window ready\\n'"),
-                    close_on_exit: false,
-                    cwd_override: path.parent().map(|p| p.to_path_buf()),
-                    agent_pane: false,
-                    inject_folder_secrets: false,
-                    authority: Default::default(),
-                },
+                path.parent().map(|p| p.to_path_buf()),
+                Some("printf 'Second window ready\\n'"),
             );
+            launch.secrets.folder = false;
+            app.create_page_at(1, 0, context, launch);
             let terminal = app.focused_pane_id().expect("new page terminal");
             let previous: std::collections::HashSet<_> = app.windows[app.active_window]
                 .panes

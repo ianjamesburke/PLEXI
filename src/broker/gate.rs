@@ -563,6 +563,8 @@ pub struct SessionCredential {
     pub context_id: u64,
     pub workspace_root: PathBuf,
     pub actor_id: String,
+    /// The pane authority a pane credential was issued from (stint 1632).
+    pub(crate) authority: Option<std::sync::Arc<super::pane_authority::PaneAuthority>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4481,6 +4483,17 @@ impl PermissionMonitor {
         workspace_root: &Path,
         actor_id: &str,
     ) -> String {
+        self.issue_credential_with(pane_id, context_id, workspace_root, actor_id, None)
+    }
+
+    fn issue_credential_with(
+        &self,
+        pane_id: Option<u64>,
+        context_id: u64,
+        workspace_root: &Path,
+        actor_id: &str,
+        authority: Option<std::sync::Arc<super::pane_authority::PaneAuthority>>,
+    ) -> String {
         let token = format!("cred_{}", uuid::Uuid::new_v4());
         self.credentials
             .lock()
@@ -4493,12 +4506,57 @@ impl PermissionMonitor {
                     context_id,
                     workspace_root: crate::platform::path::canonical_or_self(workspace_root),
                     actor_id: actor_id.to_string(),
+                    authority,
                 },
             );
         log::info!(
             "permission_monitor: issued call credential for actor={actor_id} pane={pane_id:?} context={context_id}"
         );
         token
+    }
+
+    /// Issue the call credential for a constructed pane from its authority
+    /// binding, which the credential carries (stint 1632). Only pane
+    /// construction calls this.
+    pub(crate) fn issue_pane_credential(
+        &self,
+        binding: &std::sync::Arc<super::pane_authority::PaneAuthority>,
+    ) -> String {
+        self.issue_credential_with(
+            Some(binding.pane_id),
+            binding.context_id,
+            &binding.workspace_root,
+            &format!("pane:{}", binding.pane_id),
+            Some(binding.clone()),
+        )
+    }
+
+    /// The pane authority a live call credential was issued from.
+    pub(crate) fn credential_authority(
+        &self,
+        token: &str,
+    ) -> Option<std::sync::Arc<super::pane_authority::PaneAuthority>> {
+        self.credentials
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(token)
+            .and_then(|cred| cred.authority.clone())
+    }
+
+    /// Revoke a call credential; it authenticates nothing afterwards.
+    pub(crate) fn revoke_credential(&self, token: &str) {
+        let removed = self
+            .credentials
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(token);
+        if let Some(cred) = removed {
+            log::info!(
+                "permission_monitor: revoked call credential for actor={} pane={:?}",
+                cred.actor_id,
+                cred.pane_id
+            );
+        }
     }
 
     /// Socket identity. A missing, forged, or mismatched claim is denied.
