@@ -457,7 +457,11 @@ fn a_close_without_confirmation_retires_the_suffix() {
     h.terminal_backend(revealed).enable_input_tap();
     deliver(
         &mut h,
-        vec![key(Key::W, cmd(), true), Event::Text("x".into())],
+        vec![
+            key(Key::W, cmd(), true),
+            key(Key::W, Modifiers::NONE, false),
+            Event::Text("x".into()),
+        ],
     );
     h.run_frames(2);
     assert!(
@@ -466,7 +470,6 @@ fn a_close_without_confirmation_retires_the_suffix() {
     );
     assert_eq!(h.app.active_focused_pane_id(), Some(revealed));
     assert_eq!(tap(&mut h, revealed), "", "the revealed pane got no suffix");
-    deliver(&mut h, vec![key(Key::W, Modifiers::NONE, false)]);
     deliver(&mut h, vec![Event::Text("y".into())]);
     h.run_frames(1);
     assert_eq!(tap(&mut h, revealed), "y");
