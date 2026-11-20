@@ -244,6 +244,48 @@
       "count": 1,
       "surface": "src/ui/search_bar.rs",
       "rationale": "SearchBar places its icon, input, clear action and status badge from bounded::allocate rectangles; the editor find bar fixture asserts every control stays inside panes of 100 to 250 points."
+    },
+    {
+      "source": "src/ui/text_field.rs",
+      "site": "apply | let before = self.doc.text();",
+      "count": 1,
+      "surface": "src/ui/picker.rs",
+      "rationale": "A Document text read, not a layout call; the guard's `.text(` pattern matches it."
+    },
+    {
+      "source": "src/ui/text_field.rs",
+      "site": "apply | let after = self.doc.text();",
+      "count": 1,
+      "surface": "src/ui/picker.rs",
+      "rationale": "A Document text read, not a layout call; the guard's `.text(` pattern matches it."
+    },
+    {
+      "source": "src/ui/text_field.rs",
+      "site": "show | let text = self.doc.text();",
+      "count": 1,
+      "surface": "src/ui/picker.rs",
+      "rationale": "A Document text read, not a layout call; the guard's `.text(` pattern matches it."
+    },
+    {
+      "source": "src/ui/text_field.rs",
+      "site": "show | .interact(rect, id, egui::Sense::click())",
+      "count": 1,
+      "surface": "src/ui/picker.rs",
+      "rationale": "OrderedLineField paints the picker's query field from its own Document (TextEdit cannot edit one event at a time); the palette fixture covers it empty, typed and focused."
+    },
+    {
+      "source": "src/ui/text_field.rs",
+      "site": "show | let visuals = ui.style().interact(&response);",
+      "count": 1,
+      "surface": "src/ui/picker.rs",
+      "rationale": "OrderedLineField paints the picker's query field from its own Document (TextEdit cannot edit one event at a time); the palette fixture covers it empty, typed and focused."
+    },
+    {
+      "source": "src/ui/text_field.rs",
+      "site": "show | painter.galley(galley_pos, galley.clone(), colors.text_primary);",
+      "count": 1,
+      "surface": "src/ui/picker.rs",
+      "rationale": "OrderedLineField paints the picker's query field from its own Document (TextEdit cannot edit one event at a time); the palette fixture covers it empty, typed and focused."
     }
   ]
 }
