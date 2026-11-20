@@ -204,8 +204,8 @@ pub(crate) struct AgentCallPlan {
 /// An admitted launch, consumed by [`PlexiApp::apply_launch`].
 #[derive(Clone, Debug)]
 pub(crate) enum LaunchPlan {
-    Terminal(TerminalLaunchPlan),
-    Agent(AgentCallPlan),
+    Terminal(Box<TerminalLaunchPlan>),
+    Agent(Box<AgentCallPlan>),
 }
 
 impl LaunchPlan {
@@ -662,7 +662,7 @@ impl PlexiApp {
                 return;
             }
         };
-        match self.apply_launch(LaunchPlan::Terminal(plan)) {
+        match self.apply_launch(LaunchPlan::Terminal(Box::new(plan))) {
             Ok(pane_id) => self.reply_spawn_pane(spec, &Ok(pane_id)),
             Err(refused) => {
                 log::warn!("pane_ipc: spawn_pane refused: {refused}");
@@ -1390,13 +1390,13 @@ mod tests {
 
     fn apply(h: &mut HostHarness, plan: &TerminalLaunchPlan) -> Result<PaneId, String> {
         h.app
-            .apply_launch(LaunchPlan::Terminal(plan.clone()))
+            .apply_launch(LaunchPlan::Terminal(Box::new(plan.clone())))
             .map_err(|refused| refused.to_string())
     }
 
     fn apply_agent(h: &mut HostHarness, plan: &AgentCallPlan) -> Result<PaneId, String> {
         h.app
-            .apply_launch(LaunchPlan::Agent(plan.clone()))
+            .apply_launch(LaunchPlan::Agent(Box::new(plan.clone())))
             .map_err(|refused| refused.to_string())
     }
 
@@ -2511,8 +2511,11 @@ mod tests {
             .unwrap();
         let worker = admit_tester_call(&mut h, &root);
         for (label, plan) in [
-            ("inherited terminal", LaunchPlan::Terminal(terminal)),
-            ("worker", LaunchPlan::Agent(worker)),
+            (
+                "inherited terminal",
+                LaunchPlan::Terminal(Box::new(terminal)),
+            ),
+            ("worker", LaunchPlan::Agent(Box::new(worker))),
         ] {
             let (observed, _guard) = observe_construction(&h, false);
             crate::host::shell::secret_reads::take();
@@ -2632,7 +2635,7 @@ mod tests {
         crate::host::shell::secret_reads::take();
         let pane = h
             .app
-            .apply_launch(LaunchPlan::Terminal(plan))
+            .apply_launch(LaunchPlan::Terminal(Box::new(plan)))
             .expect("launches");
         let reads = crate::host::shell::secret_reads::take();
         let (cwd, env) = seen.borrow_mut().take().expect("backend entered");
@@ -3518,7 +3521,7 @@ mod tests {
         let terminal = |h: &HostHarness, from: PaneId, branch: &str| {
             let mut spec = spec(h, "split_h", Some(from), None);
             spec.worktree = Some(branch.to_string());
-            LaunchPlan::Terminal(h.app.admit_terminal_launch(&spec).unwrap())
+            LaunchPlan::Terminal(Box::new(h.app.admit_terminal_launch(&spec).unwrap()))
         };
         let refuse = |h: &mut HostHarness, plan: LaunchPlan, invalidate: PaneId| {
             let _seam = probes::on_prepared(move |app, wt| {
@@ -3569,7 +3572,7 @@ mod tests {
         });
         let refused = h
             .app
-            .apply_launch(LaunchPlan::Agent(plan))
+            .apply_launch(LaunchPlan::Agent(Box::new(plan)))
             .expect_err("broadened role refuses");
         drop(_seam);
         assert!(

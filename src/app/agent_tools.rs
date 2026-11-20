@@ -120,7 +120,7 @@ impl PlexiApp {
         // `apply_launch` owns any checkout from preparation to the pane, and
         // reclaims or retains it on refusal (stint 1632).
         let pane_id = self
-            .apply_launch(super::launch_plan::LaunchPlan::Agent(plan))
+            .apply_launch(super::launch_plan::LaunchPlan::Agent(Box::new(plan)))
             .map_err(|refused| refused.to_string())?;
         self.agent_tool_children.insert(pane_id, child_parent);
         log::info!("agent_call: spawned role={role} parent={child_parent:?} child={pane_id} async={} handoff={}", request.asynchronous, request.handoff);
