@@ -384,6 +384,16 @@ impl Window {
         }
     }
 
+    /// Replace whatever occupies `pane_id`'s slot with `pane` (test
+    /// fixtures that swap a placeholder for a real terminal).
+    #[cfg(test)]
+    pub(crate) fn replace_pane_for_test(&mut self, pane_id: PaneId, pane: Pane) {
+        let _placeholder = self.take_pane(pane_id);
+        self.panes
+            .insert(pane_id, pane)
+            .expect("the slot is vacant once its occupant is taken");
+    }
+
     /// Take `pane_id` out of this window, recording that it left.
     pub(crate) fn take_pane(&mut self, pane_id: PaneId) -> Option<Pane> {
         let pane = self.panes.0.remove(&pane_id)?;

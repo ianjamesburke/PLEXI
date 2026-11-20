@@ -2745,10 +2745,8 @@ mod tests {
                     16.0,
                 )
                 .expect("start selection fixture");
-                app.windows[app.active_window]
-                    .panes
-                    .insert(id, Pane::Terminal(Box::new(terminal)))
-                    .unwrap();
+                let win = app.active_window;
+                app.windows[win].replace_pane_for_test(id, Pane::Terminal(Box::new(terminal)));
             });
             h.run_steps(3);
             h.with_app_mut(|app| {
@@ -9354,7 +9352,8 @@ open(out + ".done", "w").close()
             term.name = Some("fixture".into());
             term.agent = Some(crate::protocol::PaneAgentState { pane_id: pane, state: crate::protocol::AgentState::Blocked, agent: "fixture".into(), detail: None, session_id: None });
             app.ctx.data_mut(|d| d.insert_temp(egui::Id::new(("provenance_icon_rect", pane)), egui::Rect::NOTHING));
-            app.windows[app.active_window].panes.insert(pane, Pane::Terminal(Box::new(term))).unwrap();
+            let win = app.active_window;
+            app.windows[win].replace_pane_for_test(pane, Pane::Terminal(Box::new(term)));
         });
         h.focus_pane(pane).unwrap();
         let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
@@ -9676,7 +9675,13 @@ open(out + ".done", "w").close()
                 14.0,
             )
             .expect("spawn test terminal");
-            app.windows[app.active_window]
+            // The fixture replaces the placeholder the chrome fixture put in
+            // that slot.
+            let win = app.active_window;
+            app.windows[win]
+                .take_pane(second)
+                .expect("the chrome fixture's placeholder");
+            app.windows[win]
                 .panes
                 .insert(second, Pane::Terminal(Box::new(term)))
                 .unwrap();
@@ -9870,10 +9875,8 @@ open(out + ".done", "w").close()
                         detail: None,
                         session_id: None,
                     });
-                    app.windows[app.active_window]
-                        .panes
-                        .insert(pane, Pane::Terminal(Box::new(term)))
-                        .unwrap();
+                    let win = app.active_window;
+                    app.windows[win].replace_pane_for_test(pane, Pane::Terminal(Box::new(term)));
                 });
                 h.focus_pane(pane).unwrap();
                 let deadline =

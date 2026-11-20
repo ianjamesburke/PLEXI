@@ -1700,7 +1700,7 @@ fn file_browser_restore_preserves_saved_navigation_without_caller_link() {
         Some(&state),
     )
     .unwrap();
-    h.app.windows[0].panes.insert(browser_id, restored).unwrap();
+    h.app.windows[0].replace_pane_for_test(browser_id, restored);
     let _unrelated = h.add_focused_terminal();
     h.run_frames(3);
     let app = h.app.windows[0].panes[&browser_id].as_view().unwrap();
