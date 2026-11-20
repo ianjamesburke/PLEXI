@@ -2293,6 +2293,202 @@ mod tests {
         );
     }
 
+    /// What a launch's backend received and which secret values were read.
+    struct Launched {
+        pane: PaneId,
+        cwd: Option<PathBuf>,
+        env: HashMap<String, String>,
+        reads: Vec<(&'static str, PathBuf)>,
+    }
+
+    fn launch_observed(h: &mut HostHarness, spec: &PaneLaunchSpec) -> Launched {
+        let plan = h.app.admit_terminal_launch(spec).expect("admits");
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let record = seen.clone();
+        let _entry = crate::pane_ops::construct::probes::on_backend_entry(move |settings| {
+            *record.borrow_mut() = Some((settings.working_directory.clone(), settings.env.clone()));
+            Ok(())
+        });
+        crate::host::shell::secret_reads::take();
+        let pane = h
+            .app
+            .apply_launch(LaunchPlan::Terminal(plan))
+            .expect("launches");
+        let reads = crate::host::shell::secret_reads::take();
+        let (cwd, env) = seen.borrow_mut().take().expect("backend entered");
+        Launched {
+            pane,
+            cwd,
+            env,
+            reads,
+        }
+    }
+
+    /// Finding 4: the directory and secret classes a launch resolves are the
+    /// admitted ones, through every placement. An explicit `/` stays `/` for a
+    /// new window and an empty root (no home stand-in, so a home-only folder
+    /// secret never arrives); a cross-context new window with no cwd starts in
+    /// its origin context's root; split, tab and backend-default directories
+    /// are the admitted ones; a pane caller's launch reads no folder secret and
+    /// an agent caller's reads no secret at all.
+    #[test]
+    fn launch_plan_directory_and_secrets_follow_admission_through_every_placement() {
+        let _features =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        let home = dirs::home_dir().expect("home");
+        let sentinel = "PLEXI_HOME_ONLY_SENTINEL_1632";
+        crate::workspace::secrets::set_folder_secret(
+            crate::workspace::secrets::folder_store(),
+            sentinel,
+            &home,
+            "home-only-1632",
+        )
+        .expect("in-memory folder store");
+        assert_eq!(crate::workspace::secrets::backend_label(), "in-memory");
+
+        let mut h = HostHarness::new();
+        let panes = views(&mut h, 1);
+        let [a] = lay_out(&mut h, 0, panes)[..] else {
+            unreachable!()
+        };
+        let root_a = h.workspace_root();
+        h.app.set_context_root(root_a.clone(), None);
+        let slash = PathBuf::from("/");
+        let not_home = |label: &str, launched: &Launched| {
+            assert!(
+                !launched.env.contains_key(sentinel),
+                "{label}: home secret arrived"
+            );
+            for (class, path) in &launched.reads {
+                assert_ne!(path, &home, "{label}: {class} secrets read for home");
+            }
+        };
+
+        // Explicit `/`: new window and empty root keep it.
+        // No origin pane: a view origin would make this an agent-requested
+        // launch, which resolves no secret at all.
+        h.app.active_window = 0;
+        let mut new_window = spec(&h, "new_window", None, None);
+        new_window.cwd = Some(slash.clone());
+        let launched = launch_observed(&mut h, &new_window);
+        assert_eq!(
+            launched.cwd.as_deref(),
+            Some(slash.as_path()),
+            "new window keeps /"
+        );
+        assert!(
+            launched.reads.contains(&("folder", slash.clone())),
+            "an eligible launch resolves folder secrets for its own directory: {:?}",
+            launched.reads
+        );
+        not_home("new window", &launched);
+
+        let empty_ctx = push_context(&mut h, "empty", None);
+        let empty_win = push_window(&mut h, empty_ctx, 0);
+        h.app.active_window = empty_win;
+        let mut seed = spec(&h, "split_h", None, None);
+        seed.cwd = Some(slash.clone());
+        let plan = h.app.admit_terminal_launch(&seed).unwrap();
+        assert!(matches!(
+            plan.destination,
+            TerminalDestination::SeedEmptyRoot { .. }
+        ));
+        let launched = launch_observed(&mut h, &seed);
+        assert_eq!(
+            launched.cwd.as_deref(),
+            Some(slash.as_path()),
+            "empty root keeps /"
+        );
+        not_home("empty root", &launched);
+
+        // Cross-context new window with no cwd: the origin context's root,
+        // whatever context is active.
+        let root_b = tempfile::tempdir().unwrap();
+        let ctx_b = push_context(&mut h, "b", None);
+        let pos_b = h.app.router.position(|c| c.context_id == ctx_b).unwrap();
+        h.app.router.get_mut(pos_b).root = root_b.path().to_path_buf();
+        let win_b = push_window(&mut h, ctx_b, 0);
+        let b_panes = views(&mut h, 1);
+        let [b] = lay_out(&mut h, win_b, b_panes)[..] else {
+            unreachable!()
+        };
+        h.app.active_window = 0;
+        let mut cross = spec(&h, "new_window", Some(b), None);
+        cross.cwd = None;
+        let launched = launch_observed(&mut h, &cross);
+        assert_eq!(
+            launched.cwd.as_deref(),
+            Some(root_b.path()),
+            "origin context root"
+        );
+
+        // Split and tab with no cwd: the admitted anchor directory and the
+        // context root.
+        h.app.active_window = 0;
+        let mut split = spec(&h, "split_h", Some(a), None);
+        split.cwd = None;
+        let launched = launch_observed(&mut h, &split);
+        assert_eq!(
+            launched.cwd.as_deref(),
+            Some(root_a.as_path()),
+            "split anchor cwd"
+        );
+        let mut tab = spec(&h, "tab", Some(a), None);
+        tab.cwd = None;
+        let launched = launch_observed(&mut h, &tab);
+        assert_eq!(
+            launched.cwd.as_deref(),
+            Some(root_a.as_path()),
+            "tab context root"
+        );
+
+        // A split beside a pane with no directory: the backend default, and
+        // no directory-derived secret read at all.
+        let bare = h.app.host.alloc_pane_id();
+        let bare_pane = Pane::Portal(Box::new(PortalPane {
+            pane_id: bare,
+            target_context_id: empty_ctx,
+            context_state: None,
+        }));
+        let bare_win = push_window(&mut h, ctx_b, 1);
+        lay_out(&mut h, bare_win, vec![(bare, bare_pane)]);
+        let mut default_cwd = spec(&h, "split_h", Some(bare), None);
+        default_cwd.cwd = None;
+        let launched = launch_observed(&mut h, &default_cwd);
+        assert_eq!(launched.cwd, None, "backend default cwd");
+        assert_eq!(launched.reads, Vec::new(), "no directory, no secret read");
+
+        // A verified pane caller: terminal secrets for the cwd, never folder
+        // secrets. An agent caller: no secret value read.
+        let human = h.add_focused_terminal();
+        let human_pid = h.app.windows[window_of(&h, human)].panes[&human]
+            .as_terminal()
+            .unwrap()
+            .backend
+            .child_pid();
+        let mut from_pane = spec(&h, "split_h", Some(human), None);
+        from_pane.source = SpawnSource::SocketPeer(vec![human_pid]);
+        let launched = launch_observed(&mut h, &from_pane);
+        assert!(
+            launched.reads.iter().all(|(class, _)| *class != "folder"),
+            "pane caller: no folder secret resolved: {:?}",
+            launched.reads
+        );
+        let agent = spawn_tester(&mut h, &root_a);
+        let mut from_agent = spec(&h, "split_h", Some(agent), None);
+        from_agent.cwd = Some(root_a.clone());
+        let launched = launch_observed(&mut h, &from_agent);
+        assert_eq!(launched.reads, Vec::new(), "agent caller: no secret read");
+        let _ = launched.pane;
+
+        crate::workspace::secrets::remove_folder_secret(
+            crate::workspace::secrets::folder_store(),
+            sentinel,
+            &home,
+        )
+        .expect("remove the sentinel");
+    }
+
     /// Finding 3: an edit that changes what the worker runs (a harness flag)
     /// refuses the launch even though the posture is unchanged.
     #[test]
