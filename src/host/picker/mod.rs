@@ -90,6 +90,8 @@ impl RowKey {
         self.0.split_once(':').map_or(self.0.as_str(), |(s, _)| s)
     }
 
+    /// The id within its source; tests read activations by it.
+    #[cfg(test)]
     pub(crate) fn stable_id(&self) -> &str {
         self.0.split_once(':').map_or("", |(_, id)| id)
     }
