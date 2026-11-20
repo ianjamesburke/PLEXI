@@ -33,6 +33,7 @@ fn add_theme_event_recorder(
     let events = Arc::new(Mutex::new(Vec::new()));
     let pane_id = app.host.alloc_pane_id();
     let pane = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+        incarnation: Default::default(),
         pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(ThemeEventRecorder {
@@ -733,6 +734,7 @@ fn navigate_to_activates_ancestor_tabs() {
 fn open_note_in_editor(app: &mut PlexiApp, path: &std::path::Path) {
     let (_tile, pane_id) = app.add_test_pane();
     let view_pane = crate::host::pane::ViewPane {
+        incarnation: Default::default(),
         pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
@@ -821,6 +823,7 @@ fn open_note_entries_ignores_non_note_editor_panes() {
 
     let (_tile, pane_id) = app.add_test_pane();
     let view_pane = crate::host::pane::ViewPane {
+        incarnation: Default::default(),
         pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
@@ -870,6 +873,7 @@ fn palette_finds_open_note_editor_in_a_non_active_window() {
     panes.insert(
         pane_id,
         crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(

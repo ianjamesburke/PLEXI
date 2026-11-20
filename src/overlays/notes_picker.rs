@@ -1425,6 +1425,7 @@ mod tests {
 
     fn replace_with_text_editor(app: &mut PlexiApp, pane_id: u64, path: std::path::PathBuf) {
         let view_pane = ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             runtime: ViewRuntime::Builtin(Box::new(

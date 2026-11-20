@@ -3350,6 +3350,7 @@ impl PlexiApp {
         let pane_id = self.host.alloc_pane_id();
         let cwd = std::path::PathBuf::from("/tmp");
         let pane = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             permissions: crate::app::permissions::PluginPermissions::builtin(),
@@ -3401,6 +3402,7 @@ impl PlexiApp {
         let pane_id = self.host.alloc_pane_id();
         let cwd = std::path::PathBuf::from("/tmp");
         let pane = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             permissions: crate::app::permissions::PluginPermissions::builtin(),

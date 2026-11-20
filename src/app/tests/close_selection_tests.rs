@@ -268,6 +268,7 @@ fn close_selected_restores_the_pane_under_a_selected_overlay() {
     let covered = h.app.windows[0].take_pane(a).unwrap();
     let cwd = h.workspace_root();
     let overlay = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+        incarnation: Default::default(),
         pip_status: None,
         id: a,
         permissions: crate::app::permissions::PluginPermissions::builtin(),

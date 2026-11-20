@@ -4361,6 +4361,7 @@ mod tests {
         use crate::host::pane::{ViewPane, ViewRuntime};
 
         Pane::View(Box::new(ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id,
             runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -5263,6 +5264,7 @@ mod tests {
 
         let make_app = |manifest_id: &str, name: &str| {
             Pane::View(Box::new(ViewPane {
+                incarnation: Default::default(),
                 pip_status: None,
                 id: 99,
                 runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(

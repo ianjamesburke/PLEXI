@@ -336,6 +336,7 @@ pub(crate) fn restore_builtin_view_pane(
         cwd.display()
     );
     Some(Pane::View(Box::new(crate::host::pane::ViewPane {
+        incarnation: Default::default(),
         pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::ViewRuntime::Builtin(app),
@@ -378,6 +379,7 @@ pub(crate) fn restore_assistant_pane(
         workspace_root.display()
     );
     Pane::View(Box::new(crate::host::pane::ViewPane {
+        incarnation: Default::default(),
         pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::ViewRuntime::Builtin(app),
@@ -526,6 +528,7 @@ pub(crate) fn restore_view_pane_in_profile(
                 "workspace_restore: restored python plugin_id={plugin_id} pane_id={pane_id}"
             );
             let pane = Pane::View(Box::new(crate::host::pane::ViewPane {
+                incarnation: Default::default(),
                 pip_status: None,
                 id: pane_id,
                 runtime: crate::host::pane::ViewRuntime::Python(Box::new(runtime)),
@@ -644,6 +647,7 @@ pub(crate) fn restore_view_pane_in_profile(
                 manifest_id = crate::host::guest_text::shown(manifest_id)
             );
             let pane = Pane::View(Box::new(crate::host::pane::ViewPane {
+                incarnation: Default::default(),
                 pip_status: None,
                 id: pane_id,
                 runtime: crate::host::pane::ViewRuntime::Wasm(Box::new(live)),
@@ -682,6 +686,7 @@ pub(crate) fn restore_launch_failed_pane(
         "workspace_restore: launch failed for plugin_id={plugin_id} pane_id={pane_id}: {reason}"
     );
     Pane::View(Box::new(crate::host::pane::ViewPane {
+        incarnation: Default::default(),
         pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
@@ -892,6 +897,7 @@ impl PlexiApp {
             .insert(
                 new_id,
                 crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+                    incarnation: Default::default(),
                     pip_status: None,
                     id: new_id,
                     runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
@@ -1039,6 +1045,7 @@ impl PlexiApp {
                         context_id,
                     });
                     Pane::View(Box::new(crate::host::pane::ViewPane {
+                        incarnation: Default::default(),
                         pip_status: None,
                         id: new_id,
                         runtime: crate::host::pane::ViewRuntime::Python(Box::new(runtime)),
@@ -1181,6 +1188,7 @@ impl PlexiApp {
                     live.set_pane_id(new_id);
                     live.set_context_id(context_id);
                     Pane::View(Box::new(crate::host::pane::ViewPane {
+                        incarnation: Default::default(),
                         pip_status: None,
                         id: new_id,
                         runtime: crate::host::pane::ViewRuntime::Wasm(Box::new(live)),
@@ -1469,6 +1477,7 @@ impl PlexiApp {
             move |id, linked_pane_id, overlay_replaced| {
                 app.bind_host_identity(id, context_id);
                 Pane::View(Box::new(crate::host::pane::ViewPane {
+                    incarnation: Default::default(),
                     pip_status: None,
                     id,
                     runtime: crate::host::pane::ViewRuntime::Builtin(app),
@@ -3474,6 +3483,7 @@ impl PlexiApp {
             .insert(
                 id,
                 Pane::View(Box::new(crate::host::pane::ViewPane {
+                    incarnation: Default::default(),
                     pip_status: None,
                     id,
                     runtime: crate::host::pane::ViewRuntime::Builtin(app),

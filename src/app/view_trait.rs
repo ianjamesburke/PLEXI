@@ -23,6 +23,15 @@ pub struct ViewRenderContext<'a> {
     pub synthetic_input: bool,
 }
 
+/// The view instance that emitted a request: its pane slot and incarnation.
+/// A reply goes to that instance, never to whatever view later occupies the
+/// slot (stint 1632).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewEmitter {
+    pub(crate) pane_id: u64,
+    pub(crate) incarnation: crate::host::pane::ViewIncarnation,
+}
+
 /// Commands a plugin can issue back to the system.
 pub enum ViewCommand {
     Fleet(crate::app::agents_view::FleetAction),
@@ -69,7 +78,7 @@ pub enum ViewCommand {
         /// The view that emitted the request: the one recipient of its
         /// reply. Bridges leave it `None`; the host stamps it when it drains
         /// the view's commands (stint 1632).
-        emitter: Option<u64>,
+        emitter: Option<ViewEmitter>,
     },
     /// Unified spawn (#592). Mirrors DrawCommand::SpawnPane after capability check.
     SpawnPane {
@@ -81,7 +90,7 @@ pub enum ViewCommand {
         target_context: Option<u64>,
         /// The view that emitted the request, stamped at drain like
         /// `SpawnView::emitter`.
-        emitter: Option<u64>,
+        emitter: Option<ViewEmitter>,
     },
     /// Forward a capability-gated pane read/control `HostRequest` (ListPanes,
     /// FocusPane, SendToPane, ...) into the host's pane-IPC handler — the

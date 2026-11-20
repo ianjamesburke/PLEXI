@@ -1837,6 +1837,7 @@ fn test_view_pane(pane_id: u64) -> crate::host::pane::Pane {
     use crate::host::pane::{ViewPane, ViewRuntime};
     let permissions = PluginPermissions::builtin();
     crate::host::pane::Pane::View(Box::new(ViewPane {
+        incarnation: Default::default(),
         pip_status: None,
         id: pane_id,
         runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(

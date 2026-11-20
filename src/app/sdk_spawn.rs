@@ -6,36 +6,60 @@
 //! about it. Every outcome, including an invalid or empty destination,
 //! produces exactly one `PaneSpawned` or `PaneSpawnError`.
 
+use super::view_trait::ViewEmitter;
 use super::PlexiApp;
+use crate::host::pane::{Pane, ViewPane};
 use crate::protocol::PlexiEvent;
 
+/// The emitting view instance in `pane`, in the slot or under an overlay
+/// that covers it.
+fn emitter_in(pane: &mut Pane, emitter: ViewEmitter) -> Option<&mut ViewPane> {
+    let view = pane.as_view_mut()?;
+    if view.incarnation == emitter.incarnation {
+        return Some(view);
+    }
+    view.overlay_replaced
+        .as_deref_mut()
+        .and_then(|covered| emitter_in(covered, emitter))
+}
+
 impl PlexiApp {
-    /// Deliver `event` to the view that emitted a request. A requester that
-    /// has gone records that disposition and nothing else receives it.
-    pub(crate) fn deliver_to_emitter(&mut self, emitter: Option<u64>, event: PlexiEvent) {
-        let Some(pane_id) = emitter else {
+    /// The window holding the emitting view instance, if it is still open.
+    fn emitter_window(&mut self, emitter: ViewEmitter) -> Option<usize> {
+        self.windows.iter_mut().position(|w| {
+            w.panes
+                .get_mut(&emitter.pane_id)
+                .is_some_and(|pane| emitter_in(pane, emitter).is_some())
+        })
+    }
+
+    /// Deliver `event` to the view instance that emitted a request. A
+    /// requester that has gone, even if another view now occupies its slot,
+    /// records that disposition and nothing else receives it.
+    pub(crate) fn deliver_to_emitter(&mut self, emitter: Option<ViewEmitter>, event: PlexiEvent) {
+        let Some(emitter) = emitter else {
             log::warn!("sdk_reply: request carried no emitting view; {event:?} undelivered");
             return;
         };
         let view = self
             .windows
             .iter_mut()
-            .find_map(|w| w.panes.get_mut(&pane_id))
-            .and_then(crate::host::pane::Pane::as_view_mut);
+            .find_map(|w| w.panes.get_mut(&emitter.pane_id))
+            .and_then(|pane| emitter_in(pane, emitter));
         match view {
             Some(view) => {
-                log::info!("sdk_reply: delivered to emitter pane {pane_id}");
+                log::info!("sdk_reply: delivered to emitter {emitter:?}");
                 view.runtime.queue_outbound_event(event);
             }
             None => log::info!(
-                "sdk_reply: emitter pane {pane_id} is gone; reply {event:?} has no recipient"
+                "sdk_reply: emitter {emitter:?} is gone; reply {event:?} has no recipient"
             ),
         }
     }
 
     pub(crate) fn reply_sdk_spawn_pane(
         &mut self,
-        emitter: Option<u64>,
+        emitter: Option<ViewEmitter>,
         request_id: Option<String>,
         outcome: Result<u64, String>,
     ) {
@@ -52,7 +76,7 @@ impl PlexiApp {
     /// Serve one SDK `spawn_pane`: the installed pane's id, or why none was.
     pub(crate) fn serve_sdk_spawn_pane(
         &mut self,
-        emitter: Option<u64>,
+        emitter: Option<ViewEmitter>,
         type_id: &str,
         layout: &str,
         args: Vec<String>,
@@ -65,8 +89,11 @@ impl PlexiApp {
             return Err("layout 'background' not yet implemented".to_string());
         }
         let original_active_window = self.active_window;
+        let Some(emitter) = emitter else {
+            return Err("the request carried no emitting view".to_string());
+        };
         let outcome = self.spawn_from_sdk(
-            emitter.unwrap_or_default(),
+            emitter,
             type_id,
             layout,
             args,
@@ -92,7 +119,7 @@ impl PlexiApp {
 
     fn spawn_from_sdk(
         &mut self,
-        emitter: u64,
+        emitter: ViewEmitter,
         type_id: &str,
         layout: &str,
         args: Vec<String>,
@@ -102,10 +129,8 @@ impl PlexiApp {
         // The requester's own context bounds `target_context` (#1518): the
         // emitting view's window, never whichever window is active.
         let requester_context_id = self
-            .windows
-            .iter()
-            .find(|w| w.panes.contains_key(&emitter))
-            .map(|w| w.context_id)
+            .emitter_window(emitter)
+            .map(|win| self.windows[win].context_id)
             .ok_or_else(|| "the requesting view is no longer open".to_string())?;
         if let Some(target_ctx_id) = target_context {
             let target_exists = self.router.iter().any(|c| c.context_id == target_ctx_id);
@@ -151,7 +176,7 @@ impl PlexiApp {
             let cwd = self.windows[target_win].get_focused_pane_cwd(target_tile);
             let context = self.pane_context_env_for_window(target_win);
             let launch = self.plugin_terminal_launch(
-                emitter,
+                emitter.pane_id,
                 context,
                 cwd,
                 initial_cmd.map(|command| crate::pane_ops::construct::LaunchCommand {

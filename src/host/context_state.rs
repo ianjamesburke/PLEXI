@@ -390,6 +390,7 @@ mod tests {
         let mut child_win = make_empty_window(2, 101);
         let make_view_pane = |id: u64, state: AgentState| {
             crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+                incarnation: Default::default(),
                 id,
                 name: format!("app-{id}"),
                 manifest_id: "test.app".into(),

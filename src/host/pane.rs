@@ -2677,6 +2677,21 @@ pub struct ViewPane {
     pub slots: HashMap<String, PathBuf>,
     /// Last semantics committed by the production render path for native plugins.
     pub(crate) semantic_state: SemanticPaneState,
+    /// This view instance, distinct from any other view that later occupies
+    /// the same pane slot (an overlay, a replacement). Replies to a request
+    /// go to the incarnation that made it (stint 1632).
+    pub(crate) incarnation: ViewIncarnation,
+}
+
+/// One view instance's identity, fresh for every constructed view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ViewIncarnation(u64);
+
+impl Default for ViewIncarnation {
+    fn default() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
 }
 
 impl ViewPane {

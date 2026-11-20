@@ -597,6 +597,7 @@ fn overlay_view_on(h: &mut HostHarness, pane_id: u64, manifest_id: &str) {
     let cwd = h.workspace_root();
     let covered = h.app.windows[0].push_overlay(pane_id, |covered| {
         crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             permissions: crate::app::permissions::PluginPermissions::builtin(),
@@ -4627,9 +4628,26 @@ fn add_pipe_test_pane(
     u64,
     std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>,
 ) {
-    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let pane_id = h.app.host.alloc_pane_id();
+    let (pane, received) = pipe_test_view(pane_id);
+    h.app.windows[win_idx].panes.insert(pane_id, pane).unwrap();
+    let tile = h.app.windows[win_idx].tree.tiles.insert_pane(pane_id);
+    if h.app.windows[win_idx].tree.root().is_none() {
+        h.app.windows[win_idx].tree.root = Some(tile);
+    }
+    (pane_id, received)
+}
+
+/// A fresh pipe test view instance for slot `pane_id`, and its inbox.
+fn pipe_test_view(
+    pane_id: u64,
+) -> (
+    crate::host::pane::Pane,
+    std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>,
+) {
+    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let pane = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+        incarnation: Default::default(),
         pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(PipeTestView {
@@ -4647,12 +4665,7 @@ fn add_pipe_test_pane(
         slots: std::collections::HashMap::new(),
         semantic_state: Default::default(),
     }));
-    h.app.windows[win_idx].panes.insert(pane_id, pane).unwrap();
-    let tile = h.app.windows[win_idx].tree.tiles.insert_pane(pane_id);
-    if h.app.windows[win_idx].tree.root().is_none() {
-        h.app.windows[win_idx].tree.root = Some(tile);
-    }
-    (pane_id, received)
+    (pane, received)
 }
 
 /// Queue `cmd` onto `pane_id`'s own outgoing queue, exactly as if the plugin
@@ -4863,6 +4876,23 @@ fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
             "the focused bystander heard {id}"
         );
     }
+
+    // Round 5 P2-2: the emitter's slot is taken by a different view while
+    // its request is held. The reply belongs to the emitting instance, which
+    // is gone, so the replacement in the same slot hears nothing.
+    h.app.attention_queue.open = true;
+    queue_pipe_command(&mut h, requester, spawn("replaced", Some(context_b)));
+    h.run_hidden_frames(1);
+    let (replacement, replacement_heard) = pipe_test_view(requester);
+    h.app.windows[0].take_pane(requester).expect("the emitter's slot");
+    h.app.windows[0].panes.insert(requester, replacement).unwrap();
+    h.app.attention_queue.open = false;
+    h.run_hidden_frames(1);
+    assert!(
+        replies_to(&replacement_heard, "replaced").is_empty(),
+        "a view that later occupies the slot hears nothing"
+    );
+    assert!(replies_to(&received, "replaced").is_empty());
 }
 
 /// Falsifying regression #1: before stint 0724 Phase D 2/2, `OpenDirectedPipe`
@@ -10343,6 +10373,7 @@ mod routine_firing {
     ) -> PaneId {
         let pane_id = h.app.host.alloc_pane_id();
         let pane = ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -16151,6 +16182,7 @@ fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
         .insert(
             wasm_pane_id,
             Pane::View(Box::new(crate::host::pane::ViewPane {
+                incarnation: Default::default(),
                 pip_status: None,
                 id: wasm_pane_id,
                 runtime: crate::host::pane::ViewRuntime::Wasm(Box::new(live)),

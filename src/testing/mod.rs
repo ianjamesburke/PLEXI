@@ -334,6 +334,7 @@ impl HostHarness {
         // and balloons any test that renders the pane by gigabytes.
         let browser_root = self._workspace_dir.path().to_path_buf();
         let view_pane = ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -420,6 +421,7 @@ impl HostHarness {
             context_id,
         );
         let view_pane = ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             runtime: ViewRuntime::Builtin(Box::new(assistant)),

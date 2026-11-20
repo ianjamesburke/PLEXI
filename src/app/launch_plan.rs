@@ -1351,6 +1351,7 @@ mod tests {
     fn view_pane(h: &HostHarness, pane_id: PaneId) -> Pane {
         let root = h.workspace_root();
         Pane::View(Box::new(ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(

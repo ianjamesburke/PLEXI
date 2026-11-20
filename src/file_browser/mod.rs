@@ -5602,6 +5602,7 @@ mod tests {
         };
         let pane_id = harness.app.host.alloc_pane_id();
         let view_pane = crate::host::pane::ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(plugin_b)),

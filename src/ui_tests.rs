@@ -1822,6 +1822,7 @@ mod tests {
 
             let id_plugin = app.host.alloc_pane_id();
             let view_pane = ViewPane {
+                incarnation: Default::default(),
                 pip_status: None,
                 id: id_plugin,
                 runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -3442,6 +3443,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 });
                 let child_pane_id = app.host.alloc_pane_id();
                 let child = ViewPane {
+                    incarnation: Default::default(),
                     pip_status: None,
                     id: child_pane_id,
                     runtime: ViewRuntime::Builtin(Box::new(
@@ -4492,6 +4494,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
             let view_pane = ViewPane {
+                incarnation: Default::default(),
                 pip_status: None,
                 id: pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -5504,6 +5507,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             // Child window holding the text-editor pane the portal previews.
             let editor_pane_id = app.host.alloc_pane_id();
             let editor = ViewPane {
+                incarnation: Default::default(),
                 pip_status: Some(crate::protocol::PipStatus::Green),
                 id: editor_pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -6089,6 +6093,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
             let view_pane = ViewPane {
+                incarnation: Default::default(),
                 pip_status: None,
                 id: pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(
@@ -6150,6 +6155,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
             let view_pane = ViewPane {
+                incarnation: Default::default(),
                 pip_status: None,
                 id: pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(
@@ -6198,6 +6204,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let pane_id = h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
             let view_pane = ViewPane {
+                incarnation: Default::default(),
                 pip_status: None,
                 id: pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(
@@ -7008,6 +7015,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             for _ in 0..count {
                 let pane_id = app.host.alloc_pane_id();
                 let view_pane = ViewPane {
+                    incarnation: Default::default(),
                     pip_status: None,
                     id: pane_id,
                     runtime: ViewRuntime::Builtin(Box::new(
@@ -9209,6 +9217,7 @@ open(out + ".done", "w").close()
         h.with_app_mut(|app| {
             let second_pane_id = app.host.alloc_pane_id();
             let view_pane = ViewPane {
+                incarnation: Default::default(),
                 pip_status: None,
                 id: second_pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -10754,6 +10763,7 @@ open(out + ".done", "w").close()
         let pane_id = h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
             let view_pane = ViewPane {
+                incarnation: Default::default(),
                 pip_status: None,
                 id: pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(
@@ -12066,6 +12076,7 @@ open(out + ".done", "w").close()
             let agent_pane = |app: &mut crate::app::PlexiApp, name: &str| {
                 let pane_id = app.host.alloc_pane_id();
                 let pane = Pane::View(Box::new(ViewPane {
+                    incarnation: Default::default(),
                     pip_status: None,
                     id: pane_id,
                     runtime: ViewRuntime::Builtin(Box::new(
@@ -12280,6 +12291,7 @@ open(out + ".done", "w").close()
                               detail: Option<&str>| {
                 let pane_id = app.host.alloc_pane_id();
                 let pane = Pane::View(Box::new(ViewPane {
+                    incarnation: Default::default(),
                     pip_status: None,
                     id: pane_id,
                     runtime: ViewRuntime::Builtin(Box::new(
@@ -12359,6 +12371,7 @@ open(out + ".done", "w").close()
             squad.push((
                 ordinary_id,
                 Pane::View(Box::new(ViewPane {
+                    incarnation: Default::default(),
                     pip_status: None,
                     id: ordinary_id,
                     runtime: ViewRuntime::Builtin(Box::new(
@@ -13233,6 +13246,7 @@ open(out + ".done", "w").close()
                 (pane_id_b, "Short"),
             ] {
                 let view_pane = ViewPane {
+                    incarnation: Default::default(),
                     pip_status: None,
                     id: pane_id,
                     runtime: ViewRuntime::Builtin(Box::new(
@@ -13884,6 +13898,7 @@ open(out + ".done", "w").close()
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
             let view_pane = ViewPane {
+                incarnation: Default::default(),
                 pip_status: None,
                 id: pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -14210,6 +14225,7 @@ open(out + ".done", "w").close()
             h.with_app_mut(|app| {
                 let pane_id = app.host.alloc_pane_id();
                 let view_pane = ViewPane {
+                    incarnation: Default::default(),
                     pip_status: None,
                     id: pane_id,
                     runtime: ViewRuntime::Builtin(Box::new(TextEditorView::new_for_test_note(

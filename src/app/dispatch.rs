@@ -1372,7 +1372,13 @@ impl PlexiApp {
         // can't hold a mutable borrow on contexts + a shared borrow on the
         // registry at the same time during the match below.
         let active = self.active_window;
-        let mut per_pane: Vec<(u64, u64, String, Vec<ViewCommand>)> = Vec::new();
+        let mut per_pane: Vec<(
+            u64,
+            u64,
+            crate::host::pane::ViewIncarnation,
+            String,
+            Vec<ViewCommand>,
+        )> = Vec::new();
         for (ctx_idx, context) in self.windows.iter_mut().enumerate() {
             let context_id = context.context_id;
             // Panes that are not in the tile tree never receive `ui()`, even
@@ -1410,7 +1416,13 @@ impl PlexiApp {
                     let type_id = view_pane.runtime.type_id().to_string();
                     let cmds = view_pane.runtime.take_pending_commands();
                     if !cmds.is_empty() {
-                        per_pane.push((context_id, *pane_id, type_id, cmds));
+                        per_pane.push((
+                            context_id,
+                            *pane_id,
+                            view_pane.incarnation,
+                            type_id,
+                            cmds,
+                        ));
                     }
                     continue;
                 }
@@ -1471,7 +1483,11 @@ impl PlexiApp {
             }
         }
 
-        for (context_id, pane_id, type_id, cmds) in per_pane {
+        for (context_id, pane_id, incarnation, type_id, cmds) in per_pane {
+            let emitter = crate::app::view_trait::ViewEmitter {
+                pane_id,
+                incarnation,
+            };
             // Scope is a per-plugin user-facing policy declared in the plugin's
             // manifest.toml. Plugins never set it — the host resolves it once
             // per notification here. An plugin that omits the field gets
@@ -1527,7 +1543,7 @@ impl PlexiApp {
                         type_id,
                         layout,
                         args,
-                        emitter: Some(pane_id),
+                        emitter: Some(emitter),
                     }),
                     ViewCommand::SpawnPane {
                         type_id,
@@ -1544,7 +1560,7 @@ impl PlexiApp {
                         from_pane_id,
                         request_id,
                         target_context,
-                        emitter: Some(pane_id),
+                        emitter: Some(emitter),
                     }),
                     ViewCommand::ForwardPaneRequest { .. }
                     | ViewCommand::DeliverRunUpdate { .. }
