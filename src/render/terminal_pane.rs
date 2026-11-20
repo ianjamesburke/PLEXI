@@ -92,25 +92,28 @@ fn sealed_notice(
         "Plexi commands that need permission are refused here: {}.",
         reason.explanation()
     );
-    // Wraps in a narrow pane rather than clipping the reason.
-    ui.horizontal_wrapped(|ui| {
-        ui.add_space(crate::ui::style::PANE_CONTENT_INSET);
-        ui.label(
-            egui::RichText::new(text)
-                .size((terminal.font_size - 1.0).max(9.0))
-                .color(colors.text_primary),
-        );
-        if ui
-            .add(crate::ui::button::KitButton::new("Open a new pane", colors).compact())
-            .clicked()
-        {
-            log::info!(
-                "sealed_notice: pane {} asked for a new pane in its place",
-                terminal.id
+    // A wrapped label over a kit button, inset like the terminal grid: the
+    // reason is never clipped and clears the pane's ring.
+    let inset = crate::ui::style::PANE_CONTENT_INSET as i8;
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(inset, 2))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(text)
+                    .size((terminal.font_size - 1.0).max(9.0))
+                    .color(colors.text_primary),
             );
-            terminal.reopen_requested = true;
-        }
-    });
+            if ui
+                .add(crate::ui::button::KitButton::new("Open a new pane", colors).compact())
+                .clicked()
+            {
+                log::info!(
+                    "sealed_notice: pane {} asked for a new pane in its place",
+                    terminal.id
+                );
+                terminal.reopen_requested = true;
+            }
+        });
 }
 
 /// exited and the user pressed a key (the caller should close the tile).
