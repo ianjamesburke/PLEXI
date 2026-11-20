@@ -1972,6 +1972,7 @@ fn agent_spawned_pane_does_not_get_human_authority() {
                 cwd_override: None,
                 agent_pane: true,
                 inject_folder_secrets: false,
+                authority: Default::default(),
             },
         });
     assert!(

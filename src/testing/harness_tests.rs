@@ -312,7 +312,7 @@ pub(super) fn push_secondary_context(
         grid_y: 0,
         window_id: win_id,
         context_id,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
     h.app.router.push(crate::host::context::Context {
         name: "context-b".to_string().into(),
@@ -4118,7 +4118,7 @@ fn portal_context_state_refreshes_when_child_context_changes() {
         grid_y: 0,
         window_id: child_win_id,
         context_id: child_ctx_id,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
     add_view_pane_to_window(&mut h, child_win_id, "portal-child-one");
 
@@ -10202,7 +10202,7 @@ mod routine_firing {
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
-            tree_generation: 0,
+            tree_history: Default::default(),
         });
         let win_idx = h.app.windows.len() - 1;
         add_focused_view_pane(h, win_idx, root);
@@ -19122,7 +19122,14 @@ mod tiled_navigation_frame_tests {
             );
         }
         let anchor = h.app.focused_tab_anchor(0);
-        h.app.new_tab(0, anchor, None, false, None, false, false);
+        h.app.new_tab(
+            0,
+            anchor,
+            crate::pane_ops::create::TerminalSpawnOptions {
+                inject_folder_secrets: false,
+                ..Default::default()
+            },
+        );
         let events = crate::host::event_log::test_take_events();
         assert!(
             !events
@@ -20940,7 +20947,14 @@ mod zoomed_pane_input_tests {
         h.focus_pane(first);
         h.run_frames(1);
         let anchor = h.app.focused_tab_anchor(0);
-        h.app.new_tab(0, anchor, None, false, None, false, false);
+        h.app.new_tab(
+            0,
+            anchor,
+            crate::pane_ops::create::TerminalSpawnOptions {
+                inject_folder_secrets: false,
+                ..Default::default()
+            },
+        );
         h.run_frames(2);
         let focused = h.app.windows[0].focused_pane.expect("focused tab");
         h.app.windows[0].zoom_to(focused);

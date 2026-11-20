@@ -701,6 +701,17 @@ impl PermissionPosture {
         if restrictiveness(parent.default_posture) > restrictiveness(self.default_posture) {
             self.default_posture = parent.default_posture;
         }
+        // Under a deny-by-default parent an `allow` or `ask` entry is an escape
+        // from Deny to Ask. The child keeps only the escapes its parent also
+        // grants, so no target is decided more loosely than the parent decides
+        // it (stint 1632).
+        if parent.default_posture == Decision::Deny {
+            let parent_escapes = |rule: &String| {
+                Self::lists_contain(&parent.allow, rule) || Self::lists_contain(&parent.ask, rule)
+            };
+            self.allow.retain(parent_escapes);
+            self.ask.retain(parent_escapes);
+        }
         self
     }
 
@@ -1643,6 +1654,50 @@ mod tests {
         assert_eq!(child.default_posture, Decision::Deny);
         assert!(child.deny.contains(&"secret.get".to_string()));
         assert!(child.ask.contains(&"pane.send".to_string()));
+    }
+
+    /// No target may be decided more loosely for the child than for its
+    /// deny-by-default parent: the child's own `allow`/`ask` entries are not
+    /// escapes the parent granted.
+    #[test]
+    fn child_posture_is_never_looser_than_a_deny_default_parent() {
+        let parent = PermissionPosture {
+            default_posture: Decision::Deny,
+            allow: vec!["fs.read".into()],
+            ask: vec!["pane.send".into()],
+            deny: vec![],
+        };
+        let child = PermissionPosture {
+            default_posture: Decision::Ask,
+            allow: vec!["fs.read".into(), "net.fetch".into()],
+            ask: vec!["secret.get".into()],
+            deny: vec![],
+        };
+        let merged = child.clone().restricted_by(&parent);
+        let store = GrantStore::default();
+        let strictness = |d: Decision| match d {
+            Decision::Allow => 0,
+            Decision::Ask => 1,
+            Decision::Deny => 2,
+        };
+        for target in ["fs.read", "pane.send", "net.fetch", "secret.get", "other"] {
+            let request = PermissionRequest::new(
+                ActorType::Agent,
+                "child",
+                TargetType::HostTool,
+                target,
+                None,
+            );
+            let of = |p: &PermissionPosture| store.evaluate(&request, Some(p));
+            let floor = strictness(of(&parent)).max(strictness(of(&child)));
+            assert!(
+                strictness(of(&merged)) >= floor,
+                "{target}: merged {:?} is looser than parent {:?} / child {:?}",
+                of(&merged),
+                of(&parent),
+                of(&child)
+            );
+        }
     }
 
     #[test]

@@ -1,16 +1,21 @@
 //! Launch plans (stint 1632). A terminal `spawn_pane` or an `agent call` is
 //! admitted once into a [`LaunchPlan`]: who asked, what authority the new pane
-//! gets, and where it goes. [`PlexiApp::apply_launch`] commits a plan. It
-//! re-checks the destination and the authority, refuses when either changed,
-//! and returns the pane it actually created.
+//! gets, where it goes, and in which directory. [`PlexiApp::apply_launch`]
+//! commits a plan. It re-checks the destination and the authority, refuses
+//! when either changed, and returns the pane it actually created.
 //!
 //! A destination names what the caller selected (a window inside a context,
-//! an anchor pane, an empty tree at a generation), never a `TileId` or a
-//! window index: tile ids restart when a tree is rebuilt and indices shift.
-//! Pane, window and context ids are allocated monotonically for the host's
-//! lifetime, and a window leaves its context only when that context is
-//! dissolved, so `(window_id, context_id)` cannot be satisfied by a moved
-//! window.
+//! an anchor pane, an empty tree) at the window's [`TreeHistory`] generation,
+//! never a bare `TileId` or a window index: tile ids restart when a tree is
+//! rebuilt and indices shift. Pane, window and context ids are allocated
+//! monotonically for the host's lifetime, and a window leaves its context
+//! only when that context is dissolved, so `(window_id, context_id)` cannot be
+//! satisfied by a moved window.
+//!
+//! App and path `spawn_pane` launches are not planned: they hold no resource
+//! between admission and commit.
+//!
+//! [`TreeHistory`]: crate::host::context::TreeHistory
 
 use std::path::PathBuf;
 
@@ -21,31 +26,33 @@ use super::agent_tools::{AgentCallRequest, AgentCaller};
 use super::launch_spec::PaneLaunchSpec;
 use super::PlexiApp;
 use crate::broker::PermissionPosture;
+use crate::host::pane::PaneLaunchAuthority;
 use crate::host::worktree::ManagedWorktree;
-use crate::pane_ops::create::{AgentWorkerAuthority, SubcontextTarget};
+use crate::pane_ops::create::{AgentOrigin, AgentWorkerAuthority, SubcontextTarget};
 use crate::spatial::tiling::PaneId;
 
-/// A window as the caller selected it.
+/// A window as the caller selected it, at its tree generation then.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct WindowMembership {
     pub(crate) window_id: u64,
     pub(crate) context_id: u64,
+    pub(crate) generation: u64,
 }
 
 /// The node a split lands beside.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SplitAnchor {
-    /// A pane, wherever its tile is at commit.
+    /// A pane that has not left its window since admission.
     Pane(PaneId),
-    /// A container node, valid only in the tree it was selected from.
-    Node { tile: TileId, tree_generation: u64 },
+    /// A container node of the unrebuilt tree, still holding exactly `panes`.
+    Node { tile: TileId, panes: Vec<PaneId> },
 }
 
 /// The tab group a tab joins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TabAnchor {
     Pane(PaneId),
-    EmptyRoot { tree_generation: u64 },
+    EmptyRoot,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,7 +71,6 @@ pub(crate) enum TerminalDestination {
     },
     SeedEmptyRoot {
         at: WindowMembership,
-        tree_generation: u64,
     },
     NewWindow {
         context_id: u64,
@@ -78,6 +84,8 @@ pub(crate) enum TerminalDestination {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TerminalAuthority {
     pub(crate) agent_pane: bool,
+    /// Folder secrets for exactly the plan's `cwd` (or its prepared checkout);
+    /// never set without a directory bound at admission.
     pub(crate) inject_folder_secrets: bool,
     /// The verified caller pane the posture ceiling came from.
     pub(crate) caller_pane: Option<PaneId>,
@@ -89,7 +97,8 @@ pub(crate) struct TerminalAuthority {
 pub(crate) struct TerminalLaunchPlan {
     pub(crate) authority: TerminalAuthority,
     pub(crate) destination: TerminalDestination,
-    /// Explicit cwd, or the default the destination had at admission.
+    /// The working directory, resolved once at admission from the explicit
+    /// cwd or the destination's default. A prepared checkout replaces it.
     pub(crate) cwd: Option<PathBuf>,
     /// `(branch, repository anchor)` when the pane runs in a new checkout.
     pub(crate) worktree: Option<(String, PathBuf)>,
@@ -107,21 +116,34 @@ pub(crate) struct AdmittedAgentCaller {
     peer_ancestry: Vec<u32>,
 }
 
-/// The inputs that authorize an agent launch. Admission records them; commit
-/// derives them again and refuses on any difference.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Everything that authorizes and shapes an agent launch: the caller's grant,
+/// the role's resolved definition as it reaches the worker (command, harness,
+/// lifetime, result schema) and the ceiling. Admission records it; commit
+/// derives it again from the same inputs and refuses on any difference.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AgentCallAuthority {
     pub(crate) parent: Option<PaneId>,
     /// Context root the caller's `can_call`/`can_handoff` grant was read from.
     pub(crate) grant_root: PathBuf,
+    /// The role id the definition resolved to.
+    pub(crate) role: String,
     pub(crate) harness: String,
+    pub(crate) command: String,
+    pub(crate) ephemeral: bool,
+    pub(crate) result_schema: Option<Value>,
     pub(crate) worker: AgentWorkerAuthority,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum AdmittedSubcontext {
-    Existing { name: String, context_id: u64 },
-    Create { name: String },
+    Existing {
+        name: String,
+        context_id: u64,
+    },
+    Create {
+        name: String,
+        parent_context_id: u64,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -130,20 +152,16 @@ pub(crate) struct AgentCallPlan {
     requested_role: String,
     pub(crate) handoff: bool,
     pub(crate) authority: AgentCallAuthority,
-    /// The role id the definition resolved to.
-    pub(crate) role: String,
-    pub(crate) command: String,
+    /// The task as the worker receives it (with the restore packet on handoff).
+    task_text: String,
     pub(crate) task: String,
-    pub(crate) ephemeral: bool,
-    pub(crate) result_schema: Option<Value>,
     pub(crate) lookup_root: PathBuf,
     /// The pane the worker hangs under (the caller, or its parent on handoff).
     pub(crate) child_parent: Option<PaneId>,
     pub(crate) subcontext: Option<AdmittedSubcontext>,
-    pub(crate) origin_context: u64,
+    /// The caller's window, or the window active when an outside caller asked.
+    pub(crate) origin: WindowMembership,
     pub(crate) worktree: Option<String>,
-    /// Prevalidated completion published for the caller on handoff.
-    pub(crate) handoff_result: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -154,6 +172,17 @@ pub(crate) enum LaunchPlan<'a> {
 
 fn refused(what: String) -> String {
     format!("launch refused: {what}")
+}
+
+/// The completion a handed-off caller publishes, naming its successor.
+pub(crate) fn handoff_completion(role: &str, task: &str, successor_pane_id: PaneId) -> String {
+    json!({
+        "status": "handed_off",
+        "role": role,
+        "task": task,
+        "successor_pane_id": successor_pane_id,
+    })
+    .to_string()
 }
 
 impl PlexiApp {
@@ -176,9 +205,11 @@ impl PlexiApp {
     }
 
     fn window_membership(&self, win_idx: usize) -> WindowMembership {
+        let win = &self.windows[win_idx];
         WindowMembership {
-            window_id: self.windows[win_idx].window_id,
-            context_id: self.windows[win_idx].context_id,
+            window_id: win.window_id,
+            context_id: win.context_id,
+            generation: win.tree_history.generation(),
         }
     }
 
@@ -188,7 +219,7 @@ impl PlexiApp {
             Some(Tile::Pane(pane_id)) => SplitAnchor::Pane(*pane_id),
             _ => SplitAnchor::Node {
                 tile,
-                tree_generation: win.tree_generation,
+                panes: panes_under(&win.tree, tile),
             },
         }
     }
@@ -210,178 +241,222 @@ impl PlexiApp {
         Ok(win_idx)
     }
 
-    fn locate_split_anchor(&self, win_idx: usize, anchor: SplitAnchor) -> Result<TileId, String> {
+    fn locate_split_anchor(
+        &self,
+        win_idx: usize,
+        at: WindowMembership,
+        anchor: &SplitAnchor,
+    ) -> Result<TileId, String> {
         let win = &self.windows[win_idx];
+        let history = &win.tree_history;
+        if history.rebuilt_since(at.generation) {
+            return Err(refused(format!(
+                "anchor pane's window {} was rebuilt after admission",
+                win.window_id
+            )));
+        }
         match anchor {
-            SplitAnchor::Pane(pane_id) => win
-                .panes
-                .contains_key(&pane_id)
-                .then(|| win.tree.tiles.find_pane(&pane_id))
-                .flatten()
-                .ok_or_else(|| {
+            SplitAnchor::Pane(pane_id) => {
+                let tile = win
+                    .panes
+                    .contains_key(pane_id)
+                    .then(|| win.tree.tiles.find_pane(pane_id))
+                    .flatten();
+                match tile {
+                    Some(tile) if !history.departed_since(*pane_id, at.generation) => Ok(tile),
+                    _ => Err(refused(format!(
+                        "anchor pane {pane_id} left window {} after admission",
+                        win.window_id
+                    ))),
+                }
+            }
+            SplitAnchor::Node { tile, panes } => {
+                let same = matches!(win.tree.tiles.get(*tile), Some(Tile::Container(_)))
+                    && panes_under(&win.tree, *tile) == *panes;
+                same.then_some(*tile).ok_or_else(|| {
                     refused(format!(
-                        "anchor pane {pane_id} is no longer in window {}",
+                        "node {tile:?} of window {} no longer holds panes {panes:?}",
                         win.window_id
                     ))
-                }),
-            SplitAnchor::Node {
-                tile,
-                tree_generation,
-            } => (win.tree_generation == tree_generation && win.tree.tiles.get(tile).is_some())
-                .then_some(tile)
-                .ok_or_else(|| {
-                    refused(format!(
-                        "node {tile:?} of window {} was rebuilt (generation {tree_generation} -> {})",
-                        win.window_id, win.tree_generation
-                    ))
-                }),
+                })
+            }
         }
     }
 
-    fn require_empty_tree(&self, win_idx: usize, tree_generation: u64) -> Result<(), String> {
+    /// An empty tree is the one admitted only while nothing joined and left
+    /// it and it was not rebuilt: its generation is unchanged.
+    fn require_empty_tree(&self, win_idx: usize, at: WindowMembership) -> Result<(), String> {
         let win = &self.windows[win_idx];
-        if win.tree.root.is_some() || win.tree_generation != tree_generation {
+        let now = win.tree_history.generation();
+        if win.tree.root.is_some() || now != at.generation {
             return Err(refused(format!(
-                "window {} is no longer the empty tree the launch was admitted for (generation {tree_generation} -> {})",
-                win.window_id, win.tree_generation
+                "window {} is no longer the empty tree the launch was admitted for (generation {} -> {now})",
+                win.window_id, at.generation
             )));
         }
         Ok(())
     }
 
-    /// Admit a terminal `spawn_pane`: what the new pane may have and where it
-    /// goes. Names and implicit focus are resolved here, once.
+    /// The window holding an explicit origin pane. A named origin that is gone
+    /// is an error, never a fall back to focus.
+    fn explicit_origin(
+        &self,
+        from_pane_id: Option<PaneId>,
+    ) -> Result<Option<(usize, TileId)>, String> {
+        from_pane_id
+            .map(|id| {
+                self.find_pane_in_any_window(id)
+                    .ok_or_else(|| format!("origin pane {id} not found"))
+            })
+            .transpose()
+    }
+
+    /// Admit a terminal `spawn_pane`: what the new pane may have, where it
+    /// goes and its directory. Names, focus and defaults are resolved here,
+    /// once.
     pub(crate) fn admit_terminal_launch(
         &self,
         spec: &PaneLaunchSpec,
     ) -> Result<TerminalLaunchPlan, String> {
         let layout = spec.layout.as_deref().unwrap_or("split_h");
         let active = self.active_window;
-        let peer_pane = spec
+        let ancestry = spec
             .peer_ancestry
             .as_deref()
-            .filter(|pids| !pids.is_empty())
-            .and_then(|pids| self.resolve_socket_peer_pane(pids).map(|(pid, _, _)| pid));
+            .filter(|pids| !pids.is_empty());
+        let peer_pane =
+            ancestry.and_then(|pids| self.resolve_socket_peer_pane(pids).map(|(pid, _, _)| pid));
         let requester_is_pane = peer_pane.is_some();
         let requester_is_agent = peer_pane.is_some_and(|pid| !self.is_human_owned_pane(pid))
             || spec
                 .from_pane_id
                 .is_some_and(|pid| !self.is_human_owned_pane(pid));
         let agent_pane = spec.agent.is_some() || requester_is_agent;
-        let inject_folder_secrets = !requester_is_pane
-            && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets);
         if requester_is_pane {
             log::info!(
                 "pane_ipc: spawn_pane requester is a pane (peer_pane={peer_pane:?}, is_agent_pane={agent_pane}); withholding folder secrets"
             );
         }
-        // Provenance comes from the verified socket peer, never the wire.
-        let (caller_pane, spawned_by) =
-            self.resolve_unspoofable_spawner(spec.from_pane_id, spec.peer_ancestry.as_deref());
+        // Provenance and the posture ceiling come from the verified socket
+        // peer. A wire `from_pane_id` is a placement origin only; it names
+        // the caller just for in-process requests that have no peer.
+        let (caller_pane, spawned_by) = match ancestry {
+            Some(_) => (peer_pane, self.derive_spawned_by_for_parent(peer_pane)),
+            None => self.resolve_unspoofable_spawner(spec.from_pane_id, None),
+        };
         let inherited_posture = caller_pane.and_then(|id| self.pane_permission_posture(id));
 
         let vertical = matches!(layout, "split_h" | "split_right" | "split_left");
         let new_pane_first = matches!(layout, "split_above" | "split_left");
-        let caller_win = spec
-            .from_pane_id
-            .and_then(|id| self.find_pane_in_any_window(id).map(|(win, _)| win));
-        let mut default_cwd = None;
-        let destination = if let Some(ctx_name) =
-            spec.context_name.as_deref().filter(|c| !c.is_empty())
-        {
-            // Named-context targeting (stint 0574): a hard target that never
-            // touches active_window or focus state.
-            if layout == "new_window" || layout == "tab" {
-                return Err(format!(
-                    "context_name does not support layout '{layout}' — use a split layout"
-                ));
-            }
-            let context_id = self
-                .router
-                .iter()
-                .find(|c| c.name == ctx_name)
-                .map(|c| c.context_id)
-                .ok_or_else(|| format!("context '{ctx_name}' does not exist"))?;
-            let (win, tile) = self
-                .context_spawn_target(context_id)
-                .ok_or_else(|| format!("context '{ctx_name}' has no pane to spawn beside"))?;
-            TerminalDestination::Split {
-                at: self.window_membership(win),
-                anchor: self.split_anchor(win, tile),
-                vertical,
-                new_pane_first,
-                keep_focus: spec.no_focus,
-            }
-        } else if layout == "new_window" {
-            let win = caller_win.unwrap_or(active);
-            default_cwd = Some(self.router.active().root.clone());
-            TerminalDestination::NewWindow {
-                context_id: self.windows[win].context_id,
-                grid_y: self.windows[win].grid_y,
-                restore_active: spec.no_focus.then_some(self.windows[active].window_id),
-            }
-        } else if layout == "tab" {
-            let win = caller_win.unwrap_or(active);
-            let anchor = if self.windows[win].panes.is_empty() {
-                TabAnchor::EmptyRoot {
-                    tree_generation: self.windows[win].tree_generation,
-                }
-            } else {
-                TabAnchor::Pane(self.focused_tab_anchor(win).ok_or_else(|| {
-                    format!(
-                        "window {} has no focused pane to open a tab beside",
-                        self.windows[win].window_id
-                    )
-                })?)
-            };
-            TerminalDestination::Tab {
-                at: self.window_membership(win),
-                anchor,
-                keep_focus: spec.no_focus,
-            }
-        } else {
-            // from_pane_id wins (cross-window), then the active window's focus.
-            let split_target = match spec.from_pane_id {
-                Some(from_id) => match self.find_pane_in_any_window(from_id) {
-                    Some(location) => Some(location),
-                    None => {
-                        log::warn!(
-                            "pane_ipc: spawn_pane: from_pane_id={from_id} not found in any window, using focused pane"
-                        );
-                        None
-                    }
-                },
-                None => None,
-            }
-            .or_else(|| {
-                self.windows[active]
-                    .focused_pane
-                    .or(self.windows[active].tree.root)
-                    .map(|tile| (active, tile))
-            });
-            match split_target {
-                Some((win, tile)) => TerminalDestination::Split {
-                    at: self.window_membership(win),
-                    anchor: self.split_anchor(win, tile),
-                    vertical,
-                    new_pane_first,
-                    keep_focus: spec.no_focus || spec.from_pane_id.is_some(),
-                },
-                None => {
-                    default_cwd = Some(self.router.active().root.clone());
-                    TerminalDestination::SeedEmptyRoot {
-                        at: self.window_membership(active),
-                        tree_generation: self.windows[active].tree_generation,
-                    }
-                }
-            }
+        let origin = self.explicit_origin(spec.from_pane_id)?;
+        let context_root = |win: usize| {
+            self.pane_context_env_for_context(self.windows[win].context_id)
+                .root
         };
+        let home = || dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let (destination, default_cwd) =
+            if let Some(ctx_name) = spec.context_name.as_deref().filter(|c| !c.is_empty()) {
+                // Named-context targeting (stint 0574): a hard target that never
+                // touches active_window or focus state.
+                if layout == "new_window" || layout == "tab" {
+                    return Err(format!(
+                        "context_name does not support layout '{layout}' — use a split layout"
+                    ));
+                }
+                let context_id = self
+                    .router
+                    .iter()
+                    .find(|c| c.name == ctx_name)
+                    .map(|c| c.context_id)
+                    .ok_or_else(|| format!("context '{ctx_name}' does not exist"))?;
+                let (win, tile) = self
+                    .context_spawn_target(context_id)
+                    .ok_or_else(|| format!("context '{ctx_name}' has no pane to spawn beside"))?;
+                (
+                    TerminalDestination::Split {
+                        at: self.window_membership(win),
+                        anchor: self.split_anchor(win, tile),
+                        vertical,
+                        new_pane_first,
+                        keep_focus: spec.no_focus,
+                    },
+                    self.windows[win].get_focused_pane_cwd(tile),
+                )
+            } else if layout == "new_window" {
+                let win = origin.map_or(active, |(win, _)| win);
+                (
+                    TerminalDestination::NewWindow {
+                        context_id: self.windows[win].context_id,
+                        grid_y: self.windows[win].grid_y,
+                        restore_active: spec.no_focus.then_some(self.windows[active].window_id),
+                    },
+                    Some(self.router.active().root.clone()),
+                )
+            } else if layout == "tab" {
+                let win = origin.map_or(active, |(win, _)| win);
+                let (anchor, anchor_cwd) = if self.windows[win].panes.is_empty() {
+                    (TabAnchor::EmptyRoot, None)
+                } else {
+                    let pane = self.focused_tab_anchor(win).ok_or_else(|| {
+                        format!(
+                            "window {} has no focused pane to open a tab beside",
+                            self.windows[win].window_id
+                        )
+                    })?;
+                    let tile = self.windows[win].tree.tiles.find_pane(&pane);
+                    (
+                        TabAnchor::Pane(pane),
+                        tile.and_then(|tile| self.windows[win].get_focused_pane_cwd(tile)),
+                    )
+                };
+                (
+                    TerminalDestination::Tab {
+                        at: self.window_membership(win),
+                        anchor,
+                        keep_focus: spec.no_focus,
+                    },
+                    Some(context_root(win).or(anchor_cwd).unwrap_or_else(home)),
+                )
+            } else {
+                // An explicit origin wins (cross-window), then the active
+                // window's focus, then an empty active window's root.
+                let split_target = origin.or_else(|| {
+                    self.windows[active]
+                        .focused_pane
+                        .or(self.windows[active].tree.root)
+                        .map(|tile| (active, tile))
+                });
+                match split_target {
+                    Some((win, tile)) => (
+                        TerminalDestination::Split {
+                            at: self.window_membership(win),
+                            anchor: self.split_anchor(win, tile),
+                            vertical,
+                            new_pane_first,
+                            keep_focus: spec.no_focus || spec.from_pane_id.is_some(),
+                        },
+                        self.windows[win].get_focused_pane_cwd(tile),
+                    ),
+                    None => (
+                        TerminalDestination::SeedEmptyRoot {
+                            at: self.window_membership(active),
+                        },
+                        Some(self.router.active().root.clone()),
+                    ),
+                }
+            };
+        let cwd = spec.cwd.clone().or(default_cwd);
         let worktree = spec
             .worktree
             .as_ref()
             .map(|branch| (branch.clone(), self.resolve_worktree_anchor(spec)));
+        // Folder secrets belong to one directory decided now: the bound cwd or
+        // the checkout prepared for this plan. No directory, no secrets.
+        let inject_folder_secrets = !requester_is_pane
+            && (cwd.is_some() || worktree.is_some())
+            && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets);
         log::info!(
-            "launch_plan: admitted terminal destination={destination:?} agent_pane={agent_pane} inject_folder_secrets={inject_folder_secrets} caller_pane={caller_pane:?} inherits_posture={} worktree={:?}",
+            "launch_plan: admitted terminal destination={destination:?} cwd={cwd:?} agent_pane={agent_pane} inject_folder_secrets={inject_folder_secrets} caller_pane={caller_pane:?} inherits_posture={} worktree={:?}",
             inherited_posture.is_some(),
             worktree.as_ref().map(|(branch, _)| branch)
         );
@@ -394,7 +469,7 @@ impl PlexiApp {
                 inherited_posture,
             },
             destination,
-            cwd: spec.cwd.clone().or(default_cwd),
+            cwd,
             worktree,
             initial_cmd: super::cmd_from_args(&spec.args),
             ephemeral: spec.ephemeral,
@@ -473,15 +548,21 @@ impl PlexiApp {
     ) -> Result<PaneId, String> {
         self.verify_terminal_authority(&plan.authority)?;
         let authority = &plan.authority;
-        let options = |cwd_override| crate::pane_ops::create::TerminalSpawnOptions {
+        let cwd = prepared.map(|wt| wt.path.clone()).or(plan.cwd.clone());
+        // The ceiling and provenance are part of construction, so the shell
+        // and its credential never run under a pane without them.
+        let options = crate::pane_ops::create::TerminalSpawnOptions {
             initial_cmd: plan.initial_cmd.as_deref(),
             close_on_exit: plan.ephemeral,
-            cwd_override,
+            cwd_override: cwd,
             agent_pane: authority.agent_pane,
             inject_folder_secrets: authority.inject_folder_secrets,
+            authority: PaneLaunchAuthority {
+                posture: authority.inherited_posture.clone(),
+                spawned_by: Some(authority.spawned_by.clone()),
+            },
         };
-        let cwd = prepared.map(|wt| wt.path.clone()).or(plan.cwd.clone());
-        let pane_id = match plan.destination {
+        let pane_id = match &plan.destination {
             TerminalDestination::Split {
                 at,
                 anchor,
@@ -489,15 +570,15 @@ impl PlexiApp {
                 new_pane_first,
                 keep_focus,
             } => {
-                let win_idx = self.locate_window(at)?;
-                let target_tile = self.locate_split_anchor(win_idx, anchor)?;
+                let win_idx = self.locate_window(*at)?;
+                let target_tile = self.locate_split_anchor(win_idx, *at, anchor)?;
                 self.spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
                     win_idx,
                     target_tile,
-                    vertical,
-                    new_pane_first,
-                    keep_focus,
-                    options: options(cwd),
+                    vertical: *vertical,
+                    new_pane_first: *new_pane_first,
+                    keep_focus: *keep_focus,
+                    options,
                 })
             }
             TerminalDestination::Tab {
@@ -505,57 +586,40 @@ impl PlexiApp {
                 anchor,
                 keep_focus,
             } => {
-                let win_idx = self.locate_window(at)?;
+                let win_idx = self.locate_window(*at)?;
                 let anchor = match anchor {
                     TabAnchor::Pane(pane_id) => {
-                        self.locate_split_anchor(win_idx, SplitAnchor::Pane(pane_id))?;
-                        Some(pane_id)
+                        self.locate_split_anchor(win_idx, *at, &SplitAnchor::Pane(*pane_id))?;
+                        Some(*pane_id)
                     }
-                    TabAnchor::EmptyRoot { tree_generation } => {
-                        self.require_empty_tree(win_idx, tree_generation)?;
+                    TabAnchor::EmptyRoot => {
+                        self.require_empty_tree(win_idx, *at)?;
                         None
                     }
                 };
                 let original_focus = self.windows[win_idx].focused_pane;
                 let pane_id = self
-                    .new_tab(
-                        win_idx,
-                        anchor,
-                        plan.initial_cmd.as_deref(),
-                        plan.ephemeral,
-                        cwd,
-                        authority.agent_pane,
-                        authority.inject_folder_secrets,
-                    )
+                    .new_tab(win_idx, anchor, options)
                     .ok_or_else(|| "failed to open the terminal tab".to_string())?;
                 // active_window is left alone: a tab never steals the user's
                 // window, only the target window's own focus.
-                if keep_focus {
+                if *keep_focus {
                     self.restore_window_focused_pane(win_idx, original_focus);
                 }
                 pane_id
             }
-            TerminalDestination::SeedEmptyRoot {
-                at,
-                tree_generation,
-            } => {
-                let win_idx = self.locate_window(at)?;
-                self.require_empty_tree(win_idx, tree_generation)?;
-                self.seed_root_pane(
-                    win_idx,
-                    plan.initial_cmd.as_deref(),
-                    plan.ephemeral,
-                    cwd,
-                    authority.agent_pane,
-                    authority.inject_folder_secrets,
-                )
-                .ok_or_else(|| "failed to seed root pane".to_string())?
+            TerminalDestination::SeedEmptyRoot { at } => {
+                let win_idx = self.locate_window(*at)?;
+                self.require_empty_tree(win_idx, *at)?;
+                self.seed_root_pane(win_idx, options)
+                    .ok_or_else(|| "failed to seed root pane".to_string())?
             }
             TerminalDestination::NewWindow {
                 context_id,
                 grid_y,
                 restore_active,
             } => {
+                let (context_id, grid_y) = (*context_id, *grid_y);
                 if !self.router.iter().any(|c| c.context_id == context_id) {
                     return Err(refused(format!("context {context_id} was deleted")));
                 }
@@ -567,11 +631,11 @@ impl PlexiApp {
                     .max()
                     .map_or(1, |x| x + 1);
                 let pane_id = self
-                    .create_page_at(grid_x, grid_y, context_id, options(cwd))
+                    .create_page_at(grid_x, grid_y, context_id, options)
                     .ok_or_else(|| "failed to create the terminal window".to_string())?;
                 if let Some(window_id) = restore_active {
                     if let Some(win_idx) =
-                        self.windows.iter().position(|w| w.window_id == window_id)
+                        self.windows.iter().position(|w| w.window_id == *window_id)
                     {
                         self.active_window = win_idx;
                     }
@@ -585,21 +649,9 @@ impl PlexiApp {
         if let Some(ref name) = plan.name {
             self.apply_inline_pane_name(pane_id, name);
         }
-        // The parent link is left alone so no result delivery is implied.
+        // Stamped at construction; this records it in the session trace. The
+        // parent link is left alone so no result delivery is implied.
         self.set_pane_spawned_by(pane_id, authority.spawned_by.clone(), None);
-        if let Some(ref ceiling) = authority.inherited_posture {
-            if let Some(term) = self
-                .windows
-                .iter_mut()
-                .find_map(|w| w.panes.get_mut(&pane_id))
-                .and_then(|p| p.as_terminal_mut())
-            {
-                term.agent_permission_posture = Some(match term.agent_permission_posture.take() {
-                    Some(own) => own.restricted_by(ceiling),
-                    None => ceiling.clone(),
-                });
-            }
-        }
         if let Some(ref schema) = plan.result_schema {
             self.pane_results.entry(pane_id).or_default().schema = Some(schema.clone());
             log::info!("pane_result: registered schema at spawn for pane_id={pane_id}");
@@ -607,15 +659,16 @@ impl PlexiApp {
         Ok(pane_id)
     }
 
-    /// Everything that authorizes `role` for `parent`, read from current
-    /// state. Admission records it and commit compares it.
+    /// Everything that authorizes and shapes `role` for `parent`, read from
+    /// current state. Admission records it and commit compares it.
     fn agent_call_authority(
         &self,
         parent: Option<PaneId>,
         role: &str,
         handoff: bool,
         lookup_root: &std::path::Path,
-    ) -> Result<(AgentCallAuthority, crate::agent::AgentDefinition), String> {
+        task_text: &str,
+    ) -> Result<AgentCallAuthority, String> {
         let grant_root = self.check_agent_tool_permission(parent, role, handoff)?;
         let workspace = crate::app::registry::resolve_agent_lookup_workspace_root(lookup_root);
         let (def, _) = crate::cli::agent::resolve_agent_definition_in(
@@ -627,21 +680,26 @@ impl PlexiApp {
             .harness
             .as_ref()
             .ok_or("agent role has no CLI harness")?;
+        let adapter = crate::cli::agent::resolve_harness_adapter(harness)?;
+        let command = crate::cli::agent::with_auto_state_hooks(
+            adapter,
+            crate::cli::agent::build_agent_spawn_command(&def, adapter, task_text)?,
+        );
         let parent_posture = parent.and_then(|id| self.pane_permission_posture(id));
-        let authority = AgentCallAuthority {
+        Ok(AgentCallAuthority {
             parent,
             grant_root,
-            harness: crate::cli::agent::resolve_harness_adapter(harness)?
-                .harness
-                .as_str()
-                .to_string(),
+            role: def.id.clone(),
+            harness: adapter.harness.as_str().to_string(),
+            command,
+            ephemeral: harness.ephemeral,
+            result_schema: harness.result_schema.clone(),
             worker: AgentWorkerAuthority::ceiling(def.posture.clone(), parent_posture.as_ref()),
-        };
-        Ok((authority, def))
+        })
     }
 
-    /// Admit an `agent call`: the authenticated caller, the role's grant and
-    /// ceiling, the command, and where the worker goes.
+    /// Admit an `agent call`: the authenticated caller, the role's grant,
+    /// definition and ceiling, and the destination the caller selected.
     pub(crate) fn admit_agent_call(
         &self,
         request: &AgentCallRequest<'_>,
@@ -667,64 +725,71 @@ impl PlexiApp {
             (None, Some(cwd)) => PathBuf::from(cwd),
             _ => grant_root,
         };
-        let (authority, def) =
-            self.agent_call_authority(parent, request.role, request.handoff, &lookup_root)?;
-        let harness = def
-            .harness
-            .as_ref()
-            .ok_or("agent role has no CLI harness")?;
-        let adapter = crate::cli::agent::resolve_harness_adapter(harness)?;
         let parent_terminal = parent
             .and_then(|id| self.windows.iter().find_map(|w| w.panes.get(&id)))
             .and_then(|p| p.as_terminal());
-        let (task, handoff_result) = match (request.handoff, parent) {
+        let task_text = match (request.handoff, parent) {
             (true, Some(old)) => {
-                let raw =
-                    json!({"status":"handed_off","role":def.id,"task":request.task}).to_string();
-                let mut result_state = self.pane_results.get(&old).cloned().unwrap_or_default();
-                result_state
-                    .write_payload(&raw)
-                    .map_err(|error| format!("handoff completion: {}", error.message()))?;
                 let packet = json!({"from_pane_id":old,"from_role":parent_terminal.and_then(|t| t.agent_role.as_deref()),
                     "session":parent_terminal.and_then(|t| t.build_saved_agent_session()),"task":request.task});
-                (
-                    format!(
-                        "# Restore packet\n{packet}\n\n# Successor task\n{}",
-                        request.task
-                    ),
-                    Some(raw),
+                format!(
+                    "# Restore packet\n{packet}\n\n# Successor task\n{}",
+                    request.task
                 )
             }
-            _ => (request.task.to_string(), None),
+            _ => request.task.to_string(),
         };
-        let command = crate::cli::agent::with_auto_state_hooks(
-            adapter,
-            crate::cli::agent::build_agent_spawn_command(&def, adapter, &task)?,
-        );
+        let authority = self.agent_call_authority(
+            parent,
+            request.role,
+            request.handoff,
+            &lookup_root,
+            &task_text,
+        )?;
+        if let (true, Some(old)) = (request.handoff, parent) {
+            // The completion must name the successor. Validate its shape now,
+            // with the id the successor is expected to get; commit validates
+            // the real one before anything is published.
+            let raw = handoff_completion(&authority.role, request.task, self.host.next_pane_id());
+            let mut result_state = self.pane_results.get(&old).cloned().unwrap_or_default();
+            result_state
+                .write_payload(&raw)
+                .map_err(|error| format!("handoff completion: {}", error.message()))?;
+        }
         let child_parent = if request.handoff {
             parent_terminal.and_then(|t| t.parent_pane_id)
         } else {
             parent
         };
-        let origin_context = parent
+        // The caller's own window, or for an outside caller the window the
+        // user had active: never re-derived from focus at commit.
+        let origin_win = parent
             .and_then(|id| self.find_pane_in_any_window(id))
-            .map_or(self.windows[self.active_window].context_id, |(win, _)| {
-                self.windows[win].context_id
-            });
+            .map_or(self.active_window, |(win, _)| win);
+        let origin = self.window_membership(origin_win);
         let subcontext = match child_parent {
             Some(id) => {
                 let name = format!("agent-tools-{id}");
-                let under = self.agent_spawn_parent(Some(id), Some(origin_context))?;
+                let under = self.agent_spawn_parent(
+                    Some(id),
+                    AgentOrigin::Window {
+                        window_id: origin.window_id,
+                        context_id: origin.context_id,
+                    },
+                )?;
                 Some(match self.agent_subcontext_under(under.context_id, &name) {
                     Some(context_id) => AdmittedSubcontext::Existing { name, context_id },
-                    None => AdmittedSubcontext::Create { name },
+                    None => AdmittedSubcontext::Create {
+                        name,
+                        parent_context_id: under.context_id,
+                    },
                 })
             }
             None => None,
         };
         log::info!(
-            "launch_plan: admitted agent_call role={} parent={parent:?} child_parent={child_parent:?} origin_context={origin_context} subcontext={subcontext:?} handoff={} worktree={:?}",
-            def.id,
+            "launch_plan: admitted agent_call role={} parent={parent:?} child_parent={child_parent:?} origin={origin:?} subcontext={subcontext:?} handoff={} worktree={:?}",
+            authority.role,
             request.handoff,
             request.worktree
         );
@@ -733,17 +798,13 @@ impl PlexiApp {
             requested_role: request.role.to_string(),
             handoff: request.handoff,
             authority,
-            role: def.id.clone(),
-            command,
+            task_text,
             task: request.task.to_string(),
-            ephemeral: harness.ephemeral,
-            result_schema: harness.result_schema.clone(),
             lookup_root,
             child_parent,
             subcontext,
-            origin_context,
+            origin,
             worktree: request.worktree.map(str::to_string),
-            handoff_result,
         })
     }
 
@@ -768,26 +829,17 @@ impl PlexiApp {
                 return Err(refused(format!("parent pane {required} closed")));
             }
         }
-        if !self
-            .router
-            .iter()
-            .any(|c| c.context_id == plan.origin_context)
-        {
-            return Err(refused(format!(
-                "origin context {} was deleted",
-                plan.origin_context
-            )));
-        }
-        let (now, _) = self.agent_call_authority(
+        let now = self.agent_call_authority(
             parent,
             &plan.requested_role,
             plan.handoff,
             &plan.lookup_root,
+            &plan.task_text,
         )?;
         if now != plan.authority {
             return Err(refused(format!(
-                "permission_denied: the authority for role '{}' changed after admission",
-                plan.role
+                "permission_denied: the authority or definition of role '{}' changed after admission",
+                plan.authority.role
             )));
         }
         let cwd = prepared
@@ -798,31 +850,57 @@ impl PlexiApp {
                 name,
                 context_id: *context_id,
             },
-            AdmittedSubcontext::Create { name } => SubcontextTarget::Create(name),
+            AdmittedSubcontext::Create {
+                name,
+                parent_context_id,
+            } => SubcontextTarget::Create {
+                name,
+                parent_context_id: *parent_context_id,
+            },
         });
+        let authority = &plan.authority;
         let (pane_id, _) = self.spawn_prepared_agent_worker_pane(
-            plan.authority.worker.clone(),
-            &plan.role,
-            &plan.authority.harness,
-            &plan.command,
+            authority.worker.clone(),
+            &authority.role,
+            &authority.harness,
+            &authority.command,
             &plan.task,
             subcontext,
-            plan.ephemeral,
+            authority.ephemeral,
             plan.child_parent,
             Some(cwd),
-            plan.result_schema.clone(),
+            authority.result_schema.clone(),
             None,
             true,
-            Some(plan.origin_context),
+            AgentOrigin::Window {
+                window_id: plan.origin.window_id,
+                context_id: plan.origin.context_id,
+            },
         )?;
         Ok(pane_id)
     }
+}
+
+/// The panes under `tile`, sorted: a container's identity within one tree.
+fn panes_under(tree: &egui_tiles::Tree<PaneId>, tile: TileId) -> Vec<PaneId> {
+    let mut panes = Vec::new();
+    let mut stack = vec![tile];
+    while let Some(next) = stack.pop() {
+        match tree.tiles.get(next) {
+            Some(Tile::Pane(pane)) => panes.push(*pane),
+            Some(Tile::Container(container)) => stack.extend(container.children().copied()),
+            None => {}
+        }
+    }
+    panes.sort_unstable();
+    panes
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::host::context::{Context, Window};
+    use crate::host::keys::Direction;
     use crate::host::pane::{Pane, PortalPane, ViewPane, ViewRuntime};
     use crate::protocol::HostRequest;
     use crate::testing::HostHarness;
@@ -889,7 +967,7 @@ mod tests {
             grid_y: 0,
             window_id,
             context_id,
-            tree_generation: 0,
+            tree_history: Default::default(),
         });
         h.app.windows.len() - 1
     }
@@ -1095,7 +1173,15 @@ mod tests {
         // the existing tree, and closing it leaves the tree empty again.
         let filler = h
             .app
-            .new_tab(0, None, None, false, Some(h.workspace_root()), false, false)
+            .new_tab(
+                0,
+                None,
+                crate::pane_ops::create::TerminalSpawnOptions {
+                    cwd_override: Some(h.workspace_root()),
+                    inject_folder_secrets: false,
+                    ..Default::default()
+                },
+            )
             .expect("filler tab");
         h.app.close_pane_by_id(filler);
         assert!(
@@ -1295,9 +1381,369 @@ mod tests {
             .app
             .apply_launch(LaunchPlan::Agent(&plan), None)
             .expect_err("broadened role refuses");
-        assert!(
-            error.contains("authority for role 'tester' changed"),
-            "{error}"
+        assert!(error.contains("changed after admission"), "{error}");
+    }
+
+    /// Finding 6: a named origin pane that is gone is an error for every
+    /// layout, never a fall back to focus or the active window.
+    #[test]
+    fn launch_plan_refuses_a_missing_explicit_origin() {
+        let mut h = HostHarness::new();
+        let panes = views(&mut h, 1);
+        lay_out(&mut h, 0, panes);
+        let gone = h.app.host.alloc_pane_id();
+        for layout in ["split_h", "tab", "new_window"] {
+            let error = h
+                .app
+                .admit_terminal_launch(&spec(&h, layout, Some(gone), None))
+                .expect_err(layout);
+            assert!(
+                error.contains(&format!("origin pane {gone} not found")),
+                "{layout}: {error}"
+            );
+        }
+    }
+
+    /// Finding 6: a pane that left its window and came back is not the
+    /// placement the caller selected.
+    #[test]
+    fn launch_plan_refuses_an_anchor_that_left_and_returned() {
+        let mut h = HostHarness::new();
+        let panes = views(&mut h, 2);
+        let [a, _b] = lay_out(&mut h, 0, panes)[..] else {
+            unreachable!()
+        };
+        let ctx = h.app.windows[0].context_id;
+        let right = push_window(&mut h, ctx, 1);
+        let right_panes = views(&mut h, 1);
+        lay_out(&mut h, right, right_panes);
+        h.app.active_window = 0;
+        let split = h
+            .app
+            .admit_terminal_launch(&spec(&h, "split_h", Some(a), None))
+            .unwrap();
+        let tab = h
+            .app
+            .admit_terminal_launch(&spec(&h, "tab", Some(a), None))
+            .unwrap();
+
+        assert!(h.app.move_focused_pane_to_adjacent_window(Direction::Right));
+        let (win, tile) = h.app.find_pane_in_any_window(a).unwrap();
+        assert_ne!(win, 0, "fixture: a left window 0");
+        h.app.active_window = win;
+        h.app.set_window_focused_pane(win, tile);
+        assert!(h.app.move_focused_pane_to_adjacent_window(Direction::Left));
+        assert_eq!(window_of(&h, a), 0, "fixture: a is back in window 0");
+
+        for (label, plan) in [("split", &split), ("tab", &tab)] {
+            let error = apply(&mut h, plan).expect_err(label);
+            assert!(error.contains("left window"), "{label}: {error}");
+        }
+    }
+
+    /// Finding 6: a container anchor is the node holding the panes it held at
+    /// admission, not whatever occupies its tile id later.
+    #[test]
+    fn launch_plan_container_anchor_refuses_a_changed_node() {
+        let mut h = HostHarness::new();
+        let panes = views(&mut h, 2);
+        lay_out(&mut h, 0, panes);
+        h.app.windows[0].focused_pane = None;
+        let unchanged = h
+            .app
+            .admit_terminal_launch(&spec(&h, "split_h", None, None))
+            .unwrap();
+        let changed = h
+            .app
+            .admit_terminal_launch(&spec(&h, "split_h", None, None))
+            .unwrap();
+        assert!(matches!(
+            changed.destination,
+            TerminalDestination::Split {
+                anchor: SplitAnchor::Node { .. },
+                ..
+            }
+        ));
+        let first = apply(&mut h, &unchanged).expect("unchanged node accepts");
+        assert_eq!(window_of(&h, first), 0);
+        let error = apply(&mut h, &changed).expect_err("node gained a pane");
+        assert!(error.contains("no longer holds panes"), "{error}");
+    }
+
+    /// Finding 3 (named context): deleting the named context and creating a
+    /// new one with the same name does not satisfy the admitted destination.
+    #[test]
+    fn launch_plan_refuses_a_recreated_named_context() {
+        let mut h = HostHarness::new();
+        let panes = views(&mut h, 1);
+        lay_out(&mut h, 0, panes);
+        let work = push_context(&mut h, "work", None);
+        let work_win = push_window(&mut h, work, 0);
+        let work_panes = views(&mut h, 1);
+        lay_out(&mut h, work_win, work_panes);
+        let named = h
+            .app
+            .admit_terminal_launch(&spec(&h, "split_h", None, Some("work")))
+            .unwrap();
+        let idx = h.app.router.position(|c| c.context_id == work).unwrap();
+        h.app.delete_context(idx);
+        let again = push_context(&mut h, "work", None);
+        let again_win = push_window(&mut h, again, 0);
+        let again_panes = views(&mut h, 1);
+        lay_out(&mut h, again_win, again_panes);
+        let error = apply(&mut h, &named).expect_err("recreated context refuses");
+        assert!(error.contains("closed"), "{error}");
+    }
+
+    /// Finding 4: the directory a launch runs in (and takes folder secrets
+    /// for) is decided at admission. A split's anchor or a tab's context root
+    /// changing afterwards does not move it.
+    #[test]
+    fn launch_plan_binds_the_directory_at_admission() {
+        let mut h = HostHarness::new();
+        let panes = views(&mut h, 1);
+        let [a] = lay_out(&mut h, 0, panes)[..] else {
+            unreachable!()
+        };
+        let admitted_dir = tempfile::tempdir().unwrap();
+        let later_dir = tempfile::tempdir().unwrap();
+        let set_view_root = |h: &mut HostHarness, dir: &std::path::Path| {
+            if let Some(Pane::View(view)) = h.app.windows[0].panes.get_mut(&a) {
+                view.workspace_root = dir.to_path_buf();
+            }
+        };
+        set_view_root(&mut h, admitted_dir.path());
+        h.app
+            .set_context_root(admitted_dir.path().to_path_buf(), None);
+        let mut split_spec = spec(&h, "split_h", Some(a), None);
+        split_spec.cwd = None;
+        let mut tab_spec = spec(&h, "tab", Some(a), None);
+        tab_spec.cwd = None;
+        let split = h.app.admit_terminal_launch(&split_spec).unwrap();
+        let tab = h.app.admit_terminal_launch(&tab_spec).unwrap();
+        assert_eq!(split.cwd.as_deref(), Some(admitted_dir.path()));
+
+        set_view_root(&mut h, later_dir.path());
+        h.app.set_context_root(later_dir.path().to_path_buf(), None);
+        for (label, plan) in [("split", &split), ("tab", &tab)] {
+            let pane = apply(&mut h, plan).expect(label);
+            let initial = h.app.windows[window_of(&h, pane)].panes[&pane]
+                .as_terminal()
+                .and_then(|t| t.initial_cwd.clone());
+            assert_eq!(initial.as_deref(), Some(admitted_dir.path()), "{label}");
+        }
+    }
+
+    /// Finding 4: an outside caller (socket ancestry that resolves to no pane)
+    /// cannot take a pane's provenance or ceiling by naming it on the wire.
+    #[test]
+    fn launch_plan_wire_origin_is_not_provenance() {
+        let mut h = HostHarness::new();
+        let agent = h.add_focused_terminal();
+        h.app.windows[0]
+            .panes
+            .get_mut(&agent)
+            .and_then(|p| p.as_terminal_mut())
+            .unwrap()
+            .agent_role = Some("lead".into());
+        let mut outside = spec(&h, "split_h", Some(agent), None);
+        outside.peer_ancestry = Some(vec![u32::MAX]);
+        let plan = h.app.admit_terminal_launch(&outside).unwrap();
+        assert_eq!(plan.authority.caller_pane, None);
+        assert_eq!(plan.authority.spawned_by, "human");
+    }
+
+    /// Finding 1: the creation primitives construct the pane with its
+    /// ceiling and provenance, so no pane exists, even inside one call,
+    /// without them.
+    #[test]
+    fn launch_plan_terminal_is_constructed_with_its_authority() {
+        let mut h = HostHarness::new();
+        let panes = views(&mut h, 1);
+        let [a] = lay_out(&mut h, 0, panes)[..] else {
+            unreachable!()
+        };
+        let tile = h.app.windows[0].tree.tiles.find_pane(&a).unwrap();
+        let pane = h
+            .app
+            .spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
+                win_idx: 0,
+                target_tile: tile,
+                vertical: true,
+                new_pane_first: false,
+                keep_focus: true,
+                options: crate::pane_ops::create::TerminalSpawnOptions {
+                    cwd_override: Some(h.workspace_root()),
+                    inject_folder_secrets: false,
+                    authority: PaneLaunchAuthority {
+                        posture: Some(posture(&["tool.secret"])),
+                        spawned_by: Some("agent:lead".into()),
+                    },
+                    ..Default::default()
+                },
+            });
+        let term = h.app.windows[0].panes[&pane].as_terminal().unwrap();
+        assert_eq!(
+            term.agent_permission_posture,
+            Some(posture(&["tool.secret"]))
         );
+        assert_eq!(term.spawned_by.as_deref(), Some("agent:lead"));
+    }
+
+    /// Finding 3: an edit that changes what the worker runs (a harness flag)
+    /// refuses the launch even though the posture is unchanged.
+    #[test]
+    fn launch_plan_agent_call_refuses_a_changed_harness_definition() {
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        write_role(&root, "'tool.secret'");
+        let plan = admit_tester_call(&h, &root);
+        let settings = crate::agent::workspace_agents_dir(&root)
+            .join("tester")
+            .join("settings.toml");
+        let edited = std::fs::read_to_string(&settings).unwrap().replace(
+            "ephemeral=false\n",
+            "ephemeral=false\nmodel='edited-model'\n",
+        );
+        std::fs::write(&settings, edited).unwrap();
+        let error = h
+            .app
+            .apply_launch(LaunchPlan::Agent(&plan), None)
+            .expect_err("changed definition refuses");
+        assert!(error.contains("changed after admission"), "{error}");
+    }
+
+    /// Finding 5: an outside caller's worker lands in the window that was
+    /// active at admission, even when it is not its context's first window.
+    #[test]
+    fn launch_plan_agent_call_lands_in_the_selected_window() {
+        let mut h = HostHarness::new();
+        let first = views(&mut h, 1);
+        lay_out(&mut h, 0, first);
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        write_role(&root, "");
+        let ctx = h.app.windows[0].context_id;
+        let second = push_window(&mut h, ctx, 1);
+        let second_panes = views(&mut h, 1);
+        lay_out(&mut h, second, second_panes);
+        h.app.active_window = second;
+        let plan = admit_tester_call(&h, &root);
+        h.app.active_window = 0;
+        let pane = h
+            .app
+            .apply_launch(LaunchPlan::Agent(&plan), None)
+            .expect("worker launches");
+        assert_eq!(window_of(&h, pane), second);
+    }
+
+    /// Finding 5: a create-sub-context intent is bound to the parent context
+    /// it was admitted under; a parent now elsewhere refuses.
+    #[test]
+    fn launch_plan_subcontext_create_is_bound_to_its_parent_context() {
+        let mut h = HostHarness::new();
+        let panes = views(&mut h, 1);
+        let [parent] = lay_out(&mut h, 0, panes)[..] else {
+            unreachable!()
+        };
+        let elsewhere = h.app.windows[0].context_id + 1_000_000;
+        let error = h
+            .app
+            .resolve_agent_spawn_location(
+                Some(SubcontextTarget::Create {
+                    name: "agent-tools-x",
+                    parent_context_id: elsewhere,
+                }),
+                Some(parent),
+                None,
+                false,
+                AgentOrigin::Active,
+            )
+            .expect_err("moved parent refuses");
+        assert!(error.contains("was admitted under context"), "{error}");
+    }
+
+    /// Finding 7: a handoff publishes the successor's id in the caller's
+    /// completion and in the reply, before the caller closes.
+    #[test]
+    fn launch_plan_handoff_publishes_the_successor() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        for role in ["lead", "writer"] {
+            let dir = crate::agent::workspace_agents_dir(&root).join(role);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("AGENT.md"), "Work").unwrap();
+            std::fs::write(dir.join("settings.toml"), format!("[agent]\nid='{role}'\ndisplay_name='{role}'\n[harness]\ncli='pi'\nephemeral=false\ncan_handoff=['writer']")).unwrap();
+        }
+        let (caller, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "lead",
+                "pi",
+                "sleep 30",
+                "Start",
+                None,
+                false,
+                None,
+                Some(root.clone()),
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let token = monitor.issue_credential(
+            Some(caller),
+            h.app.windows[0].context_id,
+            &root,
+            "agent:lead",
+        );
+        let response = root.join("handoff-successor.json");
+        h.app
+            .start_agent_tool_call(AgentCallRequest {
+                role: "writer",
+                task: "Continue",
+                parent_pane_id: Some(caller),
+                credential: Some(&token),
+                peer_ancestry: &[],
+                cwd: None,
+                worktree: None,
+                asynchronous: false,
+                handoff: true,
+                response_file: response.to_str().unwrap(),
+            })
+            .unwrap();
+        let reply: Value =
+            serde_json::from_str(&std::fs::read_to_string(&response).unwrap()).unwrap();
+        let successor = reply["successor_pane_id"]
+            .as_u64()
+            .expect("reply names successor");
+        assert_eq!(reply["result"]["successor_pane_id"], json!(successor));
+        let committed = h
+            .app
+            .pane_results
+            .get(&caller)
+            .and_then(|r| r.committed.clone());
+        assert_eq!(
+            committed.map(|p| p["successor_pane_id"].clone()),
+            Some(json!(successor)),
+            "the caller's stored completion names the successor"
+        );
+        let role = h
+            .app
+            .windows
+            .iter()
+            .find_map(|w| w.panes.get(&successor))
+            .and_then(|p| p.as_terminal())
+            .and_then(|t| t.agent_role.clone());
+        assert_eq!(role.as_deref(), Some("writer"));
+        assert!(h.app.find_pane_in_any_window(caller).is_none());
     }
 }

@@ -544,7 +544,7 @@ fn close_unpack_respects_other_pages_and_missing_targets() {
         grid_y: 0,
         window_id: 987_654_321,
         context_id: parent,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
     h.app.close_pane_by_id(outside);
     assert_eq!(
@@ -624,7 +624,7 @@ fn close_unpack_chooses_populated_child_page_over_remembered_empty_page() {
         grid_y: 0,
         window_id: empty_window,
         context_id: child,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
     assert!(h.app.zoom_out_of_context());
     h.app.context_active_window.insert(child, empty_window);
@@ -678,7 +678,7 @@ fn close_unpack_when_last_sibling_page_is_removed() {
         grid_y: 0,
         window_id: 987_654_323,
         context_id: parent,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
     h.app.close_pane_by_id(outside);
     assert_eq!(h.app.router.active().context_id, parent);

@@ -380,7 +380,7 @@ fn workspace_snapshot_marks_other_windows_outside_active_view() {
         grid_y: 0,
         window_id,
         context_id: context,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
     let (tile, second) = h.app.add_view_pane_in_window(1, "second");
     h.app.windows[1].focused_pane = Some(tile);

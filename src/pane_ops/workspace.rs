@@ -503,7 +503,7 @@ impl PlexiApp {
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
-            tree_generation: 0,
+            tree_history: Default::default(),
         });
         self.context_active_window.insert(ctx_id, win_id);
 
@@ -744,7 +744,7 @@ impl PlexiApp {
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
-            tree_generation: 0,
+            tree_history: Default::default(),
         });
         let new_idx = self.windows.len() - 1;
         if self
@@ -876,7 +876,7 @@ impl PlexiApp {
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
-            tree_generation: 0,
+            tree_history: Default::default(),
         });
         let new_idx = self.windows.len() - 1;
         if self
@@ -964,17 +964,13 @@ impl PlexiApp {
         context_id: u64,
         options: super::create::TerminalSpawnOptions<'_>,
     ) -> Option<PaneId> {
-        let super::create::TerminalSpawnOptions {
-            initial_cmd,
-            close_on_exit,
-            cwd_override,
-            agent_pane,
-            inject_folder_secrets,
-        } = options;
+        let close_on_exit = options.close_on_exit;
         let old_window_id = self.windows[self.active_window].window_id;
         let old_focus = self.windows[self.active_window].focused_pane;
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let cwd = cwd_override
+        let cwd = options
+            .cwd_override
+            .clone()
             .or_else(|| self.resolve_new_pane_cwd(None))
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
@@ -985,11 +981,10 @@ impl PlexiApp {
         let context_env = self.pane_context_env_for_context(context_id);
         let Some((tree, panes, root_tile)) = self.create_single_pane_tree(
             &context_env,
-            Some(cwd.clone()),
-            initial_cmd,
-            close_on_exit,
-            agent_pane,
-            inject_folder_secrets,
+            super::create::TerminalSpawnOptions {
+                cwd_override: Some(cwd.clone()),
+                ..options
+            },
         ) else {
             log::error!("Failed to create terminal for new page at ({grid_x}, {grid_y})");
             return None;
@@ -1011,7 +1006,7 @@ impl PlexiApp {
             grid_y,
             window_id: win_id,
             context_id: ctx_id,
-            tree_generation: 0,
+            tree_history: Default::default(),
         });
         self.active_window = self.windows.len() - 1;
         self.context_active_window.insert(ctx_id, win_id);
@@ -1044,21 +1039,13 @@ impl PlexiApp {
         cwd: PathBuf,
         options: super::create::TerminalSpawnOptions<'_>,
     ) -> Option<(PaneId, egui_tiles::TileId)> {
-        let super::create::TerminalSpawnOptions {
-            initial_cmd,
-            close_on_exit,
-            cwd_override: _,
-            agent_pane,
-            inject_folder_secrets,
-        } = options;
         let spawn_start = std::time::Instant::now();
         let (tree, panes, root_tile) = self.create_single_pane_tree(
             context,
-            Some(cwd),
-            initial_cmd,
-            close_on_exit,
-            agent_pane,
-            inject_folder_secrets,
+            super::create::TerminalSpawnOptions {
+                cwd_override: Some(cwd),
+                ..options
+            },
         )?;
         let spawn_duration = spawn_start.elapsed();
         let pane_id = *panes
@@ -1074,7 +1061,7 @@ impl PlexiApp {
         win.panes = panes;
         win.focused_pane = Some(root_tile);
         win.zoomed_pane = None;
-        win.advance_tree_generation();
+        win.note_tree_rebuilt();
         Some((pane_id, root_tile))
     }
 
@@ -1090,30 +1077,21 @@ impl PlexiApp {
     pub(crate) fn seed_root_pane(
         &mut self,
         win_idx: usize,
-        initial_cmd: Option<&str>,
-        close_on_exit: bool,
-        cwd_override: Option<PathBuf>,
-        agent_pane: bool,
-        inject_folder_secrets: bool,
+        options: super::create::TerminalSpawnOptions<'_>,
     ) -> Option<crate::spatial::tiling::PaneId> {
+        let (close_on_exit, inject_folder_secrets) =
+            (options.close_on_exit, options.inject_folder_secrets);
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let cwd = cwd_override
+        let cwd = options
+            .cwd_override
+            .clone()
             .or_else(|| self.resolve_new_pane_cwd(None))
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
         let context = self.pane_context_env_for_window(win_idx);
-        let Some((pane_id, _root_tile)) = self.seed_window_root_pane(
-            win_idx,
-            &context,
-            cwd,
-            super::create::TerminalSpawnOptions {
-                initial_cmd,
-                close_on_exit,
-                cwd_override: None,
-                agent_pane,
-                inject_folder_secrets,
-            },
-        ) else {
+        let Some((pane_id, _root_tile)) =
+            self.seed_window_root_pane(win_idx, &context, cwd, options)
+        else {
             log::error!("seed_root_pane: failed to create terminal for empty window idx={win_idx}");
             return None;
         };
@@ -1132,9 +1110,13 @@ impl PlexiApp {
             self.router.active().root
         );
         let context = self.pane_context_env_for_window(self.active_window);
-        let Some((tree, panes, root_tile)) =
-            self.create_single_pane_tree(&context, Some(cwd), None, false, false, true)
-        else {
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(
+            &context,
+            super::create::TerminalSpawnOptions {
+                cwd_override: Some(cwd),
+                ..Default::default()
+            },
+        ) else {
             log::error!("Failed to create terminal for reset context");
             return;
         };
@@ -1144,7 +1126,7 @@ impl PlexiApp {
         ctx.panes = panes;
         ctx.focused_pane = Some(root_tile);
         ctx.zoomed_pane = None;
-        ctx.advance_tree_generation();
+        ctx.note_tree_rebuilt();
     }
 
     pub(crate) fn delete_context(&mut self, ws_index: usize) {
@@ -1262,7 +1244,7 @@ impl PlexiApp {
                 if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
                     win.tree.remove_recursively(tile_id);
                 }
-                win.advance_tree_generation();
+                win.note_pane_departed(pane_id);
             }
         }
 
@@ -2095,7 +2077,7 @@ impl PlexiApp {
             self.windows[parent_idx]
                 .tree
                 .remove_recursively(portal_tile_id);
-            self.windows[parent_idx].advance_tree_generation();
+            self.windows[parent_idx].note_pane_departed(portal_pane_id);
             if let Some(idx) = self.router.position(|c| c.context_id == child_ctx_id) {
                 self.router.remove_at(idx);
             }
@@ -2156,8 +2138,8 @@ impl PlexiApp {
             parent_win
                 .panes
                 .extend(std::mem::take(&mut primary_child_win.panes));
-            parent_win.advance_tree_generation();
-            primary_child_win.advance_tree_generation();
+            parent_win.note_pane_departed(portal_pane_id);
+            primary_child_win.note_tree_rebuilt();
             if let Some(parent_tile) = parent_win.tree.tiles.parent_of(portal_tile_id) {
                 if let Some(Tile::Container(parent_container)) =
                     parent_win.tree.tiles.get_mut(parent_tile)
@@ -2252,7 +2234,7 @@ impl PlexiApp {
                 if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
                     win.tree.remove_recursively(tile_id);
                 }
-                win.advance_tree_generation();
+                win.note_pane_departed(pane_id);
                 log::warn!(
                     "dissolve_portal: removed stale PortalPane {pane_id} targeting dissolved ctx={child_ctx_id}"
                 );

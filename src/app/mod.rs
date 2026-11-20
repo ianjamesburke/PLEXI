@@ -2102,7 +2102,7 @@ impl PlexiApp {
                 grid_y: 0,
                 window_id: 1,
                 context_id: 1,
-                tree_generation: 0,
+                tree_history: Default::default(),
             }],
             active_window: 0,
             sidebar_visible: true,
@@ -3093,7 +3093,7 @@ impl PlexiApp {
                 grid_y: 0,
                 window_id: 1,
                 context_id: 1,
-                tree_generation: 0,
+                tree_history: Default::default(),
             }],
             active_window: 0,
             sidebar_visible: false,
@@ -4719,7 +4719,7 @@ impl PlexiApp {
             }
             Action::NewTab => {
                 let anchor = self.focused_tab_anchor(self.active_window);
-                self.new_tab(self.active_window, anchor, None, false, None, false, true);
+                self.new_tab(self.active_window, anchor, Default::default());
                 self.mark_workspace_dirty();
             }
             Action::ToggleZoom => self.toggle_pane_zoom(),
@@ -6407,7 +6407,7 @@ pub(crate) fn restore_workspace(
             grid_y: saved_win.grid_y,
             window_id: saved_win.window_id,
             context_id: saved_win.context_id,
-            tree_generation: 0,
+            tree_history: Default::default(),
         };
         if win.panes.is_empty() {
             win.tree = egui_tiles::Tree::empty("plexi");

@@ -9,10 +9,7 @@ use crate::host::pane::{Pane, TerminalPane};
 use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;
 use egui_tiles::{Container, Tile, TileId};
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-};
+use std::collections::{HashMap, HashSet};
 
 pub(crate) enum SwapResult {
     Swapped {
@@ -345,11 +342,11 @@ impl PlexiApp {
             if self.windows[active].panes.is_empty() {
                 let context = self.pane_context_env_for_window(active);
                 if let Some((tree, panes, root_tile)) =
-                    self.create_single_pane_tree(&context, None, None, false, false, true)
+                    self.create_single_pane_tree(&context, Default::default())
                 {
                     self.windows[active].tree = tree;
                     self.windows[active].panes = panes;
-                    self.windows[active].advance_tree_generation();
+                    self.windows[active].note_tree_rebuilt();
                     self.set_window_focused_pane(active, root_tile);
                 }
             }
@@ -516,17 +513,20 @@ impl PlexiApp {
     /// pane it created. `anchor` is the pane the caller selected, never the
     /// window's focus at call time; `None` is only valid for an empty window,
     /// whose first pane becomes the tree root.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_tab(
         &mut self,
         target_win_idx: usize,
         anchor: Option<PaneId>,
-        initial_cmd: Option<&str>,
-        close_on_exit: bool,
-        cwd_override: Option<PathBuf>,
-        agent_pane: bool,
-        inject_folder_secrets: bool,
+        options: super::create::TerminalSpawnOptions<'_>,
     ) -> Option<PaneId> {
+        let super::create::TerminalSpawnOptions {
+            initial_cmd,
+            close_on_exit,
+            cwd_override,
+            agent_pane,
+            inject_folder_secrets,
+            authority,
+        } = options;
         self.windows.get(target_win_idx)?;
         // Empty context (welcome screen): create the first pane as tree root.
         if anchor.is_none() && self.windows[target_win_idx].panes.is_empty() {
@@ -567,12 +567,13 @@ impl PlexiApp {
                 settings.working_directory.as_deref(),
                 inject_folder_secrets,
             );
-            let mut pane = match TerminalPane::new(
+            let mut pane = match TerminalPane::with_authority(
                 new_id,
                 self.ctx.clone(),
                 self.pty_event_tx.clone(),
                 settings,
                 self.default_font_size,
+                authority,
             ) {
                 Ok(pane) => pane,
                 Err(error) => {
@@ -635,12 +636,13 @@ impl PlexiApp {
             settings.working_directory.as_deref(),
             inject_folder_secrets,
         );
-        let mut pane = match TerminalPane::new(
+        let mut pane = match TerminalPane::with_authority(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
             settings,
             self.default_font_size,
+            authority,
         ) {
             Ok(pane) => pane,
             Err(error) => {
@@ -999,7 +1001,7 @@ impl PlexiApp {
                     context_root.as_deref(),
                 );
                 closed_pane_id = Some(pane_id);
-                ctx.advance_tree_generation();
+                ctx.note_pane_departed(pane_id);
                 ctx.panes.remove(&pane_id)
             } else {
                 None
@@ -1714,7 +1716,7 @@ impl PlexiApp {
             }
             ctx.tree.tiles.remove(focused_tile);
             let pane = ctx.panes.remove(&src_pane_id);
-            ctx.advance_tree_generation();
+            ctx.note_pane_departed(src_pane_id);
             ctx.focused_pane = next_src_focus;
             ctx.simplify_and_reconcile();
             pane
@@ -1781,7 +1783,7 @@ impl PlexiApp {
             grid_y: src_grid_y,
             window_id: win_id,
             context_id: ws_id,
-            tree_generation: 0,
+            tree_history: Default::default(),
         });
 
         self.active_window = self.windows.len() - 1;
@@ -1890,7 +1892,7 @@ impl PlexiApp {
             }
             ctx.tree.tiles.remove(src_focused_tile);
             let pane = ctx.panes.remove(&src_pane_id);
-            ctx.advance_tree_generation();
+            ctx.note_pane_departed(src_pane_id);
             ctx.focused_pane = next_src_focus;
             ctx.simplify_and_reconcile();
             pane
@@ -2246,7 +2248,7 @@ mod close_pane_by_id_tests {
             grid_y,
             window_id,
             context_id,
-            tree_generation: 0,
+            tree_history: Default::default(),
         }
     }
 

@@ -495,6 +495,289 @@ impl PlexiApp {
         payload
     }
 
+    /// Commit `pane_id`'s completion: validate and store the result, publish
+    /// it to waiters and the parent, and return the reply payload. Shared by
+    /// `agent done` and handoff, which publishes the successor first.
+    pub(crate) fn complete_agent_pane(
+        &mut self,
+        pane_id: u64,
+        result: Option<&str>,
+        summary: Option<&str>,
+    ) -> serde_json::Value {
+        let pane_id = &pane_id;
+        let raw_result = result.unwrap_or("{}");
+        let summary_str = summary.unwrap_or_default();
+        log::info!(
+            "pane_ipc: kind=agent_done pane_id={pane_id} result_len={} summary_len={}",
+            raw_result.len(),
+            summary_str.len()
+        );
+        let pane_alive = self.find_pane_in_any_window(*pane_id).is_some();
+        if !pane_alive && !self.pane_results.contains_key(pane_id) {
+            return serde_json::json!({
+                "ok": false,
+                "pane_id": pane_id,
+                "error_code": "pane_not_found",
+                "error": format!("pane {pane_id} not found"),
+            });
+        }
+        match self
+            .pane_results
+            .entry(*pane_id)
+            .or_default()
+            .write_payload(raw_result)
+        {
+            Ok(committed) => {
+                self.complete_result_waits(*pane_id);
+                self.finish_agent_tool_waits(
+                    *pane_id,
+                    serde_json::json!({
+                        "ok": true, "pane_id": pane_id, "status": "completed",
+                        "summary": summary_str, "result": committed,
+                    }),
+                );
+                let completed_payload = serde_json::json!({
+                    "pane_id": pane_id,
+                    "status": "completed",
+                    "summary": summary_str,
+                    "result": committed,
+                })
+                .to_string();
+                if !summary_str.is_empty() {
+                    let _ = self.write_pane_slot_internal(
+                        *pane_id,
+                        "summary",
+                        summary_str.as_bytes(),
+                        false,
+                        true,
+                    );
+                }
+                let slot_res = self.write_pane_slot_internal(
+                    *pane_id,
+                    "completed",
+                    completed_payload.as_bytes(),
+                    false,
+                    true,
+                );
+                let mut agent_label = "agent".to_string();
+                let mut agent_harness = None;
+                let mut session_id = None;
+                let mut parent_pane_id = None;
+                let mut workspace_roots = Vec::new();
+                let mut pane_ctx_id = None;
+                for win in &mut self.windows {
+                    if let Some(pane) = win.panes.get_mut(pane_id) {
+                        pane_ctx_id = Some(win.context_id);
+                        if let Some(t) = pane.as_terminal_mut() {
+                            parent_pane_id = t.parent_pane_id;
+                            t.agent_completed = true;
+                            t.fleet_result = Some(committed.clone());
+                            t.fleet_done_unseen = true;
+                            t.fleet_seen = false;
+                            t.fleet_since = crate::platform::clock::now_secs();
+                            t.last_blocked_reason = None;
+                            agent_harness = t.agent_harness.clone();
+                            if let Some(ref r) = t.agent_role {
+                                agent_label = r.clone();
+                            } else if let Some(ref h) = t.agent_harness {
+                                agent_label = h.clone();
+                            } else if let Some(ref a) = t.agent {
+                                agent_label = a.agent.clone();
+                            } else if let Some(ref n) = t.name {
+                                if !n.trim().is_empty() && n != "terminal" {
+                                    agent_label = n.clone();
+                                }
+                            }
+                            if let Some(ref cwd) = t.initial_cwd {
+                                if let Some(ws) =
+                                    crate::app::registry::resolve_agent_lookup_workspace_root(cwd)
+                                {
+                                    workspace_roots.push(ws);
+                                }
+                                if !workspace_roots.contains(cwd) {
+                                    workspace_roots.push(cwd.clone());
+                                }
+                            }
+                            session_id = t.agent_session_id.clone();
+                        }
+                        if !workspace_roots.contains(&win.path) {
+                            workspace_roots.push(win.path.clone());
+                        }
+                        let done_state = if agent_harness.as_deref() == Some("script") {
+                            crate::protocol::AgentState::Completed
+                        } else {
+                            crate::protocol::AgentState::Idle
+                        };
+                        let _ = pane.set_agent(Some(crate::protocol::PaneAgentState {
+                            pane_id: *pane_id,
+                            state: done_state,
+                            agent: agent_label.clone(),
+                            detail: (!summary_str.is_empty()).then(|| summary_str.to_string()),
+                            session_id: session_id.clone(),
+                        }));
+                        break;
+                    }
+                }
+                if let Some(cid) = pane_ctx_id {
+                    if let Some(ctx) = self.router.iter().find(|c| c.context_id == cid) {
+                        if !workspace_roots.contains(&ctx.root) {
+                            workspace_roots.insert(0, ctx.root.clone());
+                        }
+                    }
+                }
+                if workspace_roots.is_empty() {
+                    workspace_roots.push(self.router.active().root.clone());
+                }
+                let profile_dir = crate::config::config_dir();
+                let persisted = crate::cli::agent::persist_agent_done_result(
+                    *pane_id,
+                    &agent_label,
+                    agent_harness.as_deref(),
+                    session_id.as_deref(),
+                    summary_str,
+                    &committed,
+                    &workspace_roots,
+                    &profile_dir,
+                );
+                let (result_md_path, result_json_path) = match persisted {
+                    Ok((md_p, js_p, _, _)) => (
+                        Some(md_p.to_string_lossy().into_owned()),
+                        Some(js_p.to_string_lossy().into_owned()),
+                    ),
+                    Err(e) => {
+                        log::warn!("agent_done: failed to persist result for pane {pane_id}: {e}");
+                        (None, None)
+                    }
+                };
+                self.withdraw_agent_attention_items(*pane_id, session_id.as_deref());
+                if !self.pane_has_parent_agent(*pane_id) {
+                    let done_title = if summary_str.trim().is_empty() {
+                        format!("{agent_label} done")
+                    } else {
+                        format!("{agent_label} done: {}", summary_str.trim())
+                    };
+                    let resource = result_md_path
+                        .clone()
+                        .unwrap_or_else(|| format!("pane:{pane_id}"));
+                    if let Err(e) =
+                        crate::broker::gate::PermissionMonitor::for_profile(&profile_dir)
+                            .map_err(|error| error.to_string())
+                            .and_then(|monitor| {
+                                monitor.file_needs_you_with_details(
+                                    crate::broker::gate::NeedsYouFile {
+                                        kind: crate::broker::gate::NeedsYouKind::AgentDone,
+                                        actor: format!("pane:{pane_id}"),
+                                        resource,
+                                        summary: done_title,
+                                        expires_at: None,
+                                        run_tag: session_id
+                                            .clone()
+                                            .or_else(|| Some(format!("pane:{pane_id}"))),
+                                    },
+                                    Some(crate::broker::gate::NeedsYouDetails {
+                                        pane_id: Some(*pane_id),
+                                        session_id: session_id.clone(),
+                                        preview_refs: result_md_path.clone().into_iter().collect(),
+                                        ..Default::default()
+                                    }),
+                                )
+                            })
+                    {
+                        log::warn!(
+                            "agent_done: could not file attention item for pane {pane_id}: {e}"
+                        );
+                    }
+                }
+                self.report_agent_attention(
+                    *pane_id,
+                    &crate::protocol::AgentState::Completed,
+                    (!summary_str.is_empty()).then_some(summary_str),
+                );
+                if self.fleet_focused_pane() == Some(*pane_id) {
+                    self.mark_agent_seen(*pane_id);
+                }
+                self.mark_workspace_dirty();
+                let provenance = Provenance {
+                    source: Source::LegacyReport,
+                    agent_label: agent_label.clone(),
+                    session_id,
+                    raw_event: Some("AgentDone".to_string()),
+                };
+                self.emit_pane_lifecycle(
+                    *pane_id,
+                    PaneLifecycleEvent::TurnFinished {
+                        provenance: provenance.clone(),
+                    },
+                );
+                self.emit_pane_lifecycle(*pane_id, PaneLifecycleEvent::AgentIdle { provenance });
+                self.record_child_agent_result(
+                    parent_pane_id,
+                    crate::workspace::QueuedChildResult {
+                        child_pane_id: *pane_id,
+                        child_agent: agent_label,
+                        status: "completed".to_string(),
+                        summary: (!summary_str.is_empty()).then(|| summary_str.to_string()),
+                        result_json: serde_json::to_string(&committed)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                        finished_at_epoch_secs: crate::platform::clock::now_secs(),
+                    },
+                );
+                self.flush_pending_child_results_if_idle(*pane_id);
+                self.refresh_portal_context_states();
+                let payload = match slot_res {
+                    Ok((path, bytes)) => serde_json::json!({
+                        "ok": true,
+                        "pane_id": pane_id,
+                        "slot": "completed",
+                        "path": path.to_string_lossy(),
+                        "result_path": result_md_path,
+                        "json_path": result_json_path,
+                        "bytes": bytes,
+                        "result": committed,
+                        "summary": summary,
+                    }),
+                    Err(e) => serde_json::json!({
+                        "ok": true,
+                        "pane_id": pane_id,
+                        "result_path": result_md_path,
+                        "json_path": result_json_path,
+                        "result": committed,
+                        "summary": summary,
+                        "slot_warning": e,
+                    }),
+                };
+                payload
+            }
+            Err(err) => {
+                log::warn!(
+                    "pane_ipc: agent_done validation failed for pane {pane_id}: {}",
+                    err.message()
+                );
+                serde_json::json!({
+                    "ok": false,
+                    "pane_id": pane_id,
+                    "error_code": err.error_code(),
+                    "error": err.message(),
+                    "validation_errors": err.validation_errors(),
+                })
+            }
+        }
+    }
+
+    /// After a completion: close an ephemeral `agent call` child.
+    pub(crate) fn close_completed_ephemeral_child(&mut self, pane_id: u64) {
+        let close = self.agent_tool_children.contains_key(&pane_id)
+            && self
+                .windows
+                .iter()
+                .find_map(|w| w.panes.get(&pane_id))
+                .and_then(|p| p.as_terminal())
+                .is_some_and(|t| t.ephemeral);
+        if close {
+            self.close_pane_by_id(pane_id);
+        }
+    }
+
     /// Handle a single pane-IPC `HostRequest`. Shared by the socket drain above
     /// and the PGAP forwarding path (`ViewCommand::ForwardPaneRequest`, stint
     /// 0013/0014) so capability-gated plugin requests take the identical host
@@ -4973,286 +5256,12 @@ impl PlexiApp {
                     self.refuse_cross_pane("agent_done", caller, *pane_id, response_file);
                     return;
                 }
-                let raw_result = result.as_deref().unwrap_or("{}");
-                let summary_str = summary.as_deref().unwrap_or_default();
-                log::info!(
-                    "pane_ipc: kind=agent_done pane_id={pane_id} result_len={} summary_len={}",
-                    raw_result.len(),
-                    summary_str.len()
-                );
-                let pane_alive = self.find_pane_in_any_window(*pane_id).is_some();
-                if !pane_alive && !self.pane_results.contains_key(pane_id) {
-                    write_json_response(
-                        response_file,
-                        serde_json::json!({
-                            "ok": false,
-                            "pane_id": pane_id,
-                            "error_code": "pane_not_found",
-                            "error": format!("pane {pane_id} not found"),
-                        }),
-                    );
-                    return;
-                }
-                match self
-                    .pane_results
-                    .entry(*pane_id)
-                    .or_default()
-                    .write_payload(raw_result)
-                {
-                    Ok(committed) => {
-                        self.complete_result_waits(*pane_id);
-                        self.finish_agent_tool_waits(
-                            *pane_id,
-                            serde_json::json!({
-                                "ok": true, "pane_id": pane_id, "status": "completed",
-                                "summary": summary_str, "result": committed,
-                            }),
-                        );
-                        let completed_payload = serde_json::json!({
-                            "pane_id": pane_id,
-                            "status": "completed",
-                            "summary": summary_str,
-                            "result": committed,
-                        })
-                        .to_string();
-                        if !summary_str.is_empty() {
-                            let _ = self.write_pane_slot_internal(
-                                *pane_id,
-                                "summary",
-                                summary_str.as_bytes(),
-                                false,
-                                true,
-                            );
-                        }
-                        let slot_res = self.write_pane_slot_internal(
-                            *pane_id,
-                            "completed",
-                            completed_payload.as_bytes(),
-                            false,
-                            true,
-                        );
-                        let mut agent_label = "agent".to_string();
-                        let mut agent_harness = None;
-                        let mut session_id = None;
-                        let mut parent_pane_id = None;
-                        let mut workspace_roots = Vec::new();
-                        let mut pane_ctx_id = None;
-                        for win in &mut self.windows {
-                            if let Some(pane) = win.panes.get_mut(pane_id) {
-                                pane_ctx_id = Some(win.context_id);
-                                if let Some(t) = pane.as_terminal_mut() {
-                                    parent_pane_id = t.parent_pane_id;
-                                    t.agent_completed = true;
-                                    t.fleet_result = Some(committed.clone());
-                                    t.fleet_done_unseen = true;
-                                    t.fleet_seen = false;
-                                    t.fleet_since = crate::platform::clock::now_secs();
-                                    t.last_blocked_reason = None;
-                                    agent_harness = t.agent_harness.clone();
-                                    if let Some(ref r) = t.agent_role {
-                                        agent_label = r.clone();
-                                    } else if let Some(ref h) = t.agent_harness {
-                                        agent_label = h.clone();
-                                    } else if let Some(ref a) = t.agent {
-                                        agent_label = a.agent.clone();
-                                    } else if let Some(ref n) = t.name {
-                                        if !n.trim().is_empty() && n != "terminal" {
-                                            agent_label = n.clone();
-                                        }
-                                    }
-                                    if let Some(ref cwd) = t.initial_cwd {
-                                        if let Some(ws) =
-                                            crate::app::registry::resolve_agent_lookup_workspace_root(cwd)
-                                        {
-                                            workspace_roots.push(ws);
-                                        }
-                                        if !workspace_roots.contains(cwd) {
-                                            workspace_roots.push(cwd.clone());
-                                        }
-                                    }
-                                    session_id = t.agent_session_id.clone();
-                                }
-                                if !workspace_roots.contains(&win.path) {
-                                    workspace_roots.push(win.path.clone());
-                                }
-                                let done_state = if agent_harness.as_deref() == Some("script") {
-                                    crate::protocol::AgentState::Completed
-                                } else {
-                                    crate::protocol::AgentState::Idle
-                                };
-                                let _ = pane.set_agent(Some(crate::protocol::PaneAgentState {
-                                    pane_id: *pane_id,
-                                    state: done_state,
-                                    agent: agent_label.clone(),
-                                    detail: (!summary_str.is_empty())
-                                        .then(|| summary_str.to_string()),
-                                    session_id: session_id.clone(),
-                                }));
-                                break;
-                            }
-                        }
-                        if let Some(cid) = pane_ctx_id {
-                            if let Some(ctx) = self.router.iter().find(|c| c.context_id == cid) {
-                                if !workspace_roots.contains(&ctx.root) {
-                                    workspace_roots.insert(0, ctx.root.clone());
-                                }
-                            }
-                        }
-                        if workspace_roots.is_empty() {
-                            workspace_roots.push(self.router.active().root.clone());
-                        }
-                        let profile_dir = crate::config::config_dir();
-                        let persisted = crate::cli::agent::persist_agent_done_result(
-                            *pane_id,
-                            &agent_label,
-                            agent_harness.as_deref(),
-                            session_id.as_deref(),
-                            summary_str,
-                            &committed,
-                            &workspace_roots,
-                            &profile_dir,
-                        );
-                        let (result_md_path, result_json_path) = match persisted {
-                            Ok((md_p, js_p, _, _)) => (
-                                Some(md_p.to_string_lossy().into_owned()),
-                                Some(js_p.to_string_lossy().into_owned()),
-                            ),
-                            Err(e) => {
-                                log::warn!(
-                                    "agent_done: failed to persist result for pane {pane_id}: {e}"
-                                );
-                                (None, None)
-                            }
-                        };
-                        self.withdraw_agent_attention_items(*pane_id, session_id.as_deref());
-                        if !self.pane_has_parent_agent(*pane_id) {
-                            let done_title = if summary_str.trim().is_empty() {
-                                format!("{agent_label} done")
-                            } else {
-                                format!("{agent_label} done: {}", summary_str.trim())
-                            };
-                            let resource = result_md_path
-                                .clone()
-                                .unwrap_or_else(|| format!("pane:{pane_id}"));
-                            if let Err(e) =
-                                crate::broker::gate::PermissionMonitor::for_profile(&profile_dir)
-                                    .map_err(|error| error.to_string())
-                                    .and_then(|monitor| {
-                                        monitor.file_needs_you_with_details(
-                                            crate::broker::gate::NeedsYouFile {
-                                                kind: crate::broker::gate::NeedsYouKind::AgentDone,
-                                                actor: format!("pane:{pane_id}"),
-                                                resource,
-                                                summary: done_title,
-                                                expires_at: None,
-                                                run_tag: session_id
-                                                    .clone()
-                                                    .or_else(|| Some(format!("pane:{pane_id}"))),
-                                            },
-                                            Some(crate::broker::gate::NeedsYouDetails {
-                                                pane_id: Some(*pane_id),
-                                                session_id: session_id.clone(),
-                                                preview_refs: result_md_path
-                                                    .clone()
-                                                    .into_iter()
-                                                    .collect(),
-                                                ..Default::default()
-                                            }),
-                                        )
-                                    })
-                            {
-                                log::warn!("agent_done: could not file attention item for pane {pane_id}: {e}");
-                            }
-                        }
-                        self.report_agent_attention(
-                            *pane_id,
-                            &crate::protocol::AgentState::Completed,
-                            (!summary_str.is_empty()).then_some(summary_str),
-                        );
-                        if self.fleet_focused_pane() == Some(*pane_id) {
-                            self.mark_agent_seen(*pane_id);
-                        }
-                        self.mark_workspace_dirty();
-                        let provenance = Provenance {
-                            source: Source::LegacyReport,
-                            agent_label: agent_label.clone(),
-                            session_id,
-                            raw_event: Some("AgentDone".to_string()),
-                        };
-                        self.emit_pane_lifecycle(
-                            *pane_id,
-                            PaneLifecycleEvent::TurnFinished {
-                                provenance: provenance.clone(),
-                            },
-                        );
-                        self.emit_pane_lifecycle(
-                            *pane_id,
-                            PaneLifecycleEvent::AgentIdle { provenance },
-                        );
-                        self.record_child_agent_result(
-                            parent_pane_id,
-                            crate::workspace::QueuedChildResult {
-                                child_pane_id: *pane_id,
-                                child_agent: agent_label,
-                                status: "completed".to_string(),
-                                summary: (!summary_str.is_empty()).then(|| summary_str.to_string()),
-                                result_json: serde_json::to_string(&committed)
-                                    .unwrap_or_else(|_| "{}".to_string()),
-                                finished_at_epoch_secs: crate::platform::clock::now_secs(),
-                            },
-                        );
-                        self.flush_pending_child_results_if_idle(*pane_id);
-                        self.refresh_portal_context_states();
-                        let payload = match slot_res {
-                            Ok((path, bytes)) => serde_json::json!({
-                                "ok": true,
-                                "pane_id": pane_id,
-                                "slot": "completed",
-                                "path": path.to_string_lossy(),
-                                "result_path": result_md_path,
-                                "json_path": result_json_path,
-                                "bytes": bytes,
-                                "result": committed,
-                                "summary": summary,
-                            }),
-                            Err(e) => serde_json::json!({
-                                "ok": true,
-                                "pane_id": pane_id,
-                                "result_path": result_md_path,
-                                "json_path": result_json_path,
-                                "result": committed,
-                                "summary": summary,
-                                "slot_warning": e,
-                            }),
-                        };
-                        write_json_response(response_file, payload);
-                        let close = self.agent_tool_children.contains_key(pane_id)
-                            && self
-                                .windows
-                                .iter()
-                                .find_map(|w| w.panes.get(pane_id))
-                                .and_then(|p| p.as_terminal())
-                                .is_some_and(|t| t.ephemeral);
-                        if close {
-                            self.close_pane_by_id(*pane_id);
-                        }
-                    }
-                    Err(err) => {
-                        log::warn!(
-                            "pane_ipc: agent_done validation failed for pane {pane_id}: {}",
-                            err.message()
-                        );
-                        write_json_response(
-                            response_file,
-                            serde_json::json!({
-                                "ok": false,
-                                "pane_id": pane_id,
-                                "error_code": err.error_code(),
-                                "error": err.message(),
-                                "validation_errors": err.validation_errors(),
-                            }),
-                        );
-                    }
+                let payload =
+                    self.complete_agent_pane(*pane_id, result.as_deref(), summary.as_deref());
+                let completed = payload["ok"] == true;
+                write_json_response(response_file, payload);
+                if completed {
+                    self.close_completed_ephemeral_child(*pane_id);
                 }
             }
             crate::protocol::HostRequest::AgentNext { response_file } => {

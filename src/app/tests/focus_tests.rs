@@ -74,7 +74,7 @@ fn theme_broadcast_reaches_background_apps_in_every_window() {
         grid_y: 0,
         window_id: 2,
         context_id: 2,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
     let inactive_events = add_theme_event_recorder(&mut app, 1);
     let parked_events = Arc::new(Mutex::new(Vec::new()));
@@ -460,7 +460,7 @@ fn switch_workspace_pushes_focus_history() {
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_b_id,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
     app.context_active_window.insert(ctx_b_id, win_b_id);
     let ctx_b_idx = app.router.len() - 1;
@@ -532,7 +532,7 @@ fn switch_workspace_no_double_push_during_history_navigation() {
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_b_id,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
     app.context_active_window.insert(ctx_b_id, win_b_id);
     let ctx_b_idx = app.router.len() - 1;
@@ -588,7 +588,7 @@ fn focus_history_restores_context_minimap_visibility() {
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_b_id,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
     app.context_active_window.insert(ctx_b_id, win_b_id);
     let ctx_b_idx = app.router.len() - 1;
@@ -662,7 +662,7 @@ fn pane_navigate_same_context_records_destination_active_window() {
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_id,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
 
     assert!(app.pane_navigate(pane_b_id));
@@ -894,7 +894,7 @@ fn palette_finds_open_note_editor_in_a_non_active_window() {
         grid_y: 0,
         window_id,
         context_id: app.router.active().context_id,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
 
     assert_eq!(

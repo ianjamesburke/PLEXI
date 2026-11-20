@@ -244,11 +244,11 @@ fn core_only_terminal_executes_and_splits() {
         .app
         .seed_root_pane(
             h.app.active_window,
-            None,
-            false,
-            Some(h.workspace_root().to_path_buf()),
-            false,
-            false,
+            crate::pane_ops::create::TerminalSpawnOptions {
+                cwd_override: Some(h.workspace_root().to_path_buf()),
+                inject_folder_secrets: false,
+                ..Default::default()
+            },
         )
         .expect("core-only startup must create a terminal");
     h.focus_pane(terminal);

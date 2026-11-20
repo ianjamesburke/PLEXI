@@ -2833,7 +2833,7 @@ mod tests {
             grid_y: 0,
             window_id,
             context_id: context,
-            tree_generation: 0,
+            tree_history: Default::default(),
         });
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let workspace = h.workspace_root();
@@ -2927,7 +2927,7 @@ mod tests {
             grid_y: 0,
             window_id,
             context_id: context,
-            tree_generation: 0,
+            tree_history: Default::default(),
         });
         let portal = pane + 1000000;
         h.app.windows[0].panes.insert(

@@ -370,7 +370,7 @@ fn two_window_fixture(h: &mut HostHarness) -> (PaneId, PaneId, PaneId) {
         grid_y: 0,
         window_id,
         context_id,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
     let (c_tile, c) = h.app.add_view_pane_in_window(1, "right");
     h.app.windows[1].focused_pane = Some(c_tile);
@@ -473,7 +473,7 @@ fn agent_subcontext_portal_insert_leaves_parent_window_settled() {
             None,
             None,
             false,
-            None,
+            crate::pane_ops::create::AgentOrigin::Active,
         )
         .expect("subcontext resolves");
     h.assert_window_settled(0, "agent subcontext portal insert");
@@ -522,7 +522,14 @@ fn new_tab_leaves_window_settled() {
     let (a, _b, _c) = two_window_fixture(&mut h);
     assert!(h.app.windows[0].tree.tiles.find_pane(&a).is_some());
     let anchor = h.app.focused_tab_anchor(0);
-    h.app.new_tab(0, anchor, None, false, None, false, false);
+    h.app.new_tab(
+        0,
+        anchor,
+        crate::pane_ops::create::TerminalSpawnOptions {
+            inject_folder_secrets: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(h.app.windows[0].panes.len(), 3, "new_tab adds a pane");
     h.assert_window_settled(0, "new_tab");
 }

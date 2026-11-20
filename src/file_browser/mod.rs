@@ -5598,7 +5598,7 @@ mod tests {
             grid_y: 0,
             window_id: 2,
             context_id: ctx_b_id,
-            tree_generation: 0,
+            tree_history: Default::default(),
         };
         let pane_id = harness.app.host.alloc_pane_id();
         let view_pane = crate::host::pane::ViewPane {

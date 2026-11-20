@@ -283,7 +283,7 @@ impl PlexiApp {
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
-            tree_generation: 0,
+            tree_history: Default::default(),
         });
         let win_idx = self.windows.len() - 1;
         self.router.push(crate::host::context::Context {
@@ -337,6 +337,7 @@ impl PlexiApp {
                 let mut touched = false;
                 for &pid in &target_pids {
                     if let Some(pane) = win.panes.remove(&pid) {
+                        win.note_pane_departed(pid);
                         moved_panes.push((pid, pane));
                     }
                     if let Some(tile_id) = win.tree.tiles.find_pane(&pid) {
@@ -345,7 +346,6 @@ impl PlexiApp {
                     }
                 }
                 if touched {
-                    win.advance_tree_generation();
                     win.simplify_and_reconcile();
                 }
             }
@@ -388,7 +388,7 @@ impl PlexiApp {
                 }
             });
             self.windows[win_idx].tree = tree;
-            self.windows[win_idx].advance_tree_generation();
+            self.windows[win_idx].note_tree_rebuilt();
             if let Some(pid) = prev_focused_pid {
                 if let Some(t) = self.windows[win_idx].tree.tiles.find_pane(&pid) {
                     self.windows[win_idx].focused_pane = Some(t);

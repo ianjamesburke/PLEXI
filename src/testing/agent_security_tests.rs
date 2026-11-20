@@ -229,6 +229,7 @@ fn spawn_second_terminal(h: &mut HostHarness, beside: u64) -> u64 {
                 cwd_override: None,
                 agent_pane: true,
                 inject_folder_secrets: false,
+                authority: Default::default(),
             },
         })
 }

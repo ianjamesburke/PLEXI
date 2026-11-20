@@ -973,13 +973,43 @@ impl std::fmt::Display for TerminalSpawnError {
 
 impl std::error::Error for TerminalSpawnError {}
 
+/// The restrictions and provenance a terminal pane holds from the moment it
+/// exists. Passed into construction so no pane value, and no backend command
+/// or credential behind it, is ever reachable without them (stint 1632).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PaneLaunchAuthority {
+    /// Permission ceiling; `None` leaves the pane to its role or Ask.
+    pub posture: Option<crate::broker::PermissionPosture>,
+    /// Verified provenance, over any `PLEXI_SPAWNED_BY` in the environment.
+    pub spawned_by: Option<String>,
+}
+
 impl TerminalPane {
     pub fn new(
         id: u64,
         ctx: egui::Context,
         tx: Sender<(u64, PtyEvent)>,
+        settings: BackendSettings,
+        default_font_size: f32,
+    ) -> Result<Self, TerminalSpawnError> {
+        Self::with_authority(
+            id,
+            ctx,
+            tx,
+            settings,
+            default_font_size,
+            PaneLaunchAuthority::default(),
+        )
+    }
+
+    /// Construct a terminal holding `authority` before its backend starts.
+    pub fn with_authority(
+        id: u64,
+        ctx: egui::Context,
+        tx: Sender<(u64, PtyEvent)>,
         mut settings: BackendSettings,
         default_font_size: f32,
+        authority: PaneLaunchAuthority,
     ) -> Result<Self, TerminalSpawnError> {
         settings.env.insert(
             super::process_cleanup::SESSION_ENV.into(),
@@ -993,10 +1023,9 @@ impl TerminalPane {
             .env
             .get("PLEXI_PARENT_PANE")
             .and_then(|v| v.parse::<u64>().ok());
-        let spawned_by = settings
-            .env
-            .get("PLEXI_SPAWNED_BY")
-            .cloned()
+        let spawned_by = authority
+            .spawned_by
+            .or_else(|| settings.env.get("PLEXI_SPAWNED_BY").cloned())
             .filter(|s| !s.trim().is_empty())
             // A pane nobody stamped (new window/split/first shell) was opened by the
             // person at the desktop; agent and system spawners stamp themselves.
@@ -1072,7 +1101,7 @@ impl TerminalPane {
             agent_harness,
             agent_session_id: None,
             agent_role,
-            agent_permission_posture: None,
+            agent_permission_posture: authority.posture,
             last_blocked_reason: None,
             tail_preview: None,
             agent_completed: false,

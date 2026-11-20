@@ -133,29 +133,33 @@ impl PlexiApp {
             self.pane_worktrees.insert(pane_id, wt);
         }
         self.agent_tool_children.insert(pane_id, child_parent);
-        log::info!("agent_call: spawned role={} parent={child_parent:?} child={pane_id} async={} handoff={}", plan.role, request.asynchronous, request.handoff);
-        if request.handoff {
-            if let Some(old) = parent {
-                // Preserve the successor reference as the caller's validated completion.
-                let result = plan
-                    .handoff_result
-                    .clone()
-                    .ok_or("missing prepared handoff completion")?;
-                self.handle_pane_ipc_request(crate::protocol::HostRequest::AgentDone {
-                    peer_ancestry: None,
-                    pane_id: old,
-                    result: Some(result),
-                    summary: Some(format!("Handed off to {}", plan.role)),
-                    response_file: request.response_file.to_string(),
-                });
-                // Handoff transfers ownership, independently of ordinary done's
-                // optional ephemeral cleanup. The successor exists and the
-                // prevalidated completion has been published before closing.
-                if self.find_pane_in_any_window(old).is_some() {
-                    self.close_pane_by_id(old);
-                }
-                log::info!("agent_handoff: closed caller={old} successor={pane_id}");
+        log::info!("agent_call: spawned role={} parent={child_parent:?} child={pane_id} async={} handoff={}", plan.authority.role, request.asynchronous, request.handoff);
+        if let (true, Some(old)) = (request.handoff, parent) {
+            // The caller's completion names its successor and is published
+            // before the caller closes; the reply carries both ids.
+            let raw =
+                super::launch_plan::handoff_completion(&plan.authority.role, &plan.task, pane_id);
+            let summary = format!("Handed off to {}", plan.authority.role);
+            let mut reply = self.complete_agent_pane(old, Some(&raw), Some(&summary));
+            if reply["ok"] != true {
+                log::warn!(
+                    "agent_handoff: completion refused; closing successor={pane_id}: {reply}"
+                );
+                self.reclaim_pane_worktree(pane_id);
+                self.close_pane_by_id(pane_id);
+                return Err(format!(
+                    "handoff completion: {}",
+                    reply["error"].as_str().unwrap_or("rejected")
+                ));
             }
+            reply["successor_pane_id"] = json!(pane_id);
+            crate::rpc::write_json_response(request.response_file, reply);
+            // Handoff transfers ownership, independently of ordinary done's
+            // optional ephemeral cleanup.
+            if self.find_pane_in_any_window(old).is_some() {
+                self.close_pane_by_id(old);
+            }
+            log::info!("agent_handoff: closed caller={old} successor={pane_id}");
         } else if request.asynchronous {
             crate::rpc::write_json_response(
                 request.response_file,

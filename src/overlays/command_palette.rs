@@ -2448,6 +2448,7 @@ impl PlexiApp {
                 cwd_override: ws_root,
                 agent_pane: false,
                 inject_folder_secrets: false,
+                authority: Default::default(),
             },
         });
         self.windows[win_idx]
@@ -3158,7 +3159,7 @@ mod tests {
             grid_y: 0,
             window_id: h.app.next_window_id,
             context_id: context.context_id,
-            tree_generation: 0,
+            tree_history: Default::default(),
         });
         h.app.next_window_id += 1;
         h.app.router.push(context);
@@ -4333,7 +4334,7 @@ mod tests {
             grid_y,
             window_id,
             context_id,
-            tree_generation: 0,
+            tree_history: Default::default(),
         }
     }
 
@@ -4404,7 +4405,7 @@ mod tests {
             grid_y: 0,
             window_id,
             context_id,
-            tree_generation: 0,
+            tree_history: Default::default(),
         }
     }
 

@@ -60,6 +60,8 @@ pub(crate) struct TerminalSpawnOptions<'a> {
     pub cwd_override: Option<PathBuf>,
     pub agent_pane: bool,
     pub inject_folder_secrets: bool,
+    /// Ceiling and provenance the pane is constructed with.
+    pub authority: crate::host::pane::PaneLaunchAuthority,
 }
 
 impl Default for TerminalSpawnOptions<'_> {
@@ -70,6 +72,7 @@ impl Default for TerminalSpawnOptions<'_> {
             cwd_override: None,
             agent_pane: false,
             inject_folder_secrets: true,
+            authority: Default::default(),
         }
     }
 }
@@ -100,14 +103,29 @@ pub(crate) enum SubcontextTarget<'a> {
     Named(&'a str),
     /// The sub-context admitted earlier; a same-named replacement refuses.
     Existing { name: &'a str, context_id: u64 },
-    /// Create the sub-context; one that appeared since admission refuses.
-    Create(&'a str),
+    /// Create the sub-context under the parent context admitted with it;
+    /// one that appeared since, or a parent that moved, refuses.
+    Create {
+        name: &'a str,
+        parent_context_id: u64,
+    },
+}
+
+/// Where an agent spawn without a live parent pane lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AgentOrigin {
+    /// The active window at spawn time (direct, unplanned spawns).
+    Active,
+    /// The first window of a context.
+    Context(u64),
+    /// The window the caller selected, still in the context it was in.
+    Window { window_id: u64, context_id: u64 },
 }
 
 impl<'a> SubcontextTarget<'a> {
     pub(crate) fn name(self) -> &'a str {
         match self {
-            Self::Named(name) | Self::Create(name) | Self::Existing { name, .. } => name,
+            Self::Named(name) | Self::Create { name, .. } | Self::Existing { name, .. } => name,
         }
     }
 }
@@ -1549,12 +1567,16 @@ impl PlexiApp {
     pub(super) fn create_single_pane_tree(
         &mut self,
         context: &PaneContextEnv,
-        cwd: Option<PathBuf>,
-        initial_cmd: Option<&str>,
-        close_on_exit: bool,
-        agent_pane: bool,
-        inject_folder_secrets: bool,
+        options: TerminalSpawnOptions<'_>,
     ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
+        let TerminalSpawnOptions {
+            initial_cmd,
+            close_on_exit,
+            cwd_override: cwd,
+            agent_pane,
+            inject_folder_secrets,
+            authority,
+        } = options;
         let new_id = self.host.alloc_pane_id();
         let (mut settings, pending_credential) =
             Self::make_backend_settings(new_id, cwd, &self.colors, context, agent_pane);
@@ -1572,12 +1594,13 @@ impl PlexiApp {
         );
         // The spawn error is logged where it happened; this caller's contract
         // is an Option, so a failed spawn still yields None.
-        let mut pane = TerminalPane::new(
+        let mut pane = TerminalPane::with_authority(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
             settings,
             self.default_font_size,
+            authority,
         )
         .ok()?;
         pane.ephemeral = close_on_exit;
@@ -1614,6 +1637,7 @@ impl PlexiApp {
                     cwd_override,
                     agent_pane,
                     inject_folder_secrets,
+                    authority,
                 },
         } = spec;
         let new_id = self.host.alloc_pane_id();
@@ -1633,12 +1657,13 @@ impl PlexiApp {
             settings.working_directory.as_deref(),
             inject_folder_secrets,
         );
-        let mut pane = match TerminalPane::new(
+        let mut pane = match TerminalPane::with_authority(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
             settings,
             self.default_font_size,
+            authority,
         ) {
             Ok(pane) => pane,
             Err(error) => {
@@ -1803,15 +1828,25 @@ impl PlexiApp {
     pub(crate) fn agent_spawn_parent(
         &self,
         from_pane_id: Option<u64>,
-        origin_context_id: Option<u64>,
+        origin: AgentOrigin,
     ) -> Result<AgentSpawnParent, String> {
-        let origin_win = match origin_context_id {
-            Some(id) => self
+        let origin_win = match origin {
+            AgentOrigin::Active => self.active_window,
+            AgentOrigin::Context(id) => self
                 .windows
                 .iter()
                 .position(|w| w.context_id == id)
                 .ok_or_else(|| format!("origin context {id} not found"))?,
-            None => self.active_window,
+            AgentOrigin::Window {
+                window_id,
+                context_id,
+            } => self
+                .windows
+                .iter()
+                .position(|w| w.window_id == window_id && w.context_id == context_id)
+                .ok_or_else(|| {
+                    format!("origin window {window_id} is no longer in context {context_id}")
+                })?,
         };
         let parent_lookup = from_pane_id.and_then(|pid| {
             self.find_pane_in_any_window(pid)
@@ -1863,7 +1898,7 @@ impl PlexiApp {
         from_pane_id: Option<u64>,
         cwd_override: Option<std::path::PathBuf>,
         conjoined: bool,
-        origin_context_id: Option<u64>,
+        origin: AgentOrigin,
     ) -> Result<(usize, u64, Option<u64>, std::path::PathBuf), String> {
         let AgentSpawnParent {
             pane_id: parent_pane_id,
@@ -1871,7 +1906,7 @@ impl PlexiApp {
             context_id: parent_ctx_id,
             root: parent_root,
             depth: parent_depth,
-        } = self.agent_spawn_parent(from_pane_id, origin_context_id)?;
+        } = self.agent_spawn_parent(from_pane_id, origin)?;
         let effective_cwd = cwd_override.unwrap_or_else(|| parent_root.clone());
 
         let (target_win_idx, target_ctx_id) = if let Some(target) = subcontext {
@@ -1888,9 +1923,19 @@ impl PlexiApp {
                         "sub-context '{sub_name}' (id={context_id}) is no longer under context {parent_ctx_id}"
                     ));
                 }
-                (SubcontextTarget::Create(_), Some(found)) => {
+                (SubcontextTarget::Create { .. }, Some(found)) => {
                     return Err(format!(
                         "sub-context '{sub_name}' (id={found}) appeared after the launch was admitted"
+                    ));
+                }
+                (
+                    SubcontextTarget::Create {
+                        parent_context_id, ..
+                    },
+                    None,
+                ) if parent_context_id != parent_ctx_id => {
+                    return Err(format!(
+                        "sub-context '{sub_name}' was admitted under context {parent_context_id}, but its parent is now in context {parent_ctx_id}"
                     ));
                 }
                 _ => {}
@@ -1962,7 +2007,7 @@ impl PlexiApp {
                     grid_y: 0,
                     window_id: win_id,
                     context_id: ctx_id,
-                    tree_generation: 0,
+                    tree_history: Default::default(),
                 });
                 self.context_active_window.insert(ctx_id, win_id);
                 (self.windows.len() - 1, ctx_id)
@@ -2017,7 +2062,8 @@ impl PlexiApp {
         conjoined: bool,
         origin_context_id: Option<u64>,
     ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
-        let parent = self.agent_spawn_parent(from_pane_id, origin_context_id)?;
+        let origin = origin_context_id.map_or(AgentOrigin::Active, AgentOrigin::Context);
+        let parent = self.agent_spawn_parent(from_pane_id, origin)?;
         let lookup_cwd = cwd_override.clone().unwrap_or(parent.root);
         let authority = self.agent_worker_authority(role, &lookup_cwd, parent.pane_id);
         self.spawn_prepared_agent_worker_pane(
@@ -2033,7 +2079,7 @@ impl PlexiApp {
             result_schema,
             run_token,
             conjoined,
-            origin_context_id,
+            origin,
         )
     }
 
@@ -2088,7 +2134,7 @@ impl PlexiApp {
         result_schema: Option<serde_json::Value>,
         run_token: Option<&str>,
         conjoined: bool,
-        origin_context_id: Option<u64>,
+        origin: AgentOrigin,
     ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
         let (target_win_idx, target_ctx_id, parent_pane_id, effective_cwd) = self
             .resolve_agent_spawn_location(
@@ -2096,7 +2142,7 @@ impl PlexiApp {
                 from_pane_id,
                 cwd_override,
                 conjoined,
-                origin_context_id,
+                origin,
             )?;
         let spawned_by = self.derive_spawned_by_for_parent(parent_pane_id);
 
@@ -2151,12 +2197,18 @@ impl PlexiApp {
         // retain the shell and its output for inspection.
         super::apply_initial_cmd(&mut settings, worker_command, false);
 
-        let mut pane = match TerminalPane::new(
+        // The ceiling is part of construction: the worker command and its
+        // credential never run under a pane without it.
+        let mut pane = match TerminalPane::with_authority(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
             settings,
             self.default_font_size,
+            crate::host::pane::PaneLaunchAuthority {
+                posture: authority.posture,
+                spawned_by: Some(spawned_by.clone()),
+            },
         ) {
             Ok(pane) => pane,
             Err(error) => {
@@ -2168,11 +2220,9 @@ impl PlexiApp {
         };
         pane.ephemeral = ephemeral;
         pane.parent_pane_id = parent_pane_id;
-        pane.spawned_by = Some(spawned_by.clone());
         pane.agent_harness = Some(harness.to_string());
         pane.agent_role = Some(role.to_string());
         pane.begin_agent_launch(crate::host::pane::AgentLaunchKind::Command);
-        pane.agent_permission_posture = authority.posture;
         if let Some(ref posture) = pane.agent_permission_posture {
             log::info!(
                 "agent_spawn: posture snapshot for role={role} pane={new_id}: default={}",
@@ -4122,6 +4172,7 @@ mod tests {
                     cwd_override: None,
                     agent_pane: false,
                     inject_folder_secrets: false,
+                    authority: Default::default(),
                 },
             });
             assert!(

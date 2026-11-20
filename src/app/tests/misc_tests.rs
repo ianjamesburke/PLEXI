@@ -254,7 +254,7 @@ fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
         grid_y: 0,
         window_id: 2,
         context_id: ctx_id,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
     app.active_window = 1; // focus second window
 
@@ -937,7 +937,7 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
         grid_y: 1,
         window_id: 10,
         context_id: ctx2_id,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
     app.active_window = 1;
     app.router.set_active(1);
@@ -1020,7 +1020,7 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
         grid_y: 1,
         window_id: 10,
         context_id: ctx2_id,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
     app.active_window = 1;
     app.router.set_active(1);
@@ -1583,7 +1583,7 @@ fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
         grid_y: 1,
         window_id: 90001,
         context_id: other_context,
-        tree_generation: 0,
+        tree_history: Default::default(),
     });
     h.app.active_window = 1;
     h.app.router.set_active(1);

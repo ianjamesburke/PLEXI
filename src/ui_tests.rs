@@ -3464,7 +3464,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     grid_y: 0,
                     window_id,
                     context_id: child_ctx_id,
-                    tree_generation: 0,
+                    tree_history: Default::default(),
                 });
                 let portal = app.host.alloc_pane_id();
                 let win = &mut app.windows[app.active_window];
@@ -5516,7 +5516,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 grid_y: 0,
                 window_id: child_window_id,
                 context_id: child_ctx_id,
-                tree_generation: 0,
+                tree_history: Default::default(),
             });
 
             // Portal pane in the active window targeting the child context.
@@ -6776,7 +6776,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 grid_y: 1,
                 window_id: child_window_id,
                 context_id: child_ctx_id,
-                tree_generation: 0,
+                tree_history: Default::default(),
             });
             child_ctx_id
         });
@@ -6956,7 +6956,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 grid_y: 0,
                 window_id,
                 context_id,
-                tree_generation: 0,
+                tree_history: Default::default(),
             });
             app.windows.len() - 1
         })
@@ -9223,7 +9223,7 @@ open(out + ".done", "w").close()
                 grid_y: 0,
                 window_id: extra_window_id,
                 context_id: ctx_id,
-                tree_generation: 0,
+                tree_history: Default::default(),
             });
             app.show_command_palette = true;
             app.sync_command_palette_focus();
@@ -12066,7 +12066,7 @@ open(out + ".done", "w").close()
                 grid_y: 0,
                 window_id,
                 context_id: ctx_id,
-                tree_generation: 0,
+                tree_history: Default::default(),
             });
             app.context_active_window.insert(ctx_id, window_id);
             (active_id, inactive_id, ctx_id)
@@ -12335,7 +12335,7 @@ open(out + ".done", "w").close()
                 grid_y: 0,
                 window_id: squad_window_id,
                 context_id: squad_ctx_id,
-                tree_generation: 0,
+                tree_history: Default::default(),
             });
             app.context_active_window
                 .insert(squad_ctx_id, squad_window_id);
@@ -13466,7 +13466,7 @@ open(out + ".done", "w").close()
                 grid_y: 0,
                 window_id: inactive_window_id,
                 context_id: inactive_context_id,
-                tree_generation: 0,
+                tree_history: Default::default(),
             });
 
             let notification = |notify_id: &str, source_context_id, source_window_id| {
@@ -14293,7 +14293,7 @@ open(out + ".done", "w").close()
                 grid_y: 0,
                 window_id: win_id,
                 context_id: ctx_id,
-                tree_generation: 0,
+                tree_history: Default::default(),
             });
             let second_idx = app.windows.len() - 1;
             let (tile, p4) = app.add_view_pane_in_window(second_idx, "test");
@@ -16324,6 +16324,7 @@ open(out + ".done", "w").close()
                     cwd_override: path.parent().map(|p| p.to_path_buf()),
                     agent_pane: false,
                     inject_folder_secrets: false,
+                    authority: Default::default(),
                 },
             );
             let terminal = app.focused_pane_id().expect("new page terminal");

@@ -211,17 +211,57 @@ pub struct Window {
     pub window_id: u64,
     /// The context this window belongs to.
     pub context_id: u64,
-    /// Advances whenever the tree is rebuilt in place or a pane leaves the
-    /// window. Tile ids restart in a rebuilt tree, so a `TileId` names a node
-    /// only together with this generation; an admitted empty-root launch
-    /// binds it so a fill-and-empty cycle cannot satisfy it (stint 1632).
-    pub tree_generation: u64,
+    /// Rebuilds and departures since the window was created, which admitted
+    /// launches bind (stint 1632). Every in-place tree rebuild calls
+    /// [`Window::note_tree_rebuilt`] and every pane removal calls
+    /// [`Window::note_pane_departed`].
+    pub tree_history: TreeHistory,
+}
+
+/// What happened to a window's tree, for launches admitted against it. Tile
+/// ids restart when a tree is rebuilt, so a `TileId` or an empty tree means
+/// the same node only while no rebuild happened; a pane anchor means the same
+/// placement only while that pane never left the window.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TreeHistory {
+    generation: u64,
+    rebuilt_at: u64,
+    /// Generation at which each pane last left. Bounded by the panes that
+    /// ever left this window during the host's lifetime.
+    departed_at: HashMap<PaneId, u64>,
+}
+
+impl TreeHistory {
+    /// Advances on every rebuild and every departure.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn rebuilt_since(&self, generation: u64) -> bool {
+        self.rebuilt_at > generation
+    }
+
+    pub(crate) fn departed_since(&self, pane_id: PaneId, generation: u64) -> bool {
+        self.departed_at
+            .get(&pane_id)
+            .is_some_and(|&at| at > generation)
+    }
 }
 
 impl Window {
-    /// Record a tree rebuild or a pane leaving this window.
-    pub(crate) fn advance_tree_generation(&mut self) {
-        self.tree_generation += 1;
+    /// Record that the tree was replaced in place: every earlier tile id and
+    /// pane membership is void.
+    pub(crate) fn note_tree_rebuilt(&mut self) {
+        let history = &mut self.tree_history;
+        history.generation += 1;
+        history.rebuilt_at = history.generation;
+    }
+
+    /// Record that `pane_id` left this window.
+    pub(crate) fn note_pane_departed(&mut self, pane_id: PaneId) {
+        let history = &mut self.tree_history;
+        history.generation += 1;
+        history.departed_at.insert(pane_id, history.generation);
     }
 
     pub(crate) fn find_ancestor_tabs(&self, tile_id: TileId) -> Option<(TileId, TileId)> {
