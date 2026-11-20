@@ -831,7 +831,9 @@ impl PlexiApp {
         let share = Self::share_ratio_from_fraction(plugin_id, share_hint);
         let (new_id, vertical, new_pane_first) = self.open_pane_layout(plugin_id, hint);
         let pane = build(new_id, linked_pane_id, None);
-        self.windows[active].panes.insert(new_id, pane);
+        if self.windows[active].panes.insert(new_id, pane).is_err() {
+            return None;
+        }
 
         // Empty context: no focused pane means no existing tile to split against —
         // install the new pane directly as the tree root.
@@ -863,29 +865,35 @@ impl PlexiApp {
         let active = target_win;
         let share = Self::share_ratio_from_fraction(plugin_id, None);
         let (new_id, vertical, new_pane_first) = self.open_pane_layout(plugin_id, hint);
-        self.windows[active].panes.insert(
-            new_id,
-            crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
-                pip_status: None,
-                id: new_id,
-                runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
-                    crate::host::launch_failed::LaunchFailedView {
-                        plugin_id: plugin_id.to_string(),
-                        missing,
-                    },
-                )),
-                workspace_root,
-                permissions: crate::app::permissions::PluginPermissions::default(),
-                manifest_id: plugin_id.to_string(),
-                name: format!("Cannot launch {plugin_id}"),
-                pane_group: None,
-                linked_pane_id: None,
-                overlay_replaced: None,
-                agent: None,
-                slots: std::collections::HashMap::new(),
-                semantic_state: Default::default(),
-            })),
-        );
+        if self.windows[active]
+            .panes
+            .insert(
+                new_id,
+                crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+                    pip_status: None,
+                    id: new_id,
+                    runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
+                        crate::host::launch_failed::LaunchFailedView {
+                            plugin_id: plugin_id.to_string(),
+                            missing,
+                        },
+                    )),
+                    workspace_root,
+                    permissions: crate::app::permissions::PluginPermissions::default(),
+                    manifest_id: plugin_id.to_string(),
+                    name: format!("Cannot launch {plugin_id}"),
+                    pane_group: None,
+                    linked_pane_id: None,
+                    overlay_replaced: None,
+                    agent: None,
+                    slots: std::collections::HashMap::new(),
+                    semantic_state: Default::default(),
+                })),
+            )
+            .is_err()
+        {
+            return;
+        }
         if self.windows[active].focused_pane.is_none() {
             let ctx = &mut self.windows[active];
             let root_tile = ctx.tree.tiles.insert_pane(new_id);
@@ -1672,9 +1680,13 @@ impl PlexiApp {
             }
         };
         pane.ephemeral = close_on_exit;
-        self.windows[win_idx]
+        if self.windows[win_idx]
             .panes
-            .insert(new_id, Pane::Terminal(Box::new(pane)));
+            .insert(new_id, Pane::Terminal(Box::new(pane)))
+            .is_err()
+        {
+            return new_id;
+        }
         pending_credential.mark_live();
 
         let share =
@@ -1976,14 +1988,20 @@ impl PlexiApp {
                         },
                         false,
                     );
-                    self.windows[parent_win_idx].panes.insert(
-                        portal_pane_id,
-                        Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                            pane_id: portal_pane_id,
-                            target_context_id: ctx_id,
-                            context_state: None,
-                        })),
-                    );
+                    if self.windows[parent_win_idx]
+                        .panes
+                        .insert(
+                            portal_pane_id,
+                            Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                                pane_id: portal_pane_id,
+                                target_context_id: ctx_id,
+                                context_state: None,
+                            })),
+                        )
+                        .is_err()
+                    {
+                        return Err(format!("portal pane {portal_pane_id} id is taken"));
+                    }
                     // The parent window is saved settled (stint 1440).
                     self.windows[parent_win_idx].simplify_and_reconcile();
                 }
@@ -2000,7 +2018,7 @@ impl PlexiApp {
                     name: String::new(),
                     path: effective_cwd.clone(),
                     tree: egui_tiles::Tree::empty("plexi"),
-                    panes: std::collections::HashMap::new(),
+                    panes: Default::default(),
                     focused_pane: None,
                     zoomed_pane: None,
                     grid_x: 0,
@@ -2239,9 +2257,13 @@ impl PlexiApp {
             session_id: None,
         });
 
-        self.windows[target_win_idx]
+        if self.windows[target_win_idx]
             .panes
-            .insert(new_id, Pane::Terminal(Box::new(pane)));
+            .insert(new_id, Pane::Terminal(Box::new(pane)))
+            .is_err()
+        {
+            return Err(format!("agent worker pane {new_id} id is taken"));
+        }
         pending_credential.mark_live();
 
         // Beside the parent pane when it is in the target window, else beside
@@ -3379,7 +3401,7 @@ impl PlexiApp {
             if window.context_id != caller_context_id {
                 continue;
             }
-            for (id, pane) in &window.panes {
+            for (id, pane) in window.panes.iter() {
                 if pane
                     .as_view()
                     .is_some_and(|app| app.runtime.type_id() == "assistant")
@@ -3412,24 +3434,30 @@ impl PlexiApp {
             "assistant: created headless pane {id} (not in the tile tree) for a headless send in context {caller_context_id} workspace {}",
             workspace_root.display()
         );
-        self.windows[win_idx].panes.insert(
-            id,
-            Pane::View(Box::new(crate::host::pane::ViewPane {
-                pip_status: None,
+        if self.windows[win_idx]
+            .panes
+            .insert(
                 id,
-                runtime: crate::host::pane::ViewRuntime::Builtin(app),
-                workspace_root,
-                permissions: crate::app::permissions::PluginPermissions::builtin(),
-                manifest_id: "assistant".to_string(),
-                name: "Assistant".to_string(),
-                pane_group: None,
-                linked_pane_id: None,
-                overlay_replaced: None,
-                agent: None,
-                slots: std::collections::HashMap::new(),
-                semantic_state: Default::default(),
-            })),
-        );
+                Pane::View(Box::new(crate::host::pane::ViewPane {
+                    pip_status: None,
+                    id,
+                    runtime: crate::host::pane::ViewRuntime::Builtin(app),
+                    workspace_root,
+                    permissions: crate::app::permissions::PluginPermissions::builtin(),
+                    manifest_id: "assistant".to_string(),
+                    name: "Assistant".to_string(),
+                    pane_group: None,
+                    linked_pane_id: None,
+                    overlay_replaced: None,
+                    agent: None,
+                    slots: std::collections::HashMap::new(),
+                    semantic_state: Default::default(),
+                })),
+            )
+            .is_err()
+        {
+            return None;
+        }
         let context_root = self.context_root_for(caller_context_id);
         crate::host::event_log::emit_scoped(
             crate::host::event_log::HostEvent::ViewOpened {

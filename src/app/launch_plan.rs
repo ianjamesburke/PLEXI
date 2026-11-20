@@ -918,7 +918,9 @@ fn tree_topology(tree: &egui_tiles::Tree<PaneId>) -> u64 {
             Tile::Pane(pane) => pane.hash(&mut hasher),
             Tile::Container(container) => {
                 format!("{:?}", container.kind()).hash(&mut hasher);
-                container.children().for_each(|child| child.hash(&mut hasher));
+                container
+                    .children()
+                    .for_each(|child| child.hash(&mut hasher));
             }
         }
     }
@@ -989,7 +991,7 @@ mod tests {
             name: String::new(),
             path: h.workspace_root(),
             tree: egui_tiles::Tree::empty("launch-plan-test"),
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x,
@@ -1564,7 +1566,10 @@ mod tests {
             for (label, plan) in plans {
                 let before = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
                 let error = apply(h, plan).expect_err(&format!("{label} {when}"));
-                assert!(error.starts_with("launch refused"), "{label} {when}: {error}");
+                assert!(
+                    error.starts_with("launch refused"),
+                    "{label} {when}: {error}"
+                );
                 let after = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
                 assert_eq!(before, after, "{label} {when}: refused before building");
             }
@@ -1577,13 +1582,47 @@ mod tests {
         let while_covered = admit_all(&mut h);
         pop(&mut h);
         refuse_all(&mut h, &before_round_trip, "after a push and pop");
-        refuse_all(&mut h, &while_covered, "admitted while covered, after the pop");
+        refuse_all(
+            &mut h,
+            &while_covered,
+            "admitted while covered, after the pop",
+        );
 
         let fresh = admit_all(&mut h);
         for (label, plan) in &fresh[..1] {
             let pane = apply(&mut h, plan).unwrap_or_else(|e| panic!("{label}: {e}"));
             assert_eq!(window_of(&h, pane), 0);
         }
+    }
+
+    /// Finding 6: the pane collection cannot replace an occupant behind the
+    /// window's back. Installing over an occupied id is refused and keeps
+    /// the occupant; taking a pane out records its departure.
+    #[test]
+    fn launch_plan_pane_map_refuses_occupied_slots() {
+        let mut h = HostHarness::new();
+        let panes = views(&mut h, 1);
+        let [a] = lay_out(&mut h, 0, panes)[..] else {
+            unreachable!()
+        };
+        let generation = h.app.windows[0].tree_history.generation();
+        let mut impostor = view_pane(&h, a);
+        if let Pane::View(view) = &mut impostor {
+            view.name = "impostor".into();
+        }
+        assert_eq!(
+            h.app.windows[0].panes.insert(a, impostor),
+            Err(crate::host::context::OccupiedSlot(a))
+        );
+        assert_eq!(
+            h.app.windows[0].panes[&a]
+                .as_view()
+                .map(|v| v.name.as_str()),
+            Some("Test App")
+        );
+        assert!(!h.app.windows[0].tree_history.departed_since(a, generation));
+        assert!(h.app.windows[0].take_pane(a).is_some());
+        assert!(h.app.windows[0].tree_history.departed_since(a, generation));
     }
 
     /// Finding 3 (named context): deleting the named context and creating a

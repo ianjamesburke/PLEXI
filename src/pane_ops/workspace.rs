@@ -462,14 +462,20 @@ impl PlexiApp {
                 },
                 new_pane_first,
             );
-            self.windows[parent_win_idx].panes.insert(
-                sub_ctx_pane_id,
-                crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                    pane_id: sub_ctx_pane_id,
-                    target_context_id: ctx_id,
-                    context_state: None,
-                })),
-            );
+            if self.windows[parent_win_idx]
+                .panes
+                .insert(
+                    sub_ctx_pane_id,
+                    crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                        pane_id: sub_ctx_pane_id,
+                        target_context_id: ctx_id,
+                        context_state: None,
+                    })),
+                )
+                .is_err()
+            {
+                return Err(format!("portal pane {sub_ctx_pane_id} id is taken"));
+            }
             // The parent window is saved settled (stint 1440).
             self.windows[parent_win_idx].simplify_and_reconcile();
         } else {
@@ -496,7 +502,7 @@ impl PlexiApp {
             name: String::new(),
             path,
             tree: child_tree,
-            panes: child_panes,
+            panes: (child_panes).into(),
             focused_pane: Some(child_root_tile),
             zoomed_pane: None,
             grid_x: 0,
@@ -737,7 +743,7 @@ impl PlexiApp {
             name: String::new(),
             path: cwd.clone(),
             tree: egui_tiles::Tree::empty("plexi"),
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
@@ -869,7 +875,7 @@ impl PlexiApp {
             name: String::new(),
             path: path.clone(),
             tree: egui_tiles::Tree::empty("plexi"),
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
@@ -999,7 +1005,7 @@ impl PlexiApp {
             name,
             path: cwd,
             tree,
-            panes,
+            panes: panes.into(),
             focused_pane: Some(root_tile),
             zoomed_pane: None,
             grid_x,
@@ -1058,7 +1064,7 @@ impl PlexiApp {
         );
         let win = &mut self.windows[win_idx];
         win.tree = tree;
-        win.panes = panes;
+        win.panes = panes.into();
         win.focused_pane = Some(root_tile);
         win.zoomed_pane = None;
         win.note_tree_rebuilt();
@@ -1123,7 +1129,7 @@ impl PlexiApp {
 
         let ctx = &mut self.windows[self.active_window];
         ctx.tree = tree;
-        ctx.panes = panes;
+        ctx.panes = panes.into();
         ctx.focused_pane = Some(root_tile);
         ctx.zoomed_pane = None;
         ctx.note_tree_rebuilt();
@@ -1240,11 +1246,10 @@ impl PlexiApp {
                 .map(|(id, _)| *id)
                 .collect();
             for pane_id in portal_pane_ids {
-                win.panes.remove(&pane_id);
+                win.take_pane(pane_id);
                 if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
                     win.tree.remove_recursively(tile_id);
                 }
-                win.note_pane_departed(pane_id);
             }
         }
 
@@ -2073,11 +2078,10 @@ impl PlexiApp {
             log::warn!(
                 "dissolve_portal: ctx={child_ctx_id} has no child windows; removing portal only"
             );
-            self.windows[parent_idx].panes.remove(&portal_pane_id);
+            self.windows[parent_idx].take_pane(portal_pane_id);
             self.windows[parent_idx]
                 .tree
                 .remove_recursively(portal_tile_id);
-            self.windows[parent_idx].note_pane_departed(portal_pane_id);
             if let Some(idx) = self.router.position(|c| c.context_id == child_ctx_id) {
                 self.router.remove_at(idx);
             }
@@ -2134,11 +2138,8 @@ impl PlexiApp {
                 return;
             };
 
-            parent_win.panes.remove(&portal_pane_id);
-            parent_win
-                .panes
-                .extend(std::mem::take(&mut primary_child_win.panes));
-            parent_win.note_pane_departed(portal_pane_id);
+            parent_win.take_pane(portal_pane_id);
+            parent_win.adopt_panes(std::mem::take(&mut primary_child_win.panes));
             primary_child_win.note_tree_rebuilt();
             if let Some(parent_tile) = parent_win.tree.tiles.parent_of(portal_tile_id) {
                 if let Some(Tile::Container(parent_container)) =
@@ -2230,11 +2231,10 @@ impl PlexiApp {
                 .map(|(pane_id, _)| *pane_id)
                 .collect();
             for pane_id in stale_portal_ids {
-                win.panes.remove(&pane_id);
+                win.take_pane(pane_id);
                 if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
                     win.tree.remove_recursively(tile_id);
                 }
-                win.note_pane_departed(pane_id);
                 log::warn!(
                     "dissolve_portal: removed stale PortalPane {pane_id} targeting dissolved ctx={child_ctx_id}"
                 );
@@ -2404,7 +2404,7 @@ impl PlexiApp {
 
         for win in &self.windows {
             let mut saved_panes = Vec::new();
-            for (&id, pane) in &win.panes {
+            for (&id, pane) in win.panes.iter() {
                 debug_assert_eq!(pane.id(), id);
                 if let Some(t) = pane.as_terminal() {
                     let cwd = t

@@ -247,7 +247,7 @@ fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
         name: "Window 1".into(),
         path: crate::testing::scratch_context_root("context-2"),
         tree: egui_tiles::Tree::empty("w1"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
@@ -930,7 +930,7 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
         name: "Context 2".into(),
         path: crate::testing::scratch_context_root("context-2"),
         tree: egui_tiles::Tree::empty("ctx2_tree"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
@@ -1013,7 +1013,7 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
         name: "Context 2".into(),
         path: crate::testing::scratch_context_root("context-2"),
         tree: egui_tiles::Tree::empty("ctx2_tree"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
@@ -1576,7 +1576,7 @@ fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
         name: "Other".into(),
         path: other_root.path().to_path_buf(),
         tree: egui_tiles::Tree::empty("explorer_other"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
@@ -1704,7 +1704,7 @@ fn file_browser_restore_preserves_saved_navigation_without_caller_link() {
         Some(&state),
     )
     .unwrap();
-    h.app.windows[0].panes.insert(browser_id, restored);
+    h.app.windows[0].panes.insert(browser_id, restored).unwrap();
     let _unrelated = h.add_focused_terminal();
     h.run_frames(3);
     let app = h.app.windows[0].panes[&browser_id].as_view().unwrap();

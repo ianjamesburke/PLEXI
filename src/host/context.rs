@@ -199,7 +199,7 @@ pub struct Window {
     pub name: String,
     pub path: PathBuf,
     pub tree: Tree<PaneId>,
-    pub panes: HashMap<PaneId, Pane>,
+    pub(crate) panes: PaneMap,
     pub focused_pane: Option<TileId>,
     pub zoomed_pane: Option<TileId>,
     /// Spatial grid coordinates within the context's window grid.
@@ -216,6 +216,73 @@ pub struct Window {
     /// [`Window::note_tree_rebuilt`] and every pane removal calls
     /// [`Window::note_pane_departed`].
     pub tree_history: TreeHistory,
+}
+
+/// A window's panes by id. Reads see a plain map. Membership changes go
+/// through [`Window`] so each one advances the window's [`TreeHistory`]
+/// (stint 1632): there is no way to overwrite an occupied slot, or to take a
+/// pane out and put another under its id, without recording it.
+#[derive(Default)]
+pub(crate) struct PaneMap(HashMap<PaneId, Pane>);
+
+/// An install into a slot that is already occupied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OccupiedSlot(pub(crate) PaneId);
+
+impl std::ops::Deref for PaneMap {
+    type Target = HashMap<PaneId, Pane>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PaneMap {
+    pub(crate) fn get_mut(&mut self, pane_id: &PaneId) -> Option<&mut Pane> {
+        self.0.get_mut(pane_id)
+    }
+
+    pub(crate) fn values_mut(&mut self) -> std::collections::hash_map::ValuesMut<'_, PaneId, Pane> {
+        self.0.values_mut()
+    }
+
+    pub(crate) fn iter_mut(&mut self) -> std::collections::hash_map::IterMut<'_, PaneId, Pane> {
+        self.0.iter_mut()
+    }
+
+    /// Install `pane` under a vacant id. An occupied slot keeps its occupant;
+    /// the rejected pane is dropped.
+    pub(crate) fn insert(&mut self, pane_id: PaneId, pane: Pane) -> Result<(), OccupiedSlot> {
+        match self.0.entry(pane_id) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                log::error!("pane_map: refused to overwrite occupied pane slot {pane_id}");
+                Err(OccupiedSlot(pane_id))
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(pane);
+                Ok(())
+            }
+        }
+    }
+}
+
+impl From<HashMap<PaneId, Pane>> for PaneMap {
+    fn from(panes: HashMap<PaneId, Pane>) -> Self {
+        Self(panes)
+    }
+}
+
+impl FromIterator<(PaneId, Pane)> for PaneMap {
+    fn from_iter<I: IntoIterator<Item = (PaneId, Pane)>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl IntoIterator for PaneMap {
+    type Item = (PaneId, Pane);
+    type IntoIter = std::collections::hash_map::IntoIter<PaneId, Pane>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
 }
 
 /// What happened to a window's tree, for launches admitted against it. Tile
@@ -264,15 +331,30 @@ impl Window {
         history.departed_at.insert(pane_id, history.generation);
     }
 
+    /// Move every pane of `other` into this window's vacant slots. A pane
+    /// whose id is already taken here is refused and dropped.
+    pub(crate) fn adopt_panes(&mut self, other: PaneMap) {
+        for (pane_id, pane) in other {
+            let _refused_and_logged = self.panes.insert(pane_id, pane);
+        }
+    }
+
+    /// Take `pane_id` out of this window, recording that it left.
+    pub(crate) fn take_pane(&mut self, pane_id: PaneId) -> Option<Pane> {
+        let pane = self.panes.0.remove(&pane_id)?;
+        self.note_pane_departed(pane_id);
+        Some(pane)
+    }
+
     /// Cover the occupant of `pane_id`'s slot with `build(occupant)`. The slot
     /// keeps its pane and tile ids, but its occupant changed, so a launch
     /// admitted against it is stale (stint 1632). `false` when the slot is
     /// empty.
     pub(crate) fn push_overlay(&mut self, pane_id: PaneId, build: impl FnOnce(Pane) -> Pane) -> bool {
-        let Some(occupant) = self.panes.remove(&pane_id) else {
+        let Some(occupant) = self.panes.0.remove(&pane_id) else {
             return false;
         };
-        self.panes.insert(pane_id, build(occupant));
+        self.panes.0.insert(pane_id, build(occupant));
         self.note_pane_departed(pane_id);
         true
     }
@@ -285,7 +367,7 @@ impl Window {
             Some(Pane::View(view)) => view.overlay_replaced.take()?,
             _ => return None,
         };
-        let overlay = self.panes.insert(pane_id, *covered);
+        let overlay = self.panes.0.insert(pane_id, *covered);
         self.note_pane_departed(pane_id);
         overlay
     }

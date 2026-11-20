@@ -1442,9 +1442,13 @@ mod tests {
             semantic_state: Default::default(),
         };
 
+        // A test fixture swapping the occupant: take it out (recording the
+        // departure) before installing the editor under the same id.
+        app.windows[0].take_pane(pane_id);
         app.windows[0]
             .panes
-            .insert(pane_id, Pane::View(Box::new(view_pane)));
+            .insert(pane_id, Pane::View(Box::new(view_pane)))
+            .unwrap();
     }
 
     fn state_path(state: &serde_json::Value) -> String {

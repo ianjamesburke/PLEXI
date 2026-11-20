@@ -276,7 +276,7 @@ impl PlexiApp {
             name: name.to_string(),
             path: root.clone(),
             tree: egui_tiles::Tree::empty("plexi"),
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
@@ -336,8 +336,7 @@ impl PlexiApp {
                 }
                 let mut touched = false;
                 for &pid in &target_pids {
-                    if let Some(pane) = win.panes.remove(&pid) {
-                        win.note_pane_departed(pid);
+                    if let Some(pane) = win.take_pane(pid) {
                         moved_panes.push((pid, pane));
                     }
                     if let Some(tile_id) = win.tree.tiles.find_pane(&pid) {
@@ -350,7 +349,9 @@ impl PlexiApp {
                 }
             }
             for (pid, pane) in moved_panes {
-                self.windows[win_idx].panes.insert(pid, pane);
+                if self.windows[win_idx].panes.insert(pid, pane).is_err() {
+                    log::error!("zoom: pane {pid} dropped: its id is taken in window {win_idx}");
+                }
             }
 
             let mut tiles = egui_tiles::Tiles::default();
@@ -1263,7 +1264,7 @@ impl PlexiApp {
             out.push(format!("◆ {}", ask.summary));
         }
         for win in self.windows.iter().filter(|w| w.context_id == context_id) {
-            for (&pid, pane) in &win.panes {
+            for (&pid, pane) in win.panes.iter() {
                 if out.len() >= max_lines {
                     break;
                 }

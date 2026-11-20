@@ -87,9 +87,13 @@ impl PlexiApp {
                 return;
             }
         };
-        self.windows[active]
+        if self.windows[active]
             .panes
-            .insert(new_id, Pane::Terminal(Box::new(term)));
+            .insert(new_id, Pane::Terminal(Box::new(term)))
+            .is_err()
+        {
+            return;
+        }
         pending_credential.mark_live();
 
         // Split the tree directly, adjacent to sender_tile, without touching focused_pane.

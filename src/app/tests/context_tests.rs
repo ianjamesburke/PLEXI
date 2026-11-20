@@ -133,7 +133,7 @@ fn deleting_context_preserves_workspace_save_and_restore() {
         name: String::new(),
         path: root_path,
         tree: egui_tiles::Tree::empty("disposable"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
@@ -246,7 +246,7 @@ fn assert_workspace_config_applies_when_switching_contexts() {
         name: "Context B".into(),
         path: root_b.path().to_path_buf(),
         tree: egui_tiles::Tree::empty("workspace_config_b"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
@@ -304,7 +304,7 @@ fn switching_contexts_refreshes_workspace_plugin_registry() {
         name: "Context B".into(),
         path: root_b.path().to_path_buf(),
         tree: egui_tiles::Tree::empty("workspace_plugin_registry_b"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
@@ -837,7 +837,7 @@ fn delete_context_portal_resets_stale_focused_pane() {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/child_1854"),
             tree: egui_tiles::Tree::new("child_1854", r, tiles),
-            panes: std::collections::HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
@@ -854,14 +854,17 @@ fn delete_context_portal_resets_stale_focused_pane() {
     {
         let root_win = &mut app.windows[0];
         portal_tile = root_win.tree.tiles.insert_pane(portal_pane_id);
-        root_win.panes.insert(
-            portal_pane_id,
-            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                pane_id: portal_pane_id,
-                target_context_id: child_id,
-                context_state: None,
-            })),
-        );
+        root_win
+            .panes
+            .insert(
+                portal_pane_id,
+                crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                    pane_id: portal_pane_id,
+                    target_context_id: child_id,
+                    context_state: None,
+                })),
+            )
+            .unwrap();
     }
 
     // Simulate focus being on the Portal tile (the buggy pre-delete state).
@@ -952,7 +955,7 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/a"),
             tree: egui_tiles::Tree::new("plexi_a", r_a, tiles_a),
-            panes,
+            panes: panes.into(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
@@ -971,7 +974,7 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/b"),
             tree: egui_tiles::Tree::new("plexi_b", r_b, tiles_b),
-            panes,
+            panes: panes.into(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
@@ -1063,7 +1066,7 @@ fn delete_window_revokes_removed_pane_credentials() {
         name: "removed".to_string(),
         path: std::path::PathBuf::from("/tmp/removed"),
         tree: egui_tiles::Tree::new("removed_window", root, tiles),
-        panes,
+        panes: panes.into(),
         focused_pane: Some(root),
         zoomed_pane: None,
         grid_x: 1,
@@ -1300,7 +1303,7 @@ fn context_transition_rescans_registry() {
         name: "Context B".into(),
         path: dir_b.clone(),
         tree: egui_tiles::Tree::empty("test_tree_b"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
@@ -1441,7 +1444,7 @@ fn unresolved_auto_name_uses_first_focused_pane_cwd_then_freezes() {
     let mut pane = test_view_pane(pane_id);
     pane.as_view_mut().expect("view pane").workspace_root =
         std::path::PathBuf::from("/projects/first-project");
-    window.panes.insert(pane_id, pane);
+    window.panes.insert(pane_id, pane).unwrap();
 
     app.resolve_auto_context_names();
     assert_eq!(app.router.active().name.displayed(), "first-project");
@@ -1524,8 +1527,6 @@ fn new_context_root_pty_env_uses_its_own_context_identity() {
 /// delete that window. Previously the window survived empty, showing the welcome screen.
 #[test]
 fn delete_context_collapses_empty_portal_window() {
-    use std::collections::HashMap;
-
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
@@ -1545,7 +1546,7 @@ fn delete_context_collapses_empty_portal_window() {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/test_2029"),
             tree: egui_tiles::Tree::new("test_2029_win2", placeholder, tiles),
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 1,
@@ -1576,7 +1577,7 @@ fn delete_context_collapses_empty_portal_window() {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/test_2029_child"),
             tree: egui_tiles::Tree::new("test_2029_child", r, tiles),
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
@@ -1600,15 +1601,17 @@ fn delete_context_collapses_empty_portal_window() {
         // Insert the portal pane.
         let portal_tile = win2.tree.tiles.insert_pane(portal_pane_id);
         win2.tree.root = Some(portal_tile);
-        win2.panes.clear();
-        win2.panes.insert(
-            portal_pane_id,
-            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                pane_id: portal_pane_id,
-                target_context_id: child_id,
-                context_state: None,
-            })),
-        );
+        win2.panes = Default::default();
+        win2.panes
+            .insert(
+                portal_pane_id,
+                crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                    pane_id: portal_pane_id,
+                    target_context_id: child_id,
+                    context_state: None,
+                })),
+            )
+            .unwrap();
         win2.focused_pane = Some(portal_tile);
     }
 
@@ -1650,8 +1653,6 @@ fn delete_context_collapses_empty_portal_window() {
 /// Deleting all of them would strip the context of every window, violating the invariant.
 #[test]
 fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
-    use std::collections::HashMap;
-
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
@@ -1667,7 +1668,7 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/test_2029_edge"),
             tree: egui_tiles::Tree::new("test_2029_edge_win2", placeholder, tiles),
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 1,
@@ -1698,7 +1699,7 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/test_2029_edge_child"),
             tree: egui_tiles::Tree::new("test_2029_edge_child", r, tiles),
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
@@ -1718,15 +1719,17 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
             .unwrap();
         let portal_tile = win.tree.tiles.insert_pane(portal_pane_id);
         win.tree.root = Some(portal_tile);
-        win.panes.clear();
-        win.panes.insert(
-            portal_pane_id,
-            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                pane_id: portal_pane_id,
-                target_context_id: child_id,
-                context_state: None,
-            })),
-        );
+        win.panes = Default::default();
+        win.panes
+            .insert(
+                portal_pane_id,
+                crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                    pane_id: portal_pane_id,
+                    target_context_id: child_id,
+                    context_state: None,
+                })),
+            )
+            .unwrap();
     }
 
     assert_eq!(
@@ -1836,7 +1839,7 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
     );
     app.windows[0].tree =
         egui_tiles::Tree::new("dissolve_single_parent", parent_root, parent_tiles);
-    app.windows[0].panes = parent_panes;
+    app.windows[0].panes = parent_panes.into();
     app.windows[0].focused_pane = Some(portal_tile);
     app.windows[0].zoomed_pane = Some(portal_tile);
 
@@ -1858,7 +1861,7 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
         name: "child".to_string(),
         path: std::path::PathBuf::from("/tmp/dissolve_single_child"),
         tree: egui_tiles::Tree::new("dissolve_single_child", child_root, child_tiles),
-        panes: child_panes,
+        panes: (child_panes).into(),
         focused_pane: Some(child_right_tile),
         zoomed_pane: Some(child_right_tile),
         grid_x: 0,
@@ -2020,7 +2023,7 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
         })),
     );
     app.windows[0].tree = egui_tiles::Tree::new("dissolve_multi_parent", parent_root, parent_tiles);
-    app.windows[0].panes = parent_panes;
+    app.windows[0].panes = parent_panes.into();
     app.windows[0].focused_pane = Some(portal_tile);
     app.windows[0].grid_x = 0;
     app.windows[0].grid_y = 0;
@@ -2041,7 +2044,7 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
         name: "secondary-a".to_string(),
         path: std::path::PathBuf::from("/tmp/dissolve_multi_a"),
         tree: egui_tiles::Tree::new("dissolve_multi_a", tile_a, tiles_a),
-        panes: panes_a,
+        panes: (panes_a).into(),
         focused_pane: Some(tile_a),
         zoomed_pane: None,
         grid_x: 0,
@@ -2063,7 +2066,7 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
         name: "primary".to_string(),
         path: std::path::PathBuf::from("/tmp/dissolve_multi_primary"),
         tree: egui_tiles::Tree::new("dissolve_multi_primary", primary_root, tiles_primary),
-        panes: panes_primary,
+        panes: (panes_primary).into(),
         focused_pane: Some(primary_right_tile),
         zoomed_pane: Some(primary_right_tile),
         grid_x: 1,
@@ -2081,7 +2084,7 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
         name: "secondary-c".to_string(),
         path: std::path::PathBuf::from("/tmp/dissolve_multi_c"),
         tree: egui_tiles::Tree::new("dissolve_multi_c", tile_c, tiles_c),
-        panes: panes_c,
+        panes: (panes_c).into(),
         focused_pane: Some(tile_c),
         zoomed_pane: None,
         grid_x: 1,
@@ -2302,14 +2305,16 @@ fn rename_on_focused_portal_falls_through_to_subcontext() {
     {
         let win = &mut app.windows[0];
         portal_tile = win.tree.tiles.insert_pane(portal_pane_id);
-        win.panes.insert(
-            portal_pane_id,
-            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                pane_id: portal_pane_id,
-                target_context_id: child_id,
-                context_state: None,
-            })),
-        );
+        win.panes
+            .insert(
+                portal_pane_id,
+                crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                    pane_id: portal_pane_id,
+                    target_context_id: child_id,
+                    context_state: None,
+                })),
+            )
+            .unwrap();
         win.focused_pane = Some(portal_tile);
     }
 
@@ -2375,7 +2380,7 @@ fn closing_last_pane_in_subcontext_collapses_and_zooms_out() {
         name: "collapse_child".to_string(),
         path: std::path::PathBuf::from("/tmp/collapse_child"),
         tree: egui_tiles::Tree::new("collapse_child", child_tile, child_tiles),
-        panes: child_panes,
+        panes: (child_panes).into(),
         focused_pane: Some(child_tile),
         zoomed_pane: None,
         grid_x: 0,
@@ -2478,7 +2483,7 @@ fn closing_last_pane_in_background_subcontext_removes_it_without_switching() {
         name: "bg_collapse_child".to_string(),
         path: std::path::PathBuf::from("/tmp/bg_collapse_child"),
         tree: egui_tiles::Tree::new("bg_collapse_child", child_tile, child_tiles),
-        panes: child_panes,
+        panes: (child_panes).into(),
         focused_pane: Some(child_tile),
         zoomed_pane: None,
         grid_x: 0,
@@ -2726,7 +2731,7 @@ fn set_context_root_ipc_targets_caller_context() {
         name: "background".to_string(),
         path: std::path::PathBuf::from("/tmp/background"),
         tree: egui_tiles::Tree::new("background", pane_tile, tiles),
-        panes,
+        panes: panes.into(),
         focused_pane: Some(pane_tile),
         zoomed_pane: None,
         grid_x: 1,
@@ -2914,14 +2919,16 @@ fn context_close_offers_dissolve_only_for_portal_backed_context() {
     let child_ctx_id = top_level_id + 1_000;
     let portal_pane_id = app.host.alloc_pane_id();
     let win = &mut app.windows[app.active_window];
-    win.panes.insert(
-        portal_pane_id,
-        crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
-            pane_id: portal_pane_id,
-            target_context_id: child_ctx_id,
-            context_state: None,
-        })),
-    );
+    win.panes
+        .insert(
+            portal_pane_id,
+            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                pane_id: portal_pane_id,
+                target_context_id: child_ctx_id,
+                context_state: None,
+            })),
+        )
+        .unwrap();
 
     assert!(
         app.build_context_close_state(child_ctx_id).can_dissolve,
@@ -3298,7 +3305,7 @@ fn context_sub_focus_returns_to_the_callers_window_not_the_active_one() {
         name: String::new(),
         path: std::path::PathBuf::from("/tmp/elsewhere"),
         tree: egui_tiles::Tree::empty("plexi"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
@@ -3579,7 +3586,7 @@ fn perf_gate_delete_context_does_not_block_ui_thread() {
             name: String::new(),
             path: std::path::PathBuf::from(format!("/tmp/perf-gate-delete-context-{i}")),
             tree: egui_tiles::Tree::new(format!("plexi_perf_gate_{i}"), root_tile, tiles),
-            panes,
+            panes: panes.into(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
@@ -3713,7 +3720,7 @@ fn launch_into_an_inactive_context_resolves_that_contexts_own_registry() {
         name: "Context B".into(),
         path: root_b.path().to_path_buf(),
         tree: egui_tiles::Tree::empty("cross_context_launch_test"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
@@ -3799,7 +3806,7 @@ fn set_context_root_on_an_inactive_context_rescans_its_registry() {
         name: "Context B".into(),
         path: crate::testing::scratch_context_root("context"),
         tree: egui_tiles::Tree::empty("inactive_set_root_test"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
@@ -3880,7 +3887,7 @@ fn registry_watcher_covers_an_inactive_contexts_root_and_rescans_it_alone() {
         name: "Context B".into(),
         path: root_b.path().to_path_buf(),
         tree: egui_tiles::Tree::empty("watcher_inactive_root_test"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
@@ -4139,7 +4146,7 @@ fn spawn_stamp_matches_placement_for_caller_in_inactive_context() {
         name: "Context 2".into(),
         path: crate::testing::scratch_context_root("context-2"),
         tree: egui_tiles::Tree::empty("ctx2_tree"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,

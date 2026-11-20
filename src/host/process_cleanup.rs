@@ -1636,7 +1636,8 @@ wait
                 .expect("spawn test terminal");
                 h.app.windows[0]
                     .panes
-                    .insert(id, crate::host::pane::Pane::Terminal(Box::new(terminal)));
+                    .insert(id, crate::host::pane::Pane::Terminal(Box::new(terminal)))
+                    .unwrap();
             }
             let deadline = std::time::Instant::now()
                 + crate::testing::load_aware_timeout(Duration::from_secs(10));

@@ -352,7 +352,9 @@ impl HostHarness {
         };
 
         let win = &mut self.app.windows[0];
-        win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
+        win.panes
+            .insert(pane_id, Pane::View(Box::new(view_pane)))
+            .unwrap();
         let tile_id = win.tree.tiles.insert_pane(pane_id);
         if win.tree.root.is_none() {
             win.tree.root = Some(tile_id);
@@ -433,7 +435,9 @@ impl HostHarness {
             semantic_state: Default::default(),
         };
         let win = &mut self.app.windows[win_idx];
-        win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
+        win.panes
+            .insert(pane_id, Pane::View(Box::new(view_pane)))
+            .unwrap();
         let tile_id = win.tree.tiles.insert_pane(pane_id);
         // Join the layout so this pane actually renders each frame — a tile
         // outside the root container would never reach the tiling behavior.

@@ -139,7 +139,7 @@ impl PlexiApp {
                 }));
                 let mut panes = Vec::new();
                 for window in &self.windows {
-                    for (pane_id, pane) in &window.panes {
+                    for (pane_id, pane) in window.panes.iter() {
                         let Some(tile) = window.tree.tiles.find_pane(pane_id) else {
                             continue;
                         };

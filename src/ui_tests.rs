@@ -1715,7 +1715,9 @@ mod tests {
             )
             .expect("spawn terminal pane");
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
+            win.panes
+                .insert(id, Pane::Terminal(Box::new(terminal)))
+                .unwrap();
             let tile = win.tree.tiles.insert_pane(id);
             win.tree.root = Some(tile);
             win.focused_pane = Some(tile);
@@ -1838,9 +1840,15 @@ mod tests {
             };
 
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(id_a, Pane::Terminal(Box::new(term_a)));
-            win.panes.insert(id_b, Pane::Terminal(Box::new(term_b)));
-            win.panes.insert(id_plugin, Pane::View(Box::new(view_pane)));
+            win.panes
+                .insert(id_a, Pane::Terminal(Box::new(term_a)))
+                .unwrap();
+            win.panes
+                .insert(id_b, Pane::Terminal(Box::new(term_b)))
+                .unwrap();
+            win.panes
+                .insert(id_plugin, Pane::View(Box::new(view_pane)))
+                .unwrap();
 
             let tile_a = win.tree.tiles.insert_pane(id_a);
             let tile_b = win.tree.tiles.insert_pane(id_b);
@@ -1978,7 +1986,10 @@ mod tests {
             )
             .expect("spawn terminal pane A");
             let win_a = &mut app.windows[app.active_window];
-            win_a.panes.insert(id_a, Pane::Terminal(Box::new(term_a)));
+            win_a
+                .panes
+                .insert(id_a, Pane::Terminal(Box::new(term_a)))
+                .unwrap();
             let tile_a = win_a.tree.tiles.insert_pane(id_a);
             win_a.tree.root = Some(tile_a);
             win_a.focused_pane = Some(tile_a);
@@ -2001,7 +2012,10 @@ mod tests {
             )
             .expect("spawn terminal pane B");
             let win_b = &mut app.windows[win_b_idx];
-            win_b.panes.insert(id_b, Pane::Terminal(Box::new(term_b)));
+            win_b
+                .panes
+                .insert(id_b, Pane::Terminal(Box::new(term_b)))
+                .unwrap();
             let tile_b = win_b.tree.tiles.insert_pane(id_b);
             win_b.tree.root = Some(tile_b);
             win_b.focused_pane = Some(tile_b);
@@ -2732,7 +2746,8 @@ mod tests {
                 .expect("start selection fixture");
                 app.windows[app.active_window]
                     .panes
-                    .insert(id, Pane::Terminal(Box::new(terminal)));
+                    .insert(id, Pane::Terminal(Box::new(terminal)))
+                    .unwrap();
             });
             h.run_steps(3);
             h.with_app_mut(|app| {
@@ -3457,7 +3472,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                         child_tile,
                         child_tiles,
                     ),
-                    panes: child_panes,
+                    panes: (child_panes).into(),
                     focused_pane: Some(child_tile),
                     zoomed_pane: None,
                     grid_x: 0,
@@ -3475,7 +3490,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                         target_context_id: child_ctx_id,
                         context_state: None,
                     })),
-                );
+                ).unwrap();
                 tiles.push(win.tree.tiles.insert_pane(portal));
                 portals[i] = portal;
             }
@@ -3618,7 +3633,9 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             .expect("spawn terminal pane");
             term.name = Some("build".to_string());
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(id, Pane::Terminal(Box::new(term)));
+            win.panes
+                .insert(id, Pane::Terminal(Box::new(term)))
+                .unwrap();
             let tile = win.tree.tiles.insert_pane(id);
             let root = win.tree.root.expect("portal root");
             win.tree.root = Some(win.tree.tiles.insert_horizontal_tile(vec![tile, root]));
@@ -3729,7 +3746,9 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             .expect("spawn terminal pane");
             term.name = Some("release checks".to_string());
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(id, Pane::Terminal(Box::new(term)));
+            win.panes
+                .insert(id, Pane::Terminal(Box::new(term)))
+                .unwrap();
             let tile = win.tree.tiles.insert_pane(id);
             let other_tile = win.tree.tiles.find_pane(&other).expect("other pane tile");
             win.tree.root = Some(
@@ -4286,7 +4305,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     .expect("spawn terminal pane");
                     terminal.spawned_by = Some("agent:researcher".to_string());
                     let win = &mut app.windows[app.active_window];
-                    win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
+                    win.panes.insert(id, Pane::Terminal(Box::new(terminal))).unwrap();
                     let tile = win.tree.tiles.insert_pane(id);
                     win.tree.root = Some(tile);
                     win.focused_pane = Some(tile);
@@ -4490,7 +4509,9 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[window_index];
-            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
+            win.panes
+                .insert(pane_id, Pane::View(Box::new(view_pane)))
+                .unwrap();
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -5509,7 +5530,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 name: "notes window".to_string(),
                 path: editor_path.clone(),
                 tree: egui_tiles::Tree::new("notes window", child_tile, child_tiles),
-                panes: child_panes,
+                panes: (child_panes).into(),
                 focused_pane: Some(child_tile),
                 zoomed_pane: None,
                 grid_x: 0,
@@ -5523,14 +5544,16 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             let portal_pane_id = app.host.alloc_pane_id();
             let active_win = app.active_window;
             let win = &mut app.windows[active_win];
-            win.panes.insert(
-                portal_pane_id,
-                Pane::Portal(Box::new(PortalPane {
-                    pane_id: portal_pane_id,
-                    target_context_id: child_ctx_id,
-                    context_state: None,
-                })),
-            );
+            win.panes
+                .insert(
+                    portal_pane_id,
+                    Pane::Portal(Box::new(PortalPane {
+                        pane_id: portal_pane_id,
+                        target_context_id: child_ctx_id,
+                        context_state: None,
+                    })),
+                )
+                .unwrap();
             let portal_tile = win.tree.tiles.insert_pane(portal_pane_id);
             if let Some(root) = win.tree.root {
                 let new_root = win
@@ -5798,7 +5821,8 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 .process_command(egui_term::BackendCommand::Write(b"sleep 30\n".to_vec()));
             app.windows[app.active_window]
                 .panes
-                .insert(id, Pane::Terminal(Box::new(terminal)));
+                .insert(id, Pane::Terminal(Box::new(terminal)))
+                .unwrap();
             id
         });
 
@@ -5988,7 +6012,9 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             });
 
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
+            win.panes
+                .insert(id, Pane::Terminal(Box::new(terminal)))
+                .unwrap();
             let tile = win.tree.tiles.insert_pane(id);
             win.tree.root = Some(tile);
             win.focused_pane = Some(tile);
@@ -6080,7 +6106,9 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
+            win.panes
+                .insert(pane_id, Pane::View(Box::new(view_pane)))
+                .unwrap();
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -6139,7 +6167,9 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
+            win.panes
+                .insert(pane_id, Pane::View(Box::new(view_pane)))
+                .unwrap();
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -6185,7 +6215,9 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
+            win.panes
+                .insert(pane_id, Pane::View(Box::new(view_pane)))
+                .unwrap();
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -6617,14 +6649,17 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                         win.tree.root().unwrap(),
                     );
                     let pane_id = *panes.last().unwrap();
-                    win.panes.insert(
-                        pane_id,
-                        Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                    win.take_pane(pane_id);
+                    win.panes
+                        .insert(
                             pane_id,
-                            target_context_id: target,
-                            context_state: None,
-                        })),
-                    );
+                            Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                                pane_id,
+                                target_context_id: target,
+                                context_state: None,
+                            })),
+                        )
+                        .unwrap();
                 }
                 for win in &mut app.windows {
                     let panes = crate::spatial::tiling::collect_pane_ids_spatial(
@@ -6769,7 +6804,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 name: "child window".to_string(),
                 path: crate::testing::scratch_context_root("ui"),
                 tree: egui_tiles::Tree::empty("child window"),
-                panes: std::collections::HashMap::new(),
+                panes: Default::default(),
                 focused_pane: None,
                 zoomed_pane: None,
                 grid_x: 0,
@@ -6949,7 +6984,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 name: String::new(),
                 path: std::path::PathBuf::from(path),
                 tree: egui_tiles::Tree::empty("sidebar-row-states"),
-                panes: std::collections::HashMap::new(),
+                panes: Default::default(),
                 focused_pane: None,
                 zoomed_pane: None,
                 grid_x,
@@ -6990,7 +7025,9 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     semantic_state: Default::default(),
                 };
                 let win = &mut app.windows[window_index];
-                win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
+                win.panes
+                    .insert(pane_id, Pane::View(Box::new(view_pane)))
+                    .unwrap();
                 tiles.push(win.tree.tiles.insert_pane(pane_id));
             }
             let win = &mut app.windows[window_index];
@@ -7243,9 +7280,11 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     18.0,
                 )
                 .expect("start terminal fixture");
+                app.windows[app.active_window].take_pane(id);
                 app.windows[app.active_window]
                     .panes
-                    .insert(id, Pane::Terminal(Box::new(terminal)));
+                    .insert(id, Pane::Terminal(Box::new(terminal)))
+                    .unwrap();
                 app.sidebar_visible = false;
             });
             let deadline = std::time::Instant::now()
@@ -7317,9 +7356,11 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 18.0,
             )
             .expect("start clock fixture");
+            app.windows[app.active_window].take_pane(id);
             app.windows[app.active_window]
                 .panes
-                .insert(id, Pane::Terminal(Box::new(terminal)));
+                .insert(id, Pane::Terminal(Box::new(terminal)))
+                .unwrap();
             app.sidebar_visible = false;
         });
         let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
@@ -7385,9 +7426,11 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 18.0,
             )
             .expect("start clock fixture");
+            app.windows[app.active_window].take_pane(id);
             app.windows[app.active_window]
                 .panes
-                .insert(id, Pane::Terminal(Box::new(terminal)));
+                .insert(id, Pane::Terminal(Box::new(terminal)))
+                .unwrap();
             app.sidebar_visible = false;
         });
         let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
@@ -7523,7 +7566,8 @@ open(out + ".done", "w").close()
             terminal.backend.enable_input_tap();
             app.windows[app.active_window]
                 .panes
-                .insert(id, Pane::Terminal(Box::new(terminal)));
+                .insert(id, Pane::Terminal(Box::new(terminal)))
+                .unwrap();
         });
         let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
         loop {
@@ -7615,9 +7659,11 @@ open(out + ".done", "w").close()
             )
             .expect("start keyboard fixture");
             terminal.backend.enable_input_tap();
+            app.windows[app.active_window].take_pane(id);
             app.windows[app.active_window]
                 .panes
-                .insert(id, Pane::Terminal(Box::new(terminal)));
+                .insert(id, Pane::Terminal(Box::new(terminal)))
+                .unwrap();
         });
         let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
         loop {
@@ -9044,14 +9090,16 @@ open(out + ".done", "w").close()
                 let child_ctx_id = app.router.active().context_id + 4_000;
                 let portal_pane_id = app.host.alloc_pane_id();
                 let win = &mut app.windows[app.active_window];
-                win.panes.insert(
-                    portal_pane_id,
-                    Pane::Portal(Box::new(PortalPane {
-                        pane_id: portal_pane_id,
-                        target_context_id: child_ctx_id,
-                        context_state: None,
-                    })),
-                );
+                win.panes
+                    .insert(
+                        portal_pane_id,
+                        Pane::Portal(Box::new(PortalPane {
+                            pane_id: portal_pane_id,
+                            target_context_id: child_ctx_id,
+                            context_state: None,
+                        })),
+                    )
+                    .unwrap();
                 child_ctx_id
             } else {
                 app.router.active().context_id
@@ -9174,7 +9222,8 @@ open(out + ".done", "w").close()
             };
             let win = &mut app.windows[app.active_window];
             win.panes
-                .insert(second_pane_id, Pane::View(Box::new(view_pane)));
+                .insert(second_pane_id, Pane::View(Box::new(view_pane)))
+                .unwrap();
             let second_tile = win.tree.tiles.insert_pane(second_pane_id);
             if let Some(first_tile) = win.tree.root {
                 let root = win
@@ -9216,7 +9265,7 @@ open(out + ".done", "w").close()
                 name: "palette metadata extra".to_string(),
                 path: crate::testing::scratch_context_root("ui"),
                 tree: egui_tiles::Tree::new("palette metadata extra", extra_root, extra_tiles),
-                panes: extra_panes,
+                panes: (extra_panes).into(),
                 focused_pane: Some(extra_tile_a),
                 zoomed_pane: None,
                 grid_x: 1,
@@ -9265,7 +9314,10 @@ open(out + ".done", "w").close()
             )
             .expect("spawn test terminal");
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(first, Pane::Terminal(Box::new(term)));
+            win.take_pane(first);
+            win.panes
+                .insert(first, Pane::Terminal(Box::new(term)))
+                .unwrap();
             let a = win.tree.tiles.find_pane(&first).unwrap();
             let b = win.tree.tiles.find_pane(&second).unwrap();
             win.tree.root = Some(win.tree.tiles.insert_horizontal_tile(vec![a, b]));
@@ -9288,7 +9340,7 @@ open(out + ".done", "w").close()
             term.name = Some("fixture".into());
             term.agent = Some(crate::protocol::PaneAgentState { pane_id: pane, state: crate::protocol::AgentState::Blocked, agent: "fixture".into(), detail: None, session_id: None });
             app.ctx.data_mut(|d| d.insert_temp(egui::Id::new(("provenance_icon_rect", pane)), egui::Rect::NOTHING));
-            app.windows[app.active_window].panes.insert(pane, Pane::Terminal(Box::new(term)));
+            app.windows[app.active_window].panes.insert(pane, Pane::Terminal(Box::new(term))).unwrap();
         });
         h.focus_pane(pane).unwrap();
         let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
@@ -9612,7 +9664,8 @@ open(out + ".done", "w").close()
             .expect("spawn test terminal");
             app.windows[app.active_window]
                 .panes
-                .insert(second, Pane::Terminal(Box::new(term)));
+                .insert(second, Pane::Terminal(Box::new(term)))
+                .unwrap();
         });
         h1.run_steps(5);
         for pane in [first, second] {
@@ -9805,7 +9858,8 @@ open(out + ".done", "w").close()
                     });
                     app.windows[app.active_window]
                         .panes
-                        .insert(pane, Pane::Terminal(Box::new(term)));
+                        .insert(pane, Pane::Terminal(Box::new(term)))
+                        .unwrap();
                 });
                 h.focus_pane(pane).unwrap();
                 let deadline =
@@ -10712,7 +10766,9 @@ open(out + ".done", "w").close()
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
+            win.panes
+                .insert(pane_id, Pane::View(Box::new(view_pane)))
+                .unwrap();
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -11340,7 +11396,8 @@ open(out + ".done", "w").close()
                         term.outside_workspace_checked_at = Some(Instant::now());
                         term.outside_workspace_root = Some(root.clone());
                         term.agent = Some(crate::protocol::PaneAgentState { pane_id: id, state: state.clone(), agent: "codex".into(), detail: None, session_id: None });
-                        app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term)));
+                        app.windows[app.active_window].take_pane(id);
+                        app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term))).unwrap();
                     });
                     }
                     h.with_app_mut(|app| {
@@ -11918,9 +11975,11 @@ open(out + ".done", "w").close()
                     detail: detail.map(str::to_string),
                     session_id: None,
                 });
+                app.windows[app.active_window].take_pane(id);
                 app.windows[app.active_window]
                     .panes
-                    .insert(id, Pane::Terminal(Box::new(term)));
+                    .insert(id, Pane::Terminal(Box::new(term)))
+                    .unwrap();
                 app.sidebar_visible = false;
             });
         }
@@ -12029,7 +12088,7 @@ open(out + ".done", "w").close()
 
             let (active_id, active_pane) = agent_pane(app, "plexi-pm");
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(active_id, active_pane);
+            win.panes.insert(active_id, active_pane).unwrap();
             let agent_tile = win.tree.tiles.insert_pane(active_id);
             let first_tile = win.tree.root.expect("fixture pane is the root");
             let root_tile = win
@@ -12059,7 +12118,7 @@ open(out + ".done", "w").close()
                 name: "night-ctx".to_string(),
                 path: root.clone(),
                 tree: egui_tiles::Tree::new("night-ctx", tile, tiles),
-                panes: std::collections::HashMap::from([(inactive_id, inactive_pane)]),
+                panes: (std::collections::HashMap::from([(inactive_id, inactive_pane)])).into(),
                 focused_pane: Some(tile),
                 zoomed_pane: None,
                 grid_x: 1,
@@ -12250,7 +12309,7 @@ open(out + ".done", "w").close()
                 Some("Read"),
             );
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(solo_id, solo);
+            win.panes.insert(solo_id, solo).unwrap();
             let solo_tile = win.tree.tiles.insert_pane(solo_id);
             if let Some(first_tile) = win.tree.root {
                 let root = win
@@ -12328,7 +12387,7 @@ open(out + ".done", "w").close()
                 name: "squad-alpha".to_string(),
                 path: browser_root.clone(),
                 tree: egui_tiles::Tree::new("squad-alpha", squad_root, squad_tiles),
-                panes: squad_panes,
+                panes: (squad_panes).into(),
                 focused_pane: Some(squad_focused),
                 zoomed_pane: None,
                 grid_x: 1,
@@ -13186,7 +13245,7 @@ open(out + ".done", "w").close()
                     semantic_state: Default::default(),
                 };
                 let win = &mut app.windows[app.active_window];
-                win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
+                win.panes.insert(pane_id, Pane::View(Box::new(view_pane))).unwrap();
             }
             let win = &mut app.windows[app.active_window];
             let tile_a = win.tree.tiles.insert_pane(pane_id_a);
@@ -13240,7 +13299,9 @@ open(out + ".done", "w").close()
                 terminal.outside_workspace_root = Some(workspace_root);
 
                 let win = &mut app.windows[app.active_window];
-                win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
+                win.panes
+                    .insert(id, Pane::Terminal(Box::new(terminal)))
+                    .unwrap();
                 let tile = win.tree.tiles.insert_pane(id);
                 win.tree.root = Some(tile);
                 win.focused_pane = Some(tile);
@@ -13327,8 +13388,12 @@ open(out + ".done", "w").close()
                 term_b.outside_workspace_root = Some(workspace_root);
 
                 let win = &mut app.windows[app.active_window];
-                win.panes.insert(id_a, Pane::Terminal(Box::new(term_a)));
-                win.panes.insert(id_b, Pane::Terminal(Box::new(term_b)));
+                win.panes
+                    .insert(id_a, Pane::Terminal(Box::new(term_a)))
+                    .unwrap();
+                win.panes
+                    .insert(id_b, Pane::Terminal(Box::new(term_b)))
+                    .unwrap();
                 let tile_a = win.tree.tiles.insert_pane(id_a);
                 let tile_b = win.tree.tiles.insert_pane(id_b);
                 let tab_tile = win.tree.tiles.insert_tab_tile(vec![tile_a, tile_b]);
@@ -13459,7 +13524,7 @@ open(out + ".done", "w").close()
                 name: String::new(),
                 path: inactive_root,
                 tree: egui_tiles::Tree::empty("sidebar-x-end-preview"),
-                panes: std::collections::HashMap::new(),
+                panes: Default::default(),
                 focused_pane: None,
                 zoomed_pane: None,
                 grid_x: 0,
@@ -13572,7 +13637,9 @@ open(out + ".done", "w").close()
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
+            win.panes
+                .insert(pane_id, Pane::View(Box::new(view_pane)))
+                .unwrap();
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -13896,7 +13963,9 @@ open(out + ".done", "w").close()
                     semantic_state: Default::default(),
                 };
                 let win = &mut app.windows[app.active_window];
-                win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
+                win.panes
+                    .insert(pane_id, Pane::View(Box::new(view_pane)))
+                    .unwrap();
                 let tile_id = win.tree.tiles.insert_pane(pane_id);
                 if win.tree.root.is_none() {
                     win.tree.root = Some(tile_id);
@@ -14286,7 +14355,7 @@ open(out + ".done", "w").close()
                 name: String::new(),
                 path: std::path::PathBuf::from("/tmp"),
                 tree: egui_tiles::Tree::empty("plexi-second"),
-                panes: std::collections::HashMap::new(),
+                panes: Default::default(),
                 focused_pane: None,
                 zoomed_pane: None,
                 grid_x: 1,
@@ -15375,7 +15444,8 @@ open(out + ".done", "w").close()
         let window = &mut app.windows[active_window];
         window
             .panes
-            .insert(pane_id, Pane::Terminal(Box::new(terminal)));
+            .insert(pane_id, Pane::Terminal(Box::new(terminal)))
+            .unwrap();
         let tile = window.tree.tiles.insert_pane(pane_id);
         if window.tree.root().is_none() {
             window.tree.root = Some(tile);

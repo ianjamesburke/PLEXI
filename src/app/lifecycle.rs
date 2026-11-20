@@ -805,7 +805,7 @@ impl PlexiApp {
                     if context_id.is_some_and(|id| window.context_id != id) {
                         continue;
                     }
-                    for (id, pane) in &mut window.panes {
+                    for (id, pane) in window.panes.iter_mut() {
                         if pane_id.is_some_and(|wanted| wanted != *id) {
                             continue;
                         }
@@ -1217,7 +1217,7 @@ impl PlexiApp {
                         .find(|ctx| ctx.context_id == win.context_id)
                         .map(|ctx| ctx.name.to_string())
                         .unwrap_or_default();
-                    for (pane_id, pane) in &win.panes {
+                    for (pane_id, pane) in win.panes.iter() {
                         // Only emit panes that have a corresponding tile in the tree.
                         // win.panes and the tile tree can desync (e.g. from corrupted
                         // restore state); omitting orphaned entries ensures every id

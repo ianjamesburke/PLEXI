@@ -473,7 +473,7 @@ impl Default for PortalPreview {
 }
 
 pub struct PlexiBehavior<'a> {
-    pub panes: &'a mut HashMap<PaneId, Pane>,
+    pub(crate) panes: &'a mut crate::host::context::PaneMap,
     pub child_agent_strips: HashMap<PaneId, Vec<crate::agent::fleet::AgentRow>>,
     pub pane_lineage: HashMap<PaneId, String>,
     pub child_agent_dive: Option<PaneId>,

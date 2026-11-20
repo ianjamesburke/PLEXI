@@ -326,7 +326,7 @@ impl PlexiApp {
                     self.create_single_pane_tree(&context, Default::default())
                 {
                     self.windows[active].tree = tree;
-                    self.windows[active].panes = panes;
+                    self.windows[active].panes = panes.into();
                     self.windows[active].note_tree_rebuilt();
                     self.set_window_focused_pane(active, root_tile);
                 }
@@ -458,9 +458,13 @@ impl PlexiApp {
             Some(&self.router.active().root),
         );
         pane.ephemeral = close_on_exit;
-        self.windows[self.active_window]
+        if self.windows[self.active_window]
             .panes
-            .insert(new_id, Pane::Terminal(Box::new(pane)));
+            .insert(new_id, Pane::Terminal(Box::new(pane)))
+            .is_err()
+        {
+            return None;
+        }
         pending_credential.mark_live();
 
         let split_target = match self.windows[self.active_window].find_ancestor_tabs(focused) {
@@ -564,7 +568,13 @@ impl PlexiApp {
             };
             pane.ephemeral = close_on_exit;
             let ctx = &mut self.windows[target_win_idx];
-            ctx.panes.insert(new_id, Pane::Terminal(Box::new(pane)));
+            if ctx
+                .panes
+                .insert(new_id, Pane::Terminal(Box::new(pane)))
+                .is_err()
+            {
+                return None;
+            }
             pending_credential.mark_live();
             let pane_tile = ctx.tree.tiles.insert_pane(new_id);
             let tab_tile = ctx.tree.tiles.insert_tab_tile(vec![pane_tile]);
@@ -632,9 +642,13 @@ impl PlexiApp {
             }
         };
         pane.ephemeral = close_on_exit;
-        self.windows[target_win_idx]
+        if self.windows[target_win_idx]
             .panes
-            .insert(new_id, Pane::Terminal(Box::new(pane)));
+            .insert(new_id, Pane::Terminal(Box::new(pane)))
+            .is_err()
+        {
+            return None;
+        }
         pending_credential.mark_live();
         self.push_focus_history(old_window_id, old_focus);
 
@@ -982,8 +996,7 @@ impl PlexiApp {
                     context_root.as_deref(),
                 );
                 closed_pane_id = Some(pane_id);
-                ctx.note_pane_departed(pane_id);
-                ctx.panes.remove(&pane_id)
+                ctx.take_pane(pane_id)
             } else {
                 None
             };
@@ -1696,8 +1709,7 @@ impl PlexiApp {
                 }
             }
             ctx.tree.tiles.remove(focused_tile);
-            let pane = ctx.panes.remove(&src_pane_id);
-            ctx.note_pane_departed(src_pane_id);
+            let pane = ctx.take_pane(src_pane_id);
             ctx.focused_pane = next_src_focus;
             ctx.simplify_and_reconcile();
             pane
@@ -1757,7 +1769,7 @@ impl PlexiApp {
             name: String::new(),
             path: cwd,
             tree: new_tree,
-            panes: new_panes,
+            panes: (new_panes).into(),
             focused_pane: Some(new_tile),
             zoomed_pane: None,
             grid_x: new_x,
@@ -1872,8 +1884,7 @@ impl PlexiApp {
                 }
             }
             ctx.tree.tiles.remove(src_focused_tile);
-            let pane = ctx.panes.remove(&src_pane_id);
-            ctx.note_pane_departed(src_pane_id);
+            let pane = ctx.take_pane(src_pane_id);
             ctx.focused_pane = next_src_focus;
             ctx.simplify_and_reconcile();
             pane
@@ -1918,7 +1929,9 @@ impl PlexiApp {
 
         let ctx = &mut self.windows[adj_idx];
         let new_tile = ctx.tree.tiles.insert_pane(src_pane_id);
-        ctx.panes.insert(src_pane_id, pane);
+        if ctx.panes.insert(src_pane_id, pane).is_err() {
+            return false;
+        }
 
         if ctx.tree.root.is_none() {
             ctx.tree.root = Some(new_tile);
@@ -2201,7 +2214,6 @@ impl PlexiApp {
 #[cfg(test)]
 mod close_pane_by_id_tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn test_app() -> PlexiApp {
         let ctx = egui::Context::default();
@@ -2222,7 +2234,7 @@ mod close_pane_by_id_tests {
             name: "test".into(),
             path: std::env::temp_dir(),
             tree,
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
@@ -2292,11 +2304,11 @@ mod close_pane_by_id_tests {
     fn close_pane_by_id_removes_zombie_non_active_window() {
         let mut h = crate::testing::HostHarness::new();
         let pane_id = h.add_test_pane();
-        let pane = h.app.windows[0].panes.remove(&pane_id).unwrap();
+        let pane = h.app.windows[0].take_pane(pane_id).unwrap();
         h.app.windows[0].tree = egui_tiles::Tree::empty("empty-window");
         let context_id = h.app.windows[0].context_id;
         let mut window = window_with_pane(context_id, 2, pane_id, 1);
-        window.panes.insert(pane_id, pane);
+        window.panes.insert(pane_id, pane).unwrap();
         h.app.windows.push(window);
 
         assert_eq!(h.app.windows.len(), 2);

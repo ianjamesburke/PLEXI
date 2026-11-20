@@ -363,7 +363,7 @@ fn two_window_fixture(h: &mut HostHarness) -> (PaneId, PaneId, PaneId) {
         name: "right".into(),
         path: crate::testing::scratch_context_root("stint-1230-right"),
         tree: egui_tiles::Tree::empty("stint_1230_right"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,

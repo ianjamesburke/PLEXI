@@ -5591,7 +5591,7 @@ mod tests {
             name: "Context B".into(),
             path: dir_b.path().to_path_buf(),
             tree: egui_tiles::Tree::empty("inactive_context_browser_test"),
-            panes: std::collections::HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 1,
@@ -5620,7 +5620,8 @@ mod tests {
         win_b.tree.root = Some(tile_id);
         win_b
             .panes
-            .insert(pane_id, crate::host::pane::Pane::View(Box::new(view_pane)));
+            .insert(pane_id, crate::host::pane::Pane::View(Box::new(view_pane)))
+            .unwrap();
         harness.app.windows.push(win_b);
 
         // Active context remains Window 0 / Context A

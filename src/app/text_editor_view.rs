@@ -5367,7 +5367,7 @@ mod data_safety_tests {
             .app
             .windows
             .iter()
-            .flat_map(|w| &w.panes)
+            .flat_map(|w| w.panes.iter())
             .find_map(|(id, pane)| {
                 (pane.as_view()?.runtime.type_id() == "text-editor").then_some(*id)
             })

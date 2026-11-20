@@ -330,7 +330,7 @@ mod tests {
             name: String::new(),
             path: PathBuf::from("/tmp"),
             tree: egui_tiles::Tree::empty("test"),
-            panes: std::collections::HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
@@ -414,7 +414,8 @@ mod tests {
 
         child_win
             .panes
-            .insert(10, make_view_pane(10, AgentState::Working));
+            .insert(10, make_view_pane(10, AgentState::Working))
+            .unwrap();
         let windows = vec![make_empty_window(1, 100), child_win];
         let state = ContextState::compute(1, &contexts, &windows);
         assert_eq!(state.children[0].status, ContextStatus::Working);
@@ -427,10 +428,12 @@ mod tests {
         let mut windows = windows;
         windows[1]
             .panes
-            .insert(11, make_view_pane(11, AgentState::Working));
+            .insert(11, make_view_pane(11, AgentState::Working))
+            .unwrap();
         windows[1]
             .panes
-            .insert(12, make_view_pane(12, AgentState::Blocked));
+            .insert(12, make_view_pane(12, AgentState::Blocked))
+            .unwrap();
         let state = ContextState::compute(1, &contexts, &windows);
         assert_eq!(state.children[0].status, ContextStatus::Blocked);
         assert_eq!(state.status, ContextStatus::Blocked);
@@ -442,7 +445,8 @@ mod tests {
         let mut needs_you_win = make_empty_window(2, 101);
         needs_you_win
             .panes
-            .insert(20, make_view_pane(20, AgentState::NeedsYou));
+            .insert(20, make_view_pane(20, AgentState::NeedsYou))
+            .unwrap();
         let windows = vec![make_empty_window(1, 100), needs_you_win];
         let state = ContextState::compute(1, &contexts, &windows);
         assert_eq!(state.children[0].status, ContextStatus::NeedsYou);

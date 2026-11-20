@@ -97,7 +97,7 @@ fn ghost_restore_falls_back_when_origin_pane_closed_r31() {
     assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
 
     // Remove p2 while zoomed out.
-    h.app.windows[0].panes.remove(&p2);
+    h.app.windows[0].take_pane(p2);
     if let Some(tile) = h.app.windows[0].tree.tiles.find_pane(&p2) {
         h.app.windows[0].tree.tiles.remove(tile);
     }

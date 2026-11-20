@@ -11,7 +11,7 @@ fn same_workspace_window_below(context_id: u64, window_id: u64, pane_id: u64) ->
         name: "Test".into(),
         path: crate::testing::scratch_context_root("notification"),
         tree,
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
@@ -325,7 +325,7 @@ fn dispatch_notify_action_pane_focus_navigates() {
             tree.root = Some(tile);
             tree
         },
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
@@ -1829,7 +1829,7 @@ fn push_second_context_window(h: &mut HostHarness, ctx_id: u64, window_id: u64) 
             tree.root = Some(tile);
             tree
         },
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,

@@ -279,7 +279,7 @@ impl PlexiApp {
                 })
             {
                 self.conjoined_contexts.insert(win.context_id, parent);
-                for (&id, pane) in &win.panes {
+                for (&id, pane) in win.panes.iter() {
                     if pane
                         .as_terminal()
                         .is_some_and(|t| t.parent_pane_id == Some(parent))

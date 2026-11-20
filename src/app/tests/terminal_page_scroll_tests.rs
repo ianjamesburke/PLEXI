@@ -43,7 +43,8 @@ pub(super) fn terminal_with_fixture(h: &mut HostHarness, mode: &str) -> PaneId {
     .expect("start page-scroll fixture");
     h.app.windows[0]
         .panes
-        .insert(id, Pane::Terminal(Box::new(terminal)));
+        .insert(id, Pane::Terminal(Box::new(terminal)))
+        .unwrap();
     let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
     loop {
         h.run_frames(2);

@@ -305,7 +305,7 @@ pub(super) fn push_secondary_context(
         name: String::new(),
         path: root.to_path_buf(),
         tree: egui_tiles::Tree::empty("tool_dispatch_context_b"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
@@ -594,29 +594,27 @@ fn register_top_view_tool(h: &HostHarness, pane_id: u64, plugin_id: &str, tool: 
 /// `hint = "overlay"`: the overlay reuses the pane id and stashes the covered
 /// pane in `overlay_replaced`.
 fn overlay_view_on(h: &mut HostHarness, pane_id: u64, manifest_id: &str) {
-    let covered = h.app.windows[0]
-        .panes
-        .remove(&pane_id)
-        .expect("covered pane is in the pane map");
     let cwd = h.workspace_root();
-    let overlay = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
-        pip_status: None,
-        id: pane_id,
-        permissions: crate::app::permissions::PluginPermissions::builtin(),
-        runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
-            crate::file_browser::FileBrowserView::new(cwd.clone()),
-        )),
-        workspace_root: cwd,
-        manifest_id: manifest_id.to_string(),
-        name: manifest_id.to_string(),
-        pane_group: None,
-        linked_pane_id: None,
-        overlay_replaced: Some(Box::new(covered)),
-        agent: None,
-        slots: std::collections::HashMap::new(),
-        semantic_state: Default::default(),
-    }));
-    h.app.windows[0].panes.insert(pane_id, overlay);
+    let covered = h.app.windows[0].push_overlay(pane_id, |covered| {
+        crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+            pip_status: None,
+            id: pane_id,
+            permissions: crate::app::permissions::PluginPermissions::builtin(),
+            runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
+                crate::file_browser::FileBrowserView::new(cwd.clone()),
+            )),
+            workspace_root: cwd,
+            manifest_id: manifest_id.to_string(),
+            name: manifest_id.to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: Some(Box::new(covered)),
+            agent: None,
+            slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
+        }))
+    });
+    assert!(covered, "covered pane is in the pane map");
 }
 
 /// `(plugin_id, pane_id, provider tool name)` for every tool live in the
@@ -3358,7 +3356,7 @@ fn workspace_clean_slots_lists_and_removes_dead_pane_slot_dirs() {
         .join(pane.to_string());
     assert!(slot_dir.exists(), "slot dir should exist before clean");
 
-    h.app.windows[0].panes.remove(&pane);
+    h.app.windows[0].take_pane(pane);
 
     let dry_run_file = temp_response(tmp.path(), "slot-clean-dry-run");
     h.inject_ipc(HostRequest::WorkspaceCleanSlots {
@@ -4111,7 +4109,7 @@ fn portal_context_state_refreshes_when_child_context_changes() {
         name: String::new(),
         path: std::path::PathBuf::from("/tmp/harness_2023_child"),
         tree: egui_tiles::Tree::empty("harness_2023_child"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
@@ -4127,14 +4125,16 @@ fn portal_context_state_refreshes_when_child_context_changes() {
     {
         let win = &mut h.app.windows[0];
         let _ = win.tree.tiles.insert_pane(portal_pane_id);
-        win.panes.insert(
-            portal_pane_id,
-            Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                pane_id: portal_pane_id,
-                target_context_id: child_ctx_id,
-                context_state: None,
-            })),
-        );
+        win.panes
+            .insert(
+                portal_pane_id,
+                Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                    pane_id: portal_pane_id,
+                    target_context_id: child_ctx_id,
+                    context_state: None,
+                })),
+            )
+            .unwrap();
     }
 
     let portal_state = |h: &HostHarness| {
@@ -4644,7 +4644,7 @@ fn add_pipe_test_pane(
         slots: std::collections::HashMap::new(),
         semantic_state: Default::default(),
     }));
-    h.app.windows[win_idx].panes.insert(pane_id, pane);
+    h.app.windows[win_idx].panes.insert(pane_id, pane).unwrap();
     let tile = h.app.windows[win_idx].tree.tiles.insert_pane(pane_id);
     if h.app.windows[win_idx].tree.root().is_none() {
         h.app.windows[win_idx].tree.root = Some(tile);
@@ -10174,7 +10174,9 @@ mod routine_firing {
             semantic_state: Default::default(),
         };
         let win = &mut h.app.windows[win_idx];
-        win.panes.insert(pane_id, Pane::View(Box::new(pane)));
+        win.panes
+            .insert(pane_id, Pane::View(Box::new(pane)))
+            .unwrap();
         let tile_id = win.tree.tiles.insert_pane(pane_id);
         if win.tree.root.is_none() {
             win.tree.root = Some(tile_id);
@@ -10195,7 +10197,7 @@ mod routine_firing {
             name: String::new(),
             path: root.to_path_buf(),
             tree: egui_tiles::Tree::empty("plexi"),
-            panes: std::collections::HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 1,
@@ -15947,24 +15949,27 @@ fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
     let ctx_id = h.app.windows[win_idx].context_id;
     live.set_pane_id(wasm_pane_id);
     live.set_context_id(ctx_id);
-    h.app.windows[win_idx].panes.insert(
-        wasm_pane_id,
-        Pane::View(Box::new(crate::host::pane::ViewPane {
-            pip_status: None,
-            id: wasm_pane_id,
-            runtime: crate::host::pane::ViewRuntime::Wasm(Box::new(live)),
-            workspace_root: std::env::temp_dir(),
-            permissions: crate::app::permissions::PluginPermissions::default(),
-            manifest_id: "sysmon".to_string(),
-            name: "sysmon".to_string(),
-            pane_group: None,
-            linked_pane_id: None,
-            overlay_replaced: None,
-            agent: None,
-            slots: std::collections::HashMap::new(),
-            semantic_state: Default::default(),
-        })),
-    );
+    h.app.windows[win_idx]
+        .panes
+        .insert(
+            wasm_pane_id,
+            Pane::View(Box::new(crate::host::pane::ViewPane {
+                pip_status: None,
+                id: wasm_pane_id,
+                runtime: crate::host::pane::ViewRuntime::Wasm(Box::new(live)),
+                workspace_root: std::env::temp_dir(),
+                permissions: crate::app::permissions::PluginPermissions::default(),
+                manifest_id: "sysmon".to_string(),
+                name: "sysmon".to_string(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
+            })),
+        )
+        .unwrap();
     let _ = h.app.windows[win_idx].tree.tiles.insert_pane(wasm_pane_id);
 
     queue_pipe_command(
@@ -18954,7 +18959,7 @@ mod tiled_navigation_frame_tests {
         let ctx_id = h.app.router.active().context_id;
         h.app.focus_pane_in_strip(panes[2]);
         let tile = h.app.windows[0].tree.tiles.find_pane(&panes[2]).unwrap();
-        let removed = h.app.windows[0].panes.remove(&panes[2]).unwrap();
+        let removed = h.app.windows[0].take_pane(panes[2]).unwrap();
         let strip = h.app.host.strip(ctx_id).cloned();
         let pane_ids: std::collections::BTreeSet<_> =
             h.app.windows[0].panes.keys().copied().collect();
@@ -18980,7 +18985,7 @@ mod tiled_navigation_frame_tests {
         );
         assert_eq!(h.app.windows[0].tree.tiles.len(), tree_count);
         assert_eq!(h.app.windows[0].focused_pane, Some(tile));
-        h.app.windows[0].panes.insert(panes[2], removed);
+        h.app.windows[0].panes.insert(panes[2], removed).unwrap();
     }
 
     #[test]

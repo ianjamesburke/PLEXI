@@ -3298,7 +3298,7 @@ mod tests {
             if close_context {
                 h.app.router.get_mut(0).context_id += 100;
             } else {
-                h.app.windows[0].panes.remove(&pane);
+                h.app.windows[0].take_pane(pane);
             }
             h.app.drain_pending_user_commands();
             assert!(!marker.exists(), "closed source must not execute steps");
@@ -4327,7 +4327,7 @@ mod tests {
             name: "test".to_string(),
             path: std::path::PathBuf::from("/tmp"),
             tree,
-            panes,
+            panes: panes.into(),
             focused_pane,
             zoomed_pane: None,
             grid_x,
@@ -4398,7 +4398,7 @@ mod tests {
             name: "test".to_string(),
             path: std::path::PathBuf::from("/tmp"),
             tree: egui_tiles::Tree::new("test", root, tiles),
-            panes,
+            panes: panes.into(),
             focused_pane,
             zoomed_pane: None,
             grid_x: 0,

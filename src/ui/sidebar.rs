@@ -897,7 +897,7 @@ mod tests {
         h.app.router.get_mut(0).name = "renamed in background".to_string().into();
         assert_eq!(h.app.sidebar_ancestry_levels(0)[0].name, "renamed in background");
         assert_eq!(h.app.active_window, focus);
-        h.app.windows[focus].panes.clear();
+        h.app.windows[focus].panes = Default::default();
         h.app.windows[focus].tree = egui_tiles::Tree::empty("empty restored child");
         assert!(h.app.sidebar_ancestry_levels(0)[1].dots.is_none());
         h.app.switch_workspace(0);
@@ -950,7 +950,7 @@ mod tests {
                 name: String::new(),
                 path: std::path::PathBuf::from("/tmp"),
                 tree,
-                panes: std::collections::HashMap::new(),
+                panes: Default::default(),
                 focused_pane: (window_id == 43).then_some(tile),
                 zoomed_pane: None,
                 grid_x,

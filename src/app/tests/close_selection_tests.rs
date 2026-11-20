@@ -265,7 +265,7 @@ fn selection(h: &HostHarness) -> Option<Vec<u64>> {
 fn close_selected_restores_the_pane_under_a_selected_overlay() {
     let mut h = HostHarness::new();
     let [a, b, c, d] = grid(&mut h);
-    let covered = h.app.windows[0].panes.remove(&a).unwrap();
+    let covered = h.app.windows[0].take_pane(a).unwrap();
     let cwd = h.workspace_root();
     let overlay = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
         pip_status: None,
@@ -284,7 +284,7 @@ fn close_selected_restores_the_pane_under_a_selected_overlay() {
         slots: std::collections::HashMap::new(),
         semantic_state: Default::default(),
     }));
-    h.app.windows[0].panes.insert(a, overlay);
+    h.app.windows[0].panes.insert(a, overlay).unwrap();
     select(&mut h, &[a, b]);
     close_shortcut(&mut h);
     assert_eq!(

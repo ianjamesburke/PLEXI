@@ -1855,7 +1855,7 @@ impl PlexiApp {
                     pending_result_waits: Vec::new(),
                     pending_agent_waits: Vec::new(),
                     child_result_events: HashMap::new(),
-                    child_parent_panes: HashMap::new(),
+                    child_parent_panes: Default::default(),
                     pulled_child_results: std::collections::HashSet::new(),
                     delivered_child_batches: HashMap::new(),
                     agent_tool_waits: Vec::new(),
@@ -2103,7 +2103,7 @@ impl PlexiApp {
                 name: String::new(),
                 path,
                 tree,
-                panes,
+                panes: panes.into(),
                 focused_pane: None,
                 zoomed_pane: None,
                 grid_x: 0,
@@ -2152,7 +2152,7 @@ impl PlexiApp {
             pending_result_waits: Vec::new(),
             pending_agent_waits: Vec::new(),
             child_result_events: HashMap::new(),
-            child_parent_panes: HashMap::new(),
+            child_parent_panes: Default::default(),
             pulled_child_results: std::collections::HashSet::new(),
             delivered_child_batches: HashMap::new(),
             agent_tool_waits: Vec::new(),
@@ -3094,7 +3094,7 @@ impl PlexiApp {
                 name: "Test".into(),
                 path: path.clone(),
                 tree: egui_tiles::Tree::empty("test_tree"),
-                panes: HashMap::new(),
+                panes: Default::default(),
                 focused_pane: None,
                 zoomed_pane: None,
                 grid_x: 0,
@@ -3149,7 +3149,7 @@ impl PlexiApp {
             pending_result_waits: Vec::new(),
             pending_agent_waits: Vec::new(),
             child_result_events: HashMap::new(),
-            child_parent_panes: HashMap::new(),
+            child_parent_panes: Default::default(),
             pulled_child_results: std::collections::HashSet::new(),
             delivered_child_batches: HashMap::new(),
             agent_tool_waits: Vec::new(),
@@ -3327,7 +3327,7 @@ impl PlexiApp {
             slots: std::collections::HashMap::new(),
             semantic_state: Default::default(),
         }));
-        self.windows[0].panes.insert(pane_id, pane);
+        self.windows[0].panes.insert(pane_id, pane).unwrap();
         let tile_id = self.windows[0].tree.tiles.insert_pane(pane_id);
         if self.windows[0].tree.root().is_none() {
             self.windows[0].tree.root = Some(tile_id);
@@ -3378,7 +3378,7 @@ impl PlexiApp {
             slots: std::collections::HashMap::new(),
             semantic_state: Default::default(),
         }));
-        self.windows[win_idx].panes.insert(pane_id, pane);
+        self.windows[win_idx].panes.insert(pane_id, pane).unwrap();
         let tile_id = self.windows[win_idx].tree.tiles.insert_pane(pane_id);
         if self.windows[win_idx].tree.root().is_none() {
             self.windows[win_idx].tree.root = Some(tile_id);
@@ -6408,7 +6408,7 @@ pub(crate) fn restore_workspace(
             },
             path: saved_win.path,
             tree: saved_win.tree,
-            panes,
+            panes: panes.into(),
             focused_pane: saved_win.focused_pane,
             zoomed_pane: None,
             grid_x: saved_win.grid_x,
@@ -6458,7 +6458,7 @@ pub(crate) fn restore_workspace(
                 })
                 .collect();
             for pid in portal_ids {
-                win.panes.remove(&pid);
+                win.take_pane(pid);
                 if let Some(tile_id) = win.tree.tiles.find_pane(&pid) {
                     win.tree.remove_recursively(tile_id);
                 }
