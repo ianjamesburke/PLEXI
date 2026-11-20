@@ -26,7 +26,8 @@ fn kind(outcome: &Outcome) -> &'static str {
         Outcome::UsageError(UsageError::Retired(_)) => "retired",
         Outcome::UsageError(UsageError::UnknownCommand { .. }) => "unknown_command",
         Outcome::UsageError(UsageError::MissingCommand { .. }) => "missing_command",
-        Outcome::UsageError(UsageError::Separated { .. }) => "separated",
+        Outcome::UsageError(UsageError::Rebound { .. }) => "rebound",
+        Outcome::UsageError(UsageError::NotUtf8 { .. }) => "not_utf8",
         Outcome::UsageError(UsageError::Grammar { .. }) => "grammar",
         Outcome::UsageError(UsageError::Internal(message)) => panic!("internal: {message}"),
         Outcome::Completions { .. } => "completions",
@@ -352,28 +353,148 @@ fn a_missing_experiment_value_carries_static_guidance() {
     assert!(text.contains("--folder ."), "{text}");
     assert!(text.contains("Usage:"), "{text}");
     assert!(
-        text.contains("plexi experiments enable folder_secrets"),
+        text.contains(&format!("{BIN} experiments enable folder_secrets")),
         "{text}"
     );
 }
 
-/// A token that would become a pending option's value once `--profile` or a
-/// display request is removed is refused rather than silently rebound.
+/// Removing `--profile` or a display request never hands a token to another
+/// argument: wherever the selector sits, the outcome is the same, or a usage
+/// error. Round 1's probe and its moved-selector twin.
 #[test]
-fn removal_never_rebinds_a_pending_option() {
-    help_of(&["pane", "list", "--context", "--help"]);
-    expect(&["pane", "list", "--context", "--help", "3"], "separated");
-    expect(
+fn removal_never_rebinds_a_value() {
+    for parts in [
+        &[
+            "--profile",
+            "t1",
+            "pane",
+            "info",
+            "--previous",
+            "--help",
+            "3",
+        ][..],
+        &[
+            "pane",
+            "info",
+            "--previous",
+            "--profile",
+            "t1",
+            "--help",
+            "3",
+        ],
+        &[
+            "pane",
+            "info",
+            "--previous",
+            "--help",
+            "--profile",
+            "t1",
+            "3",
+        ],
+        &["pane", "list", "--context", "--help", "3"],
         &["pane", "list", "--context", "--profile", "t1", "3"],
-        "separated",
-    );
+    ] {
+        expect(parts, "rebound");
+    }
+    help_of(&["pane", "list", "--context", "--help"]);
     let run = run_of(&["pane", "list", "--context", "--profile", "t1", "--json"]);
     assert_eq!(run.selection, named("t1"));
+    assert_eq!(
+        help_of(&["pane", "info", "--previous", "3", "--help"]).0,
+        path(&["pane", "info"])
+    );
     // A required value cannot be skipped by a removed token.
     expect(
         &["secret", "set", "A", "--folder", "--profile", "t1", "."],
         "grammar",
     );
+}
+
+/// A value for `arg` that its parser accepts.
+fn sample_value(arg: &clap::Arg) -> String {
+    arg.get_possible_values()
+        .first()
+        .map(|value| value.get_name().to_string())
+        .unwrap_or_else(|| "1".to_string())
+}
+
+/// argv shapes for one command: its positionals filled, then each of its own
+/// options at every value count it accepts (up to two).
+fn shapes(node: &Command, p: &[String]) -> Vec<Vec<String>> {
+    let mut base: Vec<String> = std::iter::once(BIN.to_string())
+        .chain(p.iter().cloned())
+        .collect();
+    for arg in node.get_positionals() {
+        base.push(sample_value(arg));
+    }
+    let mut out = vec![base.clone()];
+    for arg in node
+        .get_arguments()
+        .filter(|a| !a.is_positional() && !a.is_global_set() && takes_values(a))
+    {
+        let Some(long) = arg.get_long() else { continue };
+        let (min, max) = values(arg);
+        for count in min..=max.min(2) {
+            let mut shape = base.clone();
+            shape.push(format!("--{long}"));
+            shape.extend(std::iter::repeat_n(sample_value(arg), count));
+            out.push(shape);
+        }
+    }
+    out
+}
+
+/// The differential: for every command path and option-arity shape that clap
+/// accepts, insert `--profile t1` or `--help` at every position. Whenever the
+/// outcome accepts the input, recognition's value ownership must equal clap's
+/// own matches for the same argv with the inserted tokens removed; when the
+/// inserted tokens are data, clap's matches for the argv as given.
+#[test]
+fn ownership_equals_clap_at_every_insertion_position() {
+    let mut tree = grammar(BIN);
+    tree.build();
+    let display = display_grammar(grammar(BIN));
+    let mut checked = 0usize;
+    for p in every_path() {
+        let node = node_at(&tree, &p).unwrap();
+        for shape in shapes(node, &p) {
+            let Ok(clean) = display.clone().try_get_matches_from(&shape) else {
+                continue;
+            };
+            for insert in [&["--profile", "t1"][..], &["--help"]] {
+                for at in 1..=shape.len() {
+                    let mut x = shape.clone();
+                    for (k, token) in insert.iter().enumerate() {
+                        x.insert(at + k, token.to_string());
+                    }
+                    let accepted = matches!(
+                        outcome(BIN, &x),
+                        Outcome::Run(_)
+                            | Outcome::Launch(_)
+                            | Outcome::Help(_)
+                            | Outcome::Completions { .. }
+                    );
+                    if let Outcome::UsageError(UsageError::Internal(message)) = outcome(BIN, &x) {
+                        panic!("{x:?}: {message}");
+                    }
+                    if !accepted {
+                        continue;
+                    }
+                    let r = recognize(&tree, &x);
+                    let removed = !r.profiles.is_empty() || r.help.is_some();
+                    let reference = if removed {
+                        assert_eq!(r.kept, shape, "{x:?}");
+                        clean.clone()
+                    } else {
+                        display.clone().try_get_matches_from(&x).unwrap()
+                    };
+                    assert!(rebinding(&tree, &r, &x, &reference).is_none(), "{x:?}");
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 1000, "only {checked} cases checked");
 }
 
 fn visible_paths(cmd: &Command, prefix: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
@@ -497,27 +618,6 @@ fn the_grammar_uses_only_modelled_features() {
     assert!(!source.contains("infer_subcommands") && !source.contains("infer_long_args"));
 }
 
-/// Recognition matches clap's own reading of every command path: the kept
-/// tokens are argv unchanged and the path is clap's.
-#[test]
-fn recognition_agrees_with_clap_on_every_path() {
-    let mut tree = grammar(BIN);
-    tree.build();
-    for p in every_path() {
-        let words: Vec<&str> = p.iter().map(String::as_str).collect();
-        let args = argv(&words);
-        let r = recognize(&tree, &args);
-        if r.stop.is_none() {
-            assert_eq!(r.kept, args, "{args:?}");
-            assert_eq!(r.path, p, "{args:?}");
-        }
-        let mut with = words.clone();
-        with.extend(["--profile", "t1"]);
-        let r = recognize(&tree, &argv(&with));
-        assert_eq!(r.profiles, vec![Some("t1".to_string())], "{with:?}");
-    }
-}
-
 #[test]
 fn cli_help_snapshots() {
     for (name, parts) in [
@@ -559,4 +659,83 @@ fn invoked_bin_name_strips_paths_and_exe() {
         assert_eq!(invoked_bin_name(Some(arg0)), expected, "{arg0:?}");
     }
     assert_eq!(invoked_bin_name(None), "plexi");
+}
+
+/// Round 1 P2s on PR #3269.
+#[test]
+fn help_subcommand_validates_its_own_tokens() {
+    expect(&["help", "host", "--help=oops"], "grammar");
+    expect(&["host", "--help=oops"], "grammar");
+    assert_eq!(help_of(&["help", "host", "help"]).0, path(&["host"]));
+    let text = render_node_help(BIN, &path(&["host"]), true).to_string();
+    assert!(text.contains(&format!("Usage: {BIN} host")), "{text}");
+}
+
+#[test]
+fn completions_validate_the_shell() {
+    expect(&["completions", "invalid-shell"], "grammar");
+    expect(&["completions", "invalid-shell", "--help"], "grammar");
+    expect(&["completions", "fish"], "completions");
+}
+
+#[test]
+fn hidden_commands_are_never_suggested_or_completed() {
+    for parts in [
+        &["agent", "tem"][..],
+        &["agent", "--json", "tem"],
+        &["agent", "--json", "flee"],
+    ] {
+        let text = error_text(parts);
+        assert!(
+            !text.contains("team") && !text.contains("fleet"),
+            "{parts:?}: {text}"
+        );
+    }
+    for shell in ["fish", "zsh", "bash"] {
+        let script =
+            String::from_utf8(crate::cli::completions::render_completions(shell, BIN).unwrap())
+                .unwrap();
+        for hidden in ["assistant", "agents-dashboard", "ledger"] {
+            assert!(
+                !script.contains(&format!("'{hidden}'"))
+                    && !script.contains(&format!("\"{hidden}\""))
+                    && !script.contains(&format!(" {hidden} "))
+                    && !script.contains(&format!("-a \"{hidden}\"")),
+                "{shell} completes hidden {hidden}"
+            );
+        }
+    }
+}
+
+#[test]
+fn public_help_states_no_profile_setting_and_names_the_binary() {
+    let text = render_node_help(BIN, &path(&["secret", "set"]), true).to_string();
+    assert!(!text.contains("Experiment off"), "{text}");
+    assert!(
+        text.contains(&format!("{BIN} experiments enable folder_secrets")),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_duplicate_option_gets_no_missing_value_note() {
+    let text = error_text(&["secret", "set", "A", "--folder", ".", "--folder", "."]);
+    assert!(!text.contains("Example: --folder"), "{text}");
+    assert_eq!(text.matches("Usage:").count(), 1, "{text}");
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_argv_is_a_usage_error() {
+    use std::os::unix::ffi::OsStringExt;
+    let argv = vec![
+        std::ffi::OsString::from(BIN),
+        std::ffi::OsString::from("--help"),
+        std::ffi::OsString::from("--profile"),
+        std::ffi::OsString::from_vec(vec![0xff]),
+    ];
+    assert!(matches!(
+        parse(&argv).outcome,
+        Outcome::UsageError(UsageError::NotUtf8 { index: 3 })
+    ));
 }

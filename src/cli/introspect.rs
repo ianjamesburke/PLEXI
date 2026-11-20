@@ -143,7 +143,7 @@ pub fn declared_tools(plugin_dir: &Path) -> Vec<(String, String)> {
 
 fn cli_tree() -> Vec<CliNode> {
     let mut out = Vec::new();
-    walk_command(&crate::cli::help::public_command(), "plexi", &mut out);
+    walk_command(&crate::cli::help::public_command("plexi"), "plexi", &mut out);
     out
 }
 

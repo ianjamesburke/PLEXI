@@ -389,9 +389,9 @@ mod tests {
     #[test]
     fn cli_trace_capture_opt_in_keeps_content_but_still_hides_secrets() {
         let args = ["plexi", "pane", "send", "42", "hello world"].map(str::to_string);
-        assert_eq!(redact_argv_with_content(&args, &[], true), args);
+        assert_eq!(redact_argv_with_content(&args, None, &[], true), args);
         let args = ["plexi", "pane", "send", "42", "API_KEY=private"].map(str::to_string);
-        assert!(!redact_argv_with_content(&args, &[], true)
+        assert!(!redact_argv_with_content(&args, None, &[], true)
             .join(" ")
             .contains("private"));
         let args = [
@@ -402,7 +402,7 @@ mod tests {
             "--task=API_KEY=private",
         ]
         .map(str::to_string);
-        assert!(!redact_argv_with_content(&args, &[], true)
+        assert!(!redact_argv_with_content(&args, None, &[], true)
             .join(" ")
             .contains("private"));
         let args = [
@@ -413,11 +413,11 @@ mod tests {
             "--task=--token=private",
         ]
         .map(str::to_string);
-        assert!(!redact_argv_with_content(&args, &[], true)
+        assert!(!redact_argv_with_content(&args, None, &[], true)
             .join(" ")
             .contains("private"));
         let invalid = ["plexi", "pane", "send", "42", "private", "extra"].map(str::to_string);
-        assert!(!redact_argv_with_content(&invalid, &[], true)
+        assert!(!redact_argv_with_content(&invalid, None, &[], true)
             .join(" ")
             .contains("private"));
     }
@@ -440,7 +440,7 @@ fn active() -> &'static Mutex<Option<Invocation>> {
 
 /// Begin once per CLI process, before dispatch. Debug/skill readers are excluded
 /// so a review-only draft does not mutate the session it is reading.
-pub fn begin(argv: &[String]) {
+pub fn begin(argv: &[String], owners: &[Option<super::front::Owner>]) {
     let socket =
         super::resolve_command_socket().unwrap_or_else(crate::platform::ipc::endpoint_path);
     let mut slot = active().lock().unwrap_or_else(|e| e.into_inner());
@@ -450,7 +450,12 @@ pub fn begin(argv: &[String]) {
     let id = uuid::Uuid::new_v4().to_string();
     let frame = json!({
         "type": "cli_trace", "id": id, "phase": "start",
-        "argv": redact_argv(argv, &known_secret_names(&crate::config::config_dir())),
+        "argv": redact_argv_with_content(
+            argv,
+            Some(owners),
+            &known_secret_names(&crate::config::config_dir()),
+            capture_content(),
+        ),
         "pane_id": std::env::var("PLEXI_PANE_ID").ok().and_then(|v| v.parse::<u64>().ok()),
         "agent_session_id": std::env::var("PLEXI_AGENT_SESSION_ID").ok(),
         "ts": crate::platform::clock::now_rfc3339(),
@@ -678,16 +683,28 @@ fn fail_closed(command: &clap::Command, argv: &[String]) -> Vec<Option<String>> 
         .collect()
 }
 
-fn redact_content(argv: &[String]) -> (Vec<Option<String>>, bool) {
+/// `owners` is the invocation's own captured ownership; argv received from
+/// another process is recognized here. Anything unconfirmed fails closed.
+fn redact_content(
+    argv: &[String],
+    owners: Option<&[Option<super::front::Owner>]>,
+) -> (Vec<Option<String>>, bool) {
     use clap::CommandFactory;
-    // Ownership comes from the CLI front end's recognition, confirmed against
-    // clap's own values; anything it cannot confirm fails closed.
-    let Some(owners) = super::front::argument_owners(argv) else {
-        return (fail_closed(&super::args::Cli::command(), argv), true);
+    let recognized;
+    let owners = match owners {
+        Some(owners) if owners.len() == argv.len() => owners,
+        Some(_) => return (fail_closed(&super::args::Cli::command(), argv), true),
+        None => match super::front::argument_owners(argv) {
+            Some(found) => {
+                recognized = found;
+                &recognized[..]
+            }
+            None => return (fail_closed(&super::args::Cli::command(), argv), true),
+        },
     };
     let replacements = argv
         .iter()
-        .zip(&owners)
+        .zip(owners)
         .map(|(token, owner)| {
             let owner = owner.as_ref()?;
             let present = |id: &str| {
@@ -709,12 +726,20 @@ fn redact_content(argv: &[String]) -> (Vec<Option<String>>, bool) {
 /// the sequence remains useful; mask uppercase env assignments, secret keys,
 /// and command arguments that carry free-form user or agent text.
 pub(crate) fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
-    let capture = std::env::var("PLEXI_TRACE_CAPTURE_CONTENT").is_ok_and(|value| value == "1");
-    redact_argv_with_content(argv, known, capture)
+    redact_argv_with_content(argv, None, known, capture_content())
 }
 
-fn redact_argv_with_content(argv: &[String], known: &[String], capture: bool) -> Vec<String> {
-    let (content, fallback) = redact_content(argv);
+fn capture_content() -> bool {
+    std::env::var("PLEXI_TRACE_CAPTURE_CONTENT").is_ok_and(|value| value == "1")
+}
+
+fn redact_argv_with_content(
+    argv: &[String],
+    owners: Option<&[Option<super::front::Owner>]>,
+    known: &[String],
+    capture: bool,
+) -> Vec<String> {
+    let (content, fallback) = redact_content(argv, owners);
     let mut hide_next = false;
     let secret_set = argv.windows(2).position(|pair| pair == ["secret", "set"]);
     argv.iter()

@@ -64,61 +64,102 @@ impl Probe {
         link
     }
 
+    /// Every profile an invocation could read: the one under test, the bare
+    /// binary's default, and each name the argv passes to `--profile`.
+    fn watched_profiles(&self, profile_dir: &Path, args: &[&str]) -> Vec<PathBuf> {
+        let mut dirs = vec![profile_dir.to_path_buf(), self.fifo_profile_dir(None)];
+        for (i, arg) in args.iter().enumerate() {
+            let name = match arg.strip_prefix("--profile=") {
+                Some(name) => Some(name),
+                None if *arg == "--profile" => args.get(i + 1).copied(),
+                None => None,
+            };
+            if let Some(name) =
+                name.filter(|n| !n.is_empty() && !n.contains('/') && !n.starts_with('-'))
+            {
+                dirs.push(self.fifo_profile_dir(Some(name)));
+            }
+        }
+        dirs.sort();
+        dirs.dedup();
+        dirs
+    }
+
+    fn fifo_profile_dir(&self, name: Option<&str>) -> PathBuf {
+        match name {
+            Some(name) => self.fifo_profile(name),
+            None => {
+                let dir = self.home.path().join(".plexi");
+                std::fs::create_dir_all(&dir).unwrap();
+                let config = dir.join("config.toml");
+                if !config.exists() {
+                    let c = std::ffi::CString::new(config.as_os_str().as_encoded_bytes()).unwrap();
+                    // SAFETY: c is a valid NUL-terminated path.
+                    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+                }
+                dir
+            }
+        }
+    }
+
     fn run(&self, binary: &Path, profile_dir: &Path, config: &str, args: &[&str]) -> Observed {
-        let fifo = profile_dir.join("config.toml");
         let listener = UnixListener::bind(&self.socket).unwrap();
         listener.set_nonblocking(true).unwrap();
         let done = Arc::new(AtomicBool::new(false));
         let opens = Arc::new(AtomicUsize::new(0));
         let accepts = Arc::new(AtomicUsize::new(0));
-        let is_fifo = {
-            use std::os::unix::fs::FileTypeExt;
-            std::fs::metadata(&fifo).is_ok_and(|m| m.file_type().is_fifo())
-        };
-        // A blocking open for writing returns once the binary opens the FIFO
-        // to read it: that is the observed read. The probe ends by opening the
-        // read side itself, after `done`, which is not counted.
-        assert!(
-            is_fifo || fifo.is_file(),
-            "no probe file at {}",
-            fifo.display()
-        );
-        let fifo_watcher = is_fifo.then(|| {
-            let (done, opens, fifo) = (done.clone(), opens.clone(), fifo.clone());
-            let config = config.to_string();
-            std::thread::spawn(move || {
-                use std::io::Write;
-                loop {
-                    let opened = std::fs::OpenOptions::new().write(true).open(&fifo);
-                    let Ok(mut writer) = opened else { break };
-                    if done.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    opens.fetch_add(1, Ordering::SeqCst);
-                    let _ = writer.write_all(config.as_bytes());
-                }
+        let fifos: Vec<PathBuf> = self
+            .watched_profiles(profile_dir, args)
+            .into_iter()
+            .map(|dir| dir.join("config.toml"))
+            .filter(|config| {
+                use std::os::unix::fs::FileTypeExt;
+                assert!(config.exists(), "no probe file at {}", config.display());
+                std::fs::metadata(config).is_ok_and(|m| m.file_type().is_fifo())
             })
-        });
+            .collect();
+        // A blocking open for writing returns once the binary opens a FIFO to
+        // read it: that is the observed read. The probe ends by opening each
+        // read side itself, after `done`, which is not counted.
+        let fifo_watchers: Vec<_> = fifos
+            .iter()
+            .map(|fifo| {
+                let (done, opens, fifo) = (done.clone(), opens.clone(), fifo.clone());
+                let config = config.to_string();
+                std::thread::spawn(move || {
+                    use std::io::Write;
+                    while let Ok(mut writer) = std::fs::OpenOptions::new().write(true).open(&fifo) {
+                        if done.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        opens.fetch_add(1, Ordering::SeqCst);
+                        let _ = writer.write_all(config.as_bytes());
+                    }
+                })
+            })
+            .collect();
+        // Accepts until `done`, then drains whatever is still queued.
         let socket_watcher = {
             let (done, accepts) = (done.clone(), accepts.clone());
-            std::thread::spawn(move || {
-                while !done.load(Ordering::SeqCst) {
-                    if let Ok((stream, _)) = listener.accept() {
+            std::thread::spawn(move || loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
                         accepts.fetch_add(1, Ordering::SeqCst);
                         drop(stream);
                     }
-                    std::thread::sleep(Duration::from_millis(2));
+                    Err(_) if done.load(Ordering::SeqCst) => break,
+                    Err(_) => std::thread::sleep(Duration::from_millis(2)),
                 }
             })
         };
         let stop = move || {
             done.store(true, Ordering::SeqCst);
-            if let Some(watcher) = fifo_watcher {
+            for (fifo, watcher) in fifos.iter().zip(fifo_watchers) {
                 use std::os::unix::fs::OpenOptionsExt;
                 let _unblock = std::fs::OpenOptions::new()
                     .read(true)
                     .custom_flags(libc::O_NONBLOCK)
-                    .open(&fifo);
+                    .open(fifo);
                 watcher.join().unwrap();
             }
             socket_watcher.join().unwrap();
@@ -315,11 +356,18 @@ fn a_valid_experiment_command_reads_the_profile() {
     );
     assert!(text(&off.output.stderr).contains("plexi experiments enable assistant"));
     assert!(off.config_opens > 0, "the control never read config.toml");
-    let on = probe.run(&binary, &profile, ASSISTANT_ON, &args);
-    assert!(on.config_opens > 0, "the control never read config.toml");
+    // The socket control reads an ordinary config file: a FIFO serves one
+    // open per writer pass, and repeated reads can race that pass.
+    let enabled = probe.home.path().join(".plexi-t1663on");
+    std::fs::create_dir_all(&enabled).unwrap();
+    std::fs::write(enabled.join("config.toml"), ASSISTANT_ON).unwrap();
+    let args = ["--profile", "t1663on", "assistant", "permission", "list"];
+    let on = probe.run(&binary, &enabled, "", &args);
     assert!(
         on.accepts > 0,
-        "the enabled control never reached the socket"
+        "the enabled control never reached the socket: exit {:?} {}",
+        on.output.status.code(),
+        text(&on.output.stderr)
     );
 }
 

@@ -49,8 +49,8 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
 /// enables. Help, usage, suggestions and completions render from it, so they
 /// never read a profile. Hidden commands still parse; dispatch admission
 /// (`admission`) refuses an experiment that is off.
-pub fn public_command() -> clap::Command {
-    gate_command(Cli::command(), |_| false)
+pub fn public_command(bin: &str) -> clap::Command {
+    gate_command(Cli::command(), |_| false, bin)
 }
 
 /// Append the active channel's `plexi run` paths to `run`'s help. Pure path
@@ -73,10 +73,15 @@ pub fn with_run_paths(cmd: clap::Command) -> clap::Command {
 /// the `exit_if_feature_disabled` backstop cannot drift apart. A hidden
 /// top-level command keeps an `about` explaining why, so `plexi <cmd> --help`
 /// still says how to turn it on.
-pub fn gate_command(cmd: clap::Command, enabled: impl Fn(ReleaseFeature) -> bool) -> clap::Command {
+/// `bin` is the binary named in the how-to-enable text.
+pub fn gate_command(
+    cmd: clap::Command,
+    enabled: impl Fn(ReleaseFeature) -> bool,
+    bin: &str,
+) -> clap::Command {
     let mut cmd = cmd;
     for feature in ReleaseFeature::ALL.iter().copied().filter(|f| !enabled(*f)) {
-        let text = crate::release::feature_unavailable_text(feature);
+        let text = crate::release::experiment_text(feature, bin);
         for path in feature.owned_paths() {
             cmd = match *path {
                 GatePath::Sub(path) => hide_subcommand(cmd, path, &text),
@@ -122,9 +127,7 @@ fn hide_arg(cmd: clap::Command, path: &[&str], id: &str, text: &str) -> clap::Co
             .map(ToString::to_string)
             .unwrap_or_default();
         return cmd
-            .after_help(format!(
-                "{previous}\n--{id}: {description}\nExperiment off: {text}"
-            ))
+            .after_help(format!("{previous}\n--{id}: {description}\n{text}"))
             .mut_arg(id, |a| a.hide(true));
     };
     cmd.mut_subcommand(*head, |sub| hide_arg(sub, rest, id, text))
@@ -354,15 +357,15 @@ mod tests {
     use super::*;
 
     fn all_off() -> clap::Command {
-        gate_command(Cli::command(), |_| false)
+        gate_command(Cli::command(), |_| false, "plexi")
     }
 
     fn all_on() -> clap::Command {
-        gate_command(Cli::command(), |_| true)
+        gate_command(Cli::command(), |_| true, "plexi")
     }
 
     fn only(feature: ReleaseFeature) -> clap::Command {
-        gate_command(Cli::command(), |f| f == feature)
+        gate_command(Cli::command(), |f| f == feature, "plexi")
     }
 
     fn visible_subs(cmd: &clap::Command) -> Vec<String> {
@@ -667,7 +670,7 @@ mod tests {
     #[test]
     fn run_help_lists_per_channel_commands_toml_paths() {
         let _g = crate::config::set_test_channel("alpha");
-        let mut cmd = with_run_paths(public_command());
+        let mut cmd = with_run_paths(public_command("plexi"));
         let run_sub = cmd.find_subcommand_mut("run").unwrap();
         let help = run_sub.render_long_help().to_string();
         for needle in [

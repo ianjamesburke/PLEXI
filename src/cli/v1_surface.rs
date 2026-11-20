@@ -49,7 +49,7 @@ fn visible_paths(command: &clap::Command, parent: &str, out: &mut BTreeSet<Strin
 }
 
 fn tree(enabled: impl Fn(ReleaseFeature) -> bool) -> clap::Command {
-    let mut cmd = super::help::gate_command(Cli::command(), enabled);
+    let mut cmd = super::help::gate_command(Cli::command(), enabled, "plexi");
     cmd.build();
     cmd
 }
@@ -102,7 +102,7 @@ fn an_untagged_sample_command_is_reported_as_drift() {
         .mut_subcommand("agent", |agent| {
             agent.subcommand(clap::Command::new("zz-untagged-agent"))
         });
-    let mut cmd = super::help::gate_command(cmd, |_| false);
+    let mut cmd = super::help::gate_command(cmd, |_| false, "plexi");
     cmd.build();
     let mut paths = BTreeSet::new();
     visible_paths(&cmd, "", &mut paths);

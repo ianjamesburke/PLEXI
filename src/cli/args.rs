@@ -625,6 +625,7 @@ pub enum Commands {
     /// Example: plexi completions zsh >> ~/.zshrc
     Completions {
         /// Shell name: zsh, bash, or fish
+        #[arg(value_parser = ["zsh", "bash", "fish", "elvish", "powershell"])]
         shell: Option<String>,
     },
     /// Install the CLI launcher, completions and PATH entry

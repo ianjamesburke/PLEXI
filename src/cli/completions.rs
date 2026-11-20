@@ -94,10 +94,7 @@ pub fn render_completions(shell: &str, binary_name: &str) -> Result<Vec<u8>, Str
     // A pure function of the CLI definition (stint 1604): the installer runs
     // this against a profile it must not touch, so no experiment is read and
     // every experiment-owned path stays hidden, as on a fresh profile.
-    let mut cmd = crate::cli::help::gate_command(
-        <crate::cli::args::Cli as clap::CommandFactory>::command(),
-        |_| false,
-    );
+    let mut cmd = visible_only(&crate::cli::help::public_command(binary_name));
     if shell_variant == Shell::Zsh {
         // Generate to a buffer so we can post-process the zsh script.
         let mut buf = Vec::new();
@@ -112,6 +109,41 @@ pub fn render_completions(shell: &str, binary_name: &str) -> Result<Vec<u8>, Str
         generate(shell_variant, &mut cmd, binary_name, &mut buf);
         Ok(buf)
     }
+}
+
+/// A copy of `cmd` holding only visible subcommands. clap_complete lists every
+/// subcommand it is given, hidden or not, and clap cannot remove one, so a
+/// command group is rebuilt from its name, text, aliases and arguments, which
+/// is everything a completion script reads.
+fn visible_only(cmd: &clap::Command) -> clap::Command {
+    if !cmd.has_subcommands() {
+        return cmd.clone();
+    }
+    let visible: Vec<String> = cmd.get_visible_aliases().map(str::to_string).collect();
+    let hidden: Vec<String> = cmd
+        .get_all_aliases()
+        .filter(|alias| !visible.iter().any(|v| v == alias))
+        .map(str::to_string)
+        .collect();
+    let mut out = clap::Command::new(cmd.get_name().to_string())
+        .aliases(hidden)
+        .visible_aliases(visible)
+        .args(cmd.get_arguments().cloned())
+        .subcommands(
+            cmd.get_subcommands()
+                .filter(|sub| !sub.is_hide_set())
+                .map(visible_only),
+        );
+    if let Some(about) = cmd.get_about() {
+        out = out.about(about.clone());
+    }
+    if let Some(about) = cmd.get_long_about() {
+        out = out.long_about(about.clone());
+    }
+    if let Some(version) = cmd.get_version() {
+        out = out.version(version.to_string());
+    }
+    out
 }
 
 pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {

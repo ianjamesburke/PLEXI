@@ -51,13 +51,13 @@ mod workspace;
 
 fn main() -> eframe::Result {
     let process_start = std::time::Instant::now();
-    let raw_args: Vec<String> = std::env::args().collect();
+    let raw_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     // Installer and renderer entry points are exact argv shapes, outside
     // ordinary command dispatch.
     let entry_point = match raw_args.get(1..) {
-        Some([flag]) if matches!(flag.as_str(), "--build-info" | "--distribution-check" | "--render") => {
-            Some(flag.as_str())
-        }
+        Some([flag]) => ["--build-info", "--distribution-check", "--render"]
+            .into_iter()
+            .find(|entry| flag == entry),
         _ => None,
     };
     // The one reader of argv. Everything below acts on its outcome.
@@ -428,8 +428,14 @@ fn main() -> eframe::Result {
             }
         }
         Startup::Run(run) => {
-            let cli = run.cli;
-            let blocked = cli::help::admission(&run.surface, crate::release::feature_enabled);
+            let cli::front::Run {
+                cli,
+                surface,
+                tokens,
+                owners,
+                ..
+            } = *run;
+            let blocked = cli::help::admission(&surface, crate::release::feature_enabled);
             if let Some(feature) = blocked {
                 exit_if_feature_disabled(feature);
             }
@@ -455,7 +461,7 @@ fn main() -> eframe::Result {
                     cli::resolve_opt_context_target(t).unwrap_or_else(|code| cli::trace::exit(code))
                 };
                 if !matches!(&cmd, Commands::Debug { .. } | Commands::Skill { .. }) {
-                    cli::trace::begin(&raw_args);
+                    cli::trace::begin(&tokens, &owners);
                 }
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {

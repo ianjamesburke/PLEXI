@@ -29,7 +29,7 @@ fn rendered_skill(enabled: impl Fn(ReleaseFeature) -> bool) -> String {
 /// The gated clap tree for the same `enabled` set, so the skill is checked
 /// against exactly what help shows. Hidden commands do not count as present.
 fn built_cli(enabled: impl Fn(ReleaseFeature) -> bool) -> clap::Command {
-    let mut cmd = super::help::gate_command(super::args::Cli::command(), enabled);
+    let mut cmd = super::help::gate_command(super::args::Cli::command(), enabled, "plexi");
     cmd.build(); // propagate global args into subcommands
     cmd
 }

@@ -56,6 +56,10 @@ pub struct Run {
     pub cli: Cli,
     pub surface: Surface,
     pub selection: ProfileSelection,
+    /// argv as given, and which argument owns each token's value: the input
+    /// tracing records, captured here so tracing never reparses.
+    pub tokens: Vec<String>,
+    pub owners: Vec<Option<Owner>>,
 }
 
 /// Bare launch, or launch with a workspace operand (`cli.workspace_path`).
@@ -77,9 +81,11 @@ pub enum UsageError {
     },
     /// A command group invoked without its subcommand.
     MissingCommand { path: Vec<String> },
-    /// `--profile` or a display request placed between an option and a token
-    /// that would become that option's value once it is removed.
-    Separated { token: String, option: String },
+    /// Removing `--profile` or a display request would hand a token to a
+    /// different argument than the one clap gives it with the token present.
+    Rebound { argument: String },
+    /// An argv token that is not UTF-8.
+    NotUtf8 { index: usize },
     /// Clap's own diagnosis, with any static annotation for the argument.
     Grammar {
         error: clap::Error,
@@ -105,7 +111,7 @@ pub fn invoked_bin_name(arg0: Option<&str>) -> String {
 /// The public grammar bound to the invoked binary name. Recognition,
 /// validation and every renderer use this one tree.
 fn grammar(bin: &str) -> Command {
-    help::public_command()
+    help::public_command(bin)
         .bin_name(bin.to_string())
         .display_name(bin.to_string())
 }
@@ -130,9 +136,18 @@ fn display_grammar(cmd: Command) -> Command {
 
 /// Parse argv into one outcome. Reads nothing but argv, except that a word in
 /// the root command position is checked for existence as a workspace path.
-pub fn parse(argv: &[String]) -> Invocation {
-    let bin = invoked_bin_name(argv.first().map(String::as_str));
-    let outcome = outcome(&bin, argv);
+pub fn parse(argv: &[std::ffi::OsString]) -> Invocation {
+    let arg0 = argv.first().map(|a| a.to_string_lossy().into_owned());
+    let bin = invoked_bin_name(arg0.as_deref());
+    let tokens: Result<Vec<String>, usize> = argv
+        .iter()
+        .enumerate()
+        .map(|(index, token)| token.to_str().map(str::to_string).ok_or(index))
+        .collect();
+    let outcome = match tokens {
+        Ok(tokens) => outcome(&bin, &tokens),
+        Err(index) => Outcome::UsageError(UsageError::NotUtf8 { index }),
+    };
     log::info!(
         "cli_front: bin={bin} outcome={}",
         match &outcome {
@@ -168,11 +183,21 @@ fn outcome(bin: &str, argv: &[String]) -> Outcome {
         // that token, so nothing after it can change clap's diagnosis.
         let error = match display_grammar(grammar(bin)).try_get_matches_from(&r.kept[..prefix]) {
             Err(error) => error,
-            Ok(_) => {
-                return Outcome::UsageError(UsageError::Internal(format!(
-                    "argument recognition stopped at {:?} but the grammar accepted it",
-                    r.kept.get(prefix - 1)
-                )))
+            // Clap accepts what recognition rejected only when a removed
+            // token let clap read the stop token as an earlier option's value.
+            Ok(matches) => {
+                let stop_token = &r.kept[prefix - 1];
+                let taker = parsed_values(&tree, &matches)
+                    .into_iter()
+                    .find(|parsed| parsed.values.last() == Some(stop_token));
+                return Outcome::UsageError(match taker {
+                    Some(parsed) => UsageError::Rebound {
+                        argument: parsed.id,
+                    },
+                    None => UsageError::Internal(format!(
+                        "argument recognition stopped at {stop_token:?} but the grammar accepted it"
+                    )),
+                });
             }
         };
         return grammar_error(bin, &r.path, error);
@@ -183,7 +208,9 @@ fn outcome(bin: &str, argv: &[String]) -> Outcome {
             Ok(matches) => matches,
             Err(error) => return grammar_error(bin, &r.path, error),
         };
-        if let Some(error) = path_disagreement(&r.path, &matches) {
+        if let Some(error) =
+            path_disagreement(&r.path, &matches).or_else(|| rebinding(&tree, &r, argv, &matches))
+        {
             return Outcome::UsageError(error);
         }
         return match help_request {
@@ -199,7 +226,9 @@ fn outcome(bin: &str, argv: &[String]) -> Outcome {
         Ok(matches) => matches,
         Err(error) => return grammar_error(bin, &r.path, error),
     };
-    if let Some(error) = path_disagreement(&r.path, &matches) {
+    if let Some(error) =
+        path_disagreement(&r.path, &matches).or_else(|| rebinding(&tree, &r, argv, &matches))
+    {
         return Outcome::UsageError(error);
     }
     let surface = Surface::capture(&matches);
@@ -213,6 +242,8 @@ fn outcome(bin: &str, argv: &[String]) -> Outcome {
             cli,
             surface,
             selection,
+            tokens: argv.to_vec(),
+            owners: r.owners,
         })),
         None => Outcome::Launch(Box::new(Launch { cli, selection })),
     }
@@ -295,6 +326,11 @@ fn grammar_error(bin: &str, path: &[String], error: clap::Error) -> Outcome {
 /// Static guidance for a missing value of an experiment-owned option. It names
 /// the experiment without claiming whether any profile has it on.
 fn missing_value_note(bin: &str, path: &[String], error: &clap::Error) -> Option<String> {
+    let missing_value = error.kind() == ErrorKind::InvalidValue
+        && matches!(error.get(ContextKind::InvalidValue), Some(ContextValue::String(v)) if v.is_empty());
+    if !missing_value {
+        return None;
+    }
     let Some(ContextValue::String(arg)) = error.get(ContextKind::InvalidArg) else {
         return None;
     };
@@ -325,7 +361,7 @@ fn missing_value_note(bin: &str, path: &[String], error: &clap::Error) -> Option
     Some(format!(
         "{} {arg}\n{example}--{id}: {}\n",
         usage.trim_end(),
-        crate::release::feature_unavailable_text(feature)
+        crate::release::experiment_text(feature, bin)
     ))
 }
 
@@ -355,13 +391,15 @@ struct Recognized {
     kept: Vec<String>,
     /// Per argv index: the argument whose value the token carries.
     owners: Vec<Option<Owner>>,
+    /// Every value-taking option given, by command path and id.
+    given: Vec<(Vec<String>, String)>,
     stop: Option<Stop>,
 }
 
 /// The argument a token's value belongs to: its command path, argument id,
 /// and the byte length of any option prefix (`--name=`, `-x`) before the value.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Owner {
+pub struct Owner {
     pub path: Vec<String>,
     pub id: String,
     pub prefix: usize,
@@ -378,8 +416,9 @@ impl Owner {
 }
 
 /// Which argument owns each argv token's value, for a complete invocation
-/// clap confirms. `None` when recognition stops, clap rejects the tokens, or
-/// clap's values disagree with recognition: callers fail closed.
+/// clap confirms. `None` when recognition stops or clap's reading differs:
+/// callers fail closed. For argv received from another process; an
+/// invocation's own ownership travels in [`Run`].
 pub(crate) fn argument_owners(argv: &[String]) -> Option<Vec<Option<Owner>>> {
     let bin = "plexi";
     let mut tree = grammar(bin);
@@ -391,42 +430,136 @@ pub(crate) fn argument_owners(argv: &[String]) -> Option<Vec<Option<Owner>>> {
     let matches = display_grammar(grammar(bin))
         .try_get_matches_from(&r.kept)
         .ok()?;
-    if path_disagreement(&r.path, &matches).is_some() {
+    if path_disagreement(&r.path, &matches).is_some()
+        || rebinding(&tree, &r, argv, &matches).is_some()
+    {
         return None;
     }
-    // The values recognition assigned to each (path, id), in argv order.
-    let mut recognized: Vec<(&Owner, Vec<&str>)> = Vec::new();
+    Some(r.owners)
+}
+
+/// The values one non-global argument received at one command path.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Assigned {
+    path: Vec<String>,
+    id: String,
+    values: Vec<String>,
+}
+
+fn node_at<'a>(tree: &'a Command, path: &[String]) -> Option<&'a Command> {
+    path.iter()
+        .try_fold(tree, |node, name| node.find_subcommand(name))
+}
+
+fn arg_at<'a>(tree: &'a Command, path: &[String], id: &str) -> Option<&'a clap::Arg> {
+    node_at(tree, path)?
+        .get_arguments()
+        .find(|arg| arg.get_id() == id)
+}
+
+/// Every value recognition assigned, by argument, in argv order.
+fn recognized_values(tree: &Command, r: &Recognized, argv: &[String]) -> Vec<Assigned> {
+    let mut out: Vec<Assigned> = Vec::new();
     for (token, owner) in argv.iter().zip(&r.owners) {
         let Some(owner) = owner else { continue };
-        let value = token.get(owner.prefix..)?;
-        match recognized
+        if arg_at(tree, &owner.path, &owner.id).is_some_and(clap::Arg::is_global_set) {
+            continue;
+        }
+        let value = token.get(owner.prefix..).unwrap_or_default().to_string();
+        match out
             .iter_mut()
-            .find(|(seen, _)| seen.path == owner.path && seen.id == owner.id)
+            .find(|a| a.path == owner.path && a.id == owner.id)
         {
-            Some((_, values)) => values.push(value),
-            None => recognized.push((owner, vec![value])),
+            Some(assigned) => assigned.values.push(value),
+            None => out.push(Assigned {
+                path: owner.path.clone(),
+                id: owner.id.clone(),
+                values: vec![value],
+            }),
         }
     }
-    for (owner, values) in &recognized {
-        let at = owner
-            .path
-            .iter()
-            .try_fold(&matches, |m, name| m.subcommand_matches(name))?;
-        let parsed: Vec<String> = at
-            .try_get_raw(&owner.id)
-            .ok()??
-            .map(|value| value.to_string_lossy().into_owned())
-            .collect();
-        if parsed != *values {
-            log::warn!(
-                "cli_front: ownership of {:?} {} disagrees with clap",
-                owner.path,
-                owner.id
-            );
-            return None;
+    out
+}
+
+/// Every value clap assigned from the command line, by argument. Global
+/// arguments are left out: clap copies them across levels, and none can be
+/// rebound (`the_grammar_uses_only_modelled_features`).
+fn parsed_values(tree: &Command, matches: &clap::ArgMatches) -> Vec<Assigned> {
+    let mut out = Vec::new();
+    let mut path: Vec<String> = Vec::new();
+    let mut level = Some(matches);
+    while let Some(m) = level {
+        if let Some(node) = node_at(tree, &path) {
+            for arg in node
+                .get_arguments()
+                .filter(|a| !a.is_global_set() && takes_values(a))
+            {
+                let id = arg.get_id().as_str();
+                if m.value_source(id) != Some(clap::parser::ValueSource::CommandLine) {
+                    continue;
+                }
+                let values: Vec<String> = m
+                    .try_get_raw(id)
+                    .ok()
+                    .flatten()
+                    .map(|raw| raw.map(|v| v.to_string_lossy().into_owned()).collect())
+                    .unwrap_or_default();
+                out.push(Assigned {
+                    path: path.clone(),
+                    id: id.to_string(),
+                    values,
+                });
+            }
         }
+        level = m.subcommand().map(|(name, sub)| {
+            path.push(name.to_string());
+            sub
+        });
     }
-    Some(r.owners)
+    out
+}
+
+/// Clap's reading of the kept tokens must give every value to the argument
+/// recognition gave it in argv as written. A difference means removing
+/// `--profile` or a display request handed a token to another argument.
+fn rebinding(
+    tree: &Command,
+    r: &Recognized,
+    argv: &[String],
+    matches: &clap::ArgMatches,
+) -> Option<UsageError> {
+    let mut ours = recognized_values(tree, r, argv);
+    let mut theirs: Vec<Assigned> = parsed_values(tree, matches)
+        .into_iter()
+        .filter(|parsed| {
+            // An option given with no value token holds clap's default-missing
+            // value. A token rebound to it would be missing from the argument
+            // recognition gave it to, so the comparison still sees the move.
+            let given_bare = !ours
+                .iter()
+                .any(|a| a.path == parsed.path && a.id == parsed.id)
+                && r
+                    .given
+                    .iter()
+                    .any(|(path, id)| *path == parsed.path && *id == parsed.id);
+            !given_bare
+        })
+        .collect();
+    ours.sort();
+    theirs.sort();
+    if ours == theirs {
+        return None;
+    }
+    let differing = ours
+        .iter()
+        .chain(&theirs)
+        .find(|a| !ours.contains(a) || !theirs.contains(a))
+        .map(|a| a.id.clone())
+        .unwrap_or_default();
+    log::info!("cli_front: removal would rebind values: ours={ours:?} clap={theirs:?}");
+    Some(UsageError::Rebound {
+        argument: differing,
+    })
 }
 
 enum Stop {
@@ -560,7 +693,7 @@ fn recognize(tree: &Command, argv: &[String]) -> Recognized {
                     None => (long, None),
                 };
                 if name == PROFILE_LONG {
-                    if let Some(stop) = removal_stop(&r, state, None) {
+                    if let Some(stop) = missing_value_stop(&r, state) {
                         r.stop = Some(stop);
                         return r;
                     }
@@ -580,11 +713,6 @@ fn recognize(tree: &Command, argv: &[String]) -> Recognized {
                             }
                         },
                     };
-                    let next = Some((argv.get(i + consumed), token.as_str()));
-                    if let Some(stop) = removal_stop(&r, state, next) {
-                        r.stop = Some(stop);
-                        return r;
-                    }
                     state = State::Done;
                     i += consumed;
                     continue;
@@ -595,10 +723,7 @@ fn recognize(tree: &Command, argv: &[String]) -> Recognized {
                             r.kept.push(token.clone());
                             return stop_at_end(r);
                         }
-                        let next = Some((argv.get(i + 1), token.as_str()));
-                        if let Some(stop) =
-                            removal_stop(&r, state, None).or_else(|| removal_stop(&r, state, next))
-                        {
+                        if let Some(stop) = missing_value_stop(&r, state) {
                             r.stop = Some(stop);
                             return r;
                         }
@@ -609,6 +734,9 @@ fn recognize(tree: &Command, argv: &[String]) -> Recognized {
                     }
                     arg_given = true;
                     r.kept.push(token.clone());
+                    if takes_values(arg) {
+                        r.given.push((r.path.clone(), arg.get_id().to_string()));
+                    }
                     if inline.is_some() && takes_values(arg) {
                         r.owners[i] = Some(Owner::new(&r.path, arg, name.len() + 3));
                     }
@@ -664,6 +792,7 @@ fn recognize(tree: &Command, argv: &[String]) -> Recognized {
                         if !takes_values(arg) {
                             continue;
                         }
+                        r.given.push((r.path.clone(), arg.get_id().to_string()));
                         let rest = &flags[at + c.len_utf8()..];
                         if arg.is_require_equals_set() && !rest.starts_with('=') {
                             if values(arg).0 == 0 {
@@ -683,14 +812,7 @@ fn recognize(tree: &Command, argv: &[String]) -> Recognized {
                         break;
                     }
                     if !display.is_empty() {
-                        let next = Some((argv.get(i + 1), token.as_str()));
-                        let stop = removal_stop(&r, state, None).or_else(|| {
-                            kept_flags
-                                .is_empty()
-                                .then(|| removal_stop(&r, state, next))
-                                .flatten()
-                        });
-                        if let Some(stop) = stop {
+                        if let Some(stop) = missing_value_stop(&r, state) {
                             r.stop = Some(stop);
                             return r;
                         }
@@ -721,7 +843,11 @@ fn recognize(tree: &Command, argv: &[String]) -> Recognized {
         }
         // A positional value.
         let Some(arg) = positional_at(node, pos_counter) else {
-            if !trailing && !arg_given && !looks_like_option(token) && node.has_subcommands() {
+            if !trailing
+                && !looks_like_option(token)
+                && node.has_subcommands()
+                && node.get_positionals().next().is_none()
+            {
                 r.stop = Some(Stop::Own(UsageError::UnknownCommand {
                     path: r.path.clone(),
                     word: token.clone(),
@@ -765,39 +891,16 @@ fn stop_at_end(mut r: Recognized) -> Recognized {
     r
 }
 
-/// Whether removing a `--profile` or display token here would change how clap
-/// reads the kept tokens.
-///
-/// With `next: None`: a pending option still lacks a required value, which
-/// clap rejects when this token arrives; the kept prefix reproduces that.
-/// With `next: Some(..)`: a pending option may take another value, and the
-/// next token would become it once this token is gone.
-fn removal_stop(
-    r: &Recognized,
-    state: State<'_>,
-    next: Option<(Option<&String>, &str)>,
-) -> Option<Stop> {
+/// A pending option still lacking a required value when `--profile` or a
+/// display request arrives: clap rejects the missing value at that token, and
+/// the kept prefix reproduces it.
+fn missing_value_stop(r: &Recognized, state: State<'_>) -> Option<Stop> {
     let State::Opt(arg, count) = state else {
         return None;
     };
-    let (min, max) = values(arg);
-    match next {
-        None => (count < min).then(|| Stop::Clap {
-            prefix: r.kept.len(),
-        }),
-        Some((next, token)) => {
-            let next = next?;
-            (count >= min
-                && count < max
-                && (arg.is_allow_hyphen_values_set() || !looks_like_option(next)))
-            .then(|| {
-                Stop::Own(UsageError::Separated {
-                    token: token.to_string(),
-                    option: arg.to_string(),
-                })
-            })
-        }
-    }
+    (count < values(arg).0).then(|| Stop::Clap {
+        prefix: r.kept.len(),
+    })
 }
 
 fn record_display(r: &mut Recognized, arg: &clap::Arg, long_token: bool) {
@@ -853,29 +956,34 @@ fn recognize_help_subcommand(r: &mut Recognized, node: &Command, rest: &[String]
                 j += 1;
                 continue;
             }
-            if find_long(node, name).is_some_and(is_help) {
+            if inline.is_none() && find_long(node, name).is_some_and(is_help) {
                 j += 1;
                 continue;
             }
         }
-        if token
+        let short_help = token
             .strip_prefix('-')
-            .and_then(|flags| flags.chars().next().filter(|_| flags.chars().count() == 1))
+            .filter(|flags| flags.chars().count() == 1)
+            .and_then(|flags| flags.chars().next())
             .and_then(|c| find_short(node, c))
-            .is_some_and(is_help)
-        {
+            .is_some_and(is_help);
+        if short_help {
             j += 1;
             continue;
         }
         if looks_like_option(token) {
-            r.stop = Some(Stop::Own(UsageError::Grammar {
-                error: clap::Error::raw(
-                    ErrorKind::UnknownArgument,
-                    format!("unexpected argument '{token}' after a help path\n"),
-                ),
-                note: None,
-            }));
+            // Clap diagnoses the option at the node `help` was given at.
+            r.kept.push(token.clone());
+            r.stop = Some(Stop::Clap {
+                prefix: r.kept.len(),
+            });
             return;
+        }
+        // `help` after a path names clap's generated help command: the path
+        // already says what to describe.
+        if token == "help" && target.has_subcommands() {
+            j += 1;
+            continue;
         }
         match target.find_subcommand(token) {
             Some(sub) => {
@@ -915,26 +1023,45 @@ pub fn emit_help(bin: &str, help: &Help) -> i32 {
     0
 }
 
-/// Help for a canonical command path, exactly as clap displays it for that
-/// path's help flag (clap chooses the long or short layout per command).
+/// Help for a canonical command path, laid out as clap's own help flag lays it
+/// out: the long layout only when the command has long help to show.
 fn render_node_help(bin: &str, path: &[String], long: bool) -> clap::builder::StyledStr {
-    let request: Vec<String> = std::iter::once(bin.to_string())
-        .chain(path.iter().cloned())
-        .chain(std::iter::once(
-            if long { "--help" } else { "-h" }.to_string(),
-        ))
-        .collect();
     let mut cmd = help::with_run_paths(grammar(bin));
-    match cmd.try_get_matches_from_mut(&request) {
-        Err(error) if error.kind() == ErrorKind::DisplayHelp => error.render(),
-        other => {
-            log::error!(
-                "cli_front: help for {path:?} did not display: {:?}",
-                other.err().map(|e| e.kind())
-            );
-            cmd.render_long_help()
+    cmd.build();
+    fn render(node: &mut Command, path: &[String], long: bool) -> clap::builder::StyledStr {
+        match path.split_first() {
+            Some((name, rest)) if node.find_subcommand(name).is_some() => {
+                let sub = node
+                    .find_subcommand_mut(name)
+                    .expect("find_subcommand just found it");
+                render(sub, rest, long)
+            }
+            _ if long && long_help_exists(node) => node.render_long_help(),
+            _ => node.render_help(),
         }
     }
+    render(&mut cmd, path, long)
+}
+
+/// Clap 4.6.7's `Command::long_help_exists` (crate-private): whether `--help`
+/// shows more than `-h`. `help_matches_clap_native_rendering` holds the two
+/// equal on every path.
+fn long_help_exists(cmd: &Command) -> bool {
+    let should_long = |arg: &clap::Arg| {
+        !arg.is_hide_set()
+            && (arg.get_long_help().is_some()
+                || arg.is_hide_long_help_set()
+                || arg.is_hide_short_help_set()
+                || (!arg.is_hide_possible_values_set()
+                    && arg
+                        .get_possible_values()
+                        .iter()
+                        .any(|value| !value.is_hide_set() && value.get_help().is_some())))
+    };
+    cmd.get_long_about().is_some()
+        || cmd.get_before_long_help().is_some()
+        || cmd.get_after_long_help().is_some()
+        || cmd.get_arguments().any(should_long)
 }
 
 pub fn emit_version(bin: &str) -> i32 {
@@ -999,10 +1126,13 @@ pub fn usage_error_text(bin: &str, error: &UsageError) -> String {
             )
         }
         UsageError::MissingCommand { path } => render_node_help(bin, path, false).to_string(),
-        UsageError::Separated { token, option } => format!(
-            "error: '{token}' separates '{option}' from what would become its value; move '{token}' elsewhere, or give the value with '='\n\n{}",
+        UsageError::Rebound { argument } => format!(
+            "error: with `--profile` or a help or version request removed, a value would move to or from '{argument}'; give the value with '=' or move the flag\n\n{}",
             try_help(&[])
         ),
+        UsageError::NotUtf8 { index } => {
+            format!("error: argument {index} is not valid UTF-8\n\n{}", try_help(&[]))
+        }
         UsageError::Grammar { error, note } => format!(
             "{}{}",
             error.render(),
