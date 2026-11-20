@@ -326,19 +326,31 @@ impl HostHarness {
 
     /// Add a test view pane with the given permissions.
     pub fn add_test_pane_with_permissions(&mut self, permissions: PluginPermissions) -> PaneId {
-        let pane_id = self.next_pane_id;
-        self.next_pane_id += 1;
-
         // Root the file browser in the harness's empty workspace dir — NEVER
         // the real temp_dir(), which on a dev machine can hold ~50k entries
         // and balloons any test that renders the pane by gigabytes.
         let browser_root = self._workspace_dir.path().to_path_buf();
+        self.add_builtin_view_pane(
+            Box::new(crate::file_browser::FileBrowserView::new(browser_root)),
+            permissions,
+        )
+    }
+
+    /// Add `view` as a builtin view pane in `windows[0]`. The tile becomes the
+    /// tree root only when the tree is empty; callers that need a layout
+    /// arrange the returned pane's tile themselves.
+    pub fn add_builtin_view_pane(
+        &mut self,
+        view: Box<dyn crate::app::view_trait::View>,
+        permissions: PluginPermissions,
+    ) -> PaneId {
+        let pane_id = self.next_pane_id;
+        self.next_pane_id += 1;
+        let browser_root = self._workspace_dir.path().to_path_buf();
         let view_pane = ViewPane {
             pip_status: None,
             id: pane_id,
-            runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
-                browser_root.clone(),
-            ))),
+            runtime: ViewRuntime::Builtin(view),
             workspace_root: browser_root,
             permissions,
             manifest_id: "test".to_string(),
@@ -520,17 +532,25 @@ impl HostHarness {
     /// passes alone; anything only drained in `ui` wedges until the window is
     /// next uncovered.
     pub fn hidden_frame(&mut self) -> &mut Self {
-        let app = &mut self.app;
-        use eframe::App;
-        let viewport_id = egui::ViewportId::ROOT;
-        let mut input = RawInput {
+        self.hidden_frame_with(RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::vec2(1280.0, 800.0),
             )),
             ..Default::default()
-        };
-        input.viewports.entry(viewport_id).or_default().occluded = Some(true);
+        })
+    }
+
+    /// [`Self::hidden_frame`] delivering `input`, as eframe does when native
+    /// events arrive while the window is occluded.
+    pub fn hidden_frame_with(&mut self, mut input: RawInput) -> &mut Self {
+        let app = &mut self.app;
+        use eframe::App;
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .occluded = Some(true);
         app.raw_input_hook(&self.ctx, &mut input);
         let full_output = self.ctx.run_ui(input, |ui| {
             app.logic(ui.ctx(), &mut eframe::Frame::_new_kittest());
@@ -566,6 +586,11 @@ impl HostHarness {
     /// Snapshot observable state from the plugin after the last frame.
     pub fn state(&self) -> HostSnapshot {
         HostSnapshot::from_plugin(&self.app)
+    }
+
+    /// The harness's egui context, for asserting on what the last pass folded.
+    pub fn egui_ctx(&self) -> &egui::Context {
+        &self.ctx
     }
 
     /// Number of panes in the active window.

@@ -673,6 +673,23 @@ impl PlexiApp {
     /// require explicit user acknowledgement and must NOT be preempted.
     /// Non-critical modals (`NotificationModal`, `CommandPalette`) can be safely
     /// dismissed so QuickNote can open on top.
+    /// Reconcile every overlay layer with its owning state, so the focus stack
+    /// (and therefore the input owner) is current after anything that may
+    /// open or close an overlay: a routed key, a host action, an overlay draw.
+    pub(crate) fn sync_overlay_layers(&mut self) {
+        self.sync_confirm_close_focus();
+        self.sync_context_close_focus();
+        self.sync_command_palette_focus();
+        self.sync_rename_pane_focus();
+        self.sync_shortcuts_focus();
+        self.sync_context_rename_focus();
+        self.sync_text_input_focus();
+        self.sync_capability_modal_focus();
+        self.sync_event_consent_focus();
+        self.sync_raw_wasm_review_focus();
+        self.sync_unsaved_changes_focus();
+    }
+
     pub(crate) fn is_quick_note_preemptable(&self) -> bool {
         matches!(self.focus_stack.last(), Some(FocusKind::CommandPalette))
     }
@@ -1255,10 +1272,6 @@ impl PlexiApp {
                 }
             }
         }
-        // The complete input pass belongs to the modal, including paired Text
-        // events and unrecognized shortcuts on the frame that resolves it.
-        let mut input = crate::app::input_router::PlexiInput::take_from(ctx);
-        input.clear();
     }
 
     pub(crate) fn sync_context_close_focus(&mut self) {

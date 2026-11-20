@@ -1110,9 +1110,58 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn draw_command_palette(&mut self, ctx: &egui::Context) {
+    /// The palette's keyboard contract, one routed event at a time: Escape
+    /// and its own toggle chord dismiss; arrows and Cmd+J/K move the row;
+    /// Enter runs the row selected at this ordinal. Typing is left to the
+    /// query field. Chords match exactly (platform-aware), so Cmd+Option+P
+    /// is Focus Approval, never the palette toggle.
+    pub(crate) fn command_palette_handle_key(
+        &mut self,
+        input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::view_trait::KeyDisposition {
+        use crate::app::view_trait::KeyDisposition;
+        let toggle = self.key_bindings.toggle_command_palette;
+        if input.consume_key_exact(egui::Modifiers::NONE, egui::Key::Escape)
+            || input.consume_key_exact(toggle.0, toggle.1)
+        {
+            self.show_command_palette = false;
+            return KeyDisposition::Consumed;
+        }
+        let down = input.consume_key_exact(egui::Modifiers::NONE, egui::Key::ArrowDown)
+            || input.consume_key_exact(egui::Modifiers::COMMAND, egui::Key::J);
+        let up = input.consume_key_exact(egui::Modifiers::NONE, egui::Key::ArrowUp)
+            || input.consume_key_exact(egui::Modifiers::COMMAND, egui::Key::K);
+        let enter = input.consume_key_exact(egui::Modifiers::NONE, egui::Key::Enter);
+        if !(down || up || enter) {
+            return KeyDisposition::Passthrough;
+        }
+        let entries = self.command_palette_entries();
+        let total = entries.len();
+        if down && total > 0 && self.palette_selected < total - 1 {
+            self.palette_selected += 1;
+            self.palette_selected_key = Some(entries[self.palette_selected].selection_key());
+        }
+        if up && self.palette_selected > 0 {
+            self.palette_selected -= 1;
+            self.palette_selected_key = Some(entries[self.palette_selected].selection_key());
+        }
+        if enter {
+            let action = self
+                .palette_selected_key
+                .as_ref()
+                .and_then(|key| entries.iter().find(|entry| entry.selection_key() == *key))
+                .and_then(action_for_palette_entry);
+            if let Some(action) = action {
+                self.run_palette_selection(action);
+            }
+        }
+        KeyDisposition::Consumed
+    }
+
+    /// The palette's rows for the current query, with the selection
+    /// reconciled against them.
+    fn command_palette_entries(&mut self) -> Vec<PaletteEntry> {
         let query = normalized_palette_query(&self.palette_query);
-        let colors = self.colors;
 
         // ── Window entries (active context first, then by visit recency) ──
         // Two-tier sort: panes whose window belongs to the active context float
@@ -1533,61 +1582,21 @@ impl PlexiApp {
             entries.insert(0, entry);
         }
 
-        let total = entries.len();
         reconcile_palette_selection(
             &entries,
             &mut self.palette_selected,
             &mut self.palette_selected_key,
         );
+        entries
+    }
 
-        // ── Keyboard nav ───────────────────────────────────────────────────
-        let mut action: Option<PaletteAction> = None;
-        let prev_selected = self.palette_selected;
-
-        // The toggle that opened the palette also dismisses it, so it is read
-        // from the (config-overridable) binding table rather than hardcoded —
-        // a user who rebinds it can close with the same key they opened with.
-        let toggle = self.key_bindings.toggle_command_palette;
-
-        ctx.input_mut(|input| {
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
-                self.show_command_palette = false;
-            }
-            if input.consume_key(toggle.0, toggle.1) {
-                self.show_command_palette = false;
-            }
-            if (input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
-                || input.consume_key(egui::Modifiers::COMMAND, egui::Key::J))
-                && total > 0
-                && self.palette_selected < total - 1
-            {
-                self.palette_selected += 1;
-                self.palette_selected_key = Some(entries[self.palette_selected].selection_key());
-            }
-            if (input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
-                || input.consume_key(egui::Modifiers::COMMAND, egui::Key::K))
-                && self.palette_selected > 0
-            {
-                self.palette_selected -= 1;
-                self.palette_selected_key = Some(entries[self.palette_selected].selection_key());
-            }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
-                action = self
-                    .palette_selected_key
-                    .as_ref()
-                    .and_then(|key| entries.iter().find(|entry| entry.selection_key() == *key))
-                    .and_then(action_for_palette_entry);
-            }
-        });
-
-        if let Some(action) = action {
-            self.run_palette_selection(action);
-            return;
-        }
-
+    pub(crate) fn draw_command_palette(&mut self, ctx: &egui::Context) {
         if !self.show_command_palette {
             return;
         }
+        let colors = self.colors;
+        let entries = self.command_palette_entries();
+        let prev_selected = self.palette_selected;
 
         // ── Render ─────────────────────────────────────────────────────────
         // 0.8: the palette is a launcher, not a workspace — filling nearly

@@ -3649,8 +3649,7 @@ fn notification_modal_handle_key_returns_consumed() {
     h.app
         .enqueue_ask("ask-1", pane_id, "rm -rf /tmp/foo", 1000, Vec::new());
     h.app.open_decision_overlay_for_ask("ask-1");
-    let ctx = h.app.ctx.clone();
-    let mut input = crate::app::input_router::PlexiInput::take_from(&ctx);
+    let mut input = crate::app::input_router::PlexiInput::synthetic(Vec::new(), egui::Modifiers::NONE);
     let disposition = h.app.handle_decision_overlay_input(&mut input);
     assert_eq!(
         disposition,
@@ -19256,7 +19255,7 @@ fn notes_picker_invocation_shortcut_toggles_and_preserves_notes() {
         );
         assert_eq!(h.app.input_owner(&ctx), InputOwner::Pane(pane));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "original note");
-        assert!(h.app.claimed_host_key_releases.contains(&key));
+        assert!(h.app.input_router.holds_claimed_key(key));
         h.frame(egui::RawInput {
             events: vec![egui::Event::Key {
                 key,
@@ -19267,7 +19266,7 @@ fn notes_picker_invocation_shortcut_toggles_and_preserves_notes() {
             }],
             ..Default::default()
         });
-        assert!(!h.app.claimed_host_key_releases.contains(&key));
+        assert!(!h.app.input_router.holds_claimed_key(key));
     }
 }
 
@@ -19739,10 +19738,7 @@ fn notes_picker_delete_close_then_plain_v_does_not_paste() {
     h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
     assert!(!path.exists());
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
-    assert!(h
-        .app
-        .claimed_host_key_releases
-        .contains(&egui::Key::Backspace));
+    assert!(h.app.input_router.holds_claimed_key(egui::Key::Backspace));
     h.frame(egui::RawInput {
         events: vec![egui::Event::Key {
             key: egui::Key::Backspace,
@@ -19753,10 +19749,7 @@ fn notes_picker_delete_close_then_plain_v_does_not_paste() {
         }],
         ..Default::default()
     });
-    assert!(!h
-        .app
-        .claimed_host_key_releases
-        .contains(&egui::Key::Backspace));
+    assert!(!h.app.input_router.holds_claimed_key(egui::Key::Backspace));
     h.run_frames(2);
     h.terminal_backend(term).enable_input_tap();
     h.frame(egui::RawInput {

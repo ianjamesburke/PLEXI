@@ -4582,7 +4582,6 @@ mod tests {
 
     fn run_handle_key(app: &mut FileBrowserView, events: Vec<Event>) -> bool {
         use crate::app::view_trait::KeyDisposition;
-        let ctx = egui::Context::default();
         let modifiers = events
             .iter()
             .find_map(|event| match event {
@@ -4590,18 +4589,8 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_default();
-        let raw = RawInput {
-            events,
-            modifiers,
-            ..Default::default()
-        };
-        let mut consumed = false;
-        let _ = ctx.run_ui(raw, |ui| {
-            let ctx = ui.ctx();
-            let input = crate::app::input_router::PlexiInput::take_from(ctx);
-            consumed = app.handle_key(&input) == KeyDisposition::Consumed;
-        });
-        consumed
+        let input = crate::app::input_router::PlexiInput::synthetic(events, modifiers);
+        app.handle_key(&input) == KeyDisposition::Consumed
     }
 
     fn classify_events(
@@ -4609,18 +4598,8 @@ mod tests {
         modifiers: Modifiers,
         typing: bool,
     ) -> Option<FileBrowserAction> {
-        let ctx = egui::Context::default();
-        let raw = RawInput {
-            events,
-            modifiers,
-            ..Default::default()
-        };
-        let mut action = None;
-        let _ = ctx.run_ui(raw, |ui| {
-            let input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
-            action = classify_key(&input, typing);
-        });
-        action
+        let input = crate::app::input_router::PlexiInput::synthetic(events, modifiers);
+        classify_key(&input, typing)
     }
 
     /// The modifiers a row asks for, as a press would carry them.
@@ -5047,28 +5026,19 @@ mod tests {
     #[test]
     fn key_pressed_no_repeat_requires_non_repeat_event() {
         // key_pressed_no_repeat returns false when no events are present.
-        let ctx = egui::Context::default();
-        let _ = ctx.run_ui(RawInput::default(), |ui| {
-            let ctx = ui.ctx();
-            let input = crate::app::input_router::PlexiInput::take_from(ctx);
-            assert!(!super::key_pressed_no_repeat(&input, Key::ArrowRight));
-        });
+        let input = crate::app::input_router::PlexiInput::synthetic(Vec::new(), Modifiers::default());
+        assert!(!super::key_pressed_no_repeat(&input, Key::ArrowRight));
     }
 
     #[test]
     fn key_pressed_no_repeat_returns_true_for_fresh_press() {
         // egui marks the first press of a key (repeat=false), so key_pressed_no_repeat
         // must return true for a fresh key press event.
-        let ctx = egui::Context::default();
-        let raw = RawInput {
-            events: vec![key_event(Key::ArrowRight, Modifiers::default())],
-            ..Default::default()
-        };
-        let _ = ctx.run_ui(raw, |ui| {
-            let ctx = ui.ctx();
-            let input = crate::app::input_router::PlexiInput::take_from(ctx);
-            assert!(super::key_pressed_no_repeat(&input, Key::ArrowRight));
-        });
+        let input = crate::app::input_router::PlexiInput::synthetic(
+            vec![key_event(Key::ArrowRight, Modifiers::default())],
+            Modifiers::default(),
+        );
+        assert!(super::key_pressed_no_repeat(&input, Key::ArrowRight));
     }
 
     // ── Enter / l / → open non-directory files (#138) ──────────────────────
@@ -5901,13 +5871,9 @@ mod tests {
 
         let raw = crate::app::key_str_to_egui_raw_input("enter")
             .expect("CLI key string 'enter' must map to an egui event");
-        let ctx = egui::Context::default();
-        let mut consumed = false;
-        let _ = ctx.run_ui(raw, |ui| {
-            let ctx = ui.ctx();
-            let input = crate::app::input_router::PlexiInput::take_from(ctx);
-            consumed = app.handle_key(&input) == crate::app::view_trait::KeyDisposition::Consumed;
-        });
+        let input = crate::app::input_router::PlexiInput::synthetic(raw.events, raw.modifiers);
+        let consumed =
+            app.handle_key(&input) == crate::app::view_trait::KeyDisposition::Consumed;
 
         assert!(consumed, "injected Enter must be consumed by the plugin");
         assert_eq!(

@@ -529,6 +529,12 @@ pub struct PlexiBehavior<'a> {
     /// can't swallow a key (Cmd+A) first. `None` when the focused pane is not a
     /// terminal (or an overlay owns input).
     pub focused_terminal_input: Option<crate::render::terminal_pane::TerminalInput>,
+    /// The tile the input router assigned this delivery's pane press to.
+    pub routed_press: Option<TileId>,
+    /// The window being presented, for the router's press hit map.
+    pub window_id: u64,
+    /// Pane hit areas presented this pass, committed to the router after.
+    pub presented_panes: Vec<crate::app::input_router::PresentedPane>,
     /// This frame's modifier state, used to build the empty [`TerminalInput`]
     /// for unfocused terminals (which still need current modifiers for pointer
     /// link-hover and mouse reporting).
@@ -586,18 +592,21 @@ impl PlexiBehavior<'_> {
                     .is_some_and(|pos| hit_rect.contains(pos))
             });
 
-        // Detect clicks or file drags for focus inside the visible hit_rect only.
-        // A press over an overlay above the pane (the palette, a modal, a
-        // popup) belongs to that overlay, not to the pane under it.
-        let pointer_on_this_layer = || {
-            ui.input(|i| i.pointer.interact_pos()).is_none_or(|pos| {
-                ui.ctx()
-                    .layer_id_at(pos)
-                    .is_none_or(|layer| layer == ui.layer_id())
-            })
-        };
-        let is_click =
-            ui.input(|i| i.pointer.any_pressed()) && pointer_in_hit_rect && pointer_on_this_layer();
+        // Publish where a press can land on this pane. The input router
+        // hit-tests the next delivery's presses against this presentation and
+        // assigns a press to the pane at its ordinal; a press over an overlay
+        // above the pane (the palette, a modal, a popup) never does.
+        if hit_rect.width() > 0.5 && hit_rect.height() > 0.5 {
+            self.presented_panes
+                .push(crate::app::input_router::PresentedPane {
+                    window_id: self.window_id,
+                    tile: tile_id,
+                    pane: *pane_id,
+                    hit_rect,
+                    layer: ui.layer_id(),
+                });
+        }
+        let is_click = self.routed_press == Some(tile_id);
         let is_drag_hovering = if sole_drop_target {
             ui.input(|i| !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty())
         } else {
@@ -760,21 +769,17 @@ impl PlexiBehavior<'_> {
                 .rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
             let mut terminal_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
             terminal_ui.set_clip_rect(clip_rect);
-            // The focused terminal consumes the host-supplied keyboard buffer;
-            // every other terminal gets an empty one (pointer/wheel only).
-            let terminal_input = if is_focused {
-                self.focused_terminal_input.take().unwrap_or_else(|| {
-                    render::terminal_pane::TerminalInput {
-                        keyboard_events: Vec::new(),
-                        modifiers: self.frame_modifiers,
-                    }
-                })
-            } else {
-                render::terminal_pane::TerminalInput {
+            // The terminal the router assigned this delivery's keyboard
+            // stream to consumes it; every other terminal gets an empty one
+            // (pointer/wheel only).
+            let terminal_input = self
+                .focused_terminal_input
+                .take_if(|input| input.pane_id == *pane_id)
+                .unwrap_or_else(|| render::terminal_pane::TerminalInput {
+                    pane_id: *pane_id,
                     keyboard_events: Vec::new(),
                     modifiers: self.frame_modifiers,
-                }
-            };
+                });
             let (close_exited, tab_action) = crate::platform::ui_profile::time("terminal", || {
                 render::terminal_pane::render(
                     &mut terminal_ui,

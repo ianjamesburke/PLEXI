@@ -29,6 +29,9 @@
 //! `split_focused` and `new_context` spawn real terminal panes. Pass on macOS
 //! local dev; tag `#[ignore]` for headless CI without PTY support.
 
+#[cfg(test)]
+mod input_router;
+
 use std::path::Path;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -2238,47 +2241,44 @@ mod tests {
         });
         assert_eq!(font_after_plus, initial_font + 2.0);
 
-        // 3. Deduplication in single frame
-        h.with_app_mut(|app| {
-            let ctx = egui::Context::default();
-            let mut raw = egui::RawInput::default();
-            raw.events.push(egui::Event::Key {
-                key: egui::Key::Equals,
-                physical_key: Some(egui::Key::Equals),
+        // 3. Deduplication in single delivery: one physical press can arrive
+        // as both Equals and Plus; the router runs the font step once.
+        for key in [egui::Key::Equals, egui::Key::Plus] {
+            h.harness().input_mut().events.push(egui::Event::Key {
+                key,
+                physical_key: Some(key),
                 pressed: true,
                 repeat: false,
                 modifiers: egui::Modifiers::COMMAND,
             });
-            raw.events.push(egui::Event::Key {
-                key: egui::Key::Plus,
-                physical_key: Some(egui::Key::Plus),
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::COMMAND,
-            });
-            let mut actions = Vec::new();
-            let mut claimed_key_releases = std::collections::HashSet::new();
-            let _ = ctx.run_ui(raw, |ui| {
-                let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
-                actions = crate::host::keys::poll_actions(
-                    &mut input,
-                    &app.binding_table,
-                    &mut claimed_key_releases,
-                    /* view_active */ true,
-                    /* keyboard_capture */ false,
-                    /* overlay_open */ false,
-                    /* shortcuts_overlay_open */ false,
-                );
-            });
-            let count = actions
-                .iter()
-                .filter(|a| **a == crate::host::keys::Action::IncreasePaneFontSize)
-                .count();
-            assert_eq!(
-                count, 1,
-                "Equals and Plus companions must deduplicate in single frame"
-            );
+        }
+        h.step();
+        let font_after_companions = h.with_app(|app| {
+            let pane_id = app.active_focused_pane_id().unwrap();
+            let (win, _) = app.find_pane_in_any_window(pane_id).unwrap();
+            let Pane::View(a) = app.windows[win].panes.get(&pane_id).unwrap() else {
+                panic!()
+            };
+            let ViewRuntime::Builtin(b) = &a.runtime else {
+                panic!()
+            };
+            b.font_size().unwrap()
         });
+        assert_eq!(
+            font_after_companions,
+            font_after_plus + 1.0,
+            "Equals and Plus companions must deduplicate in a single delivery"
+        );
+        for key in [egui::Key::Equals, egui::Key::Plus] {
+            h.harness().input_mut().events.push(egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed: false,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        h.step();
 
         // 4. Custom configured binding override
         h.with_app_mut(|app| {
@@ -2307,7 +2307,7 @@ mod tests {
             b.font_size().unwrap()
         });
         assert_eq!(
-            font_unchanged, font_after_plus,
+            font_unchanged, font_after_companions,
             "Cmd+= overridden so should not step"
         );
 
@@ -2333,7 +2333,7 @@ mod tests {
         });
         assert_eq!(
             font_stepped,
-            font_after_plus + 1.0,
+            font_after_companions + 1.0,
             "Cmd+Alt+= custom override steps font"
         );
     }

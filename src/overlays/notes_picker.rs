@@ -941,14 +941,12 @@ impl PlexiApp {
         // picker must claim its configured invocation chord itself.
         let (modifiers, key) = self.key_bindings.open_notes_picker;
         if input.consume_key_no_repeat(modifiers, key) {
-            self.claimed_host_key_releases.insert(key);
             self.close_notes_picker();
             return;
         }
         // A held invocation chord must not immediately close the picker that
         // its first press opened, nor leak repeat events to the focused pane.
         if input.consume_key(modifiers, key) {
-            self.claimed_host_key_releases.insert(key);
             return;
         }
         let visible = self.notes_picker_filtered().len();
@@ -974,7 +972,7 @@ impl PlexiApp {
             Down,
             Up,
             Enter,
-            Delete(egui::Key),
+            Delete,
             Undo,
             OpenNew,
             ToggleProject,
@@ -997,9 +995,9 @@ impl PlexiApp {
         } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
             Some(PickerKey::OpenNew)
         } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Backspace) {
-            Some(PickerKey::Delete(egui::Key::Backspace))
+            Some(PickerKey::Delete)
         } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Delete) {
-            Some(PickerKey::Delete(egui::Key::Delete))
+            Some(PickerKey::Delete)
         } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
             Some(PickerKey::Undo)
         } else if input.consume_copy() {
@@ -1047,15 +1045,13 @@ impl PlexiApp {
                 self.notes_picker_current_project_only = !self.notes_picker_current_project_only;
                 self.notes_picker_selected = 0;
                 self.notes_picker_last_drawn_selected = None;
-                self.claimed_host_key_releases.insert(egui::Key::Tab);
                 log::info!(
                     "notes_picker: current_project_only={}",
                     self.notes_picker_current_project_only
                 );
             }
             Some(PickerKey::Enter) => self.notes_picker_open_selected(),
-            Some(PickerKey::Delete(key)) => {
-                self.claimed_host_key_releases.insert(key);
+            Some(PickerKey::Delete) => {
                 self.notes_picker_request_delete();
             }
             Some(PickerKey::Undo) => self.notes_picker_undo_delete(),
@@ -1478,9 +1474,10 @@ mod tests {
             repeat: false,
             modifiers: egui::Modifiers::NONE,
         });
+        let mut owned =
+            crate::app::input_router::PlexiInput::synthetic(input.events.clone(), input.modifiers);
         let _ = ctx.run_ui(input, |ui| {
-            let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
-            app.notes_picker_handle_key(&mut input);
+            app.notes_picker_handle_key(&mut owned);
             app.notes_picker_flush_copy(ui.ctx());
         });
     }
@@ -1926,9 +1923,10 @@ mod tests {
             repeat: false,
             modifiers,
         });
+        let mut owned =
+            crate::app::input_router::PlexiInput::synthetic(input.events.clone(), input.modifiers);
         let _ = ctx.run_ui(input, |ui| {
-            let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
-            app.notes_picker_handle_key(&mut input);
+            app.notes_picker_handle_key(&mut owned);
             app.notes_picker_flush_copy(ui.ctx());
         });
     }

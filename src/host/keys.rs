@@ -1530,102 +1530,112 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
     entries
 }
 
-/// Poll global keyboard actions using the pre-built binding table.
+/// Which binding contexts are eligible for one key press.
 ///
-/// `view_active` — focused pane has an active plugin surface (affects Escape/Tab).
-/// `keyboard_capture_active` — the focused pane's runtime reports `keyboard_capture()`.
-///   When true, all host shortcuts are suppressed *except* Global-context bindings
-///   (Quit, ClosePane, CommandPalette, QuickNote, ToggleNotificationModal).
-/// `overlay_open` — an overlay owns keyboard focus. Same suppression as `keyboard_capture_active`.
-///   Each overlay's `*_handle_key` method owns its own key contract and runs before this function.
-/// `shortcuts_overlay_open` — the shortcuts overlay is open; suppresses CloseView (Escape)
-///   so the overlay can own Escape for dismissal.
-///
-/// `input` is a [`crate::app::input_router::PlexiInput`] buffer already taken
-/// out of `ctx` for this frame (stint 0240's ownership-transfer router).
-/// The host calls this after the focused overlay owner in two passes: Global
-/// and Normal bindings before focused-plugin key dispatch, then ViewActive
-/// bindings afterward. Thus host chords are structurally removed before a
-/// guest runtime can see them, while a plugin or focused text field still owns
-/// bare Escape before CloseView.
-pub fn poll_actions(
-    input: &mut crate::app::input_router::PlexiInput,
-    table: &[BindingEntry],
-    claimed_key_releases: &mut std::collections::HashSet<egui::Key>,
-    view_active: bool,
-    keyboard_capture_active: bool,
-    overlay_open: bool,
-    shortcuts_overlay_open: bool,
-) -> Vec<Action> {
-    let mut actions = Vec::new();
+/// `view_active` — the focused pane has an active plugin surface (Escape/Tab).
+/// `keyboard_capture_active` — the focused pane's runtime reports
+///   `keyboard_capture()`; only Global bindings stay eligible.
+/// `overlay_open` — an overlay owns the event; only Global bindings stay
+///   eligible (each overlay's `handle_key` owns its own contract first).
+/// `shortcuts_overlay_open` — suppresses CloseView so the overlay owns Escape.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct BindingPolicy {
+    pub(crate) view_active: bool,
+    pub(crate) keyboard_capture_active: bool,
+    pub(crate) overlay_open: bool,
+    pub(crate) shortcuts_overlay_open: bool,
+}
 
-    // A host chord owns both edges even if Command is released first and the
-    // matching key-up therefore arrives with no modifiers in a later frame.
-    for key in claimed_key_releases.iter().copied().collect::<Vec<_>>() {
-        if input.consume_key_release(key) {
-            claimed_key_releases.remove(&key);
+impl BindingPolicy {
+    /// An overlay owns the event: Global bindings only.
+    pub(crate) fn overlay() -> Self {
+        Self {
+            overlay_open: true,
+            ..Self::default()
         }
     }
 
+    /// A pane-level owner. `view_active` admits ViewActive bindings, which
+    /// the router consults only after the pane's own handler declined.
+    pub(crate) fn pane(view_active: bool, keyboard_capture_active: bool) -> Self {
+        Self {
+            view_active,
+            keyboard_capture_active,
+            ..Self::default()
+        }
+    }
+}
+
+/// True when `event` is a press of `key` whose own modifiers match
+/// `modifiers` under the platform-aware exact rule.
+pub(crate) fn event_matches_exact(
+    event: &egui::Event,
+    modifiers: egui::Modifiers,
+    key: egui::Key,
+) -> bool {
+    matches!(
+        event,
+        egui::Event::Key { key: k, pressed: true, modifiers: m, .. }
+            if *k == key && modifiers_match_exact(m, &modifiers)
+    )
+}
+
+/// Match one key press against the binding table, at its ordinal.
+///
+/// The input router calls this once per routed press with the policy of the
+/// event's owner, so eligibility is settled when the key is pressed: a chord
+/// suppressed under an overlay can never run later against restored focus.
+/// The table's order is the specificity order (`build_binding_table`); exact
+/// entries match the event's own modifiers platform-aware, subset entries
+/// match logically, and `no_repeat` entries ignore router-derived repeats.
+/// Releases never match: the router pairs them with their press.
+pub fn match_binding(
+    event: &egui::Event,
+    table: &[BindingEntry],
+    policy: BindingPolicy,
+) -> Option<Action> {
+    let egui::Event::Key {
+        key,
+        pressed: true,
+        repeat,
+        modifiers,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    let suppressed = policy.keyboard_capture_active || policy.overlay_open;
     for entry in table {
         match entry.context {
-            BindingContext::Global => {
-                // Always checked — no suppression.
-            }
+            BindingContext::Global => {}
             BindingContext::Normal => {
-                if keyboard_capture_active || overlay_open {
+                if suppressed {
                     continue;
                 }
             }
             BindingContext::ViewActive => {
-                if !view_active || keyboard_capture_active || overlay_open {
+                if !policy.view_active || suppressed {
                     continue;
                 }
-                // Escape is suppressed when the shortcuts overlay is open so the overlay
-                // can own it for dismissal.
-                if matches!(entry.action, Action::CloseView) && shortcuts_overlay_open {
+                if matches!(entry.action, Action::CloseView) && policy.shortcuts_overlay_open {
                     continue;
                 }
             }
         }
-
-        // Exact chords match on the key event's own modifiers, not the frame
-        // snapshot: a quick tap (or xdotool) delivers the modifier and the key
-        // in one frame, so the snapshot can read NONE and the chord would fall
-        // through to a subset binding (Cmd+Shift+0 opening Quick Note).
-        let triggered = if entry.exact && !entry.no_repeat {
-            input.consume_key_exact(entry.modifiers, entry.key)
-        } else if entry.exact && !modifiers_match_exact(&input.modifiers(), &entry.modifiers) {
+        if entry.key != *key || (entry.no_repeat && *repeat) {
             continue;
-        } else if entry.no_repeat {
-            input.consume_key_no_repeat(entry.modifiers, entry.key)
+        }
+        let matched = if entry.exact {
+            modifiers_match_exact(modifiers, &entry.modifiers)
         } else {
-            input.consume_key(entry.modifiers, entry.key)
+            modifiers.matches_logically(entry.modifiers)
         };
-        if triggered {
-            claimed_key_releases.insert(entry.key);
-            if entry.key == egui::Key::Equals {
-                claimed_key_releases.insert(egui::Key::Plus);
-            } else if entry.key == egui::Key::Plus {
-                claimed_key_releases.insert(egui::Key::Equals);
-            }
-            if !matches!(
-                entry.action,
-                Action::IncreasePaneFontSize
-                    | Action::DecreasePaneFontSize
-                    | Action::ResetPaneFontSize
-                    | Action::UiScaleUp
-                    | Action::UiScaleDown
-                    | Action::UiScaleReset
-            ) || !actions.contains(&entry.action)
-            {
-                actions.push(entry.action.clone());
-            }
+        if matched {
+            return Some(entry.action.clone());
         }
     }
-
-    // Switch context (Cmd+1 through Cmd+9) — hardcoded loop; not individual table entries.
-    if !(keyboard_capture_active || overlay_open) {
+    // Switch context (Cmd+1 through Cmd+9) — a fixed range, not table entries.
+    if !suppressed && modifiers_match_exact(modifiers, &egui::Modifiers::COMMAND) {
         let num_keys = [
             egui::Key::Num1,
             egui::Key::Num2,
@@ -1637,23 +1647,12 @@ pub fn poll_actions(
             egui::Key::Num8,
             egui::Key::Num9,
         ];
-        for (i, key) in num_keys.into_iter().enumerate() {
-            if input.consume_key_exact(egui::Modifiers::COMMAND, key) {
-                log::info!("keys: poll_actions admitted SwitchContext({i}) for {key:?}");
-                claimed_key_releases.insert(key);
-                actions.push(Action::SwitchContext(i));
-            }
+        if let Some(i) = num_keys.iter().position(|k| k == key) {
+            log::info!("keys: admitted SwitchContext({i}) for {key:?}");
+            return Some(Action::SwitchContext(i));
         }
     }
-
-    // Also claim a release delivered in the same raw-input batch as its press.
-    for key in claimed_key_releases.iter().copied().collect::<Vec<_>>() {
-        if input.consume_key_release(key) {
-            claimed_key_releases.remove(&key);
-        }
-    }
-
-    actions
+    None
 }
 
 #[cfg(test)]
@@ -1761,150 +1760,80 @@ mod tests {
         assert!(table.iter().any(|e| e.action == Action::NextBlockedAgent));
     }
 
-    /// Run `poll_actions` for a single Tab keypress with an active plugin surface.
-    fn poll_tab() -> Vec<Action> {
-        let table = build_binding_table(&KeyBindings::default());
-        let ctx = egui::Context::default();
-        let mut raw = egui::RawInput::default();
-        raw.events.push(egui::Event::Key {
-            key: egui::Key::Tab,
-            physical_key: None,
+    fn press(key: egui::Key, repeat: bool, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: Some(key),
             pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        });
-        let mut actions = Vec::new();
-        let mut claimed_key_releases = std::collections::HashSet::new();
-        let _ = ctx.run_ui(raw, |ui| {
-            let ctx = ui.ctx();
-            let mut input = crate::app::input_router::PlexiInput::take_from(ctx);
-            actions = poll_actions(
-                &mut input,
-                &table,
-                &mut claimed_key_releases,
-                /* view_active */ true,
-                /* keyboard_capture */ false,
-                /* overlay_open */ false,
-                /* shortcuts_overlay_open */ false,
-            );
-        });
-        actions
+            repeat,
+            modifiers,
+        }
     }
 
     #[test]
     fn tab_passes_through_to_active_view() {
-        let actions = poll_tab();
-        assert!(
-            actions.is_empty(),
+        let table = build_binding_table(&KeyBindings::default());
+        assert_eq!(
+            match_binding(
+                &press(egui::Key::Tab, false, egui::Modifiers::NONE),
+                &table,
+                BindingPolicy::pane(true, false),
+            ),
+            None,
             "plain Tab should not be consumed by host plugin focus; plugins own it"
         );
     }
 
+    /// Font and UI-scale chords match their press and router-derived repeats,
+    /// under a pane owner and (Global) under a modal; a release never matches.
     #[test]
-    fn font_and_ui_scale_chords_claim_press_repeat_release_and_modal_edges() {
+    fn font_and_ui_scale_chords_match_press_repeat_and_modal_but_never_release() {
         let table = build_binding_table(&KeyBindings::default());
-        let ctx = egui::Context::default();
-        let mut claimed_key_releases = std::collections::HashSet::new();
-        let poll =
-            |events: Vec<egui::Event>,
-             overlay_open: bool,
-             claimed_key_releases: &mut std::collections::HashSet<egui::Key>| {
-                let mut raw = egui::RawInput::default();
-                raw.events = events;
-                let mut actions = Vec::new();
-                let mut remaining_events = 0;
-                let _ = ctx.run_ui(raw, |ui| {
-                    let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
-                    actions = poll_actions(
-                        &mut input,
-                        &table,
-                        claimed_key_releases,
-                        /* view_active */ true,
-                        /* keyboard_capture */ false,
-                        overlay_open,
-                        /* shortcuts_overlay_open */ false,
-                    );
-                    remaining_events = input.events().len();
-                });
-                (actions, remaining_events)
-            };
-        let key_event = |key, pressed, repeat, modifiers| egui::Event::Key {
-            key,
-            physical_key: Some(key),
-            pressed,
-            repeat,
-            modifiers,
+        let pane = BindingPolicy::pane(true, false);
+        assert_eq!(
+            match_binding(&press(egui::Key::Equals, false, cmd()), &table, pane),
+            Some(Action::IncreasePaneFontSize)
+        );
+        assert_eq!(
+            match_binding(&press(egui::Key::Equals, true, cmd()), &table, pane),
+            Some(Action::IncreasePaneFontSize),
+            "holding the chord keeps stepping the font size"
+        );
+        let release = egui::Event::Key {
+            key: egui::Key::Equals,
+            physical_key: Some(egui::Key::Equals),
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
         };
-
-        let (actions, remaining) = poll(
-            vec![key_event(egui::Key::Equals, true, false, cmd())],
-            false,
-            &mut claimed_key_releases,
-        );
-        assert_eq!(actions, vec![Action::IncreasePaneFontSize]);
+        assert_eq!(match_binding(&release, &table, pane), None);
         assert_eq!(
-            remaining, 0,
-            "font-size press must not reach the focused pane"
+            match_binding(
+                &press(egui::Key::Plus, false, cmd_shift()),
+                &table,
+                BindingPolicy::overlay()
+            ),
+            Some(Action::UiScaleUp)
         );
+    }
 
-        let (actions, remaining) = poll(
-            vec![key_event(
-                egui::Key::Equals,
-                false,
-                false,
-                egui::Modifiers::NONE,
-            )],
-            false,
-            &mut claimed_key_releases,
-        );
-        assert!(
-            actions.is_empty(),
-            "key release must not trigger a second action"
-        );
+    /// A Normal chord is suppressed under an overlay and runs for a pane;
+    /// `no_repeat` bindings ignore repeats.
+    #[test]
+    fn normal_chords_are_settled_by_the_owner_policy_at_their_ordinal() {
+        let table = build_binding_table(&KeyBindings::default());
+        let b = KeyBindings::default();
+        let chord = press(b.new_tab.1, false, b.new_tab.0);
+        assert_eq!(match_binding(&chord, &table, BindingPolicy::overlay()), None);
         assert_eq!(
-            remaining, 0,
-            "font-size release must not leak to the focused pane"
+            match_binding(&chord, &table, BindingPolicy::pane(false, false)),
+            Some(Action::NewTab)
         );
-
-        let (actions, remaining) = poll(
-            vec![key_event(egui::Key::Equals, true, true, cmd())],
-            false,
-            &mut claimed_key_releases,
-        );
-        assert_eq!(actions, vec![Action::IncreasePaneFontSize]);
+        let close = press(b.close_pane.1, true, b.close_pane.0);
         assert_eq!(
-            remaining, 0,
-            "font-size repeat must be claimed exactly once"
-        );
-
-        let (actions, remaining) = poll(
-            vec![key_event(egui::Key::Plus, true, false, cmd_shift())],
-            true,
-            &mut claimed_key_releases,
-        );
-        assert_eq!(actions, vec![Action::UiScaleUp]);
-        assert_eq!(
-            remaining, 0,
-            "modal ui-scale chord must not leak to the focused pane"
-        );
-
-        let (actions, remaining) = poll(
-            vec![key_event(
-                egui::Key::Plus,
-                false,
-                false,
-                egui::Modifiers::NONE,
-            )],
-            true,
-            &mut claimed_key_releases,
-        );
-        assert!(
-            actions.is_empty(),
-            "modal key release must not trigger a second action"
-        );
-        assert_eq!(
-            remaining, 0,
-            "modal ui-scale release must not leak to the focused pane"
+            match_binding(&close, &table, BindingPolicy::pane(false, false)),
+            None,
+            "ClosePane is no_repeat"
         );
     }
 
@@ -1983,7 +1912,6 @@ mod tests {
     #[test]
     fn linux_ctrl_chords_fire_focus_approval_and_command_palette_without_leaking() {
         let table = build_binding_table(&KeyBindings::default());
-        let ctx = egui::Context::default();
 
         for (mods, key, expected) in [
             (
@@ -2006,38 +1934,13 @@ mod tests {
                 Action::ToggleCommandPalette,
             ),
         ] {
-            let mut raw = egui::RawInput {
-                modifiers: mods,
-                ..Default::default()
-            };
-            raw.events.push(egui::Event::Key {
-                key,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: mods,
-            });
-            let mut actions = Vec::new();
-            let mut remaining_events = 0;
-            let mut claimed_key_releases = std::collections::HashSet::new();
-            let _ = ctx.run_ui(raw, |ui| {
-                let ctx = ui.ctx();
-                let mut input = crate::app::input_router::PlexiInput::take_from(ctx);
-                actions = poll_actions(
-                    &mut input,
-                    &table,
-                    &mut claimed_key_releases,
-                    /* view_active */ false,
-                    /* keyboard_capture */ false,
-                    /* overlay_open */ false,
-                    /* shortcuts_overlay_open */ false,
-                );
-                remaining_events = input.events().len();
-            });
-            assert_eq!(actions, vec![expected]);
             assert_eq!(
-                remaining_events, 0,
-                "chord must be consumed from PlexiInput so it does not leak to the terminal"
+                match_binding(
+                    &press(key, false, mods),
+                    &table,
+                    BindingPolicy::pane(false, false)
+                ),
+                Some(expected)
             );
         }
     }

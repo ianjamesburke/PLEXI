@@ -38,11 +38,13 @@ fn header_pip_center_x(bar: egui::Rect) -> f32 {
 /// (stint 0387). Built in `PlexiApp::update` by taking the frame's
 /// `PlexiInput` ownership buffer *before* the render pass and threaded down to
 /// the focused terminal so egui's render-time widget machinery can't swallow a
-/// key (e.g. Cmd+A) first. The focused pane receives the taken events;
-/// unfocused panes receive an empty `keyboard_events` list (they only need
-/// pointer/wheel, which stays on the ctx path).
+/// key (e.g. Cmd+A) first. The input router assigns a stream to one terminal
+/// pane (`pane_id`); every other pane receives an empty `keyboard_events` list
+/// (they only need pointer/wheel, which stays on the ctx path).
 #[derive(Default)]
 pub struct TerminalInput {
+    /// The terminal pane the router assigned these events to.
+    pub pane_id: crate::spatial::tiling::PaneId,
     pub keyboard_events: Vec<egui::Event>,
     pub modifiers: egui::Modifiers,
 }

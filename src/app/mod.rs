@@ -144,7 +144,7 @@ pub(crate) struct TextInputOverlay {
 
 use crate::config;
 use crate::host::context::Window;
-use crate::host::keys::{self, Action};
+use crate::host::keys::Action;
 use crate::host::pane::{Pane, TerminalPane};
 use crate::host::shell;
 use crate::spatial::tiling::PaneId;
@@ -153,7 +153,7 @@ use crate::workspace::router::ContextMove;
 use crate::workspace::WorkspaceFile;
 use egui_term::{BackendSettings, PtyEvent, TerminalTheme};
 use egui_tiles::{Tile, Tree};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -326,9 +326,9 @@ pub struct PlexiApp {
     pub(crate) config: crate::config::PlexiConfig,
     pub(crate) key_bindings: crate::host::keys::KeyBindings,
     pub(crate) binding_table: Vec<crate::host::keys::BindingEntry>,
-    /// Keys whose press edge fired a host binding and whose matching release
-    /// remains host-owned, even if Command is released first.
-    pub(crate) claimed_host_key_releases: HashSet<egui::Key>,
+    /// The host input router (stint 1659): assigns every raw input event of a
+    /// delivery to one owner in `raw_input_hook`, before egui folds it.
+    pub(crate) input_router: input_router::InputRouter,
     pub(crate) context_rename: Option<ContextRenameState>,
     pub(crate) rename_buffer: String,
     /// The pane rename dialog's open session; see `OpenSession`.
@@ -704,7 +704,7 @@ pub struct PlexiApp {
         HashMap<crate::spatial::tiling::PaneId, std::collections::VecDeque<egui::RawInput>>,
     pub zoom: zoom::ZoomState,
     pub attention_queue: attention_queue::AttentionQueueState,
-    approval_keyboard: approval_keyboard::ApprovalKeyboard,
+    pub(crate) approval_keyboard: approval_keyboard::ApprovalKeyboard,
     /// Consent input guards for the event-consent, raw WASM review and
     /// keychain recovery dialogs (stints 1498, 1560); the capability prompt
     /// keeps its own on its pane.
@@ -1814,7 +1814,7 @@ impl PlexiApp {
                     config: config.clone(),
                     key_bindings: key_bindings.clone(),
                     binding_table: crate::host::keys::build_binding_table(&key_bindings),
-                    claimed_host_key_releases: HashSet::new(),
+                    input_router: Default::default(),
                     pending_close: false,
                     close_confirm_target: None,
                     pending_quit: false,
@@ -2109,7 +2109,7 @@ impl PlexiApp {
             quit_last_press: None,
             config,
             binding_table: crate::host::keys::build_binding_table(&key_bindings),
-            claimed_host_key_releases: HashSet::new(),
+            input_router: Default::default(),
             key_bindings,
             pending_close: false,
             close_confirm_target: None,
@@ -3099,7 +3099,7 @@ impl PlexiApp {
             quit_last_press: None,
             config,
             binding_table: crate::host::keys::build_binding_table(&key_bindings),
-            claimed_host_key_releases: HashSet::new(),
+            input_router: Default::default(),
             key_bindings,
             pending_close: false,
             close_confirm_target: None,
@@ -3665,7 +3665,10 @@ impl eframe::App for PlexiApp {
         // A hidden window (minimized/occluded) gets logic-only passes with no
         // widget pass to receive events — leave queued pane inputs in place so
         // the next visible frame delivers them instead of silently eating them.
+        // Native input that arrived while hidden is retired by the router,
+        // never replayed against whatever is showing when drawing resumes.
         if raw_input.viewport().visible() == Some(false) {
+            self.route_delivery(ctx, raw_input);
             return;
         }
         let focused_pane = self.windows.get(self.active_window).and_then(|window| {
@@ -3724,6 +3727,9 @@ impl eframe::App for PlexiApp {
                 }
             }
         }
+        // One ordered delivery, native and injected input together: every
+        // actionable event gets its owner here, before egui folds anything.
+        self.route_delivery(ctx, raw_input);
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -4025,8 +4031,6 @@ impl eframe::App for PlexiApp {
         }
         let _sheet_frame = SheetButtonFrame::begin();
         let ctx = &ui.ctx().clone();
-        // Before any overlay owner takes the frame's input buffer.
-        input_owner::note_tab_key(ctx);
         let ui_profile_start = crate::platform::ui_profile::enabled().then(std::time::Instant::now);
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
@@ -4083,221 +4087,16 @@ impl eframe::App for PlexiApp {
         {
             self.leave_approval();
         }
-        // Unified overlay dispatch: each overlay owns its complete keyboard
-        // contract via a `*_handle_key` method that returns `Consumed`, preventing
-        // `dispatch_plugin_key_events` and `poll_actions` from seeing those events.
-        // Global shortcuts (Cmd+Q, Cmd+W, Cmd+P) remain active via `poll_actions`
-        // even when an overlay holds focus (see early-return guard in `keys::poll_actions`).
-        // A close chord belongs to the top modal, never the pane beneath it.
-        // Reuse that modal's Escape/cancel contract, including unsaved-work vetoes.
-        let modal_focus_open = !self.focus_stack.is_empty();
-        if modal_focus_open {
-            let binding = self.key_bindings.close_pane;
-            let mut claimed = false;
-            ctx.input_mut(|input| {
-                for event in &mut input.events {
-                    if let egui::Event::Key {
-                        key,
-                        modifiers,
-                        physical_key,
-                        ..
-                    } = event
-                    {
-                        if *key == binding.1 && modifiers.matches_logically(binding.0) {
-                            claimed = true;
-                            *key = egui::Key::Escape;
-                            *physical_key = None;
-                            *modifiers = egui::Modifiers::NONE;
-                        }
-                    }
-                }
-            });
-            if claimed {
-                self.claimed_host_key_releases.insert(binding.1);
-            }
-        }
+        // Keyboard and pointer ownership was settled event by event in
+        // `raw_input_hook` (src/app/input_router.rs): overlay keys, host
+        // bindings and pane plugins have already run. This pass draws the top
+        // overlay, which may close itself (a button decision), so re-sync the
+        // focus stack after drawing.
+        let drawn_owner = self.input_router.observe(self.host_input_owner());
         let mut early_modal_cmds: Vec<crate::app::view_trait::ViewCommand> = Vec::new();
-        let mut overlay_key_disposition = if modal_focus_open {
-            // Ownership-transfer (stint 0240): take this frame's input-intent
-            // events out of `ctx` once, hand them to the top `FocusKind`
-            // below, then give back whatever it didn't claim before rendering
-            // — see `src/app/input_router.rs`.
-            let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
-            // Step 0: QuickNote preemption (#1626).
-            // Cmd+0 is a high-priority action that must fire even when a non-critical
-            // modal is open. Consume the key here — before the overlay draw phase can
-            // absorb it via a focused TextEdit widget — then dismiss the non-critical
-            // modal and open QuickNote. Critical modals (ConfirmClose, CapabilityModal,
-            // ContextCloseConfirm) are not preemptable and fall through to handle_key.
-            let qn_binding = self.key_bindings.open_quick_note;
-            let qn_pressed = router_input.consume_key_exact(qn_binding.0, qn_binding.1);
-            if qn_pressed && self.is_quick_note_preemptable() {
-                self.dismiss_preemptable_modal();
-                self.open_quick_note_modal();
-                self.sync_command_palette_focus();
-                log::info!("quick_note: opened by preempting non-critical modal");
-                router_input.give_back(ctx);
-                crate::app::view_trait::KeyDisposition::Consumed
-            } else {
-                // Step 1: run the top overlay's handle_key through the
-                // `FocusOwner` trait (consumes its owned key events from this
-                // frame's ownership-transfer buffer, before any render).
-                let disposition = match self.focus_stack.last().copied() {
-                    Some(kind) => kind.owner().handle_key(self, ctx, &mut router_input),
-                    None => crate::app::view_trait::KeyDisposition::Passthrough,
-                };
-                // Give back whatever this overlay didn't claim so the render
-                // pass below (a focused `TextEdit`'s own Text/Key consumption)
-                // still sees it — this refactor transfers ownership for the
-                // *first* consumer each frame, not for the whole frame.
-                router_input.give_back(ctx);
-                // Step 2: render the top overlay (visual only — key reads
-                // already done above). `handle_key` may have popped or replaced
-                // the top layer (NotesPicker/QuickNote/ContextDescription
-                // self-close), so re-read the current top rather than reusing
-                // the kind dispatched above.
-                if let Some(kind) = self.focus_stack.last().copied() {
-                    early_modal_cmds = kind.owner().draw(self, ctx);
-                }
-                // The overlay may have self-closed (confirm-close confirmed/cancelled,
-                // palette picked an entry, rename committed). Re-sync so the layer is
-                // accurate for the rest of this frame.
-                self.sync_confirm_close_focus();
-                self.sync_context_close_focus();
-                self.sync_command_palette_focus();
-                self.sync_rename_pane_focus();
-                self.sync_shortcuts_focus();
-                self.sync_context_rename_focus();
-                self.sync_text_input_focus();
-                self.sync_capability_modal_focus();
-                self.sync_event_consent_focus();
-                self.sync_raw_wasm_review_focus();
-                self.sync_unsaved_changes_focus();
-                disposition
-            } // end else (non-preempted path)
-        } else {
-            crate::app::view_trait::KeyDisposition::Passthrough
-        };
-
-        // Host bindings own their chords before a plugin can classify raw key
-        // events. This is the structural guard against one physical Cmd+D
-        // both splitting the pane and reaching a PGAP plugin as its bare `d`
-        // shortcut. Overlay owners still run first because their local key
-        // contracts determine which unclaimed events remain in the router.
-        let (view_active, keyboard_capture_active) = self.focused_view_capture_state();
-        let overlay_open = self.input_captured_by_overlay();
-        let skip_toggle_shortcuts = !overlay_open
-            && !self.show_shortcuts
-            && self.focused_builtin_editor_captures_shortcuts();
-        let filtered_bindings: Option<Vec<keys::BindingEntry>> = skip_toggle_shortcuts.then(|| {
-            self.binding_table
-                .iter()
-                .filter(|b| b.action != Action::ToggleShortcuts)
-                .cloned()
-                .collect()
-        });
-        let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
-        // Native popup dismissal owns bare Escape before the view/CloseView
-        // handlers. Otherwise a dropdown can close its entire parent pane.
-        if egui::Popup::is_any_open(ctx)
-            && router_input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
-        {
-            egui::Popup::close_all(ctx);
-            log::info!("ui: Escape dismissed native popup before pane key dispatch");
-        }
-        self.suppress_approval_decision_repeats(&mut router_input);
-        let mut poll_actions_result = keys::poll_actions(
-            &mut router_input,
-            filtered_bindings.as_deref().unwrap_or(&self.binding_table),
-            &mut self.claimed_host_key_releases,
-            /* view_active */ false,
-            keyboard_capture_active,
-            overlay_open,
-            self.show_shortcuts,
-        );
-        // Cmd+Down belongs to editors unless the focused pane has tool children.
-        // Use the normal binding poller so both edges and overlay capture retain
-        // the same ownership rules as other host chords.
-        if self.visual_owner_pane().is_some_and(|parent| {
-            self.conjoined_contexts.iter().any(|(context, id)| {
-                *id == parent
-                    && self
-                        .windows
-                        .iter()
-                        .any(|window| window.context_id == *context && !window.panes.is_empty())
-            })
-        }) {
-            poll_actions_result.extend(keys::poll_actions(
-                &mut router_input,
-                &[keys::BindingEntry {
-                    modifiers: egui::Modifiers::COMMAND,
-                    key: egui::Key::ArrowDown,
-                    exact: true,
-                    no_repeat: true,
-                    context: keys::BindingContext::Normal,
-                    action: Action::ToggleZoom,
-                }],
-                &mut self.claimed_host_key_releases,
-                false,
-                keyboard_capture_active,
-                overlay_open,
-                self.show_shortcuts,
-            ));
-        }
-        if self
-            .host
-            .pane_selection(self.windows[self.active_window].window_id)
-            .is_some()
-        {
-            poll_actions_result.extend(keys::poll_actions(
-                &mut router_input,
-                &[keys::BindingEntry {
-                    modifiers: egui::Modifiers::NONE,
-                    key: egui::Key::Escape,
-                    exact: true,
-                    no_repeat: true,
-                    context: keys::BindingContext::Normal,
-                    action: Action::CancelPaneSelection,
-                }],
-                &mut self.claimed_host_key_releases,
-                false,
-                keyboard_capture_active,
-                overlay_open,
-                self.show_shortcuts,
-            ));
-        }
-        // Route bare-key contracts on Plexi-owned surfaces (Decision Overlay,
-        // Attention Queue list, Tree Atlas) after Global chords
-        // (`Cmd+Esc`, `Cmd+Enter`, `Cmd+I`, `Cmd+Alt+B`) have been claimed by
-        // `poll_actions` above, swallowing all remaining bare keys and `Cmd+V`
-        // so nothing leaks to any underlying pane (R40).
-        if !modal_focus_open {
-            if self.attention_queue.decision_overlay.is_some() {
-                overlay_key_disposition = self.handle_decision_overlay_input(&mut router_input);
-            } else if self.attention_queue.open {
-                overlay_key_disposition = self.handle_attention_queue_list_input(&mut router_input);
-            } else if self.zoom.level != zoom::ZoomLevel::Columns {
-                overlay_key_disposition = self.handle_zoom_surface_input(&mut router_input);
-            }
-        }
-        router_input.give_back(ctx);
-
-        // Plugins only receive key input when no overlay holds focus. Double-check
-        // input_captured_by_overlay() after the re-syncs above — an overlay may
-        // have returned Passthrough for keys it doesn't own (e.g. a Choice/Input
-        // notification) while still being open. Re-syncs may also have dismissed
-        // the overlay, in which case it's safe to forward keys to the view pane.
-        if overlay_key_disposition == crate::app::view_trait::KeyDisposition::Passthrough
-            && !self.input_captured_by_overlay()
-        {
-            // Ownership-transfer (stint 0387): take this frame's input-intent
-            // events out of `ctx`, hand them to the focused view pane's
-            // `handle_key`, then give back whatever it didn't claim so the
-            // pane's own render pass (a focused `TextEdit`) still sees typed
-            // text. Mirrors the overlay and `poll_actions` router pairs.
-            let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
-            self.dispatch_plugin_key_events(ctx, &mut router_input);
-            router_input.give_back(ctx);
+        if let Some(kind) = self.focus_stack.last().copied() {
+            early_modal_cmds = kind.owner().draw(self, ctx);
+            self.sync_overlay_layers();
         }
         // Stint 0688: plugin-command servicing moved to `App::logic` — see
         // `service_view_commands`. Only the modal-render follow-up stays here,
@@ -4390,29 +4189,6 @@ impl eframe::App for PlexiApp {
             }
         }
 
-        // Handle keyboard shortcuts. Global shortcuts (Cmd+Q, Cmd+W, Cmd+P) always
-        // fire; all other shortcuts are suppressed when an overlay holds focus via
-        // the early-return guard in `keys::poll_actions`.
-        //
-        // ViewActive bindings are intentionally polled after plugin dispatch.
-        // Focused TextInputs and plugins own bare Escape first; the dispatch gate
-        // removes it when it exits a field so CloseView cannot fire in the same
-        // frame. Global and Normal host chords were already removed above.
-        let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
-        poll_actions_result.extend(keys::poll_actions(
-            &mut router_input,
-            filtered_bindings.as_deref().unwrap_or(&self.binding_table),
-            &mut self.claimed_host_key_releases,
-            view_active,
-            keyboard_capture_active,
-            overlay_open,
-            self.show_shortcuts,
-        ));
-        router_input.give_back(ctx);
-        for action in poll_actions_result {
-            self.dispatch_host_action(action, ctx);
-        }
-
         if self.quit_coordinator.blocks_input() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             return;
@@ -4446,12 +4222,18 @@ impl eframe::App for PlexiApp {
         // terminal only ever sees what the global allowlist left behind.
         // Bare Escape while zoomed goes to the pane with no layout change
         // (stint 0898: Cmd+Enter is the only zoom toggle).
-        let focused_terminal_input = self.take_focused_terminal_input(ctx);
-        // Host focus (keyboard nav, a click handled before this pass) is
-        // already current. egui focus still belongs to last frame until
-        // `reconcile_egui_focus` at the end of `ui`. Publish the owner now so
-        // an editor that just lost the pane cannot insert this frame's text.
-        crate::app::input_owner::publish_frame_input_owner(ctx, self.host_input_owner());
+        let focused_terminal_input = self.input_router.terminal_stream.take();
+        // egui focus still belongs to last frame until `reconcile_egui_focus`
+        // at the end of `ui`. Publish the owner whose input egui folded this
+        // pass, so an editor that just lost the pane (or sits under an overlay
+        // that closed while drawing) cannot insert this delivery's text.
+        crate::app::input_owner::publish_frame_input_owner(
+            ctx,
+            self.input_router
+                .egui_owner
+                .unwrap_or_else(|| self.host_input_owner()),
+        );
+        self.input_router.set_conjoined_parent_hit(None);
         // Every surface that paints an approval-capable button (sidebar
         // Needs-you row, approval banner) registers its bounds this frame.
         self.approval_buttons.clear();
@@ -4463,6 +4245,13 @@ impl eframe::App for PlexiApp {
         // Detect genuine pane focus transitions, and periodically bank long
         // same-pane sessions so Stats has live data without keystroke tracking.
         self.reconcile_focus_logging(FOCUS_HEARTBEAT_INTERVAL);
+
+        // The owner drawn this pass stayed the owner through it: its painted
+        // geometry is what the next delivery's pointer input hit-tests.
+        let presented_owner = self.input_router.observe(self.host_input_owner());
+        if presented_owner == drawn_owner {
+            self.input_router.note_presented(presented_owner);
+        }
 
         // Last step of every frame: project the derived input owner onto egui
         // widget focus (stint 0429). Everything above may change host focus
@@ -5820,17 +5609,10 @@ fn drive_native_pane_key(
 ) -> Result<view_trait::KeyDisposition, String> {
     let raw = key_str_to_egui_raw_input(key)
         .ok_or_else(|| format!("key {key:?} does not map to a native plugin key event"))?;
-    // Throwaway context: the cheapest way to build a well-formed input buffer.
-    // handle_key only reads input — it never paints — so no fonts/render
-    // setup is needed. Route through the same `PlexiInput` ownership buffer the
-    // live frame uses so `pane key` exercises the production keyboard path.
-    let ctx = egui::Context::default();
-    let mut disposition = view_trait::KeyDisposition::Passthrough;
-    let _ = ctx.run_ui(raw, |ui| {
-        let input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
-        disposition = runtime.handle_key(&input);
-    });
-    Ok(disposition)
+    // The same owner buffer the router hands a pane's `handle_key`, so
+    // `pane key` exercises the production keyboard path.
+    let input = crate::app::input_router::PlexiInput::synthetic(raw.events, raw.modifiers);
+    Ok(runtime.handle_key(&input))
 }
 
 /// Register the directed pipe on the target's own local pipe registry so a

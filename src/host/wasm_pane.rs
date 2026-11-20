@@ -5313,16 +5313,9 @@ mod tests {
     #[test]
     fn handle_key_reserves_bare_escape_for_host_close() {
         fn disposition(live: &mut LiveWasmPane, event: egui::Event) -> KeyDisposition {
-            let ctx = egui::Context::default();
-            let mut raw = egui::RawInput::default();
-            raw.events.push(event);
-            let mut out = KeyDisposition::Passthrough;
-            let _ = ctx.run_ui(raw, |ui| {
-                let ctx = ui.ctx();
-                let input = crate::app::input_router::PlexiInput::take_from(ctx);
-                out = live.handle_key(&input);
-            });
-            out
+            let input =
+                crate::app::input_router::PlexiInput::synthetic(vec![event], egui::Modifiers::NONE);
+            live.handle_key(&input)
         }
 
         let mut live = LiveWasmPane::new(

@@ -327,7 +327,26 @@ impl<'a> TerminalView<'a> {
             .map(|s| s.modifiers)
             .unwrap_or_else(|| layout.ctx.input(|i| i.modifiers));
         let mut events = supplied.map(|s| s.events).unwrap_or_default();
-        events.extend(layout.ctx.input(|i| i.events.clone()));
+        // Keyboard input arrives only through the supplied stream: the shared
+        // context's keyboard events belong to whichever owner holds egui input
+        // this pass, which may not be this terminal.
+        events.extend(layout.ctx.input(|i| {
+            i.events
+                .iter()
+                .filter(|event| {
+                    !matches!(
+                        event,
+                        egui::Event::Text(_)
+                            | egui::Event::Key { .. }
+                            | egui::Event::Copy
+                            | egui::Event::Cut
+                            | egui::Event::Paste(_)
+                            | egui::Event::Ime(_)
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        }));
         // An unfocused terminal (here for the pointer) is given no keyboard
         // input, so its encoder must never record a hold from it.
         if !has_focus {

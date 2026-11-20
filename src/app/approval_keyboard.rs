@@ -3,7 +3,6 @@ use super::input_router::PlexiInput;
 use super::view_trait::KeyDisposition;
 use super::{FocusKind, PlexiApp};
 use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
-use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 pub(crate) const ARM_DELAY: Duration = Duration::from_secs(1);
@@ -105,16 +104,13 @@ impl ConsentGuard {
 }
 
 #[derive(Default)]
-pub(super) struct ApprovalKeyboard {
+pub(crate) struct ApprovalKeyboard {
     pub id: Option<String>,
     since: Option<Instant>,
     pub confirm_always: bool,
     /// Last decision failure `(request_id, reason)` so the banner can display
     /// an explicit error message while keeping the ask open and actionable.
     pub last_error: Option<(String, String)>,
-    /// Decision keys remain owned after the banner closes until their key-up.
-    /// This stops OS auto-repeat from being delivered to the previously focused pane.
-    held_decision_keys: HashSet<egui::Key>,
 }
 
 impl ApprovalKeyboard {
@@ -141,6 +137,12 @@ impl ApprovalKeyboard {
         self.since
             .map(|since| ARM_DELAY.saturating_sub(now.saturating_duration_since(since)))
             .unwrap_or_default()
+    }
+
+    /// Arm the focused request as though it had been shown for `ago`.
+    #[cfg(test)]
+    pub(crate) fn backdate_focus(&mut self, ago: Duration) {
+        self.since = Some(Instant::now() - ago);
     }
 
     pub fn armed(&self, now: Instant) -> bool {
@@ -241,11 +243,6 @@ impl PlexiApp {
             .retain(|kind| *kind != FocusKind::ApprovalBanner);
     }
 
-    /// Called before host bindings and pane dispatch on every input frame.
-    pub(crate) fn suppress_approval_decision_repeats(&mut self, input: &mut PlexiInput) {
-        input.suppress_held_keys(&mut self.approval_keyboard.held_decision_keys);
-    }
-
     pub(crate) fn approval_handle_key(&mut self, input: &mut PlexiInput) -> KeyDisposition {
         self.approval_key_at(input, Instant::now())
     }
@@ -294,9 +291,6 @@ impl PlexiApp {
                     Some(egui::Key::Enter) => {
                         log::info!("approval: opening agent_done result id={id} via=keyboard");
                         self.open_agent_done_result(&done_record);
-                        self.approval_keyboard
-                            .held_decision_keys
-                            .insert(egui::Key::Enter);
                         self.leave_approval();
                     }
                     Some(egui::Key::D) => {
@@ -305,9 +299,6 @@ impl PlexiApp {
                             false,
                             crate::broker::gate::ResolveSurface::Desktop,
                         );
-                        self.approval_keyboard
-                            .held_decision_keys
-                            .insert(egui::Key::D);
                         self.leave_approval();
                     }
                     _ => {}
@@ -369,17 +360,6 @@ impl PlexiApp {
             _ => None,
         };
         if let Some(choice) = choice {
-            if matches!(
-                choice,
-                ApprovalChoice::Once
-                    | ApprovalChoice::AllowTool
-                    | ApprovalChoice::Deny
-                    | ApprovalChoice::DenyAlways
-            ) {
-                if let Some((key, _)) = key {
-                    self.approval_keyboard.held_decision_keys.insert(key);
-                }
-            }
             match monitor.approve_pending(&id, choice) {
                 Ok(()) => {
                     log::info!("approval: decided id={id} decision={choice:?} via=keyboard");
@@ -459,7 +439,6 @@ impl PlexiApp {
                     self.set_window_focused_pane(win, tile);
                     log::info!("approval: jumped to asking pane id={id} via=keyboard");
                 }
-                self.approval_keyboard.held_decision_keys.insert(key);
                 self.leave_approval();
                 return;
             }
@@ -476,7 +455,6 @@ impl PlexiApp {
             "approval: decided needs_you id={id} kind={} key={key:?} ok={decided} via=keyboard",
             record.kind.as_str()
         );
-        self.approval_keyboard.held_decision_keys.insert(key);
         match outcome {
             Ok(()) => {
                 self.approval_keyboard.last_error = None;
@@ -521,17 +499,16 @@ mod tests {
         }
     }
     fn input(key: egui::Key, modifiers: egui::Modifiers) -> PlexiInput {
-        let ctx = egui::Context::default();
-        ctx.input_mut(|i| {
-            i.events.push(egui::Event::Key {
+        PlexiInput::synthetic(
+            vec![egui::Event::Key {
                 key,
                 physical_key: None,
                 pressed: true,
                 repeat: false,
                 modifiers,
-            })
-        });
-        PlexiInput::take_from(&ctx)
+            }],
+            modifiers,
+        )
     }
     #[test]
     fn approval_keyboard_arm_oldest_escape_and_pane_typing() {
@@ -655,59 +632,6 @@ mod tests {
             now + ARM_DELAY,
         );
         assert!(monitor.show_pending(&id).is_none());
-    }
-
-    #[test]
-    fn approval_decision_key_stays_owned_until_release() {
-        let mut h = HostHarness::new();
-        let root = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
-        let id = pending(&monitor, "SECRET", root.path());
-        h.app.focus_approval();
-        let now = Instant::now();
-        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
-        h.app
-            .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now);
-        assert!(monitor.show_pending(&id).is_none());
-
-        let mut held_repeat = PlexiInput::synthetic(
-            vec![
-                egui::Event::Key {
-                    key: egui::Key::A,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: true,
-                    modifiers: egui::Modifiers::NONE,
-                },
-                egui::Event::Text("a".to_string()),
-            ],
-            egui::Modifiers::NONE,
-        );
-        h.app.suppress_approval_decision_repeats(&mut held_repeat);
-        assert!(
-            held_repeat.is_empty(),
-            "held approval key must not reach the pane"
-        );
-
-        let mut release = PlexiInput::synthetic(
-            vec![egui::Event::Key {
-                key: egui::Key::A,
-                physical_key: None,
-                pressed: false,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            }],
-            egui::Modifiers::NONE,
-        );
-        h.app.suppress_approval_decision_repeats(&mut release);
-        assert!(release.is_empty(), "approval key-up remains host-owned");
-
-        let mut next_key = input(egui::Key::A, egui::Modifiers::NONE);
-        h.app.suppress_approval_decision_repeats(&mut next_key);
-        assert!(
-            !next_key.is_empty(),
-            "input resumes after the decision key is released"
-        );
     }
 
     #[test]

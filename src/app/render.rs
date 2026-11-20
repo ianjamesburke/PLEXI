@@ -345,9 +345,18 @@ impl PlexiApp {
                 };
 
                 // Capture focus before rendering so we can record a history entry
-                // if the user clicks a different pane this frame.
-                let canvas_old_focus = self.windows[self.active_window].focused_pane;
+                // if the user clicks a different pane this frame. A press the
+                // input router assigned to a pane already moved focus at its
+                // ordinal; history and the click flash start from before it.
                 let canvas_old_window_id = self.windows[self.active_window].window_id;
+                let routed_press = self
+                    .input_router
+                    .pane_press
+                    .filter(|press| press.window_id == canvas_old_window_id);
+                let canvas_old_focus = match routed_press {
+                    Some(press) => press.prior_focus,
+                    None => self.windows[self.active_window].focused_pane,
+                };
 
                 // Portal panes in the active window — computed once and shared by
                 // the preview map and the ContextState refresh below. Most contexts
@@ -801,6 +810,9 @@ impl PlexiApp {
                     strip_layout_jump: false,
                     strip_layout: None,
                     resized: false,
+                    routed_press: routed_press.map(|press| press.tile),
+                    window_id: canvas_old_window_id,
+                    presented_panes: Vec::new(),
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ui.scope(|ui| {
@@ -950,8 +962,10 @@ impl PlexiApp {
                 let tab_action = behavior.tab_action.take();
                 let portal_zoom = behavior.portal_zoom_request.take();
                 let child_agent_dive = behavior.child_agent_dive.take();
+                let presented_panes = std::mem::take(&mut behavior.presented_panes);
 
                 drop(behavior);
+                self.input_router.set_presented_panes(presented_panes);
 
                 // Tree::ui can still restructure the tree (a tab or pane drag);
                 // heal focus and zoom against the tree it left (stint 1230).
@@ -966,7 +980,8 @@ impl PlexiApp {
                     Some(egui_tiles::Tile::Pane(pane)) => Some(*pane),
                     _ => None,
                 };
-                let extend = ui.input(|i| i.modifiers.command && i.modifiers.shift);
+                let extend = routed_press
+                    .is_some_and(|press| press.modifiers.command && press.modifiers.shift);
                 let same_window = ctx.window_id == canvas_old_window_id;
                 if let (true, true, Some(start), Some(next)) = (extend, same_window, pane_at(canvas_old_focus), pane_at(clicked_tile)) {
                     log::info!("pane_selection: toggled by cmd+shift click window={} pane={next}", ctx.window_id);

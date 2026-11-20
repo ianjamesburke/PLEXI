@@ -1192,28 +1192,19 @@ mod tests {
         key: egui::Key,
         modifiers: egui::Modifiers,
     ) -> KeyDisposition {
-        let ctx = egui::Context::default();
-        let mut disposition = KeyDisposition::Passthrough;
-        let _ = ctx.run_ui(
-            egui::RawInput {
-                // `input.modifiers` reads from the top-level snapshot, not the
-                // per-event field — set both so the guard sees the modifier.
+        // `input.modifiers` reads from the top-level snapshot, not the
+        // per-event field — set both so the guard sees the modifier.
+        let input = crate::app::input_router::PlexiInput::synthetic(
+            vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
                 modifiers,
-                events: vec![egui::Event::Key {
-                    key,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers,
-                }],
-                ..Default::default()
-            },
-            |ui| {
-                let input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
-                disposition = app.handle_key(&input);
-            },
+            }],
+            modifiers,
         );
-        disposition
+        app.handle_key(&input)
     }
 
     #[test]
@@ -1277,25 +1268,19 @@ mod tests {
 
         // This mirrors the focused-TextEdit dispatcher path: CLI forms opt in
         // to receiving bare Enter before the event is returned to TextEdit.
-        let _ = ctx.run_ui(
-            egui::RawInput {
-                events: vec![egui::Event::Key {
-                    key: egui::Key::Enter,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers: egui::Modifiers::NONE,
-                }],
-                ..Default::default()
-            },
-            |ui| {
-                let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
-                assert!(app.submit_on_focused_text_input_enter());
-                assert_eq!(app.handle_key(&input), KeyDisposition::Consumed);
-                assert!(input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-                input.give_back(ui.ctx());
-            },
+        let mut input = crate::app::input_router::PlexiInput::synthetic(
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            egui::Modifiers::NONE,
         );
+        assert!(app.submit_on_focused_text_input_enter());
+        assert_eq!(app.handle_key(&input), KeyDisposition::Consumed);
+        assert!(input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
 
         assert!(
             app.take_pending_commands().iter().any(|command| matches!(

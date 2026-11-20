@@ -47,30 +47,15 @@ pub(crate) enum OverlaySurface {
 
 /// Memory slot for the trap member that held focus at the end of last frame.
 const FOCUS_TRAP_LAST_ID: &str = "plexi_focus_trap_last";
-/// Memory slot set while a focus trap owns input, so the next frame's Tab is
-/// taken from egui before its own traversal runs (stint 1514).
+/// Memory slot set while a focus trap owns input, so the router takes the
+/// next delivery's Tab away from egui's own traversal (stint 1514).
 const FOCUS_TRAP_ACTIVE_ID: &str = "plexi_focus_trap_active";
-/// Memory slot for this frame's Tab (`Some(shift)`), noted before an overlay
-/// owner takes the input buffer (stint 1505).
-const FOCUS_TRAP_TAB_NOW_ID: &str = "plexi_focus_trap_tab_now";
 
-/// Note this frame's Tab press for the focus trap, at the start of the frame:
-/// an overlay that takes the whole input buffer (unsaved changes) would
-/// otherwise hide it from the reconciler. While a trap owns input, egui's own
-/// Tab traversal is cancelled here, before any widget registers, so the
-/// trap's order is the only Tab order (stint 1514).
-pub(crate) fn note_tab_key(ctx: &egui::Context) {
-    let tab = ctx.input(|i| i.key_pressed(egui::Key::Tab).then_some(i.modifiers.shift));
-    let trap_active = ctx.data(|d| d.get_temp::<bool>(egui::Id::new(FOCUS_TRAP_ACTIVE_ID)));
-    if tab.is_some() && trap_active == Some(true) {
-        ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
-    }
-    ctx.data_mut(|d| match tab {
-        Some(shift) => {
-            d.insert_temp(egui::Id::new(FOCUS_TRAP_TAB_NOW_ID), shift);
-        }
-        None => d.remove::<bool>(egui::Id::new(FOCUS_TRAP_TAB_NOW_ID)),
-    });
+/// True while a focus trap owned input at the end of the last pass. The
+/// input router then claims an overlay's Tab instead of leaving it to egui's
+/// traversal, so the trap's order is the only Tab order.
+pub(crate) fn focus_trap_active(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(egui::Id::new(FOCUS_TRAP_ACTIVE_ID))) == Some(true)
 }
 
 impl PlexiApp {
@@ -195,15 +180,12 @@ impl PlexiApp {
         if let Some(trap) = owner_key.and_then(|key| registry.trap_for(key)) {
             // The trap order is the one Tab order (stint 1514): every Tab
             // steps from the member focused last frame (entering at the
-            // first, safe member with none, stint 1505); egui's own
-            // traversal was cancelled in `note_tab_key`.
+            // first, safe member with none, stint 1505). The input router
+            // recorded the overlay's Tab at its ordinal and, once the trap is
+            // known, kept it from egui's own traversal.
             let last_id = egui::Id::new(FOCUS_TRAP_LAST_ID);
             let last: Option<egui::Id> = ctx.data(|d| d.get_temp(last_id));
-            let noted: Option<bool> =
-                ctx.data(|d| d.get_temp(egui::Id::new(FOCUS_TRAP_TAB_NOW_ID)));
-            let tab = noted.or_else(|| {
-                ctx.input(|i| i.key_pressed(egui::Key::Tab).then_some(i.modifiers.shift))
-            });
+            let tab = self.input_router.trap_tab.take();
             let focused = ctx.memory(|m| m.focused());
             match tab.and_then(|backwards| crate::ui::focus::trap_step(trap, last, backwards)) {
                 Some(target) if focused != Some(target) => {
