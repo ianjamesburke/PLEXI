@@ -334,13 +334,22 @@ impl PlexiApp {
             initial_slots,
             focus,
             response_file: _,
-            peer_ancestry,
+            source,
         } = request
         else {
             return serde_json::json!({ "ok": false, "error": "agent_spawn_reply: not an agent_spawn request" });
         };
-        let (effective_parent, spawned_by) =
-            self.resolve_unspoofable_spawner(*parent_pane_id, peer_ancestry.as_deref());
+        let super::launch_plan::ResolvedSource {
+            caller_pane: effective_parent,
+            spawned_by,
+            ..
+        } = match self.resolve_launch_source(source, *parent_pane_id) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                log::warn!("pane_ipc: agent_spawn refused: {error}");
+                return serde_json::json!({ "ok": false, "error": error });
+            }
+        };
         log::info!(
             "pane_ipc: kind=agent_spawn role={role} harness={harness} subcontext={subcontext:?} ephemeral={ephemeral} parent_pane_id={effective_parent:?} spawned_by={spawned_by}"
         );
@@ -2471,6 +2480,15 @@ impl PlexiApp {
                     crate::app::launch_spec::PaneLaunchTarget::Terminal
                 ) {
                     self.launch_terminal_spec(&spec);
+                    return;
+                }
+                // App and path launches pass the same source resolution as a
+                // terminal: an unverified socket peer is refused (stint 1632).
+                if let Err(error) = self.resolve_launch_source(&spec.source, spec.from_pane_id) {
+                    log::warn!("pane_ipc: spawn_pane rejected: {error}");
+                    if let Some(rf) = response_file {
+                        write_json_response(rf, serde_json::json!({ "error": error }));
+                    }
                     return;
                 }
                 let mut response_pane_id = self.host.next_pane_id();
@@ -5423,7 +5441,7 @@ impl PlexiApp {
                 cwd,
                 caller_pane_id,
                 response_file,
-                peer_ancestry,
+                source,
             } => {
                 log::info!(
                     "pane_ipc: kind=agent_open name={name} cwd={cwd} caller={caller_pane_id:?}"
@@ -5432,7 +5450,7 @@ impl PlexiApp {
                     name,
                     std::path::Path::new(cwd),
                     *caller_pane_id,
-                    peer_ancestry.as_deref(),
+                    source,
                 ) {
                     Ok(outcome) => outcome.to_json(),
                     Err(error) => {

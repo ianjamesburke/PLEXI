@@ -1726,10 +1726,7 @@ impl PlexiApp {
         let Some(pid) = parent_pane_id else {
             return "human".to_string();
         };
-        let Some(pane) = self.windows.iter().find_map(|w| w.panes.get(&pid)) else {
-            return "human".to_string();
-        };
-        if let Some(term) = pane.as_terminal() {
+        if let Some(term) = self.terminal_incarnation(pid) {
             if let Some(ref role) = term.agent_role {
                 if !role.trim().is_empty() {
                     return format!("agent:{}", role.trim());
@@ -1752,27 +1749,6 @@ impl PlexiApp {
             }
         }
         "human".to_string()
-    }
-
-    /// Resolve the unspoofable `(parent_pane_id, spawned_by)` from socket `peer_ancestry`,
-    /// falling back to `claimed_parent_pane_id` only when socket peer ancestry is absent
-    /// (e.g. direct in-process test harness injection).
-    pub(crate) fn resolve_unspoofable_spawner(
-        &self,
-        claimed_parent_pane_id: Option<u64>,
-        peer_ancestry: Option<&[u32]>,
-    ) -> (Option<u64>, String) {
-        if let Some(ancestry) = peer_ancestry.filter(|a| !a.is_empty()) {
-            if let Some((verified_pane_id, _, _)) = self.resolve_socket_peer_pane(ancestry) {
-                let spawner = self.derive_spawned_by_for_parent(Some(verified_pane_id));
-                return (Some(verified_pane_id), spawner);
-            }
-            if claimed_parent_pane_id.is_none() {
-                return (None, "human".to_string());
-            }
-        }
-        let spawner = self.derive_spawned_by_for_parent(claimed_parent_pane_id);
-        (claimed_parent_pane_id, spawner)
     }
 
     /// Record a constructed terminal's provenance in the session trace, read

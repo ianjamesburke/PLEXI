@@ -81,18 +81,18 @@ impl AgentOpenOutcome {
 
 impl PlexiApp {
     /// Open the named agent `name` for a request made from `cwd` by `caller`.
-    /// `peer_ancestry` is the socket peer stamp: when it resolves to a live
-    /// pane, that pane is the caller and the claimed `caller` is ignored, for
-    /// both launch branches (same rule as `agent start`).
+    /// `source` is the host-stamped submitter: the caller is whoever
+    /// [`PlexiApp::resolve_launch_source`] resolves it to, for both launch
+    /// branches (same rule as `agent start`); an unverified source is refused.
     pub(crate) fn open_named_agent(
         &mut self,
         name: &str,
         cwd: &Path,
         caller: Option<u64>,
-        peer_ancestry: Option<&[u32]>,
+        source: &crate::protocol::SpawnSource,
     ) -> Result<AgentOpenOutcome, String> {
         let admitted = admit_agent_mesh_route("AgentOpen")?;
-        self.open_admitted_named_agent(name, cwd, caller, peer_ancestry, admitted)
+        self.open_admitted_named_agent(name, cwd, caller, source, admitted)
             .inspect_err(|error| log::warn!("agent_open: name={name} failed: {error}"))
     }
 
@@ -101,9 +101,10 @@ impl PlexiApp {
         name: &str,
         cwd: &Path,
         caller: Option<u64>,
-        peer_ancestry: Option<&[u32]>,
+        source: &crate::protocol::SpawnSource,
         admitted: AdmittedAgentMeshRoute,
     ) -> Result<AgentOpenOutcome, String> {
+        let verified_caller = self.resolve_launch_source(source, caller)?.caller_pane;
         if let Some(pane_id) = self.running_named_agent_pane(name) {
             // A standby pane is focused and left in Standby: it resumes only
             // on Enter or `pane send` (src/cli/AGENTS.md, owner rule).
@@ -120,7 +121,6 @@ impl PlexiApp {
         // The definition decides the harness; unknown agents fail here, before
         // anything is launched (same resolution as `agent start`).
         let stops = crate::app::registry::workspace_walk_stops()?;
-        let (verified_caller, _) = self.resolve_unspoofable_spawner(caller, peer_ancestry);
         let parent = self.agent_open_parent(verified_caller);
         let payload = crate::cli::agent::resolve_agent_start_in_stopping_at(
             name,
@@ -160,11 +160,10 @@ impl PlexiApp {
                 .map_err(|e| format!("agent open: start payload for '{name}' is invalid: {e}"))?
         };
         if let crate::protocol::HostRequest::AgentSpawn {
-            peer_ancestry: stamped,
-            ..
+            source: stamped, ..
         } = &mut request
         {
-            *stamped = peer_ancestry.map(<[u32]>::to_vec);
+            *stamped = source.clone();
         }
         let reply = self.agent_spawn_reply_admitted(&request, admitted);
         let pane_id = spawned_pane_id(&reply)?;

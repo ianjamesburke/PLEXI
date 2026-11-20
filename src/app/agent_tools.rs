@@ -84,8 +84,7 @@ impl PlexiApp {
             .map(|c| c.root.clone())
             .ok_or_else(|| format!("origin context {origin_context_id} no longer exists"))?;
         let caller_role = caller
-            .and_then(|id| self.windows.iter().find_map(|w| w.panes.get(&id)))
-            .and_then(|p| p.as_terminal())
+            .and_then(|id| self.terminal_incarnation(id))
             .and_then(|t| t.agent_role.as_deref());
         if let Some(caller_role) = caller_role {
             let workspace = crate::app::registry::resolve_agent_lookup_workspace_root(&root);

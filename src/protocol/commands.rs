@@ -839,9 +839,11 @@ pub enum HostRequest {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         focus: bool,
         response_file: String,
-        /// Host-stamped socket peer ancestry for unspoofable `spawned_by` provenance.
+        /// Who submitted this launch, stamped by the host and never read from
+        /// the wire: the claimed `parent_pane_id` names the parent only for an
+        /// in-process request (stint 1632).
         #[serde(skip)]
-        peer_ancestry: Option<Vec<u32>>,
+        source: SpawnSource,
     },
 
     /// Blocking pull wait for one or more child agent panes to finish via `plexi agent done`
@@ -913,9 +915,11 @@ pub enum HostRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caller_pane_id: Option<u64>,
         response_file: String,
-        /// Host-stamped socket peer ancestry for unspoofable `spawned_by` provenance.
+        /// Who submitted this open, stamped by the host and never read from
+        /// the wire: `caller_pane_id` names the caller only for an in-process
+        /// request (stint 1632).
         #[serde(skip)]
-        peer_ancestry: Option<Vec<u32>>,
+        source: SpawnSource,
     },
 
     AgentReopen {

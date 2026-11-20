@@ -5699,7 +5699,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     initial_slots: vec![],
                     focus: false,
                     response_file: reply.to_string_lossy().into_owned(),
-                    peer_ancestry: None,
+                    source: crate::protocol::SpawnSource::InProcess,
                 },
             );
             let raw = std::fs::read_to_string(&reply).expect("read spawn response");
@@ -5788,7 +5788,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     initial_slots: vec![],
                     focus: false,
                     response_file: reply.to_string_lossy().into_owned(),
-                    peer_ancestry: None,
+                    source: crate::protocol::SpawnSource::InProcess,
                 },
             );
             let raw = std::fs::read_to_string(&reply).expect("read split response");

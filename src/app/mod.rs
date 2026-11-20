@@ -888,7 +888,9 @@ pub(crate) fn handle_socket_line_in(
                     *p = peer_ancestry.unwrap_or(&[]).to_vec();
                     log::info!("pane_ipc: stamped peer ancestry ({} pid(s))", p.len());
                 }
-                crate::protocol::HostRequest::SpawnPane { source, .. } => {
+                crate::protocol::HostRequest::SpawnPane { source, .. }
+                | crate::protocol::HostRequest::AgentSpawn { source, .. }
+                | crate::protocol::HostRequest::AgentOpen { source, .. } => {
                     // An uncaptured peer stays `Unverified`: it can never pass
                     // for an in-process caller (stint 1632).
                     *source = match peer_ancestry {
@@ -897,7 +899,7 @@ pub(crate) fn handle_socket_line_in(
                         }
                         _ => crate::protocol::SpawnSource::Unverified,
                     };
-                    log::info!("pane_ipc: stamped spawn_pane source {source:?}");
+                    log::info!("pane_ipc: stamped launch source {source:?}");
                 }
                 crate::protocol::HostRequest::SetAgentState {
                     peer_ancestry: p, ..
@@ -912,12 +914,6 @@ pub(crate) fn handle_socket_line_in(
                     peer_ancestry: p, ..
                 }
                 | crate::protocol::HostRequest::CallerContext {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::AgentSpawn {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::AgentOpen {
                     peer_ancestry: p, ..
                 }
                 | crate::protocol::HostRequest::AgentWait {
@@ -2379,14 +2375,23 @@ impl PlexiApp {
         if self.team_member_for_pane(pane_id).is_some() {
             return false;
         }
-        let Some((win_idx, _)) = self.find_pane_in_any_window(pane_id) else {
-            return false;
-        };
-        self.windows
-            .get(win_idx)
-            .and_then(|win| win.panes.get(&pane_id))
-            .and_then(|pane| pane.as_terminal())
+        self.terminal_incarnation(pane_id)
             .is_some_and(|term| term.is_human_owned())
+    }
+
+    /// The live terminal process in `pane_id`'s slot, covered by an overlay
+    /// or not. Every identity and authority question about a pane (its
+    /// socket peer, ceiling, role, provenance) is asked of this, so covering
+    /// a terminal never changes how its process is authorized (stint 1632).
+    pub(crate) fn terminal_incarnation(
+        &self,
+        pane_id: crate::spatial::tiling::PaneId,
+    ) -> Option<&crate::host::pane::TerminalPane> {
+        let (win_idx, _) = self.find_pane_in_any_window(pane_id)?;
+        self.windows[win_idx]
+            .panes
+            .get(&pane_id)?
+            .terminal_incarnation()
     }
 
     /// The pane's ceiling from its authority binding, installed when it was
@@ -2398,11 +2403,7 @@ impl PlexiApp {
         &self,
         pane_id: crate::spatial::tiling::PaneId,
     ) -> Option<crate::broker::PermissionPosture> {
-        let (win_idx, _) = self.find_pane_in_any_window(pane_id)?;
-        self.windows[win_idx]
-            .panes
-            .get(&pane_id)?
-            .as_terminal()?
+        self.terminal_incarnation(pane_id)?
             .permission_posture()
             .cloned()
     }
@@ -2525,7 +2526,7 @@ impl PlexiApp {
         for &candidate in peer_ancestry {
             for window in self.windows.iter() {
                 for (pane_id, pane) in window.panes.iter() {
-                    let Some(terminal) = pane.as_terminal() else {
+                    let Some(terminal) = pane.terminal_incarnation() else {
                         continue;
                     };
                     if terminal.backend.child_pid() == candidate {
@@ -6013,8 +6014,7 @@ pub(crate) fn restore_workspace(
                 saved_pane.kind,
                 crate::workspace::SavedPaneKind::Portal { .. }
             ) {
-                if let crate::workspace::SavedPaneKind::Portal { context_id } = &saved_pane.kind
-                {
+                if let crate::workspace::SavedPaneKind::Portal { context_id } = &saved_pane.kind {
                     pane_entry = Some(Pane::Portal(Box::new(crate::host::pane::PortalPane {
                         pane_id: saved_pane.id,
                         target_context_id: *context_id,

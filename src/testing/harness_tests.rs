@@ -13180,7 +13180,7 @@ mod pane_lifecycle_events {
             initial_slots: vec![],
             focus: false,
             response_file: spawn_reply.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
 
@@ -13316,7 +13316,7 @@ mod pane_lifecycle_events {
             initial_slots: vec![],
             focus: false,
             response_file: spawn_reply.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
 
@@ -13386,7 +13386,7 @@ mod pane_lifecycle_events {
             initial_slots: vec![],
             focus: false,
             response_file: spawn_reply.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
         let spawned = read_json_response(&spawn_reply);
@@ -13526,7 +13526,7 @@ mod pane_lifecycle_events {
                 initial_slots: vec![],
                 focus: false,
                 response_file: reply.clone(),
-                peer_ancestry: None,
+                source: crate::protocol::SpawnSource::InProcess,
             });
             h.hidden_frame();
             let spawned = read_json_response(&reply);
@@ -15119,7 +15119,7 @@ mod agent_state_restoration_tests {
             initial_slots: vec![("summary".into(), "Auth audit passed".into())],
             focus: false,
             response_file: spawn_reply.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
         let spawned = read_json_response(&spawn_reply);
@@ -16458,7 +16458,7 @@ fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_an
 
     let plugin_req: HostRequest =
         serde_json::from_value(req_json).expect("valid AgentSpawn request");
-    h.inject_ipc(plugin_req);
+    h.inject_in_process(plugin_req);
     h.hidden_frame();
 
     let spawned = read_json_response(&spawn_reply);
@@ -16577,7 +16577,14 @@ impl AgentFocusFixture {
         payload["command"] = serde_json::Value::String("sleep 30".into());
         payload["response_file"] =
             serde_json::Value::String(temp_response(self.home.path(), "agent-focus"));
-        serde_json::from_value(payload).expect("valid AgentSpawn request")
+        let mut request: HostRequest =
+            serde_json::from_value(payload).expect("valid AgentSpawn request");
+        // The harness stands in for the verified socket path: the claimed
+        // caller is trusted as an in-process caller's is.
+        if let HostRequest::AgentSpawn { source, .. } = &mut request {
+            *source = crate::protocol::SpawnSource::InProcess;
+        }
+        request
     }
 
     fn start(&self, caller: Option<u64>) -> HostRequest {
@@ -16779,7 +16786,7 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
         initial_slots: vec![],
         focus: false,
         response_file: spawn_lead_reply.clone(),
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let lead_resp = read_json_response(&spawn_lead_reply);
@@ -16804,7 +16811,7 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
         initial_slots: vec![],
         focus: false,
         response_file: spawn_child_reply.clone(),
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let child_resp = read_json_response(&spawn_child_reply);
@@ -16935,7 +16942,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
         initial_slots: vec![],
         focus: false,
         response_file: lead_reply.clone(),
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let lead_id = read_json_response(&lead_reply)["pane_id"].as_u64().unwrap();
@@ -16959,7 +16966,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
             initial_slots: vec![],
             focus: false,
             response_file: rep.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
         child_ids.push(read_json_response(&rep)["pane_id"].as_u64().unwrap());
@@ -17147,7 +17154,7 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
         initial_slots: vec![],
         focus: false,
         response_file: spawn_reply.clone(),
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let spawn_json = read_json_response(&spawn_reply);
@@ -17322,7 +17329,7 @@ allow = ["pane.send"]
     let mut req_1 = start_payload_no_msg.clone();
     req_1["command"] = serde_json::Value::String("sleep 30".to_string());
     req_1["response_file"] = serde_json::Value::String(spawn_reply_1.clone());
-    h.inject_ipc(serde_json::from_value(req_1).unwrap());
+    h.inject_in_process(serde_json::from_value(req_1).unwrap());
     h.hidden_frame();
 
     let spawn_resp_1 = read_json_response(&spawn_reply_1);
@@ -17363,7 +17370,7 @@ allow = ["pane.send"]
         initial_slots: vec![],
         focus: false,
         response_file: spawn_claude_reply.clone(),
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let claude_resp = read_json_response(&spawn_claude_reply);
@@ -17397,7 +17404,7 @@ allow = ["pane.send"]
     let mut req_2 = spawn_payload.clone();
     req_2["command"] = serde_json::Value::String("sleep 30".to_string());
     req_2["response_file"] = serde_json::Value::String(spawn_reply_2.clone());
-    h.inject_ipc(serde_json::from_value(req_2).unwrap());
+    h.inject_in_process(serde_json::from_value(req_2).unwrap());
     h.hidden_frame();
 
     let spawn_resp_2 = read_json_response(&spawn_reply_2);
@@ -17564,7 +17571,7 @@ allow = ["pane.send"]
     let mut failed_request = failed_spawn_payload;
     failed_request["command"] = serde_json::Value::String("sleep 30".to_string());
     failed_request["response_file"] = serde_json::Value::String(failed_spawn_reply.clone());
-    h.inject_ipc(serde_json::from_value(failed_request).unwrap());
+    h.inject_in_process(serde_json::from_value(failed_request).unwrap());
     h.hidden_frame();
     let failed_child_pane_id = read_json_response(&failed_spawn_reply)["pane_id"]
         .as_u64()
@@ -18205,7 +18212,7 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
             initial_slots: vec![],
             focus: false,
             response_file: lead_reply.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
         let lead_id = read_json_response(&lead_reply)["pane_id"]
@@ -18228,7 +18235,7 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
             initial_slots: vec![],
             focus: false,
             response_file: helper_reply.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
         let helper_id = read_json_response(&helper_reply)["pane_id"]
@@ -18335,7 +18342,7 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
         initial_slots: vec![],
         focus: false,
         response_file: spawn_reply.clone(),
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let oneshot_pane = read_json_response(&spawn_reply)["pane_id"]
@@ -18605,7 +18612,7 @@ mod restore_followups_0983b {
                 initial_slots: vec![],
                 focus: false,
                 response_file: spawn_reply.clone(),
-                peer_ancestry: None,
+                source: crate::protocol::SpawnSource::InProcess,
             });
             h.hidden_frame();
             let child_id = read_json_response(&spawn_reply)["pane_id"]
@@ -21107,7 +21114,12 @@ fn named_agent_focuses_when_running() {
 
     let outcome = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect("open");
     h.run_frames(2);
 
@@ -21144,7 +21156,12 @@ fn named_agent_resumes_last_chat_when_stopped() {
 
     let outcome = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect("open");
     h.run_frames(2);
 
@@ -21209,7 +21226,12 @@ fn named_agent_resumes_exited_chat_before_closed_history() {
         assert!(!t.exited);
         let outcome = h
             .app
-            .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+            .open_named_agent(
+                "researcher",
+                &fx.proj_dir,
+                Some(caller),
+                &crate::protocol::SpawnSource::InProcess,
+            )
             .unwrap();
         let crate::app::agent_open::AgentOpenOutcome::Resumed {
             pane_id,
@@ -21248,7 +21270,12 @@ fn named_agent_resumes_exited_chat_before_closed_history() {
         h.app.fleet_history.borrow_mut().clear();
         assert_eq!(
             h.app
-                .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+                .open_named_agent(
+                    "researcher",
+                    &fx.proj_dir,
+                    Some(caller),
+                    &crate::protocol::SpawnSource::InProcess
+                )
                 .unwrap(),
             crate::app::agent_open::AgentOpenOutcome::Focused { pane_id }
         );
@@ -21285,7 +21312,12 @@ fn named_agent_exited_chat_selects_newest_eligible_pane() {
     h.app.pane_navigate(older);
     let resumed = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .unwrap();
     assert_eq!(
         resumed,
@@ -21339,7 +21371,12 @@ fn named_agent_exited_chat_selects_newest_eligible_pane() {
         }
         let resumed = h
             .app
-            .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+            .open_named_agent(
+                "researcher",
+                &fx.proj_dir,
+                Some(caller),
+                &crate::protocol::SpawnSource::InProcess,
+            )
             .unwrap();
         assert_eq!(
             resumed,
@@ -21355,7 +21392,12 @@ fn named_agent_exited_chat_selects_newest_eligible_pane() {
     let live = start_researcher(&mut h, &fx, caller);
     assert_eq!(
         h.app
-            .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+            .open_named_agent(
+                "researcher",
+                &fx.proj_dir,
+                Some(caller),
+                &crate::protocol::SpawnSource::InProcess
+            )
             .unwrap(),
         crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: live },
         "live agents still precede exited chats",
@@ -21392,7 +21434,12 @@ fn named_agent_starts_new_when_never_run() {
 
     let outcome = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect("open");
     h.run_frames(2);
 
@@ -21413,7 +21460,12 @@ fn named_agent_starts_new_when_never_run() {
 
     let missing = h
         .app
-        .open_named_agent("no-such-agent", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "no-such-agent",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect_err("unknown agents fail before launch");
     assert!(missing.contains("no-such-agent"), "{missing}");
 }
@@ -21444,7 +21496,7 @@ fn cli_agent_open_matches_palette() {
         cwd: fx.proj_dir.to_string_lossy().into_owned(),
         caller_pane_id: Some(caller),
         response_file: cli_reply.clone(),
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.run_frames(2);
     let cli = read_json_response(&cli_reply);
@@ -21502,7 +21554,12 @@ fn named_agent_focuses_standby_pane_without_waking_it() {
 
     let outcome = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect("open");
     h.run_frames(2);
 
@@ -21573,7 +21630,12 @@ fn named_agent_focuses_most_recently_focused_of_several() {
 
     let outcome = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect("open");
 
     assert_eq!(
@@ -21606,7 +21668,12 @@ fn named_agent_skips_exited_pane() {
 
     let outcome = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect("open");
 
     let crate::app::agent_open::AgentOpenOutcome::Started { pane_id } = outcome else {
@@ -21633,7 +21700,12 @@ fn named_agent_resumes_beside_unfocused_caller() {
 
     let outcome = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect("open");
     h.run_frames(2);
 
@@ -21679,7 +21751,7 @@ fn named_agent_resume_uses_verified_caller_not_claimed() {
             "researcher",
             &fx.proj_dir,
             Some(claimed),
-            Some(&[verified_pid]),
+            &crate::protocol::SpawnSource::SocketPeer(vec![verified_pid]),
         )
         .expect("open");
     h.run_frames(2);
@@ -21888,7 +21960,12 @@ fn named_agent_counts_detected_agent_after_launch_ended() {
     h.app.pane_navigate(caller);
     assert_eq!(
         h.app
-            .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+            .open_named_agent(
+                "researcher",
+                &fx.proj_dir,
+                Some(caller),
+                &crate::protocol::SpawnSource::InProcess
+            )
             .expect("open"),
         crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: shell }
     );
@@ -22058,7 +22135,7 @@ fn assert_agent_mesh_ipc_gate_enabled(route: &str, enabled: bool) {
             cwd: fx.proj_dir.to_string_lossy().into_owned(),
             caller_pane_id: Some(caller),
             response_file: response.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         },
         "AgentSpawn" => {
             let mut request = fx.spawn(Some(caller));

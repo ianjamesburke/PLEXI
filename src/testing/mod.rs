@@ -62,9 +62,9 @@ use egui::RawInput;
 use std::collections::HashMap;
 use std::sync::{atomic::AtomicU64, Arc};
 
-mod timeout;
 pub(crate) mod source_tree;
 pub(crate) mod test_log;
+mod timeout;
 pub(crate) use timeout::load_aware_timeout;
 
 // ─── HostSnapshot ────────────────────────────────────────────────────────────
@@ -725,13 +725,29 @@ impl HostHarness {
         self
     }
 
+    /// Inject a launch request (`spawn_pane`, `agent_spawn`, `agent_open`)
+    /// as a verified in-process caller would send it: its claimed pane is
+    /// trusted. A request deserialized from wire JSON is otherwise
+    /// `Unverified` and refused (stint 1632).
+    pub fn inject_in_process(&self, mut cmd: HostRequest) -> &Self {
+        match &mut cmd {
+            HostRequest::SpawnPane { source, .. }
+            | HostRequest::AgentSpawn { source, .. }
+            | HostRequest::AgentOpen { source, .. } => {
+                *source = crate::protocol::SpawnSource::InProcess;
+            }
+            _ => panic!("inject_in_process: not a launch request"),
+        }
+        self.inject_ipc(cmd)
+    }
+
     /// Launch a real process plugin from `plugins/dev/<name>` and return its pane
     /// id, without waiting for the guest's first render. Use this when the
     /// test drives startup itself (a title-phase poll, a scheduler-wake
     /// probe); otherwise prefer `launch_dev_view`, which also waits.
     pub fn launch_dev_view_without_render(&mut self, name: &str) -> PaneId {
-        let plugin_dir =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("plugins/dev/{name}"));
+        let plugin_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("plugins/dev/{name}"));
         let before = self.state().open_panes;
         let focused = self
             .app

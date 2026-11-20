@@ -4902,7 +4902,11 @@ mod agent_tests {
         let reply_dir = tempfile::tempdir().unwrap();
         let spawn_reply = reply_dir.path().join("spawn.json");
         payload["response_file"] = serde_json::json!(spawn_reply);
-        h.inject_ipc(serde_json::from_value(payload).unwrap());
+        let mut request: crate::protocol::HostRequest = serde_json::from_value(payload).unwrap();
+        if let crate::protocol::HostRequest::AgentSpawn { source, .. } = &mut request {
+            *source = crate::protocol::SpawnSource::InProcess;
+        }
+        h.inject_ipc(request);
         h.hidden_frame();
         let spawned: serde_json::Value =
             serde_json::from_slice(&fs::read(&spawn_reply).unwrap()).unwrap();

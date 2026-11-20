@@ -83,10 +83,28 @@ pub(crate) enum TerminalDestination {
     },
 }
 
+/// A launch's submitter as the host established it: the one answer every
+/// launch route (`spawn_pane` of any target, `agent spawn`, `agent open`)
+/// gets from [`PlexiApp::resolve_launch_source`] (stint 1632).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedSource {
+    /// The verified pane that asked. Only it supplies parent authority and
+    /// provenance; a claimed pane id from the wire never does.
+    pub(crate) caller_pane: Option<PaneId>,
+    /// The caller is a pane process (resolved through any overlay).
+    pub(crate) requester_is_pane: bool,
+    /// The directory-derived secret classes the launch is eligible for.
+    pub(crate) secrets: crate::host::shell::SecretPolicy,
+    pub(crate) spawned_by: String,
+}
+
 /// What a terminal launch may have, decided at admission.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TerminalAuthority {
     pub(crate) agent_pane: bool,
+    /// The workspace's terminal secrets; withheld from a source with no
+    /// verifiable identity (the spawn queue).
+    pub(crate) inject_terminal_secrets: bool,
     /// Folder secrets for exactly the plan's `cwd` (or its prepared checkout);
     /// never set without a directory bound at admission.
     pub(crate) inject_folder_secrets: bool,
@@ -412,6 +430,50 @@ impl PlexiApp {
             .transpose()
     }
 
+    /// Resolve who submitted a launch from its host-stamped source. A
+    /// request whose socket peer was not captured is refused; a claimed pane
+    /// names the caller only for an in-process request; a captured peer is
+    /// the terminal process it resolves to, covered by an overlay or not.
+    pub(crate) fn resolve_launch_source(
+        &self,
+        source: &SpawnSource,
+        claimed: Option<PaneId>,
+    ) -> Result<ResolvedSource, String> {
+        use crate::host::shell::SecretPolicy;
+        let (caller_pane, requester_is_pane, secrets) = match source {
+            SpawnSource::Unverified => {
+                return Err(refused(
+                    "the launch arrived without a verified socket peer identity".into(),
+                ))
+            }
+            SpawnSource::InProcess => (claimed, false, SecretPolicy::ALL),
+            SpawnSource::SocketPeer(pids) => match self.resolve_socket_peer_pane(pids) {
+                // A pane process gets its workspace's terminal secrets, never
+                // folder secrets.
+                Some((pane, _, _)) => (
+                    Some(pane),
+                    true,
+                    SecretPolicy {
+                        terminal: true,
+                        folder: false,
+                    },
+                ),
+                None => (None, false, SecretPolicy::ALL),
+            },
+            // Anyone who can write the profile's queue directory: no
+            // identity, so no caller pane and no secrets of either class.
+            SpawnSource::SpawnQueue => (None, false, SecretPolicy::NONE),
+        };
+        let resolved = ResolvedSource {
+            caller_pane,
+            requester_is_pane,
+            secrets,
+            spawned_by: self.derive_spawned_by_for_parent(caller_pane),
+        };
+        log::info!("launch_plan: resolved source {source:?} claimed={claimed:?} -> {resolved:?}");
+        Ok(resolved)
+    }
+
     /// Admit a terminal `spawn_pane`: what the new pane may have, where it
     /// goes and its directory. Names, focus and defaults are resolved here,
     /// once.
@@ -424,22 +486,12 @@ impl PlexiApp {
         // Provenance, the posture ceiling and secret eligibility come from the
         // host-stamped source. A wire `from_pane_id` is a placement origin; it
         // names the caller only for an in-process request (stint 1632).
-        let (caller_pane, requester_is_pane, secrets_eligible) = match &spec.source {
-            SpawnSource::Unverified => {
-                return Err(refused(
-                    "spawn_pane arrived without a verified socket peer identity".into(),
-                ))
-            }
-            SpawnSource::InProcess => (spec.from_pane_id, false, true),
-            SpawnSource::SocketPeer(pids) => {
-                let peer = self.resolve_socket_peer_pane(pids).map(|(pid, _, _)| pid);
-                (peer, peer.is_some(), peer.is_none())
-            }
-            // Anyone who can write the profile's queue directory: no identity,
-            // so no caller pane and no folder secrets.
-            SpawnSource::SpawnQueue => (None, false, false),
-        };
-        let spawned_by = self.derive_spawned_by_for_parent(caller_pane);
+        let ResolvedSource {
+            caller_pane,
+            requester_is_pane,
+            secrets: eligible,
+            spawned_by,
+        } = self.resolve_launch_source(&spec.source, spec.from_pane_id)?;
         let requester_is_agent = caller_pane.is_some_and(|pid| !self.is_human_owned_pane(pid))
             || spec
                 .from_pane_id
@@ -559,7 +611,7 @@ impl PlexiApp {
             .map(|branch| (branch.clone(), self.resolve_worktree_anchor(spec)));
         // Folder secrets belong to one directory decided now: the bound cwd or
         // the checkout prepared for this plan. No directory, no secrets.
-        let inject_folder_secrets = secrets_eligible
+        let inject_folder_secrets = eligible.folder
             && (cwd.is_some() || worktree.is_some())
             && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets);
         log::info!(
@@ -570,6 +622,7 @@ impl PlexiApp {
         Ok(TerminalLaunchPlan {
             authority: TerminalAuthority {
                 agent_pane,
+                inject_terminal_secrets: eligible.terminal,
                 inject_folder_secrets,
                 caller_pane,
                 spawned_by,
@@ -733,7 +786,7 @@ impl PlexiApp {
             context,
             cwd: prepared.map(|wt| wt.path.clone()).or(plan.cwd.clone()),
             secrets: crate::host::shell::SecretPolicy {
-                terminal: !authority.agent_pane,
+                terminal: !authority.agent_pane && authority.inject_terminal_secrets,
                 folder: !authority.agent_pane && authority.inject_folder_secrets,
             },
             agent_pane: authority.agent_pane,
@@ -880,9 +933,8 @@ impl PlexiApp {
             (None, Some(cwd)) => PathBuf::from(cwd),
             _ => grant_root,
         };
-        let parent_terminal = parent
-            .and_then(|id| self.windows.iter().find_map(|w| w.panes.get(&id)))
-            .and_then(|p| p.as_terminal());
+        let parent_terminal = parent.and_then(|id| self.terminal_incarnation(id));
+        let parent_of_parent = parent_terminal.and_then(|t| t.parent_pane_id);
         let task_text = match (request.handoff, parent) {
             (true, Some(old)) => {
                 let packet = json!({"from_pane_id":old,"from_role":parent_terminal.and_then(|t| t.agent_role.as_deref()),
@@ -914,7 +966,7 @@ impl PlexiApp {
             _ => None,
         };
         let child_parent = if request.handoff {
-            parent_terminal.and_then(|t| t.parent_pane_id)
+            parent_of_parent
         } else {
             parent
         };
@@ -2399,6 +2451,195 @@ mod tests {
             cwd,
             env,
             reads,
+        }
+    }
+
+    /// Cover `pane` with a builtin overlay, as a user opening an app over
+    /// it does.
+    fn cover_with_overlay(h: &mut HostHarness, pane: PaneId) {
+        let win = window_of(h, pane);
+        let tile = h.app.windows[win].tree.tiles.find_pane(&pane).unwrap();
+        h.app.active_window = win;
+        h.app.set_window_focused_pane(win, tile);
+        let root = h.workspace_root();
+        h.app.open_builtin_view_pane(
+            Box::new(crate::file_browser::FileBrowserView::new(root.clone())),
+            crate::app::permissions::PluginPermissions::builtin(),
+            root,
+            None,
+            Some("overlay"),
+            None,
+        );
+        let covered = h.app.windows[win].panes[&pane]
+            .as_view()
+            .is_some_and(|v| v.overlay_replaced.is_some());
+        assert!(covered, "fixture: {pane} is covered by an overlay");
+    }
+
+    /// Round 3 item 1: covering a terminal with an overlay does not change
+    /// how its live process is authorized. Its socket peer still resolves to
+    /// it (so its launches are a pane's: no folder secrets, its ceiling
+    /// inherited), and its ceiling and `can_call` are its own, not the
+    /// overlay's.
+    #[test]
+    fn launch_plan_covered_terminal_keeps_its_identity_and_authority() {
+        let _features =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let caller = spawn_tester(&mut h, &root);
+        let posture = h.app.pane_permission_posture(caller);
+        assert!(
+            posture.is_some(),
+            "fixture: the tester runs under a ceiling"
+        );
+        let pid = h
+            .app
+            .terminal_incarnation(caller)
+            .unwrap()
+            .backend
+            .child_pid();
+        let context_id = h.app.windows[window_of(&h, caller)].context_id;
+        cover_with_overlay(&mut h, caller);
+
+        assert_eq!(
+            h.app
+                .resolve_socket_peer_pane(&[pid])
+                .map(|(pane, _, _)| pane),
+            Some(caller),
+            "the covered terminal's process is still that pane"
+        );
+        assert_eq!(h.app.pane_permission_posture(caller), posture);
+        let mut socket = spec(&h, "split_h", None, None);
+        socket.source = SpawnSource::SocketPeer(vec![pid]);
+        let plan = h.app.admit_terminal_launch(&socket).expect("admits");
+        assert_eq!(plan.authority.caller_pane, Some(caller));
+        assert!(
+            !plan.authority.inject_folder_secrets,
+            "a pane caller gets no folder secrets"
+        );
+        assert_eq!(plan.authority.inherited_posture, posture);
+        let error = h
+            .app
+            .check_agent_tool_permission(Some(caller), context_id, "tester", false)
+            .expect_err("the tester lists no role in can_call");
+        assert!(error.contains("can_call"), "{error}");
+    }
+
+    /// Round 3 item 6a: `agent spawn` and `agent open` take their caller
+    /// from the host-stamped source through the one resolver. An uncaptured
+    /// peer is refused, and a captured peer that is no pane never borrows the
+    /// claimed parent's authority or provenance.
+    #[test]
+    fn launch_plan_agent_spawn_and_open_resolve_the_stamped_source() {
+        let _features =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let claimed = spawn_tester(&mut h, &root);
+        let request = |source: SpawnSource| HostRequest::AgentSpawn {
+            role: "tester".to_string(),
+            harness: "pi".to_string(),
+            command: "sleep 30".to_string(),
+            task: None,
+            subcontext: None,
+            ephemeral: false,
+            parent_pane_id: Some(claimed),
+            name: None,
+            cwd: Some(root.to_string_lossy().into_owned()),
+            worktree: None,
+            result_schema: None,
+            initial_slots: Vec::new(),
+            focus: false,
+            response_file: String::new(),
+            source,
+        };
+        let panes = |h: &HostHarness| h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
+        let before = panes(&h);
+        let unverified = h.app.agent_spawn_reply(&request(SpawnSource::Unverified));
+        assert_eq!(unverified["ok"], false, "{unverified}");
+        assert!(
+            unverified["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("verified socket peer"),
+            "{unverified}"
+        );
+        assert_eq!(panes(&h), before, "an unverified spawn starts nothing");
+
+        let outside = h
+            .app
+            .agent_spawn_reply(&request(SpawnSource::SocketPeer(vec![u32::MAX])));
+        assert_eq!(outside["ok"], true, "{outside}");
+        assert_eq!(
+            outside["parent_pane_id"],
+            Value::Null,
+            "a captured peer that is no pane is not the claimed parent: {outside}"
+        );
+        assert_eq!(outside["spawned_by"], "human", "{outside}");
+
+        let in_process = h.app.agent_spawn_reply(&request(SpawnSource::InProcess));
+        assert_eq!(in_process["parent_pane_id"], json!(claimed), "{in_process}");
+
+        let error = h
+            .app
+            .open_named_agent("tester", &root, Some(claimed), &SpawnSource::Unverified)
+            .expect_err("an unverified open is refused");
+        assert!(error.contains("verified socket peer"), "{error}");
+    }
+
+    /// Round 3 item 8: a spawn-queue launch has no verifiable identity, so it
+    /// resolves no secret of either class; and an app or path `spawn_pane`
+    /// is refused on an unverified source exactly as a terminal is.
+    #[test]
+    fn launch_plan_queue_gets_no_secrets_and_every_target_refuses_unverified() {
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        h.app.active_window = 0;
+        h.app.windows[0].focused_pane = None;
+        let mut queued = spec(&h, "new_window", None, None);
+        queued.source = SpawnSource::SpawnQueue;
+        let launched = launch_observed(&mut h, &queued);
+        assert!(
+            launched.reads.is_empty(),
+            "a queue launch resolves no secret: {:?}",
+            launched.reads
+        );
+
+        for (type_id, path) in [("file_browser", None), ("", Some(h.workspace_root()))] {
+            let reply = h
+                .workspace_root()
+                .join(format!("unverified-{type_id}.json"));
+            let mut request: HostRequest = serde_json::from_value(json!({
+                "type": "spawn_pane",
+                "type_id": type_id,
+                "args": [],
+                "response_file": reply,
+            }))
+            .unwrap();
+            if let (Some(app_path), HostRequest::SpawnPane { path, .. }) = (&path, &mut request) {
+                *path = Some(app_path.to_string_lossy().into_owned());
+            }
+            let before = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
+            h.app.handle_pane_ipc_request(request);
+            let body: Value =
+                serde_json::from_str(&std::fs::read_to_string(&reply).expect("a reply")).unwrap();
+            assert!(
+                body["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("verified socket peer"),
+                "{type_id}: {body}"
+            );
+            assert_eq!(
+                h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>(),
+                before,
+                "{type_id}: nothing launched"
+            );
         }
     }
 

@@ -2899,7 +2899,12 @@ impl PlexiApp {
                     .unwrap_or_else(|| command.context_root.clone());
                 // The entire saved command now runs in logic, so admission
                 // and resolution can finish before the next step executes.
-                match self.open_named_agent(&name, &eff_cwd, default_pane_id, None) {
+                match self.open_named_agent(
+                    &name,
+                    &eff_cwd,
+                    default_pane_id,
+                    &crate::protocol::SpawnSource::InProcess,
+                ) {
                     Ok(_) => HostStepOutcome::Exited(0),
                     Err(error) => {
                         self.notify_command_refused(&format!("agent open {name}"), &error);

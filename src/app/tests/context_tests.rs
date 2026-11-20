@@ -4553,10 +4553,15 @@ fn context_target_request(
     let file = h.profile_dir().join("context-target-reply.json");
     let _ = std::fs::remove_file(&file);
     payload["response_file"] = serde_json::json!(file);
-    let request = serde_json::from_value(payload.clone()).unwrap_or_else(|_| {
+    let mut request = serde_json::from_value(payload.clone()).unwrap_or_else(|_| {
         payload.as_object_mut().unwrap().remove("response_file");
         serde_json::from_value(payload).unwrap()
     });
+    // The harness stands in for a verified caller: a launch's claimed
+    // pane is trusted as an in-process caller's is.
+    if let crate::protocol::HostRequest::SpawnPane { source, .. } = &mut request {
+        *source = crate::protocol::SpawnSource::InProcess;
+    }
     h.inject_ipc(request);
     h.app.drain_pane_cmd_channel();
     std::fs::read_to_string(file)
@@ -4720,9 +4725,25 @@ fn context_targets_invalid_view_context_never_spawns_in_active() {
     let mut h = crate::testing::HostHarness::new();
     h.add_test_pane();
     let count = h.app.windows[0].panes.len();
-    let reply = context_target_request(&mut h, serde_json::json!({"type":"spawn_pane", "type_id":"agents", "target_context":u64::MAX, "args":[]})).unwrap();
+    let file = h.profile_dir().join("context-target-reply.json");
+    let mut request: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+        "type": "spawn_pane", "type_id": "agents", "target_context": u64::MAX, "args": [],
+        "response_file": file,
+    }))
+    .unwrap();
+    // A verified caller, so the request reaches the target check.
+    if let crate::protocol::HostRequest::SpawnPane { source, .. } = &mut request {
+        *source = crate::protocol::SpawnSource::InProcess;
+    }
+    h.inject_ipc(request);
+    h.app.drain_pane_cmd_channel();
+    let reply: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
     assert_eq!(h.app.windows[0].panes.len(), count);
-    assert!(reply["error"].as_str().unwrap().contains("not found"));
+    assert!(
+        reply["error"].as_str().unwrap().contains("not found"),
+        "{reply}"
+    );
 }
 
 /// The panes split beside `portal`: its nearest Linear ancestor's other
