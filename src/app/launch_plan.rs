@@ -3555,4 +3555,517 @@ mod tests {
         assert!(!h.app.pane_worktrees.contains_key(&pane));
         assert!(!path.exists(), "the ordinary close reclaimed it");
     }
+    // ── Round 3/4 acceptance: one durable grant per pane (DESIGN-R2) ────────
+
+    fn edit_saved_workspace(
+        profile: &std::path::Path,
+        edit: impl FnOnce(&mut crate::workspace::WorkspaceFile),
+    ) {
+        let mut ws = crate::workspace::WorkspaceFile::load_from(profile).expect("saved workspace");
+        edit(&mut ws);
+        ws.save_to(profile).expect("rewrite workspace");
+    }
+
+    fn saved_pane_mut(
+        ws: &mut crate::workspace::WorkspaceFile,
+        pane: PaneId,
+    ) -> &mut crate::workspace::SavedPane {
+        ws.windows
+            .iter_mut()
+            .flat_map(|w| w.panes.iter_mut())
+            .find(|p| p.id == pane)
+            .expect("pane was saved")
+    }
+
+    /// A role directory with this settings body.
+    fn write_role_settings(root: &std::path::Path, id: &str, body: &str) {
+        let dir = crate::agent::workspace_agents_dir(root).join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("AGENT.md"), id).unwrap();
+        std::fs::write(
+            dir.join("settings.toml"),
+            format!("[agent]\nid='{id}'\ndisplay_name='{id}'\n[harness]\ncli='pi'\nephemeral=false\n{body}"),
+        )
+        .unwrap();
+    }
+
+    /// A named worker for `role`, under `parent` when given.
+    fn worker(
+        h: &mut HostHarness,
+        root: &std::path::Path,
+        role: &str,
+        parent: Option<PaneId>,
+        sub: Option<&str>,
+    ) -> PaneId {
+        h.app
+            .spawn_agent_worker_pane(
+                role,
+                "pi",
+                "sleep 30",
+                "Run",
+                sub,
+                false,
+                parent,
+                Some(root.to_path_buf()),
+                None,
+                None,
+                false,
+                None,
+            )
+            .expect("worker starts")
+            .0
+    }
+
+    /// A plain shell `caller`'s own process asks for over the socket.
+    fn shell_from(h: &mut HostHarness, caller: PaneId) -> PaneId {
+        let launch = from_caller(h, "split_h", caller);
+        let plan = h.app.admit_terminal_launch(&launch).expect("admits");
+        apply(h, &plan).expect("plain shell starts")
+    }
+
+    fn pid_of(h: &mut HostHarness, pane: PaneId) -> u32 {
+        h.app
+            .terminal_incarnation(pane)
+            .expect("a live terminal")
+            .backend
+            .child_pid()
+    }
+
+    /// The grant `pane` runs under.
+    fn grant_of(h: &HostHarness, pane: PaneId) -> crate::broker::pane_authority::PaneAuthority {
+        h.app
+            .pane_authority(pane)
+            .expect("a constructed terminal")
+            .grant()
+            .clone()
+    }
+
+    /// A second context holding one workspace secret; returns its id string.
+    fn secret_context(h: &mut HostHarness, root: &std::path::Path) -> String {
+        let mut target = h.app.router.active().clone();
+        target.context_id = crate::testing::reserve_test_context_id();
+        target.root = root.to_path_buf();
+        target.name = crate::host::context::ContextName::custom("grant-inventory");
+        let id = target.context_id.to_string();
+        h.app.router.push(target);
+        let cfg = crate::workspace::secrets::init_workspace(
+            root,
+            &crate::config::workspace_channel_dir(),
+        )
+        .unwrap();
+        let account = crate::workspace::secrets::keychain_workspace_name(&cfg.id, "GRANT_1632");
+        crate::workspace::secrets::system_store()
+            .set(&account, "not-for-output")
+            .unwrap();
+        id
+    }
+
+    /// The broker's answer to a cross-context secret inventory asked by
+    /// `pid`'s pane: `true` when the names were listed without admission.
+    fn lists_other_context(h: &mut HostHarness, context: &str, pid: u32) -> bool {
+        let response_file = crate::rpc::response_file("grant-1632-list", "json");
+        let request = HostRequest::PaneSecretList {
+            context: context.into(),
+            peer_ancestry: vec![pid],
+            response_file: response_file.clone(),
+        };
+        let line = serde_json::to_string(&request).unwrap();
+        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[pid]), &mut Vec::new());
+        h.hidden_frame();
+        let body: Value =
+            serde_json::from_str(&std::fs::read_to_string(response_file).unwrap()).unwrap();
+        body["entries"]
+            .as_array()
+            .is_some_and(|e| e.iter().any(|entry| entry["name"] == "GRANT_1632"))
+    }
+
+    /// Round 3 items 2a and 8, round 4 ownership: an agent's plain child and
+    /// a spawn-queue shell are restricted from the first instant and after a
+    /// restart with no agent-session metadata: no human ownership, no secret
+    /// read, and the next cross-context inventory goes through admission. A
+    /// desktop shell is the control.
+    #[test]
+    fn grant_plain_child_and_queue_shell_stay_restricted_through_restart() {
+        let profile = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let (desktop, child, queued, grandchild) = {
+            let mut h = HostHarness::from_profile_dir(profile.path());
+            let desktop = h.add_focused_terminal();
+            h.app.set_context_root(root.path().to_path_buf(), None);
+            let agent = spawn_tester(&mut h, root.path());
+            crate::host::shell::secret_reads::take();
+            let child = shell_from(&mut h, agent);
+            let mut queue = spec(&h, "new_window", None, None);
+            queue.source = SpawnSource::SpawnQueue;
+            let plan = h.app.admit_terminal_launch(&queue).unwrap();
+            let queued = apply(&mut h, &plan).unwrap();
+            // The child's own next launch.
+            let grandchild = shell_from(&mut h, child);
+            assert_eq!(
+                crate::host::shell::secret_reads::take(),
+                Vec::new(),
+                "no ineligible secret resolver read"
+            );
+            let context = secret_context(&mut h, other.path());
+            for (pane, human) in [(desktop, true), (child, false), (queued, false), (grandchild, false)] {
+                assert_eq!(h.app.is_human_owned_pane(pane), human, "pane {pane} live");
+                let pid = pid_of(&mut h, pane);
+                assert_eq!(lists_other_context(&mut h, &context, pid), human, "pane {pane} live");
+            }
+            assert!(h.app.save_workspace_now(), "saved");
+            (desktop, child, queued, grandchild)
+        };
+        let mut h = HostHarness::from_profile_dir(profile.path());
+        let context = secret_context(&mut h, other.path());
+        for (pane, human) in [(desktop, true), (child, false), (queued, false), (grandchild, false)] {
+            assert!(
+                h.app.terminal_incarnation(pane).is_some_and(|t| !t.is_agent_pane()),
+                "fixture: pane {pane} restored with no agent session"
+            );
+            assert_eq!(h.app.is_human_owned_pane(pane), human, "pane {pane} restored");
+            let pid = pid_of(&mut h, pane);
+            assert_eq!(lists_other_context(&mut h, &context, pid), human, "pane {pane} restored");
+        }
+        assert_eq!(
+            grant_of(&h, child).secrets,
+            crate::broker::pane_authority::SecretEligibility::none()
+        );
+    }
+
+    /// Round 4 delegation: a plain child and grandchild carry their parent's
+    /// `can_call` and `can_handoff` limits, independently, live and after a
+    /// restart. A broader role-file edit does not widen a running pane.
+    #[test]
+    fn grant_delegation_limits_travel_with_plain_children() {
+        let profile = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let check = |h: &HostHarness, pane: PaneId, label: &str| {
+            let ctx = h.app.windows[window_of(h, pane)].context_id;
+            let decide = |role: &str, handoff: bool| {
+                h.app
+                    .check_agent_tool_permission(Some(pane), ctx, role, handoff)
+                    .is_ok()
+            };
+            assert!(decide("tester", false), "{label}: may call tester");
+            assert!(!decide("writer", false), "{label}: may not call writer");
+            assert!(decide("writer", true), "{label}: may hand off to writer");
+            assert!(!decide("tester", true), "{label}: may not hand off to tester");
+        };
+        let (lead, child, grandchild) = {
+            let mut h = HostHarness::from_profile_dir(profile.path());
+            h.add_test_pane();
+            h.app.set_context_root(root.path().to_path_buf(), None);
+            write_role_settings(root.path(), "lead", "can_call=['tester']\ncan_handoff=['writer']\n");
+            let lead = worker(&mut h, root.path(), "lead", None, None);
+            let child = shell_from(&mut h, lead);
+            let grandchild = shell_from(&mut h, child);
+            for (pane, label) in [(lead, "lead"), (child, "child"), (grandchild, "grandchild")] {
+                check(&h, pane, label);
+            }
+            // A broader definition after admission widens nothing.
+            write_role_settings(
+                root.path(),
+                "lead",
+                "can_call=['tester','writer']\ncan_handoff=['writer','tester']\n",
+            );
+            for (pane, label) in [(lead, "lead"), (child, "child"), (grandchild, "grandchild")] {
+                check(&h, pane, label);
+            }
+            assert!(h.app.save_workspace_now(), "saved");
+            (lead, child, grandchild)
+        };
+        let h = HostHarness::from_profile_dir(profile.path());
+        for (pane, label) in [(lead, "lead"), (child, "child"), (grandchild, "grandchild")] {
+            check(&h, pane, &format!("{label} restored"));
+        }
+    }
+
+    /// Round 3 item 2b, round 4 missing role and legacy ancestry. A legacy
+    /// grandparent, parent and child saved across windows, with the deny
+    /// only on the grandparent's role and no saved parent posture, restores
+    /// the child denied at first use, even with an exact allow grant
+    /// present. An unreadable child role, a missing parent and a cycle seal
+    /// the pane.
+    #[test]
+    fn grant_legacy_import_keeps_ancestor_restrictions() {
+        let profile = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        write_role_settings(
+            root.path(),
+            "elder",
+            "[permissions]\ndefault_posture='ask'\ndeny=['tool.secret']\n",
+        );
+        write_role_settings(root.path(), "helper", "[permissions]\ndefault_posture='ask'\n");
+        let (grandparent, parent, child, plain) = {
+            let mut h = HostHarness::from_profile_dir(profile.path());
+            h.add_test_pane();
+            h.app.set_context_root(root.path().to_path_buf(), None);
+            let grandparent = worker(&mut h, root.path(), "elder", None, None);
+            let parent = worker(&mut h, root.path(), "helper", Some(grandparent), Some("mid"));
+            let child = worker(&mut h, root.path(), "helper", Some(parent), Some("leaf"));
+            let plain = h.add_focused_terminal();
+            assert_ne!(window_of(&h, grandparent), window_of(&h, child));
+            assert!(h.app.save_workspace_now(), "saved");
+            (grandparent, parent, child, plain)
+        };
+        // A pre-grant save: no records, and no saved posture below the
+        // grandparent's role.
+        let legacy = |extra: &dyn Fn(&mut crate::workspace::WorkspaceFile)| {
+            edit_saved_workspace(profile.path(), |ws| {
+                for pane in ws.windows.iter_mut().flat_map(|w| w.panes.iter_mut()) {
+                    pane.authority = None;
+                    if let Some(session) = pane.agent_session.as_mut() {
+                        session.permission_posture = None;
+                    }
+                }
+                extra(ws);
+            });
+        };
+        let exact_allow = |h: &HostHarness, pane: PaneId| {
+            let binding = crate::broker::ExactBinding {
+                actor_type: crate::broker::ActorType::Agent,
+                actor_id: format!("pane:{pane}"),
+                actor_scope: crate::broker::ActorScope::Workspace,
+                trust_origin: "host".to_string(),
+                workspace_root: root.path().to_path_buf(),
+                target_type: crate::broker::TargetType::PluginConnector,
+                target_id: "tool.secret".to_string(),
+                resource_scope: crate::broker::ResourceScope::Game,
+                resource_id: Some("game-1".to_string()),
+                args_fingerprint: "fp-1632".to_string(),
+                session_id: None,
+                package_id: "grant-1632".to_string(),
+                instance_id: Some(7),
+                context_id: Some(3),
+                call_id: "grant-1632".to_string(),
+                operation_id: String::new(),
+            };
+            let mut store = crate::broker::GrantStore::default();
+            store.record(crate::broker::GrantRecord::from_binding(
+                &binding,
+                crate::broker::Decision::Allow,
+                crate::broker::GrantDuration::Always,
+                crate::broker::GrantSource::User,
+                "exact allow",
+            ));
+            let request = crate::broker::PermissionRequest::exact(&binding);
+            match h.app.pane_ceiling(pane) {
+                Ok(posture) => {
+                    assert_eq!(
+                        store.evaluate_at(&request, None, 0),
+                        crate::broker::Decision::Allow,
+                        "fixture: the exact grant allows without a ceiling"
+                    );
+                    store.evaluate_at(&request, posture.as_ref(), 0)
+                }
+                Err(_) => crate::broker::Decision::Deny,
+            }
+        };
+        legacy(&|_| {});
+        let h = HostHarness::from_profile_dir(profile.path());
+        assert_eq!(
+            exact_allow(&h, child),
+            crate::broker::Decision::Deny,
+            "the grandparent's deny beats an exact allow at first use"
+        );
+        assert!(h.app.pane_ceiling(plain).is_err(), "a legacy plain shell is sealed");
+        assert!(!h.app.is_human_owned_pane(plain));
+        drop(h);
+
+        // Unreadable child role.
+        legacy(&|_| {});
+        let broken = crate::agent::workspace_agents_dir(root.path()).join("helper");
+        std::fs::write(broken.join("settings.toml"), "not toml [").unwrap();
+        let h = HostHarness::from_profile_dir(profile.path());
+        assert!(h.app.pane_ceiling(child).is_err(), "unreadable role: sealed");
+        drop(h);
+        write_role_settings(root.path(), "helper", "[permissions]\ndefault_posture='ask'\n");
+
+        // Missing parent: the child names a pane that is not in the save.
+        legacy(&|ws| {
+            saved_pane_mut(ws, child)
+                .agent_session
+                .as_mut()
+                .unwrap()
+                .parent_pane_id = Some(parent + 1_000_000);
+        });
+        let h = HostHarness::from_profile_dir(profile.path());
+        assert!(h.app.pane_ceiling(child).is_err(), "missing parent: sealed");
+        drop(h);
+
+        // A cycle: the grandparent claims the child as its parent.
+        legacy(&|ws| {
+            saved_pane_mut(ws, grandparent)
+                .agent_session
+                .as_mut()
+                .unwrap()
+                .parent_pane_id = Some(child);
+        });
+        let h = HostHarness::from_profile_dir(profile.path());
+        assert!(h.app.pane_ceiling(child).is_err(), "cycle: sealed");
+    }
+
+    /// Round 4 missing role: a direct named-worker launch whose role does
+    /// not resolve starts no backend; and a history reopen under a broader
+    /// current definition keeps the recorded restriction.
+    #[test]
+    fn grant_unresolved_named_worker_starts_nothing_and_reopen_keeps_its_record() {
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let starts = std::rc::Rc::new(std::cell::Cell::new(0));
+        let started = starts.clone();
+        let entry = crate::pane_ops::construct::probes::on_backend_entry(move |_| {
+            started.set(started.get() + 1);
+            Ok(())
+        });
+        let before = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
+        let error = h
+            .app
+            .admit_agent_call(&AgentCallRequest {
+                role: "ghost",
+                task: "Haunt",
+                parent_pane_id: None,
+                credential: None,
+                peer_ancestry: &[u32::MAX],
+                cwd: Some(root.to_str().unwrap()),
+                worktree: None,
+                asynchronous: true,
+                handoff: false,
+                response_file: "",
+            })
+            .expect_err("an unresolved role is refused");
+        assert!(error.contains("ghost"), "{error}");
+        assert_eq!(starts.get(), 0, "no backend started");
+        assert_eq!(
+            h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>(),
+            before
+        );
+        drop(entry);
+
+        write_role_settings(&root, "tester", "[permissions]\ndefault_posture='ask'\n");
+        let recorded = {
+            let mut grant = crate::broker::pane_authority::PaneAuthority::for_test(
+                7_001,
+                crate::broker::pane_authority::Ceiling::Posture {
+                    posture: posture(&["record.only"]),
+                },
+                0,
+                root.clone(),
+            );
+            grant.can_call = crate::broker::pane_authority::Delegation::none();
+            serde_json::to_value(grant).unwrap()
+        };
+        let record = crate::workspace::AgentHistoryRecord {
+            fleet_seen: false,
+            fleet_dismissed: false,
+            run_id: "run-1632-reopen".into(),
+            pane_id: 7_001,
+            context_id: h.app.windows[0].context_id,
+            context_name: "Test".into(),
+            parent_pane_id: None,
+            spawned_by: None,
+            pane_name: None,
+            harness: "pi".into(),
+            config_name: Some("tester".into()),
+            permission_posture: None,
+            authority: Some(recorded),
+            session_id: None,
+            cwd: root.clone(),
+            ephemeral: false,
+            last_state: crate::protocol::AgentState::Completed,
+            last_blocked_reason: None,
+            last_detail: None,
+            summary: None,
+            result: None,
+            tail_preview: None,
+            slots: HashMap::new(),
+            closed_at: 0,
+        };
+        let reply = h.app.reopen_agent_record(
+            &record,
+            None,
+            None,
+            crate::broker::pane_authority::GrantSource::OutsideProcess,
+        );
+        let reopened = reply["pane_id"].as_u64().expect("reopened");
+        let grant = grant_of(&h, reopened);
+        assert!(
+            grant.posture().unwrap().is_some_and(|p| p.denies("record.only")),
+            "the recorded restriction is kept: {grant:?}"
+        );
+        assert_eq!(grant.can_call, crate::broker::pane_authority::Delegation::none());
+    }
+
+    /// Round 3 item 6a, round 4 history parent: an outside caller's history
+    /// resume lands beside the focused pane, with no authenticated parent and
+    /// nothing borrowed from that pane.
+    #[test]
+    fn grant_outside_history_resume_borrows_no_parent() {
+        let _features =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        write_role_settings(&root, "helper", "[permissions]\ndefault_posture='ask'\n");
+        let focused = spawn_tester(&mut h, &root);
+        assert!(h.app.pane_navigate(focused));
+        let record = crate::workspace::AgentHistoryRecord {
+            fleet_seen: false,
+            fleet_dismissed: false,
+            run_id: "run-1632-outside".into(),
+            pane_id: 7_002,
+            context_id: h.app.windows[0].context_id,
+            context_name: "Test".into(),
+            parent_pane_id: Some(focused),
+            spawned_by: None,
+            pane_name: None,
+            harness: "pi".into(),
+            config_name: Some("helper".into()),
+            permission_posture: None,
+            authority: None,
+            session_id: None,
+            cwd: root.clone(),
+            ephemeral: false,
+            last_state: crate::protocol::AgentState::Completed,
+            last_blocked_reason: None,
+            last_detail: None,
+            summary: None,
+            result: None,
+            tail_preview: None,
+            slots: HashMap::new(),
+            closed_at: 0,
+        };
+        crate::workspace::append_agent_history_to(h.profile_dir(), &record).unwrap();
+        let reply_file = h.workspace_root().join("reopen-1632.json");
+        // As the socket handler stamps a captured peer that is no pane.
+        h.app.handle_pane_ipc_request(HostRequest::AgentReopen {
+            query: record.run_id.clone(),
+            subcontext: None,
+            response_file: reply_file.to_string_lossy().into_owned(),
+            source: SpawnSource::SocketPeer(vec![u32::MAX]),
+        });
+        let reply: Value =
+            serde_json::from_str(&std::fs::read_to_string(&reply_file).unwrap()).unwrap();
+        let reopened = reply["pane_id"].as_u64().unwrap_or_else(|| panic!("{reply}"));
+        let grant = grant_of(&h, reopened);
+        assert_eq!(grant.parent, None, "no authenticated parent");
+        assert_eq!(grant.provenance, Provenance::OutsideProcess);
+        assert!(
+            !grant.posture().unwrap().is_some_and(|p| p.denies("tool.secret")),
+            "nothing borrowed from the focused tester: {grant:?}"
+        );
+        assert_eq!(
+            h.app.terminal_incarnation(reopened).unwrap().parent_pane_id,
+            None
+        );
+        assert_eq!(
+            window_of(&h, reopened),
+            window_of(&h, focused),
+            "placed beside the focused pane"
+        );
+    }
 }
