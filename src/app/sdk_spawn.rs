@@ -64,12 +64,6 @@ impl PlexiApp {
             log::warn!("SpawnPane: layout='background' not implemented, rejected");
             return Err("layout 'background' not yet implemented".to_string());
         }
-        // The requester's own context bounds `target_context` (#1518): the
-        // emitting view's window, never whichever window is active.
-        let requester_context_id = emitter
-            .and_then(|id| self.windows.iter().find(|w| w.panes.contains_key(&id)))
-            .map(|w| w.context_id)
-            .ok_or_else(|| "the requesting view is no longer open".to_string())?;
         let original_active_window = self.active_window;
         let outcome = self.spawn_from_sdk(
             emitter.unwrap_or_default(),
@@ -78,7 +72,6 @@ impl PlexiApp {
             args,
             from_pane_id,
             target_context,
-            requester_context_id,
         );
         // Restore the active window if the spawn switched it for placement.
         if original_active_window < self.windows.len() {
@@ -105,8 +98,15 @@ impl PlexiApp {
         args: Vec<String>,
         from_pane_id: Option<u64>,
         target_context: Option<u64>,
-        requester_context_id: u64,
     ) -> Result<u64, String> {
+        // The requester's own context bounds `target_context` (#1518): the
+        // emitting view's window, never whichever window is active.
+        let requester_context_id = self
+            .windows
+            .iter()
+            .find(|w| w.panes.contains_key(&emitter))
+            .map(|w| w.context_id)
+            .ok_or_else(|| "the requesting view is no longer open".to_string())?;
         if let Some(target_ctx_id) = target_context {
             let target_exists = self.router.iter().any(|c| c.context_id == target_ctx_id);
             let is_descendant = self
