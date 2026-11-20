@@ -1,9 +1,10 @@
 //! Stint 1650: closing a pane. The contract is in `session`.
 use std::cell::Cell;
 use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,14 +24,47 @@ use super::{
 
 thread_local! {
     pub(super) static FAIL_AT: Cell<Option<&'static str>> = const { Cell::new(None) };
-    /// The last shell spawned on this thread and its master's device.
-    static SPAWNED: Cell<Option<(u32, libc::dev_t)>> = const { Cell::new(None) };
+    /// The last pty prepared on this thread, by its master's identity.
+    static MASTER: Cell<Option<u64>> = const { Cell::new(None) };
+    /// The last shell spawned on this thread.
+    static SPAWNED: Cell<Option<u32>> = const { Cell::new(None) };
 }
 
-pub(super) fn note_spawn(pid: u32, master: &std::fs::File) {
-    use std::os::unix::fs::MetadataExt;
-    let device = master.metadata().unwrap().rdev() as libc::dev_t;
-    SPAWNED.with(|spawned| spawned.set(Some((pid, device))));
+/// The pane whose reader's poll registration fails, half way.
+static FAIL_REGISTRATION: AtomicU64 = AtomicU64::new(u64::MAX);
+
+pub(super) fn note_master(master: &std::fs::File) {
+    MASTER.with(|m| m.set(master_id(master.as_raw_fd())));
+}
+
+pub(super) fn note_spawn(pid: u32) {
+    SPAWNED.with(|spawned| spawned.set(Some(pid)));
+}
+
+pub(super) fn registration_failpoint(pane: u64) -> std::io::Result<()> {
+    if FAIL_REGISTRATION.load(Ordering::SeqCst) == pane {
+        return Err(std::io::Error::other("injected registration failure"));
+    }
+    Ok(())
+}
+
+/// What identifies one pty's master among this process's fds: macOS gives
+/// each master its own device number; Linux masters opened through ptmx
+/// share one, so there it is the pty index.
+fn master_id(fd: RawFd) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut index: libc::c_uint = 0;
+        (unsafe { libc::ioctl(fd, libc::TIOCGPTN, &mut index) } == 0)
+            .then_some(u64::from(index))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        ((unsafe { libc::fstat(fd, &mut stat) }) == 0
+            && stat.st_mode & libc::S_IFMT == libc::S_IFCHR)
+            .then_some(stat.st_rdev as u64)
+    }
 }
 
 fn spawn(script: &str) -> (TerminalBackend, Receiver<(u64, PtyEvent)>) {
@@ -109,14 +143,10 @@ fn wait_exit(rx: &Receiver<(u64, PtyEvent)>) -> PtyExitStatus {
     }
 }
 
-fn open_fds_on(device: libc::dev_t) -> usize {
+/// Open fds of this process on the master identified by `master`.
+fn open_masters(master: u64) -> usize {
     (0..unsafe { libc::getdtablesize() })
-        .filter(|fd| {
-            let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-            (unsafe { libc::fstat(*fd, &mut stat) }) == 0
-                && stat.st_mode & libc::S_IFMT == libc::S_IFCHR
-                && stat.st_rdev == device
-        })
+        .filter(|fd| master_id(*fd) == Some(master))
         .count()
 }
 
@@ -184,11 +214,12 @@ fn isolated(name: &str) -> bool {
 fn closing_a_flooding_hangup_ignoring_pane_retires_everything() {
     let (neighbour, neighbour_rx) = spawn("exec cat");
     let (backend, rx) = spawn("trap '' HUP; exec yes");
-    let (pid, master) = SPAWNED.with(|s| s.get()).unwrap();
+    let (pid, master) =
+        (backend.child_pid(), MASTER.with(|m| m.get()).unwrap());
     rx.recv_timeout(Duration::from_secs(5))
         .expect("the child never produced output");
     assert_eq!(
-        open_fds_on(master),
+        open_masters(master),
         2,
         "the pty and its tap hold the master"
     );
@@ -197,7 +228,11 @@ fn closing_a_flooding_hangup_ignoring_pane_retires_everything() {
     wait_retired(&rx);
     assert_owned_signals_then_one_reap(pid as libc::pid_t);
     assert!(gone(pid as libc::pid_t));
-    assert_eq!(open_fds_on(master), 0, "a master of the closed pty is open");
+    assert_eq!(
+        open_masters(master),
+        0,
+        "a master of the closed pty is open"
+    );
 
     let mut neighbour = neighbour;
     neighbour.process_command(super::BackendCommand::Write(
@@ -296,18 +331,37 @@ fn a_shell_not_yet_waitable_stays_owned_until_reaped() {
     assert!(gone(shell));
 }
 
-/// A constructor that fails at any step returns while the worker is held,
-/// and leaves no master, child or reader behind once the worker runs.
+/// A constructor that fails at any step, including the reader's poll
+/// registration (failing half way) and the shell's own spawn, returns
+/// promptly with the worker held, and leaves no master, shell or reader.
 #[test]
 fn failed_starts_return_at_once_and_leave_nothing() {
-    for step in ["nonblocking", "sigchld", "poller", "subscription"] {
+    for step in [
+        "nonblocking",
+        "sigchld",
+        "poller",
+        "subscription",
+        "registration",
+        "shell",
+    ] {
+        let pane = 1650_000 + step.len() as u64;
+        MASTER.with(|m| m.set(None));
         SPAWNED.with(|s| s.set(None));
-        FAIL_AT.with(|at| at.set(Some(step)));
+        match step {
+            "registration" => FAIL_REGISTRATION.store(pane, Ordering::SeqCst),
+            "shell" => {},
+            step => FAIL_AT.with(|at| at.set(Some(step))),
+        }
         let held = worker::HOLD.lock().unwrap_or_else(|e| e.into_inner());
         let started = Instant::now();
-        let (tx, _rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
         let settings = BackendSettings {
-            shell: "/bin/sh".to_string(),
+            shell: if step == "shell" {
+                "/nonexistent/1650"
+            } else {
+                "/bin/sh"
+            }
+            .to_string(),
             args: vec![
                 "-c".to_string(),
                 "trap '' HUP; exec sleep 3600".to_string(),
@@ -315,24 +369,28 @@ fn failed_starts_return_at_once_and_leave_nothing() {
             ..Default::default()
         };
         let result =
-            TerminalBackend::new(1650, egui::Context::default(), tx, settings);
+            TerminalBackend::new(pane, egui::Context::default(), tx, settings);
         FAIL_AT.with(|at| at.set(None));
-        assert!(result.is_err(), "{step}: the injected failure did not fail");
+        FAIL_REGISTRATION.store(u64::MAX, Ordering::SeqCst);
+        assert!(result.is_err(), "{step}: the failure did not fail");
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "{step}: the constructor waited {:?}",
             started.elapsed()
         );
         drop(held);
-        match SPAWNED.with(|s| s.get()) {
-            Some((pid, master)) => {
-                assert!(matches!(step, "poller" | "subscription"), "{step}");
-                assert_eq!(open_fds_on(master), 0, "{step}: a master is open");
-                assert_owned_signals_then_one_reap(pid as libc::pid_t);
-            },
-            None => {
-                assert!(matches!(step, "nonblocking" | "sigchld"), "{step}")
-            },
+        assert_eq!(
+            SPAWNED.with(|s| s.get()),
+            None,
+            "{step}: a shell was spawned"
+        );
+        if let Some(master) = MASTER.with(|m| m.get()) {
+            wait_until(&format!("{step}: the masters to close"), || {
+                open_masters(master) == 0
+            });
+        }
+        if matches!(step, "subscription" | "registration" | "shell") {
+            wait_retired(&rx);
         }
     }
 }
@@ -395,36 +453,40 @@ fn closing_with_the_fd_table_full_still_ends_the_child() {
     assert_owned_signals_then_one_reap(pid);
 }
 
-/// Host stop finishes closes in progress: a closing shell is reaped before
-/// it returns, and one still not waitable at its deadline is frozen, never
-/// signalled or reaped again, so the sweep after it only meets pinned pids.
+/// Host stop finishes a close in progress: the shell is reaped before it
+/// returns, and the worker then acts on nothing more.
 #[test]
-fn finishing_closes_reaps_or_freezes_each_shell() {
-    if !isolated("finishing_closes_reaps_or_freezes_each_shell") {
+fn finishing_reaps_a_closing_shell() {
+    if !isolated("finishing_reaps_a_closing_shell") {
         return;
     }
     let (backend, rx) = spawn("trap '' HUP; exec sleep 3600");
     let shell = backend.child_pid() as libc::pid_t;
     drop(backend);
     wait_retired(&rx);
-    assert_eq!(
-        super::finish_pane_closes(Instant::now() + Duration::from_secs(2)),
-        []
-    );
+    let left =
+        super::finish_pane_closes(Instant::now() + Duration::from_secs(2));
+    assert_eq!(left, []);
     assert_owned_signals_then_one_reap(shell);
+}
 
+/// A shell still not waitable at host stop's deadline is frozen: never
+/// signalled or reaped again, so the sweep after it only meets a pinned pid.
+#[test]
+fn finishing_freezes_an_unwaitable_shell() {
+    if !isolated("finishing_freezes_an_unwaitable_shell") {
+        return;
+    }
     let (backend, rx) = spawn("trap '' HUP; exec sleep 3600");
     let stuck = backend.child_pid() as libc::pid_t;
     worker::set_pending(stuck, u32::MAX);
     drop(backend);
     wait_retired(&rx);
-    wait_until("the stuck shell to reach the worker", || {
-        !worker::events(stuck).is_empty()
-    });
     let left =
         super::finish_pane_closes(Instant::now() + Duration::from_millis(300));
     assert_eq!(left, [stuck as u32]);
     let seen = worker::events(stuck).len();
+    worker::set_pending(stuck, 0);
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
         worker::events(stuck).len(),
@@ -432,6 +494,59 @@ fn finishing_closes_reaps_or_freezes_each_shell() {
         "the worker touched a frozen shell"
     );
     assert!(!worker::events(stuck).contains(&Event::Reaped));
+}
+
+/// A close is registered when the backend drops, before the reader closes
+/// the masters, so host stop sees it even then: it is left pinned, and
+/// once the masters do close the stopped worker neither signals nor reaps.
+#[test]
+fn host_stop_sees_a_close_whose_masters_are_still_open() {
+    if !isolated("host_stop_sees_a_close_whose_masters_are_still_open") {
+        return;
+    }
+    let (backend, rx) = spawn("trap '' HUP; exec sleep 3600");
+    let shell = backend.child_pid() as libc::pid_t;
+    let reader = worker::READER_HOLD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    drop(backend);
+    let left =
+        super::finish_pane_closes(Instant::now() + Duration::from_millis(300));
+    assert_eq!(left, [shell as u32], "host stop did not see the close");
+    assert!(
+        worker::events(shell).is_empty(),
+        "signalled with masters open"
+    );
+    drop(reader);
+    wait_retired(&rx);
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(
+        worker::events(shell).is_empty(),
+        "the stopped worker acted: {:?}",
+        worker::events(shell)
+    );
+    assert!(!gone(shell), "the pin was released after host stop");
+    unsafe { libc::kill(shell, libc::SIGKILL) };
+}
+
+/// A wait error means the pin is lost: the worker signals nothing.
+#[test]
+fn a_lost_pin_is_never_signalled() {
+    let (backend, rx) = spawn("trap '' HUP; exec sleep 3600");
+    let shell = backend.child_pid() as libc::pid_t;
+    worker::lose_pin(shell);
+    drop(backend);
+    wait_retired(&rx);
+    std::thread::sleep(Duration::from_millis(1000));
+    assert!(
+        worker::events(shell).is_empty(),
+        "signalled after losing the pin: {:?}",
+        worker::events(shell)
+    );
+    // Not the worker's any more: end the fixture here.
+    unsafe { libc::kill(shell, libc::SIGKILL) };
+    let mut status = 0;
+    unsafe { libc::waitpid(shell, &mut status, 0) };
 }
 
 /// A pty whose final bytes become readable only once its exit is seen.

@@ -9,14 +9,17 @@
 //! or `nohup` work may survive by design. Nothing is found by scanning.
 //!
 //! One lifecycle worker, started before any shell exists, owns every
-//! closing shell. It hangs up `-S`, sends SIGKILL to `-S` after a grace (a
-//! leader that already exited does not cancel that: other members may
-//! remain), and is the only reaper, reaping once after the last signal. A
-//! shell that is not yet waitable stays on its list without delaying other
-//! closes.
+//! closing shell. A close registers with it at once ([`CloseOnDrop`]), so
+//! host stop always sees it. Once the pty has closed its masters, the
+//! worker hangs up `-S` and sends SIGKILL to `-S` after a grace (a leader
+//! that already exited does not cancel that: other members may remain). It
+//! is the only reaper, reaping once after the last signal. Any wait error
+//! means the pin is lost, and the shell is never signalled again. After
+//! host stop ([`finish_pane_closes`]) the worker signals and reaps nothing.
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::PtyExitStatus;
@@ -28,51 +31,38 @@ const KILL_WAIT: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(20);
 
 pub(super) enum Job {
-    Close(Closing),
+    Close(Arc<Session>),
     Finish {
         deadline: Instant,
         done: Sender<Vec<u32>>,
     },
 }
 
-pub(super) struct Closing {
-    pane: u64,
-    sid: libc::pid_t,
-    /// Dropped once the shell is reaped (or never, if frozen).
-    _guard: Option<Box<dyn Send>>,
-}
-
-/// The pane's shell. Shared by the pane's pty and its backend; when the
-/// last handle drops, the shell is handed to the lifecycle worker. That
-/// drop only sends on a channel: it never waits, so it is safe anywhere.
+/// The pane's shell: a direct child that called `setsid`, not yet reaped.
 pub(super) struct Session {
     pane: u64,
     sid: libc::pid_t,
-    worker: Sender<Job>,
+    /// Set by the pty once both masters are closed. No signal before that.
+    masters_closed: AtomicBool,
     guard: Mutex<Option<Box<dyn Send>>>,
 }
 
 impl Session {
-    /// `sid` must be a direct child that called `setsid`, not yet reaped.
-    pub(super) fn new(
-        pane: u64,
-        sid: libc::pid_t,
-        worker: Sender<Job>,
-    ) -> Self {
+    pub(super) fn new(pane: u64, sid: libc::pid_t) -> Self {
         Self {
             pane,
             sid,
-            worker,
+            masters_closed: AtomicBool::new(false),
             guard: Mutex::new(None),
         }
     }
 
-    pub(super) fn pane(&self) -> u64 {
-        self.pane
-    }
-
     pub(super) fn pid(&self) -> u32 {
         self.sid as u32
+    }
+
+    pub(super) fn masters_closed(&self) {
+        self.masters_closed.store(true, Ordering::Release);
     }
 
     /// Keep `guard` alive until the shell is reaped.
@@ -82,33 +72,39 @@ impl Session {
 
     /// The shell's exit status once it has exited, read with `WNOWAIT` so
     /// it stays waitable, and its pid pinned, until the worker reaps it.
-    pub(super) fn exit_status(&self) -> Option<PtyExitStatus> {
+    /// An error means the pin is lost.
+    pub(super) fn exit_status(&self) -> io::Result<Option<PtyExitStatus>> {
         exit_status(self.sid)
     }
 }
 
-impl Drop for Session {
+/// Hands the shell to the worker when dropped: the backend's close, or a
+/// constructor that failed after the shell was spawned. Only sends on a
+/// channel, so it never waits.
+pub(super) struct CloseOnDrop {
+    pub(super) session: Arc<Session>,
+    pub(super) worker: Sender<Job>,
+}
+
+impl Drop for CloseOnDrop {
     fn drop(&mut self) {
-        let guard = self.guard.lock().unwrap_or_else(|e| e.into_inner()).take();
-        let closing = Closing {
-            pane: self.pane,
-            sid: self.sid,
-            _guard: guard,
-        };
-        if self.worker.send(Job::Close(closing)).is_err() {
+        if self.worker.send(Job::Close(self.session.clone())).is_err() {
             log::error!(
                 "egui_term: pane {} shell {} left unreaped: the lifecycle worker is gone",
-                self.pane,
-                self.sid
+                self.session.pane,
+                self.session.sid
             );
         }
     }
 }
 
-/// The lifecycle worker, started on first use. A pty is only spawned once
-/// this succeeds, so every shell has an owner before it exists.
 static WORKER: Mutex<Option<Sender<Job>>> = Mutex::new(None);
+/// Set by host stop. Every signal and reap holds this lock and checks it,
+/// so once it is set the worker can no longer release or signal any pid.
+static STOPPED: Mutex<bool> = Mutex::new(false);
 
+/// The lifecycle worker, started on first use. A shell is only spawned
+/// once this succeeds, so every shell has an owner before it exists.
 pub(super) fn worker() -> io::Result<Sender<Job>> {
     let mut slot = WORKER.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(worker) = slot.as_ref() {
@@ -122,40 +118,46 @@ pub(super) fn worker() -> io::Result<Sender<Job>> {
     Ok(worker)
 }
 
-/// Escalate every closing shell now and reap what can be reaped by
-/// `deadline`, for host stop. Shells still unreaped are frozen: the worker
-/// never reaps them, so they stay pinned for whatever cleanup follows.
-/// Returns their pids.
+/// For host stop: escalate every closing shell now and reap what can be
+/// reaped by `deadline`, then stop the worker for good, so the sweep that
+/// follows only meets pinned pids. Returns the shells left unreaped.
 pub fn finish_pane_closes(deadline: Instant) -> Vec<u32> {
-    // No worker means no pane was ever spawned in this process.
-    let Some(worker) = WORKER.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    else {
-        return Vec::new();
-    };
-    let (done, finished) = mpsc::channel();
-    if worker.send(Job::Finish { deadline, done }).is_err() {
-        return Vec::new();
+    let worker = WORKER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let mut left = Vec::new();
+    if let Some(worker) = worker {
+        let (done, finished) = mpsc::channel();
+        if worker.send(Job::Finish { deadline, done }).is_ok() {
+            // The worker answers at its deadline; the margin covers one pass.
+            let limit = deadline.saturating_duration_since(Instant::now())
+                + Duration::from_secs(1);
+            match finished.recv_timeout(limit) {
+                Ok(pids) => left = pids,
+                Err(error) => log::error!(
+                    "egui_term: finishing pane closes got no answer ({error}); stopping the worker"
+                ),
+            }
+        }
     }
-    // The worker answers at its deadline; the margin covers one pass.
-    let limit = deadline.saturating_duration_since(Instant::now())
-        + Duration::from_secs(1);
-    finished.recv_timeout(limit).unwrap_or_else(|error| {
-        log::error!("egui_term: finishing pane closes got no answer: {error}");
-        Vec::new()
-    })
+    *STOPPED.lock().unwrap_or_else(|e| e.into_inner()) = true;
+    left
+}
+
+/// Run `act` unless host stop has stopped the worker.
+fn unless_stopped<T>(act: impl FnOnce() -> T) -> Option<T> {
+    let stopped = STOPPED.lock().unwrap_or_else(|e| e.into_inner());
+    (!*stopped).then(act)
 }
 
 struct Entry {
-    closing: Closing,
-    kill_at: Instant,
+    session: Arc<Session>,
+    /// Set when the hangup is sent; the kill is due then.
+    kill_at: Option<Instant>,
     exited_on_hangup: Option<bool>,
     pending_logged: bool,
 }
 
 fn run(jobs: mpsc::Receiver<Job>) {
     let mut entries: Vec<Entry> = Vec::new();
-    // Frozen at host stop: never reaped, guards kept.
-    let mut frozen: Vec<Entry> = Vec::new();
     loop {
         let job = if entries.is_empty() {
             jobs.recv().ok()
@@ -169,63 +171,79 @@ fn run(jobs: mpsc::Receiver<Job>) {
         #[cfg(any(test, feature = "testing"))]
         let _held = testing::HOLD.lock().unwrap_or_else(|e| e.into_inner());
         match job {
-            Some(Job::Close(closing)) => {
-                // The master is closed: the kernel has hung up the tty. Make
-                // the hangup explicit for the owned group; a stopped member
-                // acts on it only once continued.
-                signal(closing.sid, libc::SIGHUP);
-                signal(closing.sid, libc::SIGCONT);
-                entries.push(Entry {
-                    closing,
-                    kill_at: Instant::now() + HANGUP_GRACE,
-                    exited_on_hangup: None,
-                    pending_logged: false,
-                });
-            },
+            Some(Job::Close(session)) => entries.push(Entry {
+                session,
+                kill_at: None,
+                exited_on_hangup: None,
+                pending_logged: false,
+            }),
             Some(Job::Finish { deadline, done }) => {
-                for entry in &mut entries {
-                    entry.kill_at = Instant::now();
-                }
                 while !entries.is_empty() && Instant::now() < deadline {
-                    tick(&mut entries);
+                    tick(&mut entries, true);
                     std::thread::sleep(POLL);
                 }
-                for entry in &entries {
+                let left: Vec<u32> =
+                    entries.iter().map(|e| e.session.pid()).collect();
+                if !left.is_empty() {
                     log::warn!(
-                        "egui_term: pane {} shell {} not reaped by host stop; left pinned",
-                        entry.closing.pane,
-                        entry.closing.sid
+                        "egui_term: shells {left:?} not reaped by host stop; left pinned"
                     );
                 }
-                let pids =
-                    entries.iter().map(|e| e.closing.sid as u32).collect();
-                frozen.append(&mut entries);
-                let _ = done.send(pids);
+                // Kept, never acted on again: their guards stay alive.
+                *STOPPED.lock().unwrap_or_else(|e| e.into_inner()) = true;
+                let _ = done.send(left);
             },
             None => {},
         }
-        tick(&mut entries);
+        tick(&mut entries, false);
     }
 }
 
-fn tick(entries: &mut Vec<Entry>) {
+fn tick(entries: &mut Vec<Entry>, finishing: bool) {
     let now = Instant::now();
     entries.retain_mut(|entry| {
-        let Closing { pane, sid, .. } = entry.closing;
-        if entry.exited_on_hangup.is_none() {
-            if now < entry.kill_at {
+        let session = entry.session.clone();
+        let (pane, sid) = (session.pane, session.sid);
+        if entry.kill_at.is_none() {
+            if !session.masters_closed.load(Ordering::Acquire) {
                 return true;
             }
-            entry.exited_on_hangup = Some(exit_status(sid).is_some());
-            signal(sid, libc::SIGKILL);
+            // The master is closed: the kernel has hung up the tty. Make the
+            // hangup explicit for the owned group; a stopped member acts on
+            // it only once continued.
+            match unless_stopped(|| pinned(&session).map(|_| {
+                signal(sid, libc::SIGHUP);
+                signal(sid, libc::SIGCONT);
+            })) {
+                None => return true,
+                Some(Err(())) => return false,
+                Some(Ok(())) => {},
+            }
+            entry.kill_at = Some(now + HANGUP_GRACE);
+        }
+        let kill_at = entry.kill_at.unwrap_or(now);
+        if entry.exited_on_hangup.is_none() {
+            if now < kill_at && !finishing {
+                return true;
+            }
+            match unless_stopped(|| pinned(&session).map(|exited| {
+                signal(sid, libc::SIGKILL);
+                exited
+            })) {
+                None => return true,
+                Some(Err(())) => return false,
+                Some(Ok(exited)) => entry.exited_on_hangup = Some(exited),
+            }
         }
         let escalation = if entry.exited_on_hangup == Some(true) {
             "shell exited on SIGHUP; SIGKILL sent to its group"
         } else {
             "shell escalated to SIGKILL"
         };
-        match reap(sid) {
-            Ok(Some(status)) => {
+        match unless_stopped(|| reap(sid)) {
+            None => true,
+            Some(Ok(Some(status))) => {
+                drop(session.guard.lock().unwrap_or_else(|e| e.into_inner()).take());
                 log::info!(
                     "egui_term: pane {pane} closed: pid={sid} pgid={sid} master_fd_closed=true \
                      escalation=\"{escalation}\" reap=done status={status:?}{}",
@@ -233,8 +251,8 @@ fn tick(entries: &mut Vec<Entry>) {
                 );
                 false
             },
-            Ok(None) => {
-                if !entry.pending_logged && now >= entry.kill_at + KILL_WAIT {
+            Some(Ok(None)) => {
+                if !entry.pending_logged && now >= kill_at + KILL_WAIT {
                     entry.pending_logged = true;
                     log::info!(
                         "egui_term: pane {pane} closed: pid={sid} pgid={sid} master_fd_closed=true \
@@ -243,13 +261,24 @@ fn tick(entries: &mut Vec<Entry>) {
                 }
                 true
             },
-            Err(error) => {
-                // ECHILD and the like: the pin is lost. Signal nothing more.
+            Some(Err(error)) => {
                 log::error!("egui_term: pane {pane} shell {sid} cannot be reaped: {error}");
                 false
             },
         }
     });
+}
+
+/// Whether the shell is still pinned (waitable): `Ok(exited)`. A wait
+/// error means the pin is lost: logged, and nothing more is signalled.
+fn pinned(session: &Session) -> Result<bool, ()> {
+    session.exit_status().map(|status| status.is_some()).map_err(|error| {
+        log::error!(
+            "egui_term: pane {} shell {} lost its pin ({error}); no further signals",
+            session.pane,
+            session.sid
+        );
+    })
 }
 
 fn signal(sid: libc::pid_t, signal: libc::c_int) {
@@ -294,7 +323,11 @@ fn reap(sid: libc::pid_t) -> io::Result<Option<i32>> {
     }
 }
 
-fn exit_status(sid: libc::pid_t) -> Option<PtyExitStatus> {
+fn exit_status(sid: libc::pid_t) -> io::Result<Option<PtyExitStatus>> {
+    #[cfg(any(test, feature = "testing"))]
+    if testing::lost(sid) {
+        return Err(io::Error::from_raw_os_error(libc::ECHILD));
+    }
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     let rc = unsafe {
         libc::waitid(
@@ -304,15 +337,22 @@ fn exit_status(sid: libc::pid_t) -> Option<PtyExitStatus> {
             libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
         )
     };
-    if rc != 0 || unsafe { info.si_pid() } != sid {
-        return None;
+    if rc != 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EINTR) {
+            return exit_status(sid);
+        }
+        return Err(error);
+    }
+    if unsafe { info.si_pid() } != sid {
+        return Ok(None);
     }
     let status = unsafe { info.si_status() };
-    Some(match info.si_code {
+    Ok(Some(match info.si_code {
         libc::CLD_EXITED => PtyExitStatus::Code(status),
         libc::CLD_KILLED | libc::CLD_DUMPED => PtyExitStatus::Signal(status),
         _ => PtyExitStatus::Unknown,
-    })
+    }))
 }
 
 /// Observation and control of the worker for tests.
@@ -331,8 +371,11 @@ pub mod testing {
 
     /// Held, the worker pauses before its next step.
     pub static HOLD: Mutex<()> = Mutex::new(());
+    /// Held, a pty pauses before closing its masters.
+    pub static READER_HOLD: Mutex<()> = Mutex::new(());
     static EVENTS: Mutex<Vec<(libc::pid_t, Event)>> = Mutex::new(Vec::new());
     static PENDING: Mutex<Option<HashMap<libc::pid_t, u32>>> = Mutex::new(None);
+    static LOST: Mutex<Vec<libc::pid_t>> = Mutex::new(Vec::new());
 
     pub(super) fn record(sid: libc::pid_t, event: Event) {
         EVENTS
@@ -370,5 +413,16 @@ pub mod testing {
             .unwrap_or_else(|e| e.into_inner())
             .get_or_insert_with(HashMap::new)
             .insert(sid, times);
+    }
+
+    pub(super) fn lost(sid: libc::pid_t) -> bool {
+        LOST.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&sid)
+    }
+
+    /// Every wait on `sid` fails with ECHILD from now on.
+    pub fn lose_pin(sid: libc::pid_t) {
+        LOST.lock().unwrap_or_else(|e| e.into_inner()).push(sid);
     }
 }

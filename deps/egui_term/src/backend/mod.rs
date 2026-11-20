@@ -298,10 +298,10 @@ pub struct TerminalBackend {
     notifier: Notifier,
     last_content: RenderableContent,
     child_pid: u32,
-    /// The pane's shell, shared with its pty. When both let go, the shell
-    /// goes to the lifecycle worker (`session`).
+    /// The pane's shell. Dropping this registers the close with the
+    /// lifecycle worker at once, so host stop always sees it (`session`).
     #[cfg(unix)]
-    session: Arc<session::Session>,
+    close: session::CloseOnDrop,
     /// The master, for foreground queries, until the pty closes it.
     #[cfg(unix)]
     foreground: pane_pty::Foreground,
@@ -368,7 +368,7 @@ impl TerminalBackend {
         let reaped_exit_status: Arc<Mutex<Option<PtyExitStatus>>> =
             Arc::new(Mutex::new(None));
         #[cfg(unix)]
-        let (pty, session, foreground) = pane_pty::spawn(
+        let (pty, launch) = pane_pty::prepare(
             id,
             settings,
             terminal_size.into(),
@@ -383,7 +383,7 @@ impl TerminalBackend {
             reaped_exit_status.clone(),
         )?;
         #[cfg(unix)]
-        let child_pid = session.pid();
+        let foreground = launch.foreground.clone();
         #[cfg(not(unix))]
         let (pty, child_pid) = {
             let options = tty::Options {
@@ -397,8 +397,8 @@ impl TerminalBackend {
             // (lsof / pgrep / busy detection) are Unix-gated in shell.rs.
             (ReapingPty { inner, exit_status: reaped_exit_status.clone() }, 0)
         };
-        // A failure from here on drops `pty` on this thread: that closes
-        // its masters and hands the shell to the lifecycle worker, and waits
+        // No shell exists until the reader runs (`pane_pty`): a failure
+        // before that drops `pty` here, which closes its masters and waits
         // for nothing.
         failpoint("poller")?;
         let pty_event_loop = EventLoop::new(
@@ -491,6 +491,12 @@ impl TerminalBackend {
                 log::info!("egui_term: pty_event_subscription_{id} exited");
             })?;
         let _pty_event_loop_thread = pty_event_loop.spawn();
+        // The reader is running. Spawn the shell once its registration is
+        // known; on any failure, shut the reader down: it drops the pty.
+        #[cfg(unix)]
+        let (close, child_pid) = launch.spawn().inspect_err(|_| {
+            let _ = notifier.0.send(Msg::Shutdown);
+        })?;
 
         Ok(Self {
             id,
@@ -502,7 +508,7 @@ impl TerminalBackend {
             last_content: initial_content,
             child_pid,
             #[cfg(unix)]
-            session,
+            close,
             #[cfg(unix)]
             foreground,
             lines_written: AtomicU64::new(0),
@@ -718,7 +724,7 @@ impl TerminalBackend {
     /// backend is gone (`session`). Off Unix it drops with the call.
     pub fn hold_until_reaped(&self, guard: Box<dyn Send>) {
         #[cfg(unix)]
-        self.session.hold_until_reaped(guard);
+        self.close.session.hold_until_reaped(guard);
         #[cfg(not(unix))]
         drop(guard);
     }
@@ -1636,9 +1642,9 @@ impl Default for RenderableContent {
     }
 }
 
-/// Shuts the PTY loop down; its thread closes the masters. The shell goes
-/// to the lifecycle worker when the last of the backend and the pty lets go
-/// of the session. Nothing here waits.
+/// Shuts the PTY loop down; its thread closes the masters. The `close`
+/// field then registers the shell with the lifecycle worker, which signals
+/// once the masters are closed. Nothing here waits.
 impl Drop for TerminalBackend {
     fn drop(&mut self) {
         let _ = self.notifier.0.send(Msg::Shutdown);

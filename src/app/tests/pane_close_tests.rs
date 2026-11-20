@@ -147,20 +147,41 @@ fn closing_a_pane_hangs_up_its_terminal() {
     assert!(!gone(neighbour_shell), "closing one pane ended another");
 }
 
-/// A close immediately followed by host stop has one owner: the closing
-/// shell's `PaneProcessGroup` record stays until its reap, host stop
-/// finishes the close (escalates and reaps) before its sweep, and the
-/// shell is signalled only in its own group and reaped once.
-#[test]
-#[ignore = "requires-pty"]
-fn closing_then_stopping_the_host_has_one_owner() {
-    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
-    let mut h = crate::testing::HostHarness::new();
+/// Runs the calling ignored test alone in a child process: host stop ends
+/// the pane-close worker for good. `false` in the parent, `true` in the child.
+fn isolated(name: &str) -> bool {
+    const CHILD: &str = "PLEXI_1650_ISOLATED";
+    if std::env::var_os(CHILD).is_some() {
+        return true;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &format!("app::tests::pane_close_tests::{name}"),
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout).into_owned()
+        + &String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "isolated run failed:\n{text}");
+    assert!(
+        text.contains("1 passed"),
+        "isolated test did not run:\n{text}"
+    );
+    false
+}
+
+/// A pane whose shell ignores SIGHUP, ready to close.
+fn hangup_ignoring_pane(h: &mut crate::testing::HostHarness) -> (u64, u32) {
     let terminal = h.add_focused_terminal();
     let dir = tempfile::tempdir().unwrap();
     let ready = dir.path().join("ready");
     type_into(
-        &mut h,
+        h,
         terminal,
         format!("trap '' HUP; : > '{}'; exec sleep 3600\n", ready.display()),
     );
@@ -171,35 +192,32 @@ fn closing_then_stopping_the_host_has_one_owner() {
     });
     let shell = h.terminal_backend(terminal).child_pid();
     assert!(crate::host::process_cleanup::pane_root_recorded(shell));
+    (terminal, shell)
+}
 
-    let held = egui_term::pane_close_testing::HOLD
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+/// Host stop right after a close (the real `stop_pane_processes`): the
+/// close is finished first, so the shell is signalled only in its own group
+/// and reaped once, and its process record lasts until that reap.
+#[test]
+#[ignore = "requires-pty"]
+fn host_stop_right_after_a_close_reaps_the_shell_once() {
+    if !isolated("host_stop_right_after_a_close_reaps_the_shell_once") {
+        return;
+    }
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    let mut h = crate::testing::HostHarness::new();
+    let (terminal, shell) = hangup_ignoring_pane(&mut h);
     h.app.close_pane_by_id(terminal);
-    h.run_frames(1);
-    let stop = std::thread::spawn(|| {
-        crate::host::process_cleanup::finish_closing_panes(Instant::now() + Duration::from_secs(5))
-    });
-    std::thread::sleep(Duration::from_millis(200));
     assert!(
         crate::host::process_cleanup::pane_root_recorded(shell),
         "the closing shell's record was dropped before its reap"
     );
-    assert!(
-        !gone(shell as i32),
-        "the shell was reaped while the worker was held"
-    );
-    drop(held);
-    stop.join().unwrap();
-
-    assert!(
-        gone(shell as i32),
-        "host stop returned before the shell was reaped"
-    );
+    crate::host::process_cleanup::stop_pane_processes(Duration::from_millis(200));
+    assert!(gone(shell as i32), "host stop returned before the reap");
     assert!(!crate::host::process_cleanup::pane_root_recorded(shell));
     let sid = shell as i32;
-    let events = egui_term::pane_close_testing::events(sid);
-    use egui_term::pane_close_testing::Event;
+    use egui_term::pane_close_testing::{events, Event};
+    let events = events(sid);
     assert_eq!(events.last(), Some(&Event::Reaped), "{events:?}");
     assert_eq!(events.iter().filter(|e| **e == Event::Reaped).count(), 1);
     assert!(
@@ -208,4 +226,46 @@ fn closing_then_stopping_the_host_has_one_owner() {
             .all(|e| !matches!(e, Event::Signal(target, _) if *target != -sid)),
         "{events:?}"
     );
+}
+
+/// Host stop while a close is still releasing its masters: the close is
+/// already registered, so host stop sees it and leaves it pinned; the
+/// sweep then ends the shell, and when the masters finally close the
+/// stopped worker neither signals nor reaps, so no pid is released under
+/// the sweep.
+#[test]
+#[ignore = "requires-pty"]
+fn host_stop_during_a_close_keeps_the_shell_pinned() {
+    if !isolated("host_stop_during_a_close_keeps_the_shell_pinned") {
+        return;
+    }
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    let mut h = crate::testing::HostHarness::new();
+    let (terminal, shell) = hangup_ignoring_pane(&mut h);
+    let reader = egui_term::pane_close_testing::READER_HOLD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    h.app.close_pane_by_id(terminal);
+    crate::host::process_cleanup::stop_pane_processes(Duration::from_millis(200));
+    let sid = shell as i32;
+    // The sweep killed it; it stays our unreaped child.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            shell as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    assert!(
+        rc == 0 && unsafe { info.si_pid() } == sid,
+        "the sweep left the shell running"
+    );
+    drop(reader);
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(!gone(sid), "the shell was reaped under the sweep");
+    assert!(crate::host::process_cleanup::pane_root_recorded(shell));
+    let events = egui_term::pane_close_testing::events(sid);
+    assert!(events.is_empty(), "the stopped worker acted: {events:?}");
 }
