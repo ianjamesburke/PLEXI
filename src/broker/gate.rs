@@ -585,6 +585,9 @@ pub struct VerifiedCaller {
     pub workspace_root: PathBuf,
     /// Socket and credential callers are never the human at the keyboard.
     pub is_human: bool,
+    /// The pane authority a pane credential carries (stint 1632): the
+    /// caller's ceiling, resolved from the credential itself.
+    pub(crate) authority: Option<std::sync::Arc<super::pane_authority::PaneAuthority>>,
 }
 
 pub struct AdmitRequest<'a> {
@@ -4476,6 +4479,7 @@ impl PermissionMonitor {
             .collect()
     }
 
+    #[cfg(test)]
     pub fn issue_credential(
         &self,
         pane_id: Option<u64>,
@@ -4532,6 +4536,7 @@ impl PermissionMonitor {
     }
 
     /// The pane authority a live call credential was issued from.
+    #[cfg(test)]
     pub(crate) fn credential_authority(
         &self,
         token: &str,
@@ -4602,6 +4607,7 @@ impl PermissionMonitor {
                 context_id: cred.context_id,
                 workspace_root: cred.workspace_root.clone(),
                 is_human: false,
+                authority: cred.authority.clone(),
             });
         }
         let Some(peer) = peer_pane else {
@@ -4626,6 +4632,7 @@ impl PermissionMonitor {
             context_id: 0,
             workspace_root: PathBuf::new(),
             is_human: false,
+            authority: None,
         })
     }
 
