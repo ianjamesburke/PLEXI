@@ -712,3 +712,48 @@ fn command_palette_input_matches_sequential_oracle() {
         }
     }
 }
+
+/// A scrim click closes at its release; a press dragged off its row is not
+/// a click; an Enter during IME composition confirms the composition.
+#[test]
+fn command_palette_pointer_and_ime_edges() {
+    let mut production = Production::new(field_geometry());
+    production.deliver(Answer::Final);
+    production.present();
+    let outside = egui::pos2(600.0, 600.0);
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let row = row_rect(1).center();
+    production.frame(vec![
+        button(row, true),
+        button(row + egui::vec2(0.0, 30.0), false),
+    ]);
+    assert!(production.state.is_open(), "a drag off the row is no click");
+    assert!(production.activations.is_empty());
+
+    production.frame(vec![
+        egui::Event::Ime(egui::ImeEvent::Enabled),
+        egui::Event::Ime(egui::ImeEvent::Preedit("al".into())),
+        press(egui::Key::Enter, egui::Modifiers::NONE),
+    ]);
+    assert!(
+        production.activations.is_empty(),
+        "Enter confirmed the composition"
+    );
+    assert_eq!(
+        production.state.query(),
+        "",
+        "preedit is never committed text"
+    );
+
+    production.frame(vec![button(outside, true), button(outside, false)]);
+    assert!(
+        !production.state.is_open(),
+        "the scrim click closed the palette"
+    );
+    assert!(production.activations.is_empty());
+}

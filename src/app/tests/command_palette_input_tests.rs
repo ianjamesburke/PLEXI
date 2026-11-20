@@ -127,6 +127,70 @@ fn command_palette_source_runs_only_from_logic() {
     );
 }
 
+/// Stint 1391: the Cmd+P that opens the palette is the boundary of its
+/// delivery; what follows it in the same delivery is the palette's, in order.
+#[test]
+fn command_palette_opening_chord_owns_the_rest_of_its_delivery() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(2);
+    deliver(
+        &mut h,
+        vec![
+            press(Key::P, Modifiers::COMMAND),
+            Event::Paste("keyboard".into()),
+            press(Key::Enter, Modifiers::NONE),
+        ],
+    );
+    h.run_frames(3);
+    assert_eq!(
+        palette_test_log::take_activations(),
+        vec![KEYBOARD_ROW.to_owned()],
+        "the paste and Enter after Cmd+P ran in the palette it opened"
+    );
+}
+
+/// Stint 1391: an Enter that completes in the next pass's logic closes the
+/// session before that pass's input is routed. That input was the session's:
+/// a host chord in it (Cmd+T) is consumed, never run against the pane that
+/// regains focus.
+#[test]
+fn command_palette_session_closed_in_logic_consumes_its_delivery() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(2);
+    open_palette(&mut h);
+    deliver(
+        &mut h,
+        vec![
+            Event::Paste("reset text size".into()),
+            press(Key::Enter, Modifiers::NONE),
+        ],
+    );
+    assert!(
+        h.app.command_palette_open(),
+        "the Enter waits for its answer"
+    );
+    let panes = h.pane_count();
+    deliver(
+        &mut h,
+        vec![
+            press(Key::T, Modifiers::COMMAND),
+            release(Key::T, Modifiers::COMMAND),
+        ],
+    );
+    h.run_frames(2);
+    assert!(!h.app.command_palette_open());
+    assert_eq!(palette_test_log::take_activations().len(), 1);
+    assert_eq!(
+        h.pane_count(),
+        panes,
+        "Cmd+T in the closing pass was consumed"
+    );
+}
+
 /// Stint 1391 review round 1: text after Enter belongs to the closed
 /// session, including the next delivery when the Enter completes in that
 /// pass's logic. The terminal behind the palette receives none of it, and does
@@ -155,10 +219,12 @@ fn command_palette_input_never_leaks_to_the_terminal_behind_it() {
         ),
         // The Enter waits for its answer, which lands in the next pass's
         // logic; that pass's paste still belongs to the closing session.
+        // The row opens no overlay, so focus is back on the terminal when
+        // that paste is delivered.
         (
             "Paste, Enter | Paste",
             vec![
-                Event::Paste("keyboard".into()),
+                Event::Paste("reset text size".into()),
                 press(Key::Enter, Modifiers::NONE),
             ],
         ),
