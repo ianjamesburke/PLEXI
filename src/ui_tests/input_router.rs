@@ -1260,3 +1260,26 @@ fn screenshot_palette_dismissal_and_fresh_click() {
     h.render_png(crate::ui_tests::evidence_png!("_clicked"))
         .expect("render clicked");
 }
+
+/// The kittest-backed `PlexiUiHarness` must hand every step's delivery to
+/// `raw_input_hook`, as eframe does (vendored `egui_kittest`, see
+/// `deps/egui_kittest-0.34.3/PLEXI-PATCH.md`). Without it, ui_tests input
+/// bypasses the router: a key press here would never reach the palette.
+#[test]
+fn kittest_harness_steps_go_through_raw_input_hook() {
+    let mut h = crate::ui_tests::PlexiUiHarness::new();
+    h.step();
+    let before = h.with_app(|app| app.input_router.deliveries());
+    h.step();
+    assert_eq!(
+        h.with_app(|app| app.input_router.deliveries()),
+        before + 1,
+        "one harness step is one routed delivery"
+    );
+    h.harness().key_press_modifiers(native_cmd(), Key::P);
+    h.run_steps(2);
+    assert!(
+        h.with_app(|app| app.show_command_palette),
+        "a kittest key press reaches the router and opens the palette"
+    );
+}

@@ -998,9 +998,9 @@ impl PlexiApp {
             Some(PickerKey::Up)
         } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
             Some(PickerKey::OpenNew)
-        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Backspace) {
-            Some(PickerKey::Delete)
-        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Delete) {
+        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Backspace)
+            || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Delete)
+        {
             Some(PickerKey::Delete)
         } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
             Some(PickerKey::Undo)

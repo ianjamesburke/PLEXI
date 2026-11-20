@@ -289,9 +289,11 @@ impl<'a, State> Harness<'a, State> {
     /// Run a single step. This will not process any events.
     fn _step(&mut self, sizing_pass: bool) {
         self.input.predicted_dt = self.step_dt;
-        // Plexi patch: eframe hands every delivery to `App::raw_input_hook`
-        // before egui folds it; do the same so eframe apps see what they see
-        // in production.
+        // Plexi patch (upstream candidate): eframe hands every delivery to
+        // `App::raw_input_hook` before egui folds it, in
+        // `deps/eframe-0.34.3/src/native/epi_integration.rs`
+        // `EpiIntegration::update`; do the same so eframe apps see in tests
+        // what they see in production.
         #[cfg(feature = "eframe")]
         if let AppKind::Eframe((get_app, _)) = &mut self.app {
             get_app(&mut self.state).raw_input_hook(&self.ctx, &mut self.input);

@@ -278,6 +278,13 @@ impl InputRouter {
         self.conjoined_parent_hit = hit;
     }
 
+    /// Deliveries routed so far: a test proves a harness step reached
+    /// `raw_input_hook`.
+    #[cfg(test)]
+    pub(crate) fn deliveries(&self) -> u64 {
+        self.delivery
+    }
+
     /// True while `key`'s press was consumed by a host binding or a
     /// structured owner and its release has not arrived yet.
     #[cfg(test)]
