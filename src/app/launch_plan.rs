@@ -2599,8 +2599,18 @@ mod tests {
     fn launch_plan_queue_gets_no_secrets_and_every_target_refuses_unverified() {
         let mut h = HostHarness::new();
         h.add_test_pane();
+        // A workspace, so an eligible launch resolves its terminal secrets.
+        h.app.set_context_root(h.workspace_root(), None);
         h.app.active_window = 0;
         h.app.windows[0].focused_pane = None;
+        let mut outside = spec(&h, "new_window", None, None);
+        outside.source = SpawnSource::SocketPeer(vec![u32::MAX]);
+        let launched = launch_observed(&mut h, &outside);
+        assert!(
+            launched.reads.iter().any(|(class, _)| *class == "terminal"),
+            "fixture: an identified outside caller's launch resolves terminal secrets: {:?}",
+            launched.reads
+        );
         let mut queued = spec(&h, "new_window", None, None);
         queued.source = SpawnSource::SpawnQueue;
         let launched = launch_observed(&mut h, &queued);
