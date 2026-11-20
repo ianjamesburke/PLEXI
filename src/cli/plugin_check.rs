@@ -222,9 +222,11 @@ fn join_signals(signals: &[SeedSignal]) -> String {
 
 pub fn plugin_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32 {
     let plugin_dir = Path::new(path);
+    // Argument values are caller text; the log keeps presence and counts only.
     log::info!(
-        "plugin_check: path={} sizes={sizes:?} png_dir={png_dir:?}",
-        plugin_dir.display()
+        "plugin_check: start sizes={} png_dir={}",
+        sizes.len(),
+        png_dir.is_some()
     );
 
     let render_sizes = match check_sizes(sizes) {
@@ -390,11 +392,11 @@ pub fn plugin_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> 
         );
     }
     log::info!(
-        "plugin_check[{}]: rendering {:?}, skipped {:?} below the manifest minimum, unreachable controls are errors at {:?}",
+        "plugin_check[{}]: rendering {} size(s), skipped {} below the manifest minimum, strict layout size={}",
         manifest.plugin.id,
-        plan.render,
-        plan.skipped,
-        plan.strict
+        plan.render.len(),
+        plan.skipped.len(),
+        plan.strict.is_some()
     );
     if plan.render.is_empty() && launch_config.is_some() {
         warnings.push(
@@ -1304,10 +1306,7 @@ fn scaffold_metadata_warnings(plugin_dir: &Path) -> Vec<String> {
                 "scaffold metadata — missing {}; old scaffolds are still supported, but run `plexi plugin init --adopt <dir>` (or regenerate with `plexi plugin init`) before relying on drift checks",
                 crate::cli::plugin::SCAFFOLD_METADATA_FILE
             ));
-            log::warn!(
-                "plugin_check: missing scaffold metadata at {}",
-                metadata_path.display()
-            );
+            log::warn!("plugin_check: missing scaffold metadata");
             return warnings;
         }
         Err(e) => {
@@ -1316,8 +1315,8 @@ fn scaffold_metadata_warnings(plugin_dir: &Path) -> Vec<String> {
                 metadata_path.display()
             ));
             log::warn!(
-                "plugin_check: could not read scaffold metadata at {}: {e}",
-                metadata_path.display()
+                "plugin_check: could not read scaffold metadata ({:?})",
+                e.kind()
             );
             return warnings;
         }
@@ -1330,10 +1329,7 @@ fn scaffold_metadata_warnings(plugin_dir: &Path) -> Vec<String> {
                 "scaffold metadata — invalid {}: {e}",
                 metadata_path.display()
             ));
-            log::warn!(
-                "plugin_check: invalid scaffold metadata at {}: {e}",
-                metadata_path.display()
-            );
+            log::warn!("plugin_check: invalid scaffold metadata (TOML parse error)");
             return warnings;
         }
     };
@@ -1395,15 +1391,11 @@ fn scaffold_metadata_warnings(plugin_dir: &Path) -> Vec<String> {
             "✓ scaffold metadata — {} template {}",
             metadata.sdk_version, metadata.template_version
         );
-        log::info!(
-            "plugin_check: scaffold metadata current at {}",
-            metadata_path.display()
-        );
+        log::info!("plugin_check: scaffold metadata current");
     } else {
         log::warn!(
-            "plugin_check: scaffold metadata produced {} warning(s) at {}",
-            warnings.len(),
-            metadata_path.display()
+            "plugin_check: scaffold metadata produced {} warning(s)",
+            warnings.len()
         );
     }
 
@@ -1479,10 +1471,7 @@ fn run_python_type_check_with(
             return unavailable_or_fatal(error, &probe);
         }
         probe_mypy(python).map_err(|e| format!("mypy installed but still not importable: {e}"))?;
-        log::info!(
-            "plugin_check: installed mypy into the plugin venv at {}",
-            python.display()
-        );
+        log::info!("plugin_check: installed mypy into the plugin venv");
     }
     let plugin_dir = entry_path.parent().unwrap_or_else(|| Path::new("."));
     let cache_dir = plugin_dir.join(".venv").join("mypy_cache");
@@ -1506,8 +1495,7 @@ fn run_python_type_check_with(
     let output = &exited.output;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     log::info!(
-        "plugin_check: mypy over {} exited {:?} ({} finding bytes)",
-        entry_path.display(),
+        "plugin_check: mypy exited {:?} ({} finding bytes)",
         exited.status.code(),
         stdout.len()
     );
@@ -1725,7 +1713,7 @@ json.dump({"functions": functions, "legacy_plugin_classes": legacy_plugin_classe
                 "SDK — {}:{line}: {effect} requires the missing timer capability; add \"timer\" to [plugin.capabilities] capabilities (entry module only is checked)",
                 entry_path.display()
             );
-            log::info!("plugin_check: {error}");
+            log::info!("plugin_check: {effect} at entry line {line} lacks the timer capability");
             analysis.errors.push(error);
         }
     }
@@ -1737,6 +1725,46 @@ json.dump({"functions": functions, "legacy_plugin_classes": legacy_plugin_classe
 mod plugin_check_tests {
     use std::fs;
     use tempfile::TempDir;
+
+    /// Stint 1668: `plexi.log` is kept and shared, so the checker logs that its
+    /// arguments are present, never their values, on pass and on fail.
+    #[test]
+    fn plugin_check_never_logs_argument_values() {
+        let profile = TempDir::new().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_owned());
+        let root = TempDir::new().unwrap();
+        let app = root.path().join("SENTINEL_PATH_1668");
+        fs::create_dir(&app).unwrap();
+        fs::write(
+            app.join("manifest.toml"),
+            include_str!("../../tests/fixtures/schema2/good.toml"),
+        )
+        .unwrap();
+        fs::write(
+            app.join("main.wasm"),
+            include_bytes!("../../tests/wasm-fixtures/counter.wasm"),
+        )
+        .unwrap();
+        let png_dir = root.path().join("SENTINEL_PNG_1668");
+        let (path, png) = (app.to_str().unwrap(), png_dir.to_str().unwrap());
+        let logs = crate::testing::test_log::capture();
+        let pass = super::plugin_check_cli(path, &["1668x1669".to_string()], Some(png));
+        let bad_size =
+            super::plugin_check_cli(path, &["SENTINEL_SIZE_1668".to_string()], Some(png));
+        fs::write(app.join("manifest.toml"), "schema_version = 2\n").unwrap();
+        let bad_manifest = super::plugin_check_cli(path, &["1668x1669".to_string()], Some(png));
+        assert_eq!((pass, bad_size, bad_manifest), (0, 1, 1));
+        let lines = logs.lines();
+        assert!(!lines.is_empty(), "plugin check logged nothing");
+        for line in &lines {
+            for sentinel in ["SENTINEL", "1668", "1669"] {
+                assert!(
+                    !line.contains(sentinel),
+                    "log carried an argument value: {line}"
+                );
+            }
+        }
+    }
 
     fn manifest_with_on_launch(on_launch: &str) -> crate::app::registry::PluginManifest {
         toml::from_str(&format!(

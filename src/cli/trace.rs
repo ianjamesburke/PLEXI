@@ -473,8 +473,6 @@ pub fn begin(
             capture_content(),
         ),
         "pane_id": std::env::var("PLEXI_PANE_ID").ok().and_then(|v| v.parse::<u64>().ok()),
-        "agent_session_id": std::env::var("PLEXI_AGENT_SESSION_ID").ok(),
-        "ts": crate::platform::clock::now_rfc3339(),
     });
     if send_frame(&socket, &frame) {
         *slot = Some(Invocation { frame, socket });
