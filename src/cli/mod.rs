@@ -1072,18 +1072,19 @@ pub(crate) fn caller_relation() -> Option<CallerRelation> {
 
 /// Compute the caller's relation to the effective endpoint once, before any
 /// pane default or trace reads inherited identity, and remove that identity
-/// unless the caller is a pane of the target host. `lifecycle` commands
-/// address their profile's host (`host::host_target`); every other command
+/// unless the caller is a pane of the target host. Lifecycle commands pass
+/// their validated host's socket (`host::host_target`); every other command
 /// addresses its command socket, an explicit `--socket` included, compared
 /// by endpoint object like any other target.
 pub(crate) fn settle_caller_identity(
     explicit_socket: Option<&std::path::Path>,
-    lifecycle: bool,
+    lifecycle_socket: Option<&std::path::Path>,
 ) -> Vec<String> {
     let pane = std::env::var("PLEXI_PANE_ID").is_ok_and(|id| !id.is_empty());
     let source = std::env::var_os("PLEXI_SOCKET").map(std::path::PathBuf::from);
-    let target = if lifecycle {
-        Some(host::host_target().socket())
+    let lifecycle = lifecycle_socket.is_some();
+    let target = if let Some(socket) = lifecycle_socket {
+        Some(socket.to_path_buf())
     } else {
         let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         resolve_command_socket_from(

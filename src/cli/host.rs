@@ -241,8 +241,19 @@ impl HostTarget {
         }
     }
 
+    /// The single validation step: the profile dir, its `host/` dir and its
+    /// endpoint must be this profile's own, never links into another one.
+    fn validated(self) -> Result<Self, String> {
+        ensure_real_profile_dir(&self.dir)?;
+        Ok(self)
+    }
+
     pub(crate) fn socket(&self) -> PathBuf {
         endpoint_in(&self.dir)
+    }
+
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
     }
 
     /// The command a user runs to repeat `subcommand` against this host,
@@ -284,15 +295,18 @@ pub(crate) fn addresses_profile_host(command: &crate::cli::args::Commands) -> bo
     }
 }
 
-/// Resolve the [`HostTarget`] for this invocation from `--profile` and the
-/// binary's channel.
-pub(crate) fn host_target() -> HostTarget {
+/// Resolve and validate the [`HostTarget`] for this invocation from
+/// `--profile` and the binary's channel. Every lifecycle path (status, start,
+/// stop, restart, log, uninstall) and its trace use only a target returned
+/// here, so nothing connects, traces or signals through a linked profile.
+pub(crate) fn host_target() -> Result<HostTarget, String> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let target = HostTarget::resolve(
         crate::config::build_channel(),
         crate::config::explicit_profile().map(str::to_string),
         &home,
-    );
+    )
+    .validated()?;
     log::info!(
         "host: target profile={:?} channel={:?} dir={:?} socket={:?}",
         target.profile,
@@ -300,7 +314,55 @@ pub(crate) fn host_target() -> HostTarget {
         target.dir,
         target.socket()
     );
-    target
+    Ok(target)
+}
+
+/// [`host_target`] for a `plexi host` verb: a refused target is reported and
+/// becomes the exit code.
+fn cli_host_target() -> Result<HostTarget, i32> {
+    host_target().map_err(|error| {
+        log::error!("host: {error}");
+        eprintln!("error: {error}");
+        1
+    })
+}
+
+/// Refuse a profile dir (or its `host` dir) that is a symlink or not a dir,
+/// and a host endpoint that is a symlink: resolving a host socket, lock or
+/// integrity account through one would reach another profile. Interior data
+/// symlinks are unlinked by `remove_dir_all`. A missing entry is fine.
+pub(crate) fn ensure_real_profile_dir(profile: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let endpoint = endpoint_in(profile);
+        match std::fs::symlink_metadata(&endpoint) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                log::error!("host: refusing linked host endpoint {endpoint:?}");
+                return Err(format!(
+                    "refusing to address a host through linked host endpoint {}",
+                    endpoint.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("inspect {}: {error}", endpoint.display())),
+        }
+    }
+    for path in [profile.to_path_buf(), profile.join("host")] {
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+                log::error!("host: refusing profile through non-directory {path:?}");
+                return Err(format!(
+                    "refusing to address a host through non-directory profile path {}",
+                    path.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("inspect {}: {error}", path.display())),
+        }
+    }
+    Ok(())
 }
 
 /// Resolve the canonical installed target, falling back only to this executable
@@ -344,7 +406,28 @@ fn detect_pid(socket_path: &Path) -> Option<u32> {
 
 #[cfg(unix)]
 fn detect_pid(socket_path: &Path) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
     let profile = socket_path.parent()?;
+    // The fallback PID is signalled, so it must come from this profile's own
+    // lock: a regular file with one link, never followed through a symlink
+    // or shared by hard link with another profile's held lock.
+    let lock = profile.join(host_presence::LOCK_FILE);
+    match std::fs::symlink_metadata(&lock) {
+        Ok(meta) if meta.file_type().is_file() && meta.nlink() == 1 => {}
+        Ok(meta) => {
+            log::error!(
+                "host: ignoring PID from {lock:?}: not this profile's own lock (type={:?} links={})",
+                meta.file_type(),
+                meta.nlink()
+            );
+            return None;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            log::warn!("host: PID lookup failed for {lock:?}: {error}");
+            return None;
+        }
+    }
     match host_presence::probe(profile, Instant::now() + Duration::from_millis(100)) {
         Presence::Running { pid, .. } => pid,
         Presence::NotRunning => None,
@@ -670,7 +753,10 @@ pub fn host_start_cli(
         }
     }
 
-    let target = host_target();
+    let target = match cli_host_target() {
+        Ok(target) => target,
+        Err(code) => return code,
+    };
     let (bundle_path, binary_path) = resolve_channel_paths();
     let socket_path = target.socket();
     log::info!(
@@ -954,18 +1040,8 @@ fn shutdown_complete(pid: Option<u32>, socket_path: &Path) -> bool {
 }
 
 /// Uninstall must not delete a profile while a host can still write to it.
-/// Returns the profile dir the host was stopped for, which is the one
-/// uninstall may delete.
-pub(crate) fn stop_for_uninstall() -> Result<PathBuf, String> {
-    let target = host_target();
-    stop_for_uninstall_at(&target)?;
-    Ok(target.dir)
-}
-
-/// The profile dir is checked before any shutdown: a symlinked profile (or
-/// its `host` dir) would route the shutdown into the linked profile's host.
-fn stop_for_uninstall_at(target: &HostTarget) -> Result<(), String> {
-    super::install::ensure_real_profile_dir(&target.dir)?;
+/// `target` is validated, so the shutdown cannot route into another profile.
+pub(crate) fn stop_for_uninstall(target: &HostTarget) -> Result<(), String> {
     let socket = target.socket();
     let pid = running_build_info_in(&target.dir)
         .as_ref()
@@ -1068,7 +1144,10 @@ fn restart_coordinator_command(
 }
 
 pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
-    let target = host_target();
+    let target = match cli_host_target() {
+        Ok(target) => target,
+        Err(code) => return code,
+    };
     let socket = target.socket();
     // Settled once at startup against this target's endpoint identity.
     let own_host = match super::caller_relation() {
@@ -1273,7 +1352,10 @@ fn a_hung_restart_step_is_stopped_at_its_limit() {
 /// (`HostRequest::Shutdown`), falling back to `kill -TERM <pid>` (pid via
 /// host lock) if the socket does not confirm exit within a short timeout.
 pub fn host_stop_cli() -> i32 {
-    let target = host_target();
+    let target = match cli_host_target() {
+        Ok(target) => target,
+        Err(code) => return code,
+    };
     host_stop_cli_in(&target.dir, target.channel)
 }
 
@@ -1666,7 +1748,13 @@ fn reported_pid(info: &serde_json::Value) -> Option<u32> {
 
 /// Query the running host independently of its profile markers or installed package.
 pub(crate) fn running_build_info() -> Option<serde_json::Value> {
-    running_build_info_in(&host_target().dir)
+    match host_target() {
+        Ok(target) => running_build_info_in(&target.dir),
+        Err(error) => {
+            log::warn!("host: build info not queried: {error}");
+            None
+        }
+    }
 }
 
 /// [`running_build_info`] for the host of `profile`.
@@ -1772,7 +1860,10 @@ pub(crate) fn plugin_mode_core_only() -> bool {
 
 /// `plexi host status [--json]` — ready/not-ready, pane count, pid, socket path.
 pub fn host_status_cli(json: bool) -> i32 {
-    let target = host_target();
+    let target = match cli_host_target() {
+        Ok(target) => target,
+        Err(code) => return code,
+    };
     let channel = &target.channel;
     let socket_path = target.socket();
     let pane_count = query_ready_status(
@@ -1837,7 +1928,10 @@ pub fn host_status_cli(json: bool) -> i32 {
 /// runs from a plain terminal. Waits for the host's `{"ok":true}` ack so a
 /// nonzero exit reliably means the marker did not land.
 pub fn host_log_cli(source: &str, message: &str) -> i32 {
-    let target = host_target();
+    let target = match cli_host_target() {
+        Ok(target) => target,
+        Err(code) => return code,
+    };
     let channel = &target.channel;
     let profile_dir = target.dir.clone();
     let socket_path = endpoint_in(&profile_dir);
@@ -2169,6 +2263,33 @@ mod tests {
         assert_eq!(detect_pid(&endpoint), Some(4242), "live host lock");
     }
 
+    /// Round 6: the fallback PID is signalled, so a lock linked to another
+    /// profile's held lock (symlink or hard link) yields no PID.
+    #[cfg(unix)]
+    #[test]
+    fn detect_pid_ignores_a_lock_linked_to_another_profile() {
+        let home = tempfile::tempdir().unwrap();
+        let other = home.path().join(".plexi-other");
+        let profile = home.path().join(".plexi-t1655");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::create_dir(&profile).unwrap();
+        let other_lock = other.join(plexi_distribution::host_presence::LOCK_FILE);
+        std::fs::write(&other_lock, "4242\n").unwrap();
+        let held = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .open(&other_lock)
+            .unwrap();
+        held.try_lock().unwrap();
+        let lock = profile.join(plexi_distribution::host_presence::LOCK_FILE);
+        let endpoint = endpoint_in(&profile);
+        std::os::unix::fs::symlink(&other_lock, &lock).unwrap();
+        assert_eq!(detect_pid(&endpoint), None, "symlinked lock");
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::hard_link(&other_lock, &lock).unwrap();
+        assert_eq!(detect_pid(&endpoint), None, "hard-linked lock");
+    }
+
     #[cfg(unix)]
     #[test]
     fn distribution_shutdown_confirms_original_exit_with_replacement_socket_live() {
@@ -2395,11 +2516,11 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         assert!(super::restart_hint(&target).ends_with(" --profile t1655 host restart"));
     }
 
-    /// Stint 1655: uninstall refuses a symlinked profile before it sends any
-    /// shutdown, which would otherwise reach the linked profile's host.
+    /// Stint 1655: a lifecycle target refuses a symlinked profile before any
+    /// connection, which would otherwise reach the linked profile's host.
     #[cfg(unix)]
     #[test]
-    fn uninstall_refuses_a_symlinked_profile_before_shutdown() {
+    fn a_lifecycle_target_refuses_a_symlinked_profile() {
         let home = tempfile::tempdir().unwrap();
         let linked = home.path().join("linked");
         std::fs::create_dir(&linked).unwrap();
@@ -2408,20 +2529,20 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         std::os::unix::fs::symlink(&linked, home.path().join(".plexi-t1655")).unwrap();
         let target = HostTarget::resolve(None, Some("t1655".to_string()), home.path());
 
-        let error = stop_for_uninstall_at(&target).unwrap_err();
+        let error = target.validated().unwrap_err();
 
         assert!(error.contains("non-directory"), "{error}");
         assert!(
             matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
-            "uninstall contacted the linked profile's host"
+            "validation contacted the linked profile's host"
         );
     }
 
     /// Round 2: a linked `notify.sock` inside a real profile dir would route
-    /// uninstall's shutdown into the linked profile's host.
+    /// any lifecycle request into the linked profile's host.
     #[cfg(unix)]
     #[test]
-    fn uninstall_refuses_a_linked_endpoint_before_shutdown() {
+    fn a_lifecycle_target_refuses_a_linked_endpoint() {
         let home = tempfile::tempdir().unwrap();
         let other = home.path().join(".plexi-other");
         std::fs::create_dir(&other).unwrap();
@@ -2432,12 +2553,12 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         std::os::unix::fs::symlink(endpoint_in(&other), endpoint_in(&profile)).unwrap();
         let target = HostTarget::resolve(None, Some("t1655".to_string()), home.path());
 
-        let error = stop_for_uninstall_at(&target).unwrap_err();
+        let error = target.validated().unwrap_err();
 
         assert!(error.contains("linked host endpoint"), "{error}");
         assert!(
             matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
-            "uninstall contacted the linked profile's host"
+            "validation contacted the linked profile's host"
         );
     }
 

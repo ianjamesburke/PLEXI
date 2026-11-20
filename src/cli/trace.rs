@@ -448,10 +448,17 @@ fn active() -> &'static Mutex<Option<Invocation>> {
 }
 
 /// Begin once per CLI process, before dispatch. Debug/skill readers are excluded
-/// so a review-only draft does not mutate the session it is reading.
-pub fn begin(argv: &[String], owners: &[Option<super::front::Owner>]) {
-    let socket =
-        super::resolve_command_socket().unwrap_or_else(crate::platform::ipc::endpoint_path);
+/// so a review-only draft does not mutate the session it is reading. A
+/// lifecycle command passes its validated host's socket, so its trace goes
+/// only to the host it addresses, never to an explicit `--socket`.
+pub fn begin(
+    argv: &[String],
+    owners: &[Option<super::front::Owner>],
+    lifecycle_socket: Option<PathBuf>,
+) {
+    let socket = lifecycle_socket
+        .or_else(super::resolve_command_socket)
+        .unwrap_or_else(crate::platform::ipc::endpoint_path);
     let mut slot = active().lock().unwrap_or_else(|e| e.into_inner());
     if slot.is_some() {
         return;

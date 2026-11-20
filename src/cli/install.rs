@@ -296,11 +296,17 @@ pub fn install_workspace_pack_cli() -> i32 {
 pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: bool) -> i32 {
     let result = (|| -> Result<(), String> {
         let receipt = crate::distribution::installed()?.ok_or_else(|| "No managed installation receipt found. No files were removed. Reinstall through the current installer to migrate this legacy installation.".to_string())?;
-        if receipt.channel.starts_with("pr-") && !keep_data {
+        let target = super::host::host_target()?;
+        let profile = target.dir().to_path_buf();
+        let home = dirs::home_dir().ok_or("uninstall: no home directory to resolve profiles")?;
+        if !keep_data && pr_installation_owns_profile(&receipt.channel, &profile, &home) {
             delete_data = true;
         }
         if !assume_yes && !keep_data && !delete_data {
-            eprint!("Delete this channel's saved data and integrity credentials too? [y/N]: ");
+            eprint!(
+                "Delete saved data and integrity credentials in {} too? [y/N]: ",
+                profile.display()
+            );
             io::stderr()
                 .flush()
                 .map_err(|e| format!("write data choice: {e}"))?;
@@ -311,9 +317,10 @@ pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: b
             delete_data = matches!(answer.trim(), "y" | "Y" | "yes");
         }
         println!(
-            "Remove Plexi channel {} from {}. User data will be {}.",
+            "Remove Plexi channel {} from {}. User data in {} will be {}.",
             receipt.channel,
             receipt.root.display(),
+            profile.display(),
             if delete_data {
                 "permanently deleted"
             } else {
@@ -333,7 +340,7 @@ pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: b
                 return Err("Uninstall cancelled.".into());
             }
         }
-        let profile = super::host::stop_for_uninstall()?;
+        super::host::stop_for_uninstall(&target)?;
         remove_then_delete_data(&profile, delete_data, || {
             #[cfg(not(windows))]
             plexi_distribution::transaction::uninstall(&receipt.root).map_err(|e| e.to_string())?;
@@ -393,6 +400,14 @@ pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: b
     }
 }
 
+/// A PR build's own profile (`~/.plexi-pr-<N>`) is disposable test state and
+/// is deleted by default. Any other profile, including a persistent one a PR
+/// build addresses through `--profile`, is deleted only by explicit choice.
+fn pr_installation_owns_profile(channel: &str, profile: &Path, home: &Path) -> bool {
+    channel.starts_with("pr-")
+        && profile == home.join(plexi_distribution::host_presence::profile_dir_name(channel))
+}
+
 /// Runs the uninstall step, then deletes channel data only if it succeeded, so
 /// a failed uninstall never leaves an install with its data already gone.
 fn remove_then_delete_data(
@@ -412,7 +427,7 @@ fn remove_then_delete_data(
 }
 
 fn remove_channel_data(profile: &Path) -> Result<(), String> {
-    ensure_real_profile_dir(profile)?;
+    super::host::ensure_real_profile_dir(profile)?;
     crate::broker::seal::remove_profile_credentials(profile)?;
     match std::fs::remove_dir_all(profile) {
         Ok(()) => {}
@@ -420,44 +435,6 @@ fn remove_channel_data(profile: &Path) -> Result<(), String> {
         Err(error) => return Err(format!("remove profile {}: {error}", profile.display())),
     }
     log::info!("uninstall: deleted channel profile {}", profile.display());
-    Ok(())
-}
-
-/// Refuse a profile dir (or its `host` dir) that is a symlink or not a dir,
-/// and a host endpoint that is a symlink: resolving a host socket or
-/// integrity account through one would reach another profile. Interior data
-/// symlinks are unlinked by `remove_dir_all`. A missing entry is fine.
-pub(crate) fn ensure_real_profile_dir(profile: &Path) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        let endpoint = plexi_distribution::host_presence::endpoint_in(profile);
-        match std::fs::symlink_metadata(&endpoint) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                log::error!("uninstall: refusing linked host endpoint {endpoint:?}");
-                return Err(format!(
-                    "refusing to uninstall through linked host endpoint {}",
-                    endpoint.display()
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("inspect {}: {error}", endpoint.display())),
-        }
-    }
-    for path in [profile.to_path_buf(), profile.join("host")] {
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
-                log::error!("uninstall: refusing profile through non-directory {path:?}");
-                return Err(format!(
-                    "refusing to uninstall through non-directory profile path {}",
-                    path.display()
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("inspect {}: {error}", path.display())),
-        }
-    }
     Ok(())
 }
 
@@ -807,6 +784,21 @@ mod uninstall_data_tests {
         .unwrap();
         assert!(ran.get());
         assert!(!profile.exists());
+    }
+
+    /// Round 6: a PR build deletes only its own profile by default; a
+    /// persistent profile it addresses through `--profile` needs
+    /// `--delete-data`.
+    #[test]
+    fn a_pr_uninstall_owns_only_its_own_profile() {
+        let home = std::path::Path::new("/home/u");
+        let owns = |channel: &str, dir: &str| {
+            super::pr_installation_owns_profile(channel, &home.join(dir), home)
+        };
+        assert!(owns("pr-3267", ".plexi-pr-3267"));
+        assert!(!owns("pr-3267", ".plexi-team"));
+        assert!(!owns("pr-3267", ".plexi-pr-3268"));
+        assert!(!owns("alpha", ".plexi-alpha"));
     }
 
     #[test]

@@ -273,12 +273,72 @@ fn host_restart_from_its_own_pane_ignores_an_explicit_socket() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
     assert!(stderr.contains("host restart --yes"), "{stderr}");
-    for host in [&fixture.named_host, &fixture.default_host] {
-        assert!(
-            !host.requests().iter().any(|kind| kind == "shutdown"),
-            "restart from its own pane sent a shutdown: {:?}",
-            host.requests()
-        );
+    assert!(
+        !fixture
+            .named_host
+            .requests()
+            .iter()
+            .any(|kind| kind == "shutdown"),
+        "restart from its own pane sent a shutdown: {:?}",
+        fixture.named_host.requests()
+    );
+    // Round 6: the explicit `--socket` host is not the lifecycle target, so
+    // it receives nothing, not even the invocation's trace.
+    assert!(
+        fixture.default_host.frames().is_empty(),
+        "the --socket host received frames: {:?}",
+        fixture.default_host.frames()
+    );
+}
+
+/// Round 6: a lifecycle target is validated before any connection, trace or
+/// signal. A named profile whose dir, or whose `notify.sock`, links to another
+/// profile is refused, and the linked host receives zero frames.
+#[test]
+fn a_linked_named_profile_reaches_no_host() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().to_path_buf();
+    let default_dir = home.join(format!(".plexi-{CHANNEL}"));
+    let default_host = FakeHost::bind(&default_dir);
+    let binary = home.join(format!("plexi-{CHANNEL}"));
+    std::fs::copy(env!("CARGO_BIN_EXE_plexi"), &binary).unwrap();
+    let linked_dir = home.join(".plexi-linkdir");
+    std::os::unix::fs::symlink(&default_dir, &linked_dir).unwrap();
+    let linked_sock = home.join(".plexi-linksock");
+    std::fs::create_dir(&linked_sock).unwrap();
+    std::os::unix::fs::symlink(
+        default_dir.join("notify.sock"),
+        linked_sock.join("notify.sock"),
+    )
+    .unwrap();
+    let fixture = Fixture {
+        named_host: FakeHost::bind(&home.join(".plexi-unused")),
+        _home: temp,
+        home,
+        binary,
+        default_host,
+    };
+    for profile in ["linkdir", "linksock"] {
+        for verb in [
+            &["status"][..],
+            &["stop"],
+            &["restart", "--yes"],
+            &["log", "x"],
+        ] {
+            let args = [&["--profile", profile, "host"][..], verb].concat();
+            let output = run_raw(&fixture, &args);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(1), "{args:?}: {stderr}");
+            assert!(
+                stderr.contains("refusing to address a host"),
+                "{args:?}: {stderr}"
+            );
+            assert!(
+                fixture.default_host.frames().is_empty(),
+                "{args:?} reached the linked host: {:?}",
+                fixture.default_host.frames()
+            );
+        }
     }
 }
 

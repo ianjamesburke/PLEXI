@@ -117,14 +117,30 @@ fn main() -> eframe::Result {
         Startup::Run(run) => run.selection.clone(),
         Startup::Launch(launch) => launch.selection.clone(),
     });
-    let dropped_identity = match &startup {
-        Startup::Run(run) => cli::settle_caller_identity(
-            run.cli.socket.as_deref(),
-            run.cli
+    // A lifecycle command addresses its validated profile host and nothing
+    // else: a refused target exits here, before any connection or trace.
+    let lifecycle_socket = match &startup {
+        Startup::Run(run)
+            if run
+                .cli
                 .command
                 .as_ref()
-                .is_some_and(cli::host::addresses_profile_host),
-        ),
+                .is_some_and(cli::host::addresses_profile_host) =>
+        {
+            match cli::host::host_target() {
+                Ok(target) => Some(target.socket()),
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    cli::trace::exit(1);
+                }
+            }
+        }
+        _ => None,
+    };
+    let dropped_identity = match &startup {
+        Startup::Run(run) => {
+            cli::settle_caller_identity(run.cli.socket.as_deref(), lifecycle_socket.as_deref())
+        }
         Startup::Launch(_) => Vec::new(),
     };
     let boot_state = crate::workspace::consume_host_boot_state();
@@ -469,7 +485,7 @@ fn main() -> eframe::Result {
                     cli::resolve_opt_context_target(t).unwrap_or_else(|code| cli::trace::exit(code))
                 };
                 if !matches!(&cmd, Commands::Debug { .. } | Commands::Skill { .. }) {
-                    cli::trace::begin(&tokens, &owners);
+                    cli::trace::begin(&tokens, &owners, lifecycle_socket.clone());
                 }
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
