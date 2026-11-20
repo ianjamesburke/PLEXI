@@ -59,25 +59,32 @@ fn open_fds_on(device: libc::dev_t) -> usize {
 /// job control) ignores it too, and a foreground job floods the tty. That is
 /// the measured Beta leak: alacritty's `Pty::drop` hung up the shell pid only
 /// and waited with the master open, so the exiting shell blocked draining its
-/// output and every group survived the close.
+/// output and every group survived the close. Negative controls: a process
+/// that detached into its own session, and a second pane, both survive.
 #[test]
 #[ignore = "requires-pty"]
 fn closing_a_pane_ends_its_whole_process_tree() {
     let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
     let mut h = crate::testing::HostHarness::new();
     let terminal = h.add_focused_terminal();
+    let neighbour = h.add_focused_terminal();
+    let neighbour_shell = h.terminal_backend(neighbour).child_pid() as i32;
     let dir = tempfile::tempdir().unwrap();
-    let (grandchild, tty, ready) = (
+    let (grandchild, detached, tty, ready) = (
         dir.path().join("grandchild"),
+        dir.path().join("detached"),
         dir.path().join("tty"),
         dir.path().join("ready"),
     );
     h.terminal_backend(terminal)
         .process_command(egui_term::BackendCommand::Write(
             format!(
-                "trap '' HUP; set -m; sleep 3600 & echo $! > '{}'; tty > '{}'; : > '{}'; \
+                "trap '' HUP; set -m; sleep 3600 & echo $! > '{}'; \
+                 perl -MPOSIX -e 'fork and exit; setsid or die; open F, \">\", $ARGV[0]; \
+                 print F $$; close F; sleep 3600' '{}'; tty > '{}'; : > '{}'; \
                  yes plexi-close-test\n",
                 grandchild.display(),
+                detached.display(),
                 tty.display(),
                 ready.display()
             )
@@ -90,6 +97,8 @@ fn closing_a_pane_ends_its_whole_process_tree() {
     });
     let shell = h.terminal_backend(terminal).child_pid() as i32;
     let grandchild = read_pid(&grandchild);
+    wait_for("the detached process", deadline, || detached.exists());
+    let detached = read_pid(&detached);
     let mut foreground = shell;
     wait_for("the foreground job", deadline, || {
         h.run_frames(1);
@@ -129,10 +138,20 @@ fn closing_a_pane_ends_its_whole_process_tree() {
             gone(-group)
         });
     }
-    // The shell is gone, not a zombie: it was reaped, and its only reaper is
-    // the pane's PTY reader thread, so that thread is past its last wait.
+    // The shell is gone, not a zombie: the session teardown reaped it, its
+    // last step.
     #[cfg(target_os = "macos")]
     wait_for("the pty master to close", deadline, || {
         open_fds_on(master) == 0
     });
+    let detached_survived = !gone(detached);
+    unsafe { libc::kill(detached, libc::SIGKILL) };
+    assert!(
+        detached_survived,
+        "a process that left the pane's session was killed"
+    );
+    assert!(
+        !gone(neighbour_shell),
+        "closing one pane ended another pane's shell"
+    );
 }

@@ -31,7 +31,8 @@ name = "egui_term"
 path = "src/lib.rs"
 
 [dependencies.alacritty_terminal]
-version = "0.25.0"
+# Exact: `pane_pty` mirrors this version's `tty::unix` and its poll keys.
+version = "=0.25.1"
 
 [dependencies.anyhow]
 version = "1.0.96"
@@ -51,3 +52,9 @@ version = "0.4"
 [dependencies.polling]
 version = "3.4.0"
 
+
+[target."cfg(unix)".dependencies.rustix-openpty]
+version = "0.2.0"
+
+[target."cfg(unix)".dependencies.signal-hook]
+version = "0.3.10"

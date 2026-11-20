@@ -1,3 +1,5 @@
+#[cfg(unix)]
+mod pane_pty;
 mod paste;
 #[cfg(unix)]
 mod session;
@@ -23,7 +25,9 @@ use alacritty_terminal::term::{
     viewport_to_point, Term, TermMode,
 };
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
-use alacritty_terminal::{tty, Grid};
+#[cfg(not(unix))]
+use alacritty_terminal::tty;
+use alacritty_terminal::Grid;
 use egui::Modifiers;
 use settings::BackendSettings;
 use std::borrow::Cow;
@@ -273,6 +277,10 @@ pub struct TerminalBackend {
     notifier: Notifier,
     last_content: RenderableContent,
     child_pid: u32,
+    /// The pane's session. Taken on drop: after a natural exit this is its
+    /// last handle, and ending it waits, so it ends on a close thread.
+    #[cfg(unix)]
+    session: Option<Arc<session::Session>>,
     /// Raw fd of the PTY master, captured at spawn. Used only for
     /// `tcgetpgrp` foreground-process queries; the EventLoop owns the
     /// actual File. A query on a closed fd returns -1 and maps to `None`.
@@ -320,27 +328,8 @@ impl TerminalBackend {
         settings: BackendSettings,
     ) -> Result<Self> {
         let dynamic_colors = settings.dynamic_colors.clone();
-        let byte_tap = settings.byte_tap.clone();
-        let pty_config = tty::Options {
-            shell: Some(tty::Shell::new(settings.shell, settings.args)),
-            working_directory: settings.working_directory,
-            env: settings.env,
-            ..tty::Options::default()
-        };
         let config = terminal_config();
         let terminal_size = TerminalSize::default();
-        let pty = tty::new(&pty_config, terminal_size.into(), id)?;
-        // Windows ConPTY exposes no child handle; downstream pid consumers
-        // (lsof / pgrep / busy detection) are already Unix-gated in shell.rs.
-        #[cfg(unix)]
-        let child_pid = pty.child().id();
-        #[cfg(not(unix))]
-        let child_pid: u32 = 0;
-        #[cfg(unix)]
-        let master_fd = {
-            use std::os::fd::AsRawFd;
-            pty.file().as_raw_fd()
-        };
         let (event_sender, event_receiver) = mpsc::channel();
         let event_proxy = EventProxy(event_sender);
         let mut term = Term::new(config, &terminal_size, event_proxy.clone());
@@ -359,43 +348,41 @@ impl TerminalBackend {
         let term = Arc::new(FairMutex::new(term));
         let reaped_exit_status: Arc<Mutex<Option<PtyExitStatus>>> =
             Arc::new(Mutex::new(None));
-        // The PTY master is both reader and writer on Unix; the tap reads
-        // through a dup of the fd (same open file description, same
-        // non-blocking mode) so it can own its reader.
         #[cfg(unix)]
-        let tap_file = pty.file().try_clone()?;
+        let (pty, session) = pane_pty::spawn(
+            id,
+            settings,
+            terminal_size.into(),
+            {
+                let proxy = event_proxy.clone();
+                Box::new(move |bytes: Vec<u8>| {
+                    proxy.send_event(Event::PtyWrite(
+                        String::from_utf8_lossy(&bytes).into_owned(),
+                    ));
+                })
+            },
+            reaped_exit_status.clone(),
+        )?;
         #[cfg(unix)]
-        let master_fds = {
-            use std::os::fd::AsRawFd;
-            [master_fd, tap_file.as_raw_fd()]
-        };
-        #[cfg(unix)]
-        let reader = tap::TapReader::new(tap_file, byte_tap, {
-            let proxy = event_proxy.clone();
-            Box::new(move |bytes: Vec<u8>| {
-                proxy.send_event(Event::PtyWrite(
-                    String::from_utf8_lossy(&bytes).into_owned(),
-                ));
-            })
-        });
+        let (child_pid, master_fd) = (session.pid(), pty.master_fd());
         #[cfg(not(unix))]
-        let _ = byte_tap;
-        let pty = ReapingPty {
-            inner: pty,
-            #[cfg(unix)]
-            reader,
-            #[cfg(unix)]
-            pane: id,
-            #[cfg(unix)]
-            child_pid,
-            #[cfg(unix)]
-            master_fds,
-            exit_status: reaped_exit_status.clone(),
+        let (pty, child_pid) = {
+            let options = tty::Options {
+                shell: Some(tty::Shell::new(settings.shell, settings.args)),
+                working_directory: settings.working_directory,
+                env: settings.env,
+                ..tty::Options::default()
+            };
+            let inner = tty::new(&options, terminal_size.into(), id)?;
+            // ConPTY exposes no child handle; downstream pid consumers
+            // (lsof / pgrep / busy detection) are Unix-gated in shell.rs.
+            (ReapingPty { inner, exit_status: reaped_exit_status.clone() }, 0)
         };
-        // No drain on exit: a child's last bytes reach the screen without it
-        // (`a_childs_last_bytes_reach_the_screen`). A close never drains.
+        // Drain on exit: a child's last bytes may arrive with its exit, and
+        // one bounded read takes everything it wrote before exiting. A close
+        // (`Msg::Shutdown`) never drains.
         let pty_event_loop =
-            EventLoop::new(term.clone(), event_proxy, pty, false, false)?;
+            EventLoop::new(term.clone(), event_proxy, pty, true, false)?;
         let event_loop_sender = pty_event_loop.channel();
         let notifier = Notifier(event_loop_sender.clone());
         let event_notifier = Notifier(event_loop_sender);
@@ -486,6 +473,8 @@ impl TerminalBackend {
             notifier,
             last_content: initial_content,
             child_pid,
+            #[cfg(unix)]
+            session: Some(session),
             #[cfg(unix)]
             master_fd,
             lines_written: AtomicU64::new(0),
@@ -1611,59 +1600,34 @@ impl Default for RenderableContent {
 
 impl Drop for TerminalBackend {
     fn drop(&mut self) {
-        // The PTY reader thread ends the session and reaps the shell when its
-        // loop exits (`ReapingPty::drop`), off the UI and logic threads.
+        // On a running pane the PTY reader thread ends the session when its
+        // loop stops (`pane_pty`). After a natural exit the session's last
+        // handle is here; ending it waits, so never on this (UI) thread.
         let _ = self.notifier.0.send(Msg::Shutdown);
+        #[cfg(unix)]
+        if let Some(session) = self.session.take() {
+            let spawned = std::thread::Builder::new()
+                .name(format!("pty-close-{}", self.id))
+                .spawn(move || drop(session));
+            if let Err(error) = spawned {
+                log::error!(
+                    "egui_term: pane {} close thread failed, ending its session inline: {error}",
+                    self.id
+                );
+            }
+        }
     }
 }
 
-/// Wrapper around [`tty::Pty`] that retains the kernel wait status (`code` or
-/// `signal`) at the exact reaper site on the PTY event-loop thread before
-/// `alacritty_terminal::tty::Pty::next_child_event` discards signal information
-/// via `ExitStatus::code()`.
+/// Windows: alacritty's ConPTY, recording the exit code it reports.
+#[cfg(not(unix))]
 struct ReapingPty {
     inner: tty::Pty,
-    // Windows readers are not clonable, so the tap is Unix-only.
-    #[cfg(unix)]
-    reader: tap::TapReader<std::fs::File>,
-    #[cfg(unix)]
-    pane: u64,
-    #[cfg(unix)]
-    child_pid: u32,
-    /// The master fd `inner` owns and the tap reader's dup of it.
-    #[cfg(unix)]
-    master_fds: [std::os::fd::RawFd; 2],
     exit_status: Arc<Mutex<Option<PtyExitStatus>>>,
 }
 
-/// Runs on the PTY reader thread when its loop exits, before `inner`'s own
-/// drop SIGHUPs and waits for the shell (`session`).
-#[cfg(unix)]
-impl Drop for ReapingPty {
-    fn drop(&mut self) {
-        if self
-            .exit_status
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_some()
-        {
-            // The shell exited and was reaped; the kernel already hung up
-            // its session and revoked the tty.
-            log::info!(
-                "egui_term: pane {} pty released after its shell {} exited",
-                self.pane,
-                self.child_pid
-            );
-            return;
-        }
-        session::end(self.pane, self.child_pid as libc::pid_t, &self.master_fds);
-    }
-}
-
+#[cfg(not(unix))]
 impl tty::EventedReadWrite for ReapingPty {
-    #[cfg(unix)]
-    type Reader = tap::TapReader<std::fs::File>;
-    #[cfg(not(unix))]
     type Reader = <tty::Pty as tty::EventedReadWrite>::Reader;
     type Writer = <tty::Pty as tty::EventedReadWrite>::Writer;
 
@@ -1690,14 +1654,7 @@ impl tty::EventedReadWrite for ReapingPty {
     }
 
     fn reader(&mut self) -> &mut Self::Reader {
-        #[cfg(unix)]
-        {
-            &mut self.reader
-        }
-        #[cfg(not(unix))]
-        {
-            self.inner.reader()
-        }
+        self.inner.reader()
     }
 
     fn writer(&mut self) -> &mut Self::Writer {
@@ -1705,61 +1662,22 @@ impl tty::EventedReadWrite for ReapingPty {
     }
 }
 
+#[cfg(not(unix))]
 impl OnResize for ReapingPty {
     fn on_resize(&mut self, window_size: WindowSize) {
         self.inner.on_resize(window_size);
     }
 }
 
+#[cfg(not(unix))]
 impl tty::EventedPty for ReapingPty {
     fn next_child_event(&mut self) -> Option<tty::ChildEvent> {
-        #[cfg(unix)]
-        let peeked = peek_child_wait_status(self.child_pid);
-        #[cfg(not(unix))]
-        let peeked: Option<PtyExitStatus> = None;
-
         let event = self.inner.next_child_event();
         if let Some(tty::ChildEvent::Exited(code)) = &event {
-            let resolved = peeked
-                .or_else(|| code.map(PtyExitStatus::Code))
-                .unwrap_or(PtyExitStatus::Unknown);
-            *self.exit_status.lock().unwrap() = Some(resolved);
+            *self.exit_status.lock().unwrap() =
+                Some(code.map_or(PtyExitStatus::Unknown, PtyExitStatus::Code));
         }
         event
-    }
-}
-
-/// Non-destructively inspect the waitable child status (`WNOWAIT`) on the PTY
-/// reader thread right before `alacritty_terminal`'s `try_wait()` reaps it.
-/// Because `WNOWAIT` leaves the child waitable, `alacritty_terminal` remains
-/// the single `waitpid` consumer while we still retain `CLD_KILLED` /
-/// `CLD_DUMPED` signals that `std::process::ExitStatus::code()` discards.
-#[cfg(unix)]
-fn peek_child_wait_status(pid: u32) -> Option<PtyExitStatus> {
-    if pid == 0 {
-        return None;
-    }
-    unsafe {
-        let mut info: libc::siginfo_t = std::mem::zeroed();
-        let rc = libc::waitid(
-            libc::P_PID,
-            pid as libc::id_t,
-            &mut info,
-            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-        );
-        // Use `siginfo_t::si_pid()` / `si_status()` methods rather than field
-        // access: on Linux/Solaris/NetBSD/OpenBSD those live inside the union
-        // backing `siginfo_t` and `libc` exposes them as methods across all
-        // Unix targets (including macOS).
-        if rc != 0 || info.si_pid() as u32 != pid {
-            return None;
-        }
-        let status = info.si_status();
-        match info.si_code {
-            libc::CLD_EXITED => Some(PtyExitStatus::Code(status)),
-            libc::CLD_KILLED | libc::CLD_DUMPED => Some(PtyExitStatus::Signal(status)),
-            _ => None,
-        }
     }
 }
 
@@ -2157,7 +2075,9 @@ mod tests {
     }
 
     /// Stint 1650: bytes a child writes just before it exits reach the
-    /// screen without `drain_on_exit`, including a tail behind a large burst.
+    /// screen, including a tail behind a large burst. A guard for
+    /// `drain_on_exit`: whether the loop reads the master or the child event
+    /// first is scheduling, so the flag's absence cannot fail it reliably.
     #[cfg(unix)]
     #[test]
     fn a_childs_last_bytes_reach_the_screen() {
@@ -2197,6 +2117,152 @@ mod tests {
                 backend.capture_lines(5)
             );
         }
+    }
+
+    #[cfg(unix)]
+    fn gone(pid: libc::pid_t) -> bool {
+        // ESRCH also means reaped: a zombie still answers `kill(pid, 0)`.
+        (unsafe { libc::kill(pid, 0) }) != 0
+            && std::io::Error::last_os_error().raw_os_error()
+                == Some(libc::ESRCH)
+    }
+
+    #[cfg(unix)]
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Stint 1650: after the shell exits on its own, its pid stays pinned
+    /// (an unreaped zombie) while the pane is open, so nothing can signal a
+    /// reused pid, and a HUP-ignoring job it left behind ends when the pane
+    /// closes. Before, the shell was reaped at exit and the job outlived
+    /// the pane.
+    #[cfg(unix)]
+    #[test]
+    fn a_natural_exit_pins_the_shell_and_close_ends_its_leftover_job() {
+        use super::settings::BackendSettings;
+        use super::{PtyEvent, PtyExitStatus, TerminalBackend};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let job_file = std::env::temp_dir()
+            .join(format!("egui-term-1650-job-{}", std::process::id()));
+        let (tx, rx) = mpsc::channel();
+        let settings = BackendSettings {
+            shell: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!(
+                    "trap '' HUP; sleep 3600 & echo $! > '{}'; exit 0",
+                    job_file.display()
+                ),
+            ],
+            ..Default::default()
+        };
+        let backend =
+            TerminalBackend::new(1650, egui::Context::default(), tx, settings)
+                .expect("spawn backend");
+        let shell = backend.child_pid() as libc::pid_t;
+        let status = loop {
+            match rx.recv_timeout(Duration::from_secs(10)) {
+                Ok((_, PtyEvent::Exit(status))) => break status,
+                Ok(_) => continue,
+                Err(error) => panic!("no exit event: {error}"),
+            }
+        };
+        assert_eq!(status, PtyExitStatus::Code(0));
+        let job: libc::pid_t = std::fs::read_to_string(&job_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let _ = std::fs::remove_file(&job_file);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!gone(shell), "shell {shell} was reaped while its pane is open");
+        assert!(!gone(job), "job {job} ended before its pane closed");
+
+        drop(backend);
+        wait_until("the leftover job to end on close", || gone(job));
+        wait_until("the shell to be reaped on close", || gone(shell));
+    }
+
+    /// Stint 1650: closing needs no new fd. With the fd table full, a
+    /// close of a HUP-ignoring, tty-flooding child still ends it and its
+    /// PTY reader. Runs in a child process so exhausting fds cannot disturb
+    /// other tests.
+    #[cfg(unix)]
+    #[test]
+    fn closing_with_the_fd_table_full_still_ends_the_child() {
+        use super::settings::BackendSettings;
+        use super::TerminalBackend;
+        use std::sync::mpsc::{self, RecvTimeoutError};
+        use std::time::{Duration, Instant};
+
+        const CHILD: &str = "EGUI_TERM_FD_EXHAUSTION_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(
+                std::env::current_exe().unwrap(),
+            )
+            .args([
+                "--exact",
+                "backend::tests::closing_with_the_fd_table_full_still_ends_the_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+            let text = String::from_utf8_lossy(&output.stdout).into_owned()
+                + &String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "child run failed:\n{text}");
+            assert!(text.contains("1 passed"), "child did not run:\n{text}");
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let settings = BackendSettings {
+            shell: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "trap '' HUP; exec yes".to_string()],
+            ..Default::default()
+        };
+        let backend =
+            TerminalBackend::new(1650, egui::Context::default(), tx, settings)
+                .expect("spawn backend");
+        let pid = backend.child_pid() as libc::pid_t;
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("the child never produced output");
+        // Cap the table, then fill it.
+        let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) }, 0);
+        limit.rlim_cur = limit.rlim_cur.min(1024);
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+        let mut held = Vec::new();
+        loop {
+            match std::fs::File::open("/dev/null") {
+                Ok(file) => held.push(file),
+                Err(error) => {
+                    assert_eq!(error.raw_os_error(), Some(libc::EMFILE));
+                    break;
+                },
+            }
+        }
+        drop(backend);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(_) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {
+                    panic!("PTY reader still running 10 s after close with no free fd")
+                },
+            }
+        }
+        drop(held);
+        wait_until("the child to be reaped", || gone(pid));
     }
 
     #[test]

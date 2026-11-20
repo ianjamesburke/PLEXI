@@ -1749,6 +1749,8 @@ dependencies = [
  "log",
  "open",
  "polling",
+ "rustix-openpty",
+ "signal-hook",
 ]
 
 [[package]]
