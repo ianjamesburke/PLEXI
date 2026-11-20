@@ -789,8 +789,10 @@ mod tests {
         let incomplete = Incomplete {
             owned: vec![10],
             unresolved: vec!["pane 1".into()],
+            admitting: 2,
         };
-        assert_eq!(left_after_owner(&[10, 99], &incomplete), 2);
+        // 99, pane 1 and two launches still being admitted.
+        assert_eq!(left_after_owner(&[10, 99], &incomplete), 4);
         assert_eq!(left_after_owner(&[10], &Unconfirmed), 2);
     }
 

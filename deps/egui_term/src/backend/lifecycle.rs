@@ -42,6 +42,8 @@ const HANGUP_GRACE: Duration = Duration::from_millis(500);
 const REAP_RETRY: Duration = Duration::from_millis(50);
 /// After this, a shell still not reapable is logged as pending.
 const REAP_PENDING: Duration = Duration::from_secs(1);
+/// The worker answers host stop this long before the caller's deadline.
+const ANSWER_MARGIN: Duration = Duration::from_millis(30);
 
 enum Job {
     Admit(u64, Box<Entry>),
@@ -63,10 +65,12 @@ enum Job {
 pub enum ShutdownOutcome {
     /// Every shell was reaped, and none was ever lost.
     Complete { owned: Vec<u32> },
-    /// Work still owned or lost at the deadline, described for the log.
+    /// Work still owned or lost at the deadline, described for the log,
+    /// and launches still being admitted.
     Incomplete {
         owned: Vec<u32>,
         unresolved: Vec<String>,
+        admitting: usize,
     },
     /// The owner did not answer by the deadline.
     Unconfirmed,
@@ -77,7 +81,11 @@ impl ShutdownOutcome {
     pub fn unresolved(&self) -> usize {
         match self {
             Self::Complete { .. } => 0,
-            Self::Incomplete { unresolved, .. } => unresolved.len(),
+            Self::Incomplete {
+                unresolved,
+                admitting,
+                ..
+            } => unresolved.len() + admitting,
             Self::Unconfirmed => 1,
         }
     }
@@ -325,11 +333,10 @@ pub fn shutdown_panes(deadline: Instant) -> ShutdownOutcome {
     if worker.send(Job::Shutdown { deadline, reply }).is_err() {
         return ShutdownOutcome::Unconfirmed;
     }
-    // The worker answers at its deadline; the margin covers one pass.
-    let limit = deadline.saturating_duration_since(Instant::now())
-        + Duration::from_millis(250);
+    // The worker answers by its own, earlier deadline; an answer that
+    // misses the caller's is no answer.
     outcome
-        .recv_timeout(limit)
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
         .unwrap_or(ShutdownOutcome::Unconfirmed)
 }
 
@@ -413,7 +420,10 @@ fn run(jobs: mpsc::Receiver<Job>) {
                     entries.values().map(|e| e.owner.pid() as u32).collect();
                 owned.extend(lost().iter().map(|(pid, _)| *pid));
                 stopping = Some(Stopping {
-                    deadline,
+                    // Room to answer before the caller stops listening.
+                    deadline: deadline
+                        .checked_sub(ANSWER_MARGIN)
+                        .unwrap_or(deadline),
                     reply,
                     owned,
                 });
@@ -429,19 +439,17 @@ fn run(jobs: mpsc::Receiver<Job>) {
             let mut unresolved: Vec<String> =
                 entries.iter().map(describe).collect();
             unresolved.extend(lost().iter().map(|(_, lost)| lost.clone()));
-            let in_flight = admissions().in_flight;
-            if in_flight > 0 {
-                unresolved
-                    .push(format!("{in_flight} launches still being admitted"));
-            }
-            let _ = stop.reply.send(if unresolved.is_empty() {
-                ShutdownOutcome::Complete { owned: stop.owned }
-            } else {
-                ShutdownOutcome::Incomplete {
-                    owned: stop.owned,
-                    unresolved,
-                }
-            });
+            let admitting = admissions().in_flight;
+            let _ =
+                stop.reply.send(if unresolved.is_empty() && admitting == 0 {
+                    ShutdownOutcome::Complete { owned: stop.owned }
+                } else {
+                    ShutdownOutcome::Incomplete {
+                        owned: stop.owned,
+                        unresolved,
+                        admitting,
+                    }
+                });
         }
     }
 }
@@ -530,15 +538,16 @@ fn hang_up(
     {
         return;
     }
-    if let Err(error) = probe(key, entry.owner.pid(), Site::Hangup) {
-        return lose(entries, key, &error);
-    }
+    let exited = match probe(key, entry.owner.pid(), Site::Hangup) {
+        Ok(status) => status.is_some(),
+        Err(error) => return lose(entries, key, &error),
+    };
     let Some(entry) = entries.get_mut(&key) else {
         return;
     };
-    signal(key, entry, libc::SIGHUP);
+    signal(key, entry, libc::SIGHUP, exited);
     // A stopped member acts on the hangup only once continued.
-    signal(key, entry, libc::SIGCONT);
+    signal(key, entry, libc::SIGCONT, exited);
     let grace = Instant::now() + HANGUP_GRACE;
     entry.kill_at = Some(
         shutting_down.map_or(grace, |deadline| grace.min(early_kill(deadline))),
@@ -555,14 +564,17 @@ fn advance(entries: &mut HashMap<u64, Entry>) {
         });
         if due {
             let pid = entries[&key].owner.pid();
-            if let Err(error) = probe(key, pid, Site::Escalate) {
-                lose(entries, key, &error);
-                continue;
-            }
+            let exited = match probe(key, pid, Site::Escalate) {
+                Ok(status) => status.is_some(),
+                Err(error) => {
+                    lose(entries, key, &error);
+                    continue;
+                },
+            };
             let Some(mut entry) = entries.remove(&key) else {
                 continue;
             };
-            signal(key, &mut entry, libc::SIGKILL);
+            signal(key, &mut entry, libc::SIGKILL, exited);
             // The last signal: from here the owner can only be reaped.
             entry.owner = match entry.owner {
                 Owner::Pinned(child) => Owner::ReapOnly(child, now),
@@ -672,7 +684,14 @@ fn publish(entry: &Entry, status: PtyExitStatus) {
     }
 }
 
-fn signal(key: u64, entry: &mut Entry, signal: libc::c_int) {
+/// Signal the owned group. `leader_exited` is what the worker's own probe
+/// just before this signal found; it only labels the log.
+fn signal(
+    key: u64,
+    entry: &mut Entry,
+    signal: libc::c_int,
+    leader_exited: bool,
+) {
     let pid = entry.owner.pid();
     #[cfg(any(test, feature = "testing"))]
     testing::record(key, testing::Event::Signal(-pid, signal));
@@ -683,47 +702,25 @@ fn signal(key: u64, entry: &mut Entry, signal: libc::c_int) {
     } else {
         Ok(())
     };
-    let exited = result.is_err()
-        && (entry
-            .status
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_some()
-            || leader_exited(pid));
-    entry
-        .signals
-        .push(format!("{signal}:{}", signal_outcome(&result, exited)));
+    entry.signals.push(format!(
+        "{signal}:{}",
+        signal_outcome(&result, leader_exited)
+    ));
 }
 
-/// How a group signal ended, for the close log. A group whose leader has
-/// exited and has no live member answers ESRCH, or EPERM on macOS when only
-/// the zombie leader is left: that is an already-exited group, not a failure.
+/// How a group signal ended, for the close log: the raw result, with the
+/// probe's finding beside an EPERM (on macOS a group left with only its
+/// zombie leader answers EPERM; so can a member the host may not signal).
 fn signal_outcome(result: &io::Result<()>, leader_exited: bool) -> String {
     match result {
         Ok(()) => "ok".to_string(),
         Err(error)
-            if error.raw_os_error() == Some(libc::ESRCH)
-                || (leader_exited
-                    && error.raw_os_error() == Some(libc::EPERM)) =>
+            if leader_exited && error.raw_os_error() == Some(libc::EPERM) =>
         {
-            "already exited".to_string()
+            "EPERM (leader exited)".to_string()
         },
         Err(error) => error.to_string(),
     }
-}
-
-/// Whether the owned leader has exited (still unreaped), for the log only.
-fn leader_exited(pid: libc::pid_t) -> bool {
-    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-    let rc = unsafe {
-        libc::waitid(
-            libc::P_PID,
-            pid as libc::id_t,
-            &mut info,
-            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-        )
-    };
-    rc == 0 && unsafe { info.si_pid() } == pid
 }
 
 #[cfg(test)]
@@ -732,15 +729,17 @@ mod tests {
     use std::io;
 
     /// The tester saw `1:Operation not permitted` for a group left with only
-    /// its zombie leader; that is logged as already exited.
+    /// its zombie leader. The log keeps the raw EPERM and adds what the
+    /// worker's own probe found; without that finding the error stands.
     #[test]
-    fn a_zombie_only_group_logs_as_already_exited() {
+    fn eperm_after_the_leader_exited_is_labelled_as_such() {
         let eperm = || Err(io::Error::from_raw_os_error(libc::EPERM));
-        let esrch = Err(io::Error::from_raw_os_error(libc::ESRCH));
-        assert_eq!(signal_outcome(&eperm(), true), "already exited");
-        assert_eq!(signal_outcome(&esrch, false), "already exited");
-        assert_eq!(signal_outcome(&Ok(()), false), "ok");
-        assert_ne!(signal_outcome(&eperm(), false), "already exited");
+        assert_eq!(signal_outcome(&eperm(), true), "EPERM (leader exited)");
+        assert_eq!(
+            signal_outcome(&eperm(), false),
+            io::Error::from_raw_os_error(libc::EPERM).to_string()
+        );
+        assert_eq!(signal_outcome(&Ok(()), true), "ok");
     }
 }
 

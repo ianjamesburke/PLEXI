@@ -31,6 +31,9 @@ thread_local! {
     static SPAWNED: Cell<Option<u32>> = const { Cell::new(None) };
 }
 
+/// How far past its deadline host stop may return.
+const EPSILON: Duration = Duration::from_millis(50);
+
 /// The pane whose reader's second poll registration fails.
 static FAIL_SECOND_ADD: AtomicU64 = AtomicU64::new(u64::MAX);
 /// Rollbacks of a first registration: (pane, master still open then,
@@ -611,7 +614,13 @@ fn host_stop_during_a_reap_is_unconfirmed_and_nothing_follows_it() {
     wait_until("the consuming wait", || {
         worker::events(key).contains(&Event::Reaped)
     });
-    let outcome = shutdown_panes(Instant::now() + Duration::from_millis(200));
+    let started = Instant::now();
+    let outcome = shutdown_panes(started + Duration::from_millis(200));
+    assert!(
+        started.elapsed() < Duration::from_millis(200) + EPSILON,
+        "host stop outlived its deadline: {:?}",
+        started.elapsed()
+    );
     assert_eq!(outcome, ShutdownOutcome::Unconfirmed);
     assert!(outcome.unresolved() > 0, "a timeout was taken as clean");
     drop(after_reap);
@@ -678,17 +687,17 @@ fn host_stop_during_an_admission_returns_on_time_and_is_never_complete() {
         worker::ADMITTING.load(Ordering::SeqCst) == 1
     });
     let started = Instant::now();
-    let outcome = shutdown_panes(Instant::now() + Duration::from_millis(300));
+    let outcome = shutdown_panes(started + Duration::from_millis(300));
     assert!(
-        started.elapsed() < Duration::from_secs(1),
+        started.elapsed() < Duration::from_millis(300) + EPSILON,
         "host stop waited {:?} behind a spawn",
         started.elapsed()
     );
     assert!(
-        matches!(&outcome, ShutdownOutcome::Incomplete { unresolved, .. }
-            if unresolved.iter().any(|u| u.contains("being admitted"))),
+        matches!(&outcome, ShutdownOutcome::Incomplete { admitting: 1, .. }),
         "{outcome:?}"
     );
+    assert_eq!(outcome.unresolved(), 1);
     drop(held);
     let (backend, _rx) = launching.join().unwrap();
     let backend = backend.expect("a launch admitted before the stop runs");
