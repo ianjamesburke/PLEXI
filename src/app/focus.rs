@@ -209,7 +209,6 @@ focus_owner_tokens! {
     Shortcuts => ShortcutsOwner { key: shortcuts_handle_key, draw: draw_shortcuts_overlay },
     ApprovalBanner => ApprovalBannerOwner { key: approval_handle_key, draw: approval_focus_draw },
     ConfirmClose => ConfirmCloseOwner { key: confirm_close_handle_key, draw: draw_confirm_close },
-    CommandPalette => CommandPaletteOwner { key: command_palette_handle_key, draw: draw_command_palette },
     RenamePane => RenamePaneOwner { key: rename_pane_handle_key, draw: draw_rename_pane_overlay },
     ContextRename => ContextRenameOwner { key: context_rename_handle_key, draw: draw_rename_context_overlay },
     ContextDescription => ContextDescriptionOwner { key: context_description_handle_key, draw: draw_edit_description_overlay },
@@ -219,6 +218,29 @@ focus_owner_tokens! {
     CapabilityModal => CapabilityModalOwner { key: capability_modal_handle_key, draw: draw_capability_modal },
     EventConsent => EventConsentOwner { key: event_consent_handle_key, draw: draw_event_consent_modal },
     RawWasmReview => RawWasmReviewOwner { key: raw_wasm_review_handle_key, draw: draw_raw_wasm_review_modal },
+}
+
+/// Command palette: routes its whole delivery in arrival order, before any
+/// other consumer takes input (stint 1391). It takes the delivery from
+/// `ctx` itself, so `input` is always empty here and nothing goes back.
+pub(crate) struct CommandPaletteOwner;
+impl FocusOwner for CommandPaletteOwner {
+    fn handle_key(
+        &self,
+        app: &mut PlexiApp,
+        ctx: &egui::Context,
+        _input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::view_trait::KeyDisposition {
+        app.route_palette_delivery(ctx)
+    }
+    fn draw(
+        &self,
+        app: &mut PlexiApp,
+        ctx: &egui::Context,
+    ) -> Vec<crate::app::view_trait::ViewCommand> {
+        app.draw_command_palette(ctx);
+        Vec::new()
+    }
 }
 
 /// Notes picker — its handler drives selection but never claims the key, so the
@@ -682,7 +704,7 @@ impl PlexiApp {
     pub(crate) fn dismiss_preemptable_modal(&mut self) {
         if let Some(FocusKind::CommandPalette) = self.focus_stack.last().cloned() {
             log::info!("quick_note: dismissing CommandPalette to open QuickNote");
-            self.show_command_palette = false;
+            self.close_command_palette();
             self.focus_stack.retain(|l| *l != FocusKind::CommandPalette);
         }
     }
@@ -1344,11 +1366,11 @@ impl PlexiApp {
         }
     }
 
-    /// Reconcile the command-palette focus layer with `show_command_palette`.
-    /// Same pattern as the notification modal: boolean visibility flag is the
-    /// source of truth, focus stack follows it deterministically each frame.
+    /// Reconcile the command-palette focus layer with the palette picker's
+    /// open state, the source of truth; the focus stack follows it.
     pub(crate) fn sync_command_palette_focus(&mut self) {
-        self.reconcile_focus_layer(FocusKind::CommandPalette, self.show_command_palette);
+        let open = self.command_palette_open();
+        self.reconcile_focus_layer(FocusKind::CommandPalette, open);
     }
 
     /// Every note currently open in an editor pane, across all windows, newest
@@ -1392,6 +1414,28 @@ impl PlexiApp {
             .into_iter()
             .filter_map(|(_, path)| crate::notes::NotePickerEntry::load(&path))
             .collect()
+    }
+
+    /// The pane whose live editor holds the note at `path`, in any window,
+    /// matched by note identity on the native path (never a serialized,
+    /// display-lossy spelling).
+    pub(crate) fn find_open_note_pane(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<crate::spatial::tiling::PaneId> {
+        let identity = crate::app::text_editor_view::note_path_identity(path);
+        self.windows.iter().find_map(|win| {
+            let mut panes: Vec<_> = win.panes.iter().collect();
+            panes.sort_by_key(|(id, _)| *id);
+            panes.into_iter().find_map(|(id, pane)| {
+                let crate::host::pane::ViewRuntime::Builtin(builtin) = &pane.as_view()?.runtime
+                else {
+                    return None;
+                };
+                let open = builtin.open_note_path()?;
+                (crate::app::text_editor_view::note_path_identity(open) == identity).then_some(*id)
+            })
+        })
     }
 
     /// Navigate to a pane by id, updating both `focused_pane` on its window and

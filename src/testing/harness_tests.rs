@@ -3617,12 +3617,12 @@ fn palette_close_surrenders_focus_before_pane_close() {
 
     // Open the palette — sync_command_palette_focus pushes the focus layer
     // and the per-frame code requests focus on palette_search.
-    h.app.show_command_palette = true;
+    h.app.open_command_palette("");
     h.run_frames(3);
 
     // Dismiss the palette — sync_command_palette_focus must pop the layer
     // AND surrender palette_search focus so AccessKit has no stale node.
-    h.app.show_command_palette = false;
+    h.app.close_command_palette();
     h.run_frames(2);
 
     // Close a pane — triggers the AccessKit consistency check that panicked
@@ -3724,8 +3724,7 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
     );
 
     // Push CommandPalette on top — now ConfirmClose is buried.
-    h.app.show_command_palette = true;
-    h.app.sync_command_palette_focus();
+    h.app.open_command_palette("");
     assert_eq!(
         h.app.focus_stack.last(),
         Some(&FocusKind::CommandPalette),
@@ -3976,8 +3975,7 @@ fn steal_focus(h: &HostHarness) -> egui::Id {
 #[test]
 fn command_palette_text_field_registry_wins_after_central_panel_steal() {
     let mut h = HostHarness::new();
-    h.app.show_command_palette = true;
-    h.app.sync_command_palette_focus();
+    h.app.open_command_palette("");
 
     h.run_frames(1);
     steal_focus(&h);
@@ -5704,8 +5702,7 @@ fn command_palette_owns_focus_over_focused_assistant_pane() {
     h.focus_pane(pane_b);
     h.run_frames(2);
 
-    h.app.show_command_palette = true;
-    h.app.sync_command_palette_focus();
+    h.app.open_command_palette("");
     h.run_frames(2);
 
     assert_eq!(
@@ -16213,9 +16210,9 @@ fn pane_close_chord_dismisses_modal_without_closing_pane() {
     let pane = h.add_test_pane();
     h.focus_pane(pane).run_frames(2);
     h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
-    assert!(h.app.show_command_palette);
+    assert!(h.app.command_palette_open());
     h.press_key(egui::Key::W, egui::Modifiers::COMMAND);
-    assert!(!h.app.show_command_palette);
+    assert!(!h.app.command_palette_open());
     assert!(h.app.windows[0].panes.contains_key(&pane));
     assert!(!h.app.pending_close);
 }

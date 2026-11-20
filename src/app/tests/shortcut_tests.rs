@@ -153,14 +153,14 @@ fn rebound_command_palette_toggle_also_dismisses_the_palette() {
     h.press_key(egui::Key::Y, egui::Modifiers::COMMAND);
     h.run_frames(2);
     assert!(
-        h.app.show_command_palette,
+        h.app.command_palette_open(),
         "rebound chord must open the palette"
     );
 
     h.press_key(egui::Key::Y, egui::Modifiers::COMMAND);
     h.run_frames(2);
     assert!(
-        !h.app.show_command_palette,
+        !h.app.command_palette_open(),
         "rebound chord must dismiss the palette it opened"
     );
 }
