@@ -538,8 +538,7 @@ fn rebinding(
             let given_bare = !ours
                 .iter()
                 .any(|a| a.path == parsed.path && a.id == parsed.id)
-                && r
-                    .given
+                && r.given
                     .iter()
                     .any(|(path, id)| *path == parsed.path && *id == parsed.id);
             !given_bare
