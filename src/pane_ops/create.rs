@@ -790,14 +790,14 @@ impl PlexiApp {
                     return None;
                 };
                 let pane_id = *focused_pane_id;
-                let Some(replaced_pane) = self.windows[active].panes.remove(&pane_id) else {
+                if !self.windows[active].push_overlay(pane_id, |covered| {
+                    build(pane_id, None, Some(Box::new(covered)))
+                }) {
                     log::warn!(
                         "plugin::{plugin_id}: overlay launch skipped — pane {pane_id} missing from pane map"
                     );
                     return None;
-                };
-                let pane = build(pane_id, None, Some(Box::new(replaced_pane)));
-                self.windows[active].panes.insert(pane_id, pane);
+                }
                 self.set_window_focused_pane(active, focused_tile);
                 log::info!("plugin::{plugin_id}: launched as overlay on pane {pane_id}");
                 return Some(pane_id);
@@ -2550,7 +2550,7 @@ impl PlexiApp {
     fn reveal_and_focus_instance(&mut self, win_idx: usize, slot: PaneId, overlay_depth: usize) {
         let win_id = self.windows[win_idx].window_id;
         for _ in 0..overlay_depth {
-            super::layout::restore_overlay_replacement(&mut self.windows[win_idx].panes, slot);
+            super::layout::restore_overlay_replacement(&mut self.windows[win_idx], slot);
         }
         self.jump_to_context(win_idx, win_id, Some(slot));
     }

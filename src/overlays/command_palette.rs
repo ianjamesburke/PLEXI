@@ -5707,9 +5707,15 @@ steps = [
                 let mut reader = std::io::BufReader::new(stream);
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_ok() && !line.trim().is_empty() {
-                    if let Ok(req) =
+                    if let Ok(mut req) =
                         serde_json::from_str::<crate::protocol::HostRequest>(line.trim())
                     {
+                        // Stamp the peer the way the socket handler does: the
+                        // CLI runs on a thread of this test process.
+                        if let crate::protocol::HostRequest::SpawnPane { source, .. } = &mut req {
+                            *source =
+                                crate::protocol::SpawnSource::SocketPeer(vec![std::process::id()]);
+                        }
                         h.app.handle_pane_ipc_request(req);
                     }
                 }
@@ -6281,9 +6287,15 @@ steps = [
                 let mut reader = std::io::BufReader::new(stream);
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_ok() && !line.trim().is_empty() {
-                    if let Ok(req) =
+                    if let Ok(mut req) =
                         serde_json::from_str::<crate::protocol::HostRequest>(line.trim())
                     {
+                        // Stamp the peer the way the socket handler does: the
+                        // CLI runs on a thread of this test process.
+                        if let crate::protocol::HostRequest::SpawnPane { source, .. } = &mut req {
+                            *source =
+                                crate::protocol::SpawnSource::SocketPeer(vec![std::process::id()]);
+                        }
                         if let crate::protocol::HostRequest::SpawnPane { from_pane_id, .. } = &req {
                             seen_from_ids.push(*from_pane_id);
                         }

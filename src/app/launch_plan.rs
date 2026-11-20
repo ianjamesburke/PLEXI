@@ -45,8 +45,11 @@ pub(crate) struct WindowMembership {
 pub(crate) enum SplitAnchor {
     /// A pane that has not left its window since admission.
     Pane(PaneId),
-    /// A container node of the unrebuilt tree, still holding exactly `panes`.
-    Node { tile: TileId, panes: Vec<PaneId> },
+    /// A container node, valid only while its window's topology and
+    /// membership are exactly as admitted: no rebuild, departure, occupant
+    /// change or structural edit anywhere in the window. Conservative for
+    /// slice 1: any change to the window refuses a container target.
+    Node { tile: TileId, topology: u64 },
 }
 
 /// The tab group a tab joins.
@@ -220,7 +223,7 @@ impl PlexiApp {
             Some(Tile::Pane(pane_id)) => SplitAnchor::Pane(*pane_id),
             _ => SplitAnchor::Node {
                 tile,
-                panes: panes_under(&win.tree, tile),
+                topology: tree_topology(&win.tree),
             },
         }
     }
@@ -271,12 +274,13 @@ impl PlexiApp {
                     ))),
                 }
             }
-            SplitAnchor::Node { tile, panes } => {
+            SplitAnchor::Node { tile, topology } => {
                 let same = matches!(win.tree.tiles.get(*tile), Some(Tile::Container(_)))
-                    && panes_under(&win.tree, *tile) == *panes;
+                    && history.generation() == at.generation
+                    && tree_topology(&win.tree) == *topology;
                 same.then_some(*tile).ok_or_else(|| {
                     refused(format!(
-                        "node {tile:?} of window {} no longer holds panes {panes:?}",
+                        "node {tile:?} of window {} changed after admission",
                         win.window_id
                     ))
                 })
@@ -898,19 +902,27 @@ impl PlexiApp {
     }
 }
 
-/// The panes under `tile`, sorted: a container's identity within one tree.
-fn panes_under(tree: &egui_tiles::Tree<PaneId>, tile: TileId) -> Vec<PaneId> {
-    let mut panes = Vec::new();
-    let mut stack = vec![tile];
-    while let Some(next) = stack.pop() {
-        match tree.tiles.get(next) {
-            Some(Tile::Pane(pane)) => panes.push(*pane),
-            Some(Tile::Container(container)) => stack.extend(container.children().copied()),
-            None => {}
+/// A digest of a window's tree structure: every tile, its kind, children in
+/// order and pane occupant. Split shares and the active tab are not
+/// structure. Combined with the membership generation it identifies a
+/// container node (stint 1632).
+fn tree_topology(tree: &egui_tiles::Tree<PaneId>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut tiles: Vec<_> = tree.tiles.iter().collect();
+    tiles.sort_unstable_by_key(|(id, _)| id.0);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tree.root.hash(&mut hasher);
+    for (id, tile) in tiles {
+        id.hash(&mut hasher);
+        match tile {
+            Tile::Pane(pane) => pane.hash(&mut hasher),
+            Tile::Container(container) => {
+                format!("{:?}", container.kind()).hash(&mut hasher);
+                container.children().for_each(|child| child.hash(&mut hasher));
+            }
         }
     }
-    panes.sort_unstable();
-    panes
+    hasher.finish()
 }
 
 #[cfg(test)]
@@ -1484,7 +1496,94 @@ mod tests {
         let first = apply(&mut h, &unchanged).expect("unchanged node accepts");
         assert_eq!(window_of(&h, first), 0);
         let error = apply(&mut h, &changed).expect_err("node gained a pane");
-        assert!(error.contains("no longer holds panes"), "{error}");
+        assert!(error.contains("changed after admission"), "{error}");
+    }
+
+    /// Finding 6: an overlay replaces the occupant of a slot under the same
+    /// pane and tile ids. Pushing one, popping one, or both, after admission
+    /// make split, tab and container targets stale; so does a plan admitted
+    /// while covered and applied after the pop. A plan admitted after the
+    /// restore launches.
+    #[test]
+    fn launch_plan_overlay_push_and_pop_change_the_occupant() {
+        let mut h = HostHarness::new();
+        let panes = views(&mut h, 2);
+        let [a, _b] = lay_out(&mut h, 0, panes)[..] else {
+            unreachable!()
+        };
+        h.app.active_window = 0;
+        let a_tile = h.app.windows[0].tree.tiles.find_pane(&a).unwrap();
+        let admit_all = |h: &mut HostHarness| {
+            let split = h
+                .app
+                .admit_terminal_launch(&spec(h, "split_h", Some(a), None))
+                .unwrap();
+            let tab = h
+                .app
+                .admit_terminal_launch(&spec(h, "tab", Some(a), None))
+                .unwrap();
+            h.app.windows[0].focused_pane = None;
+            let node = h
+                .app
+                .admit_terminal_launch(&spec(h, "split_h", None, None))
+                .unwrap();
+            assert!(matches!(
+                node.destination,
+                TerminalDestination::Split {
+                    anchor: SplitAnchor::Node { .. },
+                    ..
+                }
+            ));
+            h.app.set_window_focused_pane(0, a_tile);
+            [("split", split), ("tab", tab), ("node", node)]
+        };
+        let push = |h: &mut HostHarness| {
+            let root = h.workspace_root();
+            h.app.open_builtin_view_pane(
+                Box::new(crate::file_browser::FileBrowserView::new(root.clone())),
+                crate::app::permissions::PluginPermissions::builtin(),
+                root,
+                None,
+                Some("overlay"),
+                None,
+            );
+            let covered = h.app.windows[0].panes[&a]
+                .as_view()
+                .is_some_and(|v| v.overlay_replaced.is_some());
+            assert!(covered, "fixture: a is covered by an overlay");
+        };
+        let pop = |h: &mut HostHarness| {
+            h.app.set_window_focused_pane(0, a_tile);
+            h.app.close_focused();
+            let covered = h.app.windows[0].panes[&a]
+                .as_view()
+                .is_some_and(|v| v.overlay_replaced.is_some());
+            assert!(!covered, "fixture: the overlay was popped");
+        };
+        let refuse_all = |h: &mut HostHarness, plans: &[(&str, TerminalLaunchPlan)], when: &str| {
+            for (label, plan) in plans {
+                let before = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
+                let error = apply(h, plan).expect_err(&format!("{label} {when}"));
+                assert!(error.starts_with("launch refused"), "{label} {when}: {error}");
+                let after = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
+                assert_eq!(before, after, "{label} {when}: refused before building");
+            }
+        };
+
+        let before_push = admit_all(&mut h);
+        let before_round_trip = admit_all(&mut h);
+        push(&mut h);
+        refuse_all(&mut h, &before_push, "after a push");
+        let while_covered = admit_all(&mut h);
+        pop(&mut h);
+        refuse_all(&mut h, &before_round_trip, "after a push and pop");
+        refuse_all(&mut h, &while_covered, "admitted while covered, after the pop");
+
+        let fresh = admit_all(&mut h);
+        for (label, plan) in &fresh[..1] {
+            let pane = apply(&mut h, plan).unwrap_or_else(|e| panic!("{label}: {e}"));
+            assert_eq!(window_of(&h, pane), 0);
+        }
     }
 
     /// Finding 3 (named context): deleting the named context and creating a

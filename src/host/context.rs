@@ -264,6 +264,32 @@ impl Window {
         history.departed_at.insert(pane_id, history.generation);
     }
 
+    /// Cover the occupant of `pane_id`'s slot with `build(occupant)`. The slot
+    /// keeps its pane and tile ids, but its occupant changed, so a launch
+    /// admitted against it is stale (stint 1632). `false` when the slot is
+    /// empty.
+    pub(crate) fn push_overlay(&mut self, pane_id: PaneId, build: impl FnOnce(Pane) -> Pane) -> bool {
+        let Some(occupant) = self.panes.remove(&pane_id) else {
+            return false;
+        };
+        self.panes.insert(pane_id, build(occupant));
+        self.note_pane_departed(pane_id);
+        true
+    }
+
+    /// Hand `pane_id`'s slot back to the pane its overlay covers and return
+    /// the overlay. Advances membership like [`Self::push_overlay`]; a probe
+    /// that finds no overlay changes nothing.
+    pub(crate) fn pop_overlay(&mut self, pane_id: PaneId) -> Option<Pane> {
+        let covered = match self.panes.get_mut(&pane_id) {
+            Some(Pane::View(view)) => view.overlay_replaced.take()?,
+            _ => return None,
+        };
+        let overlay = self.panes.insert(pane_id, *covered);
+        self.note_pane_departed(pane_id);
+        overlay
+    }
+
     pub(crate) fn find_ancestor_tabs(&self, tile_id: TileId) -> Option<(TileId, TileId)> {
         let mut current = tile_id;
         loop {

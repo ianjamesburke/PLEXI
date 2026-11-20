@@ -55,46 +55,27 @@ impl CloseFocusRule {
 /// Restoring NEVER writes into the restored terminal. Cwd handoff is an
 /// explicit `ViewCommand::CdRequest` only (#2145) — a coding agent may be
 /// running in the terminal behind the overlay.
-pub(super) fn restore_overlay_replacement(
-    panes: &mut HashMap<PaneId, Pane>,
-    pane_id: PaneId,
-) -> bool {
-    let Some(pane) = panes.remove(&pane_id) else {
+pub(super) fn restore_overlay_replacement(win: &mut crate::host::context::Window, pane_id: PaneId) -> bool {
+    let Some(Pane::View(app)) = win.pop_overlay(pane_id) else {
         return false;
     };
-
-    match pane {
-        Pane::View(mut app) => {
-            if let Some(replaced) = app.overlay_replaced.take() {
-                let (plugin_id, type_id) =
-                    overlay_close_ids(&app.manifest_id, app.runtime.type_id());
-                log::info!(
-                    "view_closed: plugin_id={plugin_id} type_id={type_id} pane_id={pane_id} reason=overlay_restored"
-                );
-                // Free function — no `PlexiApp`/router access, so no origin is
-                // resolvable here without a new ambient lookup. Global-only.
-                crate::host::event_log::emit_scoped(
-                    crate::host::event_log::HostEvent::ViewClosed {
-                        plugin_id,
-                        type_id,
-                        pane_id,
-                        reason: Some("overlay_restored".to_string()),
-                        timestamp: crate::host::event_log::now_timestamp(),
-                    },
-                    None,
-                );
-                panes.insert(pane_id, *replaced);
-                true
-            } else {
-                panes.insert(pane_id, Pane::View(app));
-                false
-            }
-        }
-        other => {
-            panes.insert(pane_id, other);
-            false
-        }
-    }
+    let (plugin_id, type_id) = overlay_close_ids(&app.manifest_id, app.runtime.type_id());
+    log::info!(
+        "view_closed: plugin_id={plugin_id} type_id={type_id} pane_id={pane_id} reason=overlay_restored"
+    );
+    // No `PlexiApp`/router access, so no origin is resolvable here without a
+    // new ambient lookup. Global-only.
+    crate::host::event_log::emit_scoped(
+        crate::host::event_log::HostEvent::ViewClosed {
+            plugin_id,
+            type_id,
+            pane_id,
+            reason: Some("overlay_restored".to_string()),
+            timestamp: crate::host::event_log::now_timestamp(),
+        },
+        None,
+    );
+    true
 }
 
 /// Catalog id vs runtime kind for an overlay close.
@@ -820,7 +801,7 @@ impl PlexiApp {
                 _ => None,
             });
         if let Some(pane_id) = focused_pane_id {
-            if restore_overlay_replacement(&mut self.windows[self.active_window].panes, pane_id) {
+            if restore_overlay_replacement(&mut self.windows[self.active_window], pane_id) {
                 return;
             }
         }
@@ -2052,7 +2033,7 @@ impl PlexiApp {
         else {
             return;
         };
-        if restore_overlay_replacement(&mut self.windows[active].panes, pane_id) {
+        if restore_overlay_replacement(&mut self.windows[active], pane_id) {
             return;
         }
 
