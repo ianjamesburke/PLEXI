@@ -1,4 +1,6 @@
 mod paste;
+#[cfg(unix)]
+mod session;
 pub mod settings;
 pub mod tap;
 
@@ -361,18 +363,21 @@ impl TerminalBackend {
         // through a dup of the fd (same open file description, same
         // non-blocking mode) so it can own its reader.
         #[cfg(unix)]
-        let reader = tap::TapReader::new(
-            pty.file().try_clone()?,
-            byte_tap,
-            {
-                let proxy = event_proxy.clone();
-                Box::new(move |bytes: Vec<u8>| {
-                    proxy.send_event(Event::PtyWrite(
-                        String::from_utf8_lossy(&bytes).into_owned(),
-                    ));
-                })
-            },
-        );
+        let tap_file = pty.file().try_clone()?;
+        #[cfg(unix)]
+        let master_fds = {
+            use std::os::fd::AsRawFd;
+            [master_fd, tap_file.as_raw_fd()]
+        };
+        #[cfg(unix)]
+        let reader = tap::TapReader::new(tap_file, byte_tap, {
+            let proxy = event_proxy.clone();
+            Box::new(move |bytes: Vec<u8>| {
+                proxy.send_event(Event::PtyWrite(
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                ));
+            })
+        });
         #[cfg(not(unix))]
         let _ = byte_tap;
         let pty = ReapingPty {
@@ -380,9 +385,15 @@ impl TerminalBackend {
             #[cfg(unix)]
             reader,
             #[cfg(unix)]
+            pane: id,
+            #[cfg(unix)]
             child_pid,
+            #[cfg(unix)]
+            master_fds,
             exit_status: reaped_exit_status.clone(),
         };
+        // No drain on exit: a child's last bytes reach the screen without it
+        // (`a_childs_last_bytes_reach_the_screen`). A close never drains.
         let pty_event_loop =
             EventLoop::new(term.clone(), event_proxy, pty, false, false)?;
         let event_loop_sender = pty_event_loop.channel();
@@ -463,9 +474,7 @@ impl TerminalBackend {
                         break;
                     }
                 }
-                log::info!(
-                    "egui_term: pty_event_subscription_{id} exited; terminal state released"
-                );
+                log::info!("egui_term: pty_event_subscription_{id} exited");
             })?;
 
         Ok(Self {
@@ -1602,52 +1611,10 @@ impl Default for RenderableContent {
 
 impl Drop for TerminalBackend {
     fn drop(&mut self) {
+        // The PTY reader thread ends the session and reaps the shell when its
+        // loop exits (`ReapingPty::drop`), off the UI and logic threads.
         let _ = self.notifier.0.send(Msg::Shutdown);
-        // Reap the PTY child on a background thread. reap_child polls for up
-        // to 200 ms then issues SIGKILL + blocking waitpid — running that on
-        // the caller's thread (the render thread during quit) froze the UI.
-        #[cfg(unix)]
-        {
-            let pid = self.child_pid;
-            let _ = std::thread::Builder::new()
-                .name(format!("pty-reap-{pid}"))
-                .spawn(move || reap_child(pid));
-        }
     }
-}
-
-/// Kill and reap a PTY child process. Sends SIGKILL if the process has not
-/// exited within ~200 ms of the caller sending Msg::Shutdown.
-#[cfg(unix)]
-fn reap_child(pid: u32) {
-    use std::os::raw::c_int;
-    const SIGKILL: c_int = 9;
-    const WNOHANG: c_int = 1;
-    const POLL_MS: u64 = 25;
-    const POLLS: u32 = 8; // 8 × 25 ms = 200 ms grace period
-
-    extern "C" {
-        fn waitpid(
-            pid: libc::pid_t,
-            status: *mut c_int,
-            options: c_int,
-        ) -> libc::pid_t;
-        fn kill(pid: libc::pid_t, sig: c_int) -> c_int;
-    }
-
-    let ipid = pid as libc::pid_t;
-    for _ in 0..POLLS {
-        let result = unsafe { waitpid(ipid, std::ptr::null_mut(), WNOHANG) };
-        if result != 0 {
-            // Reaped (result == pid) or error (result == -1); either way done.
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
-    }
-    // Child still alive — escalate to SIGKILL and block until reaped.
-    log::warn!("egui_term: PTY child {pid} did not exit after Shutdown — sending SIGKILL");
-    unsafe { kill(ipid, SIGKILL) };
-    unsafe { waitpid(ipid, std::ptr::null_mut(), 0) };
 }
 
 /// Wrapper around [`tty::Pty`] that retains the kernel wait status (`code` or
@@ -1660,8 +1627,37 @@ struct ReapingPty {
     #[cfg(unix)]
     reader: tap::TapReader<std::fs::File>,
     #[cfg(unix)]
+    pane: u64,
+    #[cfg(unix)]
     child_pid: u32,
+    /// The master fd `inner` owns and the tap reader's dup of it.
+    #[cfg(unix)]
+    master_fds: [std::os::fd::RawFd; 2],
     exit_status: Arc<Mutex<Option<PtyExitStatus>>>,
+}
+
+/// Runs on the PTY reader thread when its loop exits, before `inner`'s own
+/// drop SIGHUPs and waits for the shell (`session`).
+#[cfg(unix)]
+impl Drop for ReapingPty {
+    fn drop(&mut self) {
+        if self
+            .exit_status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
+            // The shell exited and was reaped; the kernel already hung up
+            // its session and revoked the tty.
+            log::info!(
+                "egui_term: pane {} pty released after its shell {} exited",
+                self.pane,
+                self.child_pid
+            );
+            return;
+        }
+        session::end(self.pane, self.child_pid as libc::pid_t, &self.master_fds);
+    }
 }
 
 impl tty::EventedReadWrite for ReapingPty {
@@ -2115,36 +2111,92 @@ mod tests {
         }
     }
 
-    /// `reap_child` must kill and reap a process that does not exit on its
-    /// own. After it returns, the PID must be gone (kill -0 returns ESRCH).
+    /// Stint 1650: closing a pane whose program ignores SIGHUP and floods the
+    /// tty ends the program and the pane's PTY reader thread. Before, the
+    /// exiting session leader waited for its unread output to drain while
+    /// `Pty::drop` waited for it with the master open, forever. The event
+    /// loop's sender drops only after the `Pty`, so the host receiver
+    /// disconnecting proves the reader thread got past that wait.
     #[cfg(unix)]
     #[test]
-    fn reap_child_kills_and_reaps_stubborn_process() {
-        use std::process::Command;
+    fn closing_a_backend_ends_a_hangup_ignoring_flooding_child() {
+        use super::settings::BackendSettings;
+        use super::TerminalBackend;
+        use std::sync::mpsc::{self, RecvTimeoutError};
+        use std::time::{Duration, Instant};
 
-        let child = Command::new("/bin/sleep")
-            .arg("3600")
-            .spawn()
-            .expect("failed to spawn sleep 3600");
-        let pid = child.id();
+        let (tx, rx) = mpsc::channel();
+        let settings = BackendSettings {
+            shell: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "trap '' HUP; exec yes".to_string()],
+            ..Default::default()
+        };
+        let backend =
+            TerminalBackend::new(1650, egui::Context::default(), tx, settings)
+                .expect("spawn backend");
+        let pid = backend.child_pid() as libc::pid_t;
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("the child never produced output");
+        drop(backend);
 
-        // Forget the handle — we want reap_child to do the cleanup.
-        std::mem::forget(child);
-
-        // Confirm the child is alive before we reap it.
-        let alive_before = unsafe { libc::kill(pid as libc::pid_t, 0) };
-        assert_eq!(alive_before, 0, "child {pid} should be alive before reap");
-
-        super::reap_child(pid);
-
-        // Give the OS a tick to update process state.
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        let alive_after = unsafe { libc::kill(pid as libc::pid_t, 0) };
-        assert_eq!(
-            alive_after, -1,
-            "child {pid} must be gone after reap_child, kill returned {alive_after}"
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(_) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {
+                    panic!("PTY reader of the closed pane still running after 10 s")
+                },
+            }
+        }
+        assert!(
+            unsafe { libc::kill(pid, 0) } != 0,
+            "child {pid} outlived its closed pane"
         );
+    }
+
+    /// Stint 1650: bytes a child writes just before it exits reach the
+    /// screen without `drain_on_exit`, including a tail behind a large burst.
+    #[cfg(unix)]
+    #[test]
+    fn a_childs_last_bytes_reach_the_screen() {
+        use super::settings::BackendSettings;
+        use super::{PtyEvent, TerminalBackend};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        for attempt in 0..20 {
+            let (tx, rx) = mpsc::channel();
+            let settings = BackendSettings {
+                shell: "/bin/sh".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    "head -c 200000 /dev/zero | tr '\\0' x; printf last-bytes"
+                        .to_string(),
+                ],
+                ..Default::default()
+            };
+            let backend = TerminalBackend::new(
+                attempt,
+                egui::Context::default(),
+                tx,
+                settings,
+            )
+            .expect("spawn backend");
+            loop {
+                match rx.recv_timeout(Duration::from_secs(5)) {
+                    Ok((_, PtyEvent::Exit(_))) => break,
+                    Ok(_) => continue,
+                    Err(error) => panic!("no exit event: {error}"),
+                }
+            }
+            assert!(
+                backend.capture_lines(5).join("\n").contains("last-bytes"),
+                "attempt {attempt}: output written before exit is missing: {:?}",
+                backend.capture_lines(5)
+            );
+        }
     }
 
     #[test]
