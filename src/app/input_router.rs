@@ -263,6 +263,9 @@ pub(crate) struct InputRouter {
     /// gone by then.
     held_input: Vec<egui::Event>,
     held_for: Option<OwnerInstance>,
+    /// The held input arrived in a delivery marked synthetic (pane IPC or
+    /// host-key injection): the pass that routes it is marked too.
+    held_synthetic: bool,
     /// Epoch of the overlay instance most recently drawn in full.
     presented_epoch: Option<u64>,
     /// Pane hit areas from the last visible pass.
@@ -432,17 +435,14 @@ fn changes_egui_state(event: &egui::Event) -> bool {
     is_decisive(event) || matches!(event, egui::Event::Text(_))
 }
 
-/// Keyboard-side input an overlay's egui fields take: held, not dropped,
-/// while that overlay has not been drawn yet (its field has no focus).
+/// Text an overlay's egui field takes: held, not dropped, while that
+/// overlay has not been drawn yet (its field has no focus). Keys are not
+/// held: a press is decided when it arrives, so an arm delay or a
+/// fresh-press check sees it at its real time.
 fn is_field_input(event: &egui::Event) -> bool {
     matches!(
         event,
-        egui::Event::Key { .. }
-            | egui::Event::Text(_)
-            | egui::Event::Paste(_)
-            | egui::Event::Copy
-            | egui::Event::Cut
-            | egui::Event::Ime(_)
+        egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Ime(_)
     )
 }
 
@@ -496,9 +496,15 @@ impl PlexiApp {
                     self.retire_event(event, &mut out);
                 }
             } else {
+                if self.input_router.held_synthetic {
+                    // Injected input stays injected when it is routed later:
+                    // the pass fails closed for consent like any mixed one.
+                    self.synthetic_input_frame = true;
+                }
                 queue.extend(held);
             }
             self.input_router.held_for = None;
+            self.input_router.held_synthetic = false;
         }
         queue.extend(incoming);
 
@@ -543,6 +549,7 @@ impl PlexiApp {
                 );
                 self.input_router.held_input = held;
                 self.input_router.held_for = Some(owner);
+                self.input_router.held_synthetic = self.synthetic_input_frame;
                 ctx.request_repaint();
                 break;
             }
@@ -846,16 +853,20 @@ impl PlexiApp {
                 None
             }
             None => {
+                if id == egui::Key::Tab {
+                    // A focus trap's order is the one Tab order: the
+                    // reconciler steps it at frame end, whoever else the Tab
+                    // reaches.
+                    self.input_router.trap_tab = Some(modifiers.shift);
+                }
                 let (mut d, by_host, routed) =
                     self.dispatch_key_press(ctx, owner, event, modifiers, os_focused);
-                if id == egui::Key::Tab && matches!(d, Disposition::Egui) {
-                    // A focus trap's order is the one Tab order: the reconciler
-                    // steps it at frame end, and egui's own traversal never
-                    // sees this Tab once a trap owns input.
-                    self.input_router.trap_tab = Some(modifiers.shift);
-                    if crate::app::input_owner::focus_trap_active(ctx) {
-                        d = Disposition::Consumed;
-                    }
+                if id == egui::Key::Tab
+                    && matches!(d, Disposition::Egui)
+                    && crate::app::input_owner::focus_trap_active(ctx)
+                {
+                    // egui's own traversal never sees it once a trap owns.
+                    d = Disposition::Consumed;
                 }
                 *explicit = by_host;
                 let path = match d {

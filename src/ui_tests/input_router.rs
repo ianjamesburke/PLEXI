@@ -1058,15 +1058,7 @@ impl Model {
                 self.paint(&mut pass);
             }
             let (owner, instance) = self.owner();
-            let field_input = matches!(
-                step,
-                Step::Down(_)
-                    | Step::Up(_)
-                    | Step::Text(_)
-                    | Step::CmdPDown
-                    | Step::Paste(_)
-                    | Step::ImeCommit(_)
-            );
+            let field_input = matches!(step, Step::Text(_) | Step::Paste(_) | Step::ImeCommit(_));
             if owner == ModelOwner::Palette && !self.presented && field_input && !pass.barrier {
                 // Held until the palette has painted and its field has focus.
                 self.paint(&mut pass);
@@ -1564,7 +1556,7 @@ fn a_terminal_key_burst_stays_in_one_pass() {
     let (t1, _t2) = two_terminals(&mut h);
     let burst: Vec<Event> = "abcdefghij".chars().flat_map(typed).collect();
     let before = h.app.input_router.deliveries();
-    h.frame(RawInput {
+    h.frame_pass(RawInput {
         screen_rect: screen(),
         events: burst,
         ..Default::default()

@@ -9868,6 +9868,8 @@ fn screenshot_delivered_capture_still_fulfills() {
     };
     let ctx = h.ctx.clone();
     h.app.fulfill_screenshot_events(&ctx, &raw_input);
+    // The hook only matches the capture; `App::logic` writes it.
+    h.app.write_completed_screenshots();
 
     let response = read_json_response(&response_file);
     assert_eq!(

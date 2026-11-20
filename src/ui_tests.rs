@@ -353,13 +353,29 @@ impl PlexiUiHarness {
     /// stability limit.
     pub fn step(&mut self) -> &mut Self {
         self.inner.step();
+        self.drain_held_input();
         self
     }
 
     /// Advance `n` frames.
     pub fn run_steps(&mut self, n: usize) -> &mut Self {
-        self.inner.run_steps(n);
+        for _ in 0..n {
+            self.step();
+        }
         self
+    }
+
+    /// A delivery the input router split (an egui run, then input held for
+    /// the next pass) finishes on the passes eframe runs at once in
+    /// production, because the router requests an immediate repaint.
+    fn drain_held_input(&mut self) {
+        for _ in 0..16 {
+            if !self.inner.state().input_router.has_held_input() {
+                return;
+            }
+            self.inner.step();
+        }
+        panic!("held input never drained");
     }
 
     /// Access the kittest Harness directly for semantic queries:
