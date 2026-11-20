@@ -988,6 +988,25 @@ fn the_host_record_keeps_no_sender_value() {
         &["plexi-alpha", "pane", "new", "--right"].map(str::to_string),
     );
     assert_eq!(kept, ["plexi", "pane", "new", "--right"]);
+    // Round 5: a short spelling records its declared option.
+    let short = crate::cli::trace::host_record(&["plexi", "pane", "new", "-r"].map(str::to_string));
+    assert_eq!(short, ["plexi", "pane", "new", "--right"]);
+    // Round 5: once forwarded arguments may have begun, an option-shaped token
+    // is child data, even one spelled like a global option.
+    let forwarded = crate::cli::trace::host_record(
+        &["plexi", "run", "example", "arg", "--json"].map(str::to_string),
+    );
+    assert_eq!(
+        forwarded,
+        ["plexi", "run", "<redacted>", "<redacted>", "<redacted>"]
+    );
+    let leading = crate::cli::trace::host_record(
+        &["plexi", "run", "--json", "example", "-ws"].map(str::to_string),
+    );
+    assert_eq!(
+        leading,
+        ["plexi", "run", "--json", "<redacted>", "<redacted>"]
+    );
 }
 
 #[test]

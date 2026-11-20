@@ -671,14 +671,33 @@ pub(crate) fn host_record(argv: &[String]) -> Vec<String> {
         }
     }
     rest.extend(tokens);
-    let declared = |name: &str| {
-        path_nodes.iter().any(|node| {
-            node.get_arguments().any(|arg| {
-                arg.get_long()
-                    .is_some_and(|long| name == format!("--{long}"))
+    // The declared option a token spells, by its canonical spelling.
+    let declared = |spelled: &str| -> Option<String> {
+        let long = spelled.strip_prefix("--");
+        let short = spelled
+            .strip_prefix('-')
+            .filter(|_| long.is_none())
+            .filter(|flags| flags.chars().count() == 1)
+            .and_then(|flags| flags.chars().next());
+        let arg = path_nodes.iter().rev().find_map(|node| {
+            node.get_arguments().find(|arg| match (long, short) {
+                (Some(name), _) => arg.get_long() == Some(name),
+                (None, Some(c)) => arg.get_short() == Some(c),
+                (None, None) => false,
             })
+        })?;
+        Some(match (arg.get_long(), arg.get_short()) {
+            (Some(long), _) => format!("--{long}"),
+            (None, Some(short)) => format!("-{short}"),
+            (None, None) => return None,
         })
     };
+    // Once the leaf command's forwarded arguments may have begun, every later
+    // token is child data. Without recognizing positionals, any first token
+    // that is not a declared option may begin them.
+    let forwards = node
+        .get_positionals()
+        .any(|arg| arg.is_trailing_var_arg_set() || arg.is_allow_hyphen_values_set());
     let mut escaped = false;
     for token in rest {
         if escaped || token == "--" {
@@ -686,18 +705,18 @@ pub(crate) fn host_record(argv: &[String]) -> Vec<String> {
             record.push(MASK.to_string());
             continue;
         }
-        let flag = token
-            .split_once('=')
-            .map_or(token.as_str(), |(flag, _)| flag);
-        record.push(if declared(flag) {
-            if flag.len() == token.len() {
-                flag.to_string()
-            } else {
-                format!("{flag}={MASK}")
+        let (flag, value) = match token.split_once('=') {
+            Some((flag, _)) => (flag, true),
+            None => (token.as_str(), false),
+        };
+        match declared(flag) {
+            Some(spelling) if value => record.push(format!("{spelling}={MASK}")),
+            Some(spelling) => record.push(spelling),
+            None => {
+                escaped = forwards;
+                record.push(MASK.to_string());
             }
-        } else {
-            MASK.to_string()
-        });
+        }
     }
     record
 }
