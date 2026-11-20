@@ -301,15 +301,18 @@ fn a_decision_for_a_replaced_opening_decides_nothing() {
     assert_eq!(decisions(&h), ["cancel", "cancel"]);
 }
 
-/// Prints `READY` after asking for SGR mouse reports, then idles.
-const MOUSE_FIXTURE: &str = r#"
+/// Asks for kitty key-release events (`CSI > 3 u`), prints `READY`, idles.
+const KITTY_FIXTURE: &str = r#"
 import sys, time
-sys.stdout.write("\x1b[?1000h\x1b[?1006h")
+sys.stdout.write("\x1b[>3u")
 print("READY", flush=True)
 time.sleep(120)
 "#;
 
-fn mouse_terminal(h: &mut HostHarness) -> PaneId {
+const PAGE_UP_PRESS: &str = "\x1b[5;1:1~";
+const PAGE_UP_RELEASE: &str = "\x1b[5;1:3~";
+
+fn kitty_terminal(h: &mut HostHarness) -> PaneId {
     let id = h.add_focused_terminal();
     let terminal = crate::host::pane::TerminalPane::new(
         id,
@@ -317,13 +320,13 @@ fn mouse_terminal(h: &mut HostHarness) -> PaneId {
         h.app.pty_event_tx.clone(),
         egui_term::BackendSettings {
             shell: "/usr/bin/python3".into(),
-            args: vec!["-c".into(), MOUSE_FIXTURE.into()],
+            args: vec!["-c".into(), KITTY_FIXTURE.into()],
             working_directory: Some(std::env::temp_dir()),
             ..Default::default()
         },
         14.0,
     )
-    .expect("start mouse fixture");
+    .expect("start kitty fixture");
     h.app.windows[0]
         .panes
         .insert(id, crate::host::pane::Pane::Terminal(Box::new(terminal)));
@@ -337,7 +340,7 @@ fn mouse_terminal(h: &mut HostHarness) -> PaneId {
         {
             break;
         }
-        assert!(Instant::now() < deadline, "mouse fixture timed out");
+        assert!(Instant::now() < deadline, "kitty fixture timed out");
         std::thread::sleep(Duration::from_millis(20));
     }
     h.run_frames(3);
@@ -346,44 +349,30 @@ fn mouse_terminal(h: &mut HostHarness) -> PaneId {
     id
 }
 
-fn grid_point(h: &mut HostHarness, id: PaneId) -> Pos2 {
-    h.terminal_backend(id)
-        .presented
-        .expect("the terminal was presented")
-        .hit_rect
-        .center()
-}
-
-/// A mouse-reporting drag on the terminal when the dialog takes input: the
-/// program gets its press, then exactly one release when the gesture
-/// retires; the late physical release and a move send nothing. After the
-/// dialog, a fresh click reports press and release.
+/// A key held into the terminal when the dialog takes input: the program
+/// gets its press, then exactly one release when the hold retires; the late
+/// physical release reaches nobody. After the dialog, a fresh press and
+/// release reach the program.
 #[test]
 #[ignore = "requires-pty"]
-fn a_pointer_gesture_retires_once_when_the_dialog_opens() {
+fn a_held_key_retires_once_when_the_dialog_opens() {
     let mut h = HostHarness::new();
-    let term = mouse_terminal(&mut h);
-    let at = grid_point(&mut h, term);
-    deliver(&mut h, vec![Event::PointerMoved(at), button(at, true)]);
-    let pressed = tap(&mut h, term);
-    assert!(
-        pressed.starts_with("\x1b[<0;") && pressed.ends_with('M'),
-        "the program saw the press: {pressed:?}"
+    let term = kitty_terminal(&mut h);
+    deliver(&mut h, vec![key(Key::PageUp, Modifiers::NONE, true)]);
+    h.run_frames(1);
+    assert_eq!(
+        tap(&mut h, term),
+        PAGE_UP_PRESS,
+        "the program saw the press"
     );
-    let report = pressed.trim_end_matches('M').to_string();
     deliver(&mut h, vec![key(Key::W, cmd(), true)]);
     h.run_frames(2);
     assert!(h.app.pending_close);
-    assert_eq!(
-        tap(&mut h, term),
-        format!("{report}m"),
-        "one retirement release"
-    );
+    assert_eq!(tap(&mut h, term), PAGE_UP_RELEASE, "one retirement release");
     deliver(
         &mut h,
         vec![
-            Event::PointerMoved(at + egui::vec2(20.0, 0.0)),
-            button(at, false),
+            key(Key::PageUp, Modifiers::NONE, false),
             key(Key::W, Modifiers::NONE, false),
         ],
     );
@@ -393,12 +382,18 @@ fn a_pointer_gesture_retires_once_when_the_dialog_opens() {
     deliver(&mut h, vec![key(Key::Escape, Modifiers::NONE, false)]);
     h.run_frames(2);
     assert!(!h.app.pending_close);
-    deliver(&mut h, vec![button(at, true), button(at, false)]);
+    deliver(
+        &mut h,
+        vec![
+            key(Key::PageUp, Modifiers::NONE, true),
+            key(Key::PageUp, Modifiers::NONE, false),
+        ],
+    );
     h.run_frames(1);
     assert_eq!(
         tap(&mut h, term),
-        format!("{report}M{report}m"),
-        "a fresh click reports"
+        format!("{PAGE_UP_PRESS}{PAGE_UP_RELEASE}"),
+        "a fresh press and release reach the program"
     );
 }
 
@@ -465,7 +460,10 @@ fn a_close_without_confirmation_retires_the_suffix() {
         vec![key(Key::W, cmd(), true), Event::Text("x".into())],
     );
     h.run_frames(2);
-    assert!(!h.app.windows[0].panes.contains_key(&closing), "Cmd+W closed it");
+    assert!(
+        !h.app.windows[0].panes.contains_key(&closing),
+        "Cmd+W closed it"
+    );
     assert_eq!(h.app.active_focused_pane_id(), Some(revealed));
     assert_eq!(tap(&mut h, revealed), "", "the revealed pane got no suffix");
     deliver(&mut h, vec![key(Key::W, Modifiers::NONE, false)]);

@@ -144,10 +144,7 @@ impl PlexiApp {
         true
     }
 
-    pub(crate) fn render_conjoined_parent(
-        &mut self,
-        ui: &mut egui::Ui,
-    ) -> Option<egui::Rect> {
+    pub(crate) fn render_conjoined_parent(&mut self, ui: &mut egui::Ui) -> Option<egui::Rect> {
         let parent = self.conjoined_parent()?;
         let (window, tile) = self.find_pane_in_any_window(parent)?;
         if window == self.active_window {

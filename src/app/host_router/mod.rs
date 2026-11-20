@@ -90,7 +90,6 @@ impl Received {
     fn synthetic(&self) -> bool {
         self.source == Source::Injected
     }
-
 }
 
 /// A live terminal pane and its input endpoint incarnation.

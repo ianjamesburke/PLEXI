@@ -12,11 +12,6 @@ const A: PaneInstance = PaneInstance {
     pane: 10,
     endpoint: 100,
 };
-const B: PaneInstance = PaneInstance {
-    window_id: 1,
-    pane: 11,
-    endpoint: 101,
-};
 
 fn cmd() -> Modifiers {
     Modifiers {
@@ -76,7 +71,7 @@ const PANEL: Rect = Rect {
     max: Pos2::new(600.0, 440.0),
 };
 
-/// A terminal presented over the left half (A) and right half (B).
+/// Committed host state for one hook.
 struct World {
     table: Vec<crate::host::keys::BindingEntry>,
     dialog: Option<OpeningId>,
@@ -99,7 +94,6 @@ impl World {
     }
 
     fn snapshot(&self) -> Snapshot<'_> {
-        let layer = egui::LayerId::background();
         Snapshot {
             visible: true,
             os_focused: self.os_focused,
@@ -112,18 +106,6 @@ impl World {
             keyboard: self.keyboard,
             table: &self.table,
             gates: binding::BindingGates::default(),
-            terminals: vec![
-                PresentedTerminal {
-                    target: A,
-                    hit_rect: Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(640.0, 800.0)),
-                    layer,
-                },
-                PresentedTerminal {
-                    target: B,
-                    hit_rect: Rect::from_min_max(Pos2::new(640.0, 0.0), Pos2::new(1280.0, 800.0)),
-                    layer,
-                },
-            ],
             dialog_presentation: self.dialog.filter(|_| self.presented).map(|opening| {
                 DialogPresentation {
                     opening,
@@ -141,28 +123,17 @@ impl World {
 /// Stamp `events` as one delivery from `source`.
 fn delivery(router: &mut HostRouter, source: Source, events: Vec<Event>) -> Vec<Received> {
     let id = router.next_delivery();
-    let mut pointer = None;
     events
         .into_iter()
         .enumerate()
-        .map(|(ordinal, event)| {
-            if let Event::PointerMoved(pos) | Event::PointerButton { pos, .. } = &event {
-                pointer = Some(*pos);
-            }
-            Received {
-                id: EventId {
-                    delivery: id,
-                    ordinal: ordinal as u32,
-                },
-                source,
-                received_at: std::time::Instant::now(),
-                modifiers: Modifiers::NONE,
-                pointer: matches!(event, Event::PointerMoved(_) | Event::PointerButton { .. })
-                    .then_some(pointer)
-                    .flatten(),
-                top_layer: Some(egui::LayerId::background()),
-                event,
-            }
+        .map(|(ordinal, event)| Received {
+            id: EventId {
+                delivery: id,
+                ordinal: ordinal as u32,
+            },
+            source,
+            received_at: std::time::Instant::now(),
+            event,
         })
         .collect()
 }
@@ -171,8 +142,6 @@ fn delivery(router: &mut HostRouter, source: Source, events: Vec<Event>) -> Vec<
 #[derive(Debug, PartialEq)]
 enum Effect {
     Terminal(u64, Vec<String>),
-    Retire(u64),
-    Focus(u64),
     Host(Action),
     Decide(u64, String),
 }
@@ -197,12 +166,9 @@ fn drain(router: &mut HostRouter) -> Vec<Effect> {
         .take_commands()
         .into_iter()
         .map(|command| match command {
-            RoutedCommand::Terminal { target, events, .. } => Effect::Terminal(
-                target.pane,
-                events.iter().map(|e| label(&e.event)).collect(),
-            ),
-            RoutedCommand::RetireTerminalPointer { target } => Effect::Retire(target.pane),
-            RoutedCommand::FocusPane { target, .. } => Effect::Focus(target.pane),
+            RoutedCommand::Terminal { target, events, .. } => {
+                Effect::Terminal(target.pane, events.iter().map(label).collect())
+            }
             RoutedCommand::HostAction { id, action, .. } => {
                 router.resolve(id, Outcome::Done);
                 Effect::Host(action)
@@ -468,75 +434,6 @@ fn injected_click_cannot_close() {
     assert_eq!(drain(&mut router), vec![]);
 }
 
-/// A drag on terminal A is retired once when the dialog takes input; its
-/// late release reaches nobody; after the dialog, a fresh press works.
-#[test]
-fn a_terminal_gesture_retires_when_the_dialog_opens() {
-    let mut world = World::new();
-    let mut router = HostRouter::default();
-    let at = Pos2::new(100.0, 100.0);
-    let press = delivery(&mut router, Source::Native, vec![button(at, true)]);
-    router.route(&world.snapshot(), vec![press]);
-    assert_eq!(
-        drain(&mut router),
-        vec![Effect::Focus(10), Effect::Terminal(10, texts(&["press"]))]
-    );
-    world.dialog = Some(OpeningId(11));
-    let rest = delivery(
-        &mut router,
-        Source::Native,
-        vec![
-            Event::PointerMoved(Pos2::new(120.0, 100.0)),
-            button(at, false),
-        ],
-    );
-    let routed = router.route(&world.snapshot(), vec![rest]);
-    assert_eq!(drain(&mut router), vec![Effect::Retire(10)]);
-    assert_eq!(routed.egui.len(), 1, "egui keeps hover, nothing else");
-    world.dialog = None;
-    let fresh = delivery(
-        &mut router,
-        Source::Native,
-        vec![button(at, true), button(at, false)],
-    );
-    router.route(&world.snapshot(), vec![fresh]);
-    assert_eq!(
-        drain(&mut router),
-        vec![
-            Effect::Focus(10),
-            Effect::Terminal(10, texts(&["press", "release"]))
-        ]
-    );
-}
-
-/// A press on terminal B transfers keyboard ownership at its ordinal: text
-/// before it reaches A, text after it reaches B.
-#[test]
-fn a_press_transfers_the_rest_of_the_delivery() {
-    let world = World::new();
-    let mut router = HostRouter::default();
-    let b = Pos2::new(900.0, 100.0);
-    let events = delivery(
-        &mut router,
-        Source::Native,
-        vec![
-            Event::Text("x".into()),
-            button(b, true),
-            button(b, false),
-            Event::Text("y".into()),
-        ],
-    );
-    router.route(&world.snapshot(), vec![events]);
-    assert_eq!(
-        drain(&mut router),
-        vec![
-            Effect::Terminal(10, texts(&["text:x"])),
-            Effect::Focus(11),
-            Effect::Terminal(11, texts(&["press", "release", "text:y"])),
-        ]
-    );
-}
-
 /// A held no-repeat chord does not fire again, whatever the repeat flag.
 #[test]
 fn a_held_close_chord_fires_once() {
@@ -548,58 +445,6 @@ fn a_held_close_chord_fires_once() {
     let again = delivery(&mut router, Source::Native, vec![key(Key::W, cmd(), true)]);
     router.route(&world.snapshot(), vec![again]);
     assert_eq!(drain(&mut router), vec![]);
-}
-
-/// A blur inside a delivery retires the terminal gesture and bars the rest.
-#[test]
-fn blur_inside_a_delivery_retires_and_bars() {
-    let world = World::new();
-    let mut router = HostRouter::default();
-    let at = Pos2::new(100.0, 100.0);
-    let events = delivery(
-        &mut router,
-        Source::Native,
-        vec![
-            button(at, true),
-            Event::WindowFocused(false),
-            button(at, false),
-            Event::Text("z".into()),
-        ],
-    );
-    let routed = router.route(&world.snapshot(), vec![events]);
-    assert_eq!(
-        drain(&mut router),
-        vec![
-            Effect::Focus(10),
-            Effect::Terminal(10, texts(&["press"])),
-            Effect::Retire(10)
-        ]
-    );
-    assert_eq!(routed.egui.len(), 1, "only the blur reaches egui");
-}
-
-/// After an event egui must run first (a key on a view pane), input the
-/// router would claim waits for the next pass.
-#[test]
-fn router_input_after_a_legacy_key_waits_a_pass() {
-    let mut world = World::new();
-    world.keyboard = KeyboardOwner::Legacy;
-    let mut router = HostRouter::default();
-    let at = Pos2::new(100.0, 100.0);
-    let events = delivery(
-        &mut router,
-        Source::Native,
-        vec![key(Key::X, Modifiers::NONE, true), button(at, true)],
-    );
-    let routed = router.route(&world.snapshot(), vec![events]);
-    assert_eq!(routed.egui.len(), 1);
-    assert!(routed.held);
-    assert_eq!(drain(&mut router), vec![]);
-    router.route(&world.snapshot(), vec![]);
-    assert_eq!(
-        drain(&mut router),
-        vec![Effect::Focus(10), Effect::Terminal(10, texts(&["press"]))]
-    );
 }
 
 /// A failed host action retires the suffix bound to it.
@@ -640,5 +485,70 @@ fn escape_then_click_in_one_delivery_decides_once() {
         ],
     );
     router.route(&world.snapshot(), vec![events]);
-    assert_eq!(drain(&mut router), vec![Effect::Decide(12, "cancel".into())]);
+    assert_eq!(
+        drain(&mut router),
+        vec![Effect::Decide(12, "cancel".into())]
+    );
+}
+
+/// Pointer input over a terminal stays on egui's path (the widget owns
+/// selection and mouse reporting); the router claims none of it.
+#[test]
+fn terminal_pointer_input_stays_with_egui() {
+    let world = World::new();
+    let mut router = HostRouter::default();
+    let at = Pos2::new(100.0, 100.0);
+    let events = delivery(
+        &mut router,
+        Source::Native,
+        vec![Event::PointerMoved(at), button(at, true), button(at, false)],
+    );
+    let routed = router.route(&world.snapshot(), vec![events]);
+    assert_eq!(routed.egui.len(), 3);
+    assert!(!routed.held);
+    assert_eq!(drain(&mut router), vec![]);
+}
+
+/// A click egui must run first (it may move pane focus) holds the keys
+/// after it for the next pass, where they resolve against the new owner.
+#[test]
+fn keys_after_a_click_wait_for_the_click_to_land() {
+    let mut world = World::new();
+    let mut router = HostRouter::default();
+    let at = Pos2::new(100.0, 100.0);
+    let events = delivery(
+        &mut router,
+        Source::Native,
+        vec![button(at, true), button(at, false), Event::Text("y".into())],
+    );
+    let routed = router.route(&world.snapshot(), vec![events]);
+    assert_eq!(routed.egui.len(), 2, "the click went to egui");
+    assert!(routed.held, "the text waits");
+    assert_eq!(drain(&mut router), vec![]);
+    // egui moved focus to a view pane: the text goes to egui with it.
+    world.keyboard = KeyboardOwner::Legacy;
+    let routed = router.route(&world.snapshot(), vec![]);
+    assert_eq!(routed.egui.len(), 1);
+    assert_eq!(drain(&mut router), vec![]);
+}
+
+/// A blur inside a delivery retires a dialog press and bars the rest.
+#[test]
+fn blur_inside_a_delivery_retires_and_bars() {
+    let mut world = World::new();
+    world.dialog = Some(OpeningId(13));
+    let mut router = HostRouter::default();
+    let events = delivery(
+        &mut router,
+        Source::Native,
+        vec![
+            button(CANCEL_RECT.center(), true),
+            Event::WindowFocused(false),
+            button(CANCEL_RECT.center(), false),
+            key(Key::Escape, Modifiers::NONE, true),
+        ],
+    );
+    let routed = router.route(&world.snapshot(), vec![events]);
+    assert_eq!(drain(&mut router), vec![], "no decision after the blur");
+    assert_eq!(routed.egui.len(), 1, "only the blur reaches egui");
 }

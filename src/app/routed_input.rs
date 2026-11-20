@@ -5,8 +5,8 @@
 
 use super::host_router::{
     dialog::{ActionSpec, DialogPresentation},
-    DialogSnapshot, KeyboardOwner, Outcome, PaneInstance, Received,
-    RoutedCommand, Snapshot, Source,
+    DialogSnapshot, KeyboardOwner, Outcome, PaneInstance, Received, RoutedCommand, Snapshot,
+    Source,
 };
 use super::{FocusKind, PlexiApp};
 
@@ -143,20 +143,20 @@ impl PlexiApp {
         let os_focused = raw_input.viewport().focused.unwrap_or(true);
         let now = std::time::Instant::now();
         let stamp = |router: &mut super::host_router::HostRouter,
-                         events: Vec<egui::Event>,
-                         source: Source| {
+                     events: Vec<egui::Event>,
+                     source: Source| {
             let delivery = router.next_delivery();
             events
                 .into_iter()
                 .enumerate()
                 .map(|(ordinal, event)| Received {
-                        id: super::host_router::EventId {
-                            delivery,
-                            ordinal: ordinal as u32,
-                        },
-                        source,
-                        received_at: now,
-                        event,
+                    id: super::host_router::EventId {
+                        delivery,
+                        ordinal: ordinal as u32,
+                    },
+                    source,
+                    received_at: now,
+                    event,
                 })
                 .collect::<Vec<_>>()
         };
@@ -171,11 +171,7 @@ impl PlexiApp {
         if visible {
             for batch in self.take_injected_batches(ctx) {
                 injected_modifiers = Some(batch.modifiers);
-                deliveries.push(stamp(
-                    &mut self.host_router,
-                    batch.events,
-                    Source::Injected,
-                ));
+                deliveries.push(stamp(&mut self.host_router, batch.events, Source::Injected));
             }
         }
         let mut router = std::mem::take(&mut self.host_router);
