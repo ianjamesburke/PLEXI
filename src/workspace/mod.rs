@@ -99,6 +99,24 @@ pub struct SavedPane {
     /// Saved agent session state for agent terminal panes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<SavedAgentSession>,
+    /// The authority a terminal was constructed under, saved for every
+    /// terminal whether or not it has a resumable agent session (stint
+    /// 1632). `None` for other panes and for saves that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<SavedPaneAuthority>,
+}
+
+/// A terminal's construction authority as saved: its permission ceiling,
+/// provenance and secret classes. Restore constructs the pane under exactly
+/// this, so restarting never widens what it may do.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct SavedPaneAuthority {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub posture: Option<crate::broker::PermissionPosture>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_by: Option<String>,
+    pub terminal_secrets: bool,
+    pub folder_secrets: bool,
 }
 
 /// Queued structured result from a child agent pane waiting to be delivered
@@ -1650,6 +1668,7 @@ mod tests {
         let kinds = [SavedPaneKind::Terminal, SavedPaneKind::View];
         for kind in kinds {
             let pane = SavedPane {
+                authority: None,
                 id: 42,
                 kind: kind.clone(),
                 cwd: PathBuf::from("/tmp"),
@@ -1670,6 +1689,7 @@ mod tests {
         }
         // Portal round-trips with embedded context_id.
         let portal_pane = SavedPane {
+            authority: None,
             id: 99,
             kind: SavedPaneKind::Portal {
                 context_id: 42,
@@ -1826,6 +1846,7 @@ mod tests {
         let mut slots = HashMap::new();
         slots.insert("summary".to_string(), PathBuf::from("/tmp/slot_summary"));
         let pane = SavedPane {
+            authority: None,
             id: 42,
             kind: SavedPaneKind::Terminal,
             cwd: PathBuf::from("/tmp/work"),

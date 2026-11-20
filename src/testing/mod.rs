@@ -62,9 +62,9 @@ use egui::RawInput;
 use std::collections::HashMap;
 use std::sync::{atomic::AtomicU64, Arc};
 
+mod timeout;
 pub(crate) mod source_tree;
 pub(crate) mod test_log;
-mod timeout;
 pub(crate) use timeout::load_aware_timeout;
 
 // ─── HostSnapshot ────────────────────────────────────────────────────────────

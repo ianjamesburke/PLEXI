@@ -235,6 +235,7 @@ impl PlexiApp {
             spawned_by,
             context_id: context.context_id,
             workspace_root,
+            secrets,
         });
 
         // 2 and 3. The bound directory and the environment permitted for it.

@@ -176,6 +176,18 @@ impl AgentWorkerAuthority {
             }),
         }
     }
+
+    /// This ceiling, never wider than `saved`: a pane relaunched from a
+    /// record runs under at most the authority it ran under then.
+    pub(crate) fn narrowed_by(self, saved: Option<&crate::broker::PermissionPosture>) -> Self {
+        Self {
+            posture: match (self.posture, saved) {
+                (Some(current), Some(saved)) => Some(current.restricted_by(saved)),
+                (None, Some(saved)) => Some(saved.clone()),
+                (current, None) => current,
+            },
+        }
+    }
 }
 
 pub(crate) struct IdViewLaunchOptions {

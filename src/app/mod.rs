@@ -5833,6 +5833,14 @@ pub(crate) fn restore_workspace(
         .map(|c| (c.context_id, c.depth))
         .collect();
 
+    // Every saved pane by id, across windows and contexts: a restored pane's
+    // parent can live in any of them (stint 1632).
+    let saved_panes_by_id: HashMap<u64, crate::workspace::SavedPane> = ws
+        .windows
+        .iter()
+        .flat_map(|win| win.panes.iter())
+        .map(|pane| (pane.id, pane.clone()))
+        .collect();
     for mut saved_win in ws.windows {
         let mut panes = HashMap::new();
         let mut non_skipped_pane_count = 0usize;
@@ -6015,7 +6023,8 @@ pub(crate) fn restore_workspace(
                 saved_pane.kind,
                 crate::workspace::SavedPaneKind::Portal { .. }
             ) {
-                if let crate::workspace::SavedPaneKind::Portal { context_id } = &saved_pane.kind {
+                if let crate::workspace::SavedPaneKind::Portal { context_id } = &saved_pane.kind
+                {
                     pane_entry = Some(Pane::Portal(Box::new(crate::host::pane::PortalPane {
                         pane_id: saved_pane.id,
                         target_context_id: *context_id,
@@ -6085,7 +6094,7 @@ pub(crate) fn restore_workspace(
                             })
                             .or_else(|| {
                                 let pid = session.parent_pane_id?;
-                                let parent = saved_win.panes.iter().find(|p| p.id == pid)?;
+                                let parent = saved_panes_by_id.get(&pid)?;
                                 if let Some(ref ps) = parent.agent_session {
                                     let label = ps
                                         .config_name
@@ -6159,11 +6168,15 @@ pub(crate) fn restore_workspace(
                             })
                         })
                         .flatten();
-                    // The ceiling is resolved before construction, including
-                    // the legacy fallback for a session saved without one: the
-                    // role's posture under its lookup root, narrowed by the
-                    // parent's saved ceiling (stint 1632).
-                    let posture = effective_session.as_ref().and_then(|session| {
+                    // The pane is constructed under the authority it was saved
+                    // with, agent session or not (stint 1632). A save that
+                    // predates that record resolves the ceiling before
+                    // construction, including the legacy fallback for a
+                    // session saved without one: the role's posture under its
+                    // lookup root, narrowed by the parent's saved ceiling,
+                    // wherever the parent was saved.
+                    let saved_authority = saved_pane.authority.as_ref();
+                    let legacy_posture = effective_session.as_ref().and_then(|session| {
                         session.permission_posture.clone().or_else(|| {
                             let role = session.config_name.as_deref()?;
                             let lookup_root = cwd
@@ -6177,11 +6190,19 @@ pub(crate) fn restore_workspace(
                             )
                             .ok()
                             .map(|(def, _)| def.posture)?;
-                            let parent_posture = session
-                                .parent_pane_id
-                                .and_then(|pid| saved_win.panes.iter().find(|p| p.id == pid))
-                                .and_then(|p| p.agent_session.as_ref())
-                                .and_then(|s| s.permission_posture.as_ref());
+                            let parent_posture = session.parent_pane_id.and_then(|pid| {
+                                let parent = saved_panes_by_id.get(&pid)?;
+                                parent
+                                    .authority
+                                    .as_ref()
+                                    .and_then(|a| a.posture.as_ref())
+                                    .or_else(|| {
+                                        parent
+                                            .agent_session
+                                            .as_ref()
+                                            .and_then(|s| s.permission_posture.as_ref())
+                                    })
+                            });
                             Some(match parent_posture {
                                 Some(parent) => role_posture.restricted_by(parent),
                                 None => role_posture,
@@ -6189,19 +6210,40 @@ pub(crate) fn restore_workspace(
                         })
                     });
                     let agent_pane = effective_session.is_some();
+                    let (posture, spawned_by, secrets) = match saved_authority {
+                        Some(saved) => (
+                            saved.posture.clone(),
+                            saved.spawned_by.clone(),
+                            shell::SecretPolicy {
+                                terminal: saved.terminal_secrets,
+                                folder: saved.folder_secrets,
+                            },
+                        ),
+                        None => (
+                            legacy_posture,
+                            effective_session
+                                .as_ref()
+                                .and_then(|session| session.spawned_by.clone()),
+                            if agent_pane {
+                                shell::SecretPolicy::NONE
+                            } else {
+                                shell::SecretPolicy::ALL
+                            },
+                        ),
+                    };
+                    log::info!(
+                        "workspace_restore: pane {} authority from {} posture={} secrets={secrets:?}",
+                        saved_pane.id,
+                        if saved_authority.is_some() { "its saved record" } else { "legacy fields" },
+                        posture.is_some()
+                    );
                     let launch = crate::pane_ops::construct::TerminalLaunch {
                         pane_id: saved_pane.id,
                         posture,
-                        spawned_by: effective_session
-                            .as_ref()
-                            .and_then(|session| session.spawned_by.clone()),
+                        spawned_by,
                         context: context_env,
                         cwd: cwd.clone(),
-                        secrets: if agent_pane {
-                            shell::SecretPolicy::NONE
-                        } else {
-                            shell::SecretPolicy::ALL
-                        },
+                        secrets,
                         agent_pane,
                         command: launch_command,
                         ephemeral: false,

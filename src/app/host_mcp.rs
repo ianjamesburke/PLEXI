@@ -185,6 +185,7 @@ pub(crate) fn register_pane_credential_for_test(
     workspace_root: PathBuf,
 ) -> String {
     let binding = Arc::new(crate::broker::pane_authority::PaneAuthority {
+        secrets: crate::host::shell::SecretPolicy::NONE,
         pane_id,
         posture: None,
         spawned_by: None,
@@ -991,6 +992,7 @@ mod tests {
             deny: vec!["tool.secret".into()],
         };
         let binding = Arc::new(crate::broker::pane_authority::PaneAuthority {
+            secrets: crate::host::shell::SecretPolicy::NONE,
             pane_id,
             posture: Some(posture.clone()),
             spawned_by: Some("agent:x".into()),
@@ -1013,6 +1015,7 @@ mod tests {
         let root = PathBuf::from("/workspace/host-mcp-reuse");
         let binding = |posture: crate::broker::Decision| {
             Arc::new(crate::broker::pane_authority::PaneAuthority {
+                secrets: crate::host::shell::SecretPolicy::NONE,
                 pane_id,
                 posture: Some(crate::broker::PermissionPosture {
                     default_posture: posture,
@@ -1348,6 +1351,7 @@ mod tests {
     fn bearer_with_ceiling(token: &str, posture: crate::broker::PermissionPosture) -> String {
         let caller = authenticate(token).expect("live bearer");
         let binding = Arc::new(crate::broker::pane_authority::PaneAuthority {
+            secrets: crate::host::shell::SecretPolicy::NONE,
             pane_id: caller.pane_id,
             posture: Some(posture),
             spawned_by: None,

@@ -2456,6 +2456,14 @@ impl PlexiApp {
                         agent_session: t.build_saved_agent_session_with_scrollback(
                             self.config.standby_scrollback_lines(),
                         ),
+                        authority: t.authority().map(|authority| {
+                            crate::workspace::SavedPaneAuthority {
+                                posture: authority.posture.clone(),
+                                spawned_by: authority.spawned_by.clone(),
+                                terminal_secrets: authority.secrets.terminal,
+                                folder_secrets: authority.secrets.folder,
+                            }
+                        }),
                     });
                 } else if let Some(a) = pane.as_view() {
                     if let crate::host::pane::ViewRuntime::Builtin(view) = &a.runtime {
@@ -2480,6 +2488,7 @@ impl PlexiApp {
                         continue;
                     }
                     saved_panes.push(crate::workspace::SavedPane {
+                        authority: None,
                         id,
                         kind: crate::workspace::SavedPaneKind::View,
                         cwd: a.workspace_root.clone(),
@@ -2507,6 +2516,7 @@ impl PlexiApp {
                     });
                 } else if let Some(child_ctx_id) = pane.portal_target() {
                     saved_panes.push(crate::workspace::SavedPane {
+                        authority: None,
                         id,
                         kind: crate::workspace::SavedPaneKind::Portal {
                             context_id: child_ctx_id,
@@ -2582,6 +2592,7 @@ mod tests {
             panes: ids
                 .iter()
                 .map(|id| crate::workspace::SavedPane {
+                    authority: None,
                     id: *id,
                     kind: crate::workspace::SavedPaneKind::View,
                     cwd: std::env::temp_dir(),

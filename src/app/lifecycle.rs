@@ -447,20 +447,41 @@ impl PlexiApp {
             .clone()
             .or_else(|| record.pane_name.clone())
             .unwrap_or_else(|| record.harness.clone());
-        let result = self.spawn_agent_worker_pane(
-            &role,
-            &record.harness,
-            &resume_cmd,
-            record.summary.as_deref().unwrap_or_default(),
-            subcontext,
-            false,
-            parent_pane_id,
-            Some(record.cwd.clone()),
-            None,
-            None,
-            false,
-            None,
-        );
+        // The reopened run's ceiling is today's role and parent narrowed by
+        // the one the record saved: a reopen never runs wider than the run
+        // it resumes (stint 1632).
+        let result = self
+            .resolve_agent_spawn_location(
+                subcontext.map(crate::pane_ops::create::SubcontextTarget::Named),
+                parent_pane_id,
+                Some(record.cwd.clone()),
+                false,
+                crate::pane_ops::create::AgentOrigin::Active,
+            )
+            .and_then(|placement| {
+                let authority = self
+                    .agent_worker_authority(
+                        &role,
+                        &placement.effective_cwd,
+                        placement.parent_pane_id,
+                    )
+                    .narrowed_by(record.permission_posture.as_ref());
+                self.launch_agent_worker(
+                    crate::pane_ops::create::AgentWorkerLaunch {
+                        authority,
+                        pane_id: None,
+                        spawned_by: None,
+                        role: &role,
+                        harness: &record.harness,
+                        command: &resume_cmd,
+                        task: record.summary.as_deref().unwrap_or_default(),
+                        ephemeral: false,
+                        result_schema: None,
+                        run_token: None,
+                    },
+                    placement,
+                )
+            });
         let payload = match result {
             Ok((new_pane_id, target_ctx_id)) => {
                 for win in &mut self.windows {

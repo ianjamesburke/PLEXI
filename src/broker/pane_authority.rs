@@ -29,4 +29,7 @@ pub(crate) struct PaneAuthority {
     pub(crate) context_id: u64,
     /// Workspace root the credentials are scoped to at issuance.
     pub(crate) workspace_root: PathBuf,
+    /// The directory-derived secret classes the pane was constructed with.
+    /// Persisted with the posture so a restored pane gets exactly these.
+    pub(crate) secrets: crate::host::shell::SecretPolicy,
 }

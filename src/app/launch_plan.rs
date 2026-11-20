@@ -2653,6 +2653,195 @@ mod tests {
         }
     }
 
+    /// The posture and secret classes `pane` runs under.
+    fn authority_of(
+        h: &HostHarness,
+        pane: PaneId,
+    ) -> (Option<PermissionPosture>, crate::host::shell::SecretPolicy) {
+        let authority = h
+            .app
+            .terminal_incarnation(pane)
+            .and_then(|t| t.authority())
+            .expect("a constructed terminal");
+        (authority.posture.clone(), authority.secrets)
+    }
+
+    fn edit_saved_workspace(
+        profile: &std::path::Path,
+        edit: impl FnOnce(&mut crate::workspace::WorkspaceFile),
+    ) {
+        let mut ws = crate::workspace::WorkspaceFile::load_from(profile).expect("saved workspace");
+        edit(&mut ws);
+        ws.save_to(profile).expect("rewrite workspace");
+    }
+
+    fn saved_pane_mut(
+        ws: &mut crate::workspace::WorkspaceFile,
+        pane: PaneId,
+    ) -> &mut crate::workspace::SavedPane {
+        ws.windows
+            .iter_mut()
+            .flat_map(|w| w.panes.iter_mut())
+            .find(|p| p.id == pane)
+            .expect("pane was saved")
+    }
+
+    /// Round 3 item 2a: a plain shell an agent spawned inherits the agent's
+    /// ceiling and no secrets, without being an agent pane itself. A restart
+    /// restores it under exactly that authority, not the human default.
+    #[test]
+    fn launch_plan_restore_keeps_a_plain_shells_inherited_authority() {
+        let profile = tempfile::tempdir().unwrap();
+        let (shell, inherited) = {
+            let mut h = HostHarness::from_profile_dir(profile.path());
+            h.add_test_pane();
+            let root = h.workspace_root();
+            h.app.set_context_root(root.clone(), None);
+            let caller = spawn_tester(&mut h, &root);
+            let pid = h
+                .app
+                .terminal_incarnation(caller)
+                .unwrap()
+                .backend
+                .child_pid();
+            let mut socket = spec(&h, "split_h", Some(caller), None);
+            socket.source = SpawnSource::SocketPeer(vec![pid]);
+            let plan = h.app.admit_terminal_launch(&socket).expect("admits");
+            let shell = apply(&mut h, &plan).expect("launches");
+            let inherited = authority_of(&h, shell);
+            assert!(
+                inherited.0.is_some(),
+                "fixture: the shell inherits a ceiling"
+            );
+            assert_eq!(inherited.1, crate::host::shell::SecretPolicy::NONE);
+            assert!(
+                !h.app.terminal_incarnation(shell).unwrap().is_agent_pane(),
+                "fixture: a plain shell, with no resumable session"
+            );
+            assert!(h.app.save_workspace_now(), "saved");
+            (shell, inherited)
+        };
+        let h = HostHarness::from_profile_dir(profile.path());
+        assert_eq!(
+            authority_of(&h, shell),
+            inherited,
+            "restored under the authority it was saved with"
+        );
+    }
+
+    /// Round 3 item 2b: a session saved before its ceiling was recorded
+    /// resolves it at restore from its role narrowed by its parent's saved
+    /// ceiling, wherever the parent was saved; and a history reopen runs
+    /// under the ceiling its record saved, never only today's role.
+    #[test]
+    fn launch_plan_legacy_restore_and_reopen_keep_the_saved_ceiling() {
+        let profile = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().to_path_buf();
+        let (parent, child) = {
+            let mut h = HostHarness::from_profile_dir(profile.path());
+            h.add_test_pane();
+            h.app.set_context_root(root.clone(), None);
+            let parent = spawn_tester(&mut h, &root);
+            let (child, _) = h
+                .app
+                .spawn_agent_worker_pane(
+                    "tester",
+                    "pi",
+                    "sleep 30",
+                    "Child",
+                    Some("legacy-sub"),
+                    false,
+                    Some(parent),
+                    Some(root.clone()),
+                    None,
+                    None,
+                    false,
+                    None,
+                )
+                .expect("child worker");
+            assert_ne!(
+                window_of(&h, parent),
+                window_of(&h, child),
+                "fixture: the parent was saved in another window"
+            );
+            assert!(h.app.save_workspace_now(), "saved");
+            (parent, child)
+        };
+        // The parent's saved ceiling is stricter than the role; the child's
+        // own record predates saved ceilings.
+        edit_saved_workspace(profile.path(), |ws| {
+            let parent = saved_pane_mut(ws, parent);
+            let stricter = |posture: &mut Option<PermissionPosture>| {
+                if let Some(posture) = posture.as_mut() {
+                    posture.deny.push("parent.only".to_string());
+                }
+            };
+            stricter(&mut parent.authority.as_mut().unwrap().posture);
+            stricter(&mut parent.agent_session.as_mut().unwrap().permission_posture);
+            let child = saved_pane_mut(ws, child);
+            child.authority = None;
+            child.agent_session.as_mut().unwrap().permission_posture = None;
+        });
+        let mut h = HostHarness::from_profile_dir(profile.path());
+        let restored = authority_of(&h, child).0.expect("a ceiling");
+        assert!(
+            restored.denies("parent.only"),
+            "narrowed by the parent saved in another window: {restored:?}"
+        );
+        assert!(
+            restored.denies("tool.secret"),
+            "and by its role: {restored:?}"
+        );
+
+        let mut record = crate::workspace::AgentHistoryRecord {
+            fleet_seen: false,
+            fleet_dismissed: false,
+            run_id: "run-reopen-1632".to_string(),
+            pane_id: child,
+            context_id: h.app.windows[0].context_id,
+            context_name: "Test".to_string(),
+            parent_pane_id: None,
+            spawned_by: None,
+            pane_name: None,
+            harness: "pi".to_string(),
+            config_name: Some("tester".to_string()),
+            permission_posture: Some(posture(&["record.only"])),
+            session_id: None,
+            cwd: root.clone(),
+            ephemeral: false,
+            last_state: crate::protocol::AgentState::Completed,
+            last_blocked_reason: None,
+            last_detail: None,
+            summary: None,
+            result: None,
+            tail_preview: None,
+            slots: HashMap::new(),
+            closed_at: 0,
+        };
+        let reply = h.app.reopen_agent_record(&record, None, None);
+        let reopened = reply["pane_id"].as_u64().expect("reopened");
+        let ceiling = authority_of(&h, reopened).0.expect("a ceiling");
+        assert!(
+            ceiling.denies("record.only"),
+            "a reopen runs under the ceiling its record saved: {ceiling:?}"
+        );
+        assert!(
+            ceiling.denies("tool.secret"),
+            "and today's role: {ceiling:?}"
+        );
+        record.permission_posture = None;
+        let reply = h.app.reopen_agent_record(&record, None, None);
+        let unrecorded = reply["pane_id"].as_u64().expect("reopened");
+        assert!(
+            !authority_of(&h, unrecorded)
+                .0
+                .expect("a ceiling")
+                .denies("record.only"),
+            "fixture: the role alone does not deny it"
+        );
+    }
+
     /// Finding 4: the directory and secret classes a launch resolves are the
     /// admitted ones, through every placement. An explicit `/` stays `/` for a
     /// new window and an empty root (no home stand-in, so a home-only folder

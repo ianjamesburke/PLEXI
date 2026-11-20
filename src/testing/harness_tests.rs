@@ -1639,6 +1639,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                 path: root_a.path().to_path_buf(),
                 tree: tree_a,
                 panes: vec![crate::workspace::SavedPane {
+                    authority: None,
                     id: 41,
                     kind: crate::workspace::SavedPaneKind::Portal { context_id: 20 },
                     cwd: root_a.path().to_path_buf(),
@@ -1666,6 +1667,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                 path: root_b.path().to_path_buf(),
                 tree: tree_b,
                 panes: vec![crate::workspace::SavedPane {
+                    authority: None,
                     id: 42,
                     kind: crate::workspace::SavedPaneKind::View,
                     cwd: root_b.path().to_path_buf(),
@@ -1868,6 +1870,7 @@ fn restore_view_pane_fails_visibly_when_plugin_dir_is_gone() {
 #[test]
 fn legacy_view_pane_restores_as_launch_failed_never_a_terminal() {
     let record = crate::workspace::SavedPane {
+        authority: None,
         id: 7,
         kind: crate::workspace::SavedPaneKind::View,
         cwd: std::path::PathBuf::from("/tmp"),
@@ -14669,6 +14672,7 @@ mod agent_state_restoration_tests {
                     tree: active_tree,
                     panes: vec![
                         SavedPane {
+                            authority: None,
                             id: 10,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -14703,6 +14707,7 @@ mod agent_state_restoration_tests {
                             }),
                         },
                         SavedPane {
+                            authority: None,
                             id: 11,
                             kind: SavedPaneKind::Portal { context_id: 2 },
                             cwd: PathBuf::new(),
@@ -14716,6 +14721,7 @@ mod agent_state_restoration_tests {
                             agent_session: None,
                         },
                         SavedPane {
+                            authority: None,
                             id: 12,
                             kind: SavedPaneKind::Portal { context_id: 3 },
                             cwd: PathBuf::new(),
@@ -14740,6 +14746,7 @@ mod agent_state_restoration_tests {
                     path: tmp.path().to_path_buf(),
                     tree: bg_tree,
                     panes: vec![SavedPane {
+                        authority: None,
                         id: 20,
                         kind: SavedPaneKind::Terminal,
                         cwd: tmp.path().to_path_buf(),
@@ -14786,6 +14793,7 @@ mod agent_state_restoration_tests {
                     path: tmp.path().to_path_buf(),
                     tree: ephemeral_tree,
                     panes: vec![SavedPane {
+                        authority: None,
                         id: 30,
                         kind: SavedPaneKind::Terminal,
                         cwd: tmp.path().to_path_buf(),
@@ -15274,6 +15282,7 @@ mod agent_state_restoration_tests {
                     panes: vec![
                         // Pane 10: Pi agent pane with `session_id: None` -> bare `pi` launch.
                         SavedPane {
+                            authority: None,
                             id: 10,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -15307,6 +15316,7 @@ mod agent_state_restoration_tests {
                         },
                         // Pane 11: Pi agent pane with unpersisted `session_id` (no file on disk) -> bare `pi` launch.
                         SavedPane {
+                            authority: None,
                             id: 11,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -15340,6 +15350,7 @@ mod agent_state_restoration_tests {
                         },
                         // Pane 12: Pi agent pane with persisted `session_id` on disk -> `pi --session pi-persisted-12`.
                         SavedPane {
+                            authority: None,
                             id: 12,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -15385,6 +15396,7 @@ mod agent_state_restoration_tests {
                     panes: vec![
                         // Pane 20: Standby Pi pane with `session_id: None` -> bare `pi` on wake.
                         SavedPane {
+                            authority: None,
                             id: 20,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -15418,6 +15430,7 @@ mod agent_state_restoration_tests {
                         },
                         // Pane 21: Standby Pi pane with missing `session_id` -> bare `pi` on wake.
                         SavedPane {
+                            authority: None,
                             id: 21,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -17679,6 +17692,7 @@ ask = ["pane.send"]
             tree,
             panes: vec![
                 crate::workspace::SavedPane {
+                    authority: None,
                     id: 10,
                     kind: crate::workspace::SavedPaneKind::Terminal,
                     cwd: ws_dir.path().to_path_buf(),
@@ -17711,6 +17725,7 @@ ask = ["pane.send"]
                     }),
                 },
                 crate::workspace::SavedPane {
+                    authority: None,
                     id: 11,
                     kind: crate::workspace::SavedPaneKind::Terminal,
                     cwd: ws_dir.path().to_path_buf(),
@@ -18471,6 +18486,7 @@ mod restore_followups_0983b {
                 path: tmp.path().to_path_buf(),
                 tree,
                 panes: vec![SavedPane {
+                    authority: None,
                     id: 30,
                     kind: SavedPaneKind::Terminal,
                     cwd: tmp.path().to_path_buf(),
