@@ -5,7 +5,7 @@ use std::os::unix::net::UnixListener;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-fn capture_app_open(cross_channel: bool) -> (serde_json::Value, std::path::PathBuf) {
+fn capture_view_open(cross_channel: bool) -> (serde_json::Value, std::path::PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
     let channel_dir = home.join(".plexi-pr-1195");
@@ -24,7 +24,7 @@ fn capture_app_open(cross_channel: bool) -> (serde_json::Value, std::path::PathB
         }
     }
     let mut child = command
-        .args(["app", "open", "balls"])
+        .args(["view", "open", "balls.main"])
         .current_dir(&cwd)
         .env("HOME", home)
         .env(
@@ -81,8 +81,8 @@ fn capture_app_open(cross_channel: bool) -> (serde_json::Value, std::path::PathB
 }
 
 #[test]
-fn cross_channel_app_open_drops_foreign_pane_and_sends_caller_cwd() {
-    let (request, cwd) = capture_app_open(true);
+fn cross_channel_view_open_drops_foreign_pane_and_sends_caller_cwd() {
+    let (request, cwd) = capture_view_open(true);
     assert!(
         request.get("from_pane_id").is_none(),
         "foreign identity leaked: {request}"
@@ -91,8 +91,8 @@ fn cross_channel_app_open_drops_foreign_pane_and_sends_caller_cwd() {
 }
 
 #[test]
-fn same_channel_app_open_preserves_pane_identity() {
-    let (request, _) = capture_app_open(false);
+fn same_channel_view_open_preserves_pane_identity() {
+    let (request, _) = capture_view_open(false);
     assert_eq!(request["from_pane_id"], 229);
     assert!(
         request.get("cwd").is_none(),
