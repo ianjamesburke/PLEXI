@@ -361,6 +361,9 @@ pub struct PlexiApp {
     /// with every answer of the Commands source.
     pub(crate) palette_row_pips:
         std::collections::HashMap<crate::host::picker::RowKey, crate::ui::list::ListRowPips>,
+    /// Picker key commands translated this frame, applied after the field
+    /// takes the frame's text (`draw_command_palette`).
+    pub(crate) palette_pending_keys: Vec<crate::host::picker::PickerCommand>,
     pub(crate) context_visit_history: Vec<u64>,
     pub(crate) renaming_pane: Option<PaneId>,
     /// Active text-input overlay and its dispatch target.
@@ -1870,6 +1873,7 @@ impl PlexiApp {
                     palette_notes: Vec::new(),
                     palette_commands: Vec::new(),
                     palette_row_pips: std::collections::HashMap::new(),
+                    palette_pending_keys: Vec::new(),
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
                     text_overlay: None,
@@ -2161,6 +2165,7 @@ impl PlexiApp {
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
             palette_row_pips: std::collections::HashMap::new(),
+            palette_pending_keys: Vec::new(),
             context_visit_history: Vec::new(),
             renaming_pane: None,
             text_overlay: None,
@@ -3145,6 +3150,7 @@ impl PlexiApp {
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
             palette_row_pips: std::collections::HashMap::new(),
+            palette_pending_keys: Vec::new(),
             context_visit_history: Vec::new(),
             renaming_pane: None,
             text_overlay: None,

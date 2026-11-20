@@ -308,3 +308,50 @@ fn closed_picker_ignores_rows_and_edits() {
         .apply(PickerCommand::QueryEdited("x".into()))
         .is_empty());
 }
+
+#[test]
+fn enter_while_rows_load_accepts_the_new_answer() {
+    let (mut state, _) = opened(THREE_STOPS);
+    answer(&mut state, vec![row("commands", "old", 0, None)]);
+    // Paste and Enter in one frame: the field's edit lands first, then Enter.
+    state.apply(PickerCommand::QueryEdited("new".into()));
+    assert!(
+        state.apply(PickerCommand::Accept).is_empty(),
+        "Enter waits for the edited query's rows"
+    );
+    assert!(state.is_open());
+    let generation = state.generation();
+    let effects = state.apply(PickerCommand::Rows {
+        generation,
+        rows: vec![row("commands", "new", 0, None)],
+        done: true,
+    });
+    assert_eq!(
+        effects,
+        vec![
+            PickerEffect::Closed,
+            PickerEffect::Activate {
+                row: RowKey::new("commands", "new"),
+                action: "run",
+            },
+        ]
+    );
+}
+
+#[test]
+fn pinned_row_never_lifts_its_group() {
+    let (mut state, _) = opened(THREE_STOPS);
+    state.apply(PickerCommand::QueryEdited("q".into()));
+    let mut pinned = row("commands", "update", 0, Some(100));
+    pinned.pinned = true;
+    answer(
+        &mut state,
+        vec![
+            pinned,
+            row("commands", "weak-context", 0, Some(1)),
+            row("commands", "strong-command", 4, Some(50)),
+        ],
+    );
+    let keys: Vec<_> = state.rows().iter().map(|r| r.key.stable_id()).collect();
+    assert_eq!(keys, vec!["update", "strong-command", "weak-context"]);
+}

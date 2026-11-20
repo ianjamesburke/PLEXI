@@ -122,7 +122,9 @@ impl CommandRowId {
         RowKey::new(COMMANDS_SOURCE, &self.stable_id())
     }
 
-    fn parse(key: &RowKey) -> Option<Self> {
+    /// Resolve a key back to its row. `notes` are the palette's listed notes,
+    /// whose real paths a note key resolves to.
+    fn parse(key: &RowKey, notes: &[crate::notes::NotePickerEntry]) -> Option<Self> {
         if key.source() != COMMANDS_SOURCE {
             return None;
         }
@@ -154,7 +156,22 @@ impl CommandRowId {
             "builtin" => {
                 CommandRowId::Builtin(BUILTIN_VIEWS.iter().find(|view| view.id == rest)?.id)
             }
-            "note" => CommandRowId::Note(std::path::PathBuf::from(rest)),
+            // The key spells the path for display; activation carries the
+            // listed note's own PathBuf, so a non-UTF-8 path keeps its bytes.
+            "note" => {
+                let mut matches = notes.iter().filter(|note| {
+                    CommandRowId::Note(note.path.clone())
+                        .stable_id()
+                        .strip_prefix("note/")
+                        == Some(rest)
+                });
+                let found = matches.next()?;
+                if matches.next().is_some() {
+                    log::warn!("palette: two listed notes share one row key; refusing to guess");
+                    return None;
+                }
+                CommandRowId::Note(found.path.clone())
+            }
             "run" => {
                 let (scope, name) = rest.split_once('/')?;
                 let scope = match scope {
@@ -1476,9 +1493,10 @@ impl PlexiApp {
         self.apply_palette_command(PickerCommand::Close);
     }
 
-    /// Run one picker command through the model and service its effects:
-    /// sources answer `Query` here, `Activate` resolves through the row's
-    /// source, and the focus layer follows the open state.
+    /// Run one picker command through the model and service its effects.
+    /// `Query` is answered from `App::logic` (`refresh_command_palette`), so
+    /// no source I/O runs on the draw path; `Activate` resolves through the
+    /// row's source; the focus layer follows the open state.
     pub(crate) fn apply_palette_command(&mut self, command: PickerCommand) {
         let mut effects: std::collections::VecDeque<HostEffect> = self
             .host
@@ -1490,18 +1508,14 @@ impl PlexiApp {
                     source,
                     text,
                     generation,
-                } => {
-                    let rows = self.answer_palette_query(source, &text);
-                    effects.extend(self.host.apply(HostAction::Picker(
-                        id,
-                        PickerCommand::Rows {
-                            generation,
-                            rows,
-                            done: true,
-                        },
-                    )));
+                } => log::debug!(
+                    "palette: {id:?} query generation {generation} ({} chars) waits for source '{source}' in logic",
+                    text.chars().count()
+                ),
+                PickerEffect::Closed => {
+                    self.palette_pending_keys.clear();
+                    self.sync_command_palette_focus();
                 }
-                PickerEffect::Closed => self.sync_command_palette_focus(),
                 PickerEffect::Activate { row, action } => {
                     self.sync_command_palette_focus();
                     self.activate_palette_row(&row, action);
@@ -1525,8 +1539,9 @@ impl PlexiApp {
         }
     }
 
-    /// Re-answer the open stop's current query so live rows (pane state,
-    /// context pips, update ready) stay current. Serviced from `App::logic`.
+    /// Answer the open stop's current query: a new query's first answer, and
+    /// every later pass so live rows (pane state, context pips, update ready)
+    /// stay current. Serviced from `App::logic`, never from drawing.
     pub(crate) fn refresh_command_palette(&mut self) {
         let Some((source, query, generation)) = self
             .host
@@ -1551,22 +1566,19 @@ impl PlexiApp {
     }
 
     /// Picker keys, translated before any render pass. The opening chord
-    /// closes the palette; nothing here edits the query.
+    /// closes the palette at once. Every other key command waits until the
+    /// field has taken this frame's text, so Enter after a paste or an IME
+    /// commit in the same frame acts on the edited query, never the old one.
     pub(crate) fn command_palette_keys(
         &mut self,
         input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::view_trait::KeyDisposition {
         let toggle = self.key_bindings.toggle_command_palette;
-        let mut commands = if input.consume_key(toggle.0, toggle.1) {
-            vec![PickerCommand::Close]
+        if input.consume_key(toggle.0, toggle.1) {
+            self.close_command_palette();
         } else {
-            crate::ui::picker::key_commands(input)
-        };
-        for command in commands.drain(..) {
-            if !self.command_palette_open() {
-                break;
-            }
-            self.apply_palette_command(command);
+            let commands = crate::ui::picker::key_commands(input);
+            self.palette_pending_keys.extend(commands);
         }
         crate::app::view_trait::KeyDisposition::Consumed
     }
@@ -1601,7 +1613,6 @@ impl PlexiApp {
         let modal_response = ModalShell::centered("command_palette")
             .own_scroll()
             .width(style::MODAL_WIDTH_PALETTE)
-            .escape(true)
             .show(ctx, &colors, |ui| {
                 commands.extend(crate::ui::picker::field(
                     ui,
@@ -1615,6 +1626,8 @@ impl PlexiApp {
                     "command_palette",
                     &colors,
                 ));
+                // The field's edit first, then this frame's keys, in order.
+                commands.append(&mut self.palette_pending_keys);
                 ui.add_space(style::SPACE_SM);
                 commands.extend(crate::ui::picker::results(
                     ui,
@@ -1646,7 +1659,7 @@ impl PlexiApp {
     /// Run a row's action. Keyboard and pointer reach this through the same
     /// `Activate` effect, so they always resolve the same action.
     fn activate_palette_row(&mut self, key: &RowKey, action: &'static str) {
-        let Some(id) = CommandRowId::parse(key) else {
+        let Some(id) = CommandRowId::parse(key, &self.palette_notes) else {
             log::warn!("palette: no row resolves for an activated key");
             return;
         };
@@ -3289,15 +3302,10 @@ mod tests {
             Some(&crate::app::FocusKind::Changelog)
         );
 
-        // The second Enter confirms in the frame's input pass; the next
-        // frame's logic pass takes the restart. A frame after the window
-        // hides would reach `exit_host`, so the test stops there.
+        // The second Enter confirms, and the same frame's logic pass takes
+        // the restart. A frame after the window hides would reach
+        // `exit_host`, so the test stops here.
         h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
-        assert!(
-            h.app.update_quit_pending,
-            "the second Enter requests the restart"
-        );
-        h.run_frames(1);
         assert_eq!(crate::app::quit::test_restart_scheduler::take(), 1);
         assert!(!h.app.update_confirm_prompt);
         assert!(!h.app.update_quit_pending);
@@ -3609,6 +3617,8 @@ mod tests {
     /// Click a listed row of the open palette, the pointer's path to
     /// activation.
     fn click_row(h: &mut crate::testing::HostHarness, id: CommandRowId) {
+        // Rows are answered on the next logic pass.
+        h.run_frames(1);
         let key = id.key();
         assert!(
             h.app
@@ -3621,7 +3631,7 @@ mod tests {
     }
 
     fn row_id(row: &PickerRow) -> CommandRowId {
-        CommandRowId::parse(&row.key).expect("commands row key")
+        CommandRowId::parse(&row.key, &[]).expect("commands row key")
     }
 
     /// The results painter prints a section header each time the group
@@ -3801,7 +3811,7 @@ mod tests {
         );
         let selected = state.selected().expect("selection kept");
         assert_eq!(
-            CommandRowId::parse(selected),
+            CommandRowId::parse(selected, &[]),
             Some(CommandRowId::View("todo".to_string()))
         );
     }
@@ -3933,13 +3943,74 @@ mod tests {
             },
             CommandRowId::UpdateReady("0.5.1".into()),
         ];
+        let notes = [note_entry(std::path::PathBuf::from("/tmp/notes/a:b.md"))];
         for id in ids {
-            assert_eq!(CommandRowId::parse(&id.key()), Some(id.clone()), "{id:?}");
+            assert_eq!(
+                CommandRowId::parse(&id.key(), &notes),
+                Some(id.clone()),
+                "{id:?}"
+            );
         }
         assert_eq!(
-            CommandRowId::parse(&RowKey::new("files", "cmd/Changelog")),
+            CommandRowId::parse(&RowKey::new("files", "cmd/Changelog"), &notes),
             None,
             "another source's key never resolves here"
+        );
+    }
+
+    /// Sources run in \`App::logic\`: an edit only starts a new generation,
+    /// and a logic-only pass (a hidden window skips \`ui\`) answers it.
+    #[test]
+    fn palette_query_is_answered_in_logic_not_on_the_draw_path() {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        h.app.open_command_palette("");
+        h.run_frames(1);
+        h.app.set_palette_query("keyboard");
+        let picker = |h: &crate::testing::HostHarness| {
+            let picker = h.app.host.picker(PickerId::Palette).expect("palette");
+            (
+                picker.is_loading(),
+                picker.rows().first().map(|row| row.title.clone()),
+            )
+        };
+        assert!(picker(&h).0, "the edit ran no source on the draw path");
+        h.hidden_frame();
+        assert_eq!(
+            picker(&h),
+            (false, Some("Keyboard shortcuts".to_string())),
+            "the logic pass answered the edited query"
+        );
+    }
+
+    fn note_entry(path: std::path::PathBuf) -> crate::notes::NotePickerEntry {
+        crate::notes::NotePickerEntry {
+            title: path.display().to_string(),
+            path,
+            preview: String::new(),
+            search_text: String::new(),
+            tier_label: None,
+            modified: None,
+        }
+    }
+
+    /// A note key spells its path for display, which is lossy for non-UTF-8
+    /// bytes; activation must still open the listed note's exact path.
+    #[cfg(unix)]
+    #[test]
+    fn note_row_activates_its_exact_non_utf8_path() {
+        use std::os::unix::ffi::OsStrExt;
+        let odd = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/notes/n\xff.md"));
+        let notes = [note_entry(odd.clone())];
+        let key = CommandRowId::Note(odd.clone()).key();
+        assert_eq!(
+            CommandRowId::parse(&key, &notes),
+            Some(CommandRowId::Note(odd))
+        );
+        assert_eq!(
+            CommandRowId::parse(&key, &[]),
+            None,
+            "an unlisted note never resolves"
         );
     }
 

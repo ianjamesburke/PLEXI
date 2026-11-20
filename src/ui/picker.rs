@@ -94,15 +94,16 @@ pub(crate) fn results(
 ) -> Vec<PickerCommand> {
     let mut commands = Vec::new();
     if state.rows().is_empty() {
-        let text = if state.is_loading() {
-            "Loading"
+        if state.is_loading() {
+            // The first answer arrives on the next logic pass: hold the
+            // list's height so the modal does not jump when it lands.
+            ui.add_space(max_height);
         } else {
-            empty_text
-        };
-        ui.scope(|ui| {
-            ui.set_max_width(ui.available_width());
-            crate::ui::labels::description_label(ui, text, colors);
-        });
+            ui.scope(|ui| {
+                ui.set_max_width(ui.available_width());
+                crate::ui::labels::description_label(ui, empty_text, colors);
+            });
+        }
         return commands;
     }
     let reveal_id = ui.id().with("picker_reveal_epoch");
@@ -127,7 +128,7 @@ pub(crate) fn results(
                     group = Some(row.group);
                     if !row.group.is_empty() {
                         ui.add_space(style::SPACE_XS);
-                        crate::ui::labels::list_group_label(ui, row.group, colors);
+                        crate::ui::typography::caption(ui, row.group, colors);
                         ui.add_space(style::SPACE_XS);
                     }
                 }

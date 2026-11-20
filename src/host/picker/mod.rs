@@ -180,6 +180,9 @@ pub(crate) struct PickerState {
     selection: Selection,
     generation: u64,
     loading: bool,
+    /// Enter arrived while the current query's rows were still loading: accept
+    /// the selection once that answer lands, never the stale one.
+    accept_on_answer: bool,
     /// Bumped when the keyboard moves the selection, so the results painter
     /// scrolls the selected row into view exactly once.
     reveal: u64,
@@ -197,6 +200,7 @@ impl PickerState {
             selection: Selection::First,
             generation: 0,
             loading: false,
+            accept_on_answer: false,
             reveal: 0,
         }
     }
@@ -264,6 +268,7 @@ impl PickerState {
                 self.rows.clear();
                 self.selection = Selection::First;
                 self.loading = false;
+                self.accept_on_answer = false;
                 // Answers still in flight for this session are stale.
                 self.generation += 1;
                 log::info!("picker: closed");
@@ -291,10 +296,14 @@ impl PickerState {
                 }
                 Vec::new()
             }
-            PickerCommand::Accept => match self.selection.clone() {
-                Selection::Key(key) => self.accept(key),
-                Selection::First | Selection::Cleared => Vec::new(),
-            },
+            PickerCommand::Accept => {
+                if self.loading {
+                    // The text Enter followed is not answered yet.
+                    self.accept_on_answer = true;
+                    return Vec::new();
+                }
+                self.accept_selected()
+            }
             PickerCommand::Click(key) => {
                 if !self.rows.iter().any(|row| row.key == key) {
                     return Vec::new();
@@ -317,6 +326,10 @@ impl PickerState {
                 self.rows = rank(self.active_stop().ranking, &self.query, rows);
                 self.loading = !done;
                 self.reconcile_selection();
+                if self.accept_on_answer && !self.loading {
+                    self.accept_on_answer = false;
+                    return self.accept_selected();
+                }
                 Vec::new()
             }
         }
@@ -340,6 +353,7 @@ impl PickerState {
     fn requery(&mut self) -> PickerEffect {
         self.generation += 1;
         self.loading = true;
+        self.accept_on_answer = false;
         self.selection = Selection::First;
         PickerEffect::Query {
             source: self.active_stop().source,
@@ -382,6 +396,13 @@ impl PickerState {
         self.reveal += 1;
     }
 
+    fn accept_selected(&mut self) -> Vec<PickerEffect> {
+        match self.selection.clone() {
+            Selection::Key(key) => self.accept(key),
+            Selection::First | Selection::Cleared => Vec::new(),
+        }
+    }
+
     fn accept(&mut self, key: RowKey) -> Vec<PickerEffect> {
         let Some(row) = self.rows.iter().find(|row| row.key == key) else {
             return Vec::new();
@@ -414,15 +435,16 @@ fn rank(preset: RankingPreset, query: &str, mut rows: Vec<PickerRow>) -> Vec<Pic
                 rows.sort_by_key(|row| (!row.pinned, row.group_rank));
                 return rows;
             }
+            // Pinned rows lead regardless, so they never lift their group.
             let mut best: std::collections::HashMap<u32, i64> = std::collections::HashMap::new();
-            for row in &rows {
+            for row in rows.iter().filter(|row| !row.pinned) {
                 let entry = best.entry(row.group_rank).or_insert(i64::MAX);
                 *entry = (*entry).min(row_rank(row));
             }
             rows.sort_by_cached_key(|row| {
                 (
                     !row.pinned,
-                    best[&row.group_rank],
+                    best.get(&row.group_rank).copied().unwrap_or(i64::MAX),
                     row.group_rank,
                     row_rank(row),
                 )

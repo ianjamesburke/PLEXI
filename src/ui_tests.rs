@@ -12438,6 +12438,43 @@ open(out + ".done", "w").close()
         h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
+    /// Stint 1391 review: a paste and Enter in one frame run the pasted
+    /// query's best match, never the row selected before the paste, and the
+    /// paste never reaches the pane behind the palette.
+    #[test]
+    fn palette_paste_and_enter_in_one_frame_run_the_pasted_match() {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+        add_focused_pane(&mut h);
+        h.step();
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::P);
+        h.run_steps(3);
+        let (_, _, before) = palette_picker(&h);
+        assert_ne!(before.as_deref(), Some("commands:cmd/Keyboard shortcuts"));
+        {
+            let events = &mut h.harness().input_mut().events;
+            events.push(egui::Event::Paste("keyboard".into()));
+            events.push(egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        h.step();
+        h.run_steps(3);
+        assert!(!h.with_app(|app| app.command_palette_open()));
+        assert!(
+            h.with_app(|app| app.show_shortcuts),
+            "Enter ran the pasted query's Keyboard shortcuts row"
+        );
+        assert!(
+            h.harness().query_by_label("Empty directory").is_some(),
+            "the paste never reached the explorer behind the palette"
+        );
+    }
+
     /// Stint 1391: Cmd+P opens on the Commands stop with today's rows and
     /// the first row selected; Tab and Shift+Tab keep the query (one stop
     /// today, so the stop stays put); Enter runs the selected row.
