@@ -299,23 +299,37 @@ pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: b
         let target = super::host::host_target()?;
         let profile = target.dir().to_path_buf();
         let home = dirs::home_dir().ok_or("uninstall: no home directory to resolve profiles")?;
-        if !keep_data && pr_installation_owns_profile(&receipt.channel, &profile, &home) {
-            delete_data = true;
-        }
-        if !assume_yes && !keep_data && !delete_data {
-            eprint!(
-                "Delete saved data and integrity credentials in {} too? [y/N]: ",
-                profile.display()
-            );
-            io::stderr()
-                .flush()
-                .map_err(|e| format!("write data choice: {e}"))?;
-            let mut answer = String::new();
-            io::stdin()
-                .read_line(&mut answer)
-                .map_err(|e| format!("read data choice: {e}"))?;
-            delete_data = matches!(answer.trim(), "y" | "Y" | "yes");
-        }
+        delete_data = match data_choice(
+            keep_data,
+            delete_data,
+            assume_yes,
+            pr_installation_owns_profile(&receipt.channel, &profile, &home),
+            target.is_named(),
+        ) {
+            DataChoice::Delete => true,
+            DataChoice::Retain => false,
+            DataChoice::RetainNamed => {
+                eprintln!(
+                    "{} is a named profile; its data is kept. Pass --delete-data to delete it.",
+                    profile.display()
+                );
+                false
+            }
+            DataChoice::Ask => {
+                eprint!(
+                    "Delete saved data and integrity credentials in {} too? [y/N]: ",
+                    profile.display()
+                );
+                io::stderr()
+                    .flush()
+                    .map_err(|e| format!("write data choice: {e}"))?;
+                let mut answer = String::new();
+                io::stdin()
+                    .read_line(&mut answer)
+                    .map_err(|e| format!("read data choice: {e}"))?;
+                matches!(answer.trim(), "y" | "Y" | "yes")
+            }
+        };
         println!(
             "Remove Plexi channel {} from {}. User data in {} will be {}.",
             receipt.channel,
@@ -397,6 +411,39 @@ pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: b
             eprintln!("error: {error}");
             1
         }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DataChoice {
+    Delete,
+    Retain,
+    /// A persistent named profile without `--delete-data`: never deleted,
+    /// and never offered by prompt.
+    RetainNamed,
+    Ask,
+}
+
+/// What uninstall does with the target profile's data. Flags decide first; a
+/// PR build's own profile is deleted by default; a persistent profile named
+/// through `--profile` is deleted only with `--delete-data`.
+fn data_choice(
+    keep_data: bool,
+    delete_data: bool,
+    assume_yes: bool,
+    pr_owned: bool,
+    named: bool,
+) -> DataChoice {
+    if keep_data {
+        DataChoice::Retain
+    } else if delete_data || pr_owned {
+        DataChoice::Delete
+    } else if named {
+        DataChoice::RetainNamed
+    } else if assume_yes {
+        DataChoice::Retain
+    } else {
+        DataChoice::Ask
     }
 }
 
@@ -799,6 +846,39 @@ mod uninstall_data_tests {
         assert!(!owns("pr-3267", ".plexi-team"));
         assert!(!owns("pr-3267", ".plexi-pr-3268"));
         assert!(!owns("alpha", ".plexi-alpha"));
+    }
+
+    /// Round 7: a persistent named profile is never deleted, or offered for
+    /// deletion, without `--delete-data`.
+    #[test]
+    fn a_named_profile_needs_delete_data() {
+        use super::{data_choice, DataChoice};
+        for assume_yes in [false, true] {
+            assert_eq!(
+                data_choice(false, false, assume_yes, false, true),
+                DataChoice::RetainNamed
+            );
+            assert_eq!(
+                data_choice(false, true, assume_yes, false, true),
+                DataChoice::Delete
+            );
+        }
+        assert_eq!(
+            data_choice(false, false, false, false, false),
+            DataChoice::Ask
+        );
+        assert_eq!(
+            data_choice(false, false, true, false, false),
+            DataChoice::Retain
+        );
+        assert_eq!(
+            data_choice(false, false, true, true, true),
+            DataChoice::Delete
+        );
+        assert_eq!(
+            data_choice(true, false, false, true, true),
+            DataChoice::Retain
+        );
     }
 
     #[test]

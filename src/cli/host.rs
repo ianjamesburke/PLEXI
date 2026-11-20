@@ -256,6 +256,16 @@ impl HostTarget {
         &self.dir
     }
 
+    /// True when an explicit `--profile` named this target.
+    pub(crate) fn is_named(&self) -> bool {
+        self.profile.is_some()
+    }
+
+    /// The dir `host start` seeds panes into, covered by [`Self::validated`].
+    fn spawn_queue(&self) -> PathBuf {
+        self.dir.join(SPAWN_QUEUE_DIR)
+    }
+
     /// The command a user runs to repeat `subcommand` against this host,
     /// naming the invoking binary and any explicit profile.
     fn command_line(&self, exe: &str, subcommand: &str) -> String {
@@ -295,6 +305,9 @@ pub(crate) fn addresses_profile_host(command: &crate::cli::args::Commands) -> bo
     }
 }
 
+/// The profile's spawn-queue dir, which the host drains on its first frame.
+const SPAWN_QUEUE_DIR: &str = "spawn-queue";
+
 /// Resolve and validate the [`HostTarget`] for this invocation from
 /// `--profile` and the binary's channel. Every lifecycle path (status, start,
 /// stop, restart, log, uninstall) and its trace use only a target returned
@@ -327,17 +340,23 @@ fn cli_host_target() -> Result<HostTarget, i32> {
     })
 }
 
-/// Refuse a profile dir (or its `host` dir) that is a symlink or not a dir,
-/// and a host endpoint that is a symlink: resolving a host socket, lock or
+/// Refuse a profile dir (or its `host` or `spawn-queue` dir) that is a
+/// symlink or not a dir, and a host endpoint that is a symlink or has more
+/// than one link: resolving a host socket, seed, lock or
 /// integrity account through one would reach another profile. Interior data
 /// symlinks are unlinked by `remove_dir_all`. A missing entry is fine.
 pub(crate) fn ensure_real_profile_dir(profile: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
+        use std::os::unix::fs::MetadataExt;
         let endpoint = endpoint_in(profile);
         match std::fs::symlink_metadata(&endpoint) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                log::error!("host: refusing linked host endpoint {endpoint:?}");
+            // A hard link names another profile's listening socket too.
+            Ok(meta) if meta.file_type().is_symlink() || meta.nlink() != 1 => {
+                log::error!(
+                    "host: refusing linked host endpoint {endpoint:?} (links={})",
+                    meta.nlink()
+                );
                 return Err(format!(
                     "refusing to address a host through linked host endpoint {}",
                     endpoint.display()
@@ -348,7 +367,11 @@ pub(crate) fn ensure_real_profile_dir(profile: &Path) -> Result<(), String> {
             Err(error) => return Err(format!("inspect {}: {error}", endpoint.display())),
         }
     }
-    for path in [profile.to_path_buf(), profile.join("host")] {
+    for path in [
+        profile.to_path_buf(),
+        profile.join("host"),
+        profile.join(SPAWN_QUEUE_DIR),
+    ] {
         match std::fs::symlink_metadata(&path) {
             Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
                 log::error!("host: refusing profile through non-directory {path:?}");
@@ -406,33 +429,48 @@ fn detect_pid(socket_path: &Path) -> Option<u32> {
 
 #[cfg(unix)]
 fn detect_pid(socket_path: &Path) -> Option<u32> {
-    use std::os::unix::fs::MetadataExt;
-    let profile = socket_path.parent()?;
-    // The fallback PID is signalled, so it must come from this profile's own
-    // lock: a regular file with one link, never followed through a symlink
-    // or shared by hard link with another profile's held lock.
-    let lock = profile.join(host_presence::LOCK_FILE);
-    match std::fs::symlink_metadata(&lock) {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    // The fallback PID is signalled, so it comes only from this profile's own
+    // lock, read through one no-follow open: a regular file with one link,
+    // held by a live host. A missing lock means no fallback PID.
+    let lock = socket_path.parent()?.join(host_presence::LOCK_FILE);
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&lock)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            log::warn!("host: PID lookup failed for {lock:?}: {error}");
+            return None;
+        }
+    };
+    match file.metadata() {
         Ok(meta) if meta.file_type().is_file() && meta.nlink() == 1 => {}
         Ok(meta) => {
             log::error!(
-                "host: ignoring PID from {lock:?}: not this profile's own lock (type={:?} links={})",
-                meta.file_type(),
+                "host: ignoring PID from {lock:?}: not this profile's own lock (links={})",
                 meta.nlink()
             );
             return None;
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             log::warn!("host: PID lookup failed for {lock:?}: {error}");
             return None;
         }
     }
-    match host_presence::probe(profile, Instant::now() + Duration::from_millis(100)) {
-        Presence::Running { pid, .. } => pid,
-        Presence::NotRunning => None,
-        Presence::Unknown(reason) => {
-            log::warn!("host: PID lookup failed for {profile:?}: {reason}");
+    match file.try_lock_shared() {
+        // Held by a live host: Unix advisory locks allow the read.
+        Err(std::fs::TryLockError::WouldBlock) => {
+            let mut text = String::new();
+            (&file).read_to_string(&mut text).ok()?;
+            text.trim().parse().ok()
+        }
+        Ok(()) => None,
+        Err(std::fs::TryLockError::Error(error)) => {
+            log::warn!("host: PID lookup failed for {lock:?}: {error}");
             None
         }
     }
@@ -805,7 +843,7 @@ pub fn host_start_cli(
         return 1;
     }
 
-    let queue_dir = target.dir.join("spawn-queue");
+    let queue_dir = target.spawn_queue();
     if let Err(e) = std::fs::create_dir_all(&queue_dir) {
         log::error!("host_start: could not create spawn-queue dir {queue_dir:?}: {e}");
         eprintln!("error: could not create spawn queue: {e}");
@@ -2560,6 +2598,48 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
             matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
             "validation contacted the linked profile's host"
         );
+    }
+
+    /// Round 7: a hard-linked `notify.sock` names another profile's
+    /// listening socket and is refused like a symlink.
+    #[cfg(unix)]
+    #[test]
+    fn a_lifecycle_target_refuses_a_hard_linked_endpoint() {
+        let home = tempfile::tempdir().unwrap();
+        let other = home.path().join(".plexi-other");
+        std::fs::create_dir(&other).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(endpoint_in(&other)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let profile = home.path().join(".plexi-t1655");
+        std::fs::create_dir(&profile).unwrap();
+        std::fs::hard_link(endpoint_in(&other), endpoint_in(&profile)).unwrap();
+        let target = HostTarget::resolve(None, Some("t1655".to_string()), home.path());
+
+        let error = target.validated().unwrap_err();
+
+        assert!(error.contains("linked host endpoint"), "{error}");
+        assert!(
+            matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "validation contacted the linked profile's host"
+        );
+    }
+
+    /// Round 7: `host start` seeds panes only into the selected profile's own
+    /// spawn-queue, never one linked to another profile's queue.
+    #[cfg(unix)]
+    #[test]
+    fn a_lifecycle_target_refuses_a_linked_spawn_queue() {
+        let home = tempfile::tempdir().unwrap();
+        let other_queue = home.path().join(".plexi-other/spawn-queue");
+        std::fs::create_dir_all(&other_queue).unwrap();
+        let profile = home.path().join(".plexi-t1655");
+        std::fs::create_dir(&profile).unwrap();
+        std::os::unix::fs::symlink(&other_queue, profile.join("spawn-queue")).unwrap();
+        let target = HostTarget::resolve(None, Some("t1655".to_string()), home.path());
+
+        let error = target.validated().unwrap_err();
+
+        assert!(error.contains("spawn-queue"), "{error}");
     }
 
     /// A host that answers `ok: false` is still running: the reply is not an
