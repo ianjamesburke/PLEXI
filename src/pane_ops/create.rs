@@ -2135,12 +2135,9 @@ impl PlexiApp {
             (None, None) => crate::broker::pane_authority::GrantSource::OutsideProcess,
         };
         // A raw spawn names its command; its role is a label unless a
-        // definition of it exists, which must then resolve.
-        let role_grant = if harness == "team" {
-            None
-        } else {
-            self.admit_defined_worker_role(role, &placement.effective_cwd)?
-        };
+        // definition of it exists, which must then resolve. A team
+        // coordinator is no exception: a defined role keeps its ceiling.
+        let role_grant = self.admit_defined_worker_role(role, &placement.effective_cwd)?;
         self.launch_agent_worker(
             AgentWorkerLaunch {
                 grant: AgentWorkerGrant {

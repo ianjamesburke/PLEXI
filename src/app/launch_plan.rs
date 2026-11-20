@@ -4430,4 +4430,33 @@ mod tests {
             "no cross-context inventory without admission"
         );
     }
+
+    /// Round 5 P2-3: a worker started under the team harness still runs
+    /// under its defined role's ceiling.
+    #[test]
+    fn grant_team_harness_worker_keeps_its_roles_ceiling() {
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        write_role_settings(
+            &root,
+            "squad",
+            "[permissions]\ndefault_posture='ask'\ndeny=['tool.secret']\n",
+        );
+        let (pane, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "squad", "team", ":", "Coordinate", None, false, None,
+                Some(root.clone()), None, None, false, None,
+            )
+            .expect("team coordinator starts");
+        assert!(
+            h.app
+                .pane_ceiling(pane)
+                .unwrap()
+                .is_some_and(|p| p.denies("tool.secret")),
+            "the role's deny applies under the team harness"
+        );
+    }
 }
