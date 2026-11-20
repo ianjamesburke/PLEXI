@@ -37,7 +37,9 @@ pub enum Outcome {
     /// `-V`/`--version` at the root.
     Version,
     UsageError(UsageError),
-    Completions { shell: Option<String> },
+    Completions {
+        shell: Option<String>,
+    },
     Run(Box<Run>),
     Launch(Box<Launch>),
 }
@@ -296,16 +298,18 @@ fn missing_value_note(bin: &str, path: &[String], error: &clap::Error) -> Option
     let Some(ContextValue::String(arg)) = error.get(ContextKind::InvalidArg) else {
         return None;
     };
-    let owner = crate::release::ReleaseFeature::ALL.iter().find_map(|feature| {
-        feature.owned_paths().iter().find_map(|gate| match *gate {
-            crate::release::GatePath::Arg(p, id)
-                if p.iter().eq(path.iter()) && is_option(arg, id) =>
-            {
-                Some((*feature, id))
-            }
-            _ => None,
-        })
-    })?;
+    let owner = crate::release::ReleaseFeature::ALL
+        .iter()
+        .find_map(|feature| {
+            feature.owned_paths().iter().find_map(|gate| match *gate {
+                crate::release::GatePath::Arg(p, id)
+                    if p.iter().eq(path.iter()) && is_option(arg, id) =>
+                {
+                    Some((*feature, id))
+                }
+                _ => None,
+            })
+        })?;
     let (feature, id) = owner;
     let mut cmd = grammar(bin);
     cmd.build();
@@ -417,7 +421,9 @@ pub(crate) fn argument_owners(argv: &[String]) -> Option<Vec<Option<Owner>>> {
 
 enum Stop {
     /// Clap rejects the token sequence `kept[..prefix]`.
-    Clap { prefix: usize },
+    Clap {
+        prefix: usize,
+    },
     Own(UsageError),
 }
 
@@ -479,7 +485,8 @@ fn find_short(node: &Command, c: char) -> Option<&clap::Arg> {
 }
 
 fn positional_at(node: &Command, index: usize) -> Option<&clap::Arg> {
-    node.get_positionals().find(|a| a.get_index() == Some(index))
+    node.get_positionals()
+        .find(|a| a.get_index() == Some(index))
 }
 
 /// Clap lexes these as option tokens rather than values.
@@ -579,8 +586,8 @@ fn recognize(tree: &Command, argv: &[String]) -> Recognized {
                             return stop_at_end(r);
                         }
                         let next = Some((argv.get(i + 1), token.as_str()));
-                        if let Some(stop) = removal_stop(&r, state, None)
-                            .or_else(|| removal_stop(&r, state, next))
+                        if let Some(stop) =
+                            removal_stop(&r, state, None).or_else(|| removal_stop(&r, state, next))
                         {
                             r.stop = Some(stop);
                             return r;
@@ -620,8 +627,7 @@ fn recognize(tree: &Command, argv: &[String]) -> Recognized {
                     return stop_at_end(r);
                 }
                 // Otherwise a hyphenated value for the positional.
-            } else if !hyphen_value && token.starts_with('-') && token.len() > 1 && token != "--"
-            {
+            } else if !hyphen_value && token.starts_with('-') && token.len() > 1 && token != "--" {
                 let flags = &token[1..];
                 let positional_takes_it = positional_at(node, pos_counter).is_some_and(|p| {
                     p.is_allow_hyphen_values_set()
@@ -888,11 +894,7 @@ fn recognize_help_subcommand(r: &mut Recognized, node: &Command, rest: &[String]
 pub fn emit_help(bin: &str, help: &Help) -> i32 {
     use std::io::Write;
     let text = if help.path.is_empty() {
-        crate::cli::help::grouped_help(
-            &grammar(bin),
-            bin,
-            std::env::var_os("NO_COLOR").is_some(),
-        )
+        crate::cli::help::grouped_help(&grammar(bin), bin, std::env::var_os("NO_COLOR").is_some())
     } else {
         format!("{}", render_node_help(bin, &help.path, help.long).ansi())
     };
@@ -908,7 +910,9 @@ pub fn emit_help(bin: &str, help: &Help) -> i32 {
 fn render_node_help(bin: &str, path: &[String], long: bool) -> clap::builder::StyledStr {
     let request: Vec<String> = std::iter::once(bin.to_string())
         .chain(path.iter().cloned())
-        .chain(std::iter::once(if long { "--help" } else { "-h" }.to_string()))
+        .chain(std::iter::once(
+            if long { "--help" } else { "-h" }.to_string(),
+        ))
         .collect();
     let mut cmd = help::with_run_paths(grammar(bin));
     match cmd.try_get_matches_from_mut(&request) {

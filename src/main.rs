@@ -193,6 +193,10 @@ fn main() -> eframe::Result {
         "startup: logger ready {}ms after main entry",
         process_start.elapsed().as_millis()
     );
+    log::info!(
+        "cli_front: {} {surface_path:?}",
+        if host_startup { "launch" } else { "run" }
+    );
     // Migration ran inside `lock_profile_initialization`, before the logger.
     crate::app::plugin_migration::replay_early_traces();
 

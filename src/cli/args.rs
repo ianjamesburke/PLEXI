@@ -2837,7 +2837,10 @@ pub struct ConfigScopeArgs {
 
 impl ConfigScopeArgs {
     pub fn scope(self) -> ConfigScope {
-        debug_assert!(!self.ws_suffix || self.workspace, "clap requires -w with -s");
+        debug_assert!(
+            !self.ws_suffix || self.workspace,
+            "clap requires -w with -s"
+        );
         if self.global {
             ConfigScope::Global
         } else if self.workspace {
@@ -3445,10 +3448,7 @@ pub enum AiCmd {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Cli, Commands, ConfigCmd, ConfigScope, NotifyCmd,
-        PluginCmd, SecretCmd, ViewCmd,
-    };
+    use super::{Cli, Commands, ConfigCmd, ConfigScope, NotifyCmd, PluginCmd, SecretCmd, ViewCmd};
     use clap::Parser;
 
     #[test]

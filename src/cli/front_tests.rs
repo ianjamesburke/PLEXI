@@ -83,8 +83,24 @@ fn a_duplicate_profile_is_a_usage_error_beside_display_and_experiments() {
         &["--version", "--profile", "one", "host", "--profile", "two"][..],
         &["--profile", "one", "host", "--help", "--profile", "two"],
         &["--profile", "one", "--version", "--profile"],
-        &["--profile", "one", "assistant", "permission", "list", "--profile", "two"],
-        &["--profile", "one", "assistant", "permission", "list", "--profile", "one"],
+        &[
+            "--profile",
+            "one",
+            "assistant",
+            "permission",
+            "list",
+            "--profile",
+            "two",
+        ],
+        &[
+            "--profile",
+            "one",
+            "assistant",
+            "permission",
+            "list",
+            "--profile",
+            "one",
+        ],
         &["--profile", "one", "--profile", "two", "host", "stop"],
         &["host", "--profile", "one", "stop", "--profile", "two"],
         &["--profile", "default", "host", "stop", "--profile", "two"],
@@ -202,10 +218,19 @@ fn the_child_tail_is_forwarded_untouched() {
 #[test]
 fn display_requests_waive_run_requirements_where_they_appear() {
     assert_eq!(kind(&parse_parts(&["--version", "host"])), "version");
-    assert_eq!(kind(&parse_parts(&["--version", "host", "--json"])), "version");
-    assert_eq!(help_of(&["pane", "--help", "send"]), help_of(&["pane", "--help"]));
+    assert_eq!(
+        kind(&parse_parts(&["--version", "host", "--json"])),
+        "version"
+    );
+    assert_eq!(
+        help_of(&["pane", "--help", "send"]),
+        help_of(&["pane", "--help"])
+    );
     assert_eq!(help_of(&["pane", "--help", "send"]).0, path(&["pane"]));
-    assert_eq!(help_of(&["pane", "send", "--help"]).0, path(&["pane", "send"]));
+    assert_eq!(
+        help_of(&["pane", "send", "--help"]).0,
+        path(&["pane", "send"])
+    );
     assert!(!help_of(&["pane", "send", "-h"]).1, "-h is the short form");
     expect(&["pane", "send", "--help", "--bogus"], "grammar");
     expect(&["--version", "--bogus"], "grammar");
@@ -225,7 +250,9 @@ fn missing_command_output_hides_hidden_commands_and_names_the_binary() {
         assert!(text.contains(&format!("Usage: {BIN} agent")), "{text}");
         for hidden in ["team", "fleet"] {
             assert!(
-                !text.lines().any(|line| line.trim_start().starts_with(hidden)),
+                !text
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(hidden)),
                 "{parts:?} advertised {hidden}:\n{text}"
             );
         }
@@ -242,7 +269,9 @@ fn missing_command_output_hides_hidden_commands_and_names_the_binary() {
 
 #[test]
 fn version_names_the_invoked_binary() {
-    assert!(grammar(BIN).render_version().starts_with(&format!("{BIN} ")));
+    assert!(grammar(BIN)
+        .render_version()
+        .starts_with(&format!("{BIN} ")));
 }
 
 #[test]
@@ -252,7 +281,10 @@ fn root_operands_and_unknown_commands() {
         text.starts_with("error: unknown command 'pnae'. Did you mean `pane`?"),
         "{text}"
     );
-    assert!(text.contains(&format!("Usage: {BIN} [OPTIONS] [COMMAND]")), "{text}");
+    assert!(
+        text.contains(&format!("Usage: {BIN} [OPTIONS] [COMMAND]")),
+        "{text}"
+    );
     expect(&["pnae", "-h"], "unknown_command");
     expect(&["app", "list"], "retired");
     expect(&["relay"], "unknown_command");
@@ -260,7 +292,10 @@ fn root_operands_and_unknown_commands() {
     assert!(!far.contains("Did you mean"), "{far}");
     let nested = error_text(&["agent", "tem"]);
     assert!(nested.contains(&format!("Usage: {BIN} agent")), "{nested}");
-    assert!(!nested.contains("team"), "hidden command suggested: {nested}");
+    assert!(
+        !nested.contains("team"),
+        "hidden command suggested: {nested}"
+    );
 }
 
 #[test]
@@ -328,11 +363,17 @@ fn a_missing_experiment_value_carries_static_guidance() {
 fn removal_never_rebinds_a_pending_option() {
     help_of(&["pane", "list", "--context", "--help"]);
     expect(&["pane", "list", "--context", "--help", "3"], "separated");
-    expect(&["pane", "list", "--context", "--profile", "t1", "3"], "separated");
+    expect(
+        &["pane", "list", "--context", "--profile", "t1", "3"],
+        "separated",
+    );
     let run = run_of(&["pane", "list", "--context", "--profile", "t1", "--json"]);
     assert_eq!(run.selection, named("t1"));
     // A required value cannot be skipped by a removed token.
-    expect(&["secret", "set", "A", "--folder", "--profile", "t1", "."], "grammar");
+    expect(
+        &["secret", "set", "A", "--folder", "--profile", "t1", "."],
+        "grammar",
+    );
 }
 
 fn visible_paths(cmd: &Command, prefix: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
@@ -373,7 +414,10 @@ fn every_command_accepts_help() {
         }
         let mut parts = vec!["help"];
         parts.extend(&words);
-        assert_eq!(help_of(&parts), (p.clone(), true, ProfileSelection::Default));
+        assert_eq!(
+            help_of(&parts),
+            (p.clone(), true, ProfileSelection::Default)
+        );
     }
 }
 
@@ -409,7 +453,10 @@ fn the_grammar_uses_only_modelled_features() {
         assert!(!cmd.is_multicall_set(), "{path}");
         assert!(!cmd.is_no_binary_name_set(), "{path}");
         assert!(!cmd.is_disable_help_flag_set(), "{path}");
-        assert!(cmd.get_short_flag().is_none() && cmd.get_long_flag().is_none(), "{path}");
+        assert!(
+            cmd.get_short_flag().is_none() && cmd.get_long_flag().is_none(),
+            "{path}"
+        );
         let positionals: Vec<_> = cmd.get_positionals().collect();
         for (n, arg) in positionals.iter().enumerate() {
             assert!(!arg.is_last_set(), "{path} {}", arg.get_id());
@@ -423,7 +470,11 @@ fn the_grammar_uses_only_modelled_features() {
             let id = arg.get_id();
             assert!(!arg.is_allow_negative_numbers_set(), "{path} {id}");
             assert!(arg.get_value_terminator().is_none(), "{path} {id}");
-            assert_ne!(arg.get_long(), Some(PROFILE_LONG), "{path} {id}: --profile is Plexi's own");
+            assert_ne!(
+                arg.get_long(),
+                Some(PROFILE_LONG),
+                "{path} {id}: --profile is Plexi's own"
+            );
         }
         for sub in cmd.get_subcommands() {
             if sub.get_name() != "help" {

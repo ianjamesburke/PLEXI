@@ -231,7 +231,10 @@ fn osa_distance(a: &str, b: &str) -> usize {
 /// Return the single closest visible subcommand or alias using OSA edit distance
 /// with threshold `distance <= max(1, word.len() / 3)`. Ties at the minimum
 /// distance break deterministically by subcommand declaration order.
-pub(crate) fn closest_subcommand_suggestion<'a>(word: &str, cmd: &'a clap::Command) -> Option<&'a str> {
+pub(crate) fn closest_subcommand_suggestion<'a>(
+    word: &str,
+    cmd: &'a clap::Command,
+) -> Option<&'a str> {
     let threshold = (word.chars().count() / 3).max(1);
     let mut best: Option<(usize, &'a str)> = None;
     for sub in cmd.get_subcommands().filter(|sub| !sub.is_hide_set()) {
@@ -482,7 +485,10 @@ mod tests {
         let surface = Surface::capture(&matches);
         let cli = <Cli as clap::FromArgMatches>::from_arg_matches(&matches);
         assert!(cli.is_ok());
-        assert_eq!(admission(&surface, |_| false), Some(ReleaseFeature::FolderSecrets));
+        assert_eq!(
+            admission(&surface, |_| false),
+            Some(ReleaseFeature::FolderSecrets)
+        );
     }
 
     #[test]

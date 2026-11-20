@@ -391,13 +391,35 @@ mod tests {
         let args = ["plexi", "pane", "send", "42", "hello world"].map(str::to_string);
         assert_eq!(redact_argv_with_content(&args, &[], true), args);
         let args = ["plexi", "pane", "send", "42", "API_KEY=private"].map(str::to_string);
-        assert!(!redact_argv_with_content(&args, &[], true).join(" ").contains("private"));
-        let args = ["plexi", "agent", "call", "reviewer", "--task=API_KEY=private"].map(str::to_string);
-        assert!(!redact_argv_with_content(&args, &[], true).join(" ").contains("private"));
-        let args = ["plexi", "agent", "call", "reviewer", "--task=--token=private"].map(str::to_string);
-        assert!(!redact_argv_with_content(&args, &[], true).join(" ").contains("private"));
+        assert!(!redact_argv_with_content(&args, &[], true)
+            .join(" ")
+            .contains("private"));
+        let args = [
+            "plexi",
+            "agent",
+            "call",
+            "reviewer",
+            "--task=API_KEY=private",
+        ]
+        .map(str::to_string);
+        assert!(!redact_argv_with_content(&args, &[], true)
+            .join(" ")
+            .contains("private"));
+        let args = [
+            "plexi",
+            "agent",
+            "call",
+            "reviewer",
+            "--task=--token=private",
+        ]
+        .map(str::to_string);
+        assert!(!redact_argv_with_content(&args, &[], true)
+            .join(" ")
+            .contains("private"));
         let invalid = ["plexi", "pane", "send", "42", "private", "extra"].map(str::to_string);
-        assert!(!redact_argv_with_content(&invalid, &[], true).join(" ").contains("private"));
+        assert!(!redact_argv_with_content(&invalid, &[], true)
+            .join(" ")
+            .contains("private"));
     }
 }
 
