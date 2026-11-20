@@ -5790,6 +5790,12 @@ impl LivePythonPane {
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
+    /// Queue `command` as if the current guest had sent it and it passed
+    /// admission, without draining it.
+    #[cfg(test)]
+    pub fn queue_guest_command_for_test(&mut self, command: crate::app::view_trait::ViewCommand) {
+        self.pending_commands.push(command);
+    }
     #[cfg(test)]
     pub fn record_runtime_stderr_for_test(&mut self, stderr: &str) {
         self.record_runtime_stderr(stderr);
@@ -5833,6 +5839,18 @@ impl LivePythonPane {
             self.with_cli_service(|service, who, env| service.retire(who, env));
         }
         self.retire_consent_asks();
+        // Commands the old guest queued but the host has not drained would be
+        // stamped as the new guest's at drain time; they have no requester
+        // left, so they are dropped here, where the guest is replaced.
+        let dropped = std::mem::take(&mut self.pending_commands);
+        if !dropped.is_empty() {
+            let verbs: Vec<&str> = dropped.iter().map(|c| c.verb()).collect();
+            log::info!(
+                "plugin::{}: relaunch dropped {} command(s) the old guest queued: {verbs:?}",
+                self.plugin_id,
+                dropped.len()
+            );
+        }
         if let Some(held) = &mut self.mcp_held {
             // The held line survives hot reload, but its arming identity was
             // owned by the stdin just closed by `old_runtime`'s drop. The old

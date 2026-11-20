@@ -4959,6 +4959,67 @@ fn sdk_held_request_is_retired_by_a_guest_reload() {
     );
 }
 
+/// Stint 1671: a request the old guest queued in the runtime but the host has
+/// not drained yet belongs to that guest. A hot reload drops it, so it never
+/// runs stamped as the new guest; a request the new guest makes still runs.
+#[test]
+fn python_reload_drops_requests_the_old_guest_left_queued() {
+    use crate::app::view_trait::ViewCommand;
+    let mut h = HostHarness::new();
+    let logs = crate::testing::test_log::capture();
+    let pane_id = h.launch_dev_view("node-click-probe");
+    let spawn_pane = || ViewCommand::SpawnPane {
+        type_id: "terminal".to_string(),
+        layout: "split_h".to_string(),
+        args: Vec::new(),
+        from_pane_id: None,
+        request_id: None,
+        target_context: None,
+        emitter: None,
+    };
+    let queue = |h: &mut HostHarness, command: ViewCommand| {
+        let view = h
+            .app
+            .windows
+            .iter_mut()
+            .find_map(|w| w.panes.get_mut(&pane_id))
+            .and_then(crate::host::pane::Pane::as_view_mut)
+            .expect("the Python pane");
+        let crate::host::pane::ViewRuntime::Python(runtime) = &mut view.runtime else {
+            panic!("node-click-probe runs on the Python runtime");
+        };
+        runtime.queue_guest_command_for_test(command);
+    };
+    let count = |h: &HostHarness| h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
+    let panes = count(&h);
+
+    queue(&mut h, spawn_pane());
+    queue(
+        &mut h,
+        ViewCommand::SpawnView {
+            type_id: "file_browser".to_string(),
+            layout: Some("split_h".to_string()),
+            args: Vec::new(),
+            emitter: None,
+        },
+    );
+    assert!(h
+        .app
+        .reload_view_pane(pane_id, "test: reload with queued requests"));
+    h.run_hidden_frames(2);
+    assert_eq!(count(&h), panes, "nothing starts for the ended guest");
+    assert!(
+        logs.lines().iter().any(|line| line.contains(
+            "relaunch dropped 2 command(s) the old guest queued: [\"SpawnPane\", \"SpawnView\"]"
+        )),
+        "the drop is traced with its count and verbs"
+    );
+
+    queue(&mut h, spawn_pane());
+    h.run_hidden_frames(2);
+    assert_eq!(count(&h), panes + 1, "the new guest's request runs");
+}
+
 /// Falsifying regression #1: before stint 0724 Phase D 2/2, `OpenDirectedPipe`
 /// resolved its target purely by `active_window`, with no check that the
 /// target lives in the caller's own context — a pane in context A could open
