@@ -391,22 +391,31 @@ impl TerminalBackend {
         let url_regex = RegexSearch::new(r#"(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://)[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩`]+"#).unwrap();
         let shared_size = Arc::new(Mutex::new(terminal_size));
         let _pty_event_loop_thread = pty_event_loop.spawn();
-        let event_term = term.clone();
+        // Weak, not Arc: the `Term` owns an `EventProxy` sender for the very
+        // channel this thread reads. A strong handle here would keep that
+        // sender alive forever, and alacritty sends no `Event::Exit` on
+        // `Msg::Shutdown`, so the thread and the whole scrollback grid would
+        // outlive the pane (stint 1651).
+        let event_term = Arc::downgrade(&term);
         let shared_size_clone = shared_size.clone();
         let _pty_event_subscription = std::thread::Builder::new()
             .name(format!("pty_event_subscription_{}", id))
             .spawn(move || {
-                // `while let Ok` exits cleanly when the sender drops (channel
-                // closed on TerminalBackend drop), preventing a busy-loop on
-                // a dead channel that would spin a full CPU core at shutdown.
+                // The channel closes once every sender is gone: the `Term`
+                // (dropped with the backend and the PTY event loop), the event
+                // loop's proxy and the tap callback (both dropped when the
+                // loop exits on `Msg::Shutdown`).
                 while let Ok(event) = event_receiver.recv() {
                     let pty_event = match event {
                         Event::ColorRequest(index, formatter) => {
-                            if let Some(color) = resolve_dynamic_color(
-                                &event_term,
-                                &dynamic_colors,
-                                index,
-                            ) {
+                            let color = event_term.upgrade().and_then(|term| {
+                                resolve_dynamic_color(
+                                    &term,
+                                    &dynamic_colors,
+                                    index,
+                                )
+                            });
+                            if let Some(color) = color {
                                 event_notifier
                                     .notify(formatter(color).into_bytes());
                             }
@@ -454,6 +463,9 @@ impl TerminalBackend {
                         break;
                     }
                 }
+                log::info!(
+                    "egui_term: pty_event_subscription_{id} exited; terminal state released"
+                );
             })?;
 
         Ok(Self {
@@ -2042,6 +2054,64 @@ mod tests {
             '`', '\u{0000}', '\u{001F}', '\u{007F}', '\u{0085}',
         ] {
             assert!(!is_url_char(c), "expected {c:?} to NOT be a URL char");
+        }
+    }
+
+    /// Stint 1651: closing a pane whose child is still running (no natural
+    /// `Event::Exit`) must end its `pty_event_subscription` thread and drop
+    /// its `Term`. The thread owns the host-side sender, so the host receiver
+    /// disconnecting is the observable proof that the thread returned.
+    #[cfg(unix)]
+    #[test]
+    fn dropping_backends_ends_event_threads_and_frees_terms() {
+        use super::settings::BackendSettings;
+        use super::TerminalBackend;
+        use std::sync::mpsc::{self, RecvTimeoutError};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        const PANES: u64 = 4;
+        let mut panes = Vec::new();
+        for id in 0..PANES {
+            let (tx, rx) = mpsc::channel();
+            let settings = BackendSettings {
+                shell: "/bin/sleep".to_string(),
+                args: vec!["3600".to_string()],
+                ..Default::default()
+            };
+            let backend = TerminalBackend::new(
+                id,
+                egui::Context::default(),
+                tx,
+                settings,
+            )
+            .expect("spawn backend");
+            let term = Arc::downgrade(&backend.term);
+            panes.push((backend, rx, term));
+        }
+
+        let mut closed = Vec::new();
+        for (backend, rx, term) in panes {
+            drop(backend);
+            closed.push((rx, term));
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for (id, (rx, term)) in closed.into_iter().enumerate() {
+            loop {
+                let left = deadline.saturating_duration_since(Instant::now());
+                match rx.recv_timeout(left) {
+                    Ok(_) => continue,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                    Err(RecvTimeoutError::Timeout) => panic!(
+                        "pty_event_subscription_{id} still running 5 s after its backend dropped"
+                    ),
+                }
+            }
+            assert!(
+                term.upgrade().is_none(),
+                "Term of closed pane {id} is still alive after its event thread exited"
+            );
         }
     }
 
