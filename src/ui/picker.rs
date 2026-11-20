@@ -343,3 +343,7 @@ pub(crate) fn results(
         });
     hits
 }
+
+#[cfg(test)]
+#[path = "picker_tests.rs"]
+mod tests;
