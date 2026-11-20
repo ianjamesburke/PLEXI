@@ -20095,6 +20095,22 @@ fn changelog_escape_restores_pane_and_closed_escape_reaches_terminal() {
     h.run_frames(1);
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
     assert!(!h.app.show_changelog, "Escape must close the changelog");
+    // Release it before pressing again: a press with no release between is a
+    // repeat of the held key (stint 1659).
+    h.frame(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        events: vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        ..Default::default()
+    });
     assert!(h.app.focus_stack.is_empty());
     assert_eq!(h.app.host_input_owner(), InputOwner::Pane(pane));
     assert!(

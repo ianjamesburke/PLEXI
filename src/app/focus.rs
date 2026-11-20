@@ -258,6 +258,9 @@ pub(crate) struct CloseConfirmTarget {
     pub pane: u64,
     /// The pane's name as the dialog shows it.
     pub label: String,
+    /// This opening of the dialog (stint 1659). Every target is built for
+    /// one opening, so asking again is a new instance even for the same pane.
+    pub opening: crate::app::host_router::OpeningId,
 }
 
 /// State for the context-close confirmation dialog.

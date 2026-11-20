@@ -2077,6 +2077,7 @@ impl PlexiApp {
             return crate::app::CloseConfirmTarget {
                 pane,
                 label: format!("pane {pane}"),
+                opening: crate::app::host_router::OpeningId::fresh(),
             };
         };
         let label = name(&window.panes[&pane]);
@@ -2097,7 +2098,11 @@ impl PlexiApp {
             .map(|(&id, _)| (id, place(id)))
             .collect();
         if same.len() < 2 {
-            return crate::app::CloseConfirmTarget { pane, label };
+            return crate::app::CloseConfirmTarget {
+                pane,
+                label,
+                opening: crate::app::host_router::OpeningId::fresh(),
+            };
         }
         same.sort_by(|a, b| {
             a.1 .0
@@ -2109,6 +2114,7 @@ impl PlexiApp {
         crate::app::CloseConfirmTarget {
             pane,
             label: format!("{label} ({index} of {})", same.len()),
+            opening: crate::app::host_router::OpeningId::fresh(),
         }
     }
 

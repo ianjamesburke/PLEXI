@@ -26,11 +26,13 @@ pub mod host_version;
 pub mod http;
 pub mod image_viewer_view;
 pub(crate) mod input_owner;
+pub(crate) mod host_router;
 pub(crate) mod input_router;
 pub(crate) mod install_swap;
 mod launch_notices;
 pub(crate) mod launch_spec;
 mod lifecycle;
+pub(crate) mod routed_input;
 pub mod marketplace;
 pub(crate) mod notification_image;
 mod notifications;
@@ -261,6 +263,12 @@ pub struct PlexiApp {
     pub(crate) approval_buttons: Vec<ApprovalButton>,
     /// This frame's raw input includes socket-injected pane events.
     pub(crate) synthetic_input_frame: bool,
+    /// The host input router (stint 1659): routing state, held input and the
+    /// commands `App::logic` executes.
+    pub(crate) host_router: crate::app::host_router::HostRouter,
+    /// Where the router-owned dialog was last presented.
+    pub(crate) router_dialog_presentation:
+        Option<crate::app::host_router::dialog::DialogPresentation>,
     /// `plexi pane slot wait` requests parked until the watched slot's
     /// value matches, or their caller-supplied deadline passes (stint 0585).
     pub(crate) pending_slot_waits: Vec<crate::app::pane_wait::PendingSlotWait>,
@@ -1835,6 +1843,8 @@ impl PlexiApp {
                     pending_screenshots: Vec::new(),
                     approval_buttons: Vec::new(),
                     synthetic_input_frame: false,
+                    host_router: Default::default(),
+                    router_dialog_presentation: None,
                     pending_slot_waits: Vec::new(),
                     pane_mailboxes: HashMap::new(),
                     pending_message_recvs: Vec::new(),
@@ -2131,6 +2141,8 @@ impl PlexiApp {
             pending_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
+            host_router: Default::default(),
+            router_dialog_presentation: None,
             pending_slot_waits: Vec::new(),
             pane_mailboxes: HashMap::new(),
             pending_message_recvs: Vec::new(),
@@ -3121,6 +3133,8 @@ impl PlexiApp {
             pending_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
+            host_router: Default::default(),
+            router_dialog_presentation: None,
             pending_slot_waits: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
@@ -3669,68 +3683,9 @@ impl eframe::App for PlexiApp {
         }
         self.synthetic_input_frame = false;
         self.fulfill_screenshot_events(ctx, raw_input);
-        // A hidden window (minimized/occluded) gets logic-only passes with no
-        // widget pass to receive events — leave queued pane inputs in place so
-        // the next visible frame delivers them instead of silently eating them.
-        if raw_input.viewport().visible() == Some(false) {
-            return;
-        }
-        let focused_pane = self.windows.get(self.active_window).and_then(|window| {
-            window
-                .focused_pane
-                .and_then(|tile_id| window.tree.tiles.get(tile_id))
-                .and_then(|tile| match tile {
-                    egui_tiles::Tile::Pane(pane_id) => Some(*pane_id),
-                    egui_tiles::Tile::Container(_) => None,
-                })
-        });
-        if let Some(pane_id) = focused_pane {
-            let defer_text_until_focused =
-                self.pending_pane_inputs
-                    .get(&pane_id)
-                    .is_some_and(|batches| {
-                        batches.iter().any(|batch| {
-                            batch
-                                .events
-                                .iter()
-                                .any(|event| matches!(event, egui::Event::Text(_)))
-                        })
-                    })
-                    && !crate::app::input_owner::pane_receives_ipc_text(ctx, pane_id);
-            if defer_text_until_focused {
-                // A pane can be created while eframe runs hidden logic-only
-                // passes. Its first visible pass has not rendered a text
-                // surface yet, so feeding queued text into that pass loses it
-                // before the post-frame reconciler grants default focus.
-                // Preserve the ordered batch until that focus exists.
-                log::info!(
-                    "pane_ipc: deferring text input for pane_id={pane_id} until its text surface receives focus"
-                );
-            } else if let Some(batches) = self.pending_pane_inputs.remove(&pane_id) {
-                if !batches.is_empty() {
-                    self.synthetic_input_frame = true;
-                }
-                for batch in batches {
-                    raw_input.modifiers = batch.modifiers;
-                    raw_input.events.extend(batch.events);
-                }
-            }
-            // Drag pacing (stint 0510): exactly ONE pointer batch per visible
-            // frame, so egui sees press → move… → release as a genuine
-            // multi-frame trajectory instead of a same-frame click.
-            if let Some(frames) = self.pending_pane_pointer_frames.get_mut(&pane_id) {
-                if let Some(batch) = frames.pop_front() {
-                    self.synthetic_input_frame = true;
-                    raw_input.events.extend(batch.events);
-                }
-                if frames.is_empty() {
-                    self.pending_pane_pointer_frames.remove(&pane_id);
-                } else {
-                    // Keep frames coming until the schedule drains.
-                    ctx.request_repaint();
-                }
-            }
-        }
+        // One ordered delivery per source, routed before egui folds it
+        // (stint 1659). egui receives only the legacy run.
+        self.route_raw_input(ctx, raw_input);
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -3756,6 +3711,9 @@ impl eframe::App for PlexiApp {
         if self.service_quit(frame) {
             return;
         }
+        // Routed input executes here, in delivery order, whether or not the
+        // window will paint (stint 1659).
+        self.drain_routed_input(ctx);
         self.release_unowned_terminal_holds(ctx);
         self.apply_ui_scale(ctx);
         crate::platform::titlebar::update_metrics(ctx, frame);
@@ -4225,15 +4183,7 @@ impl eframe::App for PlexiApp {
         // Cmd+Down belongs to editors unless the focused pane has tool children.
         // Use the normal binding poller so both edges and overlay capture retain
         // the same ownership rules as other host chords.
-        if self.visual_owner_pane().is_some_and(|parent| {
-            self.conjoined_contexts.iter().any(|(context, id)| {
-                *id == parent
-                    && self
-                        .windows
-                        .iter()
-                        .any(|window| window.context_id == *context && !window.panes.is_empty())
-            })
-        }) {
+        if self.focused_has_conjoined_children() {
             poll_actions_result.extend(keys::poll_actions(
                 &mut router_input,
                 &[keys::BindingEntry {
@@ -4443,17 +4393,9 @@ impl eframe::App for PlexiApp {
             return;
         }
 
-        // Ownership-transfer (stint 0387): if the focused pane is a terminal
-        // and no overlay owns input, take this frame's keyboard events out of
-        // `ctx` *before* the render pass and hand them to that terminal. Doing
-        // this before `render_panels` is what prevents egui's own render-time
-        // widget machinery (allocate_painter's built-in Cmd+A select-all) from
-        // swallowing a key before the terminal processes it. `poll_actions`
-        // above already claimed global hotkeys from the same buffer, so the
-        // terminal only ever sees what the global allowlist left behind.
-        // Bare Escape while zoomed goes to the pane with no layout change
-        // (stint 0898: Cmd+Enter is the only zoom toggle).
-        let focused_terminal_input = self.take_focused_terminal_input(ctx);
+        // A focused terminal's keyboard input never reaches `ctx`: the host
+        // router takes it in `raw_input_hook` and logic queues it on its pane,
+        // whose widget applies it as it paints (stint 1659).
         // Host focus (keyboard nav, a click handled before this pass) is
         // already current. egui focus still belongs to last frame until
         // `reconcile_egui_focus` at the end of `ui`. Publish the owner now so
@@ -4462,7 +4404,7 @@ impl eframe::App for PlexiApp {
         // Every surface that paints an approval-capable button (sidebar
         // Needs-you row, approval banner) registers its bounds this frame.
         self.approval_buttons.clear();
-        self.render_panels(ui, focused_terminal_input);
+        self.render_panels(ui);
         self.observe_terminal_resize_commits();
         self.draw_attention_queue_and_decision_overlay(ctx);
         self.draw_keychain_recovery_dialog(ctx);

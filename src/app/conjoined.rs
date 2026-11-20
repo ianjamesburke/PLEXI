@@ -147,7 +147,6 @@ impl PlexiApp {
     pub(crate) fn render_conjoined_parent(
         &mut self,
         ui: &mut egui::Ui,
-        input: &mut Option<crate::render::terminal_pane::TerminalInput>,
     ) -> Option<egui::Rect> {
         let parent = self.conjoined_parent()?;
         let (window, tile) = self.find_pane_in_any_window(parent)?;
@@ -164,11 +163,7 @@ impl PlexiApp {
             self.conjoined_parent_focus = Some(parent);
         }
         let focused = self.visual_owner_pane() == Some(parent);
-        let pane_input = if focused {
-            input.take().unwrap_or_default()
-        } else {
-            Default::default()
-        };
+        let modifiers = ui.input(|i| i.modifiers);
         let names = self.windows[window]
             .panes
             .iter()
@@ -189,6 +184,10 @@ impl PlexiApp {
                 ui.set_clip_rect(left);
                 if let Some(pane) = pane {
                     if let Some(terminal) = pane.as_terminal_mut() {
+                        let pane_input = crate::render::terminal_pane::TerminalInput {
+                            keyboard_events: std::mem::take(&mut terminal.routed_input),
+                            modifiers,
+                        };
                         crate::render::terminal_pane::render(
                             ui,
                             terminal,

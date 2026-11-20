@@ -153,6 +153,10 @@ fn conjoined_strip_keyboard_navigation_routes_input_and_restores_context() {
         .backend;
     backend.enable_input_tap();
     h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+    // A physical key is released before it is pressed again: the router
+    // pairs each press with its release (stint 1659), so a second press with
+    // no release between is a repeat of the first.
+    super::terminal_page_scroll_tests::release_key(&mut h, egui::Key::Tab, egui::Modifiers::NONE);
     let backend = &mut h.app.windows[1]
         .panes
         .get_mut(&child)

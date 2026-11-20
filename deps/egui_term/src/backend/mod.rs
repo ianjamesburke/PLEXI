@@ -291,6 +291,9 @@ impl From<TerminalSize> for WindowSize {
 
 pub struct TerminalBackend {
     pub id: u64,
+    /// Unique per backend constructed in this process: the host binds routed
+    /// input to an endpoint incarnation, never to a reused pane id alone.
+    instance: u64,
     pub url_regex: RegexSearch,
     term: Arc<FairMutex<Term<EventProxy>>>,
     size: TerminalSize,
@@ -537,6 +540,11 @@ impl TerminalBackend {
             resize_commits: 0,
             keyboard: crate::keyboard::KeyboardEncoder::default(),
             pending_resize: None,
+            instance: {
+                static NEXT: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
         })
     }
 
@@ -1308,6 +1316,11 @@ impl TerminalBackend {
             }
         }
         self.notifier.notify(bytes);
+    }
+
+    /// This backend's endpoint incarnation; see the field.
+    pub fn instance(&self) -> u64 {
+        self.instance
     }
 
     /// Start recording every byte handed to the PTY writer. Diagnostic/test
