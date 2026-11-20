@@ -17,32 +17,36 @@ const SOURCE_MIGRATION_LIMITS: crate::host::wasm_python::ScriptLimits =
 /// `generated_by` stamped into a migrated package's regenerated scaffold metadata.
 const SCAFFOLD_GENERATED_BY: &str = "plexi plugin migration v2";
 
-/// Migration runs during profile initialization, before `platform::logging::init`
-/// installs the file logger, so lines logged then are dropped. Every trace is
-/// also buffered here with its level and replayed by [`replay_early_traces`].
-static EARLY_TRACES: std::sync::Mutex<Vec<(log::Level, String)>> =
-    std::sync::Mutex::new(Vec::new());
+/// A CLI command migrates before `platform::logging::init` installs the file
+/// logger, so lines logged then are dropped. Until [`replay_early_traces`]
+/// runs, every trace is also buffered here with its level; after it (a host
+/// migrates after its claim, with the logger up) traces go to the log only.
+static EARLY_TRACES: std::sync::Mutex<Option<Vec<(log::Level, String)>>> =
+    std::sync::Mutex::new(Some(Vec::new()));
 
 fn record(level: log::Level, message: String) {
     log::log!(level, "{message}");
-    EARLY_TRACES
+    if let Some(buffer) = EARLY_TRACES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push((level, message));
+        .as_mut()
+    {
+        buffer.push((level, message));
+    }
 }
 
 fn trace(message: String) {
     record(log::Level::Info, message);
 }
 
-/// Re-emit migration traces recorded before the logger existed. Call once,
-/// immediately after logger initialization.
+/// Re-emit migration traces recorded before the logger existed and stop
+/// buffering. Call once, immediately after logger initialization.
 pub(crate) fn replay_early_traces() {
-    let drained = std::mem::take(
-        &mut *EARLY_TRACES
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    );
+    let drained = EARLY_TRACES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .unwrap_or_default();
     replay_into(drained, |level, message| log::log!(level, "{message}"));
 }
 
@@ -1147,6 +1151,16 @@ pub(crate) fn migrate_launch_root(path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// Traces buffered for replay. No test replays them, so the buffer is
+    /// still open and collects every migration's traces in this process.
+    fn early_traces() -> Vec<(log::Level, String)> {
+        EARLY_TRACES
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("no unit test replays early traces")
+    }
+
     /// Staging keeps file and directory modification times, as the 0.4
     /// converter's `shutil.copytree` did (stint 1413).
     #[test]
@@ -1231,7 +1245,7 @@ mod tests {
         migrate(root.path()).unwrap();
         assert!(root.path().join("plugins/notes/manifest.toml").is_file());
         assert!(root.path().join(MIGRATION).join("apps/notes").is_dir());
-        let traces = EARLY_TRACES.lock().unwrap();
+        let traces = early_traces();
         let line = traces
             .iter()
             .map(|(_, line)| line)
@@ -1439,7 +1453,7 @@ mod tests {
         );
         assert!(!out.join(".venv").exists());
         assert!(!out.join("__pycache__").exists());
-        let traces = EARLY_TRACES.lock().unwrap();
+        let traces = early_traces();
         let rewrote = traces
             .iter()
             .map(|(_, line)| line)
@@ -1698,7 +1712,7 @@ mod tests {
             backup.contains("mouse_tracking"),
             "original must be kept verbatim"
         );
-        let traces = EARLY_TRACES.lock().unwrap();
+        let traces = early_traces();
         assert!(traces.iter().any(|(_, line)| line.contains("package=logs")
             && line.contains("app.mouse_tracking")
             && line.contains("extra_note")));
@@ -1756,7 +1770,7 @@ mod tests {
         stage_legacy(root.path(), "bad", MISSING_TYPE);
         migrate(root.path()).unwrap_err();
         let manifest = root.path().join("apps/bad/manifest.toml");
-        let traces = EARLY_TRACES.lock().unwrap();
+        let traces = early_traces();
         let (level, line) = traces
             .iter()
             .find(|(_, line)| line.contains(&manifest.display().to_string()))
@@ -1791,7 +1805,7 @@ mod tests {
         let error = migrate(root.path()).unwrap_err().to_string();
         assert!(error.contains("package bad"), "{error}");
         assert!(!error.contains("CANARY-CONTENT"), "{error}");
-        let traces = EARLY_TRACES.lock().unwrap();
+        let traces = early_traces();
         assert!(
             !traces
                 .iter()
@@ -1989,7 +2003,7 @@ mod tests {
         );
         assert!(aside.join(".core_build").is_file());
         assert!(root.path().join("plugins/sudoku").is_dir());
-        let traces = EARLY_TRACES.lock().unwrap().clone();
+        let traces = early_traces();
         let destination = format!("destination={}", aside.display());
         assert!(
             traces.iter().any(|(level, line)| *level == log::Level::Warn

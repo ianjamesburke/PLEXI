@@ -6,7 +6,8 @@
 //! stderr line and never open a window.
 use std::path::Path;
 
-use crate::config::ProfileInitError;
+use crate::app::host_instance::HostInstance;
+use crate::config::{ProfileInitError, ProfileInitLock};
 use crate::ui::button::ButtonKind;
 use crate::ui::dialog::{ActionModal, DialogAction, DialogShortcut};
 use crate::ui::text::{self, Side};
@@ -230,10 +231,10 @@ pub(crate) fn show(view: StartupErrorView, colors: Colors) -> eframe::Result {
     )
 }
 
-/// Report a failed profile initialization and exit with status 1. Startup
-/// failures happen before the logger exists, so this brings it up, replays the
-/// buffered failure into `plexi.log`, then prints the CLI line and, for a GUI
-/// launch, opens the window.
+/// Report a failed profile initialization and exit with status 1. A CLI
+/// command's (and a host lock's) failure happens before the logger exists, so
+/// this brings it up, replays the buffered failure into `plexi.log`, then
+/// prints the CLI line and, for a GUI launch, opens the window.
 pub(crate) fn exit_on_profile_init_failure(error: &ProfileInitError, show_window: bool) -> ! {
     let config = crate::config::PlexiConfig::load();
     let log_config = config.log.clone().unwrap_or_default();
@@ -243,6 +244,34 @@ pub(crate) fn exit_on_profile_init_failure(error: &ProfileInitError, show_window
         !show_window,
     );
     crate::app::plugin_migration::replay_early_traces();
+    report_profile_init_failure(error, show_window)
+}
+
+/// Report a host's failed profile initialization and exit with status 1. The
+/// host initializes after its claim, with the logger up, holding `host.lock`
+/// and `initialization.lock`; both are released before the report.
+pub(crate) fn report_claimed_profile_init_failure(
+    error: &ProfileInitError,
+    show_window: bool,
+    held: (ProfileInitLock, HostInstance),
+) -> ! {
+    match released_then(held, || -> std::convert::Infallible {
+        report_profile_init_failure(error, show_window)
+    }) {}
+}
+
+/// Release `held`, then run `report`. The error window waits for dismissal:
+/// a lock held across it stalls a retry's lock wait, and a held `host.lock`
+/// makes presence probes report a host that has no endpoint.
+fn released_then<H, T>(held: H, report: impl FnOnce() -> T) -> T {
+    drop(held);
+    log::info!("startup: released the profile's locks before reporting the failure");
+    report()
+}
+
+/// Report a failed profile initialization once logging is running and exit
+/// with status 1.
+fn report_profile_init_failure(error: &ProfileInitError, show_window: bool) -> ! {
     log::error!(
         "startup: profile initialization failed, exiting with status 1 (window={show_window})"
     );
@@ -250,7 +279,7 @@ pub(crate) fn exit_on_profile_init_failure(error: &ProfileInitError, show_window
     eprintln!("profile initialization: {error}");
     if show_window {
         let view = StartupErrorView::from_error(error, &crate::platform::logging::log_path());
-        let colors = crate::ui::theme::colors_from_config(&config);
+        let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::load());
         if let Err(window_error) = show(view, colors) {
             log::error!("startup_error: cannot open the error window: {window_error}");
             log::logger().flush();
@@ -285,6 +314,32 @@ pub(crate) fn exit_with_startup_error(view: StartupErrorView, show_window: bool)
 mod tests {
     use super::*;
     use crate::app::plugin_migration::MigrationFailure;
+
+    /// Codex r2 on PR #3264: a host whose migration failed held `host.lock`
+    /// and `initialization.lock` while its error window waited, so a retry
+    /// stalled on the lock and probes saw a host with no endpoint.
+    #[test]
+    fn a_failed_host_releases_its_locks_before_reporting() {
+        use plexi_distribution::host_presence::{endpoint_in, probe, Presence};
+        use std::time::{Duration, Instant};
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
+        let lock = crate::config::lock_profile_for_host_launch().unwrap();
+        let Ok(crate::app::host_instance::Launch::Host(instance)) =
+            crate::app::host_instance::claim(dir.path(), &endpoint_in(dir.path()), None)
+        else {
+            panic!("the test host did not claim its profile");
+        };
+        let (presence, init_lock_free) = released_then((lock, instance), || {
+            let init = std::fs::File::open(dir.path().join("initialization.lock")).unwrap();
+            (
+                probe(dir.path(), Instant::now() + Duration::from_millis(200)),
+                init.try_lock().is_ok(),
+            )
+        });
+        assert_eq!(presence, Presence::NotRunning, "host.lock was still held");
+        assert!(init_lock_free, "initialization.lock was still held");
+    }
 
     const MISSING_TYPE: &str =
         "schema_version = 1\n[app]\nid = 'brokenpkg'\nname = 'Broken'\nentry = 'main.py'\n";
