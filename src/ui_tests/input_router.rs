@@ -1233,3 +1233,30 @@ fn production_oracle_generated_histories() {
         assert_production_matches_model(generate(seed), &format!("seed {seed}"));
     }
 }
+
+/// Visual evidence: the palette over two panes, then the same panes after
+/// `Escape, click` in one delivery (focus unchanged, no click-through), then
+/// after a fresh click (focus moved).
+#[test]
+fn screenshot_palette_dismissal_and_fresh_click() {
+    let mut h = HostHarness::new();
+    let (a, b) = two_probes(&mut h);
+    let target = center(&h, b);
+    open_palette(&mut h);
+    h.run_frames(2);
+    h.render_png(crate::ui_tests::evidence_png!("_open"))
+        .expect("render palette");
+    let mut events = vec![down(Key::Escape, Modifiers::NONE)];
+    events.extend(click(target));
+    deliver(&mut h, events);
+    deliver(&mut h, vec![up(Key::Escape, Modifiers::NONE)]);
+    h.run_frames(2);
+    assert_eq!(focused(&h), Some(a));
+    h.render_png(crate::ui_tests::evidence_png!("_dismissed"))
+        .expect("render dismissed");
+    deliver(&mut h, click(target));
+    h.run_frames(2);
+    assert_eq!(focused(&h), Some(b));
+    h.render_png(crate::ui_tests::evidence_png!("_clicked"))
+        .expect("render clicked");
+}
