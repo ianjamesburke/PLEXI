@@ -2125,10 +2125,12 @@ impl PlexiApp {
             (Some(_), None) => crate::broker::pane_authority::GrantSource::Team,
             (None, None) => crate::broker::pane_authority::GrantSource::OutsideProcess,
         };
+        // A raw spawn names its command; its role is a label unless a
+        // definition of it exists, which must then resolve.
         let role_grant = if harness == "team" {
             None
         } else {
-            Some(self.admit_worker_role(role, &placement.effective_cwd)?)
+            self.admit_defined_worker_role(role, &placement.effective_cwd)?
         };
         self.launch_agent_worker(
             AgentWorkerLaunch {
@@ -2149,6 +2151,26 @@ impl PlexiApp {
             },
             placement,
         )
+    }
+
+    /// `role`'s definition if one exists at `lookup_cwd`; a label with no
+    /// definition runs unconfigured, bounded by its source's grant. A
+    /// definition that exists but does not load refuses.
+    pub(crate) fn admit_defined_worker_role(
+        &self,
+        role: &str,
+        lookup_cwd: &Path,
+    ) -> Result<Option<crate::broker::pane_authority::AdmittedRole>, String> {
+        let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(lookup_cwd);
+        if !crate::cli::agent::agent_definition_exists(
+            role,
+            &crate::config::config_dir(),
+            lookup_root.as_deref(),
+        ) {
+            log::info!("agent_spawn: role={role} has no definition; unconfigured worker");
+            return Ok(None);
+        }
+        self.admit_worker_role(role, lookup_cwd).map(Some)
     }
 
     /// `role`'s definition visible at `lookup_cwd`, admitted for a new named

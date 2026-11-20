@@ -1560,6 +1560,24 @@ pub fn validate_agent_slug(name: &str) -> Result<(), String> {
 /// Resolve an agent by `<name>` through `AgentRegistry` (workspace tier shadowing global tier).
 /// If an agent directory for `<name>` exists on disk with a broken `AGENT.md` or `settings.toml`,
 /// returns that parse error rather than silently ignoring it.
+/// Whether any definition of `name` exists where
+/// [`resolve_agent_definition_in`] would look, valid or not.
+pub(crate) fn agent_definition_exists(
+    name: &str,
+    profile_dir: &Path,
+    workspace_root: Option<&Path>,
+) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    workspace_root.is_some_and(|ws| crate::agent::workspace_agents_dir(ws).join(trimmed).is_dir())
+        || profile_dir.join("agents").join(trimmed).is_dir()
+        || crate::agent::AgentRegistry::load_with_optional_workspace(profile_dir, workspace_root)
+            .active(trimmed)
+            .is_some()
+}
+
 pub fn resolve_agent_definition_in(
     name: &str,
     profile_dir: &Path,

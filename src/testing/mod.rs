@@ -733,7 +733,11 @@ impl HostHarness {
         match &mut cmd {
             HostRequest::SpawnPane { source, .. }
             | HostRequest::AgentSpawn { source, .. }
-            | HostRequest::AgentOpen { source, .. } => {
+            | HostRequest::AgentOpen { source, .. }
+            | HostRequest::AgentReopen { source, .. }
+            | HostRequest::CreateContext { source, .. }
+            | HostRequest::CreateSubContext { source, .. }
+            | HostRequest::FocusContext { source, .. } => {
                 *source = crate::protocol::SpawnSource::InProcess;
             }
             _ => panic!("inject_in_process: not a launch request"),

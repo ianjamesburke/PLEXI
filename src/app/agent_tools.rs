@@ -758,13 +758,25 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("AGENT.md"), "Lead").unwrap();
         std::fs::write(dir.join("settings.toml"), "[agent]\nid='lead'\ndisplay_name='Lead'\n[harness]\ncli='pi'\ncan_call=['tester']\ncan_handoff=['writer']").unwrap();
-        h.app.windows[0]
+        // The pane runs under a lead grant: its delegation limits are fixed
+        // in it, not read from the role file at call time (stint 1632).
+        let mut grant = crate::broker::pane_authority::PaneAuthority::for_test(
+            parent,
+            crate::broker::pane_authority::Ceiling::Baseline,
+            h.app.windows[0].context_id,
+            root.clone(),
+        );
+        grant.role = Some("lead".into());
+        grant.can_call = crate::broker::pane_authority::Delegation::only(&["tester".into()]);
+        grant.can_handoff = crate::broker::pane_authority::Delegation::only(&["writer".into()]);
+        let terminal = h.app.windows[0]
             .panes
             .get_mut(&parent)
             .unwrap()
             .as_terminal_mut()
-            .unwrap()
-            .agent_role = Some("lead".into());
+            .unwrap();
+        terminal.agent_role = Some("lead".into());
+        terminal.replace_grant_for_test(grant);
         let ctx = h.app.windows[0].context_id;
         assert!(h
             .app

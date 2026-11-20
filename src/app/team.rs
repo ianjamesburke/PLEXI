@@ -798,13 +798,13 @@ impl PlexiApp {
                 crate::pane_ops::create::AgentOrigin::Active,
             )?;
             // A member is admitted under the task pane's grant and its own
-            // role, which must resolve (stint 1632).
+            // role, which must load if it is defined (stint 1632).
             let grant = crate::pane_ops::create::AgentWorkerGrant {
                 source: match placement.parent_pane_id {
                     Some(parent) => self.caller_grant_source(parent),
                     None => crate::broker::pane_authority::GrantSource::Team,
                 },
-                role: Some(self.admit_worker_role(&member.role, &placement.effective_cwd)?),
+                role: self.admit_defined_worker_role(&member.role, &placement.effective_cwd)?,
                 recorded: None,
             };
             let run_token = field(&child, "run_token")?;

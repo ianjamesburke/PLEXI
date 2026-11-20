@@ -480,7 +480,7 @@ impl PlexiApp {
             )
             .and_then(|placement| {
                 let role_grant = match record.config_name.as_deref() {
-                    Some(name) => Some(self.admit_worker_role(name, &placement.effective_cwd)?),
+                    Some(name) => self.admit_defined_worker_role(name, &placement.effective_cwd)?,
                     None => None,
                 };
                 self.launch_agent_worker(

@@ -15191,7 +15191,7 @@ mod agent_state_restoration_tests {
 
         // Reopen by session_id (`pi-sess-900`) via `HostRequest::AgentReopen`.
         let reopen_reply = temp_response(tmp.path(), "reopen-worker");
-        h.inject_ipc(HostRequest::AgentReopen {
+        h.inject_in_process(HostRequest::AgentReopen {
             query: "pi-sess-900".into(),
             subcontext: None,
             response_file: reopen_reply.clone(),
@@ -22177,7 +22177,7 @@ fn assert_agent_mesh_ipc_gate_enabled(route: &str, enabled: bool) {
     };
     let before = pane_total(&h);
     let logs = crate::testing::test_log::capture();
-    h.inject_ipc(request);
+    h.inject_in_process(request);
     h.run_frames(2);
     let reply = read_json_response(&response);
     assert_eq!(reply["ok"], enabled, "{route} enabled={enabled}: {reply}");

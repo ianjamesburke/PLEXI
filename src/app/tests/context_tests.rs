@@ -533,7 +533,7 @@ fn create_context_ipc_anchor_pane_places_portal() {
     });
     let req: crate::protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
-    h.inject_ipc(req);
+    h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
 
     let parent_win = h
@@ -2826,7 +2826,7 @@ fn set_context_root_ipc_targets_caller_context() {
     );
     assert_eq!(
         crate::app::host_mcp::authenticated_workspace_for_test(&token),
-        Some(tmp.path().to_path_buf()),
+        Some(crate::platform::path::canonical_or_self(tmp.path())),
         "set-root must rebind live pane credentials to the new workspace"
     );
 }
@@ -3014,7 +3014,7 @@ fn context_sub_creates_exactly_n_panes() {
     });
     let req: crate::protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
-    h.inject_ipc(req);
+    h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
 
     let child = h
@@ -3068,7 +3068,7 @@ fn context_sub_panes_share_one_tiled_window() {
         "layout": "tiled",
     }))
     .expect("payload must deserialize");
-    h.inject_ipc(req);
+    h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
 
     let child_ctx = h
@@ -3172,7 +3172,7 @@ fn context_sub_child_is_registered_one_level_below_parent() {
         "panes": [null, null],
     }))
     .expect("payload must deserialize");
-    h.inject_ipc(req);
+    h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
 
     let child = h
@@ -3254,7 +3254,7 @@ fn context_sub_unknown_parent_creates_nothing() {
         "panes": [null, null],
     }))
     .expect("payload must deserialize");
-    h.inject_ipc(req);
+    h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
 
     assert_eq!(
@@ -3385,7 +3385,7 @@ fn context_sub_focus_returns_to_the_callers_window_not_the_active_one() {
         "focus": true,
     }))
     .expect("payload must deserialize");
-    h.inject_ipc(req);
+    h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
 
     let (depth_ctx, depth_win, _) = h
@@ -3422,7 +3422,7 @@ fn context_sub_omitted_layout_picks_columns_for_three_and_grid_for_four() {
             "panes": panes,
         }))
         .expect("payload must deserialize");
-        h.inject_ipc(req);
+        h.inject_in_process(req);
         h.app.drain_pane_cmd_channel();
 
         let child_ctx = h
@@ -3460,7 +3460,7 @@ fn context_sub_omitted_layout_picks_columns_for_three_and_grid_for_four() {
         "panes": [null, null, null, null],
     }))
     .expect("payload must deserialize");
-    h.inject_ipc(req4);
+    h.inject_in_process(req4);
     h.app.drain_pane_cmd_channel();
 
     let child4 = h
@@ -3504,7 +3504,7 @@ fn context_sub_assigns_distinct_default_pane_names() {
         "response_file": resp_path.to_string_lossy(),
     }))
     .expect("payload must deserialize");
-    h.inject_ipc(req);
+    h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
 
     let resp: serde_json::Value =
@@ -4562,7 +4562,10 @@ fn context_target_request(
     });
     // The harness stands in for a verified caller: a launch's claimed
     // pane is trusted as an in-process caller's is.
-    if let crate::protocol::HostRequest::SpawnPane { source, .. } = &mut request {
+    if let crate::protocol::HostRequest::SpawnPane { source, .. }
+    | crate::protocol::HostRequest::FocusContext { source, .. }
+    | crate::protocol::HostRequest::CreateContext { source, .. } = &mut request
+    {
         *source = crate::protocol::SpawnSource::InProcess;
     }
     h.inject_ipc(request);
@@ -4735,7 +4738,10 @@ fn context_targets_invalid_view_context_never_spawns_in_active() {
     }))
     .unwrap();
     // A verified caller, so the request reaches the target check.
-    if let crate::protocol::HostRequest::SpawnPane { source, .. } = &mut request {
+    if let crate::protocol::HostRequest::SpawnPane { source, .. }
+    | crate::protocol::HostRequest::FocusContext { source, .. }
+    | crate::protocol::HostRequest::CreateContext { source, .. } = &mut request
+    {
         *source = crate::protocol::SpawnSource::InProcess;
     }
     h.inject_ipc(request);

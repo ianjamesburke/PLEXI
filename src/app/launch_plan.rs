@@ -481,7 +481,12 @@ impl PlexiApp {
                 (None, GrantSource::PluginInstance { pane_id: *pane_id })
             }
         };
-        let spawned_by = self.spawned_by_for(&grant_source);
+        // Display provenance: an in-process launch under a named pane reads
+        // as that pane's.
+        let spawned_by = match (source, caller_pane) {
+            (SpawnSource::InProcess, Some(pane)) => self.derive_spawned_by_for_parent(Some(pane)),
+            _ => self.spawned_by_for(&grant_source),
+        };
         log::info!(
             "launch_plan: resolved source {source:?} claimed={claimed:?} -> caller={caller_pane:?} spawned_by={spawned_by}"
         );
@@ -1339,6 +1344,8 @@ fn tree_topology(tree: &egui_tiles::Tree<PaneId>) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::broker::pane_authority::Provenance;
+    use crate::broker::PermissionPosture;
     use crate::host::context::{Context, Window};
     use crate::host::keys::Direction;
     use crate::host::pane::{Pane, PortalPane, ViewPane, ViewRuntime};
@@ -1455,6 +1462,20 @@ mod tests {
             source: crate::protocol::SpawnSource::InProcess,
         })
         .expect("valid terminal spec")
+    }
+
+    /// A terminal launch from `caller`'s own process, as the socket handler
+    /// stamps it.
+    fn from_caller(h: &HostHarness, layout: &str, caller: PaneId) -> PaneLaunchSpec {
+        let pid = h
+            .app
+            .terminal_incarnation(caller)
+            .expect("a live terminal caller")
+            .backend
+            .child_pid();
+        let mut launch = spec(h, layout, Some(caller), None);
+        launch.source = SpawnSource::SocketPeer(vec![pid]);
+        launch
     }
 
     fn apply(h: &mut HostHarness, plan: &TerminalLaunchPlan) -> Result<PaneId, String> {
@@ -1730,7 +1751,22 @@ mod tests {
     /// A tester worker constructed under its role's ceiling (deny
     /// `tool.secret`) through the production worker path.
     fn spawn_tester(h: &mut HostHarness, root: &std::path::Path) -> PaneId {
+        spawn_tester_calling(h, root, "")
+    }
+
+    /// A tester worker whose role lists `can_call` when it is admitted.
+    fn spawn_tester_calling(h: &mut HostHarness, root: &std::path::Path, can_call: &str) -> PaneId {
         write_role(root, "'tool.secret'");
+        if !can_call.is_empty() {
+            let path = crate::agent::workspace_agents_dir(root)
+                .join("tester")
+                .join("settings.toml");
+            let settings = std::fs::read_to_string(&path).unwrap().replace(
+                "ephemeral=false\n",
+                &format!("ephemeral=false\ncan_call=[{can_call}]\n"),
+            );
+            std::fs::write(&path, settings).unwrap();
+        }
         h.app
             .spawn_agent_worker_pane(
                 "tester",
@@ -1842,9 +1878,9 @@ mod tests {
         assert_eq!(ceiling.deny, vec!["tool.secret".to_string()]);
         let plan = h
             .app
-            .admit_terminal_launch(&spec(&h, "split_h", Some(caller), None))
+            .admit_terminal_launch(&from_caller(&h, "split_h", caller))
             .unwrap();
-        assert_eq!(plan.authority.inherited_posture.as_ref(), Some(&ceiling));
+        assert_eq!(plan.grant.posture().unwrap(), Some(&ceiling));
         let pane = apply(&mut h, &plan).expect("inherited terminal launches");
         assert_eq!(h.app.pane_ceiling_or_none(pane), Some(ceiling));
     }
@@ -2180,43 +2216,77 @@ mod tests {
         assert!(error.contains("closed"), "{error}");
     }
 
-    /// Finding 4: the directory a launch runs in (and takes folder secrets
-    /// for) is decided at admission. A split's anchor or a tab's context root
-    /// changing afterwards does not move it.
+    /// Round 4, admission scope: a plan binds its credential scope at
+    /// admission. A destination root changed from A to B between admission
+    /// and construction refuses before any secret is read, any credential
+    /// is issued or any backend starts. With A stable, an intentional cwd C
+    /// starts, and both credentials resolve scope A, not the cwd.
     #[test]
-    fn launch_plan_binds_the_directory_at_admission() {
+    fn launch_plan_binds_the_credential_scope_at_admission() {
+        crate::app::host_mcp::ensure_test_discovery();
         let mut h = HostHarness::new();
         let panes = views(&mut h, 1);
         let [a] = lay_out(&mut h, 0, panes)[..] else {
             unreachable!()
         };
-        let admitted_dir = tempfile::tempdir().unwrap();
-        let later_dir = tempfile::tempdir().unwrap();
-        let set_view_root = |h: &mut HostHarness, dir: &std::path::Path| {
-            if let Some(Pane::View(view)) = h.app.windows[0].panes.get_mut(&a) {
-                view.workspace_root = dir.to_path_buf();
-            }
-        };
-        set_view_root(&mut h, admitted_dir.path());
-        h.app
-            .set_context_root(admitted_dir.path().to_path_buf(), None);
-        let mut split_spec = spec(&h, "split_h", Some(a), None);
-        split_spec.cwd = None;
-        let mut tab_spec = spec(&h, "tab", Some(a), None);
-        tab_spec.cwd = None;
-        let split = h.app.admit_terminal_launch(&split_spec).unwrap();
-        let tab = h.app.admit_terminal_launch(&tab_spec).unwrap();
-        assert_eq!(split.cwd.as_deref(), Some(admitted_dir.path()));
+        let root_a = tempfile::tempdir().unwrap();
+        let root_b = tempfile::tempdir().unwrap();
+        let cwd_c = tempfile::tempdir().unwrap();
+        h.app.set_context_root(root_a.path().to_path_buf(), None);
+        let starts = std::rc::Rc::new(std::cell::Cell::new(0));
+        let issued = std::rc::Rc::new(std::cell::Cell::new(0));
+        let (started, published) = (starts.clone(), issued.clone());
+        let _entry = crate::pane_ops::construct::probes::on_backend_entry(move |_| {
+            started.set(started.get() + 1);
+            Ok(())
+        });
+        let _publish = crate::pane_ops::construct::probes::on_publish(move |_, _| {
+            published.set(published.get() + 1)
+        });
+        crate::host::shell::secret_reads::take();
 
-        set_view_root(&mut h, later_dir.path());
-        h.app.set_context_root(later_dir.path().to_path_buf(), None);
-        for (label, plan) in [("split", &split), ("tab", &tab)] {
-            let pane = apply(&mut h, plan).expect(label);
-            let initial = h.app.windows[window_of(&h, pane)].panes[&pane]
-                .as_terminal()
-                .and_then(|t| t.initial_cwd.clone());
-            assert_eq!(initial.as_deref(), Some(admitted_dir.path()), "{label}");
-        }
+        let plan = h
+            .app
+            .admit_terminal_launch(&spec(&h, "split_h", Some(a), None))
+            .unwrap();
+        assert_eq!(
+            plan.grant.scope.workspace_root,
+            crate::platform::path::canonical_or_self(root_a.path())
+        );
+        h.app.set_context_root(root_b.path().to_path_buf(), None);
+        let before = h.app.windows[0].panes.len();
+        let error = apply(&mut h, &plan).expect_err("a moved scope refuses");
+        assert!(error.contains("scope changed after admission"), "{error}");
+        assert_eq!(h.app.windows[0].panes.len(), before, "nothing installed");
+        assert_eq!(issued.get(), 0, "no credential issued");
+        assert_eq!(starts.get(), 0, "no backend started");
+        assert_eq!(
+            crate::host::shell::secret_reads::take(),
+            Vec::new(),
+            "no secret read"
+        );
+
+        h.app.set_context_root(root_a.path().to_path_buf(), None);
+        let mut in_c = spec(&h, "split_h", Some(a), None);
+        in_c.cwd = Some(cwd_c.path().to_path_buf());
+        let plan = h.app.admit_terminal_launch(&in_c).unwrap();
+        let pane = apply(&mut h, &plan).expect("an intentional cwd starts");
+        let term = h.app.terminal_incarnation(pane).unwrap();
+        assert_eq!(term.initial_cwd.as_deref(), Some(cwd_c.path()));
+        let credentials = term.credentials().unwrap();
+        let canonical_a = crate::platform::path::canonical_or_self(root_a.path());
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let call = monitor
+            .authenticate_call(Some(pane), credentials.call_token(), None)
+            .unwrap();
+        assert_eq!(call.workspace_root, canonical_a, "call credential scope");
+        assert_eq!(
+            crate::app::host_mcp::authenticated_workspace_for_test(
+                credentials.mcp_token().unwrap()
+            ),
+            Some(canonical_a),
+            "MCP bearer scope"
+        );
     }
 
     /// Finding 4: an outside caller (socket ancestry that resolves to no pane)
@@ -2234,8 +2304,10 @@ mod tests {
         let mut outside = spec(&h, "split_h", Some(agent), None);
         outside.source = SpawnSource::SocketPeer(vec![u32::MAX]);
         let plan = h.app.admit_terminal_launch(&outside).unwrap();
-        assert_eq!(plan.authority.caller_pane, None);
-        assert_eq!(plan.authority.spawned_by, "human");
+        assert_eq!(plan.caller, None);
+        assert_eq!(plan.grant.provenance, Provenance::OutsideProcess);
+        assert_eq!(plan.grant.parent, None);
+        assert_eq!(plan.grant.spawned_by, "outside");
     }
 
     /// Finding 4: a launch's source is stamped by the socket handler. A
@@ -2307,29 +2379,32 @@ mod tests {
             "an uncaptured peer is stamped Unverified"
         );
 
-        let admit = |h: &HostHarness, request: HostRequest| {
+        let admit = |h: &mut HostHarness, request: HostRequest| {
             h.app
                 .admit_terminal_launch(&PaneLaunchSpec::from_spawn_pane(&request).unwrap())
                 .unwrap()
-                .authority
+                .grant
         };
-        let verified = admit(&h, stamp(Some(&[agent_pid]), "").unwrap());
-        assert_eq!(verified.caller_pane, Some(agent));
+        let verified = admit(&mut h, stamp(Some(&[agent_pid]), "").unwrap());
+        assert_eq!(verified.provenance, Provenance::VerifiedPane { pane_id: agent });
+        assert_eq!(verified.parent, Some(agent));
         assert_eq!(verified.spawned_by, "agent:tester");
-        assert_eq!(verified.inherited_posture, Some(posture(&["tool.secret"])));
-        let outside = admit(&h, stamp(Some(&[u32::MAX]), "").unwrap());
+        assert_eq!(verified.posture().unwrap(), Some(&posture(&["tool.secret"])));
+        let outside = admit(&mut h, stamp(Some(&[u32::MAX]), "").unwrap());
         assert_eq!(
-            (outside.caller_pane, outside.spawned_by.as_str()),
-            (None, "human")
+            (outside.provenance.clone(), outside.spawned_by.as_str()),
+            (Provenance::OutsideProcess, "outside")
         );
-        assert_eq!(outside.inherited_posture, None);
+        assert_eq!(outside.posture().unwrap(), None);
+        // In-process host code acts on the person's input: the pane it names
+        // is placement, not a grant to inherit.
         let internal = h
             .app
             .admit_terminal_launch(&spec(&h, "split_h", Some(agent), None))
             .unwrap()
-            .authority;
-        assert_eq!(internal.caller_pane, Some(agent));
-        assert_eq!(internal.spawned_by, "agent:tester");
+            .grant;
+        assert_eq!(internal.provenance, Provenance::DesktopInput);
+        assert_eq!(internal.spawned_by, "human");
     }
 
     /// Finding 5: an outside caller's call is admitted under its origin
@@ -2425,15 +2500,9 @@ mod tests {
 
         // A caller's second call reuses its sub-context, whose window holds
         // the first worker and one more pane by then.
-        let caller = spawn_tester(&mut h, &root);
-        let dir = crate::agent::workspace_agents_dir(&root).join("tester");
-        let settings = std::fs::read_to_string(dir.join("settings.toml"))
-            .unwrap()
-            .replace(
-                "ephemeral=false\n",
-                "ephemeral=false\ncan_call=['tester']\n",
-            );
-        std::fs::write(dir.join("settings.toml"), settings).unwrap();
+        // The caller is admitted with `can_call = ['tester']`: delegation is
+        // fixed in its grant at admission (stint 1632).
+        let caller = spawn_tester_calling(&mut h, &root, "'tester'");
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let token = monitor.issue_credential(
             Some(caller),
@@ -2525,10 +2594,10 @@ mod tests {
             assert_eq!(verified.pane_id, Some(pane_id));
             let binding = monitor
                 .credential_authority(&call)
-                .expect("the call credential carries the pane's authority binding");
-            assert_eq!(binding.pane_id, pane_id);
+                .expect("the call credential carries the pane's incarnation");
+            assert_eq!(binding.pane_id(), pane_id);
             assert_eq!(
-                decide("tool.secret", binding.posture.as_ref()),
+                decide("tool.secret", binding.grant().posture().unwrap()),
                 crate::broker::Decision::Deny,
                 "an explicitly denied operation is denied at the first instant"
             );
@@ -2537,7 +2606,7 @@ mod tests {
                 mcp.as_deref().expect("a pane bearer is published"),
             )
             .expect("the bearer authenticates at publication");
-            assert_eq!(mcp_posture, binding.posture);
+            assert_eq!(mcp_posture, binding.grant().posture().unwrap().cloned());
             publish.borrow_mut().published = Some((pane_id, call, mcp));
         });
         let backend = observed.clone();
@@ -2576,7 +2645,7 @@ mod tests {
 
         let terminal = h
             .app
-            .admit_terminal_launch(&spec(&h, "split_h", Some(caller), None))
+            .admit_terminal_launch(&from_caller(&h, "split_h", caller))
             .unwrap();
         let worker = admit_tester_call(&mut h, &root);
         for (label, plan) in [
@@ -2619,15 +2688,9 @@ mod tests {
         h.add_test_pane();
         let root = h.workspace_root();
         h.app.set_context_root(root.clone(), None);
-        let caller = spawn_tester(&mut h, &root);
-        let dir = crate::agent::workspace_agents_dir(&root).join("tester");
-        let settings = std::fs::read_to_string(dir.join("settings.toml"))
-            .unwrap()
-            .replace(
-                "ephemeral=false\n",
-                "ephemeral=false\ncan_call=['tester']\n",
-            );
-        std::fs::write(dir.join("settings.toml"), settings).unwrap();
+        // The caller is admitted with `can_call = ['tester']`: delegation is
+        // fixed in its grant at admission (stint 1632).
+        let caller = spawn_tester_calling(&mut h, &root, "'tester'");
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let token = monitor.issue_credential(
             Some(caller),
@@ -2777,12 +2840,12 @@ mod tests {
         let mut socket = spec(&h, "split_h", None, None);
         socket.source = SpawnSource::SocketPeer(vec![pid]);
         let plan = h.app.admit_terminal_launch(&socket).expect("admits");
-        assert_eq!(plan.authority.caller_pane, Some(caller));
+        assert_eq!(plan.caller.as_ref().map(|c| c.pane_id), Some(caller));
         assert!(
-            !plan.authority.inject_folder_secrets,
-            "a pane caller gets no folder secrets"
+            !plan.grant.secrets.folder && !plan.grant.secrets.workspace_terminal_env,
+            "a pane caller's launch gets no secrets"
         );
-        assert_eq!(plan.authority.inherited_posture, posture);
+        assert_eq!(plan.grant.posture().unwrap().cloned(), posture);
         let error = h
             .app
             .check_agent_tool_permission(Some(caller), context_id, "tester", false)
@@ -2842,7 +2905,7 @@ mod tests {
             Value::Null,
             "a captured peer that is no pane is not the claimed parent: {outside}"
         );
-        assert_eq!(outside["spawned_by"], "human", "{outside}");
+        assert_eq!(outside["spawned_by"], "outside", "{outside}");
 
         let in_process = h.app.agent_spawn_reply(&request(SpawnSource::InProcess));
         assert_eq!(in_process["parent_pane_id"], json!(claimed), "{in_process}");
@@ -2865,12 +2928,21 @@ mod tests {
         h.app.set_context_root(h.workspace_root(), None);
         h.app.active_window = 0;
         h.app.windows[0].focused_pane = None;
+        // Positive control: the host's own input resolves terminal secrets.
+        let desktop = spec(&h, "new_window", None, None);
+        let launched = launch_observed(&mut h, &desktop);
+        assert!(
+            launched.reads.iter().any(|(class, _)| *class == "terminal"),
+            "fixture: a desktop launch resolves terminal secrets: {:?}",
+            launched.reads
+        );
+        // An identified outside caller is a socket caller: no secret.
         let mut outside = spec(&h, "new_window", None, None);
         outside.source = SpawnSource::SocketPeer(vec![u32::MAX]);
         let launched = launch_observed(&mut h, &outside);
         assert!(
-            launched.reads.iter().any(|(class, _)| *class == "terminal"),
-            "fixture: an identified outside caller's launch resolves terminal secrets: {:?}",
+            launched.reads.is_empty(),
+            "an outside caller's launch resolves no secret: {:?}",
             launched.reads
         );
         let mut queued = spec(&h, "new_window", None, None);
@@ -2913,195 +2985,6 @@ mod tests {
                 "{type_id}: nothing launched"
             );
         }
-    }
-
-    /// The posture and secret classes `pane` runs under.
-    fn authority_of(
-        h: &HostHarness,
-        pane: PaneId,
-    ) -> (Option<PermissionPosture>, crate::host::shell::SecretPolicy) {
-        let authority = h
-            .app
-            .terminal_incarnation(pane)
-            .and_then(|t| t.authority())
-            .expect("a constructed terminal");
-        (authority.posture.clone(), authority.secrets)
-    }
-
-    fn edit_saved_workspace(
-        profile: &std::path::Path,
-        edit: impl FnOnce(&mut crate::workspace::WorkspaceFile),
-    ) {
-        let mut ws = crate::workspace::WorkspaceFile::load_from(profile).expect("saved workspace");
-        edit(&mut ws);
-        ws.save_to(profile).expect("rewrite workspace");
-    }
-
-    fn saved_pane_mut(
-        ws: &mut crate::workspace::WorkspaceFile,
-        pane: PaneId,
-    ) -> &mut crate::workspace::SavedPane {
-        ws.windows
-            .iter_mut()
-            .flat_map(|w| w.panes.iter_mut())
-            .find(|p| p.id == pane)
-            .expect("pane was saved")
-    }
-
-    /// Round 3 item 2a: a plain shell an agent spawned inherits the agent's
-    /// ceiling and no secrets, without being an agent pane itself. A restart
-    /// restores it under exactly that authority, not the human default.
-    #[test]
-    fn launch_plan_restore_keeps_a_plain_shells_inherited_authority() {
-        let profile = tempfile::tempdir().unwrap();
-        let (shell, inherited) = {
-            let mut h = HostHarness::from_profile_dir(profile.path());
-            h.add_test_pane();
-            let root = h.workspace_root();
-            h.app.set_context_root(root.clone(), None);
-            let caller = spawn_tester(&mut h, &root);
-            let pid = h
-                .app
-                .terminal_incarnation(caller)
-                .unwrap()
-                .backend
-                .child_pid();
-            let mut socket = spec(&h, "split_h", Some(caller), None);
-            socket.source = SpawnSource::SocketPeer(vec![pid]);
-            let plan = h.app.admit_terminal_launch(&socket).expect("admits");
-            let shell = apply(&mut h, &plan).expect("launches");
-            let inherited = authority_of(&h, shell);
-            assert!(
-                inherited.0.is_some(),
-                "fixture: the shell inherits a ceiling"
-            );
-            assert_eq!(inherited.1, crate::host::shell::SecretPolicy::NONE);
-            assert!(
-                !h.app.terminal_incarnation(shell).unwrap().is_agent_pane(),
-                "fixture: a plain shell, with no resumable session"
-            );
-            assert!(h.app.save_workspace_now(), "saved");
-            (shell, inherited)
-        };
-        let h = HostHarness::from_profile_dir(profile.path());
-        assert_eq!(
-            authority_of(&h, shell),
-            inherited,
-            "restored under the authority it was saved with"
-        );
-    }
-
-    /// Round 3 item 2b: a session saved before its ceiling was recorded
-    /// resolves it at restore from its role narrowed by its parent's saved
-    /// ceiling, wherever the parent was saved; and a history reopen runs
-    /// under the ceiling its record saved, never only today's role.
-    #[test]
-    fn launch_plan_legacy_restore_and_reopen_keep_the_saved_ceiling() {
-        let profile = tempfile::tempdir().unwrap();
-        let root = tempfile::tempdir().unwrap();
-        let root = root.path().to_path_buf();
-        let (parent, child) = {
-            let mut h = HostHarness::from_profile_dir(profile.path());
-            h.add_test_pane();
-            h.app.set_context_root(root.clone(), None);
-            let parent = spawn_tester(&mut h, &root);
-            let (child, _) = h
-                .app
-                .spawn_agent_worker_pane(
-                    "tester",
-                    "pi",
-                    "sleep 30",
-                    "Child",
-                    Some("legacy-sub"),
-                    false,
-                    Some(parent),
-                    Some(root.clone()),
-                    None,
-                    None,
-                    false,
-                    None,
-                )
-                .expect("child worker");
-            assert_ne!(
-                window_of(&h, parent),
-                window_of(&h, child),
-                "fixture: the parent was saved in another window"
-            );
-            assert!(h.app.save_workspace_now(), "saved");
-            (parent, child)
-        };
-        // The parent's saved ceiling is stricter than the role; the child's
-        // own record predates saved ceilings.
-        edit_saved_workspace(profile.path(), |ws| {
-            let parent = saved_pane_mut(ws, parent);
-            let stricter = |posture: &mut Option<PermissionPosture>| {
-                if let Some(posture) = posture.as_mut() {
-                    posture.deny.push("parent.only".to_string());
-                }
-            };
-            stricter(&mut parent.authority.as_mut().unwrap().posture);
-            stricter(&mut parent.agent_session.as_mut().unwrap().permission_posture);
-            let child = saved_pane_mut(ws, child);
-            child.authority = None;
-            child.agent_session.as_mut().unwrap().permission_posture = None;
-        });
-        let mut h = HostHarness::from_profile_dir(profile.path());
-        let restored = authority_of(&h, child).0.expect("a ceiling");
-        assert!(
-            restored.denies("parent.only"),
-            "narrowed by the parent saved in another window: {restored:?}"
-        );
-        assert!(
-            restored.denies("tool.secret"),
-            "and by its role: {restored:?}"
-        );
-
-        let mut record = crate::workspace::AgentHistoryRecord {
-            fleet_seen: false,
-            fleet_dismissed: false,
-            run_id: "run-reopen-1632".to_string(),
-            pane_id: child,
-            context_id: h.app.windows[0].context_id,
-            context_name: "Test".to_string(),
-            parent_pane_id: None,
-            spawned_by: None,
-            pane_name: None,
-            harness: "pi".to_string(),
-            config_name: Some("tester".to_string()),
-            permission_posture: Some(posture(&["record.only"])),
-            session_id: None,
-            cwd: root.clone(),
-            ephemeral: false,
-            last_state: crate::protocol::AgentState::Completed,
-            last_blocked_reason: None,
-            last_detail: None,
-            summary: None,
-            result: None,
-            tail_preview: None,
-            slots: HashMap::new(),
-            closed_at: 0,
-        };
-        let reply = h.app.reopen_agent_record(&record, None, None);
-        let reopened = reply["pane_id"].as_u64().expect("reopened");
-        let ceiling = authority_of(&h, reopened).0.expect("a ceiling");
-        assert!(
-            ceiling.denies("record.only"),
-            "a reopen runs under the ceiling its record saved: {ceiling:?}"
-        );
-        assert!(
-            ceiling.denies("tool.secret"),
-            "and today's role: {ceiling:?}"
-        );
-        record.permission_posture = None;
-        let reply = h.app.reopen_agent_record(&record, None, None);
-        let unrecorded = reply["pane_id"].as_u64().expect("reopened");
-        assert!(
-            !authority_of(&h, unrecorded)
-                .0
-                .expect("a ceiling")
-                .denies("record.only"),
-            "fixture: the role alone does not deny it"
-        );
     }
 
     /// Finding 4: the directory and secret classes a launch resolves are the
@@ -3238,8 +3121,8 @@ mod tests {
         assert_eq!(launched.cwd, None, "backend default cwd");
         assert_eq!(launched.reads, Vec::new(), "no directory, no secret read");
 
-        // A verified pane caller: terminal secrets for the cwd, never folder
-        // secrets. An agent caller: no secret value read.
+        // A socket caller, human-owned pane or agent, gets no secret: only
+        // host-owned input does (stint 1285's rule, applied here).
         let human = h.add_focused_terminal();
         let human_pid = h.app.windows[window_of(&h, human)].panes[&human]
             .as_terminal()
@@ -3249,13 +3132,9 @@ mod tests {
         let mut from_pane = spec(&h, "split_h", Some(human), None);
         from_pane.source = SpawnSource::SocketPeer(vec![human_pid]);
         let launched = launch_observed(&mut h, &from_pane);
-        assert!(
-            launched.reads.iter().all(|(class, _)| *class != "folder"),
-            "pane caller: no folder secret resolved: {:?}",
-            launched.reads
-        );
+        assert_eq!(launched.reads, Vec::new(), "pane caller: no secret read");
         let agent = spawn_tester(&mut h, &root_a);
-        let mut from_agent = spec(&h, "split_h", Some(agent), None);
+        let mut from_agent = from_caller(&h, "split_h", agent);
         from_agent.cwd = Some(root_a.clone());
         let launched = launch_observed(&mut h, &from_agent);
         assert_eq!(launched.reads, Vec::new(), "agent caller: no secret read");
@@ -3587,7 +3466,7 @@ mod tests {
         let root = h.workspace_root();
         h.app.set_context_root(root.clone(), None);
         init_repo(&root);
-        let terminal = |h: &HostHarness, from: PaneId, branch: &str| {
+        let terminal = |h: &mut HostHarness, from: PaneId, branch: &str| {
             let mut spec = spec(h, "split_h", Some(from), None);
             spec.worktree = Some(branch.to_string());
             LaunchPlan::Terminal(Box::new(h.app.admit_terminal_launch(&spec).unwrap()))
@@ -3604,7 +3483,7 @@ mod tests {
 
         // Terminal, clean, new branch: reclaimed, branch deleted.
         let clean = unique_branch("clean");
-        let plan = terminal(&h, a, &clean);
+        let plan = terminal(&mut h, a, &clean);
         let refused = refuse(&mut h, plan, a);
         let report = refused.worktree.expect("one disposition");
         assert_eq!(report.action, "reclaimed", "{report:?}");
@@ -3620,7 +3499,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        let plan = terminal(&h, b, &kept);
+        let plan = terminal(&mut h, b, &kept);
         let refused = refuse(&mut h, plan, b);
         let report = refused.worktree.expect("one disposition");
         assert_eq!(report.action, "reclaimed", "{report:?}");
@@ -3662,7 +3541,7 @@ mod tests {
 
         // Success: the pane owns the checkout; one ordinary close reclaims it.
         let owned = unique_branch("owned");
-        let plan = terminal(&h, c, &owned);
+        let plan = terminal(&mut h, c, &owned);
         let pane = h.app.apply_launch(plan).expect("launches in its checkout");
         let path = h
             .app
