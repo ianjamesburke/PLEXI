@@ -8217,6 +8217,34 @@ open(out + ".done", "w").close()
         }
     }
     #[test]
+    fn screenshot_surface_header_compact_matrix() {
+        for width in [180.0, 800.0] {
+            for subtitle in ["", "Synchronization complete — all workspace files are up to date"] {
+                let colors = crate::ui::theme::Colors::from_config(
+                    &crate::ui::theme::preset_colors("plexi-dusk").unwrap(),
+                );
+                let mut harness = egui_kittest::Harness::builder()
+                    .with_size(egui::vec2(width, 130.0))
+                    .build_ui(move |ui| {
+                        crate::ui::theme::setup_fonts(ui.ctx());
+                        if ui.ctx().cumulative_pass_nr() == 0 {
+                            return;
+                        }
+                        crate::ui::view_chrome::ViewChrome::new(&colors)
+                            .paint_view_bar(ui, "Files", subtitle);
+                        ui.label("Workspace files");
+                        ui.label("notes.md");
+                        ui.label("release-plan.toml");
+                    });
+                harness.run();
+                harness.render().expect("render surface header")
+                    .save(evidence_png!(format!("_{width}_{}", !subtitle.is_empty())))
+                    .expect("save surface header");
+            }
+        }
+    }
+
+    #[test]
     fn screenshot_ui_kit_adoption() {
         use crate::overlays::ui_gallery::{UiGalleryDataMode, UiGalleryPreview};
         for theme in ["plexi-dusk", "plexi-dawn"] {
