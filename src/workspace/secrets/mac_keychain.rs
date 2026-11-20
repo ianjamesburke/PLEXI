@@ -279,6 +279,16 @@ fn create_destination<'d, N: Native>(
     }
 }
 
+/// Two keychain handles name one file when their paths are equal. A path that
+/// could not be read is its native error, never "different".
+#[cfg(any(test, target_os = "macos"))]
+fn same_path(
+    left: Result<Vec<u8>, SecretError>,
+    right: Result<Vec<u8>, SecretError>,
+) -> Result<bool, SecretError> {
+    Ok(left? == right?)
+}
+
 /// Upsert (`create_only == false`) updates the selected item in place, or
 /// creates one in the default keychain. Create-only always adds, and the
 /// destination refuses a duplicate. A new item is created only when the
@@ -628,7 +638,7 @@ mod production {
             left: &SecKeychain,
             right: &SecKeychain,
         ) -> Result<bool, SecretError> {
-            Ok(keychain_path(left)? == keychain_path(right)?)
+            super::same_path(keychain_path(left), keychain_path(right))
         }
     }
 }
@@ -1140,6 +1150,23 @@ mod tests {
             "an add must use the searched member's handle"
         );
         assert_eq!(fake.in_keychain(2, ACCOUNT).as_deref(), Some("v"));
+    }
+
+    #[test]
+    fn same_path_compares_equal_paths_and_surfaces_a_path_error_from_either_side() {
+        let path = |text: &str| Ok(text.as_bytes().to_vec());
+        let failed = |status| {
+            Err(SecretError::Keychain {
+                stage: KeychainStage::Identify,
+                status,
+            })
+        };
+        assert!(same_path(path("/a"), path("/a")).unwrap());
+        assert!(!same_path(path("/a"), path("/b")).unwrap());
+        let left = same_path(failed(-1), path("/a")).unwrap_err();
+        assert_eq!(stage_status(&left), (KeychainStage::Identify, -1));
+        let right = same_path(path("/a"), failed(-2)).unwrap_err();
+        assert_eq!(stage_status(&right), (KeychainStage::Identify, -2));
     }
 
     #[test]
