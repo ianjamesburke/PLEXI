@@ -35,7 +35,19 @@ impl PlexiApp {
     /// pane is sealed too.
     pub(crate) fn caller_grant_source(&self, caller: PaneId) -> GrantSource {
         match self.pane_authority(caller) {
-            Some(live) => GrantSource::VerifiedPane(Box::new(live.grant().clone())),
+            Some(live) => {
+                let mut grant = live.grant().clone();
+                // A desktop shell running a detected agent acts for that
+                // agent now: what it opens is agent-spawned, never the
+                // person's (stint 1632).
+                if grant.is_desktop() && !self.is_human_owned_pane(caller) {
+                    log::info!(
+                        "pane_grant: caller pane {caller} runs an agent; its children are restricted"
+                    );
+                    grant.ownership = crate::broker::pane_authority::Ownership::Restricted;
+                }
+                GrantSource::VerifiedPane(Box::new(grant))
+            }
             None => {
                 log::info!(
                     "pane_grant: caller pane {caller} has no grant; its children are sealed"

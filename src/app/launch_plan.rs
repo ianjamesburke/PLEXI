@@ -4393,4 +4393,41 @@ mod tests {
             "the sealed pane stays"
         );
     }
+
+    /// Round 5 P1-6: a desktop shell running a detected agent opens
+    /// agent-spawned children. Before detection its plain child is the
+    /// person's (control); after, a new child is restricted and its next
+    /// cross-context inventory goes through admission.
+    #[test]
+    fn grant_detected_agents_plain_child_is_agent_spawned() {
+        let mut h = HostHarness::new();
+        let shell = h.add_focused_terminal();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let other = tempfile::tempdir().unwrap();
+        let context = secret_context(&mut h, other.path());
+        let before = shell_from(&mut h, shell);
+        assert!(h.app.is_human_owned_pane(before), "fixture: the person's shell's child");
+        let win = window_of(&h, shell);
+        h.app.windows[win]
+            .panes
+            .get_mut(&shell)
+            .and_then(|p| p.as_terminal_mut())
+            .unwrap()
+            .agent = Some(crate::protocol::PaneAgentState {
+            pane_id: shell,
+            state: crate::protocol::AgentState::Working,
+            agent: "claude".into(),
+            detail: None,
+            session_id: None,
+        });
+        assert!(!h.app.is_human_owned_pane(shell), "fixture: an agent was detected");
+        let child = shell_from(&mut h, shell);
+        assert!(!h.app.is_human_owned_pane(child), "the child is agent-spawned");
+        let pid = pid_of(&mut h, child);
+        assert!(
+            !lists_other_context(&mut h, &context, pid),
+            "no cross-context inventory without admission"
+        );
+    }
 }
