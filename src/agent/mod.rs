@@ -2061,8 +2061,9 @@ default = "ask"
             assert!(!trace.contains(SENTINEL), "sentinel leaked to session");
             assert!(log.contains(&format!("len={}", SENTINEL.chars().count())));
             assert!(log.contains(&format!("payload_len={}", SENTINEL.chars().count() + 1)));
-            // The host records traced calls with every value masked.
-            assert!(trace.contains("<redacted>"));
+            // The host records traced calls without values; an argv the
+            // grammar rejects is the fixed label.
+            assert!(trace.contains("<unparsed>"));
             return;
         }
         let profile = tempfile::tempdir().unwrap();

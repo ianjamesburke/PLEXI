@@ -951,11 +951,14 @@ fn non_utf8_argv_is_a_usage_error() {
     ));
 }
 
-/// The host builds every trace record from the static grammar: a host-owned
-/// label, the exact subcommand path, and declared option names; no sender
-/// value survives, including argv[0] and anything after `--`.
+/// The host's trace record comes from clap's own parse of the argv: the
+/// subcommand path and the options given, never a value, never argv[0], and
+/// nothing forwarded to a child.
 #[test]
 fn the_host_record_keeps_no_sender_value() {
+    let record = |argv: &[&str]| {
+        crate::cli::trace::host_record(&argv.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    };
     for argv in [
         &["plexi", "pane", "send", "SENTINEL"][..],
         &["plexi", "--profile", "SENTINEL", "host", "stop"],
@@ -968,45 +971,58 @@ fn the_host_record_keeps_no_sender_value() {
             "--profile",
             "SENTINEL",
         ],
+        &["plexi", "pane", "send", "42", "SENTINEL"],
         &["plexi", "pane", "send", "42", "--text=SENTINEL"],
         &["/home/SENTINEL/bin/plexi-x", "pane", "list"],
         &["plexi", "run", "example", "--", "--SENTINEL", "--json"],
     ] {
-        let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
-        let record = crate::cli::trace::host_record(&argv);
-        assert!(!record.join(" ").contains("SENTINEL"), "{record:?}");
-        assert_eq!(record[0], "plexi", "{record:?}");
+        let recorded = record(argv);
+        assert!(!recorded.join(" ").contains("SENTINEL"), "{recorded:?}");
+        assert_eq!(recorded[0], "plexi", "{recorded:?}");
     }
-    let tail = crate::cli::trace::host_record(
-        &["plexi", "run", "example", "--", "--json"].map(str::to_string),
+    assert_eq!(
+        record(&["plexi-alpha", "pane", "new", "--right"]),
+        ["plexi", "pane", "new", "--right"]
     );
     assert_eq!(
-        tail,
-        ["plexi", "run", "<redacted>", "<redacted>", "<redacted>"]
+        record(&["plexi", "pane", "new", "-r"]),
+        ["plexi", "pane", "new", "--right"]
     );
-    let kept = crate::cli::trace::host_record(
-        &["plexi-alpha", "pane", "new", "--right"].map(str::to_string),
-    );
-    assert_eq!(kept, ["plexi", "pane", "new", "--right"]);
-    // Round 5: a short spelling records its declared option.
-    let short = crate::cli::trace::host_record(&["plexi", "pane", "new", "-r"].map(str::to_string));
-    assert_eq!(short, ["plexi", "pane", "new", "--right"]);
-    // Round 5: once forwarded arguments may have begun, an option-shaped token
-    // is child data, even one spelled like a global option.
-    let forwarded = crate::cli::trace::host_record(
-        &["plexi", "run", "example", "arg", "--json"].map(str::to_string),
+    // Forwarded child arguments are values: their options are never recorded.
+    assert_eq!(
+        record(&["plexi", "run", "example", "arg", "--json"]),
+        ["plexi", "run"]
     );
     assert_eq!(
-        forwarded,
-        ["plexi", "run", "<redacted>", "<redacted>", "<redacted>"]
-    );
-    let leading = crate::cli::trace::host_record(
-        &["plexi", "run", "--json", "example", "-ws"].map(str::to_string),
+        record(&["plexi", "run", "example", "--", "--json"]),
+        ["plexi", "run"]
     );
     assert_eq!(
-        leading,
-        ["plexi", "run", "--json", "<redacted>", "<redacted>"]
+        record(&[
+            "plexi",
+            "--socket=/tmp/x",
+            "run",
+            "example",
+            "arg",
+            "--json"
+        ]),
+        ["plexi", "run", "--socket"]
     );
+    // Real options after positionals are kept.
+    assert_eq!(
+        record(&["plexi", "pane", "send", "42", "hello", "--submit"]),
+        ["plexi", "pane", "send", "--submit"]
+    );
+    assert_eq!(
+        record(&["plexi", "pane", "new", "--name", "worker", "--right"]),
+        ["plexi", "pane", "new", "--name", "--right"]
+    );
+    // An argv clap rejects records only the fixed label.
+    assert_eq!(
+        record(&["plexi", "pane", "submit", "42", "SENTINEL"]),
+        ["plexi", "<unparsed>"]
+    );
+    assert_eq!(record(&["plexi", "pane", "send"]), ["plexi", "<unparsed>"]);
 }
 
 #[test]

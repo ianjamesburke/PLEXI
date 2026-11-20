@@ -680,7 +680,6 @@ mod cli_trace_tests {
         assert_eq!(calls[0]["data"]["exit_code"], 2);
         assert_eq!(calls[0]["data"]["agent_session_id"], "agent-19");
         let calls = cli_calls(rows, Some(20));
-        assert_eq!(calls[0]["data"]["argv"][4], "<redacted>");
         assert!(calls[0]["data"]["exit_code"].is_null());
         assert!(
             !std::fs::read_to_string(dir.path().join("sessions/sess-test-cli.jsonl"))

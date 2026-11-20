@@ -8,10 +8,23 @@ mod tests {
         recorded_argv(argv, known, false)
     }
 
+    /// The host's record of an argv the static grammar rejects.
+    const UNPARSED: [&str; 2] = ["plexi", "<unparsed>"];
+
+    /// A recorded argv is stable under recording again, except the fixed
+    /// label for an unparsable one (which itself parses as a bare launch).
+    fn assert_stable(safe: &[String], known: &[String]) {
+        if safe != UNPARSED {
+            assert_eq!(redact_argv(safe, known), safe);
+        }
+    }
+
     #[test]
     fn cli_trace_redacts_secret_values_and_assignments() {
         let argv = ["plexi", "secret", "set", "FOO", "bar"];
-        assert_eq!(redact_argv(&argv.map(str::to_string), &[])[4], "<redacted>");
+        assert!(!redact_argv(&argv.map(str::to_string), &[])
+            .join(" ")
+            .contains("bar"));
         let argv = [
             "plexi",
             "pane",
@@ -24,12 +37,9 @@ mod tests {
             "--secret=other",
         ];
         let redacted = redact_argv(&argv.map(str::to_string), &["CUSTOM_TOKEN".into()]);
-        // `pane new` declares no `--secret`: the call is invalid, so every
-        // value is masked.
-        assert_eq!(redacted[4], "<redacted>");
-        assert_eq!(redacted[5], "<redacted>");
-        assert_eq!(redacted[7], "<redacted>");
-        assert!(!redacted[8].contains("other"));
+        // `pane new` declares no `--secret`: clap rejects it, so the host
+        // records only the fixed label.
+        assert_eq!(redacted, UNPARSED);
         assert!(!redacted.join(" ").contains("private"));
     }
 
@@ -111,7 +121,7 @@ mod tests {
         assert!(!text.contains("hidden value"), "{text}");
         assert!(!text.contains("other"), "{text}");
         assert!(!text.contains("private value"), "{text}");
-        assert_eq!(redact_argv(&safe, &["CUSTOM_NAME".into()]), safe);
+        assert_stable(&safe, &["CUSTOM_NAME".into()]);
     }
 
     #[test]
@@ -132,8 +142,7 @@ mod tests {
         ]
         .map(str::to_string);
         let safe = redact_argv(&argv, &[]);
-        assert!(safe[4..].iter().all(|arg| arg == "<redacted>"), "{safe:?}");
-        assert_eq!(redact_argv(&safe, &[]), safe);
+        assert_eq!(safe, UNPARSED);
     }
 
     #[test]
@@ -153,9 +162,7 @@ mod tests {
             crate::host::flight_recorder::read_session(dir.path(), "sess-grants").unwrap();
         let calls = crate::host::flight_recorder::cli_calls(rows, Some(19));
         let argv = &calls[0]["data"]["argv"];
-        for index in [4, 6, 7, 9] {
-            assert_eq!(argv[index], "<redacted>", "{argv:?}");
-        }
+        assert_eq!(argv, &json!(UNPARSED));
     }
 
     #[test]
@@ -318,7 +325,7 @@ mod tests {
                 .collect();
             let safe = redact_argv(&argv, &[]);
             assert!(!safe.join(" ").contains("SENTINEL"), "{case:?}: {safe:?}");
-            assert_eq!(redact_argv(&safe, &[]), safe, "{case:?}");
+            assert_stable(&safe, &[]);
         }
     }
 
@@ -639,85 +646,61 @@ fn is_content(path: &[String], id: &str, present: impl Fn(&str) -> bool) -> bool
 }
 
 /// The host's record of a traced invocation. A trace frame can come from any
-/// process, so nothing it sends is kept as written: a host-owned label stands
-/// for the binary; the command path keeps tokens that exactly name
-/// subcommands along a valid path in the static grammar, stopping at the first
-/// other token and at `--`; after it, an option the path declares keeps its
-/// spelling. Every other token, and every value, is masked.
+/// process, so nothing it sends is kept as written. Clap parses the argv with
+/// the full static grammar (run requirements enforced; `--profile` declared so
+/// a selector parses, and never recorded). A parse yields the label `plexi`,
+/// the subcommand path and the option names actually given; values, and the
+/// positional and forwarded arguments that carry them, are never recorded. An
+/// argv clap rejects yields only `plexi <unparsed>`.
 pub(crate) fn host_record(argv: &[String]) -> Vec<String> {
     use clap::CommandFactory;
-    const MASK: &str = "<redacted>";
-    let mut command = super::args::Cli::command();
+    const LABEL: &str = "plexi";
+    let mut command = super::args::Cli::command().arg(
+        clap::Arg::new("profile")
+            .long("profile")
+            .global(true)
+            .hide(true)
+            .action(clap::ArgAction::Append),
+    );
     command.build();
-    let mut node = &command;
-    let mut path_nodes = vec![&command];
-    let mut tokens = argv.iter().skip(1);
-    let mut record = vec!["plexi".to_string()];
-    let mut rest: Vec<&String> = Vec::new();
-    for token in tokens.by_ref() {
-        match node
-            .find_subcommand(token)
-            .filter(|sub| sub.get_name() == token)
-        {
-            Some(sub) if token != "--" => {
-                record.push(token.clone());
-                node = sub;
-                path_nodes.push(sub);
-            }
-            _ => {
-                rest.push(token);
-                break;
-            }
-        }
-    }
-    rest.extend(tokens);
-    // The declared option a token spells, by its canonical spelling.
-    let declared = |spelled: &str| -> Option<String> {
-        let long = spelled.strip_prefix("--");
-        let short = spelled
-            .strip_prefix('-')
-            .filter(|_| long.is_none())
-            .filter(|flags| flags.chars().count() == 1)
-            .and_then(|flags| flags.chars().next());
-        let arg = path_nodes.iter().rev().find_map(|node| {
-            node.get_arguments().find(|arg| match (long, short) {
-                (Some(name), _) => arg.get_long() == Some(name),
-                (None, Some(c)) => arg.get_short() == Some(c),
-                (None, None) => false,
-            })
-        })?;
-        Some(match (arg.get_long(), arg.get_short()) {
-            (Some(long), _) => format!("--{long}"),
-            (None, Some(short)) => format!("-{short}"),
-            (None, None) => return None,
-        })
+    let Ok(matches) = command.clone().try_get_matches_from(argv) else {
+        return vec![LABEL.to_string(), "<unparsed>".to_string()];
     };
-    // Once the leaf command's forwarded arguments may have begun, every later
-    // token is child data. Without recognizing positionals, any first token
-    // that is not a declared option may begin them.
-    let forwards = node
-        .get_positionals()
-        .any(|arg| arg.is_trailing_var_arg_set() || arg.is_allow_hyphen_values_set());
-    let mut escaped = false;
-    for token in rest {
-        if escaped || token == "--" {
-            escaped = true;
-            record.push(MASK.to_string());
-            continue;
-        }
-        let (flag, value) = match token.split_once('=') {
-            Some((flag, _)) => (flag, true),
-            None => (token.as_str(), false),
-        };
-        match declared(flag) {
-            Some(spelling) if value => record.push(format!("{spelling}={MASK}")),
-            Some(spelling) => record.push(spelling),
-            None => {
-                escaped = forwards;
-                record.push(MASK.to_string());
+    let mut record = vec![LABEL.to_string()];
+    let mut options: Vec<String> = Vec::new();
+    let mut node = &command;
+    let mut level = Some(&matches);
+    while let Some(m) = level {
+        for id in m.ids() {
+            let id = id.as_str();
+            if id == "profile" || m.value_source(id) != Some(clap::parser::ValueSource::CommandLine)
+            {
+                continue;
+            }
+            let Some(arg) = node.get_arguments().find(|arg| arg.get_id() == id) else {
+                continue;
+            };
+            if arg.is_positional() {
+                continue;
+            }
+            let name = match (arg.get_long(), arg.get_short()) {
+                (Some(long), _) => format!("--{long}"),
+                (None, Some(short)) => format!("-{short}"),
+                (None, None) => continue,
+            };
+            if !options.contains(&name) {
+                options.push(name);
             }
         }
+        level = m.subcommand().map(|(name, sub)| {
+            record.push(name.to_string());
+            node = node
+                .find_subcommand(name)
+                .expect("clap matched a declared subcommand");
+            sub
+        });
     }
+    record.extend(options);
     record
 }
 
