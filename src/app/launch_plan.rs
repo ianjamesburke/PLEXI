@@ -204,6 +204,9 @@ pub(crate) struct AgentCallPlan {
     /// sub-context's window, or the origin window of a worker with no
     /// parent. `None` when the worker creates its sub-context.
     pub(crate) destination: Option<AgentAnchor>,
+    /// The credential scope of an existing destination, bound at admission.
+    /// Commit refuses if that context's root moved since (stint 1632).
+    pub(crate) destination_scope: Option<crate::broker::pane_authority::CredentialScope>,
     pub(crate) worktree: Option<String>,
     /// A handoff successor's id, reserved from the monotonic allocator at
     /// admission and carried through construction.
@@ -1077,8 +1080,14 @@ impl PlexiApp {
             }
             None => Some(self.agent_anchor(origin_win)),
         };
+        let destination_scope = destination.as_ref().map(|anchor| {
+            crate::pane_ops::grant::credential_scope(
+                &self.pane_context_env_for_context(anchor.at.context_id),
+                Some(&lookup_root),
+            )
+        });
         log::info!(
-            "launch_plan: admitted agent_call role={} parent={parent:?} child_parent={child_parent:?} origin={origin:?} subcontext={subcontext:?} destination={destination:?} handoff={} worktree={:?}",
+            "launch_plan: admitted agent_call role={} parent={parent:?} child_parent={child_parent:?} origin={origin:?} subcontext={subcontext:?} destination={destination:?} destination_scope={destination_scope:?} handoff={} worktree={:?}",
             authority.role,
             request.handoff,
             request.worktree
@@ -1095,6 +1104,7 @@ impl PlexiApp {
             subcontext,
             origin,
             destination,
+            destination_scope,
             worktree: request.worktree.map(str::to_string),
             successor,
         })
@@ -1232,6 +1242,23 @@ impl PlexiApp {
         )?;
         if let Some(destination) = &plan.destination {
             self.bind_agent_destination(&mut placement, destination)?;
+        }
+        if let (
+            Some(admitted),
+            crate::pane_ops::create::AgentTarget::Window { win_idx, .. },
+        ) = (&plan.destination_scope, &placement.target)
+        {
+            let now = crate::pane_ops::grant::credential_scope(
+                &self.pane_context_env_for_window(*win_idx),
+                Some(&placement.effective_cwd),
+            );
+            if &now != admitted {
+                return Err(refused(format!(
+                    "the worker's destination scope changed after admission: root {} -> {}",
+                    admitted.workspace_root.display(),
+                    now.workspace_root.display()
+                )));
+            }
         }
         let authority = &plan.authority;
         let (pane_id, _) = self.launch_agent_worker(
@@ -4513,5 +4540,64 @@ mod tests {
         }
         let ceiling = restarted_ceiling(pane).expect("a dissolved pane is not sealed on restart");
         assert!(ceiling.is_some_and(|p| p.denies("tool.secret")));
+    }
+
+    /// Round 5 P2-1: an agent call into an existing sub-context binds that
+    /// destination's credential root at admission. A root moved between
+    /// admission and commit refuses before any worker starts, although the
+    /// caller's own grant root is unchanged; an unchanged root launches.
+    #[test]
+    fn grant_agent_destination_root_is_bound_at_admission() {
+        let _features =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
+        let mut h = HostHarness::new();
+        h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let caller = spawn_tester_calling(&mut h, &root, "'tester'");
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let token = monitor.issue_credential(
+            Some(caller),
+            h.app.windows[window_of(&h, caller)].context_id,
+            &root,
+            "agent:tester",
+        );
+        let call = |h: &mut HostHarness| {
+            h.app
+                .admit_agent_call(&AgentCallRequest {
+                    role: "tester",
+                    task: "Sub",
+                    parent_pane_id: Some(caller),
+                    credential: Some(&token),
+                    peer_ancestry: &[],
+                    cwd: None,
+                    worktree: None,
+                    asynchronous: true,
+                    handoff: false,
+                    response_file: "",
+                })
+                .expect("child call admits")
+        };
+        let first = call(&mut h);
+        let first_worker = apply_agent(&mut h, &first).expect("first worker");
+        let sub_context = h.app.windows[window_of(&h, first_worker)].context_id;
+        let second = call(&mut h);
+        assert!(matches!(
+            second.subcontext,
+            Some(AdmittedSubcontext::Existing { .. })
+        ));
+        let moved = tempfile::tempdir().unwrap();
+        h.app
+            .set_context_root(moved.path().to_path_buf(), Some(sub_context));
+        let before = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
+        let error = apply_agent(&mut h, &second).expect_err("a moved destination root refuses");
+        assert!(error.contains("destination scope changed"), "{error}");
+        assert_eq!(
+            h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>(),
+            before,
+            "no worker started"
+        );
+        let third = call(&mut h);
+        apply_agent(&mut h, &third).expect("an unchanged destination launches");
     }
 }
