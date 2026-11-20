@@ -8,7 +8,7 @@
 //! `.plexi`.
 
 #[cfg(any(test, target_os = "linux"))]
-use super::store::{NonDestructiveStore, SecretError, SecretStore};
+use super::store::{DeleteOutcome, NonDestructiveStore, SecretError, SecretStore};
 #[cfg(any(test, target_os = "linux"))]
 use ring::rand::SecureRandom;
 #[cfg(any(test, target_os = "linux"))]
@@ -316,12 +316,15 @@ impl SecretStore for EncryptedFileStore {
         self.save(&blob)
     }
 
-    fn delete(&self, account: &str) -> Result<(), SecretError> {
+    fn delete(&self, account: &str) -> Result<DeleteOutcome, SecretError> {
         let _guard = Self::lock();
         let mut blob = self.load()?;
-        blob.entries.remove(account);
+        if blob.entries.remove(account).is_none() {
+            return Ok(DeleteOutcome::NoMatchReported);
+        }
         blob.label = ENCRYPTED_FILE_LABEL.to_string();
-        self.save(&blob)
+        self.save(&blob)?;
+        Ok(DeleteOutcome::Deleted)
     }
 }
 
@@ -612,20 +615,50 @@ fn service_set(account: &str, value: &str) -> Result<(), SecretError> {
     Ok(())
 }
 
+/// `secret-tool clear` exits 0 only when libsecret reports it removed an
+/// item, and 1 with no message when nothing matched; an error prints a
+/// message. `secret_password_clearv_sync` "Returns: whether any passwords
+/// were removed" (libsecret `secret-password.c`). Any other exit, or a
+/// message, is a failure and leaves the name index alone.
 #[cfg(all(target_os = "linux", not(test)))]
-fn service_delete(account: &str) -> Result<(), SecretError> {
-    let output = secret_tool(&["clear", "account", account], None)?;
-    if !output.status.success() {
-        log::info!(
-            "folder_secrets: secret-tool clear account={account} status={}",
-            output.status
-        );
+fn service_delete(account: &str) -> Result<DeleteOutcome, SecretError> {
+    let exited = secret_tool(&["clear", "account", account], None)?;
+    let stderr = String::from_utf8_lossy(&exited.output.stderr);
+    let outcome = clear_outcome(exited.status.code(), stderr.trim());
+    log::info!(
+        "folder_secrets: secret-tool clear account={account} status={} outcome={outcome:?}",
+        exited.status
+    );
+    let outcome = outcome?;
+    if outcome == DeleteOutcome::Deleted {
+        let names: Vec<String> = read_service_index()
+            .into_iter()
+            .filter(|name| name != account)
+            .collect();
+        if let Err(error) = write_service_index(&names) {
+            log::error!(
+                "folder_secrets: deleted account={account} but the name index was not updated; refresh to rebuild it: {error}"
+            );
+        }
     }
-    let names: Vec<String> = read_service_index()
-        .into_iter()
-        .filter(|name| name != account)
-        .collect();
-    write_service_index(&names)
+    Ok(outcome)
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn clear_outcome(code: Option<i32>, stderr: &str) -> Result<DeleteOutcome, SecretError> {
+    match (code, stderr.is_empty()) {
+        (Some(0), true) => Ok(DeleteOutcome::Deleted),
+        (Some(1), true) => Ok(DeleteOutcome::NoMatchReported),
+        (code, _) => Err(SecretError::Backend(format!(
+            "secret-tool clear failed (exit {}): {}",
+            code.map_or_else(|| "signal".to_string(), |code| code.to_string()),
+            if stderr.is_empty() {
+                "no message"
+            } else {
+                stderr
+            }
+        ))),
+    }
 }
 
 #[cfg(all(target_os = "linux", not(test)))]
@@ -650,13 +683,6 @@ impl NonDestructiveStore for LinuxFolderStore {
         }
     }
 
-    fn contains(&self, account: &str) -> Result<bool, SecretError> {
-        match linux_kind() {
-            LinuxBackend::SecretService => Ok(service_lookup(account)?.is_some()),
-            LinuxBackend::EncryptedFile => EncryptedFileStore::profile().contains(account),
-        }
-    }
-
     /// The existence check keeps lookup errors: an inconclusive lookup must
     /// never let a create overwrite a stored value.
     fn add_new(&self, account: &str, value: &str) -> Result<(), SecretError> {
@@ -669,7 +695,9 @@ impl NonDestructiveStore for LinuxFolderStore {
     fn delete_if_value(&self, account: &str, expected: &str) -> Result<(), SecretError> {
         match self.get_interactive(account)? {
             None => Ok(()),
-            Some(current) if current.as_str() == expected => SecretStore::delete(self, account),
+            Some(current) if current.as_str() == expected => {
+                SecretStore::delete(self, account).map(|_| ())
+            }
             Some(_) => Err(SecretError::ValueChanged(account.to_string())),
         }
     }
@@ -706,7 +734,7 @@ impl SecretStore for LinuxFolderStore {
         }
     }
 
-    fn delete(&self, account: &str) -> Result<(), SecretError> {
+    fn delete(&self, account: &str) -> Result<DeleteOutcome, SecretError> {
         match linux_kind() {
             LinuxBackend::SecretService => service_delete(account),
             LinuxBackend::EncryptedFile => EncryptedFileStore::profile().delete(account),
@@ -723,6 +751,41 @@ pub(super) fn platform_folder_store() -> &'static dyn SecretStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stint 1635: only a clean exit 0 is a deletion; exit 1 with no message
+    /// is libsecret's no-match; anything else is a failure.
+    #[test]
+    fn secret_tool_clear_exit_maps_to_one_outcome() {
+        assert_eq!(clear_outcome(Some(0), "").unwrap(), DeleteOutcome::Deleted);
+        assert_eq!(
+            clear_outcome(Some(1), "").unwrap(),
+            DeleteOutcome::NoMatchReported
+        );
+        let error = clear_outcome(Some(1), "secret-tool: Cannot autolaunch D-Bus").unwrap_err();
+        assert!(error.to_string().contains("D-Bus"), "{error}");
+        assert!(clear_outcome(Some(0), "warning").is_err());
+        assert!(clear_outcome(None, "").is_err());
+        assert!(clear_outcome(Some(2), "").is_err());
+    }
+
+    #[test]
+    fn encrypted_file_delete_reports_no_match_without_rewriting() {
+        let dir = tempfile::tempdir().expect("dir");
+        let store = EncryptedFileStore {
+            path: dir.path().join("folder-secrets.enc"),
+            key_path: dir.path().join("keydir").join("folder-secret.key"),
+        };
+        assert_eq!(
+            store.delete("plexi:folder:aabb:ABSENT").unwrap(),
+            DeleteOutcome::NoMatchReported
+        );
+        assert!(!store.path.exists(), "a no-match must not write the file");
+        store.set("plexi:folder:aabb:PRESENT", "v").unwrap();
+        assert_eq!(
+            store.delete("plexi:folder:aabb:PRESENT").unwrap(),
+            DeleteOutcome::Deleted
+        );
+    }
 
     #[test]
     fn encrypted_file_roundtrip_keeps_plaintext_out_of_the_file_and_the_key() {
@@ -746,7 +809,9 @@ mod tests {
             file_text.contains("encrypted-file fallback"),
             "fallback file is not labeled: {file_text}"
         );
-        assert!(!key.windows(value.len()).any(|window| window == value.as_bytes()));
+        assert!(!key
+            .windows(value.len())
+            .any(|window| window == value.as_bytes()));
         let got = store
             .get("plexi:folder:aabb:FOLDER_E2E_SECRET")
             .expect("get");

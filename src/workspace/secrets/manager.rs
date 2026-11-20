@@ -300,12 +300,16 @@ pub fn mutate_secret(
         },
         Mutation::Delete => match target {
             SecretTarget::Folder(folder) => super::remove_folder_secret(store, name, folder),
-            _ if !store.list_with_prefix(&account).contains(&account) => {
-                Err(format!("Secret '{name}' no longer exists."))
-            }
-            _ => store
-                .delete(&account)
-                .map_err(|_| "Secret store deletion failed.".to_string()),
+            _ => match store.delete(&account) {
+                Ok(super::DeleteOutcome::Deleted) => Ok(()),
+                Ok(super::DeleteOutcome::NoMatchReported) => Err(format!(
+                    "The secret store returned no match for '{name}'. Refresh before retrying."
+                )),
+                Err(error) => {
+                    log::warn!("secrets_manager: delete name={name} failed: {error}");
+                    Err(format!("Secret store deletion failed: {error}"))
+                }
+            },
         },
     };
     monitor
@@ -504,6 +508,50 @@ mod tests {
                 .inject
                 .is_empty()
         );
+    }
+
+    /// Stint 1635: deletion is one store call whose outcome decides the
+    /// audit. The store panics on any read or list, so the old inventory
+    /// pre-check fails here; intent and completion are both audited.
+    #[test]
+    fn delete_issues_one_store_call_and_audits_its_outcome() {
+        use crate::workspace::secrets::{DeleteOnlyStore, DeleteOutcome};
+        let profile = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
+        let cases: [(
+            fn() -> Result<DeleteOutcome, super::super::store::SecretError>,
+            &str,
+        ); 3] = [
+            (|| Ok(DeleteOutcome::Deleted), "ok"),
+            (|| Ok(DeleteOutcome::NoMatchReported), "failed"),
+            (
+                || {
+                    Err(super::super::store::SecretError::Backend(
+                        "status -50".into(),
+                    ))
+                },
+                "failed",
+            ),
+        ];
+        for (answer, audited) in cases {
+            let store = DeleteOnlyStore::answering(answer);
+            let result = mutate_secret(
+                &store,
+                &monitor,
+                &SecretTarget::Global,
+                "GONE",
+                Mutation::Delete,
+            );
+            assert_eq!(result.is_ok(), audited == "ok", "{result:?}");
+            assert_eq!(store.deletes(), 1);
+            let rows = monitor.audit_records();
+            let last = &rows[rows.len() - 1];
+            assert_eq!(
+                (last.operation_id.as_str(), last.decision.as_str()),
+                ("delete", audited)
+            );
+            assert_eq!(rows[rows.len() - 2].decision, "requested");
+        }
     }
 
     #[test]

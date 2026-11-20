@@ -945,15 +945,16 @@ fn memory_backend() -> Option<&'static MemoryBackend> {
     Some(MEMORY.get_or_init(MemoryBackend::default))
 }
 
-/// True when running under an ephemeral `pr-<N>` test channel without an
-/// explicit `PLEXI_KEYCHAIN_PATH`, so host-seal items must stay in
+/// True when running under an ephemeral `pr-<N>` test channel without a
+/// valid `PLEXI_KEYCHAIN_PATH` override, so host-seal items must stay in
 /// `<profile>/host/pr-host-seal.json` and never touch the user's login Keychain.
+/// An invalid override does not count as explicit: it keeps the profile store.
 pub(crate) fn should_use_pr_profile_seal_store(
     compiled_test_channel: Option<&str>,
     runtime_channel: Option<&str>,
-    keychain_path_env: Option<&str>,
+    explicit_keychain: bool,
 ) -> bool {
-    if keychain_path_env.is_some_and(|p| !p.trim().is_empty()) {
+    if explicit_keychain {
         return false;
     }
     let Some(compiled) = compiled_test_channel else {
@@ -995,6 +996,15 @@ pub(crate) fn with_pr_channel_seal_isolation<T>(
     }
 }
 
+/// Whether `PLEXI_KEYCHAIN_PATH` names a valid override, by the parser the
+/// user-secret backend uses. An invalid value is not explicit.
+fn explicit_keychain_override(raw: Option<&std::ffi::OsStr>) -> bool {
+    matches!(
+        crate::workspace::secrets::parse_keychain_path(raw),
+        Ok(Some(_))
+    )
+}
+
 fn pr_isolation_active() -> bool {
     #[cfg(test)]
     let compiled = test_pr_isolation_slot()
@@ -1004,20 +1014,12 @@ fn pr_isolation_active() -> bool {
     #[cfg(not(test))]
     let compiled = option_env!("PLEXI_BUILD_TEST_CHANNEL").map(str::to_string);
     let runtime = crate::config::build_channel();
-    let keychain_path = std::env::var("PLEXI_KEYCHAIN_PATH").ok();
+    let explicit = explicit_keychain_override(std::env::var_os("PLEXI_KEYCHAIN_PATH").as_deref());
     #[cfg(test)]
-    let keychain_path = if compiled.is_some() {
-        // with_pr_channel_seal_isolation models a PR without an explicit keychain.
-        // Do not let an outer subprocess-safety override change this fixture.
-        None
-    } else {
-        keychain_path
-    };
-    should_use_pr_profile_seal_store(
-        compiled.as_deref(),
-        runtime.as_deref(),
-        keychain_path.as_deref(),
-    )
+    // with_pr_channel_seal_isolation models a PR without an explicit keychain.
+    // Do not let an outer subprocess-safety override change this fixture.
+    let explicit = explicit && compiled.is_none();
+    should_use_pr_profile_seal_store(compiled.as_deref(), runtime.as_deref(), explicit)
 }
 
 fn backend() -> &'static dyn HostKeyBackend {
@@ -1780,19 +1782,21 @@ mod mac {
         }
     }
 
+    /// The same fail-closed parser as user secrets: an invalid override is
+    /// an error before any keychain is opened, never the login keychain.
     fn keychain() -> Result<SecKeychain, String> {
-        match std::env::var("PLEXI_KEYCHAIN_PATH") {
-            Ok(path) if !path.trim().is_empty() => {
-                let path = path.trim();
-                log::info!("permission_seal: macOS host keychain {path}");
-                SecKeychain::open(path).map_err(|error| {
+        match crate::workspace::secrets::keychain_path_override()? {
+            Some(path) => {
+                log::info!("permission_seal: macOS host keychain {}", path.display());
+                SecKeychain::open(&path).map_err(|error| {
                     format!(
-                        "PLEXI_KEYCHAIN_PATH {path} could not be opened ({error}). \
-                         The host seal key is not written to the login keychain."
+                        "PLEXI_KEYCHAIN_PATH {} could not be opened ({error}). \
+                         The host seal key is not written to the login keychain.",
+                        path.display()
                     )
                 })
             }
-            _ => SecKeychain::default().map_err(|error| map_keychain_error("login", error)),
+            None => SecKeychain::default().map_err(|error| map_keychain_error("login", error)),
         }
     }
 
@@ -2372,5 +2376,38 @@ mod tests {
             get(TEST_HOST, MAC_ITEM).unwrap().unwrap().as_str(),
             "rotated-key"
         );
+    }
+}
+
+#[cfg(test)]
+mod keychain_override_tests {
+    use super::*;
+
+    /// Stint 1635: the seal store and user secrets share one fail-closed
+    /// parser, so a padded, empty or non-UTF-8 value cannot select a file
+    /// for one and not the other.
+    #[test]
+    fn seal_policy_uses_the_shared_fail_closed_parser() {
+        use std::ffi::OsStr;
+        assert!(explicit_keychain_override(Some(OsStr::new(
+            "/tmp/t.keychain-db"
+        ))));
+        for invalid in ["", " ", " /tmp/t.keychain-db", "/tmp/t.keychain-db "] {
+            assert!(
+                !explicit_keychain_override(Some(OsStr::new(invalid))),
+                "{invalid:?}"
+            );
+        }
+        assert!(!explicit_keychain_override(None));
+        assert!(should_use_pr_profile_seal_store(
+            Some("pr-7"),
+            Some("pr-7"),
+            false
+        ));
+        assert!(!should_use_pr_profile_seal_store(
+            Some("pr-7"),
+            Some("pr-7"),
+            true
+        ));
     }
 }

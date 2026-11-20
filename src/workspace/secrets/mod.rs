@@ -37,6 +37,8 @@
 mod file;
 mod folder;
 mod folder_store;
+#[cfg(any(test, target_os = "macos"))]
+mod mac_keychain;
 pub(crate) mod manager;
 mod pane_read;
 mod reconcile;
@@ -48,13 +50,16 @@ mod index;
 
 #[cfg(all(target_os = "macos", not(test)))]
 pub(crate) use store::keychain_call_lock;
-pub use store::{NonDestructiveStore, SecretStore};
+pub use store::{DeleteOutcome, NonDestructiveStore, SecretStore};
+#[cfg(all(target_os = "macos", not(test)))]
+pub(crate) use store::keychain_path_override;
+pub(crate) use store::parse_keychain_path;
 
 // Only test code outside this module names these. `SecretError` is named from
 // the macOS keychain-counting tests; every platform's tests name the in-memory
 // store. In-module callers reach both through their defining submodule.
 #[cfg(test)]
-pub use store::InMemoryKeychain;
+pub use store::{take_test_store_calls, DeleteOnlyStore, InMemoryKeychain};
 #[cfg(all(test, target_os = "macos"))]
 pub use store::SecretError;
 
@@ -63,7 +68,7 @@ pub use reconcile::reconcile_index_with_keychain;
 
 pub use folder::{
     canonical_folder, deliver_folder_secret_choice, env_for_cwd, folder_secret_sheet_pending,
-    grant_folder_secret, list_folder_secrets, read_folder_secret, read_through_host_gate,
+    list_folder_secrets, read_folder_secret, read_through_host_gate,
     remove_folder_secret, set_folder_secret, take_folder_secret_sheet, ReadResult, SecretActor,
     SECRET_READ_TOOL,
 };
@@ -195,7 +200,7 @@ impl SecretStore for LinuxUserStore {
         store::migrate_linux_file_store(folder_store::platform_folder_store());
         folder_store::platform_folder_store().set(account, value)
     }
-    fn delete(&self, account: &str) -> Result<(), store::SecretError> {
+    fn delete(&self, account: &str) -> Result<store::DeleteOutcome, store::SecretError> {
         store::migrate_linux_file_store(folder_store::platform_folder_store());
         folder_store::platform_folder_store().delete(account)
     }
