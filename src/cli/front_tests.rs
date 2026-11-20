@@ -1024,6 +1024,25 @@ fn the_host_record_keeps_no_sender_value() {
         record(&["plexi", "pane", "new", "--name", "worker", "--right"]),
         ["plexi", "pane", "new", "--name", "<name>", "--right"]
     );
+    // An optional value that requires `=`: bare stays bare and runnable, and
+    // a given value keeps the `=` form. A space-separated optional value
+    // cannot be told from bare, so it is always a placeholder.
+    assert_eq!(
+        record(&["plexi", "context", "new", "x", "--parent"]),
+        ["plexi", "context", "new", "<name>", "--parent"]
+    );
+    assert_eq!(
+        record(&["plexi", "context", "new", "x", "--parent=SENTINEL"]),
+        ["plexi", "context", "new", "<name>", "--parent=<parent>"]
+    );
+    assert_eq!(
+        record(&["plexi", "pane", "info", "--previous"]),
+        ["plexi", "pane", "info", "--previous", "<previous>"]
+    );
+    assert_eq!(
+        record(&["plexi", "pane", "info", "--previous", "3"]),
+        ["plexi", "pane", "info", "--previous", "<previous>"]
+    );
     // An argv clap rejects records only the fixed label.
     assert_eq!(
         record(&["plexi", "pane", "submit", "42", "SENTINEL"]),

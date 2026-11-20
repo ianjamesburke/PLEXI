@@ -650,12 +650,43 @@ fn is_content(path: &[String], id: &str, present: impl Fn(&str) -> bool) -> bool
             && (id == "second" || (id == "first" && !present("second"))))
 }
 
+/// Whether an optional-value option was given bare. Clap reports a bare
+/// option and an explicit value alike, so this reads only the shape of argv:
+/// an option that requires `=` and has no short form carries a value exactly
+/// when some token is one of its `--long=` spellings. Every other optional
+/// value counts as given, which can only make its record a template.
+fn bare_optional(arg: &clap::Arg, argv: &[String]) -> bool {
+    let optional = arg
+        .get_num_args()
+        .is_some_and(|range| range.min_values() == 0);
+    if !optional || !arg.is_require_equals_set() || arg.get_short().is_some() {
+        return false;
+    }
+    let Some(long) = arg.get_long() else {
+        return false;
+    };
+    let mut spellings = vec![long];
+    spellings.extend(arg.get_all_aliases().unwrap_or_default());
+    !argv.iter().any(|token| {
+        spellings
+            .iter()
+            .any(|spelling| token.starts_with(&format!("--{spelling}=")))
+    })
+}
+
+/// Marks a row whose argv `host_record` wrote as a grammar template. Rows
+/// without it predate templates: their argv dropped values without a trace,
+/// so a reader can never treat one as runnable.
+pub(crate) const RECORD_FORMAT: &str = "grammar-template-1";
+
 /// The host's record of a traced invocation. A trace frame can come from any
 /// process, so nothing it sends is kept as written. Clap parses the argv with
 /// the full static grammar (run requirements enforced; `--profile` declared so
 /// a selector parses, and never recorded). A parse yields the label `plexi`,
 /// the subcommand path, a placeholder for each positional given, then the
-/// options given, each value-taking option followed by its placeholder. A
+/// options given, each value-taking option followed by its placeholder
+/// (`--opt=<id>` when the grammar requires `=`; bare when an optional value
+/// was not given, see `bare_optional`). A
 /// placeholder is the argument's grammar id (`<task>`, or `<args>...` for
 /// several values), so the record is a template: no value, and nothing
 /// forwarded to a child, is ever kept. An argv clap rejects yields only
@@ -676,7 +707,7 @@ pub(crate) fn host_record(argv: &[String]) -> Vec<String> {
     };
     let mut record = vec![LABEL.to_string()];
     let mut positionals: Vec<String> = Vec::new();
-    let mut options: Vec<Vec<String>> = Vec::new();
+    let mut options: Vec<(String, Vec<String>)> = Vec::new();
     let mut node = &command;
     let mut level = Some(&matches);
     while let Some(m) = level {
@@ -705,14 +736,18 @@ pub(crate) fn host_record(argv: &[String]) -> Vec<String> {
                 (None, Some(short)) => format!("-{short}"),
                 (None, None) => continue,
             };
-            if options.iter().any(|option| option[0] == name) {
+            if options.iter().any(|(seen, _)| *seen == name) {
                 continue;
             }
-            options.push(if arg.get_action().takes_values() && values > 0 {
-                vec![name, placeholder]
+            let bare = bare_optional(arg, argv);
+            let tokens = if !arg.get_action().takes_values() || values == 0 || bare {
+                vec![name.clone()]
+            } else if arg.is_require_equals_set() {
+                vec![format!("{name}={placeholder}")]
             } else {
-                vec![name]
-            });
+                vec![name.clone(), placeholder]
+            };
+            options.push((name, tokens));
         }
         given.sort();
         positionals.extend(given.into_iter().map(|(_, placeholder)| placeholder));
@@ -725,7 +760,7 @@ pub(crate) fn host_record(argv: &[String]) -> Vec<String> {
         });
     }
     record.extend(positionals);
-    record.extend(options.into_iter().flatten());
+    record.extend(options.into_iter().flat_map(|(_, tokens)| tokens));
     record
 }
 

@@ -71,8 +71,20 @@ fn is_placeholder(arg: &str) -> bool {
         })
 }
 
+/// A placeholder, alone or as the value of an `--opt=<id>` template token.
+fn is_template_token(arg: &str) -> bool {
+    is_placeholder(arg)
+        || arg.split_once('=').is_some_and(|(option, value)| {
+            option.starts_with("--")
+                && option[2..]
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && is_placeholder(value)
+        })
+}
+
 fn quote(arg: &str) -> String {
-    if is_placeholder(arg)
+    if is_template_token(arg)
         || (!arg.is_empty()
             && arg
                 .chars()
@@ -188,6 +200,7 @@ fn build_draft(
         }
         if let Some((last, count)) = groups.last_mut() {
             if last["data"]["argv"] == row["data"]["argv"]
+                && last["data"]["argv_format"] == row["data"]["argv_format"]
                 && last["data"]["exit_code"] == row["data"]["exit_code"]
             {
                 *count += 1;
@@ -210,12 +223,20 @@ fn build_draft(
                     .to_string(),
             );
         }
-        if status != Some(0) || template {
+        // A row without the template marker dropped its values unmarked
+        // (`pane close 42` became `pane close`), so it is never runnable.
+        let legacy = row["data"]["argv_format"] != crate::cli::trace::RECORD_FORMAT;
+        if status != Some(0) || template || legacy {
             notes.push(format!(
-                "Review-only call (exit={}): {command}{repeat}",
+                "Review-only call (exit={}{}): {command}{repeat}",
                 status
                     .map(|n| n.to_string())
-                    .unwrap_or_else(|| "unknown".into())
+                    .unwrap_or_else(|| "unknown".into()),
+                if legacy {
+                    ", recorded before templates"
+                } else {
+                    ""
+                }
             ));
         } else {
             if !repeat.is_empty() {
@@ -447,6 +468,64 @@ mod tests {
         assert!(!suggested);
         assert!(command.contains("'a'\"'\"'b; $(oops)'"));
         assert!(!command.contains("review-me"));
+    }
+
+    #[test]
+    fn rows_recorded_before_templates_are_never_runnable() {
+        let dir = tempfile::tempdir().unwrap();
+        recorder::adopt_session(dir.path(), "sess-legacy");
+        // #3269 stored `pane close 42` as `pane close`, which run as written
+        // would close the current pane.
+        for argv in [["plexi", "pane", "close"], ["plexi", "pane", "list"]] {
+            recorder::record_in(
+                dir.path(),
+                "cli_call",
+                None,
+                Some(19),
+                Some(&uuid::Uuid::new_v4().to_string()),
+                json!({"argv": argv, "exit_code": 0}),
+            );
+        }
+        recorder::handle_cli_trace(
+            dir.path(),
+            &json!({"id":uuid::Uuid::new_v4().to_string(), "phase":"exit", "exit_code":0,
+            "pane_id":19, "argv":["plexi", "pane", "list"]}),
+        )
+        .unwrap();
+        for argv in [
+            ["plexi", "context", "new", "--parent"],
+            ["plexi", "context", "new", "--parent=other"],
+        ] {
+            recorder::handle_cli_trace(
+                dir.path(),
+                &json!({"id":uuid::Uuid::new_v4().to_string(), "phase":"exit",
+                "exit_code":0, "pane_id":19, "argv":argv}),
+            )
+            .unwrap();
+        }
+        let options = DraftOptions {
+            pane: Some(19),
+            include_internal: true,
+            ..Default::default()
+        };
+        let draft = build_draft(dir.path(), "sess-legacy", options, "command").unwrap();
+        let parsed: toml::Value = toml::from_str(&draft).unwrap();
+        assert_eq!(
+            parsed["commands"]["session_draft"]["steps"]
+                .as_array()
+                .unwrap(),
+            &vec![
+                toml::Value::from("plexi pane list"),
+                toml::Value::from("plexi context new --parent"),
+            ]
+        );
+        assert!(draft.contains("Review-only call (exit=0): plexi context new --parent=<parent>\n"));
+        assert!(!draft.contains("other"));
+        assert!(draft
+            .contains("Review-only call (exit=0, recorded before templates): plexi pane close\n"));
+        assert!(draft
+            .contains("Review-only call (exit=0, recorded before templates): plexi pane list\n"));
+        assert!(!draft.contains("repeated"));
     }
 
     #[test]
