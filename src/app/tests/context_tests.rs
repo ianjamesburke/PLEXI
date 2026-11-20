@@ -43,7 +43,8 @@ fn several_contexts_flush_identical_bytes_twice() {
     let context = h.app.router.active().context_id;
     h.app.set_context_columns(context, vec![vec![pane]]);
     for _ in 0..4 {
-        h.app.new_context();
+        h.app
+            .new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     }
     h.run_frames(2);
     assert!(
@@ -133,13 +134,14 @@ fn deleting_context_preserves_workspace_save_and_restore() {
         name: String::new(),
         path: root_path,
         tree: egui_tiles::Tree::empty("disposable"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 0,
         window_id: window,
         context_id: child,
+        tree_history: Default::default(),
     });
     h.app.context_active_window.insert(child, window);
     let index = h
@@ -245,13 +247,14 @@ fn assert_workspace_config_applies_when_switching_contexts() {
         name: "Context B".into(),
         path: root_b.path().to_path_buf(),
         tree: egui_tiles::Tree::empty("workspace_config_b"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_b_id,
+        tree_history: Default::default(),
     });
 
     app.switch_workspace(1);
@@ -302,13 +305,14 @@ fn switching_contexts_refreshes_workspace_plugin_registry() {
         name: "Context B".into(),
         path: root_b.path().to_path_buf(),
         tree: egui_tiles::Tree::empty("workspace_plugin_registry_b"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_b_id,
+        tree_history: Default::default(),
     });
 
     app.switch_workspace(1);
@@ -530,7 +534,7 @@ fn create_context_ipc_anchor_pane_places_portal() {
     });
     let req: crate::protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
-    h.inject_ipc(req);
+    h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
 
     let parent_win = h
@@ -834,13 +838,14 @@ fn delete_context_portal_resets_stale_focused_pane() {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/child_1854"),
             tree: egui_tiles::Tree::new("child_1854", r, tiles),
-            panes: std::collections::HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
             grid_y: 0,
             window_id: child_win_id,
             context_id: child_id,
+            tree_history: Default::default(),
         });
     }
 
@@ -850,14 +855,17 @@ fn delete_context_portal_resets_stale_focused_pane() {
     {
         let root_win = &mut app.windows[0];
         portal_tile = root_win.tree.tiles.insert_pane(portal_pane_id);
-        root_win.panes.insert(
-            portal_pane_id,
-            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                pane_id: portal_pane_id,
-                target_context_id: child_id,
-                context_state: None,
-            })),
-        );
+        root_win
+            .panes
+            .insert(
+                portal_pane_id,
+                crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                    pane_id: portal_pane_id,
+                    target_context_id: child_id,
+                    context_state: None,
+                })),
+            )
+            .unwrap();
     }
 
     // Simulate focus being on the Portal tile (the buggy pre-delete state).
@@ -906,16 +914,8 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
     let b_win_id = 9004u64;
     let a_pane_id = 65_300_111u64;
     let b_pane_id = 65_300_112u64;
-    let a_token = crate::app::host_mcp::register_pane_credential_for_test(
-        a_pane_id,
-        a_id,
-        std::path::PathBuf::from("/tmp/a"),
-    );
-    let b_token = crate::app::host_mcp::register_pane_credential_for_test(
-        b_pane_id,
-        b_id,
-        std::path::PathBuf::from("/tmp/b"),
-    );
+    let (a_pane, a_token, a_call) = credentialed_terminal(&app, a_pane_id, a_id, "/tmp/a");
+    let (b_pane, b_token, b_call) = credentialed_terminal(&app, b_pane_id, b_id, "/tmp/b");
 
     app.router.push(crate::host::context::Context {
         name: "A".to_string().into(),
@@ -943,36 +943,38 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
         let mut tiles_a = egui_tiles::Tiles::default();
         let r_a = tiles_a.insert_pane(a_pane_id);
         let mut panes = std::collections::HashMap::new();
-        panes.insert(a_pane_id, test_view_pane(a_pane_id));
+        panes.insert(a_pane_id, a_pane);
         app.windows.push(crate::host::context::Window {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/a"),
             tree: egui_tiles::Tree::new("plexi_a", r_a, tiles_a),
-            panes,
+            panes: panes.into(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
             grid_y: 0,
             window_id: a_win_id,
             context_id: a_id,
+            tree_history: Default::default(),
         });
     }
     {
         let mut tiles_b = egui_tiles::Tiles::default();
         let r_b = tiles_b.insert_pane(b_pane_id);
         let mut panes = std::collections::HashMap::new();
-        panes.insert(b_pane_id, test_view_pane(b_pane_id));
+        panes.insert(b_pane_id, b_pane);
         app.windows.push(crate::host::context::Window {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/b"),
             tree: egui_tiles::Tree::new("plexi_b", r_b, tiles_b),
-            panes,
+            panes: panes.into(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
             grid_y: 0,
             window_id: b_win_id,
             context_id: b_id,
+            tree_history: Default::default(),
         });
     }
 
@@ -983,7 +985,15 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
 
     // Delete A (find it by id).
     let a_idx_now = app.router.position(|c| c.context_id == a_id).unwrap();
+    // Disposal is held: the removed terminals are still alive, so only
+    // revocation at logical removal can make their credentials stale.
+    let held = crate::pane_ops::disposal::hold();
     app.delete_context(a_idx_now);
+    assert_eq!(held.held_count(), 2, "both removed windows await disposal");
+    assert!(
+        call_credential_revoked(a_pane_id, &a_call) && call_credential_revoked(b_pane_id, &b_call),
+        "deleting a context revokes its panes' call credentials before disposal"
+    );
 
     assert!(!app.context_active_window.contains_key(&a_id));
     assert!(!app.context_active_window.contains_key(&b_id));
@@ -1043,30 +1053,34 @@ fn delete_window_revokes_removed_pane_credentials() {
 
     let context_id = app.router.active().context_id;
     let removed_pane_id = 65_300_101u64;
-    let removed_token = crate::app::host_mcp::register_pane_credential_for_test(
-        removed_pane_id,
-        context_id,
-        std::path::PathBuf::from("/tmp/removed"),
-    );
+    let (removed_pane, removed_token, removed_call) =
+        credentialed_terminal(&app, removed_pane_id, context_id, "/tmp/removed");
 
     let mut tiles = egui_tiles::Tiles::default();
     let root = tiles.insert_pane(removed_pane_id);
     let mut panes = std::collections::HashMap::new();
-    panes.insert(removed_pane_id, test_view_pane(removed_pane_id));
+    panes.insert(removed_pane_id, removed_pane);
     app.windows.push(Window {
         name: "removed".to_string(),
         path: std::path::PathBuf::from("/tmp/removed"),
         tree: egui_tiles::Tree::new("removed_window", root, tiles),
-        panes,
+        panes: panes.into(),
         focused_pane: Some(root),
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: 65_300_102,
         context_id,
+        tree_history: Default::default(),
     });
 
+    let held = crate::pane_ops::disposal::hold();
     app.delete_window(1);
+    assert_eq!(held.held_count(), 1, "the removed window awaits disposal");
+    assert!(
+        call_credential_revoked(removed_pane_id, &removed_call),
+        "deleting a window revokes its panes' call credentials before disposal"
+    );
 
     assert_eq!(
         crate::app::host_mcp::authenticated_workspace_for_test(&removed_token),
@@ -1293,13 +1307,14 @@ fn context_transition_rescans_registry() {
         name: "Context B".into(),
         path: dir_b.clone(),
         tree: egui_tiles::Tree::empty("test_tree_b"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_b_id,
+        tree_history: Default::default(),
     });
     let ctx_b_idx = app.router.len() - 1;
     app.switch_workspace(ctx_b_idx);
@@ -1343,7 +1358,7 @@ fn new_context_creates_top_level_empty_context() {
         "setup: 1 pane before new_context"
     );
 
-    app.new_context();
+    app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
 
     // PTY may be unavailable in test env -- new_context_empty returns early.
     if app.router.len() == 1 {
@@ -1433,7 +1448,7 @@ fn unresolved_auto_name_uses_first_focused_pane_cwd_then_freezes() {
     let mut pane = test_view_pane(pane_id);
     pane.as_view_mut().expect("view pane").workspace_root =
         std::path::PathBuf::from("/projects/first-project");
-    window.panes.insert(pane_id, pane);
+    window.panes.insert(pane_id, pane).unwrap();
 
     app.resolve_auto_context_names();
     assert_eq!(app.router.active().name.displayed(), "first-project");
@@ -1461,11 +1476,17 @@ fn contexts_with_matching_auto_names_are_disambiguated() {
     std::fs::create_dir(&second).expect("second project");
 
     let before = h.app.router.len();
-    h.app.new_context_at_path(first);
+    h.app.new_context_at_path(
+        first,
+        crate::broker::pane_authority::GrantSource::DesktopInput,
+    );
     if h.app.router.len() == before {
         return; // PTY unavailable in this test environment.
     }
-    h.app.new_context_at_path(second);
+    h.app.new_context_at_path(
+        second,
+        crate::broker::pane_authority::GrantSource::DesktopInput,
+    );
     if h.app.router.len() == before + 1 {
         return; // PTY became unavailable between the two requests.
     }
@@ -1482,7 +1503,8 @@ fn new_context_root_pty_env_uses_its_own_context_identity() {
     let mut h = crate::testing::HostHarness::new();
     let previous_context_id = h.app.router.active().context_id;
 
-    h.app.new_context();
+    h.app
+        .new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     h.app.resolve_auto_context_names();
 
     let new_context = h.app.router.active().clone();
@@ -1516,8 +1538,6 @@ fn new_context_root_pty_env_uses_its_own_context_identity() {
 /// delete that window. Previously the window survived empty, showing the welcome screen.
 #[test]
 fn delete_context_collapses_empty_portal_window() {
-    use std::collections::HashMap;
-
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
@@ -1537,13 +1557,14 @@ fn delete_context_collapses_empty_portal_window() {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/test_2029"),
             tree: egui_tiles::Tree::new("test_2029_win2", placeholder, tiles),
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 1,
             grid_y: 0,
             window_id: win2_id,
             context_id: root_id,
+            tree_history: Default::default(),
         });
     }
 
@@ -1567,13 +1588,14 @@ fn delete_context_collapses_empty_portal_window() {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/test_2029_child"),
             tree: egui_tiles::Tree::new("test_2029_child", r, tiles),
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
             grid_y: 0,
             window_id: child_win_id,
             context_id: child_id,
+            tree_history: Default::default(),
         });
     }
 
@@ -1590,15 +1612,17 @@ fn delete_context_collapses_empty_portal_window() {
         // Insert the portal pane.
         let portal_tile = win2.tree.tiles.insert_pane(portal_pane_id);
         win2.tree.root = Some(portal_tile);
-        win2.panes.clear();
-        win2.panes.insert(
-            portal_pane_id,
-            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                pane_id: portal_pane_id,
-                target_context_id: child_id,
-                context_state: None,
-            })),
-        );
+        win2.panes = Default::default();
+        win2.panes
+            .insert(
+                portal_pane_id,
+                crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                    pane_id: portal_pane_id,
+                    target_context_id: child_id,
+                    context_state: None,
+                })),
+            )
+            .unwrap();
         win2.focused_pane = Some(portal_tile);
     }
 
@@ -1640,8 +1664,6 @@ fn delete_context_collapses_empty_portal_window() {
 /// Deleting all of them would strip the context of every window, violating the invariant.
 #[test]
 fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
-    use std::collections::HashMap;
-
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
@@ -1657,13 +1679,14 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/test_2029_edge"),
             tree: egui_tiles::Tree::new("test_2029_edge_win2", placeholder, tiles),
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 1,
             grid_y: 0,
             window_id: win2_id,
             context_id: root_id,
+            tree_history: Default::default(),
         });
     }
 
@@ -1687,13 +1710,14 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/test_2029_edge_child"),
             tree: egui_tiles::Tree::new("test_2029_edge_child", r, tiles),
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
             grid_y: 0,
             window_id: child_win_id,
             context_id: child_id,
+            tree_history: Default::default(),
         });
     }
 
@@ -1706,15 +1730,17 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
             .unwrap();
         let portal_tile = win.tree.tiles.insert_pane(portal_pane_id);
         win.tree.root = Some(portal_tile);
-        win.panes.clear();
-        win.panes.insert(
-            portal_pane_id,
-            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                pane_id: portal_pane_id,
-                target_context_id: child_id,
-                context_state: None,
-            })),
-        );
+        win.panes = Default::default();
+        win.panes
+            .insert(
+                portal_pane_id,
+                crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                    pane_id: portal_pane_id,
+                    target_context_id: child_id,
+                    context_state: None,
+                })),
+            )
+            .unwrap();
     }
 
     assert_eq!(
@@ -1747,11 +1773,71 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
     );
 }
 
+/// A live terminal that owns its credentials, as construction issues them,
+/// with its MCP bearer and call credential (stint 1632).
+fn credentialed_terminal(
+    app: &PlexiApp,
+    pane_id: u64,
+    context_id: u64,
+    root: &str,
+) -> (crate::host::pane::Pane, String, String) {
+    crate::app::host_mcp::ensure_test_discovery();
+    let terminal = app
+        .construct_terminal(crate::pane_ops::construct::TerminalLaunch {
+            authority: crate::broker::pane_authority::LivePaneAuthority::admitted(
+                crate::broker::pane_authority::PaneAuthority::for_test(
+                    pane_id,
+                    crate::broker::pane_authority::Ceiling::Baseline,
+                    context_id,
+                    std::path::PathBuf::from(root),
+                ),
+            ),
+            context: crate::pane_ops::create::PaneContextEnv {
+                context_id,
+                name: "test".to_string(),
+                description: String::new(),
+                root: Some(std::path::PathBuf::from(root)),
+                depth: 0,
+            },
+            cwd: None,
+            command: None,
+            ephemeral: false,
+            env: Vec::new(),
+            mcp: crate::pane_ops::construct::McpBearer::Pane,
+            profile_dir: crate::config::config_dir(),
+        })
+        .expect("test terminal starts");
+    let credentials = terminal
+        .credentials()
+        .expect("constructed with credentials");
+    let mcp = credentials.mcp_token().expect("an MCP bearer").to_string();
+    let call = credentials
+        .call_token()
+        .expect("a call credential")
+        .to_string();
+    (
+        crate::host::pane::Pane::Terminal(Box::new(terminal)),
+        mcp,
+        call,
+    )
+}
+
+/// The call credential `token` no longer authenticates pane `pane_id`.
+fn call_credential_revoked(pane_id: u64, token: &str) -> bool {
+    matches!(
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .expect("permission monitor")
+            .authenticate_call(Some(pane_id), Some(token), None),
+        Err(crate::broker::gate::IdentityError::StaleCredential)
+    )
+}
+
 fn test_view_pane(pane_id: u64) -> crate::host::pane::Pane {
     use crate::app::permissions::PluginPermissions;
     use crate::host::pane::{ViewPane, ViewRuntime};
     let permissions = PluginPermissions::builtin();
     crate::host::pane::Pane::View(Box::new(ViewPane {
+        incarnation: Default::default(),
         pip_status: None,
         id: pane_id,
         runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -1824,7 +1910,7 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
     );
     app.windows[0].tree =
         egui_tiles::Tree::new("dissolve_single_parent", parent_root, parent_tiles);
-    app.windows[0].panes = parent_panes;
+    app.windows[0].panes = parent_panes.into();
     app.windows[0].focused_pane = Some(portal_tile);
     app.windows[0].zoomed_pane = Some(portal_tile);
 
@@ -1840,36 +1926,40 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
     let child_right_tile = child_tiles.insert_pane(child_right);
     let child_root = child_tiles.insert_horizontal_tile(vec![child_left_tile, child_right_tile]);
     let mut child_panes = HashMap::new();
-    child_panes.insert(child_left, test_view_pane(child_left));
+    let (child_left_pane, moved_token, _) =
+        credentialed_terminal(&app, child_left, child_ctx_id, "/tmp/dissolve_single_child");
+    child_panes.insert(child_left, child_left_pane);
     child_panes.insert(child_right, test_view_pane(child_right));
     app.windows.push(Window {
         name: "child".to_string(),
         path: std::path::PathBuf::from("/tmp/dissolve_single_child"),
         tree: egui_tiles::Tree::new("dissolve_single_child", child_root, child_tiles),
-        panes: child_panes,
+        panes: (child_panes).into(),
         focused_pane: Some(child_right_tile),
         zoomed_pane: Some(child_right_tile),
         grid_x: 0,
         grid_y: 0,
         window_id: child_win_id,
         context_id: child_ctx_id,
+        tree_history: Default::default(),
     });
     app.router
         .push_depth(child_ctx_id, child_win_id, Some(child_right_tile));
-    let moved_token = crate::app::host_mcp::register_pane_credential_for_test(
-        child_left,
-        child_ctx_id,
-        std::path::PathBuf::from("/tmp/dissolve_single_child"),
-    );
-
+    let parent_root = app
+        .router
+        .iter()
+        .find(|c| c.context_id == parent_ctx_id)
+        .map(|c| crate::platform::path::canonical_or_self(&c.root))
+        .unwrap();
     app.dissolve_portal(child_ctx_id);
 
+    // The moved pane keeps its credentials, now scoped to the context it
+    // lives in (stint 1632, round 5 P1-4).
     assert_eq!(
         crate::app::host_mcp::authenticated_workspace_for_test(&moved_token),
-        Some(std::path::PathBuf::from("/tmp/dissolve_single_child")),
+        Some(parent_root),
         "dissolving a context moves its panes and must not revoke their credentials"
     );
-    crate::app::host_mcp::revoke_pane_credentials(child_left);
 
     assert!(
         app.router.iter().all(|ctx| ctx.context_id != child_ctx_id),
@@ -2007,7 +2097,7 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
         })),
     );
     app.windows[0].tree = egui_tiles::Tree::new("dissolve_multi_parent", parent_root, parent_tiles);
-    app.windows[0].panes = parent_panes;
+    app.windows[0].panes = parent_panes.into();
     app.windows[0].focused_pane = Some(portal_tile);
     app.windows[0].grid_x = 0;
     app.windows[0].grid_y = 0;
@@ -2028,13 +2118,14 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
         name: "secondary-a".to_string(),
         path: std::path::PathBuf::from("/tmp/dissolve_multi_a"),
         tree: egui_tiles::Tree::new("dissolve_multi_a", tile_a, tiles_a),
-        panes: panes_a,
+        panes: (panes_a).into(),
         focused_pane: Some(tile_a),
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 0,
         window_id: child_win_a,
         context_id: child_ctx_id,
+        tree_history: Default::default(),
     });
 
     let mut tiles_primary = egui_tiles::Tiles::default();
@@ -2049,13 +2140,14 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
         name: "primary".to_string(),
         path: std::path::PathBuf::from("/tmp/dissolve_multi_primary"),
         tree: egui_tiles::Tree::new("dissolve_multi_primary", primary_root, tiles_primary),
-        panes: panes_primary,
+        panes: (panes_primary).into(),
         focused_pane: Some(primary_right_tile),
         zoomed_pane: Some(primary_right_tile),
         grid_x: 1,
         grid_y: 0,
         window_id: child_win_primary,
         context_id: child_ctx_id,
+        tree_history: Default::default(),
     });
 
     let mut tiles_c = egui_tiles::Tiles::default();
@@ -2066,13 +2158,14 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
         name: "secondary-c".to_string(),
         path: std::path::PathBuf::from("/tmp/dissolve_multi_c"),
         tree: egui_tiles::Tree::new("dissolve_multi_c", tile_c, tiles_c),
-        panes: panes_c,
+        panes: (panes_c).into(),
         focused_pane: Some(tile_c),
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: child_win_c,
         context_id: child_ctx_id,
+        tree_history: Default::default(),
     });
 
     app.minimap.visible = false;
@@ -2208,7 +2301,7 @@ fn create_context_with_windows_adds_extra_pages() {
 
     // Create a new context (simulates the no-parent branch of CreateContext).
     let ctx_count_before = app.router.len();
-    app.new_context();
+    app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     // PTY may be unavailable in CI — new_context returns early without creating a context.
     if app.router.len() == ctx_count_before {
         return;
@@ -2236,15 +2329,8 @@ fn create_context_with_windows_adds_extra_pages() {
         .map(|x| x + 1)
         .unwrap_or(1);
     for cmd in &cmds {
-        app.create_page_at(
-            new_x,
-            active_y,
-            ctx_id,
-            crate::pane_ops::create::TerminalSpawnOptions {
-                initial_cmd: Some(cmd.as_str()),
-                ..Default::default()
-            },
-        );
+        let launch = app.test_terminal_launch(ctx_id, None, Some(cmd.as_str()));
+        app.create_page_at(new_x, active_y, ctx_id, launch);
         new_x += 1;
     }
 
@@ -2286,14 +2372,16 @@ fn rename_on_focused_portal_falls_through_to_subcontext() {
     {
         let win = &mut app.windows[0];
         portal_tile = win.tree.tiles.insert_pane(portal_pane_id);
-        win.panes.insert(
-            portal_pane_id,
-            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                pane_id: portal_pane_id,
-                target_context_id: child_id,
-                context_state: None,
-            })),
-        );
+        win.panes
+            .insert(
+                portal_pane_id,
+                crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                    pane_id: portal_pane_id,
+                    target_context_id: child_id,
+                    context_state: None,
+                })),
+            )
+            .unwrap();
         win.focused_pane = Some(portal_tile);
     }
 
@@ -2359,13 +2447,14 @@ fn closing_last_pane_in_subcontext_collapses_and_zooms_out() {
         name: "collapse_child".to_string(),
         path: std::path::PathBuf::from("/tmp/collapse_child"),
         tree: egui_tiles::Tree::new("collapse_child", child_tile, child_tiles),
-        panes: child_panes,
+        panes: (child_panes).into(),
         focused_pane: Some(child_tile),
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 0,
         window_id: child_win_id,
         context_id: child_id,
+        tree_history: Default::default(),
     });
 
     // Zoom Root → child, as sidebar/portal zoom does.
@@ -2461,13 +2550,14 @@ fn closing_last_pane_in_background_subcontext_removes_it_without_switching() {
         name: "bg_collapse_child".to_string(),
         path: std::path::PathBuf::from("/tmp/bg_collapse_child"),
         tree: egui_tiles::Tree::new("bg_collapse_child", child_tile, child_tiles),
-        panes: child_panes,
+        panes: (child_panes).into(),
         focused_pane: Some(child_tile),
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 0,
         window_id: child_win_id,
         context_id: child_id,
+        tree_history: Default::default(),
     });
 
     // Root stays active; close the subcontext's only pane by id.
@@ -2700,28 +2790,25 @@ fn set_context_root_ipc_targets_caller_context() {
         .router
         .push(test_context(other_id, active_id, "background"));
     let pane_id = 65_300_201u64;
+    let (terminal, token, _) = credentialed_terminal(&h.app, pane_id, other_id, "/tmp/background");
     let mut tiles = egui_tiles::Tiles::default();
     let pane_tile = tiles.insert_pane(pane_id);
     let mut panes = std::collections::HashMap::new();
-    panes.insert(pane_id, test_view_pane(pane_id));
+    panes.insert(pane_id, terminal);
     h.app.windows.push(Window {
         name: "background".to_string(),
         path: std::path::PathBuf::from("/tmp/background"),
         tree: egui_tiles::Tree::new("background", pane_tile, tiles),
-        panes,
+        panes: panes.into(),
         focused_pane: Some(pane_tile),
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: 65_300_202,
         context_id: other_id,
+        tree_history: Default::default(),
     });
     let old_root = std::path::PathBuf::from("/tmp/background");
-    let token = crate::app::host_mcp::register_pane_credential_for_test(
-        pane_id,
-        other_id,
-        old_root.clone(),
-    );
     assert_eq!(
         crate::app::host_mcp::authenticated_workspace_for_test(&token),
         Some(old_root)
@@ -2756,10 +2843,9 @@ fn set_context_root_ipc_targets_caller_context() {
     );
     assert_eq!(
         crate::app::host_mcp::authenticated_workspace_for_test(&token),
-        Some(tmp.path().to_path_buf()),
+        Some(crate::platform::path::canonical_or_self(tmp.path())),
         "set-root must rebind live pane credentials to the new workspace"
     );
-    crate::app::host_mcp::revoke_pane_credentials(pane_id);
 }
 
 /// Setting a context root must ensure `<root>/.plexi/.gitignore` covers
@@ -2895,14 +2981,16 @@ fn context_close_offers_dissolve_only_for_portal_backed_context() {
     let child_ctx_id = top_level_id + 1_000;
     let portal_pane_id = app.host.alloc_pane_id();
     let win = &mut app.windows[app.active_window];
-    win.panes.insert(
-        portal_pane_id,
-        crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
-            pane_id: portal_pane_id,
-            target_context_id: child_ctx_id,
-            context_state: None,
-        })),
-    );
+    win.panes
+        .insert(
+            portal_pane_id,
+            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                pane_id: portal_pane_id,
+                target_context_id: child_ctx_id,
+                context_state: None,
+            })),
+        )
+        .unwrap();
 
     assert!(
         app.build_context_close_state(child_ctx_id).can_dissolve,
@@ -2943,7 +3031,7 @@ fn context_sub_creates_exactly_n_panes() {
     });
     let req: crate::protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
-    h.inject_ipc(req);
+    h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
 
     let child = h
@@ -2997,7 +3085,7 @@ fn context_sub_panes_share_one_tiled_window() {
         "layout": "tiled",
     }))
     .expect("payload must deserialize");
-    h.inject_ipc(req);
+    h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
 
     let child_ctx = h
@@ -3101,7 +3189,7 @@ fn context_sub_child_is_registered_one_level_below_parent() {
         "panes": [null, null],
     }))
     .expect("payload must deserialize");
-    h.inject_ipc(req);
+    h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
 
     let child = h
@@ -3128,7 +3216,7 @@ fn context_sub_child_is_registered_one_level_below_parent() {
 fn make_backend_settings_stamps_the_context_it_is_given() {
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let (app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
     let context_env = crate::pane_ops::create::PaneContextEnv {
         context_id: 4242,
         name: "agentsquad".to_string(),
@@ -3136,13 +3224,15 @@ fn make_backend_settings_stamps_the_context_it_is_given() {
         root: Some(std::path::PathBuf::from("/tmp/squad")),
         depth: 3,
     };
-    let (settings, _pending_credential) = PlexiApp::make_backend_settings(
-        7,
-        Some(std::path::PathBuf::from("/tmp")),
-        &app.colors,
-        &context_env,
-        false,
-    );
+    let launch =
+        app.desktop_terminal_launch(context_env, Some(std::path::PathBuf::from("/tmp")), None);
+    let pane_id = launch.pane_id();
+    struct Settings {
+        env: std::collections::HashMap<String, String>,
+    }
+    let settings = Settings {
+        env: crate::pane_ops::construct::probes::env_at_backend_entry(launch),
+    };
     assert_eq!(
         settings.env.get("PLEXI_CONTEXT_ID"),
         Some(&"4242".to_string())
@@ -3155,7 +3245,10 @@ fn make_backend_settings_stamps_the_context_it_is_given() {
         settings.env.get("PLEXI_CONTEXT_DEPTH"),
         Some(&"3".to_string())
     );
-    assert_eq!(settings.env.get("PLEXI_PANE_ID"), Some(&"7".to_string()));
+    assert_eq!(
+        settings.env.get("PLEXI_PANE_ID"),
+        Some(&pane_id.to_string())
+    );
 }
 
 /// An unresolvable parent fails before any pane is spawned — no orphan context,
@@ -3175,7 +3268,7 @@ fn context_sub_unknown_parent_creates_nothing() {
         "panes": [null, null],
     }))
     .expect("payload must deserialize");
-    h.inject_ipc(req);
+    h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
 
     assert_eq!(
@@ -3224,6 +3317,7 @@ fn child_context_takes_its_name_from_the_spec_not_the_path() {
             anchor_pane: None,
             panes: vec![None, None],
             layout: crate::protocol::SubContextLayout::Tiled,
+            source: crate::broker::pane_authority::GrantSource::DesktopInput,
         })
         .expect("child create should succeed");
 
@@ -3279,13 +3373,14 @@ fn context_sub_focus_returns_to_the_callers_window_not_the_active_one() {
         name: String::new(),
         path: std::path::PathBuf::from("/tmp/elsewhere"),
         tree: egui_tiles::Tree::empty("plexi"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 0,
         window_id: other_win_id,
         context_id: other_ctx_id,
+        tree_history: Default::default(),
     });
     h.app.active_window = h.app.windows.len() - 1;
     assert_ne!(
@@ -3304,7 +3399,7 @@ fn context_sub_focus_returns_to_the_callers_window_not_the_active_one() {
         "focus": true,
     }))
     .expect("payload must deserialize");
-    h.inject_ipc(req);
+    h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
 
     let (depth_ctx, depth_win, _) = h
@@ -3341,7 +3436,7 @@ fn context_sub_omitted_layout_picks_columns_for_three_and_grid_for_four() {
             "panes": panes,
         }))
         .expect("payload must deserialize");
-        h.inject_ipc(req);
+        h.inject_in_process(req);
         h.app.drain_pane_cmd_channel();
 
         let child_ctx = h
@@ -3379,7 +3474,7 @@ fn context_sub_omitted_layout_picks_columns_for_three_and_grid_for_four() {
         "panes": [null, null, null, null],
     }))
     .expect("payload must deserialize");
-    h.inject_ipc(req4);
+    h.inject_in_process(req4);
     h.app.drain_pane_cmd_channel();
 
     let child4 = h
@@ -3423,7 +3518,7 @@ fn context_sub_assigns_distinct_default_pane_names() {
         "response_file": resp_path.to_string_lossy(),
     }))
     .expect("payload must deserialize");
-    h.inject_ipc(req);
+    h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
 
     let resp: serde_json::Value =
@@ -3559,13 +3654,14 @@ fn perf_gate_delete_context_does_not_block_ui_thread() {
             name: String::new(),
             path: std::path::PathBuf::from(format!("/tmp/perf-gate-delete-context-{i}")),
             tree: egui_tiles::Tree::new(format!("plexi_perf_gate_{i}"), root_tile, tiles),
-            panes,
+            panes: panes.into(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
+            tree_history: Default::default(),
         });
     }
 
@@ -3692,13 +3788,14 @@ fn launch_into_an_inactive_context_resolves_that_contexts_own_registry() {
         name: "Context B".into(),
         path: root_b.path().to_path_buf(),
         tree: egui_tiles::Tree::empty("cross_context_launch_test"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_b_id,
+        tree_history: Default::default(),
     });
 
     // Context A is still active — no `switch_workspace`/context transition
@@ -3777,13 +3874,14 @@ fn set_context_root_on_an_inactive_context_rescans_its_registry() {
         name: "Context B".into(),
         path: crate::testing::scratch_context_root("context"),
         tree: egui_tiles::Tree::empty("inactive_set_root_test"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: 2,
         context_id: ctx_b_id,
+        tree_history: Default::default(),
     });
     assert_ne!(
         app.router.active().context_id,
@@ -3857,13 +3955,14 @@ fn registry_watcher_covers_an_inactive_contexts_root_and_rescans_it_alone() {
         name: "Context B".into(),
         path: root_b.path().to_path_buf(),
         tree: egui_tiles::Tree::empty("watcher_inactive_root_test"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: 2,
         context_id: ctx_b_id,
+        tree_history: Default::default(),
     });
 
     // Resolve BOTH contexts' views (context A's happens automatically at
@@ -4115,13 +4214,14 @@ fn spawn_stamp_matches_placement_for_caller_in_inactive_context() {
         name: "Context 2".into(),
         path: crate::testing::scratch_context_root("context-2"),
         tree: egui_tiles::Tree::empty("ctx2_tree"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 1,
         window_id: 10,
         context_id: other_ctx,
+        tree_history: Default::default(),
     });
     app.active_window = 1;
     app.router.set_active(1);
@@ -4148,7 +4248,7 @@ fn spawn_stamp_matches_placement_for_caller_in_inactive_context() {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         app.drain_pane_cmd_channel();
         let total_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
@@ -4470,10 +4570,18 @@ fn context_target_request(
     let file = h.profile_dir().join("context-target-reply.json");
     let _ = std::fs::remove_file(&file);
     payload["response_file"] = serde_json::json!(file);
-    let request = serde_json::from_value(payload.clone()).unwrap_or_else(|_| {
+    let mut request = serde_json::from_value(payload.clone()).unwrap_or_else(|_| {
         payload.as_object_mut().unwrap().remove("response_file");
         serde_json::from_value(payload).unwrap()
     });
+    // The harness stands in for a verified caller: a launch's claimed
+    // pane is trusted as an in-process caller's is.
+    if let crate::protocol::HostRequest::SpawnPane { source, .. }
+    | crate::protocol::HostRequest::FocusContext { source, .. }
+    | crate::protocol::HostRequest::CreateContext { source, .. } = &mut request
+    {
+        *source = crate::protocol::SpawnSource::InProcess;
+    }
     h.inject_ipc(request);
     h.app.drain_pane_cmd_channel();
     std::fs::read_to_string(file)
@@ -4568,6 +4676,7 @@ fn context_targets_background_id_open_uses_owning_root() {
         grid_y: 0,
         window_id: b_id + 1,
         context_id: b_id,
+        tree_history: Default::default(),
     });
     // Install a global runtime fixture, with no workspace_root to mask the default.
     let global = tempfile::tempdir().unwrap();
@@ -4636,9 +4745,28 @@ fn context_targets_invalid_view_context_never_spawns_in_active() {
     let mut h = crate::testing::HostHarness::new();
     h.add_test_pane();
     let count = h.app.windows[0].panes.len();
-    let reply = context_target_request(&mut h, serde_json::json!({"type":"spawn_pane", "type_id":"agents", "target_context":u64::MAX, "args":[]})).unwrap();
+    let file = h.profile_dir().join("context-target-reply.json");
+    let mut request: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+        "type": "spawn_pane", "type_id": "agents", "target_context": u64::MAX, "args": [],
+        "response_file": file,
+    }))
+    .unwrap();
+    // A verified caller, so the request reaches the target check.
+    if let crate::protocol::HostRequest::SpawnPane { source, .. }
+    | crate::protocol::HostRequest::FocusContext { source, .. }
+    | crate::protocol::HostRequest::CreateContext { source, .. } = &mut request
+    {
+        *source = crate::protocol::SpawnSource::InProcess;
+    }
+    h.inject_ipc(request);
+    h.app.drain_pane_cmd_channel();
+    let reply: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
     assert_eq!(h.app.windows[0].panes.len(), count);
-    assert!(reply["error"].as_str().unwrap().contains("not found"));
+    assert!(
+        reply["error"].as_str().unwrap().contains("not found"),
+        "{reply}"
+    );
 }
 
 /// The panes split beside `portal`: its nearest Linear ancestor's other

@@ -121,7 +121,7 @@ fn secret_get_without_a_host_stamped_pane_is_refused() {
 
 #[test]
 fn agent_pane_env_carries_no_workspace_or_folder_secrets() {
-    let h = HostHarness::new();
+    let mut h = HostHarness::new();
     let _enabled =
         crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
     let root = h.workspace_root();
@@ -140,7 +140,7 @@ fn agent_pane_env_carries_no_workspace_or_folder_secrets() {
     )
     .unwrap();
 
-    let settings = |agent_pane: bool| {
+    let mut settings = |agent_pane: bool| {
         let context_env = crate::pane_ops::create::PaneContextEnv {
             context_id: 1,
             name: "ctx".to_string(),
@@ -148,15 +148,17 @@ fn agent_pane_env_carries_no_workspace_or_folder_secrets() {
             root: Some(root.clone()),
             depth: 0,
         };
-        crate::app::PlexiApp::make_backend_settings(
-            7,
+        let launch = h.app.terminal_launch(
+            if agent_pane {
+                crate::broker::pane_authority::GrantSource::OutsideProcess
+            } else {
+                crate::broker::pane_authority::GrantSource::DesktopInput
+            },
+            context_env,
             Some(root.clone()),
-            &h.app.colors,
-            &context_env,
-            agent_pane,
-        )
-        .0
-        .env
+            None,
+        );
+        crate::pane_ops::construct::probes::env_at_backend_entry(launch)
     };
     let human = settings(false);
     assert_eq!(
@@ -216,21 +218,25 @@ fn cli_secret_set_does_not_enable_terminal_injection() {
 
 fn spawn_second_terminal(h: &mut HostHarness, beside: u64) -> u64 {
     let (_, tile) = h.app.find_pane_in_any_window(beside).unwrap();
+    let context = h.app.pane_context_env_for_window(0);
+    let launch = h.app.terminal_launch(
+        crate::broker::pane_authority::GrantSource::OutsideProcess,
+        context,
+        None,
+        None,
+    );
     h.app
-        .spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
-            win_idx: 0,
-            target_tile: tile,
-            vertical: true,
-            new_pane_first: false,
-            keep_focus: true,
-            options: crate::pane_ops::create::TerminalSpawnOptions {
-                initial_cmd: None,
-                close_on_exit: false,
-                cwd_override: None,
-                agent_pane: true,
-                inject_folder_secrets: false,
+        .spawn_terminal_pane_at(
+            crate::pane_ops::create::SplitPlacement {
+                win_idx: 0,
+                target_tile: tile,
+                vertical: true,
+                new_pane_first: false,
+                keep_focus: true,
             },
-        })
+            launch,
+        )
+        .expect("second terminal")
 }
 
 fn socket_request(

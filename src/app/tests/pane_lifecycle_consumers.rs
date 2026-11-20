@@ -401,20 +401,21 @@ fn another_context(h: &mut HostHarness, id: u64) -> u64 {
         name: "consumer context".into(),
         path: root,
         tree: egui_tiles::Tree::empty(format!("consumer-{id}")),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: id,
         context_id: id,
+        tree_history: Default::default(),
     });
     let pane = h.add_test_pane();
     let (_, tile) = h.app.find_pane_in_any_window(pane).unwrap();
     h.app.windows[0].tree.tiles.remove(tile);
-    let value = h.app.windows[0].panes.remove(&pane).unwrap();
+    let value = h.app.windows[0].take_pane(pane).unwrap();
     let win = &mut h.app.windows[1];
-    win.panes.insert(pane, value);
+    win.panes.insert(pane, value).unwrap();
     win.tree.root = Some(win.tree.tiles.insert_pane(pane));
     h.app.switch_workspace(1);
     pane

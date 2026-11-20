@@ -148,13 +148,14 @@ fn close_on_an_empty_extra_page_removes_it_without_a_dialog() {
         name: "empty page".to_string(),
         path: root,
         tree: egui_tiles::Tree::empty("plexi"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 1,
         window_id,
         context_id: ctx_id,
+        tree_history: Default::default(),
     });
     h.app.active_window = h.app.windows.len() - 1;
     h.run_frames(2);

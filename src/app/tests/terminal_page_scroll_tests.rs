@@ -28,7 +28,7 @@ time.sleep(120)
 
 pub(super) fn terminal_with_fixture(h: &mut HostHarness, mode: &str) -> PaneId {
     let id = h.add_focused_terminal();
-    let terminal = crate::host::pane::TerminalPane::new(
+    let terminal = crate::host::pane::TerminalPane::fixture(
         id,
         h.app.ctx.clone(),
         h.app.pty_event_tx.clone(),
@@ -41,9 +41,14 @@ pub(super) fn terminal_with_fixture(h: &mut HostHarness, mode: &str) -> PaneId {
         14.0,
     )
     .expect("start page-scroll fixture");
+    // The fixture replaces the terminal the split started in that slot.
+    h.app.windows[0]
+        .take_pane(id)
+        .expect("the split installed a terminal");
     h.app.windows[0]
         .panes
-        .insert(id, Pane::Terminal(Box::new(terminal)));
+        .insert(id, Pane::Terminal(Box::new(terminal)))
+        .unwrap();
     let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
     loop {
         h.run_frames(2);

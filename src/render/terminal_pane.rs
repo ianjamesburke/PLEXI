@@ -80,6 +80,42 @@ fn standby_view_rects(
 }
 
 /// Render one frame of a terminal pane. Returns `true` if the process has
+/// The notice a sealed pane shows above its shell: why Plexi commands that
+/// need permission are refused here, and the way out (stint 1632).
+fn sealed_notice(
+    ui: &mut egui::Ui,
+    terminal: &mut TerminalPane,
+    reason: crate::broker::pane_authority::SealReason,
+    colors: &Colors,
+) {
+    let text = format!(
+        "Plexi commands that need permission are refused here: {}.",
+        reason.explanation()
+    );
+    // A wrapped label over a kit button, inset like the terminal grid: the
+    // reason is never clipped and clears the pane's ring.
+    let inset = crate::ui::style::PANE_CONTENT_INSET as i8;
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(inset, 2))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(text)
+                    .size((terminal.font_size - 1.0).max(9.0))
+                    .color(colors.text_primary),
+            );
+            if ui
+                .add(crate::ui::button::KitButton::new("Open a new pane", colors).compact())
+                .clicked()
+            {
+                log::info!(
+                    "sealed_notice: pane {} asked for a new pane in its place",
+                    terminal.id
+                );
+                terminal.reopen_requested = true;
+            }
+        });
+}
+
 /// exited and the user pressed a key (the caller should close the tile).
 /// Returns (close_exited, tab_action).
 #[allow(clippy::too_many_arguments)]
@@ -197,6 +233,10 @@ pub fn render(
             overtake_hint: false,
         },
     );
+
+    if let Some(reason) = terminal.sealed_reason() {
+        sealed_notice(ui, terminal, reason, colors);
+    }
 
     if terminal.is_standby() {
         let enter_pressed = is_focused

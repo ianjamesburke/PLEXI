@@ -12,8 +12,10 @@
 //! unchanged.
 
 mod close_batch;
+pub(crate) mod construct;
 pub(crate) mod create;
 mod events;
+pub(crate) mod grant;
 mod layout;
 mod workspace;
 mod wrap;
@@ -28,6 +30,8 @@ pub(crate) use create::{restore_view_pane_in_profile, RestoreTarget, RestoredVie
 pub(crate) use layout::default_squad_layout;
 pub(crate) use layout::insert_split_tile;
 pub(crate) use layout::SwapResult;
+#[cfg(test)]
+pub(crate) use workspace::disposal;
 pub(crate) use workspace::ChildContextSpec;
 #[cfg(test)]
 pub(crate) use workspace::NewContextKind;

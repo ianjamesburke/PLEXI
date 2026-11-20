@@ -4,8 +4,7 @@ use crate::app::notifications::PendingNotification;
 use crate::app::view_trait::ViewCommand;
 
 use super::{
-    cmd_from_args, is_overlay_unsafe_cmd, overlay_unsafe_cmd_name,
-    register_directed_pipe_on_target, PlexiApp,
+    is_overlay_unsafe_cmd, overlay_unsafe_cmd_name, register_directed_pipe_on_target, PlexiApp,
 };
 
 pub(crate) fn native_wasm_notification_contract_error(icon: Option<&str>) -> Option<&'static str> {
@@ -836,20 +835,8 @@ impl PlexiApp {
                     type_id,
                     layout,
                     args,
+                    emitter,
                 } => {
-                    // Capture requesting pane before launch changes focused_pane.
-                    let active = self.active_window;
-                    let requesting_pane_id = self.windows[active]
-                        .focused_pane
-                        .and_then(|tile| self.windows[active].tree.tiles.get(tile))
-                        .and_then(|tile| {
-                            if let egui_tiles::Tile::Pane(pid) = tile {
-                                Some(*pid)
-                            } else {
-                                None
-                            }
-                        });
-
                     // Predict the pane id, but let a dedup override it with the
                     // real existing instance's id (#0336): `Ok(Some(id))` means
                     // the launch focused a live instance instead of spawning.
@@ -868,20 +855,15 @@ impl PlexiApp {
                             continue;
                         }
                     };
-
-                    // Confirm back to the requesting plugin.
-                    if let Some(req_pane_id) = requesting_pane_id {
-                        let active = self.active_window;
-                        if let Some(pane) = self.windows[active].panes.get_mut(&req_pane_id) {
-                            let event = crate::protocol::PlexiEvent::ViewOpened {
-                                pane_id: new_pane_id,
-                                type_id: type_id.clone(),
-                            };
-                            if let Some(a) = pane.as_view_mut() {
-                                a.runtime.queue_outbound_event(event);
-                            }
-                        }
-                    }
+                    // Confirm to the view that emitted the request, wherever
+                    // focus is now (stint 1632).
+                    self.deliver_to_emitter(
+                        emitter,
+                        crate::protocol::PlexiEvent::ViewOpened {
+                            pane_id: new_pane_id,
+                            type_id: type_id.clone(),
+                        },
+                    );
                 }
                 ViewCommand::SpawnPane {
                     type_id,
@@ -890,256 +872,17 @@ impl PlexiApp {
                     from_pane_id,
                     request_id,
                     target_context,
+                    emitter,
                 } => {
-                    // "background" layout is not yet implemented (blocked on #291).
-                    if layout == "background" {
-                        let active = self.active_window;
-                        let requesting_pane_id = self.windows[active]
-                            .focused_pane
-                            .and_then(|tile| self.windows[active].tree.tiles.get(tile))
-                            .and_then(|tile| {
-                                if let egui_tiles::Tile::Pane(pid) = tile {
-                                    Some(*pid)
-                                } else {
-                                    None
-                                }
-                            });
-                        if let Some(req_pane_id) = requesting_pane_id {
-                            let active = self.active_window;
-                            if let Some(pane) = self.windows[active].panes.get_mut(&req_pane_id) {
-                                if let Some(a) = pane.as_view_mut() {
-                                    a.runtime.queue_outbound_event(
-                                        crate::protocol::PlexiEvent::PaneSpawnError {
-                                            reason: "layout 'background' not yet implemented"
-                                                .to_string(),
-                                            request_id: request_id.clone(),
-                                        },
-                                    );
-                                }
-                            }
-                        }
-                        log::warn!("SpawnPane: layout='background' not implemented, rejected");
-                        continue;
-                    }
-
-                    // A spawned child reports completion over the event bus
-                    // (`EmitEvent` with `<plugin>::completed`), not a JSON-pipe
-                    // reply — the `--pipe=<id>` reply coupling was removed in
-                    // 0327 along with the legacy peer-broadcast transport.
-                    let effective_args = args;
-
-                    // target_context validation (#1518): if set, verify the
-                    // target exists and is a descendant of the requester's
-                    // context. Switch active_window temporarily so the spawn
-                    // lands in the right context.
-                    let original_active_window = self.active_window;
-                    if let Some(target_ctx_id) = target_context {
-                        let requester_context_id = self.windows[self.active_window].context_id;
-                        let target_exists =
-                            self.router.iter().any(|c| c.context_id == target_ctx_id);
-                        let is_descendant = self
-                            .host
-                            .ancestors_of(target_ctx_id)
-                            .contains(&requester_context_id);
-
-                        if !target_exists
-                            || (!is_descendant && requester_context_id != target_ctx_id)
-                        {
-                            log::warn!(
-                                "SpawnPane: target_context={target_ctx_id} invalid or not a descendant of requester context {requester_context_id}"
-                            );
-                            // Send error back to requesting pane.
-                            let active = self.active_window;
-                            let requesting_pane_id = self.windows[active]
-                                .focused_pane
-                                .and_then(|tile| self.windows[active].tree.tiles.get(tile))
-                                .and_then(|tile| {
-                                    if let egui_tiles::Tile::Pane(pid) = tile {
-                                        Some(*pid)
-                                    } else {
-                                        None
-                                    }
-                                });
-                            if let Some(req_pane_id) = requesting_pane_id {
-                                if let Some(pane) = self.windows[active].panes.get_mut(&req_pane_id)
-                                {
-                                    if let Some(a) = pane.as_view_mut() {
-                                        a.runtime.queue_outbound_event(
-                                            crate::protocol::PlexiEvent::PaneSpawnError {
-                                                reason: format!(
-                                                    "target_context {target_ctx_id} is not a descendant of context {requester_context_id}"
-                                                ),
-                                                request_id: request_id.clone(),
-                                            },
-                                        );
-                                    }
-                                }
-                            }
-                            continue;
-                        }
-
-                        // Switch to a window in the target context for the spawn.
-                        if let Some(win_idx) = self
-                            .windows
-                            .iter()
-                            .position(|w| w.context_id == target_ctx_id)
-                        {
-                            log::info!(
-                                "SpawnPane: target_context={target_ctx_id} — switching to window index {win_idx}"
-                            );
-                            self.active_window = win_idx;
-                        } else {
-                            log::warn!(
-                                "SpawnPane: target_context={target_ctx_id} exists but has no window"
-                            );
-                            continue;
-                        }
-                    }
-
-                    // Capture requesting_pane_id from the CURRENT focused pane (the calling view pane).
-                    let active = self.active_window;
-                    let requesting_pane_id = self.windows[active]
-                        .focused_pane
-                        .and_then(|tile| self.windows[active].tree.tiles.get(tile))
-                        .and_then(|tile| {
-                            if let egui_tiles::Tile::Pane(pid) = tile {
-                                Some(*pid)
-                            } else {
-                                None
-                            }
-                        });
-
-                    // Predict the pane id that will be allocated (next_pane_id peeks without allocating).
-                    // A dedup can override this with the real existing pane id (#0336).
-                    let mut new_pane_id = self.host.next_pane_id();
-                    if type_id == "terminal" {
-                        // "terminal" is a builtin pane type, not in the plugin registry.
-                        // Resolve target window+tile from from_pane_id (cross-window search)
-                        // or fall back to the active window's focused pane.
-                        let vertical =
-                            matches!(layout.as_str(), "split_h" | "split_right" | "split_left");
-                        let new_pane_first =
-                            matches!(layout.as_str(), "split_above" | "split_left");
-                        let initial_cmd = cmd_from_args(&effective_args);
-                        let close_on_exit = initial_cmd.is_some();
-                        let (target_win, target_tile) = if let Some(from_id) = from_pane_id {
-                            match self.find_pane_in_any_window(from_id) {
-                                Some(loc) => {
-                                    log::info!(
-                                        "SpawnPane: targeting from_pane_id={from_id} in win_idx={}",
-                                        loc.0
-                                    );
-                                    loc
-                                }
-                                None => {
-                                    log::warn!("SpawnPane: from_pane_id={from_id} not found in any window, using focused pane");
-                                    let Some(tile) = self.windows[active]
-                                        .focused_pane
-                                        .or(self.windows[active].tree.root)
-                                    else {
-                                        log::warn!(
-                                            "SpawnPane: no target tile — window is empty, skipping"
-                                        );
-                                        self.active_window = original_active_window;
-                                        continue;
-                                    };
-                                    (active, tile)
-                                }
-                            }
-                        } else if let Some(tile) = self.windows[active].focused_pane {
-                            (active, tile)
-                        } else {
-                            let Some(tile) = self.windows[active].tree.root else {
-                                log::warn!("SpawnPane: no focused pane and empty tree — skipping");
-                                self.active_window = original_active_window;
-                                continue;
-                            };
-                            (active, tile)
-                        };
-                        log::info!(
-                            "SpawnPane: terminal layout='{layout}' vertical={vertical} new_pane_first={new_pane_first} pane_id={new_pane_id} target_win={target_win}", layout = crate::host::guest_text::shown(&layout)
-                        );
-                        // SDK-spawned terminal with a cmd closes on exit (matches historical behavior).
-                        // CLI terminal uses the ephemeral flag exclusively — cmd alone does not close.
-                        // keep_focus=true: coordinator plugin always retains focus after spawning a terminal.
-                        let _ = self.spawn_terminal_pane_at(
-                            crate::pane_ops::create::SpawnTerminalAtSpec {
-                                win_idx: target_win,
-                                target_tile,
-                                vertical,
-                                new_pane_first,
-                                keep_focus: true,
-                                options: crate::pane_ops::create::TerminalSpawnOptions {
-                                    initial_cmd: initial_cmd.as_deref(),
-                                    close_on_exit,
-                                    agent_pane: true,
-                                    ..Default::default()
-                                },
-                            },
-                        );
-                    } else {
-                        if let Some(from_id) = from_pane_id {
-                            // When target_context already selected a window, restrict from_pane_id
-                            // resolution to that window so it cannot override target_context.
-                            let tile_opt = if target_context.is_some() {
-                                let ctx_win = self.active_window;
-                                self.windows[ctx_win]
-                                    .tree
-                                    .tiles
-                                    .find_pane(&from_id)
-                                    .map(|ft| (ctx_win, ft))
-                            } else {
-                                self.find_pane_in_any_window(from_id)
-                            };
-                            match tile_opt {
-                                Some((fw, ft)) => {
-                                    log::info!("SpawnPane: plugin: targeting from_pane_id={from_id} win_idx={fw}");
-                                    self.active_window = fw;
-                                    self.set_window_focused_pane(fw, ft);
-                                }
-                                None => {
-                                    log::warn!("SpawnPane: plugin: from_pane_id={from_id} not found, using focused pane");
-                                }
-                            }
-                        }
-                        if let Ok(Some(existing_id)) = self.launch_view_by_id_with_layout(
-                            &type_id,
-                            Some(layout),
-                            &effective_args,
-                            None,
-                        ) {
-                            // Dedup focused a live instance; report its real id.
-                            new_pane_id = existing_id;
-                        }
-                        log::info!(
-                            "SpawnPane: launched '{type_id}' pane_id={new_pane_id}",
-                            type_id = crate::host::guest_text::shown(&type_id)
-                        );
-                    }
-
-                    // Restore active_window if we switched for target_context or from_pane_id.
-                    self.active_window = original_active_window;
-
-                    // Send PaneSpawned back to the requesting pane (may be
-                    // in a different window than where the spawn landed).
-                    if let Some(req_pane_id) = requesting_pane_id {
-                        let win_idx = self
-                            .windows
-                            .iter()
-                            .position(|w| w.panes.contains_key(&req_pane_id));
-                        if let Some(wi) = win_idx {
-                            if let Some(pane) = self.windows[wi].panes.get_mut(&req_pane_id) {
-                                if let Some(a) = pane.as_view_mut() {
-                                    a.runtime.queue_outbound_event(
-                                        crate::protocol::PlexiEvent::PaneSpawned {
-                                            pane_id: new_pane_id,
-                                            request_id,
-                                        },
-                                    );
-                                }
-                            }
-                        }
-                    }
+                    let outcome = self.serve_sdk_spawn_pane(
+                        emitter,
+                        &type_id,
+                        &layout,
+                        args,
+                        from_pane_id,
+                        target_context,
+                    );
+                    self.reply_sdk_spawn_pane(emitter, request_id, outcome);
                 }
                 ViewCommand::CdRequest {
                     cwd,
@@ -1629,7 +1372,13 @@ impl PlexiApp {
         // can't hold a mutable borrow on contexts + a shared borrow on the
         // registry at the same time during the match below.
         let active = self.active_window;
-        let mut per_pane: Vec<(u64, u64, String, Vec<ViewCommand>)> = Vec::new();
+        let mut per_pane: Vec<(
+            u64,
+            u64,
+            crate::host::pane::ViewIncarnation,
+            String,
+            Vec<ViewCommand>,
+        )> = Vec::new();
         for (ctx_idx, context) in self.windows.iter_mut().enumerate() {
             let context_id = context.context_id;
             // Panes that are not in the tile tree never receive `ui()`, even
@@ -1667,7 +1416,7 @@ impl PlexiApp {
                     let type_id = view_pane.runtime.type_id().to_string();
                     let cmds = view_pane.runtime.take_pending_commands();
                     if !cmds.is_empty() {
-                        per_pane.push((context_id, *pane_id, type_id, cmds));
+                        per_pane.push((context_id, *pane_id, view_pane.incarnation, type_id, cmds));
                     }
                     continue;
                 }
@@ -1728,7 +1477,11 @@ impl PlexiApp {
             }
         }
 
-        for (context_id, pane_id, type_id, cmds) in per_pane {
+        for (context_id, pane_id, incarnation, type_id, cmds) in per_pane {
+            let emitter = crate::app::view_trait::ViewEmitter {
+                pane_id,
+                incarnation,
+            };
             // Scope is a per-plugin user-facing policy declared in the plugin's
             // manifest.toml. Plugins never set it — the host resolves it once
             // per notification here. An plugin that omits the field gets
@@ -1773,9 +1526,37 @@ impl PlexiApp {
                             reply,
                         });
                     }
-                    ViewCommand::SpawnView { .. }
-                    | ViewCommand::SpawnPane { .. }
-                    | ViewCommand::ForwardPaneRequest { .. }
+                    // The emitting view is the one recipient of the reply,
+                    // stamped here where its pane id is known (stint 1632).
+                    ViewCommand::SpawnView {
+                        type_id,
+                        layout,
+                        args,
+                        ..
+                    } => deferred.push(ViewCommand::SpawnView {
+                        type_id,
+                        layout,
+                        args,
+                        emitter: Some(emitter),
+                    }),
+                    ViewCommand::SpawnPane {
+                        type_id,
+                        layout,
+                        args,
+                        from_pane_id,
+                        request_id,
+                        target_context,
+                        ..
+                    } => deferred.push(ViewCommand::SpawnPane {
+                        type_id,
+                        layout,
+                        args,
+                        from_pane_id,
+                        request_id,
+                        target_context,
+                        emitter: Some(emitter),
+                    }),
+                    ViewCommand::ForwardPaneRequest { .. }
                     | ViewCommand::DeliverRunUpdate { .. }
                     | ViewCommand::InsertPathToken { .. }
                     | ViewCommand::RequestCommandPreview { .. }

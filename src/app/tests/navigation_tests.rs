@@ -11,13 +11,14 @@ fn second_window(context_id: u64, window_id: u64, pane_id: u64) -> Window {
         name: "Context B".into(),
         path: crate::testing::scratch_context_root("context-b"),
         tree,
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 1,
         window_id,
         context_id,
+        tree_history: Default::default(),
     }
 }
 
@@ -26,13 +27,14 @@ fn same_workspace_window_right(context_id: u64, window_id: u64) -> Window {
         name: "Window B".into(),
         path: crate::testing::scratch_context_root("window-b"),
         tree: egui_tiles::Tree::empty("test_tree_right"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id,
         context_id,
+        tree_history: Default::default(),
     }
 }
 
@@ -44,13 +46,14 @@ fn same_workspace_window_below(context_id: u64, window_id: u64, pane_id: u64) ->
         name: "Test".into(),
         path: crate::testing::scratch_context_root("context-b"),
         tree,
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 1,
         window_id,
         context_id,
+        tree_history: Default::default(),
     }
 }
 
@@ -62,13 +65,14 @@ fn same_workspace_window_bottom(context_id: u64, window_id: u64, pane_id: u64) -
         name: "Test".into(),
         path: crate::testing::scratch_context_root("context-b"),
         tree,
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 2,
         window_id,
         context_id,
+        tree_history: Default::default(),
     }
 }
 
@@ -1190,13 +1194,14 @@ fn empty_window(context_id: u64, window_id: u64) -> Window {
         name: "Ctx".into(),
         path: crate::testing::scratch_context_root("context-b"),
         tree: egui_tiles::Tree::empty("on_launch_test"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 1,
         window_id,
         context_id,
+        tree_history: Default::default(),
     }
 }
 

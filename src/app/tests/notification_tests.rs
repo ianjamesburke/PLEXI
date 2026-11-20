@@ -11,13 +11,14 @@ fn same_workspace_window_below(context_id: u64, window_id: u64, pane_id: u64) ->
         name: "Test".into(),
         path: crate::testing::scratch_context_root("notification"),
         tree,
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 1,
         window_id,
         context_id,
+        tree_history: Default::default(),
     }
 }
 
@@ -324,13 +325,14 @@ fn dispatch_notify_action_pane_focus_navigates() {
             tree.root = Some(tile);
             tree
         },
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 1,
         window_id: 2,
         context_id: 2,
+        tree_history: Default::default(),
     });
     h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),
@@ -1216,12 +1218,8 @@ fn spawn_real_terminal_pane(
     context_id: u64,
 ) -> Option<(crate::spatial::tiling::PaneId, u32, u64, u64)> {
     let before = h.app.windows.len();
-    h.app.create_page_at(
-        grid_x,
-        grid_y,
-        context_id,
-        crate::pane_ops::create::TerminalSpawnOptions::default(),
-    );
+    let launch = h.app.test_terminal_launch(context_id, None, None);
+    h.app.create_page_at(grid_x, grid_y, context_id, launch);
     if h.app.windows.len() == before {
         return None; // no PTY in this environment
     }
@@ -1827,13 +1825,14 @@ fn push_second_context_window(h: &mut HostHarness, ctx_id: u64, window_id: u64) 
             tree.root = Some(tile);
             tree
         },
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 1,
         window_id,
         context_id: ctx_id,
+        tree_history: Default::default(),
     });
     h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),

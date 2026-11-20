@@ -36,7 +36,8 @@ fn split_horizontal_adds_pane() {
 fn new_context_adds_window() {
     let mut h = HostHarness::new();
     assert_eq!(h.window_count(), 1);
-    h.app.new_context();
+    h.app
+        .new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     assert_eq!(
         h.window_count(),
         2,
@@ -241,7 +242,8 @@ fn save_workspace_after_zoom_and_split_has_valid_focused_tile() {
     h.app.split_focused(false, None, false, false, None);
     h.run_frames(2);
     let background = h.app.active_window;
-    h.app.new_context();
+    h.app
+        .new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     h.run_frames(3);
     assert_ne!(h.app.active_window, background);
     let focused = h.app.windows[background].focused_pane.and_then(|t| match h.app.windows[background].tree.tiles.get(t) {
@@ -265,8 +267,12 @@ fn save_reconciles_stale_focus_in_background_window() {
     h.run_frames(2);
     let background = h.app.active_window;
     let root = h.app.windows[background].tree.root.unwrap();
-    assert!(matches!(h.app.windows[background].tree.tiles.get(root), Some(egui_tiles::Tile::Container(_))));
-    h.app.new_context();
+    assert!(matches!(
+        h.app.windows[background].tree.tiles.get(root),
+        Some(egui_tiles::Tile::Container(_))
+    ));
+    h.app
+        .new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     assert_ne!(h.app.active_window, background);
     h.app.windows[background].focused_pane = Some(root);
     assert_save_ok(&mut h, "stale background focus without a frame");
@@ -363,13 +369,14 @@ fn two_window_fixture(h: &mut HostHarness) -> (PaneId, PaneId, PaneId) {
         name: "right".into(),
         path: crate::testing::scratch_context_root("stint-1230-right"),
         tree: egui_tiles::Tree::empty("stint_1230_right"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id,
         context_id,
+        tree_history: Default::default(),
     });
     let (c_tile, c) = h.app.add_view_pane_in_window(1, "right");
     h.app.windows[1].focused_pane = Some(c_tile);
@@ -467,7 +474,15 @@ fn agent_subcontext_portal_insert_leaves_parent_window_settled() {
     let mut h = HostHarness::new();
     focused_bare_pane(&mut h);
     h.app
-        .resolve_agent_spawn_location(Some("stint-1440-sub"), None, None, false, None)
+        .resolve_agent_spawn_location(
+            Some(crate::pane_ops::create::SubcontextTarget::Named(
+                "stint-1440-sub",
+            )),
+            None,
+            None,
+            false,
+            crate::pane_ops::create::AgentOrigin::Active,
+        )
         .expect("subcontext resolves");
     h.assert_window_settled(0, "agent subcontext portal insert");
 }
@@ -514,7 +529,12 @@ fn new_tab_leaves_window_settled() {
     let mut h = HostHarness::new();
     let (a, _b, _c) = two_window_fixture(&mut h);
     assert!(h.app.windows[0].tree.tiles.find_pane(&a).is_some());
-    h.app.new_tab(0, None, false, None, false, false);
+    let anchor = h.app.focused_tab_anchor(0);
+    let context_id = h.app.windows[0].context_id;
+    let launch = h
+        .app
+        .test_terminal_launch(context_id, Some(h.workspace_root()), None);
+    let _ = h.app.new_tab(0, anchor, launch);
     assert_eq!(h.app.windows[0].panes.len(), 3, "new_tab adds a pane");
     h.assert_window_settled(0, "new_tab");
 }

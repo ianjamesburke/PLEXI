@@ -994,7 +994,7 @@ impl PlexiApp {
         let mut agent_entries: Vec<(u64, u64, String, crate::protocol::PaneAgentState)> =
             Vec::new();
         for win in &self.windows {
-            for (&pid, pane) in &win.panes {
+            for (&pid, pane) in win.panes.iter() {
                 if let Some(ag) = pane.agent().cloned() {
                     let pname = pane
                         .as_terminal()
@@ -2820,7 +2820,7 @@ mod tests {
         });
         let panes = [first, second]
             .into_iter()
-            .map(|id| (id, h.app.windows[0].panes.remove(&id).unwrap()))
+            .map(|id| (id, h.app.windows[0].take_pane(id).unwrap()))
             .collect();
         h.app.windows.push(Window {
             name: String::new(),
@@ -2833,6 +2833,7 @@ mod tests {
             grid_y: 0,
             window_id,
             context_id: context,
+            tree_history: Default::default(),
         });
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let workspace = h.workspace_root();
@@ -2912,7 +2913,7 @@ mod tests {
             depth: 1,
             parked: false,
         });
-        let child_pane = h.app.windows[0].panes.remove(&pane).unwrap();
+        let child_pane = h.app.windows[0].take_pane(pane).unwrap();
         let mut tiles = egui_tiles::Tiles::default();
         let tile = tiles.insert_pane(pane);
         h.app.windows.push(Window {
@@ -2926,16 +2927,20 @@ mod tests {
             grid_y: 0,
             window_id,
             context_id: context,
+            tree_history: Default::default(),
         });
         let portal = pane + 1000000;
-        h.app.windows[0].panes.insert(
-            portal,
-            Pane::Portal(Box::new(PortalPane {
-                pane_id: portal,
-                target_context_id: context,
-                context_state: None,
-            })),
-        );
+        h.app.windows[0]
+            .panes
+            .insert(
+                portal,
+                Pane::Portal(Box::new(PortalPane {
+                    pane_id: portal,
+                    target_context_id: context,
+                    context_state: None,
+                })),
+            )
+            .unwrap();
         let mut tiles = egui_tiles::Tiles::default();
         let tile = tiles.insert_pane(portal);
         h.app.windows[0].tree = egui_tiles::Tree::new("parent", tile, tiles);
@@ -4747,7 +4752,7 @@ mod tests {
         spawned_by: Option<&str>,
     ) -> u64 {
         let id = h.app.host.alloc_pane_id();
-        let mut term = crate::host::pane::TerminalPane::new(
+        let mut term = crate::host::pane::TerminalPane::fixture(
             id,
             h.app.ctx.clone(),
             h.app.pty_event_tx.clone(),
@@ -4773,7 +4778,8 @@ mod tests {
         term.spawned_by = spawned_by.map(str::to_string);
         let win = &mut h.app.windows[0];
         win.panes
-            .insert(id, crate::host::pane::Pane::Terminal(Box::new(term)));
+            .insert(id, crate::host::pane::Pane::Terminal(Box::new(term)))
+            .unwrap();
         let tile = win.tree.tiles.insert_pane(id);
         if win.tree.root().is_none() {
             win.tree.root = Some(tile);

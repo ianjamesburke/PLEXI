@@ -559,10 +559,33 @@ pub struct PermissionMonitor {
 #[derive(Clone)]
 pub struct SessionCredential {
     pub token: String,
-    pub pane_id: Option<u64>,
-    pub context_id: u64,
-    pub workspace_root: PathBuf,
     pub actor_id: String,
+    binding: CredentialBinding,
+}
+
+/// What a call credential authenticates as. A pane credential holds only its
+/// incarnation's handle: its context and workspace are read through it at
+/// each use, never copied at issue (stint 1632).
+#[derive(Clone)]
+enum CredentialBinding {
+    Pane(std::sync::Arc<super::pane_authority::LivePaneAuthority>),
+    /// A test caller with a fixed scope and no grant.
+    #[cfg(test)]
+    Fixed {
+        pane_id: Option<u64>,
+        context_id: u64,
+        workspace_root: PathBuf,
+    },
+}
+
+impl CredentialBinding {
+    fn pane_id(&self) -> Option<u64> {
+        match self {
+            Self::Pane(live) => Some(live.pane_id()),
+            #[cfg(test)]
+            Self::Fixed { pane_id, .. } => *pane_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -583,6 +606,10 @@ pub struct VerifiedCaller {
     pub workspace_root: PathBuf,
     /// Socket and credential callers are never the human at the keyboard.
     pub is_human: bool,
+    /// The incarnation a pane credential carries (stint 1632): the caller's
+    /// grant, resolved from the credential itself. `context_id` and
+    /// `workspace_root` are one snapshot of its scope.
+    pub(crate) authority: Option<std::sync::Arc<super::pane_authority::LivePaneAuthority>>,
 }
 
 pub struct AdmitRequest<'a> {
@@ -4474,6 +4501,7 @@ impl PermissionMonitor {
             .collect()
     }
 
+    #[cfg(test)]
     pub fn issue_credential(
         &self,
         pane_id: Option<u64>,
@@ -4481,7 +4509,19 @@ impl PermissionMonitor {
         workspace_root: &Path,
         actor_id: &str,
     ) -> String {
+        self.insert_credential(
+            actor_id,
+            CredentialBinding::Fixed {
+                pane_id,
+                context_id,
+                workspace_root: crate::platform::path::canonical_or_self(workspace_root),
+            },
+        )
+    }
+
+    fn insert_credential(&self, actor_id: &str, binding: CredentialBinding) -> String {
         let token = format!("cred_{}", uuid::Uuid::new_v4());
+        let pane_id = binding.pane_id();
         self.credentials
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -4489,16 +4529,59 @@ impl PermissionMonitor {
                 token.clone(),
                 SessionCredential {
                     token: token.clone(),
-                    pane_id,
-                    context_id,
-                    workspace_root: crate::platform::path::canonical_or_self(workspace_root),
                     actor_id: actor_id.to_string(),
+                    binding,
                 },
             );
         log::info!(
-            "permission_monitor: issued call credential for actor={actor_id} pane={pane_id:?} context={context_id}"
+            "permission_monitor: issued call credential for actor={actor_id} pane={pane_id:?}"
         );
         token
+    }
+
+    /// Issue the call credential for a constructed pane from its incarnation
+    /// handle, which the credential carries (stint 1632). Only pane
+    /// construction calls this.
+    pub(crate) fn issue_pane_credential(
+        &self,
+        binding: &std::sync::Arc<super::pane_authority::LivePaneAuthority>,
+    ) -> String {
+        self.insert_credential(
+            &format!("pane:{}", binding.pane_id()),
+            CredentialBinding::Pane(binding.clone()),
+        )
+    }
+
+    /// The incarnation a live call credential was issued from.
+    #[cfg(test)]
+    pub(crate) fn credential_authority(
+        &self,
+        token: &str,
+    ) -> Option<std::sync::Arc<super::pane_authority::LivePaneAuthority>> {
+        self.credentials
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(token)
+            .and_then(|cred| match &cred.binding {
+                CredentialBinding::Pane(live) => Some(live.clone()),
+                CredentialBinding::Fixed { .. } => None,
+            })
+    }
+
+    /// Revoke a call credential; it authenticates nothing afterwards.
+    pub(crate) fn revoke_credential(&self, token: &str) {
+        let removed = self
+            .credentials
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(token);
+        if let Some(cred) = removed {
+            log::info!(
+                "permission_monitor: revoked call credential for actor={} pane={:?}",
+                cred.actor_id,
+                cred.binding.pane_id()
+            );
+        }
     }
 
     /// Socket identity. A missing, forged, or mismatched claim is denied.
@@ -4515,35 +4598,68 @@ impl PermissionMonitor {
                 log::info!("permission_monitor: stale or unknown call credential");
                 return Err(IdentityError::StaleCredential);
             };
-            if let (Some(cred_pane), Some(claim)) = (cred.pane_id, claimed_pane) {
+            // One coherent snapshot of the credential's scope for this
+            // request; a revoked incarnation authenticates nothing.
+            let (cred_pane, context_id, workspace_root, authority, scope_revision): (
+                _,
+                _,
+                _,
+                _,
+                Option<u64>,
+            ) = match &cred.binding {
+                CredentialBinding::Pane(live) => {
+                    if live.is_revoked() {
+                        log::info!(
+                            "permission_monitor: credential of revoked pane {} incarnation {}",
+                            live.pane_id(),
+                            live.incarnation()
+                        );
+                        return Err(IdentityError::StaleCredential);
+                    }
+                    let scope = live.scope();
+                    (
+                        Some(live.pane_id()),
+                        scope.context_id,
+                        crate::platform::path::canonical_or_self(&scope.workspace_root),
+                        Some(live.clone()),
+                        Some(scope.revision),
+                    )
+                }
+                #[cfg(test)]
+                CredentialBinding::Fixed {
+                    pane_id,
+                    context_id,
+                    workspace_root,
+                } => (*pane_id, *context_id, workspace_root.clone(), None, None),
+            };
+            if let (Some(cred_pane), Some(claim)) = (cred_pane, claimed_pane) {
                 if cred_pane != claim {
                     log::info!("permission_monitor: credential pane {cred_pane} != claim {claim}");
                     return Err(IdentityError::Mismatch);
                 }
             }
-            if let (Some(peer), Some(claim)) = (peer_pane, claimed_pane.or(cred.pane_id)) {
+            if let (Some(peer), Some(claim)) = (peer_pane, claimed_pane.or(cred_pane)) {
                 if peer != claim {
                     log::info!("permission_monitor: peer pane {peer} != claim {claim}");
                     return Err(IdentityError::Mismatch);
                 }
             }
-            if cred.token != token || (cred.pane_id.is_none() && claimed_pane.is_some()) {
+            if cred.token != token || (cred_pane.is_none() && claimed_pane.is_some()) {
                 return Err(IdentityError::Mismatch);
             }
             log::info!(
-                "permission_monitor: authenticated credential actor={} pane={:?} context={}",
+                "permission_monitor: authenticated credential actor={} pane={cred_pane:?} context={context_id} revision={scope_revision:?}",
                 cred.actor_id,
-                cred.pane_id,
-                cred.context_id
             );
             return Ok(VerifiedCaller {
                 actor_id: cred.actor_id.clone(),
                 actor_type: ActorType::Agent,
                 actor_scope: ActorScope::User,
-                pane_id: cred.pane_id,
-                context_id: cred.context_id,
-                workspace_root: cred.workspace_root.clone(),
+                pane_id: cred_pane,
+                context_id,
+                workspace_root,
                 is_human: false,
+                authority,
             });
         }
         let Some(peer) = peer_pane else {
@@ -4568,6 +4684,7 @@ impl PermissionMonitor {
             context_id: 0,
             workspace_root: PathBuf::new(),
             is_human: false,
+            authority: None,
         })
     }
 

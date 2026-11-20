@@ -137,6 +137,25 @@ pub fn removed_host_request(kind: &str) -> Option<&'static str> {
     }
 }
 
+/// The host-established submitter of a `spawn_pane` (stint 1632). Only the
+/// host constructs it; no wire field selects or omits it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum SpawnSource {
+    /// A host code path. A `from_pane_id` it sets names a pane the host
+    /// already verified.
+    InProcess,
+    /// A command-socket peer and the ancestor pids the kernel reported.
+    SocketPeer(Vec<u32>),
+    /// A command-socket request whose peer identity was not captured.
+    #[default]
+    Unverified,
+    /// A file in the profile's spawn queue: an outside caller with no
+    /// verifiable identity.
+    SpawnQueue,
+    /// A plugin view instance acting in-process (the Assistant's host tools).
+    PluginInstance(u64),
+}
+
 /// App-to-host requests — go to `route_command`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -556,12 +575,11 @@ pub enum HostRequest {
         /// (`plexi pane new --result-schema <json-or-path>`, stint 0666).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         result_schema: Option<serde_json::Value>,
-        /// Host-stamped ancestor pids of the socket peer. The client cannot
-        /// set this: `handle_socket_line` overwrites it from the kernel
-        /// credential captured at accept. `None` means the request did not
-        /// arrive on the command socket (spawn queue, in-process).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        peer_ancestry: Option<Vec<u32>>,
+        /// Who submitted this launch, stamped by the host and never read from
+        /// the wire. A deserialized request is `Unverified` until the socket
+        /// handler stamps the peer it captured (stint 1632).
+        #[serde(skip)]
+        source: SpawnSource,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`
@@ -823,9 +841,11 @@ pub enum HostRequest {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         focus: bool,
         response_file: String,
-        /// Host-stamped socket peer ancestry for unspoofable `spawned_by` provenance.
+        /// Who submitted this launch, stamped by the host and never read from
+        /// the wire: the claimed `parent_pane_id` names the parent only for an
+        /// in-process request (stint 1632).
         #[serde(skip)]
-        peer_ancestry: Option<Vec<u32>>,
+        source: SpawnSource,
     },
 
     /// Blocking pull wait for one or more child agent panes to finish via `plexi agent done`
@@ -897,9 +917,11 @@ pub enum HostRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caller_pane_id: Option<u64>,
         response_file: String,
-        /// Host-stamped socket peer ancestry for unspoofable `spawned_by` provenance.
+        /// Who submitted this open, stamped by the host and never read from
+        /// the wire: `caller_pane_id` names the caller only for an in-process
+        /// request (stint 1632).
         #[serde(skip)]
-        peer_ancestry: Option<Vec<u32>>,
+        source: SpawnSource,
     },
 
     AgentReopen {
@@ -909,6 +931,11 @@ pub enum HostRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subcontext: Option<String>,
         response_file: String,
+        /// Who submitted this request, stamped by the host and never read
+        /// from the wire (stint 1632): the panes it creates are admitted from
+        /// it.
+        #[serde(skip)]
+        source: SpawnSource,
     },
 
     /// Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.
@@ -1315,6 +1342,11 @@ pub enum HostRequest {
         /// If set, the host writes a JSON response (context_id, windows) to this path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
+        /// Who submitted this request, stamped by the host and never read
+        /// from the wire (stint 1632): the panes it creates are admitted from
+        /// it.
+        #[serde(skip)]
+        source: SpawnSource,
     },
 
     /// Create a sub-context under the caller's context, pre-populated with a
@@ -1356,12 +1388,22 @@ pub enum HostRequest {
         /// to this path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
+        /// Who submitted this request, stamped by the host and never read
+        /// from the wire (stint 1632): the panes it creates are admitted from
+        /// it.
+        #[serde(skip)]
+        source: SpawnSource,
     },
     /// Focus existing context by root, or create one. Sent by `plexi context open`.
     FocusContext {
         root: std::path::PathBuf,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
+        /// Who submitted this request, stamped by the host and never read
+        /// from the wire (stint 1632): a context it creates seeds a pane
+        /// admitted from it.
+        #[serde(skip)]
+        source: SpawnSource,
     },
     /// Set/update the root of a context. Sent by `plexi context set-root`.
     /// `context_id` targets the caller's context (PLEXI_CONTEXT_ID); when
@@ -1895,6 +1937,10 @@ impl HostRequest {
                 | Self::CallerContext { .. }
                 | Self::AgentSpawn { .. }
                 | Self::AgentOpen { .. }
+                | Self::AgentReopen { .. }
+                | Self::CreateContext { .. }
+                | Self::CreateSubContext { .. }
+                | Self::FocusContext { .. }
                 | Self::AgentWait { .. }
                 | Self::PaneMessageSend { .. }
                 | Self::SendToPane { .. }

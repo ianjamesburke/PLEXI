@@ -276,13 +276,14 @@ impl PlexiApp {
             name: name.to_string(),
             path: root.clone(),
             tree: egui_tiles::Tree::empty("plexi"),
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
+            tree_history: Default::default(),
         });
         let win_idx = self.windows.len() - 1;
         self.router.push(crate::host::context::Context {
@@ -335,7 +336,7 @@ impl PlexiApp {
                 }
                 let mut touched = false;
                 for &pid in &target_pids {
-                    if let Some(pane) = win.panes.remove(&pid) {
+                    if let Some(pane) = win.take_pane(pid) {
                         moved_panes.push((pid, pane));
                     }
                     if let Some(tile_id) = win.tree.tiles.find_pane(&pid) {
@@ -348,7 +349,9 @@ impl PlexiApp {
                 }
             }
             for (pid, pane) in moved_panes {
-                self.windows[win_idx].panes.insert(pid, pane);
+                if self.windows[win_idx].panes.insert(pid, pane).is_err() {
+                    log::error!("zoom: pane {pid} dropped: its id is taken in window {win_idx}");
+                }
             }
 
             let mut tiles = egui_tiles::Tiles::default();
@@ -386,6 +389,7 @@ impl PlexiApp {
                 }
             });
             self.windows[win_idx].tree = tree;
+            self.windows[win_idx].note_tree_rebuilt();
             if let Some(pid) = prev_focused_pid {
                 if let Some(t) = self.windows[win_idx].tree.tiles.find_pane(&pid) {
                     self.windows[win_idx].focused_pane = Some(t);
@@ -1260,7 +1264,7 @@ impl PlexiApp {
             out.push(format!("◆ {}", ask.summary));
         }
         for win in self.windows.iter().filter(|w| w.context_id == context_id) {
-            for (&pid, pane) in &win.panes {
+            for (&pid, pane) in win.panes.iter() {
                 if out.len() >= max_lines {
                     break;
                 }

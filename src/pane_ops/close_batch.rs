@@ -222,7 +222,7 @@ impl PlexiApp {
     /// The last step of a single close, for one batch pane: a view opened over
     /// another pane hands that pane back; anything else closes.
     fn close_batch_close(&mut self, win_idx: usize, pane: PaneId) {
-        if super::layout::restore_overlay_replacement(&mut self.windows[win_idx].panes, pane) {
+        if super::layout::restore_overlay_replacement(&mut self.windows[win_idx], pane) {
             log::info!("close_batch: pane {pane} overlay closed, covered pane restored");
         } else {
             log::info!("close_batch: pane {pane} closed");

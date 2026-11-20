@@ -7,6 +7,7 @@ pub(crate) mod approval_keyboard;
 pub(crate) mod assistant_host_tools;
 pub mod attention_queue;
 pub mod audio_player_view;
+pub(crate) mod authority_import;
 pub(crate) mod canvas_bindings;
 pub(crate) mod card_gallery;
 mod cli_actions;
@@ -29,6 +30,7 @@ pub(crate) mod input_owner;
 pub(crate) mod input_router;
 pub(crate) mod install_swap;
 mod launch_notices;
+pub(crate) mod launch_plan;
 pub(crate) mod launch_spec;
 mod lifecycle;
 pub mod marketplace;
@@ -49,6 +51,7 @@ pub(crate) mod registry_views;
 pub mod registry_watcher;
 pub(crate) mod render;
 pub(crate) mod screenshot;
+mod sdk_spawn;
 mod secret_get;
 pub mod secrets_view;
 pub(crate) mod startup_error;
@@ -145,13 +148,13 @@ pub(crate) struct TextInputOverlay {
 use crate::config;
 use crate::host::context::Window;
 use crate::host::keys::{self, Action};
-use crate::host::pane::{Pane, TerminalPane};
+use crate::host::pane::Pane;
 use crate::host::shell;
 use crate::spatial::tiling::PaneId;
 use crate::ui::theme::{self, Colors};
 use crate::workspace::router::ContextMove;
 use crate::workspace::WorkspaceFile;
-use egui_term::{BackendSettings, PtyEvent, TerminalTheme};
+use egui_term::{PtyEvent, TerminalTheme};
 use egui_tiles::{Tile, Tree};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -670,6 +673,10 @@ pub struct PlexiApp {
     /// Only overlay-unsafe side effects are held here; safe commands (ShowNotification,
     /// pipes, queries) are dispatched immediately even during overlay ownership.
     pub(crate) overlay_held_cmds: Vec<crate::app::view_trait::ViewCommand>,
+    /// Each context's scope revision: advanced by every host-authorized root
+    /// change. A launch admitted at one revision refuses at another, even if
+    /// the root came back to the same path (stint 1632).
+    pub(crate) context_scope_revisions: HashMap<u64, u64>,
     /// Host agent runtime (Phase C, docs/prm/agent-platform.md). Loaded from
     /// the active workspace's `agents/` dir; ticked once per frame in
     /// `update()` to consume agent event deliveries and finished turns.
@@ -887,10 +894,24 @@ pub(crate) fn handle_socket_line_in(
                     *p = peer_ancestry.unwrap_or(&[]).to_vec();
                     log::info!("pane_ipc: stamped peer ancestry ({} pid(s))", p.len());
                 }
-                crate::protocol::HostRequest::SpawnPane {
-                    peer_ancestry: p, ..
+                crate::protocol::HostRequest::SpawnPane { source, .. }
+                | crate::protocol::HostRequest::AgentSpawn { source, .. }
+                | crate::protocol::HostRequest::AgentOpen { source, .. }
+                | crate::protocol::HostRequest::AgentReopen { source, .. }
+                | crate::protocol::HostRequest::CreateContext { source, .. }
+                | crate::protocol::HostRequest::CreateSubContext { source, .. }
+                | crate::protocol::HostRequest::FocusContext { source, .. } => {
+                    // An uncaptured peer stays `Unverified`: it can never pass
+                    // for an in-process caller (stint 1632).
+                    *source = match peer_ancestry {
+                        Some(pids) if !pids.is_empty() => {
+                            crate::protocol::SpawnSource::SocketPeer(pids.to_vec())
+                        }
+                        _ => crate::protocol::SpawnSource::Unverified,
+                    };
+                    log::info!("pane_ipc: stamped launch source {source:?}");
                 }
-                | crate::protocol::HostRequest::SetAgentState {
+                crate::protocol::HostRequest::SetAgentState {
                     peer_ancestry: p, ..
                 }
                 | crate::protocol::HostRequest::AgentDone {
@@ -903,12 +924,6 @@ pub(crate) fn handle_socket_line_in(
                     peer_ancestry: p, ..
                 }
                 | crate::protocol::HostRequest::CallerContext {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::AgentSpawn {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::AgentOpen {
                     peer_ancestry: p, ..
                 }
                 | crate::protocol::HostRequest::AgentWait {
@@ -1846,7 +1861,7 @@ impl PlexiApp {
                     pending_result_waits: Vec::new(),
                     pending_agent_waits: Vec::new(),
                     child_result_events: HashMap::new(),
-                    child_parent_panes: HashMap::new(),
+                    child_parent_panes: Default::default(),
                     pulled_child_results: std::collections::HashSet::new(),
                     delivered_child_batches: HashMap::new(),
                     agent_tool_waits: Vec::new(),
@@ -1985,6 +2000,7 @@ impl PlexiApp {
                     terminal_traversal_lock: None,
                     focus_journal_path: profile_dir.join("focus-journal.jsonl"),
                     overlay_held_cmds: Vec::new(),
+            context_scope_revisions: HashMap::new(),
                     agent_host: crate::agent::AgentHost::production(config.ai, model_modes),
                     pending_pane_clicks: HashMap::new(),
                     pending_pane_inputs: HashMap::new(),
@@ -2094,13 +2110,14 @@ impl PlexiApp {
                 name: String::new(),
                 path,
                 tree,
-                panes,
+                panes: panes.into(),
                 focused_pane: None,
                 zoomed_pane: None,
                 grid_x: 0,
                 grid_y: 0,
                 window_id: 1,
                 context_id: 1,
+                tree_history: Default::default(),
             }],
             active_window: 0,
             sidebar_visible: true,
@@ -2142,7 +2159,7 @@ impl PlexiApp {
             pending_result_waits: Vec::new(),
             pending_agent_waits: Vec::new(),
             child_result_events: HashMap::new(),
-            child_parent_panes: HashMap::new(),
+            child_parent_panes: Default::default(),
             pulled_child_results: std::collections::HashSet::new(),
             delivered_child_batches: HashMap::new(),
             agent_tool_waits: Vec::new(),
@@ -2279,6 +2296,7 @@ impl PlexiApp {
             terminal_traversal_lock: None,
             focus_journal_path: profile_dir.join("focus-journal.jsonl"),
             overlay_held_cmds: Vec::new(),
+            context_scope_revisions: HashMap::new(),
             agent_host,
             pending_pane_clicks: HashMap::new(),
             pending_pane_inputs: HashMap::new(),
@@ -2300,15 +2318,8 @@ impl PlexiApp {
         // still renders for any genuinely-empty window elsewhere.
         let seed_cwd = app.windows[0].path.clone();
         let seed_context = app.pane_context_env_for_window(0);
-        if app
-            .seed_window_root_pane(
-                0,
-                &seed_context,
-                seed_cwd,
-                crate::pane_ops::create::TerminalSpawnOptions::default(),
-            )
-            .is_some()
-        {
+        let seed = app.desktop_terminal_launch(seed_context, Some(seed_cwd), None);
+        if app.seed_window_root_pane(0, seed).is_some() {
             log::info!("first boot: seeded base root pane in context 1");
         } else {
             log::warn!(
@@ -2376,55 +2387,87 @@ impl PlexiApp {
         if self.team_member_for_pane(pane_id).is_some() {
             return false;
         }
-        let Some((win_idx, _)) = self.find_pane_in_any_window(pane_id) else {
-            return false;
-        };
-        self.windows
-            .get(win_idx)
-            .and_then(|win| win.panes.get(&pane_id))
-            .and_then(|pane| pane.as_terminal())
+        self.terminal_incarnation(pane_id)
             .is_some_and(|term| term.is_human_owned())
     }
 
-    /// The posture belongs to the pane, not the mutable agent registry. It is
-    /// therefore safe to use at admission time after the worker has changed
-    /// directory or its settings.toml has been edited.
-    pub(crate) fn pane_permission_posture(
+    /// The live terminal process in `pane_id`'s slot, covered by an overlay
+    /// or not. Every identity and authority question about a pane (its
+    /// socket peer, ceiling, role, provenance) is asked of this, so covering
+    /// a terminal never changes how its process is authorized (stint 1632).
+    pub(crate) fn terminal_incarnation(
+        &self,
+        pane_id: crate::spatial::tiling::PaneId,
+    ) -> Option<&crate::host::pane::TerminalPane> {
+        let (win_idx, _) = self.find_pane_in_any_window(pane_id)?;
+        self.windows[win_idx]
+            .panes
+            .get(&pane_id)?
+            .terminal_incarnation()
+    }
+
+    /// The live terminal's handle to its grant (stint 1632), covered by an
+    /// overlay or not.
+    pub(crate) fn pane_authority(
+        &self,
+        pane_id: crate::spatial::tiling::PaneId,
+    ) -> Option<std::sync::Arc<crate::broker::pane_authority::LivePaneAuthority>> {
+        self.terminal_incarnation(pane_id)?.authority().cloned()
+    }
+
+    /// The pane's ceiling, from the grant fixed at its admission (stint
+    /// 1632). The grant belongs to the pane, not the mutable agent registry:
+    /// a worker that changed directory or whose settings.toml was edited
+    /// keeps it. `Ok(None)` is the baseline (and every non-terminal pane); a
+    /// terminal without an established grant is refused.
+    pub(crate) fn pane_ceiling(
+        &self,
+        pane_id: crate::spatial::tiling::PaneId,
+    ) -> Result<Option<crate::broker::PermissionPosture>, String> {
+        match self.terminal_incarnation(pane_id) {
+            Some(terminal) => terminal
+                .permission_ceiling()
+                .map(|p| p.cloned())
+                .map_err(|sealed| sealed.to_string()),
+            None => Ok(None),
+        }
+    }
+
+    /// The pane's ceiling, with a sealed grant reading as none (tests).
+    #[cfg(test)]
+    pub(crate) fn pane_ceiling_or_none(
         &self,
         pane_id: crate::spatial::tiling::PaneId,
     ) -> Option<crate::broker::PermissionPosture> {
-        let (window, _) = self.find_pane_in_any_window(pane_id)?;
-        let pane = self.windows[window].panes.get(&pane_id)?.as_terminal()?;
-        if let Some(posture) = pane.agent_permission_posture.clone() {
-            return Some(posture);
+        self.pane_ceiling(pane_id).ok().flatten()
+    }
+
+    /// A context's current scope revision.
+    pub(crate) fn context_scope_revision(&self, context_id: u64) -> u64 {
+        self.context_scope_revisions
+            .get(&context_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The principal a verified event-bus caller subscribes as.
+    pub(crate) fn subscriber_authority(
+        &self,
+        verified_pane: Option<crate::spatial::tiling::PaneId>,
+    ) -> crate::host::event_subscriptions::SubscriberAuthority {
+        use crate::host::event_subscriptions::SubscriberAuthority;
+        let Some(pane_id) = verified_pane else {
+            return SubscriberAuthority::External;
+        };
+        match self.terminal_incarnation(pane_id) {
+            Some(terminal) => match terminal.authority() {
+                Some(authority) => SubscriberAuthority::Pane(
+                    crate::host::plugin_timeline::AdmittedScope::of(authority),
+                ),
+                None => SubscriberAuthority::Sealed,
+            },
+            None => SubscriberAuthority::External,
         }
-        if let Some(posture) = pane
-            .standby_session
-            .as_ref()
-            .and_then(|s| s.permission_posture.clone())
-        {
-            return Some(posture);
-        }
-        let role = pane.agent_role.as_deref().or_else(|| {
-            pane.standby_session
-                .as_ref()
-                .and_then(|s| s.config_name.as_deref())
-        })?;
-        let lookup_root = self.pane_context_authority_root(pane_id);
-        let profile_dir = crate::config::config_dir();
-        let posture = crate::cli::agent::resolve_agent_definition_in(
-            role,
-            &profile_dir,
-            lookup_root.as_deref(),
-        )
-        .ok()
-        .map(|(def, _)| def.posture)?;
-        if let Some(parent_id) = pane.parent_pane_id.filter(|&pid| pid != pane_id) {
-            if let Some(parent_posture) = self.pane_permission_posture(parent_id) {
-                return Some(posture.restricted_by(&parent_posture));
-            }
-        }
-        Some(posture)
     }
 
     /// Canonical context root that bounds a pane's authority.
@@ -2545,7 +2588,7 @@ impl PlexiApp {
         for &candidate in peer_ancestry {
             for window in self.windows.iter() {
                 for (pane_id, pane) in window.panes.iter() {
-                    let Some(terminal) = pane.as_terminal() else {
+                    let Some(terminal) = pane.terminal_incarnation() else {
                         continue;
                     };
                     if terminal.backend.child_pid() == candidate {
@@ -2878,6 +2921,7 @@ impl PlexiApp {
             subscriber_type_override: Some(crate::broker::ActorType::Plugin),
             broker_actor_override: Some(subscriber_plugin_id),
             workspace_root_override: Some(workspace_root),
+            subscriber_authority: crate::host::event_subscriptions::SubscriberAuthority::Plugin,
             context_id_override: context_id,
             // This request never travels over the raw event-bus socket — the
             // pane id is already host-known (the WASM/Python plugin dispatch
@@ -3084,13 +3128,14 @@ impl PlexiApp {
                 name: "Test".into(),
                 path: path.clone(),
                 tree: egui_tiles::Tree::empty("test_tree"),
-                panes: HashMap::new(),
+                panes: Default::default(),
                 focused_pane: None,
                 zoomed_pane: None,
                 grid_x: 0,
                 grid_y: 0,
                 window_id: 1,
                 context_id: 1,
+                tree_history: Default::default(),
             }],
             active_window: 0,
             sidebar_visible: false,
@@ -3138,7 +3183,7 @@ impl PlexiApp {
             pending_result_waits: Vec::new(),
             pending_agent_waits: Vec::new(),
             child_result_events: HashMap::new(),
-            child_parent_panes: HashMap::new(),
+            child_parent_panes: Default::default(),
             pulled_child_results: std::collections::HashSet::new(),
             delivered_child_batches: HashMap::new(),
             agent_tool_waits: Vec::new(),
@@ -3271,6 +3316,7 @@ impl PlexiApp {
             terminal_traversal_lock: None,
             focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
             overlay_held_cmds: Vec::new(),
+            context_scope_revisions: HashMap::new(),
             agent_host: crate::agent::AgentHost::inert(),
             pending_pane_clicks: HashMap::new(),
             pending_pane_inputs: HashMap::new(),
@@ -3295,11 +3341,31 @@ impl PlexiApp {
 
     /// Add a minimal builtin pane directly to window 0 for unit tests.
     /// Returns `(tile_id, pane_id)` — `tile_id` is suitable for `focused_pane` assignments.
+    /// A host-admitted terminal launch into `context_id` for tests.
+    #[cfg(test)]
+    pub(crate) fn test_terminal_launch(
+        &mut self,
+        context_id: u64,
+        cwd: Option<PathBuf>,
+        command: Option<&str>,
+    ) -> crate::pane_ops::construct::TerminalLaunch {
+        let context = self.pane_context_env_for_context(context_id);
+        self.desktop_terminal_launch(
+            context,
+            cwd,
+            command.map(|command| crate::pane_ops::construct::LaunchCommand {
+                command: command.to_string(),
+                close_on_exit: false,
+            }),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn add_test_pane(&mut self) -> (egui_tiles::TileId, u64) {
         let pane_id = self.host.alloc_pane_id();
         let cwd = std::path::PathBuf::from("/tmp");
         let pane = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             permissions: crate::app::permissions::PluginPermissions::builtin(),
@@ -3316,7 +3382,7 @@ impl PlexiApp {
             slots: std::collections::HashMap::new(),
             semantic_state: Default::default(),
         }));
-        self.windows[0].panes.insert(pane_id, pane);
+        self.windows[0].panes.insert(pane_id, pane).unwrap();
         let tile_id = self.windows[0].tree.tiles.insert_pane(pane_id);
         if self.windows[0].tree.root().is_none() {
             self.windows[0].tree.root = Some(tile_id);
@@ -3351,6 +3417,7 @@ impl PlexiApp {
         let pane_id = self.host.alloc_pane_id();
         let cwd = std::path::PathBuf::from("/tmp");
         let pane = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             permissions: crate::app::permissions::PluginPermissions::builtin(),
@@ -3367,118 +3434,12 @@ impl PlexiApp {
             slots: std::collections::HashMap::new(),
             semantic_state: Default::default(),
         }));
-        self.windows[win_idx].panes.insert(pane_id, pane);
+        self.windows[win_idx].panes.insert(pane_id, pane).unwrap();
         let tile_id = self.windows[win_idx].tree.tiles.insert_pane(pane_id);
         if self.windows[win_idx].tree.root().is_none() {
             self.windows[win_idx].tree.root = Some(tile_id);
         }
         (tile_id, pane_id)
-    }
-
-    pub(crate) fn make_backend_settings(
-        pane_id: u64,
-        working_directory: Option<PathBuf>,
-        colors: &Colors,
-        context: &crate::pane_ops::create::PaneContextEnv,
-        agent_pane: bool,
-    ) -> (BackendSettings, host_mcp::PendingPaneCredential) {
-        Self::make_backend_settings_in_profile(
-            &crate::config::config_dir(),
-            pane_id,
-            working_directory,
-            colors,
-            context,
-            agent_pane,
-        )
-    }
-
-    pub(crate) fn make_backend_settings_in_profile(
-        profile_dir: &std::path::Path,
-        pane_id: u64,
-        working_directory: Option<PathBuf>,
-        colors: &Colors,
-        context: &crate::pane_ops::create::PaneContextEnv,
-        agent_pane: bool,
-    ) -> (BackendSettings, host_mcp::PendingPaneCredential) {
-        let crate::pane_ops::create::PaneContextEnv {
-            context_id,
-            name: context_name,
-            description: context_description,
-            root: context_root,
-            depth: context_depth,
-        } = context;
-        let context_id = *context_id;
-        let context_depth = *context_depth;
-        log::info!(
-            "make_backend_settings: pane_id={pane_id} context_id={context_id} \
-             context_name={context_name:?} context_root={context_root:?} context_depth={context_depth} \
-             agent_pane={agent_pane}"
-        );
-        let mut env = shell::build_env_with_secrets(working_directory.as_deref(), !agent_pane);
-        env.remove("PLEXI_PARENT_PANE");
-        env.remove("PLEXI_EPHEMERAL");
-        env.remove("PLEXI_AGENT_HARNESS");
-        env.remove("PLEXI_AGENT_ROLE");
-        env.remove("PLEXI_AGENT_ID");
-        env.remove("PLEXI_AGENT_SPAWNED");
-        env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
-        env.insert("PLEXI_SOCKET".into(), crate::platform::ipc::endpoint());
-        // Host MCP discovery. The bearer is registered against this trusted
-        // pane/context identity; requests cannot supply their own workspace.
-        let workspace_root = context_root
-            .clone()
-            .or_else(|| working_directory.clone())
-            .unwrap_or_default();
-        match crate::broker::gate::PermissionMonitor::for_profile(profile_dir) {
-            Ok(monitor) => {
-                let call_credential = monitor.issue_credential(
-                    Some(pane_id),
-                    context_id,
-                    &workspace_root,
-                    &format!("pane:{pane_id}"),
-                );
-                env.insert("PLEXI_CALL_CREDENTIAL".into(), call_credential);
-            }
-            Err(error) => log::error!("pane_env: no call credential for pane {pane_id}: {error}"),
-        }
-        if let Some((port, token)) =
-            host_mcp::discovery_for_pane(pane_id, context_id, workspace_root)
-        {
-            env.insert("PLEXI_HOST_MCP_PORT".into(), port.to_string());
-            env.insert("PLEXI_HOST_MCP_TOKEN".into(), token);
-        }
-        env.insert("PLEXI_CONTEXT_ID".into(), context_id.to_string());
-        env.insert("PLEXI_CONTEXT_NAME".into(), context_name.to_string());
-        env.insert(
-            "PLEXI_CONTEXT_DESCRIPTION".into(),
-            context_description.to_string(),
-        );
-        if let Some(root) = context_root {
-            env.insert(
-                "PLEXI_CONTEXT_ROOT".into(),
-                root.to_string_lossy().into_owned(),
-            );
-        }
-        env.insert("PLEXI_CONTEXT_DEPTH".into(), context_depth.to_string());
-        if agent_pane {
-            env.insert("PLEXI_AGENT_SPAWNED".into(), "1".into());
-            shell::withhold_terminal_secrets(&mut env, working_directory.as_deref());
-        }
-        crate::broker::seal::scrub_pane_env(&mut env, agent_pane);
-        let shell_path = shell::detect_shell();
-        let args = shell::default_shell_args(&shell_path, agent_pane);
-        (
-            BackendSettings {
-                shell: shell_path,
-                args,
-                env,
-                dynamic_colors: theme::terminal_dynamic_colors(colors),
-                working_directory,
-                // `TerminalPane::new` installs the program-status tap.
-                byte_tap: None,
-            },
-            host_mcp::PendingPaneCredential::new(pane_id),
-        )
     }
 
     /// Single entry point for Cmd+R. Opens the pane rename modal for the
@@ -4715,7 +4676,14 @@ impl PlexiApp {
                 self.step_focus_history_forward();
             }
             Action::NewTab => {
-                self.new_tab(self.active_window, None, false, None, false, true);
+                let win_idx = self.active_window;
+                let anchor = self.focused_tab_anchor(win_idx);
+                let context = self.pane_context_env_for_window(win_idx);
+                let cwd = self.tab_cwd(win_idx, anchor);
+                let launch = self.desktop_terminal_launch(context, Some(cwd), None);
+                if let Err(error) = self.new_tab(win_idx, anchor, launch) {
+                    log::warn!("new_tab: {error}");
+                }
                 self.mark_workspace_dirty();
             }
             Action::ToggleZoom => self.toggle_pane_zoom(),
@@ -4948,7 +4916,7 @@ impl PlexiApp {
                 self.mark_workspace_dirty();
             }
             Action::NewContext => {
-                self.new_context();
+                self.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
                 self.mark_workspace_dirty();
             }
             Action::NewChildContext => {
@@ -5929,6 +5897,31 @@ pub(crate) fn restore_workspace(
         .map(|c| (c.context_id, c.depth))
         .collect();
 
+    // Every terminal's grant, decided in one pass over the whole workspace
+    // before any pane is built (stint 1632).
+    let mut restored_grants =
+        crate::app::authority_import::import(&ws, collaborators.profile_dir, &|role, cwd| {
+            let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(cwd);
+            crate::cli::agent::resolve_agent_definition_in(
+                role,
+                collaborators.profile_dir,
+                lookup_root.as_deref(),
+            )
+            .ok()
+            .map(|(def, _)| crate::broker::pane_authority::AdmittedRole {
+                id: def.id,
+                posture: def.posture,
+                can_call: def.can_call,
+                can_handoff: def.can_handoff,
+            })
+        });
+    // Every saved pane by id, for display provenance only.
+    let saved_panes_by_id: HashMap<u64, crate::workspace::SavedPane> = ws
+        .windows
+        .iter()
+        .flat_map(|win| win.panes.iter())
+        .map(|pane| (pane.id, pane.clone()))
+        .collect();
     for mut saved_win in ws.windows {
         let mut panes = HashMap::new();
         let mut non_skipped_pane_count = 0usize;
@@ -6161,29 +6154,18 @@ pub(crate) fn restore_workspace(
                         depth: ctx_depth,
                     };
                     let mut auto_resume_launched = false;
-                    let (mut settings, pending_credential) =
-                        PlexiApp::make_backend_settings_in_profile(
-                            collaborators.profile_dir,
-                            saved_pane.id,
-                            cwd.clone(),
-                            collaborators.colors,
-                            &context_env,
-                            effective_session.is_some(),
-                        );
+                    let mut worker_env: Vec<(String, String)> = Vec::new();
+                    let mut launch_command = None;
                     let mut effective_session = effective_session;
                     if let Some(ref mut session) = effective_session {
-                        settings
-                            .env
-                            .insert("PLEXI_AGENT_HARNESS".to_string(), session.harness.clone());
+                        worker_env
+                            .push(("PLEXI_AGENT_HARNESS".to_string(), session.harness.clone()));
                         if let Some(ref role) = session.config_name {
-                            settings
-                                .env
-                                .insert("PLEXI_AGENT_ROLE".to_string(), role.clone());
+                            worker_env.push(("PLEXI_AGENT_ROLE".to_string(), role.clone()));
                         }
                         if let Some(parent_id) = session.parent_pane_id {
-                            settings
-                                .env
-                                .insert("PLEXI_PARENT_PANE".to_string(), parent_id.to_string());
+                            worker_env
+                                .push(("PLEXI_PARENT_PANE".to_string(), parent_id.to_string()));
                         }
                         let resolved_spawned_by = session
                             .spawned_by
@@ -6193,7 +6175,7 @@ pub(crate) fn restore_workspace(
                             })
                             .or_else(|| {
                                 let pid = session.parent_pane_id?;
-                                let parent = saved_win.panes.iter().find(|p| p.id == pid)?;
+                                let parent = saved_panes_by_id.get(&pid)?;
                                 if let Some(ref ps) = parent.agent_session {
                                     let label = ps
                                         .config_name
@@ -6207,13 +6189,9 @@ pub(crate) fn restore_workspace(
                             })
                             .unwrap_or_else(|| "human".to_string());
                         session.spawned_by = Some(resolved_spawned_by.clone());
-                        settings
-                            .env
-                            .insert("PLEXI_SPAWNED_BY".to_string(), resolved_spawned_by);
+                        worker_env.push(("PLEXI_SPAWNED_BY".to_string(), resolved_spawned_by));
                         if session.ephemeral {
-                            settings
-                                .env
-                                .insert("PLEXI_EPHEMERAL".to_string(), "1".to_string());
+                            worker_env.push(("PLEXI_EPHEMERAL".to_string(), "1".to_string()));
                         }
                         if should_auto_resume {
                             if let Some(harness) = crate::cli::AgentHarness::parse(&session.harness)
@@ -6242,14 +6220,12 @@ pub(crate) fn restore_workspace(
                                     session.session_id,
                                     session.last_state.as_str()
                                 );
-                                settings
-                                    .env
-                                    .insert("PLEXI_RESUME_COMMAND".to_string(), resume_cmd.clone());
-                                crate::pane_ops::apply_initial_cmd(
-                                    &mut settings,
-                                    &resume_cmd,
-                                    session.ephemeral,
-                                );
+                                worker_env
+                                    .push(("PLEXI_RESUME_COMMAND".to_string(), resume_cmd.clone()));
+                                launch_command = Some(crate::pane_ops::construct::LaunchCommand {
+                                    command: resume_cmd.clone(),
+                                    close_on_exit: session.ephemeral,
+                                });
                                 auto_resume_launched = true;
                             }
                         }
@@ -6273,12 +6249,59 @@ pub(crate) fn restore_workspace(
                             })
                         })
                         .flatten();
-                    match TerminalPane::new(
-                        saved_pane.id,
-                        egui_ctx.clone(),
-                        pty_event_tx.clone(),
-                        settings,
+                    // The pane is constructed under the grant the importer
+                    // decided for it, agent session or not (stint 1632).
+                    let (grant, scope) =
+                        restored_grants.remove(&saved_pane.id).unwrap_or_else(|| {
+                            log::warn!(
+                                "workspace_restore: pane {} has no imported grant; sealed",
+                                saved_pane.id
+                            );
+                            let scope = crate::broker::pane_authority::CredentialScope {
+                                context_id: saved_win.context_id,
+                                workspace_root: PathBuf::new(),
+                            };
+                            (
+                                crate::broker::pane_authority::PaneAuthority::sealed(
+                                    crate::broker::pane_authority::SealReason::UnreadableRecord,
+                                    collaborators.profile_dir,
+                                    saved_pane.id,
+                                    crate::broker::pane_authority::Provenance::LegacyImport,
+                                    None,
+                                    "unknown".into(),
+                                    scope,
+                                ),
+                                crate::broker::pane_authority::LiveScope {
+                                    context_id: saved_win.context_id,
+                                    workspace_root: PathBuf::new(),
+                                    revision: 0,
+                                },
+                            )
+                        });
+                    // Only a session the restore mode keeps narrows the grant.
+                    let grant = if effective_session.is_some() {
+                        crate::app::authority_import::agent_session_narrowed(saved_pane.id, grant)
+                    } else {
+                        grant
+                    };
+                    let launch = crate::pane_ops::construct::TerminalLaunch {
+                        authority: crate::broker::pane_authority::LivePaneAuthority::new(
+                            grant, scope,
+                        ),
+                        context: context_env,
+                        cwd: cwd.clone(),
+                        command: launch_command,
+                        ephemeral: false,
+                        env: worker_env,
+                        mcp: crate::pane_ops::construct::McpBearer::Pane,
+                        profile_dir: collaborators.profile_dir.to_path_buf(),
+                    };
+                    match PlexiApp::construct_terminal_in(
+                        egui_ctx,
+                        pty_event_tx,
+                        collaborators.colors,
                         default_font_size,
+                        launch,
                     ) {
                         Ok(mut pane) => {
                             if auto_resume_launched {
@@ -6310,23 +6333,6 @@ pub(crate) fn restore_workspace(
                                 pane.agent_harness = Some(session.harness.clone());
                                 pane.agent_session_id = session.session_id.clone();
                                 pane.agent_role = session.config_name.clone();
-                                pane.agent_permission_posture = session
-                                    .permission_posture
-                                    .clone()
-                                    .or_else(|| {
-                                        let role = session.config_name.as_deref()?;
-                                        let lookup_root = cwd
-                                            .as_deref()
-                                            .and_then(crate::app::registry::resolve_agent_lookup_workspace_root)
-                                            .or_else(|| ctx_root.cloned());
-                                        crate::cli::agent::resolve_agent_definition_in(
-                                            role,
-                                            collaborators.profile_dir,
-                                            lookup_root.as_deref(),
-                                        )
-                                        .ok()
-                                        .map(|(def, _)| def.posture)
-                                    });
                                 pane.last_blocked_reason = session.last_blocked_reason;
                                 pane.tail_preview = session.tail_preview.clone();
                                 pane.agent_completed = session.last_state
@@ -6351,7 +6357,6 @@ pub(crate) fn restore_workspace(
                                 }
                             }
                             pane_entry = Some(Pane::Terminal(Box::new(pane)));
-                            pending_credential.mark_live();
                         }
                         Err(error) => log::error!(
                             "workspace_restore: terminal pane {} not restored: {error}",
@@ -6396,13 +6401,14 @@ pub(crate) fn restore_workspace(
             },
             path: saved_win.path,
             tree: saved_win.tree,
-            panes,
+            panes: panes.into(),
             focused_pane: saved_win.focused_pane,
             zoomed_pane: None,
             grid_x: saved_win.grid_x,
             grid_y: saved_win.grid_y,
             window_id: saved_win.window_id,
             context_id: saved_win.context_id,
+            tree_history: Default::default(),
         };
         if win.panes.is_empty() {
             win.tree = egui_tiles::Tree::empty("plexi");
@@ -6445,7 +6451,7 @@ pub(crate) fn restore_workspace(
                 })
                 .collect();
             for pid in portal_ids {
-                win.panes.remove(&pid);
+                win.take_pane(pid);
                 if let Some(tile_id) = win.tree.tiles.find_pane(&pid) {
                     win.tree.remove_recursively(tile_id);
                 }

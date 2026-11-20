@@ -510,7 +510,7 @@ impl PlexiApp {
         let active_focused = self.active_focused_pane_id();
         let mut targets = Vec::new();
         for (window_index, window) in self.windows.iter().enumerate() {
-            for (&pane_id, pane) in &window.panes {
+            for (&pane_id, pane) in window.panes.iter() {
                 if matches!(
                     pane.as_view().map(|app| &app.runtime),
                     Some(crate::host::pane::ViewRuntime::Python(_))

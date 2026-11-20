@@ -363,7 +363,29 @@ fn fallback_path_with_homebrew() -> Option<String> {
 }
 
 pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
-    build_env_with_secrets(working_directory, true)
+    build_env_with_secrets(working_directory, SecretPolicy::ALL)
+}
+
+/// Which secret classes a terminal environment may resolve (stint 1632).
+/// A withheld class is never read, so nothing has to be stripped later.
+/// Both classes come only from an explicit working directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SecretPolicy {
+    /// The workspace's `[terminal.env]` allowlist for the cwd's workspace.
+    pub(crate) terminal: bool,
+    /// Folder secrets for the cwd and its ancestors (experiment-gated).
+    pub(crate) folder: bool,
+}
+
+impl SecretPolicy {
+    pub(crate) const ALL: Self = Self {
+        terminal: true,
+        folder: true,
+    };
+    pub(crate) const NONE: Self = Self {
+        terminal: false,
+        folder: false,
+    };
 }
 
 /// Resolve the user's startup-file directory without accepting Plexi's own
@@ -394,11 +416,11 @@ fn is_plexi_zsh_integration_dir(candidate: &str) -> bool {
     })
 }
 
-/// Decide injection before resolving any values: restored agent panes must
-/// not read Keychain secrets only to remove them immediately afterwards.
+/// Decide injection before resolving any values: a withheld class is never
+/// read only to be removed afterwards.
 pub(crate) fn build_env_with_secrets(
     working_directory: Option<&Path>,
-    inject: bool,
+    secrets: SecretPolicy,
 ) -> HashMap<String, String> {
     let mut env = HashMap::new();
 
@@ -428,28 +450,20 @@ pub(crate) fn build_env_with_secrets(
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    if inject {
-        // An explicit spawn cwd is the only directory this environment is
-        // about. Falling back to the process cwd (often the login home, which
-        // holds `~/.plexi-<channel>` and is not a workspace) injects that
-        // directory's terminal secrets into a pane that was not started there.
-        let workspace_root = match working_directory {
-            Some(dir) => {
-                log::info!("shell::build_env: spawn cwd {}", dir.display());
-                match crate::app::registry::resolve_workspace_root(dir) {
-                    Some(root) => Some(root),
-                    None => {
-                        log::info!(
-                            "shell::build_env: no workspace above spawn cwd {}; not using the process directory",
-                            dir.display()
-                        );
-                        None
-                    }
-                }
-            }
-            None => crate::config::active_workspace_root(),
-        };
+    if let Some(dir) = working_directory.filter(|_| secrets.terminal) {
+        // The spawn cwd is the only directory this environment is about: no
+        // process directory, active workspace or login home stands in for it.
+        log::info!("shell::build_env: spawn cwd {}", dir.display());
+        let workspace_root = crate::app::registry::resolve_workspace_root(dir);
+        if workspace_root.is_none() {
+            log::info!(
+                "shell::build_env: no workspace above spawn cwd {}; no terminal secrets",
+                dir.display()
+            );
+        }
         if let Some(root) = workspace_root {
+            #[cfg(test)]
+            secret_reads::record("terminal", &root);
             let store = crate::workspace::secrets::system_store();
             match crate::workspace::secrets::resolve_terminal_env(&root, store) {
                 Ok(resolved) => {
@@ -486,8 +500,11 @@ pub(crate) fn build_env_with_secrets(
 
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     if let Some(dir) = working_directory.filter(|_| {
-        inject && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets)
+        secrets.folder
+            && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets)
     }) {
+        #[cfg(test)]
+        secret_reads::record("folder", dir);
         match crate::workspace::secrets::env_for_cwd(dir, crate::workspace::secrets::folder_store())
         {
             Ok(resolved) => {
@@ -554,103 +571,29 @@ pub(crate) fn build_env_with_secrets(
     env
 }
 
+/// Every secret-value resolution this thread performed, as `(class, path)`,
+/// so tests can assert which directory each resolver was given (stint 1632).
+#[cfg(test)]
+pub(crate) mod secret_reads {
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+
+    thread_local! {
+        static READS: RefCell<Vec<(&'static str, PathBuf)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn record(class: &'static str, path: &Path) {
+        READS.with(|r| r.borrow_mut().push((class, path.to_path_buf())));
+    }
+
+    /// The reads recorded since the last call.
+    pub(crate) fn take() -> Vec<(&'static str, PathBuf)> {
+        READS.with(|r| std::mem::take(&mut *r.borrow_mut()))
+    }
+}
+
 fn preserved_terminal_env_name(name: &str) -> String {
     format!("{TERMINAL_ENV_VALUE_PREFIX}{name}")
-}
-
-/// Drop folder secrets from a terminal spawn when `inject` is false.
-///
-/// A pane-requested `pane new` passes `inject = false`. A human shell and the
-/// scheduler pass `true` and keep the map `build_env` already filled. The
-/// values are not logged.
-pub(crate) fn apply_folder_secret_injection(
-    env: &mut HashMap<String, String>,
-    cwd: Option<&Path>,
-    inject: bool,
-) {
-    if inject {
-        return;
-    }
-    log::info!(
-        "folder_secrets: withholding folder secrets from spawned pane cwd={}",
-        cwd.map(|path| path.display().to_string())
-            .unwrap_or_else(|| "(none)".to_string())
-    );
-    withhold_folder_secrets(env, cwd);
-}
-
-/// Remove folder-secret values from a spawn environment. Used when the
-/// requester is a live pane: that pane must not mint a terminal that receives
-/// another folder's secrets. Names and the `PLEXI_TERMINAL_ENV_VALUE_*`
-/// duplicates are removed. The values are not logged.
-pub(crate) fn withhold_folder_secrets(env: &mut HashMap<String, String>, cwd: Option<&Path>) {
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    {
-        let Some(dir) = cwd else {
-            return;
-        };
-        let dir = crate::platform::path::canonical_or_self(dir);
-        let resolved: Vec<_> = crate::workspace::secrets::list_folder_secrets(
-            crate::workspace::secrets::folder_store(),
-        )
-        .into_iter()
-        .filter(|meta| dir.starts_with(&meta.folder))
-        .collect();
-        if resolved.is_empty() {
-            return;
-        }
-        log::info!(
-            "shell::withhold_folder_secrets: removing {} folder secret(s) for {}",
-            resolved.len(),
-            dir.display()
-        );
-        let mut names: Vec<String> = env
-            .get(TERMINAL_ENV_NAMES_VAR)
-            .map(|raw| {
-                raw.split(':')
-                    .filter(|name| !name.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
-        for meta in resolved {
-            let key = meta.name;
-            names.retain(|name| name != &key);
-            env.remove(&preserved_terminal_env_name(&key));
-            env.remove(&key);
-        }
-        if names.is_empty() {
-            env.remove(TERMINAL_ENV_NAMES_VAR);
-        } else {
-            env.insert(TERMINAL_ENV_NAMES_VAR.into(), names.join(":"));
-        }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        let _ = (env, cwd);
-    }
-}
-
-/// Remove every secret `build_env` placed: the workspace `[terminal.env]`
-/// names, their `PLEXI_TERMINAL_ENV_VALUE_*` copies, and folder secrets. An
-/// agent pane gets none of them, because any process can read the
-/// environment of a same-user parent (stint 0788 verified this from inside
-/// Claude Code's sandbox). Values are not logged.
-pub(crate) fn withhold_terminal_secrets(env: &mut HashMap<String, String>, cwd: Option<&Path>) {
-    withhold_folder_secrets(env, cwd);
-    let Some(names) = env.remove(TERMINAL_ENV_NAMES_VAR) else {
-        return;
-    };
-    let names: Vec<&str> = names.split(':').filter(|name| !name.is_empty()).collect();
-    for name in &names {
-        env.remove(*name);
-        env.remove(&preserved_terminal_env_name(name));
-    }
-    log::info!(
-        "shell::withhold_terminal_secrets: removed {} workspace terminal secret(s) from an agent pane: {}",
-        names.len(),
-        names.join(",")
-    );
 }
 
 fn is_shell_env_name(name: &str) -> bool {
@@ -1452,27 +1395,51 @@ mod tests {
             root: Some(cwd.clone()),
             depth: 0,
         };
-        for agent_pane in [false, true] {
-            let (settings, _pending) = crate::app::PlexiApp::make_backend_settings_in_profile(
-                &profile,
-                1,
-                Some(cwd.clone()),
+        for (pane_id, agent_pane) in [(9_200_001, false), (9_200_002, true)] {
+            let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let record = seen.clone();
+            let _probe = crate::pane_ops::construct::probes::on_backend_entry(move |settings| {
+                *record.borrow_mut() = Some(settings.env.clone());
+                Err("stopped at backend entry".into())
+            });
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut grant = crate::broker::pane_authority::PaneAuthority::for_test(
+                pane_id,
+                crate::broker::pane_authority::Ceiling::Baseline,
+                context.context_id,
+                cwd.clone(),
+            );
+            if !agent_pane {
+                grant.ownership = crate::broker::pane_authority::Ownership::Desktop;
+            }
+            let launch = crate::pane_ops::construct::TerminalLaunch {
+                authority: crate::broker::pane_authority::LivePaneAuthority::admitted(grant),
+                context: context.clone(),
+                cwd: Some(cwd.clone()),
+                command: None,
+                ephemeral: false,
+                env: Vec::new(),
+                mcp: crate::pane_ops::construct::McpBearer::Pane,
+                profile_dir: profile.clone(),
+            };
+            assert!(crate::app::PlexiApp::construct_terminal_in(
+                &egui::Context::default(),
+                &tx,
                 &colors,
-                &context,
-                agent_pane,
+                14.0,
+                launch
+            )
+            .is_err());
+            let env = seen.borrow_mut().take().expect("backend entry reached");
+            assert!(
+                !env.contains_key("NO_COLOR"),
+                "NO_COLOR leaked into a constructed terminal (agent_pane={agent_pane})"
             );
             assert!(
-                !settings.env.contains_key("NO_COLOR"),
-                "NO_COLOR leaked into make_backend_settings (agent_pane={agent_pane})"
+                !env.contains_key("FORCE_COLOR"),
+                "FORCE_COLOR leaked into a constructed terminal (agent_pane={agent_pane})"
             );
-            assert!(
-                !settings.env.contains_key("FORCE_COLOR"),
-                "FORCE_COLOR leaked into make_backend_settings (agent_pane={agent_pane})"
-            );
-            assert_eq!(
-                settings.env.get("COLORTERM").map(String::as_str),
-                Some("truecolor")
-            );
+            assert_eq!(env.get("COLORTERM").map(String::as_str), Some("truecolor"));
         }
     }
 

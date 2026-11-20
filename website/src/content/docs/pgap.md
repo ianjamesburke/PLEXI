@@ -392,7 +392,6 @@ Unified pane spawn primitive (#592). Supersedes SpawnView for new plugins. Requi
 | `name` | `string?` | no |
 | `no_focus` | `boolean` | no |
 | `path` | `string?` | no |
-| `peer_ancestry` | `array?` | no |
 | `request_id` | `string?` | no |
 | `response_file` | `string?` | no |
 | `result_schema` | `any` | no |

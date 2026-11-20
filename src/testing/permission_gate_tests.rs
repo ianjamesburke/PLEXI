@@ -910,14 +910,21 @@ fn all_dispatchers_require_monitor() {
         "a subscription without an exact grant is not allowed"
     );
 
-    let credential = monitor().issue_credential(Some(1), context_id, &workspace, "pane:1");
+    // A live caller: a credential is never proof its pane still exists.
+    let caller = h.add_test_pane();
+    let credential = monitor().issue_credential(
+        Some(caller),
+        context_id,
+        &workspace,
+        &format!("pane:{caller}"),
+    );
     let reply = h.workspace_root().join("app-call-blocked.json");
     h.inject_ipc(HostRequest::CallPluginTool {
         wait_approved: false,
         plugin_id: "probe".to_string(),
         tool: "probe.ping".to_string(),
         input_json: args.to_string(),
-        caller_pane_id: Some(1),
+        caller_pane_id: Some(caller),
         call_credential: Some(credential),
         peer_ancestry: Vec::new(),
         target_pane_id: None,
@@ -1958,22 +1965,26 @@ fn agent_spawned_pane_does_not_get_human_authority() {
 
     // 1. Spawn an agent pane (`agent_pane: true`).
     let (_, human_tile) = h.app.find_pane_in_any_window(human_pane).unwrap();
+    let context = h.app.pane_context_env_for_window(0);
+    let launch = h.app.terminal_launch(
+        crate::broker::pane_authority::GrantSource::OutsideProcess,
+        context,
+        None,
+        None,
+    );
     let agent_pane = h
         .app
-        .spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
-            win_idx: 0,
-            target_tile: human_tile,
-            vertical: true,
-            new_pane_first: false,
-            keep_focus: true,
-            options: crate::pane_ops::create::TerminalSpawnOptions {
-                initial_cmd: None,
-                close_on_exit: false,
-                cwd_override: None,
-                agent_pane: true,
-                inject_folder_secrets: false,
+        .spawn_terminal_pane_at(
+            crate::pane_ops::create::SplitPlacement {
+                win_idx: 0,
+                target_tile: human_tile,
+                vertical: true,
+                new_pane_first: false,
+                keep_focus: true,
             },
-        });
+            launch,
+        )
+        .expect("agent pane");
     assert!(
         !h.app.is_human_owned_pane(agent_pane),
         "agent pane must not be human-owned"
@@ -2601,4 +2612,49 @@ fn a_retired_permission_change_id_cannot_settle_a_repeated_ask() {
             "approve={approve}: no grant minted"
         );
     }
+}
+
+/// Round 3 item 3c: a credential carries the context it was issued in, never
+/// proof that its pane still exists. A plugin call authenticated by the
+/// credential of a pane that has closed is refused before it reaches the
+/// broker, even though the credential names a real context (stint 1632).
+#[test]
+fn launch_plan_credential_of_a_closed_pane_cannot_call_a_plugin() {
+    let mut h = HostHarness::new();
+    isolate_tool_context(&mut h);
+    let _chess = h.launch_repo_view("plugins/chess", &[]);
+    let ctx = h.app.windows[h.app.active_window].context_id;
+    let workspace = h.workspace_root();
+    let closed = h.add_test_pane();
+    let credential =
+        monitor().issue_credential(Some(closed), ctx, &workspace, &format!("pane:{closed}"));
+    let op = format!("gate-{}-closed", uuid::Uuid::new_v4());
+    let live = socket_call(
+        &mut h,
+        Some(closed),
+        Some(&credential),
+        &[],
+        play(0, &op, "e2e4", "game-1"),
+    );
+    assert_eq!(
+        live["error_code"], "permission_required",
+        "a live pane reaches the broker: {live}"
+    );
+    h.app.close_pane_by_id(closed);
+    assert!(h.app.find_pane_in_any_window(closed).is_none());
+    let body = socket_call(
+        &mut h,
+        Some(closed),
+        Some(&credential),
+        &[],
+        play(0, &op, "e2e4", "game-1"),
+    );
+    assert_eq!(body["error_code"], "permission_denied", "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains(&format!("caller pane {closed} not found")),
+        "refused as a dead pane, not by the broker: {body}"
+    );
 }

@@ -31,7 +31,7 @@ pub(crate) struct AgentToolWait {
 }
 
 impl PlexiApp {
-    fn agent_tool_caller(&self, caller: AgentCaller<'_>) -> Result<Option<u64>, String> {
+    pub(crate) fn agent_tool_caller(&self, caller: AgentCaller<'_>) -> Result<Option<u64>, String> {
         let peer = self
             .resolve_socket_peer_pane(caller.peer_ancestry)
             .map(|(id, _, _)| id);
@@ -56,45 +56,50 @@ impl PlexiApp {
         Ok(verified.pane_id)
     }
 
+    /// The caller's `can_call`/`can_handoff` grant, read under the admitted
+    /// origin context's root. The origin is explicit: an outside caller is
+    /// never re-resolved against whatever window is active now (stint 1632).
     pub(crate) fn check_agent_tool_permission(
         &self,
         caller: Option<u64>,
+        origin_context_id: u64,
         role: &str,
         handoff: bool,
     ) -> Result<std::path::PathBuf, String> {
-        let win = match caller {
-            Some(id) => self
+        if let Some(id) = caller {
+            let (win, _) = self
                 .find_pane_in_any_window(id)
-                .map(|(w, _)| w)
-                .ok_or_else(|| format!("caller pane {id} not found"))?,
-            None => self.active_window,
-        };
+                .ok_or_else(|| format!("caller pane {id} not found"))?;
+            let now = self.windows[win].context_id;
+            if now != origin_context_id {
+                return Err(format!(
+                    "caller pane {id} is in context {now}, not its admitted context {origin_context_id}"
+                ));
+            }
+        }
         let root = self
             .router
             .iter()
-            .find(|c| c.context_id == self.windows[win].context_id)
+            .find(|c| c.context_id == origin_context_id)
             .map(|c| c.root.clone())
-            .unwrap_or_else(|| self.windows[win].path.clone());
-        let caller_role = caller
-            .and_then(|id| self.windows[win].panes.get(&id))
-            .and_then(|p| p.as_terminal())
-            .and_then(|t| t.agent_role.as_deref());
-        if let Some(caller_role) = caller_role {
-            let workspace = crate::app::registry::resolve_agent_lookup_workspace_root(&root);
-            let (def, _) = crate::cli::agent::resolve_agent_definition_in(
-                caller_role,
-                &crate::config::config_dir(),
-                workspace.as_deref(),
-            )?;
-            let allowed = if handoff {
-                &def.can_handoff
-            } else {
-                &def.can_call
-            };
-            if !allowed.iter().any(|r| r == role) {
+            .ok_or_else(|| format!("origin context {origin_context_id} no longer exists"))?;
+        // The caller's delegation limit is fixed in its grant (stint 1632):
+        // a plain shell carries the limits it inherited with no role of its
+        // own, and a role file edited later cannot widen a running pane.
+        if let Some(id) = caller {
+            let authority = self
+                .pane_authority(id)
+                .ok_or_else(|| format!("permission_denied: caller pane {id} has no grant"))?;
+            let grant = authority.grant();
+            grant.posture().map_err(|sealed| sealed.to_string())?;
+            if !grant.delegation(handoff).allows(role) {
                 let field = if handoff { "can_handoff" } else { "can_call" };
+                log::info!(
+                    "agent_call: pane {id} (role {:?}) may not delegate '{role}' ({field})",
+                    grant.role
+                );
                 return Err(format!(
-                    "permission_denied: agent '{caller_role}' does not list '{role}' in {field}"
+                    "permission_denied: pane {id} may not delegate to '{role}': not in its {field} grant"
                 ));
             }
         }
@@ -106,138 +111,42 @@ impl PlexiApp {
         request: AgentCallRequest<'_>,
     ) -> Result<(), String> {
         super::agent_open::admit_agent_mesh_route("AgentCall")?;
-        if request.task.trim().is_empty() {
-            return Err("task must be non-empty".into());
-        }
-        let parent = self.agent_tool_caller(AgentCaller {
-            pane_id: request.parent_pane_id,
-            credential: request.credential,
-            peer_ancestry: request.peer_ancestry,
-        })?;
-        if request.handoff && parent.is_none() {
-            return Err("handoff requires a live caller pane".into());
-        }
-        let root = self.check_agent_tool_permission(parent, request.role, request.handoff)?;
-        let lookup_root = if parent.is_some() {
-            root.clone()
-        } else {
-            request
-                .cwd
-                .map(std::path::PathBuf::from)
-                .unwrap_or(root.clone())
-        };
-        let workspace = crate::app::registry::resolve_agent_lookup_workspace_root(&lookup_root);
-        let (def, _) = crate::cli::agent::resolve_agent_definition_in(
-            request.role,
-            &crate::config::config_dir(),
-            workspace.as_deref(),
-        )?;
-        let harness = def
-            .harness
-            .as_ref()
-            .ok_or("agent role has no CLI harness")?;
-        let adapter = crate::cli::agent::resolve_harness_adapter(harness)?;
-        let handoff_result = if request.handoff {
-            let old = parent.ok_or("handoff requires a caller")?;
-            let raw = json!({"status":"handed_off","role":def.id,"task":request.task}).to_string();
-            let mut result_state = self.pane_results.get(&old).cloned().unwrap_or_default();
-            result_state
-                .write_payload(&raw)
-                .map_err(|error| format!("handoff completion: {}", error.message()))?;
-            Some(raw)
-        } else {
-            None
-        };
-        let task = if request.handoff {
-            let old = parent.ok_or("handoff requires a caller")?;
-            let terminal = self
-                .windows
-                .iter()
-                .find_map(|w| w.panes.get(&old))
-                .and_then(|p| p.as_terminal());
-            let packet = json!({"from_pane_id":old,"from_role":terminal.and_then(|t| t.agent_role.as_deref()),
-                "session":terminal.and_then(|t| t.build_saved_agent_session()),"task":request.task});
-            format!(
-                "# Restore packet\n{packet}\n\n# Successor task\n{}",
-                request.task
-            )
-        } else {
-            request.task.to_string()
-        };
-        let command = crate::cli::agent::with_auto_state_hooks(
-            adapter,
-            crate::cli::agent::build_agent_spawn_command(&def, adapter, &task)?,
-        );
-        let managed = request
-            .worktree
-            .map(|branch| crate::host::worktree::create_worktree(&lookup_root, branch))
-            .transpose()?;
-        let cwd = managed
-            .as_ref()
-            .map(|w| w.path.clone())
-            .unwrap_or(lookup_root);
-        let child_parent = if request.handoff {
-            parent
-                .and_then(|id| self.windows.iter().find_map(|w| w.panes.get(&id)))
-                .and_then(|p| p.as_terminal())
-                .and_then(|t| t.parent_pane_id)
-        } else {
-            parent
-        };
-        let subcontext = child_parent.map(|id| format!("agent-tools-{id}"));
-        let origin_context = parent
-            .and_then(|id| self.find_pane_in_any_window(id))
-            .map(|(win, _)| self.windows[win].context_id);
-        let spawned = self.spawn_agent_worker_pane(
-            &def.id,
-            adapter.harness.as_str(),
-            &command,
-            request.task,
-            subcontext.as_deref(),
-            harness.ephemeral,
-            child_parent,
-            Some(cwd),
-            harness.result_schema.clone(),
-            None,
-            true,
-            origin_context,
-        );
-        let (pane_id, _) = match spawned {
-            Ok(pair) => pair,
-            Err(error) => {
-                if let Some(wt) = managed {
-                    log::warn!(
-                        "agent_call: launch failed; retaining worktree {}: {error}",
-                        wt.path.display()
-                    );
-                }
-                return Err(error);
-            }
-        };
-        if let Some(wt) = managed {
-            self.pane_worktrees.insert(pane_id, wt);
-        }
+        let plan = self.admit_agent_call(&request)?;
+        let child_parent = plan.child_parent;
+        let parent = plan.authority.parent;
+        let (role, task) = (plan.authority.role.clone(), plan.task.clone());
+        // `apply_launch` owns any checkout from preparation to the pane, and
+        // reclaims or retains it on refusal (stint 1632).
+        let pane_id = self
+            .apply_launch(super::launch_plan::LaunchPlan::Agent(Box::new(plan)))
+            .map_err(|refused| refused.to_string())?;
         self.agent_tool_children.insert(pane_id, child_parent);
-        log::info!("agent_call: spawned role={} parent={child_parent:?} child={pane_id} async={} handoff={}", def.id, request.asynchronous, request.handoff);
-        if request.handoff {
-            if let Some(old) = parent {
-                // Preserve the successor reference as the caller's validated completion.
-                let result = handoff_result.ok_or("missing prepared handoff completion")?;
-                self.handle_pane_ipc_request(crate::protocol::HostRequest::AgentDone {
-                    peer_ancestry: None,
-                    pane_id: old,
-                    result: Some(result),
-                    summary: Some(format!("Handed off to {}", def.id)),
-                    response_file: request.response_file.to_string(),
-                });
-                // Handoff transfers ownership, independently of ordinary done's
-                // optional ephemeral cleanup. The successor exists and the
-                // prevalidated completion has been published before closing.
-                if self.find_pane_in_any_window(old).is_some() {
-                    self.close_pane_by_id(old);
-                }
-                log::info!("agent_handoff: closed caller={old} successor={pane_id}");
+        log::info!("agent_call: spawned role={role} parent={child_parent:?} child={pane_id} async={} handoff={}", request.asynchronous, request.handoff);
+        if let (true, Some(old)) = (request.handoff, parent) {
+            // The caller's completion names its successor and is published
+            // before the caller closes; the reply carries both ids.
+            let raw = super::launch_plan::handoff_completion(&role, &task, pane_id);
+            let summary = format!("Handed off to {role}");
+            let mut reply = self.complete_agent_pane(old, Some(&raw), Some(&summary));
+            if reply["ok"] != true {
+                log::warn!(
+                    "agent_handoff: completion refused; closing successor={pane_id}: {reply}"
+                );
+                self.reclaim_pane_worktree(pane_id);
+                self.close_pane_by_id(pane_id);
+                return Err(format!(
+                    "handoff completion: {}",
+                    reply["error"].as_str().unwrap_or("rejected")
+                ));
             }
+            reply["successor_pane_id"] = json!(pane_id);
+            crate::rpc::write_json_response(request.response_file, reply);
+            // Handoff transfers ownership, independently of ordinary done's
+            // optional ephemeral cleanup.
+            if self.find_pane_in_any_window(old).is_some() {
+                self.close_pane_by_id(old);
+            }
+            log::info!("agent_handoff: closed caller={old} successor={pane_id}");
         } else if request.asynchronous {
             crate::rpc::write_json_response(
                 request.response_file,
@@ -349,7 +258,7 @@ impl PlexiApp {
                 })
             {
                 self.conjoined_contexts.insert(win.context_id, parent);
-                for (&id, pane) in &win.panes {
+                for (&id, pane) in win.panes.iter() {
                     if pane
                         .as_terminal()
                         .is_some_and(|t| t.parent_pane_id == Some(parent))
@@ -850,34 +759,47 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("AGENT.md"), "Lead").unwrap();
         std::fs::write(dir.join("settings.toml"), "[agent]\nid='lead'\ndisplay_name='Lead'\n[harness]\ncli='pi'\ncan_call=['tester']\ncan_handoff=['writer']").unwrap();
-        h.app.windows[0]
+        // The pane runs under a lead grant: its delegation limits are fixed
+        // in it, not read from the role file at call time (stint 1632).
+        let mut grant = crate::broker::pane_authority::PaneAuthority::for_test(
+            parent,
+            crate::broker::pane_authority::Ceiling::Baseline,
+            h.app.windows[0].context_id,
+            root.clone(),
+        );
+        grant.role = Some("lead".into());
+        grant.can_call = crate::broker::pane_authority::Delegation::only(&["tester".into()]);
+        grant.can_handoff = crate::broker::pane_authority::Delegation::only(&["writer".into()]);
+        let terminal = h.app.windows[0]
             .panes
             .get_mut(&parent)
             .unwrap()
             .as_terminal_mut()
-            .unwrap()
-            .agent_role = Some("lead".into());
+            .unwrap();
+        terminal.agent_role = Some("lead".into());
+        terminal.replace_grant_for_test(grant);
+        let ctx = h.app.windows[0].context_id;
         assert!(h
             .app
-            .check_agent_tool_permission(Some(parent), "tester", false)
+            .check_agent_tool_permission(Some(parent), ctx, "tester", false)
             .is_ok());
         assert!(h
             .app
-            .check_agent_tool_permission(Some(parent), "writer", true)
+            .check_agent_tool_permission(Some(parent), ctx, "writer", true)
             .is_ok());
         assert!(h
             .app
-            .check_agent_tool_permission(Some(parent), "writer", false)
+            .check_agent_tool_permission(Some(parent), ctx, "writer", false)
             .unwrap_err()
             .contains("can_call"));
         assert!(h
             .app
-            .check_agent_tool_permission(Some(parent), "tester", true)
+            .check_agent_tool_permission(Some(parent), ctx, "tester", true)
             .unwrap_err()
             .contains("can_handoff"));
         assert!(h
             .app
-            .check_agent_tool_permission(Some(u64::MAX), "tester", false)
+            .check_agent_tool_permission(Some(u64::MAX), ctx, "tester", false)
             .is_err());
     }
 }

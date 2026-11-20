@@ -127,6 +127,7 @@ pub(crate) fn disabled_plugin_pane(saved: &SavedPane) -> Pane {
         saved.plugin_id
     );
     Pane::View(Box::new(ViewPane {
+        incarnation: Default::default(),
         pip_status: None,
         id: saved.id,
         runtime: ViewRuntime::Builtin(Box::new(DisabledPluginView {

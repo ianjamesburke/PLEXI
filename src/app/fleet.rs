@@ -67,7 +67,7 @@ impl PlexiApp {
             .unwrap_or(120);
         let mut dismissed_ids = Vec::new();
         for win in &mut self.windows {
-            for (&pane_id, pane) in &mut win.panes {
+            for (&pane_id, pane) in win.panes.iter_mut() {
                 let Some(t) = pane.as_terminal_mut() else {
                     continue;
                 };
@@ -149,7 +149,7 @@ impl PlexiApp {
                 .find(|c| c.context_id == win.context_id)
                 .map(|c| c.name.displayed().to_string())
                 .unwrap_or_default();
-            for (&pane_id, pane) in &win.panes {
+            for (&pane_id, pane) in win.panes.iter() {
                 let Some(t) = pane.as_terminal() else {
                     continue;
                 };
@@ -815,7 +815,7 @@ mod tests {
 
         // Close pane: record_closed_agent_pane archives it into history
         let win_path = h.app.windows[0].path.clone();
-        let pane = h.app.windows[0].panes.remove(&pi_pane).unwrap();
+        let pane = h.app.windows[0].take_pane(pi_pane).unwrap();
         h.app.record_closed_agent_pane(1, &win_path, &pane);
 
         // Once closed, failure moves into older view

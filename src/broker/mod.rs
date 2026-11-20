@@ -14,6 +14,7 @@ pub mod gate;
 pub(crate) mod host_key;
 pub mod integrity;
 mod needs_you_store;
+pub(crate) mod pane_authority;
 pub mod principal;
 pub(crate) mod seal;
 
@@ -680,28 +681,71 @@ struct PostureTable {
 }
 
 impl PermissionPosture {
-    /// Combine a worker's requested posture with its parent's immutable
-    /// posture. Postures only ever restrict: an inherited deny or ask cannot
-    /// be relaxed by a child definition.
-    pub fn restricted_by(mut self, parent: &Self) -> Self {
-        for (child, inherited) in [(&mut self.deny, &parent.deny), (&mut self.ask, &parent.ask)] {
-            for rule in inherited {
-                if !child.contains(rule) {
-                    child.push(rule.clone());
-                }
-            }
-        }
-        // `allow` < `ask` < `deny`: inheriting a parent must never turn an
-        // approval requirement (or denial) into a less restrictive default.
-        let restrictiveness = |decision| match decision {
-            Decision::Allow => 0,
-            Decision::Ask => 1,
-            Decision::Deny => 2,
+    /// The pointwise meet of two postures: for every target, the stricter of
+    /// the two rules as `GrantStore::evaluate_at` applies them. Used to narrow
+    /// a worker's requested posture by its parent's immutable posture. The
+    /// result is canonical: sorted, disjoint exceptions against the merged
+    /// default, so the meet is commutative, associative and idempotent.
+    /// An explicit deny survives under a deny default because, unlike a
+    /// fallback deny, it also beats an exact allow grant (stint 1632).
+    pub fn restricted_by(self, parent: &Self) -> Self {
+        let default_posture = if TargetRule::of_default(parent.default_posture)
+            > TargetRule::of_default(self.default_posture)
+        {
+            parent.default_posture
+        } else {
+            self.default_posture
         };
-        if restrictiveness(parent.default_posture) > restrictiveness(self.default_posture) {
-            self.default_posture = parent.default_posture;
+        let default_rule = TargetRule::of_default(default_posture);
+        let mut meet = Self {
+            default_posture,
+            allow: Vec::new(),
+            ask: Vec::new(),
+            deny: Vec::new(),
+        };
+        let targets: std::collections::BTreeSet<&String> = [&self, parent]
+            .into_iter()
+            .flat_map(|p| p.allow.iter().chain(&p.ask).chain(&p.deny))
+            .collect();
+        for target in targets {
+            let rule = self.rule_for(target).max(parent.rule_for(target));
+            if rule == default_rule {
+                continue;
+            }
+            let list = match rule {
+                TargetRule::Allow => &mut meet.allow,
+                TargetRule::Ask => &mut meet.ask,
+                // A fallback deny other than the merged default cannot occur:
+                // only a deny default produces one, and it wins the default.
+                TargetRule::FallbackDeny | TargetRule::ExplicitDeny => &mut meet.deny,
+            };
+            list.push(target.clone());
         }
-        self
+        meet
+    }
+
+    /// True when this posture denies `target` before any grant is consulted
+    /// or, under a deny default, with no grant to yield to: an explicit deny,
+    /// or a deny default the target is not excepted from.
+    pub(crate) fn denies(&self, target: &str) -> bool {
+        matches!(
+            self.rule_for(target),
+            TargetRule::FallbackDeny | TargetRule::ExplicitDeny
+        )
+    }
+
+    /// The rule this posture applies to `target`, decoded with
+    /// `evaluate_at`'s precedence: explicit deny, ask, allow, then default.
+    fn rule_for(&self, target: &str) -> TargetRule {
+        if Self::lists_contain(&self.deny, target) {
+            TargetRule::ExplicitDeny
+        } else if Self::lists_contain(&self.ask, target) {
+            TargetRule::Ask
+        } else if Self::lists_contain(&self.allow, target) {
+            TargetRule::Allow
+        } else {
+            TargetRule::of_default(self.default_posture)
+        }
     }
 
     /// Load the user-level posture from `<config_dir>/config.toml`.
@@ -769,6 +813,26 @@ impl PermissionPosture {
 
     fn lists_contain(list: &[String], target_id: &str) -> bool {
         list.iter().any(|t| t == target_id)
+    }
+}
+
+/// One target's posture rule, loosest first. A fallback deny (the default)
+/// yields to an exact allow grant; an explicit deny does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TargetRule {
+    Allow,
+    Ask,
+    FallbackDeny,
+    ExplicitDeny,
+}
+
+impl TargetRule {
+    fn of_default(default_posture: Decision) -> Self {
+        match default_posture {
+            Decision::Allow => Self::Allow,
+            Decision::Ask => Self::Ask,
+            Decision::Deny => Self::FallbackDeny,
+        }
     }
 }
 
@@ -1643,6 +1707,254 @@ mod tests {
         assert_eq!(child.default_posture, Decision::Deny);
         assert!(child.deny.contains(&"secret.get".to_string()));
         assert!(child.ask.contains(&"pane.send".to_string()));
+    }
+
+    /// No target may be decided more loosely for the child than for its
+    /// deny-by-default parent: the child's own `allow`/`ask` entries are not
+    /// escapes the parent granted.
+    #[test]
+    fn child_posture_is_never_looser_than_a_deny_default_parent() {
+        let parent = PermissionPosture {
+            default_posture: Decision::Deny,
+            allow: vec!["fs.read".into()],
+            ask: vec!["pane.send".into()],
+            deny: vec![],
+        };
+        let child = PermissionPosture {
+            default_posture: Decision::Ask,
+            allow: vec!["fs.read".into(), "net.fetch".into()],
+            ask: vec!["secret.get".into()],
+            deny: vec![],
+        };
+        let merged = child.clone().restricted_by(&parent);
+        let store = GrantStore::default();
+        let strictness = |d: Decision| match d {
+            Decision::Allow => 0,
+            Decision::Ask => 1,
+            Decision::Deny => 2,
+        };
+        for target in ["fs.read", "pane.send", "net.fetch", "secret.get", "other"] {
+            let request = PermissionRequest::new(
+                ActorType::Agent,
+                "child",
+                TargetType::HostTool,
+                target,
+                None,
+            );
+            let of = |p: &PermissionPosture| store.evaluate(&request, Some(p));
+            let floor = strictness(of(&parent)).max(strictness(of(&child)));
+            assert!(
+                strictness(of(&merged)) >= floor,
+                "{target}: merged {:?} is looser than parent {:?} / child {:?}",
+                of(&merged),
+                of(&parent),
+                of(&child)
+            );
+        }
+    }
+
+    fn posture(
+        default_posture: Decision,
+        allow: &[&str],
+        ask: &[&str],
+        deny: &[&str],
+    ) -> PermissionPosture {
+        let owned = |l: &[&str]| l.iter().map(|t| t.to_string()).collect();
+        PermissionPosture {
+            default_posture,
+            allow: owned(allow),
+            ask: owned(ask),
+            deny: owned(deny),
+        }
+    }
+
+    /// The grant states the meet oracle evaluates under: none, an exact
+    /// allow, ask or deny, and an expired allow.
+    fn oracle_stores(target: &str, now: i64) -> Vec<(&'static str, GrantStore)> {
+        let grant = |decision, expires_at| {
+            let mut binding = agent_binding();
+            binding.target_id = target.to_string();
+            let mut record = GrantRecord::from_binding(
+                &binding,
+                decision,
+                GrantDuration::Always,
+                GrantSource::User,
+                "oracle",
+            );
+            record.expires_at = expires_at;
+            let mut store = GrantStore::default();
+            store.record(record);
+            store
+        };
+        vec![
+            ("none", GrantStore::default()),
+            ("exact allow", grant(Decision::Allow, None)),
+            ("exact ask", grant(Decision::Ask, None)),
+            ("exact deny", grant(Decision::Deny, None)),
+            ("expired allow", grant(Decision::Allow, Some(now - 1))),
+        ]
+    }
+
+    fn assert_canonical(p: &PermissionPosture) {
+        let mut all: Vec<&String> = p.allow.iter().chain(&p.ask).chain(&p.deny).collect();
+        for list in [&p.allow, &p.ask, &p.deny] {
+            assert!(
+                list.windows(2).all(|w| w[0] < w[1]),
+                "unsorted or duplicate: {p:?}"
+            );
+        }
+        let n = all.len();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), n, "exceptions overlap: {p:?}");
+        let default_rule = TargetRule::of_default(p.default_posture);
+        for target in all {
+            assert_ne!(
+                p.rule_for(target),
+                default_rule,
+                "redundant exception {target}: {p:?}"
+            );
+        }
+    }
+
+    /// Exhaustive single-target oracle (stint 1632): for every pair of
+    /// postures over one mentioned target and one unmentioned target, the
+    /// meet decides each request exactly as the stricter operand does, for
+    /// the same request, time and store, under every grant state.
+    #[test]
+    fn child_posture_meet_matches_the_stricter_evaluation_exhaustively() {
+        let strictness = |d: Decision| match d {
+            Decision::Allow => 0,
+            Decision::Ask => 1,
+            Decision::Deny => 2,
+        };
+        let now = 1_000_000;
+        let mut operands = Vec::new();
+        for default_posture in [Decision::Allow, Decision::Ask, Decision::Deny] {
+            for bits in 0..8u8 {
+                let pick = |bit: u8| if bits & bit != 0 { vec!["t"] } else { vec![] };
+                operands.push(posture(default_posture, &pick(1), &pick(2), &pick(4)));
+            }
+        }
+        let mut checked = 0;
+        for a in &operands {
+            for b in &operands {
+                let meet = a.clone().restricted_by(b);
+                for target in ["t", "unmentioned"] {
+                    let mut binding = agent_binding();
+                    binding.target_id = target.to_string();
+                    let request = PermissionRequest::exact(&binding);
+                    for (grants, store) in oracle_stores(target, now) {
+                        let of = |p: &PermissionPosture| store.evaluate_at(&request, Some(p), now);
+                        let stricter = if strictness(of(a)) >= strictness(of(b)) {
+                            of(a)
+                        } else {
+                            of(b)
+                        };
+                        assert_eq!(
+                            of(&meet),
+                            stricter,
+                            "{target} under {grants}: meet {meet:?} of {a:?} and {b:?}"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 24 * 24 * 2 * 5);
+        for a in &operands {
+            for b in &operands {
+                assert_canonical(&a.clone().restricted_by(b));
+            }
+        }
+    }
+
+    /// Round two's witness and its converse: neither side's exception
+    /// escapes the other's fallback deny, and an explicit deny under a deny
+    /// default still beats an exact allow grant.
+    #[test]
+    fn child_posture_meet_keeps_fallback_and_explicit_denies() {
+        let child = posture(Decision::Deny, &[], &[], &[]);
+        let parent = posture(Decision::Deny, &[], &["pane.send"], &[]);
+        assert_eq!(child.clone().restricted_by(&parent), child);
+        assert_eq!(parent.clone().restricted_by(&child), child);
+
+        let explicit = posture(Decision::Deny, &[], &[], &["pane.send"]);
+        let meet = explicit
+            .clone()
+            .restricted_by(&posture(Decision::Allow, &[], &[], &[]));
+        assert_eq!(meet, explicit);
+        let mut binding = agent_binding();
+        binding.target_id = "pane.send".to_string();
+        let mut store = GrantStore::default();
+        store.record(GrantRecord::from_binding(
+            &binding,
+            Decision::Allow,
+            GrantDuration::Always,
+            GrantSource::User,
+            "g",
+        ));
+        let request = PermissionRequest::exact(&binding);
+        assert_eq!(store.evaluate_at(&request, Some(&meet), 0), Decision::Deny);
+        assert_eq!(
+            store.evaluate_at(&request, Some(&child), 0),
+            Decision::Allow
+        );
+    }
+
+    /// Generated multi-target postures: the meet is commutative,
+    /// associative, idempotent, canonical, and independent of duplicate or
+    /// reordered exceptions.
+    #[test]
+    fn child_posture_meet_is_a_canonical_semilattice() {
+        let mut seed: u64 = 0x1632;
+        let mut next = move |n: u64| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) % n
+        };
+        let targets = ["a", "b", "c", "d"];
+        let generate = |next: &mut dyn FnMut(u64) -> u64| {
+            let default_posture =
+                [Decision::Allow, Decision::Ask, Decision::Deny][next(3) as usize];
+            let mut lists: [Vec<String>; 3] = Default::default();
+            for _ in 0..next(7) {
+                let list = &mut lists[next(3) as usize];
+                list.push(targets[next(4) as usize].to_string());
+            }
+            let [allow, ask, deny] = lists;
+            PermissionPosture {
+                default_posture,
+                allow,
+                ask,
+                deny,
+            }
+        };
+        for _ in 0..400 {
+            let (a, b, c) = (
+                generate(&mut next),
+                generate(&mut next),
+                generate(&mut next),
+            );
+            let meet = |x: &PermissionPosture, y: &PermissionPosture| x.clone().restricted_by(y);
+            let ab = meet(&a, &b);
+            assert_canonical(&ab);
+            assert_eq!(ab, meet(&b, &a), "commutative: {a:?} {b:?}");
+            assert_eq!(
+                meet(&ab, &c),
+                meet(&a, &meet(&b, &c)),
+                "associative: {a:?} {b:?} {c:?}"
+            );
+            assert_eq!(meet(&a, &a), meet(&meet(&a, &a), &a), "idempotent: {a:?}");
+            assert_eq!(meet(&ab, &ab), ab, "idempotent on canonical: {ab:?}");
+            let mut shuffled = a.clone();
+            for list in [&mut shuffled.allow, &mut shuffled.ask, &mut shuffled.deny] {
+                list.extend(list.clone());
+                list.reverse();
+            }
+            assert_eq!(meet(&shuffled, &b), ab, "duplicates and order: {a:?}");
+        }
     }
 
     #[test]

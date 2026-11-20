@@ -3367,7 +3367,7 @@ impl HeadlessBackend {
                 let cwd = self.h.workspace_root().to_path_buf();
                 self.h.with_app_mut(|app| {
                     let pane_id = app.host.alloc_pane_id();
-                    let mut terminal = crate::host::pane::TerminalPane::new(
+                    let mut terminal = crate::host::pane::TerminalPane::fixture(
                         pane_id,
                         app.ctx.clone(),
                         app.pty_event_tx.clone(),
@@ -3398,10 +3398,19 @@ impl HeadlessBackend {
                     terminal.tail_preview =
                         Some("Review stopped; inspect output and retry.".into());
                     let window = &mut app.windows[app.active_window];
-                    window.panes.insert(
-                        pane_id,
-                        crate::host::pane::Pane::Terminal(Box::new(terminal)),
-                    );
+                    if window
+                        .panes
+                        .insert(
+                            pane_id,
+                            crate::host::pane::Pane::Terminal(Box::new(terminal)),
+                        )
+                        .is_err()
+                    {
+                        return Err(SceneError::new(
+                            "pane_id_taken",
+                            &format!("scene pane {pane_id} id is taken"),
+                        ));
+                    }
                     let terminal_tile = window.tree.tiles.insert_pane(pane_id);
                     window.tree.root = Some(match window.tree.root {
                         Some(root) => window.tree.tiles.insert_tab_tile(vec![root, terminal_tile]),

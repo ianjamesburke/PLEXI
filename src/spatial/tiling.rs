@@ -473,7 +473,7 @@ impl Default for PortalPreview {
 }
 
 pub struct PlexiBehavior<'a> {
-    pub panes: &'a mut HashMap<PaneId, Pane>,
+    pub(crate) panes: &'a mut crate::host::context::PaneMap,
     pub child_agent_strips: HashMap<PaneId, Vec<crate::agent::fleet::AgentRow>>,
     pub pane_lineage: HashMap<PaneId, String>,
     pub child_agent_dive: Option<PaneId>,
@@ -483,6 +483,8 @@ pub struct PlexiBehavior<'a> {
     /// which also sets `new_focused` (stint 1340: a click clears selection).
     pub clicked: Option<TileId>,
     pub close_exited: Option<TileId>,
+    /// A sealed terminal whose notice asked for a new pane in its place.
+    pub reopen_sealed: Option<PaneId>,
     /// Set when a tab bar switches or reorders tabs.
     pub tab_action: Option<(TileId, TabBarAction)>,
     pub tab_info: HashMap<TileId, TabGroupInfo>,
@@ -545,6 +547,9 @@ pub struct PlexiBehavior<'a> {
     /// Presentation snapshot for the active strip (`StripLayout`).
     pub strip_layout: Option<crate::strip::StripLayout>,
     pub resized: bool,
+    /// A tile was dropped somewhere new this frame: a structural edit that
+    /// voids container anchors admitted before it (stint 1632).
+    pub tile_dropped: bool,
 }
 
 /// Where one pane is presented this frame. The tiled tree derives it from the
@@ -797,6 +802,9 @@ impl PlexiBehavior<'_> {
             if close_exited {
                 self.close_exited = Some(tile_id);
             }
+            if std::mem::take(&mut terminal.reopen_requested) {
+                self.reopen_sealed = Some(*pane_id);
+            }
             if tab_action.is_some() {
                 self.tab_action = tab_action;
             }
@@ -873,8 +881,10 @@ impl PlexiBehavior<'_> {
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
     fn on_edit(&mut self, action: egui_tiles::EditAction) {
-        if matches!(action, egui_tiles::EditAction::TileResized) {
-            self.resized = true;
+        match action {
+            egui_tiles::EditAction::TileResized => self.resized = true,
+            egui_tiles::EditAction::TileDropped => self.tile_dropped = true,
+            egui_tiles::EditAction::TileDragged | egui_tiles::EditAction::TabSelected => {}
         }
     }
 

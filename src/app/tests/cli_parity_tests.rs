@@ -373,13 +373,14 @@ fn workspace_snapshot_marks_other_windows_outside_active_view() {
         name: "second".into(),
         path: h.workspace_root(),
         tree: egui_tiles::Tree::empty("second"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id,
         context_id: context,
+        tree_history: Default::default(),
     });
     let (tile, second) = h.app.add_view_pane_in_window(1, "second");
     h.app.windows[1].focused_pane = Some(tile);

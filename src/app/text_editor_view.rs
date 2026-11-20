@@ -1650,6 +1650,7 @@ impl TextEditorView {
             from_pane_id: self.host_pane_id,
             request_id: None,
             target_context: None,
+            emitter: None,
         });
     }
 }
@@ -5367,7 +5368,7 @@ mod data_safety_tests {
             .app
             .windows
             .iter()
-            .flat_map(|w| &w.panes)
+            .flat_map(|w| w.panes.iter())
             .find_map(|(id, pane)| {
                 (pane.as_view()?.runtime.type_id() == "text-editor").then_some(*id)
             })

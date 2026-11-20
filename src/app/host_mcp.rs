@@ -29,7 +29,7 @@ use crate::host::event_subscriptions::{HostSubscribeReply, HostSubscribeRequest}
 use std::collections::HashMap;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Hard cap on `subscribe_and_wait` blocking, kept under common MCP client
@@ -60,146 +60,118 @@ struct McpCaller {
     /// Set when the bearer is an agent run token rather than a pane credential.
     run_id: Option<String>,
     actor_id: Option<String>,
+    /// The incarnation a pane bearer was registered from, or the pane a run
+    /// token acts for (stint 1632). `context_id` and `workspace_root` are one
+    /// snapshot of its scope at `scope_revision`.
+    authority: Option<Arc<LivePaneAuthority>>,
+    scope_revision: Option<u64>,
 }
 
-#[derive(Default)]
-struct CredentialRegistry {
-    by_token: HashMap<String, McpCaller>,
-    by_pane: HashMap<u64, String>,
+use crate::broker::pane_authority::{LivePaneAuthority, SealedAuthority};
+
+/// Pane bearers by token. Each registration is its own entry under a token
+/// minted for it, holding only its incarnation's handle: the token is the
+/// registration's exact handle, so a second registration under the same pane
+/// id gets a different token and only its owner can revoke it. Scope is read
+/// through the handle at every request, never stored here (stint 1632).
+static CREDENTIALS: OnceLock<Mutex<HashMap<String, Arc<LivePaneAuthority>>>> = OnceLock::new();
+
+fn credentials() -> &'static Mutex<HashMap<String, Arc<LivePaneAuthority>>> {
+    CREDENTIALS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-static CREDENTIALS: OnceLock<Mutex<CredentialRegistry>> = OnceLock::new();
+/// The pane each team run token acts for, so a run-token request is bounded
+/// by that pane's ceiling as well as the run's own limits.
+static RUN_PANES: OnceLock<Mutex<HashMap<String, Arc<LivePaneAuthority>>>> = OnceLock::new();
 
-fn credentials() -> &'static Mutex<CredentialRegistry> {
-    CREDENTIALS.get_or_init(|| Mutex::new(CredentialRegistry::default()))
+fn run_panes() -> &'static Mutex<HashMap<String, Arc<LivePaneAuthority>>> {
+    RUN_PANES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Register or refresh the credential injected into one pane. The caller's
-/// context and workspace come from host-owned pane construction, never the
-/// MCP request.
-fn register_pane_credential(pane_id: u64, context_id: u64, workspace_root: PathBuf) -> String {
-    let mut registry = credentials().lock().unwrap();
-    if let Some(token) = registry.by_pane.get(&pane_id).cloned() {
-        registry.by_token.insert(
-            token.clone(),
-            McpCaller {
-                pane_id,
-                context_id,
-                workspace_root,
-                run_id: None,
-                actor_id: None,
-            },
-        );
-        return token;
-    }
+/// Register a new bearer for one pane incarnation.
+fn register_pane_credential(binding: Arc<LivePaneAuthority>) -> String {
     let token = uuid::Uuid::new_v4().to_string();
-    registry.by_pane.insert(pane_id, token.clone());
-    registry.by_token.insert(
-        token.clone(),
-        McpCaller {
-            pane_id,
-            context_id,
-            workspace_root: workspace_root.clone(),
-            run_id: None,
-            actor_id: None,
-        },
-    );
     log::info!(
-        "host_mcp: registered scoped credential pane={pane_id} context={context_id} workspace={}",
-        workspace_root.display()
+        "host_mcp: registered scoped credential pane={} incarnation={}",
+        binding.pane_id(),
+        binding.incarnation()
     );
+    credentials().lock().unwrap().insert(token.clone(), binding);
     token
 }
 
-/// Return the singleton endpoint plus a credential bound to this host-owned
-/// pane identity. This is the only discovery surface pane environments use.
-pub(crate) fn discovery_for_pane(
-    pane_id: u64,
-    context_id: u64,
-    workspace_root: PathBuf,
-) -> Option<(u16, String)> {
-    discovery().map(|port| {
-        let token = register_pane_credential(pane_id, context_id, workspace_root);
-        (port, token)
-    })
+/// Register the bearer for a constructed pane from its incarnation handle
+/// and return it with the endpoint. Only pane construction calls this
+/// (`PaneCredentials::issue`).
+pub(crate) fn register_pane_bearer(binding: &Arc<LivePaneAuthority>) -> Option<(u16, String)> {
+    discovery().map(|port| (port, register_pane_credential(binding.clone())))
 }
 
-pub(crate) fn revoke_pane_credentials(pane_id: u64) {
-    let mut registry = credentials().lock().unwrap();
-    if let Some(token) = registry.by_pane.remove(&pane_id) {
-        registry.by_token.remove(&token);
-        log::info!("host_mcp: revoked scoped credential pane={pane_id}");
-    }
-}
-
-/// Owns a credential between environment construction and installation of the
-/// terminal pane. Dropping an uncommitted lease closes the credential, so every
-/// early return from `TerminalPane::new` is safe by construction.
-pub(crate) struct PendingPaneCredential {
-    pane_id: Option<u64>,
-}
-
-impl PendingPaneCredential {
-    pub(crate) fn new(pane_id: u64) -> Self {
-        Self {
-            pane_id: Some(pane_id),
-        }
-    }
-
-    pub(crate) fn mark_live(mut self) {
-        self.pane_id = None;
-    }
-}
-
-impl Drop for PendingPaneCredential {
-    fn drop(&mut self) {
-        if let Some(pane_id) = self.pane_id.take() {
-            revoke_pane_credentials(pane_id);
-        }
-    }
-}
-
-/// Update the trusted workspace attached to a live pane without rotating its
-/// credential. Context roots can change while their panes remain alive — the
-/// pane's `context_id` never changes on a root move, so it is carried forward
-/// from the existing credential rather than taken as a parameter here.
-pub(crate) fn rebind_pane_credential(pane_id: u64, workspace_root: PathBuf) {
-    let mut registry = credentials().lock().unwrap();
-    let Some(token) = registry.by_pane.get(&pane_id).cloned() else {
-        return;
-    };
-    let Some(context_id) = registry
-        .by_token
-        .get(&token)
-        .map(|caller| caller.context_id)
-    else {
-        return;
-    };
-    registry.by_token.insert(
-        token,
-        McpCaller {
-            pane_id,
-            context_id,
-            workspace_root: workspace_root.clone(),
-            run_id: None,
-            actor_id: None,
-        },
-    );
+/// Record that the run `token` acts for the pane `binding` names.
+pub(crate) fn associate_run_token(token: &str, binding: &Arc<LivePaneAuthority>) {
     log::info!(
-        "host_mcp: rebound scoped credential pane={pane_id} context={context_id} workspace={}",
-        workspace_root.display()
+        "host_mcp: run token acts for pane={} incarnation={}",
+        binding.pane_id(),
+        binding.incarnation()
     );
+    run_panes()
+        .lock()
+        .unwrap()
+        .insert(token.to_string(), binding.clone());
+}
+
+/// Revoke exactly the registration `token` names (a pane bearer, or a run
+/// token's association with its pane). Another registration for the same
+/// pane id is untouched.
+pub(crate) fn revoke_pane_bearer(token: &str) {
+    if let Some(binding) = credentials().lock().unwrap().remove(token) {
+        log::info!(
+            "host_mcp: revoked scoped credential pane={} incarnation={}",
+            binding.pane_id(),
+            binding.incarnation()
+        );
+    }
+    if let Some(binding) = run_panes().lock().unwrap().remove(token) {
+        log::info!("host_mcp: run token released pane={}", binding.pane_id());
+    }
 }
 
 fn authenticate(token: &str) -> Option<McpCaller> {
-    if let Some(caller) = credentials().lock().unwrap().by_token.get(token).cloned() {
-        return Some(caller);
+    let pane = credentials().lock().unwrap().get(token).cloned();
+    if let Some(binding) = pane {
+        if binding.is_revoked() {
+            log::warn!(
+                "host_mcp: bearer for revoked pane {} incarnation {}; refused",
+                binding.pane_id(),
+                binding.incarnation()
+            );
+            return None;
+        }
+        let scope = binding.scope();
+        return Some(McpCaller {
+            pane_id: binding.pane_id(),
+            context_id: scope.context_id,
+            workspace_root: scope.workspace_root,
+            run_id: None,
+            actor_id: None,
+            authority: Some(binding),
+            scope_revision: Some(scope.revision),
+        });
     }
     let auth = crate::agent::runs::authenticate_run_token(token)?;
+    let pane = run_panes().lock().unwrap().get(token).cloned();
+    if pane.as_ref().is_some_and(|p| p.is_revoked()) {
+        log::warn!(
+            "host_mcp: run {} acts for a revoked pane; refused",
+            auth.run_id
+        );
+        return None;
+    }
     log::info!(
-        "host_mcp: authenticated agent run {} actor={}",
+        "host_mcp: authenticated agent run {} actor={} pane={:?}",
         auth.run_id,
-        auth.actor_id
+        auth.actor_id,
+        pane.as_ref().map(|p| p.pane_id())
     );
     Some(McpCaller {
         pane_id: 0,
@@ -207,21 +179,59 @@ fn authenticate(token: &str) -> Option<McpCaller> {
         workspace_root: auth.workspace,
         run_id: Some(auth.run_id),
         actor_id: Some(auth.actor_id),
+        scope_revision: pane.as_ref().map(|p| p.scope().revision),
+        authority: pane,
     })
 }
 
+/// Register a bearer for a test pane under a baseline grant.
 #[cfg(test)]
 pub(crate) fn register_pane_credential_for_test(
     pane_id: u64,
     context_id: u64,
     workspace_root: PathBuf,
 ) -> String {
-    register_pane_credential(pane_id, context_id, workspace_root)
+    let grant = crate::broker::pane_authority::PaneAuthority::for_test(
+        pane_id,
+        crate::broker::pane_authority::Ceiling::Baseline,
+        context_id,
+        workspace_root,
+    );
+    register_pane_credential(LivePaneAuthority::admitted(grant))
+}
+
+/// Make sure an MCP endpoint is bound, so constructed panes get bearers.
+#[cfg(test)]
+pub(crate) fn ensure_test_discovery() {
+    if discovery().is_some() {
+        return;
+    }
+    let (tx, _rx) = UiMailbox::<HostSubscribeRequest>::channel(
+        std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new()),
+        "host-mcp-test-discovery",
+    );
+    let dir = tempfile::tempdir().expect("mcp profile dir");
+    start_host_mcp_server(tx, dir.path()).expect("mcp test server");
+    // The accept thread keeps using this directory.
+    std::mem::forget(dir);
+}
+
+/// The ceiling an authenticated bearer is evaluated under.
+#[cfg(test)]
+pub(crate) fn authenticated_posture_for_test(
+    token: &str,
+) -> Option<Option<crate::broker::PermissionPosture>> {
+    authenticate(token).map(|caller| caller.ceiling().ok().flatten())
 }
 
 #[cfg(test)]
 pub(crate) fn authenticated_workspace_for_test(token: &str) -> Option<PathBuf> {
     authenticate(token).map(|caller| caller.workspace_root)
+}
+
+#[cfg(test)]
+pub(crate) fn authenticated_context_for_test(token: &str) -> Option<u64> {
+    authenticate(token).map(|caller| caller.context_id)
 }
 
 /// Persisted host-MCP endpoint (`config_dir/host_mcp.json`). Credentials are
@@ -412,12 +422,17 @@ fn handle_connection(
         .unwrap_or_else(|_| "unknown".to_string());
     crate::mcp_http::handle_connection(stream, authenticate, |json, caller| {
         let dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::from_namespaced_registry(
-            crate::plexi_ai::tool_dispatch::DispatchScope::new(
-                caller.pane_id,
-                format!("mcp:pane:{}", caller.pane_id),
-                caller.workspace_root.clone(),
-                caller.context_id,
-            ),
+            crate::plexi_ai::tool_dispatch::DispatchScope {
+                // The pane's ceiling, from the grant its bearer carries. A
+                // sealed grant never reaches here: `call_route` refuses it.
+                posture: caller.ceiling().ok().flatten(),
+                ..crate::plexi_ai::tool_dispatch::DispatchScope::new(
+                    caller.pane_id,
+                    format!("mcp:pane:{}", caller.pane_id),
+                    caller.workspace_root.clone(),
+                    caller.context_id,
+                )
+            },
             // Host only (stint 1291); elsewhere a diskless monitor that grants nothing.
             crate::broker::gate::PermissionMonitor::for_profile(profile).unwrap_or_else(|error| {
                 log::error!("host_mcp: diskless permission monitor: {error}");
@@ -455,57 +470,14 @@ fn handle_connection(
                     caller.pane_id,
                     caller.workspace_root.display()
                 );
-                let result = if tool_name.starts_with("agents.") {
-                    match serde_json::to_string(&arguments) {
-                        Ok(input_json) => {
-                            let auth = crate::agent::runs::McpAuth {
-                                workspace: caller.workspace_root.clone(),
-                                run_id: caller.run_id.clone(),
-                                actor_id: caller.actor_id.clone(),
-                                pane_id: caller.pane_id,
-                                context_id: caller.context_id,
-                            };
-                            crate::agent::runs::mcp_call(&auth, tool_name, &input_json)
-                        }
-                        Err(error) => Err(format!("serialize tool arguments: {error}")),
-                    }
-                } else {
-                    match tool_name {
-                        "permissions_list" => {
-                            tool_permissions("list", &arguments, profile, &caller)
-                        }
-                        "permissions_revoke" => {
-                            tool_permissions("revoke", &arguments, profile, &caller)
-                        }
-                        "permissions_reset" => {
-                            tool_permissions("reset", &arguments, profile, &caller)
-                        }
-                        "permissions_allow" => {
-                            tool_permissions("allow", &arguments, profile, &caller)
-                        }
-                        "list_event_streams" => tool_list_event_streams(&caller),
-                        "subscribe_and_wait" => {
-                            tool_subscribe_and_wait(&arguments, subscribe_tx, &caller)
-                        }
-                        other => {
-                            let input_json = serde_json::to_string(&arguments)
-                                .map_err(|error| format!("serialize tool arguments: {error}"));
-                            match input_json {
-                                Ok(input_json) => {
-                                    let call_id = format!("mcp-{}", uuid::Uuid::new_v4());
-                                    let result =
-                                        dispatcher.dispatch_call(call_id, other, input_json);
-                                    match (result.output_json, result.error) {
-                                        (_, Some(error)) => Err(error),
-                                        (Some(output), None) => Ok(output),
-                                        (None, None) => Ok("null".to_string()),
-                                    }
-                                }
-                                Err(error) => Err(error),
-                            }
-                        }
-                    }
-                };
+                let result = call_route(
+                    McpRoute::parse(tool_name),
+                    &arguments,
+                    &caller,
+                    &dispatcher,
+                    subscribe_tx,
+                    profile,
+                );
                 match result {
                     Ok(text) => serde_json::json!({
                         "jsonrpc": "2.0", "id": id,
@@ -527,16 +499,152 @@ fn handle_connection(
     })
 }
 
+impl McpCaller {
+    /// The pane ceiling every route of this caller is bounded by: the
+    /// posture of the grant its bearer (or run token) acts for. `Ok(None)`
+    /// for a baseline grant or a run with no pane; a sealed grant refuses.
+    fn ceiling(&self) -> Result<Option<crate::broker::PermissionPosture>, SealedAuthority> {
+        match &self.authority {
+            Some(authority) => authority.grant().posture().map(|p| p.cloned()),
+            None => Ok(None),
+        }
+    }
+}
+
+/// Every `tools/call` route of the host MCP server, and how the caller's
+/// pane ceiling bounds it (stint 1632). [`call_route`] matches it
+/// exhaustively, so a new route cannot be added without deciding:
+///
+/// - A route the broker admits (`subscribe_and_wait`, `agents.*`, every
+///   dispatched tool) takes the ceiling into that admission, where
+///   `GrantStore::evaluate_at` applies it with its grant precedence: an
+///   explicit deny beats every grant; a deny default yields only to an exact
+///   allow grant.
+/// - A route the broker does not admit (`permissions_*`,
+///   `list_event_streams`) is refused when the ceiling denies its tool name,
+///   explicitly or by a deny default; there is no grant for it to yield to.
+///   An `ask` or `allow` leaves it to the route's own rules: it raises no
+///   prompt of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpRoute<'a> {
+    Permissions(PermissionsOp),
+    ListEventStreams,
+    SubscribeAndWait,
+    Agents(&'a str),
+    Dispatched(&'a str),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermissionsOp {
+    List,
+    Revoke,
+    Reset,
+    Allow,
+}
+
+impl<'a> McpRoute<'a> {
+    fn parse(tool: &'a str) -> Self {
+        match tool {
+            "permissions_list" => Self::Permissions(PermissionsOp::List),
+            "permissions_revoke" => Self::Permissions(PermissionsOp::Revoke),
+            "permissions_reset" => Self::Permissions(PermissionsOp::Reset),
+            "permissions_allow" => Self::Permissions(PermissionsOp::Allow),
+            "list_event_streams" => Self::ListEventStreams,
+            "subscribe_and_wait" => Self::SubscribeAndWait,
+            agents if agents.starts_with("agents.") => Self::Agents(agents),
+            other => Self::Dispatched(other),
+        }
+    }
+
+    /// The tool name a ceiling names this route by, when the broker does
+    /// not admit the route; `None` when it does.
+    fn unbrokered_target(self) -> Option<&'static str> {
+        match self {
+            Self::Permissions(PermissionsOp::List) => Some("permissions_list"),
+            Self::Permissions(PermissionsOp::Revoke) => Some("permissions_revoke"),
+            Self::Permissions(PermissionsOp::Reset) => Some("permissions_reset"),
+            Self::Permissions(PermissionsOp::Allow) => Some("permissions_allow"),
+            Self::ListEventStreams => Some("list_event_streams"),
+            Self::SubscribeAndWait | Self::Agents(_) | Self::Dispatched(_) => None,
+        }
+    }
+}
+
+/// The one gate every MCP tool call passes: bound `route` by the caller's
+/// ceiling (see [`McpRoute`]), then run it.
+fn call_route(
+    route: McpRoute<'_>,
+    arguments: &serde_json::Value,
+    caller: &McpCaller,
+    dispatcher: &crate::plexi_ai::tool_dispatch::ToolDispatcher,
+    subscribe_tx: &UiMailbox<HostSubscribeRequest>,
+    profile: &std::path::Path,
+) -> Result<String, String> {
+    let ceiling = caller.ceiling().map_err(|sealed| {
+        log::info!("host_mcp: pane {} is sealed; refused", caller.pane_id);
+        serde_json::json!({"ok": false, "error_code": "permission_denied", "error": sealed.to_string()})
+            .to_string()
+    })?;
+    if let (Some(target), Some(posture)) = (route.unbrokered_target(), ceiling.as_ref()) {
+        if posture.denies(target) {
+            log::info!(
+                "host_mcp: {target} refused by the ceiling of pane {}",
+                caller.pane_id
+            );
+            return Err(
+                serde_json::json!({"ok": false, "error_code": "permission_denied", "tool": target})
+                    .to_string(),
+            );
+        }
+    }
+    match route {
+        McpRoute::Permissions(op) => tool_permissions(op, arguments, profile, caller),
+        McpRoute::ListEventStreams => tool_list_event_streams(caller),
+        McpRoute::SubscribeAndWait => tool_subscribe_and_wait(arguments, subscribe_tx, caller),
+        McpRoute::Agents(tool) => {
+            let input_json = serde_json::to_string(arguments)
+                .map_err(|error| format!("serialize tool arguments: {error}"))?;
+            let auth = crate::agent::runs::McpAuth {
+                workspace: caller.workspace_root.clone(),
+                run_id: caller.run_id.clone(),
+                actor_id: caller.actor_id.clone(),
+                pane_id: caller.pane_id,
+                context_id: caller.context_id,
+                posture: ceiling,
+            };
+            crate::agent::runs::mcp_call(&auth, tool, &input_json)
+        }
+        // The dispatcher was built with the same ceiling in its scope.
+        McpRoute::Dispatched(tool) => {
+            let input_json = serde_json::to_string(arguments)
+                .map_err(|error| format!("serialize tool arguments: {error}"))?;
+            let call_id = format!("mcp-{}", uuid::Uuid::new_v4());
+            let result = dispatcher.dispatch_call(call_id, tool, input_json);
+            match (result.output_json, result.error) {
+                (_, Some(error)) => Err(error),
+                (Some(output), None) => Ok(output),
+                (None, None) => Ok("null".to_string()),
+            }
+        }
+    }
+}
+
 /// Permission-monitor tools. MCP callers are agents: revoke narrows, reset and
 /// allow file Needs you and change nothing.
 fn tool_permissions(
-    op: &str,
+    op: PermissionsOp,
     arguments: &serde_json::Value,
     profile: &std::path::Path,
     caller: &McpCaller,
 ) -> Result<String, String> {
     let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile)
         .map_err(|error| error.to_string())?;
+    let op = match op {
+        PermissionsOp::List => "list",
+        PermissionsOp::Revoke => "revoke",
+        PermissionsOp::Reset => "reset",
+        PermissionsOp::Allow => "allow",
+    };
     if op == "list" {
         let entries = monitor.list_entries();
         log::info!(
@@ -647,6 +755,15 @@ fn tool_subscribe_and_wait(
         subscriber_type_override: None,
         broker_actor_override: Some(actor_id),
         workspace_root_override: Some(caller.workspace_root.clone()),
+        subscriber_authority: match &caller.authority {
+            Some(authority) => crate::host::event_subscriptions::SubscriberAuthority::Pane(
+                crate::host::plugin_timeline::AdmittedScope {
+                    authority: authority.clone(),
+                    revision: caller.scope_revision.unwrap_or_default(),
+                },
+            ),
+            None => crate::host::event_subscriptions::SubscriberAuthority::Run,
+        },
         context_id_override: Some(caller.context_id),
         // The authenticated bearer credential already establishes this
         // caller's identity (bound to `caller.pane_id`/`context_id` at
@@ -870,7 +987,7 @@ mod tests {
         let port = start_host_mcp_server(tx, &profile).unwrap();
         // The accept thread keeps using this directory after the test returns.
         std::mem::forget(dir);
-        let token = register_pane_credential(pane_id, 1, workspace_root);
+        let token = register_pane_credential_for_test(pane_id, 1, workspace_root);
         (port, token, profile)
     }
 
@@ -882,40 +999,94 @@ mod tests {
         assert_eq!(loaded.port, 4242);
     }
 
+    fn live(
+        pane_id: u64,
+        default_posture: crate::broker::Decision,
+        deny: &[&str],
+        root: &Path,
+    ) -> Arc<LivePaneAuthority> {
+        LivePaneAuthority::admitted(crate::broker::pane_authority::PaneAuthority::for_test(
+            pane_id,
+            crate::broker::pane_authority::Ceiling::Posture {
+                posture: crate::broker::PermissionPosture {
+                    default_posture,
+                    allow: Vec::new(),
+                    ask: Vec::new(),
+                    deny: deny.iter().map(|d| d.to_string()).collect(),
+                },
+            },
+            1,
+            root.to_path_buf(),
+        ))
+    }
+
+    fn posture_of(live: &LivePaneAuthority) -> Option<crate::broker::PermissionPosture> {
+        live.grant().posture().ok().flatten().cloned()
+    }
+
+    /// A pane bearer resolves the grant its incarnation carries; a revoked
+    /// incarnation or registration authenticates nothing (stint 1632).
     #[test]
-    fn pending_pane_credentials_revoke_on_abort_and_survive_commit() {
-        let aborted_ids = [65_300_301u64, 65_300_302u64];
-        let aborted_tokens: Vec<_> = aborted_ids
-            .iter()
-            .map(|pane_id| {
-                register_pane_credential(
-                    *pane_id,
-                    1,
-                    PathBuf::from(format!("/workspace/aborted-{pane_id}")),
-                )
-            })
-            .collect();
-        let pending: Vec<_> = aborted_ids
-            .iter()
-            .map(|pane_id| PendingPaneCredential::new(*pane_id))
-            .collect();
-
-        drop(pending);
-
-        assert!(aborted_tokens
-            .iter()
-            .all(|token| authenticate(token).is_none()));
-
-        let live_id = 65_300_303u64;
-        let live_root = PathBuf::from("/workspace/live");
-        let live_token = register_pane_credential(live_id, 1, live_root.clone());
-        PendingPaneCredential::new(live_id).mark_live();
-
-        assert_eq!(
-            authenticate(&live_token).map(|caller| caller.workspace_root),
-            Some(live_root)
+    fn pane_bearer_carries_its_grant_and_refuses_once_revoked() {
+        let root = PathBuf::from("/workspace/unbound");
+        let binding = live(
+            65_300_310,
+            crate::broker::Decision::Deny,
+            &["tool.secret"],
+            &root,
         );
-        revoke_pane_credentials(live_id);
+        let token = register_pane_credential(binding.clone());
+        assert_eq!(
+            authenticated_posture_for_test(&token),
+            Some(posture_of(&binding))
+        );
+        binding.revoke();
+        assert!(
+            authenticate(&token).is_none(),
+            "a revoked incarnation is refused"
+        );
+        let fresh = live(65_300_310, crate::broker::Decision::Deny, &[], &root);
+        let token = register_pane_credential(fresh);
+        revoke_pane_bearer(&token);
+        assert!(authenticate(&token).is_none(), "revoked bearer refused");
+    }
+
+    /// Round 3 item 3a: each registration is its own handle. A second
+    /// registration under a reused pane id gets a different token; the first
+    /// bearer keeps resolving its own incarnation, and revoking either leaves
+    /// the other intact.
+    #[test]
+    fn pane_bearer_registrations_are_exact_handles() {
+        let pane_id = 900_100_002u64;
+        let root = PathBuf::from("/workspace/host-mcp-reuse");
+        let first = live(pane_id, crate::broker::Decision::Deny, &[], &root);
+        let second = live(pane_id, crate::broker::Decision::Ask, &[], &root);
+        let first_token = register_pane_credential(first.clone());
+        let second_token = register_pane_credential(second.clone());
+        assert_ne!(
+            first_token, second_token,
+            "a reused pane id gets a new token"
+        );
+        assert_eq!(
+            authenticated_posture_for_test(&first_token),
+            Some(posture_of(&first)),
+            "the first bearer still resolves its own incarnation"
+        );
+        revoke_pane_bearer(&second_token);
+        assert_eq!(
+            authenticated_posture_for_test(&first_token),
+            Some(posture_of(&first)),
+            "the second owner's revocation leaves the first registration"
+        );
+        let third_token = register_pane_credential(second.clone());
+        revoke_pane_bearer(&first_token);
+        assert!(authenticate(&first_token).is_none());
+        assert_eq!(
+            authenticated_posture_for_test(&third_token),
+            Some(posture_of(&second)),
+            "the first owner's revocation leaves the later registration"
+        );
+        revoke_pane_bearer(&third_token);
     }
 
     #[test]
@@ -985,7 +1156,8 @@ mod tests {
         let provider_a_pane = 900_007_002u64;
         let provider_b_pane = 900_007_003u64;
         let workspace_a = PathBuf::from("/workspace/host-mcp-a");
-        let caller_token = register_pane_credential(caller_pane, context_a, workspace_a.clone());
+        let caller_token =
+            register_pane_credential_for_test(caller_pane, context_a, workspace_a.clone());
         let (provider_tx, provider_rx) = std::sync::mpsc::channel();
         let (other_tx, _other_rx) = std::sync::mpsc::channel();
         let tool = |name: &str| AiTool {
@@ -1117,7 +1289,7 @@ mod tests {
 
         tool_dispatch::unregister(provider_a_pane);
         tool_dispatch::unregister(provider_b_pane);
-        revoke_pane_credentials(caller_pane);
+        revoke_pane_bearer(&caller_token);
         let (status, _) = post(
             port,
             Some(&caller_token),
@@ -1195,6 +1367,115 @@ mod tests {
         assert_eq!(event["event"], stream);
         assert_eq!(event["summary"], "it tick 1");
         assert_eq!(event["payload"]["count"], 1);
+    }
+
+    /// A second bearer for the pane `token` belongs to, under `posture`.
+    fn bearer_with_ceiling(token: &str, posture: crate::broker::PermissionPosture) -> String {
+        let caller = authenticate(token).expect("live bearer");
+        let binding =
+            LivePaneAuthority::admitted(crate::broker::pane_authority::PaneAuthority::for_test(
+                caller.pane_id,
+                crate::broker::pane_authority::Ceiling::Posture { posture },
+                caller.context_id,
+                caller.workspace_root,
+            ));
+        register_pane_credential(binding)
+    }
+
+    fn tool_call(port: u16, token: &str, name: &str, arguments: &str) -> (bool, String) {
+        let call = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
+        );
+        let (status, body) = post(port, Some(token), call.as_bytes());
+        assert_eq!(status, 200);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        (
+            json["result"]["isError"] == true,
+            json["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    }
+
+    /// Round 3 item 4: the pane ceiling bounds every MCP route, not only the
+    /// dispatcher. A subscription the host has granted is still refused
+    /// when the pane's ceiling explicitly denies its stream; the routes the
+    /// broker does not admit are refused under a deny default.
+    #[test]
+    fn mcp_ceiling_bounds_every_route() {
+        use crate::protocol::EventStreamDecl;
+        let app = "mcp-ceiling-app";
+        let stream = "ceiling.tick";
+        let target = format!("{app}::{stream}");
+        crate::host::plugin_timeline::global()
+            .lock()
+            .unwrap()
+            .declare_streams(
+                1,
+                app,
+                vec![EventStreamDecl {
+                    name: stream.to_string(),
+                    schema: serde_json::json!({"type": "object"}),
+                    description: None,
+                }],
+            )
+            .unwrap();
+        let (port, token, _profile) = start_test_server(Some(&target));
+        let posture = |default_posture, deny: Vec<String>| crate::broker::PermissionPosture {
+            default_posture,
+            allow: Vec::new(),
+            ask: Vec::new(),
+            deny,
+        };
+        let subscribe = format!(r#"{{"plugin_id":"{app}","stream":"{stream}","timeout_secs":1}}"#);
+
+        let (error, text) = tool_call(port, &token, "subscribe_and_wait", &subscribe);
+        assert!(
+            !error,
+            "fixture: the grant admits an unrestricted pane: {text}"
+        );
+        let denying = bearer_with_ceiling(
+            &token,
+            posture(crate::broker::Decision::Ask, vec![target.clone()]),
+        );
+        let (error, text) = tool_call(port, &denying, "subscribe_and_wait", &subscribe);
+        assert!(error, "an explicit pane deny beats the host grant: {text}");
+        assert!(text.contains("deny"), "{text}");
+
+        let deny_default =
+            bearer_with_ceiling(&token, posture(crate::broker::Decision::Deny, vec![]));
+        for name in ["list_event_streams", "permissions_list"] {
+            let (error, text) = tool_call(port, &token, name, "{}");
+            assert!(
+                !error,
+                "fixture: {name} serves an unrestricted pane: {text}"
+            );
+            let (error, text) = tool_call(port, &deny_default, name, "{}");
+            assert!(error, "{name} is bounded by a deny default: {text}");
+            assert!(text.contains("permission_denied"), "{name}: {text}");
+        }
+        // `agents.*` is admitted by the broker under the pane's ceiling.
+        let agents_denied = bearer_with_ceiling(
+            &token,
+            posture(
+                crate::broker::Decision::Ask,
+                vec!["agents.list".to_string()],
+            ),
+        );
+        let (_, text) = tool_call(port, &token, "agents.list", "{}");
+        assert!(
+            text.contains("permission_required"),
+            "fixture: an unrestricted pane is asked: {text}"
+        );
+        let (error, text) = tool_call(port, &agents_denied, "agents.list", "{}");
+        assert!(
+            error && text.contains("permission_denied"),
+            "agents.* is bounded by the pane's explicit deny: {text}"
+        );
+        for bearer in [&token, &denying, &deny_default, &agents_denied] {
+            revoke_pane_bearer(bearer);
+        }
     }
 
     #[test]

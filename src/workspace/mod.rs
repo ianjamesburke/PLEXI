@@ -99,6 +99,14 @@ pub struct SavedPane {
     /// Saved agent session state for agent terminal panes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<SavedAgentSession>,
+    /// The terminal's grant and effective scope, one
+    /// `broker::pane_authority::SavedPaneAuthority`, saved for every terminal
+    /// whether or not it has a resumable agent session (stint 1632). Kept
+    /// undecoded here: a corrupt record or an unknown version must never fail
+    /// the workspace load, and restore decides what it means. `None` for
+    /// other panes and for saves that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) authority: Option<serde_json::Value>,
 }
 
 /// Queued structured result from a child agent pane waiting to be delivered
@@ -177,6 +185,11 @@ pub struct AgentHistoryRecord {
     pub config_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_posture: Option<crate::broker::PermissionPosture>,
+    /// The closed pane's grant (a `broker::pane_authority::PaneAuthority`),
+    /// kept undecoded: a reopen is a new admission narrowed by it (stint
+    /// 1632). `None` for records that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) authority: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     pub cwd: PathBuf,
@@ -1650,6 +1663,7 @@ mod tests {
         let kinds = [SavedPaneKind::Terminal, SavedPaneKind::View];
         for kind in kinds {
             let pane = SavedPane {
+                authority: None,
                 id: 42,
                 kind: kind.clone(),
                 cwd: PathBuf::from("/tmp"),
@@ -1670,6 +1684,7 @@ mod tests {
         }
         // Portal round-trips with embedded context_id.
         let portal_pane = SavedPane {
+            authority: None,
             id: 99,
             kind: SavedPaneKind::Portal {
                 context_id: 42,
@@ -1826,6 +1841,7 @@ mod tests {
         let mut slots = HashMap::new();
         slots.insert("summary".to_string(), PathBuf::from("/tmp/slot_summary"));
         let pane = SavedPane {
+            authority: None,
             id: 42,
             kind: SavedPaneKind::Terminal,
             cwd: PathBuf::from("/tmp/work"),
@@ -1909,6 +1925,7 @@ mod tests {
             harness: "claude".to_string(),
             config_name: Some("implementer".to_string()),
             permission_posture: None,
+            authority: None,
             session_id: Some("sess-42".to_string()),
             last_state: AgentState::Completed,
             last_blocked_reason: None,
@@ -1973,6 +1990,11 @@ pub(crate) fn archive_saved_completion(
         harness: session.harness.clone(),
         config_name: session.config_name.clone(),
         permission_posture: session.permission_posture.clone(),
+        // The saved pane's grant record, as saved.
+        authority: pane
+            .authority
+            .as_ref()
+            .and_then(|saved| saved.get("grant").cloned()),
         session_id: session.session_id.clone(),
         cwd: pane.cwd.clone(),
         ephemeral: session.ephemeral,

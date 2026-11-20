@@ -247,13 +247,14 @@ fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
         name: "Window 1".into(),
         path: crate::testing::scratch_context_root("context-2"),
         tree: egui_tiles::Tree::empty("w1"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: 2,
         context_id: ctx_id,
+        tree_history: Default::default(),
     });
     app.active_window = 1; // focus second window
 
@@ -929,13 +930,14 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
         name: "Context 2".into(),
         path: crate::testing::scratch_context_root("context-2"),
         tree: egui_tiles::Tree::empty("ctx2_tree"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 1,
         window_id: 10,
         context_id: ctx2_id,
+        tree_history: Default::default(),
     });
     app.active_window = 1;
     app.router.set_active(1);
@@ -962,7 +964,7 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     app.drain_pane_cmd_channel();
 
@@ -1011,13 +1013,14 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
         name: "Context 2".into(),
         path: crate::testing::scratch_context_root("context-2"),
         tree: egui_tiles::Tree::empty("ctx2_tree"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 1,
         window_id: 10,
         context_id: ctx2_id,
+        tree_history: Default::default(),
     });
     app.active_window = 1;
     app.router.set_active(1);
@@ -1048,7 +1051,7 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     app.drain_pane_cmd_channel();
 
@@ -1142,7 +1145,7 @@ fn spawn_pane_seeds_root_in_empty_window() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     app.drain_pane_cmd_channel();
 
@@ -1159,12 +1162,8 @@ fn spawn_pane_seeds_root_in_empty_window() {
         let ft = crate::platform::logging::new_frame_tick();
         let (mut probe, _tx) = PlexiApp::new_for_test(ctx, ft);
         let before = probe.windows.len();
-        probe.create_page_at(
-            9,
-            9,
-            1,
-            crate::pane_ops::create::TerminalSpawnOptions::default(),
-        );
+        let launch = probe.test_terminal_launch(1, None, None);
+        probe.create_page_at(9, 9, 1, launch);
         probe.windows.len() > before
     };
     if !pty_available {
@@ -1513,7 +1512,7 @@ fn external_spawn_uses_supplied_cwd_for_plugin_workspace() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let browser = h.app.windows[0]
@@ -1573,13 +1572,14 @@ fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
         name: "Other".into(),
         path: other_root.path().to_path_buf(),
         tree: egui_tiles::Tree::empty("explorer_other"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 1,
         window_id: 90001,
         context_id: other_context,
+        tree_history: Default::default(),
     });
     h.app.active_window = 1;
     h.app.router.set_active(1);
@@ -1602,7 +1602,7 @@ fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let browser = h.app.windows[0]
@@ -1700,7 +1700,7 @@ fn file_browser_restore_preserves_saved_navigation_without_caller_link() {
         Some(&state),
     )
     .unwrap();
-    h.app.windows[0].panes.insert(browser_id, restored);
+    h.app.windows[0].replace_pane_for_test(browser_id, restored);
     let _unrelated = h.add_focused_terminal();
     h.run_frames(3);
     let app = h.app.windows[0].panes[&browser_id].as_view().unwrap();
@@ -1787,7 +1787,7 @@ fn file_browser_explicit_directory_artifact_keeps_requested_root() {
                     boot_timeout_secs: None,
                     worktree: None,
                     result_schema: None,
-                    peer_ancestry: None,
+                    source: crate::protocol::SpawnSource::InProcess,
                 });
                 h.hidden_frame();
             }

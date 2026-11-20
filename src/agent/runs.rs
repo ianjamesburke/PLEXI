@@ -1606,6 +1606,9 @@ pub struct McpAuth {
     pub actor_id: Option<String>,
     pub pane_id: u64,
     pub context_id: u64,
+    /// The calling pane's ceiling, from its bearer's authority binding
+    /// (stint 1632). `None` for a run token or an unrestricted pane.
+    pub posture: Option<crate::broker::PermissionPosture>,
 }
 
 /// Host MCP front end. A run token calls as that run. A pane credential is
@@ -1665,19 +1668,23 @@ pub fn mcp_call(auth: &McpAuth, tool: &str, input_json: &str) -> Result<String, 
 fn admit_pane(auth: &McpAuth, tool: &str, input_json: &str) -> Value {
     let actor = format!("mcp:pane:{}", auth.pane_id);
     let call_id = format!("call_{}", uuid::Uuid::new_v4());
-    let admission = host_gate!().admit(AdmitRequest {
-        call_id: &call_id,
-        tool,
-        input_json,
-        principal: &crate::broker::principal::Principal::agent(&actor),
-        actor_scope: ActorScope::User,
-        trust_origin: "host",
-        workspace_root: &auth.workspace,
-        context_id: auth.context_id,
-        package_id: PACKAGE,
-        instance_id: auth.pane_id,
-        target_type: TargetType::HostTool,
-    });
+    // Admitted under the pane's ceiling, with the broker's grant precedence.
+    let admission = host_gate!().admit_with_posture(
+        AdmitRequest {
+            call_id: &call_id,
+            tool,
+            input_json,
+            principal: &crate::broker::principal::Principal::agent(&actor),
+            actor_scope: ActorScope::User,
+            trust_origin: "host",
+            workspace_root: &auth.workspace,
+            context_id: auth.context_id,
+            package_id: PACKAGE,
+            instance_id: auth.pane_id,
+            target_type: TargetType::HostTool,
+        },
+        auth.posture.as_ref(),
+    );
     match admission {
         Admission::Proceed { .. } => json!({
             "ok": false,
@@ -1738,6 +1745,41 @@ mod tests {
         fn ws(&self) -> &Path {
             self.workspace.path()
         }
+    }
+
+    /// Round 3 item 4: a pane's `agents.*` MCP call is admitted under the
+    /// pane's ceiling. An explicit deny refuses it outright; the same call
+    /// without a ceiling becomes a pending approval.
+    #[test]
+    fn pane_agents_call_is_admitted_under_its_ceiling() {
+        let fix = Fixture::new();
+        let auth = |posture| McpAuth {
+            workspace: fix.ws().to_path_buf(),
+            run_id: None,
+            actor_id: None,
+            pane_id: 42_016_320,
+            context_id: 1,
+            posture,
+        };
+        let unrestricted = mcp_call(&auth(None), "agents.list", "{}").unwrap_err();
+        let unrestricted: Value = serde_json::from_str(&unrestricted).unwrap();
+        assert_eq!(
+            unrestricted["error_code"], "permission_required",
+            "{unrestricted}"
+        );
+        let denied = mcp_call(
+            &auth(Some(crate::broker::PermissionPosture {
+                default_posture: crate::broker::Decision::Ask,
+                allow: Vec::new(),
+                ask: Vec::new(),
+                deny: vec!["agents.list".to_string()],
+            })),
+            "agents.list",
+            "{}",
+        )
+        .unwrap_err();
+        let denied: Value = serde_json::from_str(&denied).unwrap();
+        assert_eq!(denied["error_code"], "permission_denied", "{denied}");
     }
 
     fn grants(specs: &[&str]) -> Vec<ToolGrant> {
@@ -2103,6 +2145,7 @@ mod tests {
                 actor_id: Some("agent:worker".to_string()),
                 pane_id: 0,
                 context_id: 0,
+                posture: None,
             },
             "agents.list",
             "{}",

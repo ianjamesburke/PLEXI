@@ -147,21 +147,27 @@ impl PlexiApp {
         let parent = &mut self.windows[parent_idx];
         let mut child_panes = HashMap::new();
         for id in &selected {
-            if let Some(pane) = parent.panes.remove(id) {
+            if let Some(pane) = parent.take_pane(*id) {
                 child_panes.insert(*id, pane);
             }
         }
         if let Some(Tile::Pane(slot)) = parent.tree.tiles.get_mut(anchor_tile) {
             *slot = portal_id;
         }
-        parent.panes.insert(
-            portal_id,
-            Pane::Portal(Box::new(PortalPane {
-                pane_id: portal_id,
-                target_context_id: context_id,
-                context_state: None,
-            })),
-        );
+        if parent
+            .panes
+            .insert(
+                portal_id,
+                Pane::Portal(Box::new(PortalPane {
+                    pane_id: portal_id,
+                    target_context_id: context_id,
+                    context_state: None,
+                })),
+            )
+            .is_err()
+        {
+            return false;
+        }
         let keep = parent.panes.keys().copied().collect();
         if let Some(root) = parent.tree.root {
             prune_tiles(&mut parent.tree.tiles, root, &keep);
@@ -192,13 +198,14 @@ impl PlexiApp {
             name: String::new(),
             path: root,
             tree: child_tree,
-            panes: child_panes,
+            panes: (child_panes).into(),
             focused_pane: Some(anchor_tile),
             zoomed_pane: None,
             grid_x: 0,
             grid_y: 0,
             window_id,
             context_id,
+            tree_history: Default::default(),
         };
         child_window.simplify_and_reconcile();
         self.windows.push(child_window);
@@ -210,6 +217,7 @@ impl PlexiApp {
         }
         self.attention_queue.transient_hint = None;
         log::info!("wrap_panes: panes={pane_ids:?} anchor={anchor} parent={parent_context} child={context_id} portal={portal_id}");
+        self.rescope_moved_panes();
         self.mark_workspace_dirty();
         true
     }

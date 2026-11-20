@@ -1425,18 +1425,6 @@
                 "null"
               ]
             },
-            "peer_ancestry": {
-              "description": "Host-stamped ancestor pids of the socket peer. The client cannot\nset this: `handle_socket_line` overwrites it from the kernel\ncredential captured at accept. `None` means the request did not\narrive on the command socket (spawn queue, in-process).",
-              "items": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
             "request_id": {
               "type": [
                 "string",

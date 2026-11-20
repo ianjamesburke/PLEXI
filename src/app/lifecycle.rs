@@ -112,6 +112,96 @@ impl PlexiApp {
     /// deliveries (subscribe) or awaits one reply (publish) afterward. Grants
     /// are reloaded from disk first so a just-granted permission applies without
     /// a host restart.
+    /// Resolve one subscribe request's caller on the host thread and admit
+    /// it. A raw CLI-socket request (no `context_id_override`) is resolved
+    /// from its kernel-verified peer: a verified pane subscribes under its own
+    /// grant at one scope snapshot, exactly as its MCP bearer would (stint
+    /// 1632).
+    pub(crate) fn admit_subscribe_request(
+        &mut self,
+        mut req: crate::host::event_subscriptions::HostSubscribeRequest,
+    ) {
+        if req.context_id_override.is_none() {
+            let (verified_pane_id, context_id, workspace_root) =
+                self.resolve_event_bus_caller(req.from_pane_id, req.peer_ancestry.as_deref());
+            req.from_pane_id = verified_pane_id;
+            req.context_id_override = context_id;
+            req.workspace_root_override = workspace_root;
+            // A verified pane subscribes under its own grant, at one
+            // scope snapshot, exactly as its MCP bearer would (stint 1632).
+            req.subscriber_authority = self.subscriber_authority(verified_pane_id);
+            if let crate::host::event_subscriptions::SubscriberAuthority::Pane(admitted) =
+                &req.subscriber_authority
+            {
+                req.workspace_root_override = Some(admitted.authority.scope().workspace_root);
+            }
+        }
+        if req.cancelled.is_some() {
+            req.broker_actor_override = Some(
+                crate::host::event_subscriptions::HostSubscriptionService::resolve_cli_subscriber(
+                    req.from_pane_id,
+                )
+                .1,
+            );
+        }
+        // When a parent master pane subscribes to its spawned child worker's
+        // `plexi.pane::lifecycle` stream across a sub-context boundary, bind the
+        // subscription to the child pane's context and grant a session-scoped
+        // allow so Tier 1 escalation (`Worker -> Master`) does not prompt the human.
+        if req.publisher_plugin_id == crate::host::pane_lifecycle::PUBLISHER {
+            if let (Some(caller_id), Some(target_pane_id)) = (
+                req.from_pane_id,
+                req.resource_id
+                    .as_deref()
+                    .and_then(|s| s.parse::<u64>().ok()),
+            ) {
+                let target_parent = self
+                    .windows
+                    .iter()
+                    .find_map(|win| win.panes.get(&target_pane_id))
+                    .and_then(|p| p.as_terminal())
+                    .and_then(|t| t.parent_pane_id)
+                    .or_else(|| {
+                        self.host
+                            .pane_lifecycle
+                            .get(&target_pane_id)
+                            .and_then(|s| s.parent_pane_id)
+                    });
+                if target_parent == Some(caller_id) {
+                    let target_ctx_id = self
+                        .windows
+                        .iter()
+                        .find_map(|win| {
+                            win.panes
+                                .contains_key(&target_pane_id)
+                                .then_some(win.context_id)
+                        })
+                        .or_else(|| {
+                            self.host
+                                .pane_lifecycle
+                                .get(&target_pane_id)
+                                .map(|s| s.context_id)
+                        });
+                    if let Some(t_ctx_id) = target_ctx_id {
+                        req.context_id_override = Some(t_ctx_id);
+                    }
+                    if let Some(ref ws) = req.workspace_root_override {
+                        let actor = req.broker_actor_override.clone().unwrap_or_else(|| {
+                            crate::host::event_subscriptions::HostSubscriptionService::resolve_cli_subscriber(req.from_pane_id).1
+                        });
+                        self.host_subscriptions
+                            .allow_parent_child_lifecycle(&actor, ws);
+                    }
+                }
+            }
+        }
+        // `Allow`/`Deny`/undeclared answer the transport inline; `Ask`
+        // returns a parked consent we surface as a host modal next frame.
+        if let Some(consent) = self.host_subscriptions.classify_subscribe_request(req) {
+            self.pending_event_consents.push_back(consent);
+        }
+    }
+
     fn drain_event_subscribe_channel(&mut self) {
         self.pending_event_consents
             .retain(|consent| !consent.is_cancelled());
@@ -137,75 +227,8 @@ impl PlexiApp {
         // left untouched; only the raw CLI-socket shape (`context_id_override
         // == None`) is resolved here, preferring kernel-verified
         // `peer_ancestry` over the client-forwarded `from_pane_id` claim.
-        for mut req in subscribe_reqs {
-            if req.context_id_override.is_none() {
-                let (verified_pane_id, context_id, workspace_root) =
-                    self.resolve_event_bus_caller(req.from_pane_id, req.peer_ancestry.as_deref());
-                req.from_pane_id = verified_pane_id;
-                req.context_id_override = context_id;
-                req.workspace_root_override = workspace_root;
-            }
-            if req.cancelled.is_some() {
-                req.broker_actor_override = Some(
-                    crate::host::event_subscriptions::HostSubscriptionService::resolve_cli_subscriber(req.from_pane_id).1,
-                );
-            }
-            // When a parent master pane subscribes to its spawned child worker's
-            // `plexi.pane::lifecycle` stream across a sub-context boundary, bind the
-            // subscription to the child pane's context and grant a session-scoped
-            // allow so Tier 1 escalation (`Worker -> Master`) does not prompt the human.
-            if req.publisher_plugin_id == crate::host::pane_lifecycle::PUBLISHER {
-                if let (Some(caller_id), Some(target_pane_id)) = (
-                    req.from_pane_id,
-                    req.resource_id
-                        .as_deref()
-                        .and_then(|s| s.parse::<u64>().ok()),
-                ) {
-                    let target_parent = self
-                        .windows
-                        .iter()
-                        .find_map(|win| win.panes.get(&target_pane_id))
-                        .and_then(|p| p.as_terminal())
-                        .and_then(|t| t.parent_pane_id)
-                        .or_else(|| {
-                            self.host
-                                .pane_lifecycle
-                                .get(&target_pane_id)
-                                .and_then(|s| s.parent_pane_id)
-                        });
-                    if target_parent == Some(caller_id) {
-                        let target_ctx_id = self
-                            .windows
-                            .iter()
-                            .find_map(|win| {
-                                win.panes
-                                    .contains_key(&target_pane_id)
-                                    .then_some(win.context_id)
-                            })
-                            .or_else(|| {
-                                self.host
-                                    .pane_lifecycle
-                                    .get(&target_pane_id)
-                                    .map(|s| s.context_id)
-                            });
-                        if let Some(t_ctx_id) = target_ctx_id {
-                            req.context_id_override = Some(t_ctx_id);
-                        }
-                        if let Some(ref ws) = req.workspace_root_override {
-                            let actor = req.broker_actor_override.clone().unwrap_or_else(|| {
-                                crate::host::event_subscriptions::HostSubscriptionService::resolve_cli_subscriber(req.from_pane_id).1
-                            });
-                            self.host_subscriptions
-                                .allow_parent_child_lifecycle(&actor, ws);
-                        }
-                    }
-                }
-            }
-            // `Allow`/`Deny`/undeclared answer the transport inline; `Ask`
-            // returns a parked consent we surface as a host modal next frame.
-            if let Some(consent) = self.host_subscriptions.classify_subscribe_request(req) {
-                self.pending_event_consents.push_back(consent);
-            }
+        for req in subscribe_reqs {
+            self.admit_subscribe_request(req);
         }
         for mut req in publish_reqs {
             if req.context_id_override.is_none() {
@@ -334,13 +357,27 @@ impl PlexiApp {
             initial_slots,
             focus,
             response_file: _,
-            peer_ancestry,
+            source,
         } = request
         else {
             return serde_json::json!({ "ok": false, "error": "agent_spawn_reply: not an agent_spawn request" });
         };
-        let (effective_parent, spawned_by) =
-            self.resolve_unspoofable_spawner(*parent_pane_id, peer_ancestry.as_deref());
+        let super::launch_plan::LaunchCaller {
+            caller_pane: effective_parent,
+            spawned_by,
+            ..
+        } = match self.resolve_launch_source(source, *parent_pane_id) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                log::warn!("pane_ipc: agent_spawn refused: {error}");
+                return serde_json::json!({ "ok": false, "error": error });
+            }
+        };
+        // A worker under a parent reads as that parent's, as its grant does.
+        let spawned_by = match effective_parent {
+            Some(parent) => self.derive_spawned_by_for_parent(Some(parent)),
+            None => spawned_by,
+        };
         log::info!(
             "pane_ipc: kind=agent_spawn role={role} harness={harness} subcontext={subcontext:?} ephemeral={ephemeral} parent_pane_id={effective_parent:?} spawned_by={spawned_by}"
         );
@@ -360,7 +397,7 @@ impl PlexiApp {
         );
         let payload = match result {
             Ok((new_pane_id, target_ctx_id)) => {
-                self.set_pane_spawned_by(new_pane_id, spawned_by.clone(), effective_parent);
+                self.record_pane_provenance(new_pane_id);
                 if *focus {
                     self.focus_started_agent_pane(new_pane_id, effective_parent);
                 }
@@ -411,11 +448,17 @@ impl PlexiApp {
     /// Resume one closed agent run from its history record in a new pane, with
     /// the harness resume command, and return the JSON reply. Shared by
     /// `plexi agent reopen` and `agent open` (stint 1396).
+    /// A reopen is a new admission under the authenticated `caller` and its
+    /// `source`, narrowed by the restrictions the record kept (stint 1632).
+    /// The record's own parent is history, never authority: with no
+    /// authenticated caller the run opens beside the focused pane with no
+    /// parent.
     pub(crate) fn reopen_agent_record(
         &mut self,
         record: &crate::workspace::AgentHistoryRecord,
         subcontext: Option<&str>,
-        parent_pane_id: Option<u64>,
+        caller: Option<u64>,
+        source: crate::broker::pane_authority::GrantSource,
     ) -> serde_json::Value {
         let resume_cmd = match record.session_id.as_deref() {
             Some(sid) if !sid.trim().is_empty() => {
@@ -438,20 +481,47 @@ impl PlexiApp {
             .clone()
             .or_else(|| record.pane_name.clone())
             .unwrap_or_else(|| record.harness.clone());
-        let result = self.spawn_agent_worker_pane(
-            &role,
-            &record.harness,
-            &resume_cmd,
-            record.summary.as_deref().unwrap_or_default(),
-            subcontext,
-            false,
-            parent_pane_id,
-            Some(record.cwd.clone()),
-            None,
-            None,
-            false,
-            None,
+        // The reopened run's grant is today's role under the authenticated
+        // caller, narrowed by the one the record kept: a reopen never runs
+        // wider than the run it resumes (stint 1632).
+        let recorded = crate::broker::pane_authority::PaneAuthority::recorded(
+            record.authority.as_ref(),
+            record.permission_posture.as_ref(),
+            record.pane_id,
         );
+        let result = self
+            .resolve_agent_spawn_location(
+                subcontext.map(crate::pane_ops::create::SubcontextTarget::Named),
+                caller,
+                Some(record.cwd.clone()),
+                false,
+                crate::pane_ops::create::AgentOrigin::Active,
+            )
+            .and_then(|placement| {
+                let role_grant = match record.config_name.as_deref() {
+                    Some(name) => self.admit_defined_worker_role(name, &placement.effective_cwd)?,
+                    None => None,
+                };
+                self.launch_agent_worker(
+                    crate::pane_ops::create::AgentWorkerLaunch {
+                        grant: crate::pane_ops::create::AgentWorkerGrant {
+                            source,
+                            role: role_grant,
+                            recorded,
+                        },
+                        pane_id: None,
+                        spawned_by: None,
+                        role: &role,
+                        harness: &record.harness,
+                        command: &resume_cmd,
+                        task: record.summary.as_deref().unwrap_or_default(),
+                        ephemeral: false,
+                        result_schema: None,
+                        run_token: None,
+                    },
+                    placement,
+                )
+            });
         let payload = match result {
             Ok((new_pane_id, target_ctx_id)) => {
                 for win in &mut self.windows {
@@ -495,6 +565,289 @@ impl PlexiApp {
         payload
     }
 
+    /// Commit `pane_id`'s completion: validate and store the result, publish
+    /// it to waiters and the parent, and return the reply payload. Shared by
+    /// `agent done` and handoff, which publishes the successor first.
+    pub(crate) fn complete_agent_pane(
+        &mut self,
+        pane_id: u64,
+        result: Option<&str>,
+        summary: Option<&str>,
+    ) -> serde_json::Value {
+        let pane_id = &pane_id;
+        let raw_result = result.unwrap_or("{}");
+        let summary_str = summary.unwrap_or_default();
+        log::info!(
+            "pane_ipc: kind=agent_done pane_id={pane_id} result_len={} summary_len={}",
+            raw_result.len(),
+            summary_str.len()
+        );
+        let pane_alive = self.find_pane_in_any_window(*pane_id).is_some();
+        if !pane_alive && !self.pane_results.contains_key(pane_id) {
+            return serde_json::json!({
+                "ok": false,
+                "pane_id": pane_id,
+                "error_code": "pane_not_found",
+                "error": format!("pane {pane_id} not found"),
+            });
+        }
+        match self
+            .pane_results
+            .entry(*pane_id)
+            .or_default()
+            .write_payload(raw_result)
+        {
+            Ok(committed) => {
+                self.complete_result_waits(*pane_id);
+                self.finish_agent_tool_waits(
+                    *pane_id,
+                    serde_json::json!({
+                        "ok": true, "pane_id": pane_id, "status": "completed",
+                        "summary": summary_str, "result": committed,
+                    }),
+                );
+                let completed_payload = serde_json::json!({
+                    "pane_id": pane_id,
+                    "status": "completed",
+                    "summary": summary_str,
+                    "result": committed,
+                })
+                .to_string();
+                if !summary_str.is_empty() {
+                    let _ = self.write_pane_slot_internal(
+                        *pane_id,
+                        "summary",
+                        summary_str.as_bytes(),
+                        false,
+                        true,
+                    );
+                }
+                let slot_res = self.write_pane_slot_internal(
+                    *pane_id,
+                    "completed",
+                    completed_payload.as_bytes(),
+                    false,
+                    true,
+                );
+                let mut agent_label = "agent".to_string();
+                let mut agent_harness = None;
+                let mut session_id = None;
+                let mut parent_pane_id = None;
+                let mut workspace_roots = Vec::new();
+                let mut pane_ctx_id = None;
+                for win in &mut self.windows {
+                    if let Some(pane) = win.panes.get_mut(pane_id) {
+                        pane_ctx_id = Some(win.context_id);
+                        if let Some(t) = pane.as_terminal_mut() {
+                            parent_pane_id = t.parent_pane_id;
+                            t.agent_completed = true;
+                            t.fleet_result = Some(committed.clone());
+                            t.fleet_done_unseen = true;
+                            t.fleet_seen = false;
+                            t.fleet_since = crate::platform::clock::now_secs();
+                            t.last_blocked_reason = None;
+                            agent_harness = t.agent_harness.clone();
+                            if let Some(ref r) = t.agent_role {
+                                agent_label = r.clone();
+                            } else if let Some(ref h) = t.agent_harness {
+                                agent_label = h.clone();
+                            } else if let Some(ref a) = t.agent {
+                                agent_label = a.agent.clone();
+                            } else if let Some(ref n) = t.name {
+                                if !n.trim().is_empty() && n != "terminal" {
+                                    agent_label = n.clone();
+                                }
+                            }
+                            if let Some(ref cwd) = t.initial_cwd {
+                                if let Some(ws) =
+                                    crate::app::registry::resolve_agent_lookup_workspace_root(cwd)
+                                {
+                                    workspace_roots.push(ws);
+                                }
+                                if !workspace_roots.contains(cwd) {
+                                    workspace_roots.push(cwd.clone());
+                                }
+                            }
+                            session_id = t.agent_session_id.clone();
+                        }
+                        if !workspace_roots.contains(&win.path) {
+                            workspace_roots.push(win.path.clone());
+                        }
+                        let done_state = if agent_harness.as_deref() == Some("script") {
+                            crate::protocol::AgentState::Completed
+                        } else {
+                            crate::protocol::AgentState::Idle
+                        };
+                        let _ = pane.set_agent(Some(crate::protocol::PaneAgentState {
+                            pane_id: *pane_id,
+                            state: done_state,
+                            agent: agent_label.clone(),
+                            detail: (!summary_str.is_empty()).then(|| summary_str.to_string()),
+                            session_id: session_id.clone(),
+                        }));
+                        break;
+                    }
+                }
+                if let Some(cid) = pane_ctx_id {
+                    if let Some(ctx) = self.router.iter().find(|c| c.context_id == cid) {
+                        if !workspace_roots.contains(&ctx.root) {
+                            workspace_roots.insert(0, ctx.root.clone());
+                        }
+                    }
+                }
+                if workspace_roots.is_empty() {
+                    workspace_roots.push(self.router.active().root.clone());
+                }
+                let profile_dir = crate::config::config_dir();
+                let persisted = crate::cli::agent::persist_agent_done_result(
+                    *pane_id,
+                    &agent_label,
+                    agent_harness.as_deref(),
+                    session_id.as_deref(),
+                    summary_str,
+                    &committed,
+                    &workspace_roots,
+                    &profile_dir,
+                );
+                let (result_md_path, result_json_path) = match persisted {
+                    Ok((md_p, js_p, _, _)) => (
+                        Some(md_p.to_string_lossy().into_owned()),
+                        Some(js_p.to_string_lossy().into_owned()),
+                    ),
+                    Err(e) => {
+                        log::warn!("agent_done: failed to persist result for pane {pane_id}: {e}");
+                        (None, None)
+                    }
+                };
+                self.withdraw_agent_attention_items(*pane_id, session_id.as_deref());
+                if !self.pane_has_parent_agent(*pane_id) {
+                    let done_title = if summary_str.trim().is_empty() {
+                        format!("{agent_label} done")
+                    } else {
+                        format!("{agent_label} done: {}", summary_str.trim())
+                    };
+                    let resource = result_md_path
+                        .clone()
+                        .unwrap_or_else(|| format!("pane:{pane_id}"));
+                    if let Err(e) =
+                        crate::broker::gate::PermissionMonitor::for_profile(&profile_dir)
+                            .map_err(|error| error.to_string())
+                            .and_then(|monitor| {
+                                monitor.file_needs_you_with_details(
+                                    crate::broker::gate::NeedsYouFile {
+                                        kind: crate::broker::gate::NeedsYouKind::AgentDone,
+                                        actor: format!("pane:{pane_id}"),
+                                        resource,
+                                        summary: done_title,
+                                        expires_at: None,
+                                        run_tag: session_id
+                                            .clone()
+                                            .or_else(|| Some(format!("pane:{pane_id}"))),
+                                    },
+                                    Some(crate::broker::gate::NeedsYouDetails {
+                                        pane_id: Some(*pane_id),
+                                        session_id: session_id.clone(),
+                                        preview_refs: result_md_path.clone().into_iter().collect(),
+                                        ..Default::default()
+                                    }),
+                                )
+                            })
+                    {
+                        log::warn!(
+                            "agent_done: could not file attention item for pane {pane_id}: {e}"
+                        );
+                    }
+                }
+                self.report_agent_attention(
+                    *pane_id,
+                    &crate::protocol::AgentState::Completed,
+                    (!summary_str.is_empty()).then_some(summary_str),
+                );
+                if self.fleet_focused_pane() == Some(*pane_id) {
+                    self.mark_agent_seen(*pane_id);
+                }
+                self.mark_workspace_dirty();
+                let provenance = Provenance {
+                    source: Source::LegacyReport,
+                    agent_label: agent_label.clone(),
+                    session_id,
+                    raw_event: Some("AgentDone".to_string()),
+                };
+                self.emit_pane_lifecycle(
+                    *pane_id,
+                    PaneLifecycleEvent::TurnFinished {
+                        provenance: provenance.clone(),
+                    },
+                );
+                self.emit_pane_lifecycle(*pane_id, PaneLifecycleEvent::AgentIdle { provenance });
+                self.record_child_agent_result(
+                    parent_pane_id,
+                    crate::workspace::QueuedChildResult {
+                        child_pane_id: *pane_id,
+                        child_agent: agent_label,
+                        status: "completed".to_string(),
+                        summary: (!summary_str.is_empty()).then(|| summary_str.to_string()),
+                        result_json: serde_json::to_string(&committed)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                        finished_at_epoch_secs: crate::platform::clock::now_secs(),
+                    },
+                );
+                self.flush_pending_child_results_if_idle(*pane_id);
+                self.refresh_portal_context_states();
+                let payload = match slot_res {
+                    Ok((path, bytes)) => serde_json::json!({
+                        "ok": true,
+                        "pane_id": pane_id,
+                        "slot": "completed",
+                        "path": path.to_string_lossy(),
+                        "result_path": result_md_path,
+                        "json_path": result_json_path,
+                        "bytes": bytes,
+                        "result": committed,
+                        "summary": summary,
+                    }),
+                    Err(e) => serde_json::json!({
+                        "ok": true,
+                        "pane_id": pane_id,
+                        "result_path": result_md_path,
+                        "json_path": result_json_path,
+                        "result": committed,
+                        "summary": summary,
+                        "slot_warning": e,
+                    }),
+                };
+                payload
+            }
+            Err(err) => {
+                log::warn!(
+                    "pane_ipc: agent_done validation failed for pane {pane_id}: {}",
+                    err.message()
+                );
+                serde_json::json!({
+                    "ok": false,
+                    "pane_id": pane_id,
+                    "error_code": err.error_code(),
+                    "error": err.message(),
+                    "validation_errors": err.validation_errors(),
+                })
+            }
+        }
+    }
+
+    /// After a completion: close an ephemeral `agent call` child.
+    pub(crate) fn close_completed_ephemeral_child(&mut self, pane_id: u64) {
+        let close = self.agent_tool_children.contains_key(&pane_id)
+            && self
+                .windows
+                .iter()
+                .find_map(|w| w.panes.get(&pane_id))
+                .and_then(|p| p.as_terminal())
+                .is_some_and(|t| t.ephemeral);
+        if close {
+            self.close_pane_by_id(pane_id);
+        }
+    }
+
     /// Handle a single pane-IPC `HostRequest`. Shared by the socket drain above
     /// and the PGAP forwarding path (`ViewCommand::ForwardPaneRequest`, stint
     /// 0013/0014) so capability-gated plugin requests take the identical host
@@ -522,7 +875,7 @@ impl PlexiApp {
                     if context_id.is_some_and(|id| window.context_id != id) {
                         continue;
                     }
-                    for (id, pane) in &mut window.panes {
+                    for (id, pane) in window.panes.iter_mut() {
                         if pane_id.is_some_and(|wanted| wanted != *id) {
                             continue;
                         }
@@ -934,7 +1287,7 @@ impl PlexiApp {
                         .find(|ctx| ctx.context_id == win.context_id)
                         .map(|ctx| ctx.name.to_string())
                         .unwrap_or_default();
-                    for (pane_id, pane) in &win.panes {
+                    for (pane_id, pane) in win.panes.iter() {
                         // Only emit panes that have a corresponding tile in the tree.
                         // win.panes and the tile tree can desync (e.g. from corrupted
                         // restore state); omitting orphaned entries ensures every id
@@ -2183,26 +2536,21 @@ impl PlexiApp {
                     spec.workspace_root,
                     spec.response_file
                 );
-                let peer_pane = spec
-                    .peer_ancestry
-                    .as_deref()
-                    .filter(|pids| !pids.is_empty())
-                    .and_then(|pids| self.resolve_socket_peer_pane(pids).map(|(pid, _, _)| pid));
-                let requester_is_pane = peer_pane.is_some();
-                let requester_is_agent = peer_pane
-                    .is_some_and(|pid| !self.is_human_owned_pane(pid))
-                    || spec
-                        .from_pane_id
-                        .is_some_and(|pid| !self.is_human_owned_pane(pid));
-                let is_agent_pane = spec.agent.is_some() || requester_is_agent;
-                let inject_folder_secrets = !requester_is_pane
-                    && crate::release::feature_enabled(
-                        crate::release::ReleaseFeature::FolderSecrets,
-                    );
-                if requester_is_pane {
-                    log::info!(
-                        "pane_ipc: spawn_pane requester is a pane (peer_pane={peer_pane:?}, is_agent_pane={is_agent_pane}); withholding folder secrets"
-                    );
+                if matches!(
+                    spec.target,
+                    crate::app::launch_spec::PaneLaunchTarget::Terminal
+                ) {
+                    self.launch_terminal_spec(&spec);
+                    return;
+                }
+                // App and path launches pass the same source resolution as a
+                // terminal: an unverified socket peer is refused (stint 1632).
+                if let Err(error) = self.resolve_launch_source(&spec.source, spec.from_pane_id) {
+                    log::warn!("pane_ipc: spawn_pane rejected: {error}");
+                    if let Some(rf) = response_file {
+                        write_json_response(rf, serde_json::json!({ "error": error }));
+                    }
+                    return;
                 }
                 let mut response_pane_id = self.host.next_pane_id();
 
@@ -2228,250 +2576,8 @@ impl PlexiApp {
                     }
                 }
 
-                let mut created_worktree: Option<crate::host::worktree::ManagedWorktree> = None;
                 let mut launch_result: Result<(), String> = Ok(());
-                if matches!(
-                    spec.target,
-                    crate::app::launch_spec::PaneLaunchTarget::Terminal
-                ) {
-                    let layout_str = spec.layout.as_deref().unwrap_or("split_h");
-                    let initial_cmd = super::cmd_from_args(&spec.args);
-                    // Named-context targeting (stint 0574): `plexi routine run`
-                    // fires a routine into its configured context by name,
-                    // matching the scheduler's fire path. The context is a hard
-                    // target — a missing name errors back to the caller, and
-                    // the spawn never touches active_window or focus state.
-                    let resolved_context_target = if let Some(ctx_name) =
-                        spec.context_name.as_deref().filter(|c| !c.is_empty())
-                    {
-                        if layout_str == "new_window" || layout_str == "tab" {
-                            let msg = format!(
-                                "context_name does not support layout '{layout_str}' — use a split layout"
-                            );
-                            log::warn!("pane_ipc: spawn_pane rejected: {msg}");
-                            if let Some(rf) = &spec.response_file {
-                                write_json_response(rf, serde_json::json!({ "error": msg }));
-                            }
-                            return;
-                        }
-                        let Some(target_ctx_id) = self
-                            .router
-                            .iter()
-                            .find(|c| c.name == ctx_name)
-                            .map(|c| c.context_id)
-                        else {
-                            let msg = format!("context '{ctx_name}' does not exist");
-                            log::warn!("pane_ipc: spawn_pane: {msg}");
-                            if let Some(rf) = &spec.response_file {
-                                write_json_response(rf, serde_json::json!({ "error": msg }));
-                            }
-                            return;
-                        };
-                        let Some((target_win, target_tile)) =
-                            self.context_spawn_target(target_ctx_id)
-                        else {
-                            let msg = format!("context '{ctx_name}' has no pane to spawn beside");
-                            log::warn!("pane_ipc: spawn_pane: {msg}");
-                            if let Some(rf) = &spec.response_file {
-                                write_json_response(rf, serde_json::json!({ "error": msg }));
-                            }
-                            return;
-                        };
-                        Some((ctx_name, target_ctx_id, target_win, target_tile))
-                    } else {
-                        None
-                    };
-
-                    if let Some(ref branch) = spec.worktree {
-                        let anchor_dir = self.resolve_worktree_anchor(&spec);
-                        match crate::host::worktree::create_worktree(&anchor_dir, branch) {
-                            Ok(wt) => {
-                                cwd_override = Some(wt.path.clone());
-                                created_worktree = Some(wt);
-                            }
-                            Err(msg) => {
-                                log::warn!("pane_ipc: spawn_pane worktree rejected: {msg}");
-                                if let Some(rf) = &spec.response_file {
-                                    write_json_response(rf, serde_json::json!({ "error": msg }));
-                                }
-                                return;
-                            }
-                        }
-                    }
-
-                    if let Some((ctx_name, target_ctx_id, target_win, target_tile)) =
-                        resolved_context_target
-                    {
-                        let vertical =
-                            matches!(layout_str, "split_h" | "split_right" | "split_left");
-                        let new_pane_first = matches!(layout_str, "split_above" | "split_left");
-                        log::info!(
-                            "pane_ipc: spawn_pane terminal context_name='{ctx_name}' context_id={target_ctx_id} target_win={target_win} layout={layout_str} ephemeral={}",
-                            spec.ephemeral
-                        );
-                        response_pane_id = self.spawn_terminal_pane_at(
-                            crate::pane_ops::create::SpawnTerminalAtSpec {
-                                win_idx: target_win,
-                                target_tile,
-                                vertical,
-                                new_pane_first,
-                                keep_focus: spec.no_focus,
-                                options: crate::pane_ops::create::TerminalSpawnOptions {
-                                    initial_cmd: initial_cmd.as_deref(),
-                                    close_on_exit: spec.ephemeral,
-                                    cwd_override,
-                                    agent_pane: is_agent_pane,
-                                    inject_folder_secrets,
-                                },
-                            },
-                        );
-                    } else if layout_str == "new_window" {
-                        // Derive context from the calling pane's window; fall back to active.
-                        let target_win_idx = spec
-                            .from_pane_id
-                            .and_then(|fid| self.find_pane_in_any_window(fid).map(|(idx, _)| idx))
-                            .unwrap_or(self.active_window);
-                        let ws_id = self.windows[target_win_idx].context_id;
-                        let active_y = self.windows[target_win_idx].grid_y;
-                        let max_x = self
-                            .windows
-                            .iter()
-                            .filter(|w| w.context_id == ws_id && w.grid_y == active_y)
-                            .map(|w| w.grid_x)
-                            .max();
-                        let new_x = max_x.map(|x| x + 1).unwrap_or(1);
-                        log::info!(
-                            "pane_ipc: spawn_pane terminal layout=new_window from_pane_id={:?} target_win_idx={target_win_idx} context={ws_id} grid=({new_x},{active_y}) response_pane_id={response_pane_id} cwd={cwd_override:?} ephemeral={}",
-                            spec.from_pane_id,
-                            spec.ephemeral
-                        );
-                        self.create_page_at(
-                            new_x,
-                            active_y,
-                            ws_id,
-                            crate::pane_ops::create::TerminalSpawnOptions {
-                                initial_cmd: initial_cmd.as_deref(),
-                                close_on_exit: spec.ephemeral,
-                                cwd_override,
-                                agent_pane: is_agent_pane,
-                                inject_folder_secrets,
-                            },
-                        );
-                        if spec.no_focus {
-                            self.active_window = active;
-                        }
-                    } else if layout_str == "tab" {
-                        // Derive target window from the calling pane's window; fall back to active.
-                        let target_win_idx = spec
-                            .from_pane_id
-                            .and_then(|fid| self.find_pane_in_any_window(fid).map(|(idx, _)| idx))
-                            .unwrap_or(active);
-                        let original_focused = self.windows[target_win_idx].focused_pane;
-                        log::info!(
-                            "pane_ipc: spawn_pane terminal layout=tab from_pane_id={:?} target_win_idx={target_win_idx} window_id={} response_pane_id={response_pane_id} cwd={cwd_override:?} ephemeral={}",
-                            spec.from_pane_id,
-                            self.windows[target_win_idx].window_id,
-                            spec.ephemeral
-                        );
-                        self.new_tab(
-                            target_win_idx,
-                            initial_cmd.as_deref(),
-                            spec.ephemeral,
-                            cwd_override,
-                            is_agent_pane,
-                            inject_folder_secrets,
-                        );
-                        if spec.no_focus {
-                            self.restore_window_focused_pane(target_win_idx, original_focused);
-                        }
-                        // self.active_window is intentionally left untouched here, matching
-                        // the split path below: a from_pane_id spawn must never steal the
-                        // user's currently active Plexi window, only set the new tab as the
-                        // target window's own focused pane (done inside new_tab above).
-                    } else {
-                        let vertical =
-                            matches!(layout_str, "split_h" | "split_right" | "split_left");
-                        let new_pane_first = matches!(layout_str, "split_above" | "split_left");
-                        // Resolve target window and tile: from_pane_id wins (cross-window),
-                        // then fall back to the active window's focused pane.
-                        let split_target = if let Some(from_id) = spec.from_pane_id {
-                            match self.find_pane_in_any_window(from_id) {
-                                Some(loc) => {
-                                    log::info!(
-                                        "pane_ipc: spawn_pane: targeting from_pane_id={from_id} in win_idx={}",
-                                        loc.0
-                                    );
-                                    Some(loc)
-                                }
-                                None => {
-                                    log::warn!(
-                                        "pane_ipc: spawn_pane: from_pane_id={from_id} not found in any window, using focused pane"
-                                    );
-                                    self.windows[active]
-                                        .focused_pane
-                                        .or(self.windows[active].tree.root)
-                                        .map(|tile| (active, tile))
-                                }
-                            }
-                        } else {
-                            self.windows[active]
-                                .focused_pane
-                                .or(self.windows[active].tree.root)
-                                .map(|tile| (active, tile))
-                        };
-
-                        if let Some((target_win, target_tile)) = split_target {
-                            let keep_focus = spec.no_focus || spec.from_pane_id.is_some();
-                            log::info!(
-                                "pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} ephemeral={} target_win={target_win} keep_focus={keep_focus}",
-                                spec.ephemeral
-                            );
-                            response_pane_id = self.spawn_terminal_pane_at(
-                                crate::pane_ops::create::SpawnTerminalAtSpec {
-                                    win_idx: target_win,
-                                    target_tile,
-                                    vertical,
-                                    new_pane_first,
-                                    keep_focus,
-                                    options: crate::pane_ops::create::TerminalSpawnOptions {
-                                        initial_cmd: initial_cmd.as_deref(),
-                                        close_on_exit: spec.ephemeral,
-                                        cwd_override,
-                                        agent_pane: is_agent_pane,
-                                        inject_folder_secrets,
-                                    },
-                                },
-                            );
-                            if spec.no_focus {
-                                self.active_window = active;
-                            }
-                        } else {
-                            // Truly empty window (windowless boot): no root pane to
-                            // split, so `split_focused` would no-op and drop the
-                            // spawn. Seed a root pane into the existing active window
-                            // instead. The seeded pane's id is the id we report.
-                            log::info!(
-                                "pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} ephemeral={} (empty active window — seeding root)",
-                                spec.ephemeral
-                            );
-                            match self.seed_root_pane(
-                                initial_cmd.as_deref(),
-                                spec.ephemeral,
-                                cwd_override,
-                                is_agent_pane,
-                                inject_folder_secrets,
-                            ) {
-                                Some(seeded_id) => response_pane_id = seeded_id,
-                                None => launch_result = Err("failed to seed root pane".into()),
-                            }
-                            if spec.no_focus {
-                                self.active_window = active;
-                            }
-                        }
-                    }
-                } else if let crate::app::launch_spec::PaneLaunchTarget::Path(app_path) =
-                    &spec.target
-                {
+                if let crate::app::launch_spec::PaneLaunchTarget::Path(app_path) = &spec.target {
                     let (target_win, orig_focused_in_target) =
                         self.redirect_focus_to_spawn_origin(spec.from_pane_id, "path", active);
                     // A raw `.wasm` with unreviewed imports queues the host's
@@ -2591,70 +2697,18 @@ impl PlexiApp {
                         self.restore_window_focused_pane(target_win, orig_focused_in_target);
                     }
                 }
-                if let Some(wt) = created_worktree {
-                    let pane_live = launch_result.is_ok()
-                        && self
-                            .windows
-                            .iter()
-                            .any(|w| w.panes.contains_key(&response_pane_id));
-                    if pane_live {
-                        log::info!(
-                            "pane_worktree: registered pane_id={response_pane_id} branch='{}' path='{}'",
-                            wt.branch,
-                            wt.path.display()
-                        );
-                        self.pane_worktrees.insert(response_pane_id, wt);
-                    } else {
-                        let _ = crate::host::worktree::reclaim_or_retain_worktree(&wt);
-                    }
-                }
                 if launch_result.is_ok() {
-                    let entry = self.pane_results.entry(response_pane_id).or_default();
                     if let Some(ref schema) = spec.result_schema {
-                        entry.schema = Some(schema.clone());
+                        self.pane_results
+                            .entry(response_pane_id)
+                            .or_default()
+                            .schema = Some(schema.clone());
                         log::info!(
                             "pane_result: registered schema at spawn for pane_id={response_pane_id}"
                         );
                     }
                 }
-                if matches!(
-                    spec.target,
-                    crate::app::launch_spec::PaneLaunchTarget::Terminal
-                ) && launch_result.is_ok()
-                {
-                    if let Some(ref pane_name) = spec.name {
-                        if !pane_name.is_empty() {
-                            self.apply_inline_pane_name(response_pane_id, pane_name);
-                        }
-                    }
-                    // Provenance comes from the verified socket peer, never the
-                    // wire: `pane new` from an agent pane is that agent's child,
-                    // from a plain terminal it is the person's own pane. The
-                    // parent link is left alone so no result delivery is implied.
-                    let (caller_pane_id, spawned_by) = self.resolve_unspoofable_spawner(
-                        spec.from_pane_id,
-                        spec.peer_ancestry.as_deref(),
-                    );
-                    self.set_pane_spawned_by(response_pane_id, spawned_by, None);
-                    if let Some(parent_posture) =
-                        caller_pane_id.and_then(|cid| self.pane_permission_posture(cid))
-                    {
-                        if let Some((win_idx, _)) = self.find_pane_in_any_window(response_pane_id) {
-                            if let Some(term) = self.windows[win_idx]
-                                .panes
-                                .get_mut(&response_pane_id)
-                                .and_then(|p| p.as_terminal_mut())
-                            {
-                                term.agent_permission_posture =
-                                    Some(match term.agent_permission_posture.take() {
-                                        Some(child) => child.restricted_by(&parent_posture),
-                                        None => parent_posture,
-                                    });
-                            }
-                        }
-                    }
-                }
-                self.reply_spawn_pane(&spec, response_pane_id, &launch_result);
+                self.reply_spawn_pane(&spec, &launch_result.map(|()| response_pane_id));
             }
             crate::protocol::HostRequest::SendToPane {
                 pane_id,
@@ -2696,16 +2750,29 @@ impl PlexiApp {
                 // unconfigured or corrupted agent definition) still enters the
                 // broker with `None`, so the gate falls back to `Ask` instead of
                 // being skipped — missing posture must never mean un-gated.
-                let caller_and_posture = peer_ancestry
-                    .as_deref()
-                    .and_then(|ancestry| {
-                        self.resolve_socket_peer_pane(ancestry)
-                            .map(|(caller, _, _)| caller)
-                    })
-                    .and_then(|caller| match self.pane_permission_posture(caller) {
-                        Some(posture) => Some((caller, Some(posture))),
-                        None if self.is_human_owned_pane(caller) => None,
-                        None => {
+                let peer = peer_ancestry.as_deref().and_then(|ancestry| {
+                    self.resolve_socket_peer_pane(ancestry)
+                        .map(|(caller, _, _)| caller)
+                });
+                // A pane whose authority was never established sends nothing
+                // under it, and is told why (stint 1632).
+                if let Some(Err(error)) = peer.map(|caller| self.pane_ceiling(caller)) {
+                    log::info!("pane_ipc: send_to_pane: caller pane_id={peer:?} refused: {error}");
+                    if let Some(rf) = response_file {
+                        write_json_response(
+                            rf,
+                            serde_json::json!({"error": error, "error_code": "permission_denied"}),
+                        );
+                    }
+                    return;
+                }
+                let caller_and_posture = peer
+                    .and_then(|caller| match self.pane_ceiling(caller) {
+                        Ok(Some(posture)) => Some((caller, Some(posture))),
+                        // Refused, with its reason, above.
+                        Err(_) => None,
+                        Ok(None) if self.is_human_owned_pane(caller) => None,
+                        Ok(None) => {
                             log::info!(
                                 "pane_ipc: send_to_pane: caller pane_id={caller} has no posture snapshot — pane.send defaults to broker Ask (target pane_id={pane_id})"
                             );
@@ -4780,7 +4847,20 @@ impl PlexiApp {
                 portal_direction,
                 anchor_pane,
                 response_file,
+                source,
             } => {
+                // The panes this request creates are admitted from its
+                // verified source; an uncaptured peer creates nothing.
+                let caller = match self.resolve_launch_source(source, None) {
+                    Ok(caller) => caller,
+                    Err(error) => {
+                        log::warn!("pane_ipc: create_context refused: {error}");
+                        if let Some(rf) = response_file {
+                            write_json_response(rf, serde_json::json!({ "error": error }));
+                        }
+                        return;
+                    }
+                };
                 // Map direction string to insert_split_tile params.
                 // vertical=true  → side-by-side (left/right)
                 // vertical=false → stacked (up/down)
@@ -4829,16 +4909,16 @@ impl PlexiApp {
                     let current_ctx_id = self.router.active().context_id;
                     let current_win_id = self.windows[self.active_window].window_id;
                     let current_focused = self.windows[self.active_window].focused_pane;
-                    if let Err(e) =
-                        self.new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
-                            *parent_context_id,
-                            pname.clone(),
-                            path,
-                            portal_vertical,
-                            portal_first,
-                            *anchor_pane,
-                        ))
-                    {
+                    let mut spec = crate::pane_ops::ChildContextSpec::single_terminal(
+                        *parent_context_id,
+                        pname.clone(),
+                        path,
+                        portal_vertical,
+                        portal_first,
+                        *anchor_pane,
+                    );
+                    spec.source = caller.source.clone();
+                    if let Err(e) = self.new_child_context(spec) {
                         log::warn!("pane_ipc: create_context with parent failed: {e}");
                         ctx_ok = false;
                     } else {
@@ -4869,9 +4949,9 @@ impl PlexiApp {
                     }
                 } else {
                     if let Some(r) = root {
-                        self.new_context_at_path(r.clone());
+                        self.new_context_at_path(r.clone(), caller.source.clone());
                     } else {
-                        self.new_context();
+                        self.new_context(caller.source.clone());
                     }
                     if let Some(n) = name {
                         let idx = self.router.len() - 1;
@@ -4899,15 +4979,18 @@ impl PlexiApp {
                         log::info!(
                             "pane_ipc: create_context window ctx_id={new_ctx_id} grid_x={new_x}"
                         );
-                        self.create_page_at(
-                            new_x,
-                            active_y,
-                            new_ctx_id,
-                            crate::pane_ops::create::TerminalSpawnOptions {
-                                initial_cmd: Some(cmd.as_str()),
-                                ..Default::default()
-                            },
+                        let context = self.pane_context_env_for_context(new_ctx_id);
+                        let cwd = self.default_page_cwd();
+                        let launch = self.terminal_launch(
+                            caller.source.clone(),
+                            context,
+                            Some(cwd),
+                            Some(crate::pane_ops::construct::LaunchCommand {
+                                command: cmd.clone(),
+                                close_on_exit: false,
+                            }),
                         );
+                        self.create_page_at(new_x, active_y, new_ctx_id, launch);
                     }
                 }
                 // Write JSON response for callers that passed a response_file path.
@@ -4959,7 +5042,18 @@ impl PlexiApp {
                 focus,
                 anchor_pane,
                 response_file,
+                source,
             } => {
+                let caller = match self.resolve_launch_source(source, None) {
+                    Ok(caller) => caller,
+                    Err(error) => {
+                        log::warn!("pane_ipc: create_sub_context refused: {error}");
+                        if let Some(rf) = response_file {
+                            write_json_response(rf, serde_json::json!({ "error": error }));
+                        }
+                        return;
+                    }
+                };
                 // Resolve the parent up front: everything below (depth push,
                 // window bookkeeping) is relative to it, and a bad parent must
                 // fail before any pane is spawned.
@@ -5007,6 +5101,7 @@ impl PlexiApp {
                     anchor_pane: *anchor_pane,
                     panes: panes.clone(),
                     layout: resolved_layout,
+                    source: caller.source,
                 };
                 let child = match self.new_child_context(spec) {
                     Ok(child) => child,
@@ -5082,8 +5177,12 @@ impl PlexiApp {
             crate::protocol::HostRequest::FocusContext {
                 root,
                 response_file,
+                source,
             } => {
-                let reply = match self.open_context_root(root) {
+                let reply = match self
+                    .resolve_launch_source(source, None)
+                    .and_then(|caller| self.open_context_root(root, caller.source))
+                {
                     Ok(context_id) => {
                         serde_json::json!({"context_id":context_id, "root":self.router.active().root})
                     }
@@ -5281,286 +5380,12 @@ impl PlexiApp {
                     self.refuse_cross_pane("agent_done", caller, *pane_id, response_file);
                     return;
                 }
-                let raw_result = result.as_deref().unwrap_or("{}");
-                let summary_str = summary.as_deref().unwrap_or_default();
-                log::info!(
-                    "pane_ipc: kind=agent_done pane_id={pane_id} result_len={} summary_len={}",
-                    raw_result.len(),
-                    summary_str.len()
-                );
-                let pane_alive = self.find_pane_in_any_window(*pane_id).is_some();
-                if !pane_alive && !self.pane_results.contains_key(pane_id) {
-                    write_json_response(
-                        response_file,
-                        serde_json::json!({
-                            "ok": false,
-                            "pane_id": pane_id,
-                            "error_code": "pane_not_found",
-                            "error": format!("pane {pane_id} not found"),
-                        }),
-                    );
-                    return;
-                }
-                match self
-                    .pane_results
-                    .entry(*pane_id)
-                    .or_default()
-                    .write_payload(raw_result)
-                {
-                    Ok(committed) => {
-                        self.complete_result_waits(*pane_id);
-                        self.finish_agent_tool_waits(
-                            *pane_id,
-                            serde_json::json!({
-                                "ok": true, "pane_id": pane_id, "status": "completed",
-                                "summary": summary_str, "result": committed,
-                            }),
-                        );
-                        let completed_payload = serde_json::json!({
-                            "pane_id": pane_id,
-                            "status": "completed",
-                            "summary": summary_str,
-                            "result": committed,
-                        })
-                        .to_string();
-                        if !summary_str.is_empty() {
-                            let _ = self.write_pane_slot_internal(
-                                *pane_id,
-                                "summary",
-                                summary_str.as_bytes(),
-                                false,
-                                true,
-                            );
-                        }
-                        let slot_res = self.write_pane_slot_internal(
-                            *pane_id,
-                            "completed",
-                            completed_payload.as_bytes(),
-                            false,
-                            true,
-                        );
-                        let mut agent_label = "agent".to_string();
-                        let mut agent_harness = None;
-                        let mut session_id = None;
-                        let mut parent_pane_id = None;
-                        let mut workspace_roots = Vec::new();
-                        let mut pane_ctx_id = None;
-                        for win in &mut self.windows {
-                            if let Some(pane) = win.panes.get_mut(pane_id) {
-                                pane_ctx_id = Some(win.context_id);
-                                if let Some(t) = pane.as_terminal_mut() {
-                                    parent_pane_id = t.parent_pane_id;
-                                    t.agent_completed = true;
-                                    t.fleet_result = Some(committed.clone());
-                                    t.fleet_done_unseen = true;
-                                    t.fleet_seen = false;
-                                    t.fleet_since = crate::platform::clock::now_secs();
-                                    t.last_blocked_reason = None;
-                                    agent_harness = t.agent_harness.clone();
-                                    if let Some(ref r) = t.agent_role {
-                                        agent_label = r.clone();
-                                    } else if let Some(ref h) = t.agent_harness {
-                                        agent_label = h.clone();
-                                    } else if let Some(ref a) = t.agent {
-                                        agent_label = a.agent.clone();
-                                    } else if let Some(ref n) = t.name {
-                                        if !n.trim().is_empty() && n != "terminal" {
-                                            agent_label = n.clone();
-                                        }
-                                    }
-                                    if let Some(ref cwd) = t.initial_cwd {
-                                        if let Some(ws) =
-                                            crate::app::registry::resolve_agent_lookup_workspace_root(cwd)
-                                        {
-                                            workspace_roots.push(ws);
-                                        }
-                                        if !workspace_roots.contains(cwd) {
-                                            workspace_roots.push(cwd.clone());
-                                        }
-                                    }
-                                    session_id = t.agent_session_id.clone();
-                                }
-                                if !workspace_roots.contains(&win.path) {
-                                    workspace_roots.push(win.path.clone());
-                                }
-                                let done_state = if agent_harness.as_deref() == Some("script") {
-                                    crate::protocol::AgentState::Completed
-                                } else {
-                                    crate::protocol::AgentState::Idle
-                                };
-                                let _ = pane.set_agent(Some(crate::protocol::PaneAgentState {
-                                    pane_id: *pane_id,
-                                    state: done_state,
-                                    agent: agent_label.clone(),
-                                    detail: (!summary_str.is_empty())
-                                        .then(|| summary_str.to_string()),
-                                    session_id: session_id.clone(),
-                                }));
-                                break;
-                            }
-                        }
-                        if let Some(cid) = pane_ctx_id {
-                            if let Some(ctx) = self.router.iter().find(|c| c.context_id == cid) {
-                                if !workspace_roots.contains(&ctx.root) {
-                                    workspace_roots.insert(0, ctx.root.clone());
-                                }
-                            }
-                        }
-                        if workspace_roots.is_empty() {
-                            workspace_roots.push(self.router.active().root.clone());
-                        }
-                        let profile_dir = crate::config::config_dir();
-                        let persisted = crate::cli::agent::persist_agent_done_result(
-                            *pane_id,
-                            &agent_label,
-                            agent_harness.as_deref(),
-                            session_id.as_deref(),
-                            summary_str,
-                            &committed,
-                            &workspace_roots,
-                            &profile_dir,
-                        );
-                        let (result_md_path, result_json_path) = match persisted {
-                            Ok((md_p, js_p, _, _)) => (
-                                Some(md_p.to_string_lossy().into_owned()),
-                                Some(js_p.to_string_lossy().into_owned()),
-                            ),
-                            Err(e) => {
-                                log::warn!(
-                                    "agent_done: failed to persist result for pane {pane_id}: {e}"
-                                );
-                                (None, None)
-                            }
-                        };
-                        self.withdraw_agent_attention_items(*pane_id, session_id.as_deref());
-                        if !self.pane_has_parent_agent(*pane_id) {
-                            let done_title = if summary_str.trim().is_empty() {
-                                format!("{agent_label} done")
-                            } else {
-                                format!("{agent_label} done: {}", summary_str.trim())
-                            };
-                            let resource = result_md_path
-                                .clone()
-                                .unwrap_or_else(|| format!("pane:{pane_id}"));
-                            if let Err(e) =
-                                crate::broker::gate::PermissionMonitor::for_profile(&profile_dir)
-                                    .map_err(|error| error.to_string())
-                                    .and_then(|monitor| {
-                                        monitor.file_needs_you_with_details(
-                                            crate::broker::gate::NeedsYouFile {
-                                                kind: crate::broker::gate::NeedsYouKind::AgentDone,
-                                                actor: format!("pane:{pane_id}"),
-                                                resource,
-                                                summary: done_title,
-                                                expires_at: None,
-                                                run_tag: session_id
-                                                    .clone()
-                                                    .or_else(|| Some(format!("pane:{pane_id}"))),
-                                            },
-                                            Some(crate::broker::gate::NeedsYouDetails {
-                                                pane_id: Some(*pane_id),
-                                                session_id: session_id.clone(),
-                                                preview_refs: result_md_path
-                                                    .clone()
-                                                    .into_iter()
-                                                    .collect(),
-                                                ..Default::default()
-                                            }),
-                                        )
-                                    })
-                            {
-                                log::warn!("agent_done: could not file attention item for pane {pane_id}: {e}");
-                            }
-                        }
-                        self.report_agent_attention(
-                            *pane_id,
-                            &crate::protocol::AgentState::Completed,
-                            (!summary_str.is_empty()).then_some(summary_str),
-                        );
-                        if self.fleet_focused_pane() == Some(*pane_id) {
-                            self.mark_agent_seen(*pane_id);
-                        }
-                        self.mark_workspace_dirty();
-                        let provenance = Provenance {
-                            source: Source::LegacyReport,
-                            agent_label: agent_label.clone(),
-                            session_id,
-                            raw_event: Some("AgentDone".to_string()),
-                        };
-                        self.emit_pane_lifecycle(
-                            *pane_id,
-                            PaneLifecycleEvent::TurnFinished {
-                                provenance: provenance.clone(),
-                            },
-                        );
-                        self.emit_pane_lifecycle(
-                            *pane_id,
-                            PaneLifecycleEvent::AgentIdle { provenance },
-                        );
-                        self.record_child_agent_result(
-                            parent_pane_id,
-                            crate::workspace::QueuedChildResult {
-                                child_pane_id: *pane_id,
-                                child_agent: agent_label,
-                                status: "completed".to_string(),
-                                summary: (!summary_str.is_empty()).then(|| summary_str.to_string()),
-                                result_json: serde_json::to_string(&committed)
-                                    .unwrap_or_else(|_| "{}".to_string()),
-                                finished_at_epoch_secs: crate::platform::clock::now_secs(),
-                            },
-                        );
-                        self.flush_pending_child_results_if_idle(*pane_id);
-                        self.refresh_portal_context_states();
-                        let payload = match slot_res {
-                            Ok((path, bytes)) => serde_json::json!({
-                                "ok": true,
-                                "pane_id": pane_id,
-                                "slot": "completed",
-                                "path": path.to_string_lossy(),
-                                "result_path": result_md_path,
-                                "json_path": result_json_path,
-                                "bytes": bytes,
-                                "result": committed,
-                                "summary": summary,
-                            }),
-                            Err(e) => serde_json::json!({
-                                "ok": true,
-                                "pane_id": pane_id,
-                                "result_path": result_md_path,
-                                "json_path": result_json_path,
-                                "result": committed,
-                                "summary": summary,
-                                "slot_warning": e,
-                            }),
-                        };
-                        write_json_response(response_file, payload);
-                        let close = self.agent_tool_children.contains_key(pane_id)
-                            && self
-                                .windows
-                                .iter()
-                                .find_map(|w| w.panes.get(pane_id))
-                                .and_then(|p| p.as_terminal())
-                                .is_some_and(|t| t.ephemeral);
-                        if close {
-                            self.close_pane_by_id(*pane_id);
-                        }
-                    }
-                    Err(err) => {
-                        log::warn!(
-                            "pane_ipc: agent_done validation failed for pane {pane_id}: {}",
-                            err.message()
-                        );
-                        write_json_response(
-                            response_file,
-                            serde_json::json!({
-                                "ok": false,
-                                "pane_id": pane_id,
-                                "error_code": err.error_code(),
-                                "error": err.message(),
-                                "validation_errors": err.validation_errors(),
-                            }),
-                        );
-                    }
+                let payload =
+                    self.complete_agent_pane(*pane_id, result.as_deref(), summary.as_deref());
+                let completed = payload["ok"] == true;
+                write_json_response(response_file, payload);
+                if completed {
+                    self.close_completed_ephemeral_child(*pane_id);
                 }
             }
             crate::protocol::HostRequest::AgentNext { response_file } => {
@@ -5719,7 +5544,7 @@ impl PlexiApp {
                 cwd,
                 caller_pane_id,
                 response_file,
-                peer_ancestry,
+                source,
             } => {
                 log::info!(
                     "pane_ipc: kind=agent_open name={name} cwd={cwd} caller={caller_pane_id:?}"
@@ -5728,7 +5553,7 @@ impl PlexiApp {
                     name,
                     std::path::Path::new(cwd),
                     *caller_pane_id,
-                    peer_ancestry.as_deref(),
+                    source,
                 ) {
                     Ok(outcome) => outcome.to_json(),
                     Err(error) => {
@@ -5741,6 +5566,7 @@ impl PlexiApp {
                 query,
                 subcontext,
                 response_file,
+                source,
             } => {
                 if let Err(error) = super::agent_open::admit_agent_mesh_route("AgentReopen") {
                     write_json_response(
@@ -5765,8 +5591,15 @@ impl PlexiApp {
                     );
                     return;
                 };
-                let payload =
-                    self.reopen_agent_record(&record, subcontext.as_deref(), record.parent_pane_id);
+                let payload = match self.resolve_launch_source(source, None) {
+                    Ok(caller) => self.reopen_agent_record(
+                        &record,
+                        subcontext.as_deref(),
+                        caller.caller_pane,
+                        caller.source,
+                    ),
+                    Err(error) => serde_json::json!({ "ok": false, "error": error }),
+                };
                 write_json_response(response_file, payload);
             }
             crate::protocol::HostRequest::Wake => {
@@ -6169,7 +6002,7 @@ impl PlexiApp {
                 {
                     let departed = t.last_observed_agent.take();
                     let hand_launched = t.parent_pane_id.is_none()
-                        && !t.agent_spawned
+                        && t.is_desktop_granted()
                         && !t
                             .spawned_by
                             .as_deref()
@@ -6523,26 +6356,38 @@ impl PlexiApp {
         // (stint 0574; "Don't switch global state to thread data" trap).
         let target_ctx_id = self.router.get(target_ctx_idx).context_id;
         let cwd = Some(self.router.get(target_ctx_idx).root.clone());
-        let spawned = self.context_spawn_target(target_ctx_id).map(|(win, tile)| {
-            // vertical=true → side-by-side, matching the previous
-            // split_focused(false, ..) behavior (its LinearDir is inverted).
-            self.spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
-                win_idx: win,
-                target_tile: tile,
-                vertical: true,
-                new_pane_first: false,
-                keep_focus: false,
-                options: crate::pane_ops::create::TerminalSpawnOptions {
-                    initial_cmd: Some(command),
-                    close_on_exit: ephemeral,
-                    cwd_override: cwd,
-                    ..Default::default()
-                },
-            })
-        });
+        let spawned = self
+            .context_spawn_target(target_ctx_id)
+            .and_then(|(win, tile)| {
+                let context = self.pane_context_env_for_window(win);
+                // The scheduler is the spawner: system provenance from the start.
+                let launch = self.terminal_launch(
+                    crate::broker::pane_authority::GrantSource::HostSystem,
+                    context,
+                    cwd,
+                    Some(crate::pane_ops::construct::LaunchCommand {
+                        command: command.to_string(),
+                        close_on_exit: ephemeral,
+                    }),
+                );
+                // vertical=true → side-by-side, matching the previous
+                // split_focused(false, ..) behavior (its LinearDir is inverted).
+                self.spawn_terminal_pane_at(
+                    crate::pane_ops::create::SplitPlacement {
+                        win_idx: win,
+                        target_tile: tile,
+                        vertical: true,
+                        new_pane_first: false,
+                        keep_focus: false,
+                    },
+                    launch,
+                )
+                .map_err(|error| log::warn!("scheduler: routine '{name}' pane: {error}"))
+                .ok()
+            });
 
         if let Some(pid) = spawned {
-            self.set_pane_spawned_by(pid, "system".to_string(), None);
+            self.record_pane_provenance(pid);
         }
         if spawned.is_none() {
             log::warn!("scheduler: routine '{name}' — failed to spawn a pane");
@@ -6611,7 +6456,7 @@ impl PlexiApp {
                 boot_timeout_secs: None,
                 worktree: val["worktree"].as_str().map(str::to_string),
                 result_schema: val.get("result_schema").cloned().filter(|v| !v.is_null()),
-                peer_ancestry: None,
+                source: crate::protocol::SpawnSource::SpawnQueue,
             };
             let Ok(spec) = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(&request)
             else {
@@ -6828,7 +6673,7 @@ impl PlexiApp {
 
     /// Apply an inline pane name immediately after spawn. Sets `name_locked` so
     /// OSC title sequences don't overwrite the explicit label.
-    fn apply_inline_pane_name(&mut self, pane_id: u64, pane_name: &str) {
+    pub(crate) fn apply_inline_pane_name(&mut self, pane_id: u64, pane_name: &str) {
         log::info!("pane_ipc: spawn_pane: applying inline name={pane_name:?} to pane_id={pane_id}");
         for win in &mut self.windows {
             if let Some(pane) = win.panes.get_mut(&pane_id) {

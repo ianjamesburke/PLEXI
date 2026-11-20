@@ -7,7 +7,7 @@
 //! is conceptually one feature, not a scattering of unrelated cases.
 
 use super::PlexiApp;
-use crate::host::pane::{Pane, TerminalPane};
+use crate::host::pane::Pane;
 use crate::protocol::{ArtifactOpenMode, PathTokenMode, PlexiEvent};
 use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;
@@ -62,18 +62,10 @@ impl PlexiApp {
             return;
         };
 
-        // Allocate the terminal pane.
-        let new_id = self.host.alloc_pane_id();
         let context_env = self.pane_context_env_for_window(active);
-        let (settings, pending_credential) =
-            Self::make_backend_settings(new_id, resolved_cwd, &self.colors, &context_env, false);
-        let term = match TerminalPane::new(
-            new_id,
-            self.ctx.clone(),
-            self.pty_event_tx.clone(),
-            settings,
-            self.default_font_size,
-        ) {
+        let launch = self.desktop_terminal_launch(context_env, resolved_cwd, None);
+        let new_id = launch.pane_id();
+        let term = match self.construct_terminal(launch) {
             Ok(term) => term,
             Err(error) => {
                 log::error!("RequestLinkedTerminal: failed to create TerminalPane for pane {new_id}: {error}");
@@ -87,10 +79,13 @@ impl PlexiApp {
                 return;
             }
         };
-        self.windows[active]
+        if self.windows[active]
             .panes
-            .insert(new_id, Pane::Terminal(Box::new(term)));
-        pending_credential.mark_live();
+            .insert(new_id, Pane::Terminal(Box::new(term)))
+            .is_err()
+        {
+            return;
+        }
 
         // Split the tree directly, adjacent to sender_tile, without touching focused_pane.
         // place_below=false → side-by-side (vertical=true), Canvas plugin left, terminal right.

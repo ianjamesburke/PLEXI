@@ -3,6 +3,7 @@
 
 use crate::app::PlexiApp;
 use crate::host::context::{ContextName, Window};
+use crate::host::pane::TerminalPane;
 use crate::host::shell;
 use crate::spatial::tiling::PaneId;
 use crate::workspace::WorkspaceFile;
@@ -118,9 +119,79 @@ fn two_windows_mut(
     }
 }
 
-fn revoke_window_pane_credentials(window: &Window) {
-    for pane_id in window.panes.keys() {
-        crate::app::host_mcp::revoke_pane_credentials(*pane_id);
+/// Revoke the credentials of every pane in a window being removed, at its
+/// logical removal: background disposal of the window may run much later.
+fn revoke_window_pane_credentials(window: &mut Window) {
+    for pane in window.panes.values_mut() {
+        pane.revoke_credentials();
+    }
+}
+
+/// Dispose of logically removed windows off the UI thread. Every pane's
+/// credentials are revoked here, synchronously, before disposal is
+/// scheduled: a removed pane authenticates nothing however long its
+/// backend takes to drop (stint 1632).
+fn dispose_removed_windows(mut windows: Vec<Window>, what: &'static str) {
+    for window in &mut windows {
+        revoke_window_pane_credentials(window);
+    }
+    log::info!(
+        "{what}: disposing {} window(s) off UI thread",
+        windows.len()
+    );
+    #[cfg(test)]
+    if disposal::held(&mut windows) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        drop(windows);
+        log::debug!(
+            "{what}: window disposal thread finished in {:?}",
+            start.elapsed()
+        );
+    });
+}
+
+/// Hold removed windows instead of disposing of them, so a test can observe
+/// a removed pane while its backend is still alive.
+#[cfg(test)]
+pub(crate) mod disposal {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static HELD: RefCell<Option<Vec<super::Window>>> = const { RefCell::new(None) };
+    }
+
+    /// Hold every window this thread disposes of until the guard drops.
+    pub(crate) fn hold() -> Guard {
+        HELD.with(|held| *held.borrow_mut() = Some(Vec::new()));
+        Guard
+    }
+
+    pub(crate) struct Guard;
+
+    impl Guard {
+        /// How many removed windows are held, undisposed.
+        pub(crate) fn held_count(&self) -> usize {
+            HELD.with(|held| held.borrow().as_ref().map_or(0, Vec::len))
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            HELD.with(|held| held.borrow_mut().take());
+        }
+    }
+
+    pub(super) fn held(windows: &mut Vec<super::Window>) -> bool {
+        HELD.with(|held| match held.borrow_mut().as_mut() {
+            Some(slot) => {
+                slot.append(windows);
+                true
+            }
+            None => false,
+        })
     }
 }
 
@@ -261,6 +332,8 @@ pub(crate) struct ChildContextSpec {
     pub panes: Vec<Option<String>>,
     /// How the seeded panes are arranged inside the child's single window.
     pub layout: crate::protocol::SubContextLayout,
+    /// The verified source the seeded panes are admitted from (stint 1632).
+    pub source: crate::broker::pane_authority::GrantSource,
 }
 
 impl ChildContextSpec {
@@ -283,6 +356,7 @@ impl ChildContextSpec {
             anchor_pane,
             panes: vec![None],
             layout: crate::protocol::SubContextLayout::default(),
+            source: crate::broker::pane_authority::GrantSource::DesktopInput,
         }
     }
 }
@@ -338,6 +412,7 @@ impl PlexiApp {
             anchor_pane,
             panes: pane_commands,
             layout,
+            source,
         } = spec;
         if pane_commands.is_empty() {
             return Err("child context requires at least one pane".to_string());
@@ -402,15 +477,10 @@ impl PlexiApp {
             root: Some(path.clone()),
             depth: child_depth,
         };
-        let caller_is_agent = anchor_pane.is_some_and(|pid| !self.is_human_owned_pane(pid));
-        let Some((child_tree, child_panes, child_root_tile, child_pane_ids)) = self
-            .create_context_pane_set(
-                &child_env,
-                path.clone(),
-                &pane_commands,
-                layout,
-                caller_is_agent,
-            )
+        // The seeded panes are admitted from the request's verified source;
+        // the anchor pane is placement only.
+        let Some((child_tree, child_panes, child_root_tile, child_pane_ids)) =
+            self.create_context_pane_set(&child_env, path.clone(), &pane_commands, layout, &source)
         else {
             log::error!("new_child_context: failed to create terminals for child context");
             return Err("failed to create terminals for child context".to_string());
@@ -462,14 +532,20 @@ impl PlexiApp {
                 },
                 new_pane_first,
             );
-            self.windows[parent_win_idx].panes.insert(
-                sub_ctx_pane_id,
-                crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                    pane_id: sub_ctx_pane_id,
-                    target_context_id: ctx_id,
-                    context_state: None,
-                })),
-            );
+            if self.windows[parent_win_idx]
+                .panes
+                .insert(
+                    sub_ctx_pane_id,
+                    crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                        pane_id: sub_ctx_pane_id,
+                        target_context_id: ctx_id,
+                        context_state: None,
+                    })),
+                )
+                .is_err()
+            {
+                return Err(format!("portal pane {sub_ctx_pane_id} id is taken"));
+            }
             // The parent window is saved settled (stint 1440).
             self.windows[parent_win_idx].simplify_and_reconcile();
         } else {
@@ -496,13 +572,14 @@ impl PlexiApp {
             name: String::new(),
             path,
             tree: child_tree,
-            panes: child_panes,
+            panes: (child_panes).into(),
             focused_pane: Some(child_root_tile),
             zoomed_pane: None,
             grid_x: 0,
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
+            tree_history: Default::default(),
         });
         self.context_active_window.insert(ctx_id, win_id);
 
@@ -592,9 +669,9 @@ impl PlexiApp {
         self.wrap_panes_to_subcontext(&[pane_id], pane_id, name);
     }
 
-    pub(crate) fn new_context(&mut self) {
+    pub(crate) fn new_context(&mut self, source: crate::broker::pane_authority::GrantSource) {
         log::info!("new_context: creating new top-level context");
-        self.new_context_empty();
+        self.new_context_empty(source);
     }
 
     pub(crate) fn auto_context_name_for_path(
@@ -708,7 +785,7 @@ impl PlexiApp {
     }
 
     /// Create a new standalone empty context at the home directory.
-    fn new_context_empty(&mut self) {
+    fn new_context_empty(&mut self, source: crate::broker::pane_authority::GrantSource) {
         let total_start = std::time::Instant::now();
         let cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         log::info!("new_context_empty: cwd={}", cwd.display());
@@ -736,24 +813,18 @@ impl PlexiApp {
             name: String::new(),
             path: cwd.clone(),
             tree: egui_tiles::Tree::empty("plexi"),
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
+            tree_history: Default::default(),
         });
         let new_idx = self.windows.len() - 1;
-        if self
-            .seed_window_root_pane(
-                new_idx,
-                &context_env,
-                cwd.clone(),
-                super::create::TerminalSpawnOptions::default(),
-            )
-            .is_none()
-        {
+        let launch = self.terminal_launch(source, context_env.clone(), Some(cwd.clone()), None);
+        if self.seed_window_root_pane(new_idx, launch).is_none() {
             log::error!("new_context_empty: failed to seed root pane — aborting new context");
             self.windows.pop();
             return;
@@ -810,7 +881,11 @@ impl PlexiApp {
     /// opens at `path` and the context root is set to it. Named after the
     /// directory basename, unless the path has a `.plexi/workspace.toml` with
     /// `[context]` defaults. Callers must call `mark_workspace_dirty()` afterward.
-    pub(crate) fn new_context_at_path(&mut self, path: PathBuf) {
+    pub(crate) fn new_context_at_path(
+        &mut self,
+        path: PathBuf,
+        source: crate::broker::pane_authority::GrantSource,
+    ) {
         let total_start = std::time::Instant::now();
         log::info!("new_context_at_path: path={}", path.display());
 
@@ -867,24 +942,18 @@ impl PlexiApp {
             name: String::new(),
             path: path.clone(),
             tree: egui_tiles::Tree::empty("plexi"),
-            panes: HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
+            tree_history: Default::default(),
         });
         let new_idx = self.windows.len() - 1;
-        if self
-            .seed_window_root_pane(
-                new_idx,
-                &context_env,
-                path.clone(),
-                super::create::TerminalSpawnOptions::default(),
-            )
-            .is_none()
-        {
+        let launch = self.terminal_launch(source, context_env.clone(), Some(path.clone()), None);
+        if self.seed_window_root_pane(new_idx, launch).is_none() {
             log::error!(
                 "new_context_at_path: failed to seed root pane for {} — aborting new context",
                 path.display()
@@ -944,177 +1013,146 @@ impl PlexiApp {
             Some(x) => x + 1,
             None => 1,
         };
-        self.create_page_at(
-            new_x,
-            active_y,
-            ws_id,
-            super::create::TerminalSpawnOptions::default(),
-        );
+        let context = self.pane_context_env_for_context(ws_id);
+        let cwd = self.default_page_cwd();
+        let launch = self.desktop_terminal_launch(context, Some(cwd), None);
+        self.create_page_at(new_x, active_y, ws_id, launch);
     }
 
-    /// Shared creation helper: create a single-pane window at `(grid_x, grid_y)` in
-    /// `context_id` and make it the active window.
+    /// The directory a user-opened page starts in: the active context's
+    /// root, or home in place of `/`. Decided by the caller as admission;
+    /// [`Self::create_page_at`] takes the launch's directory as given.
+    pub(crate) fn default_page_cwd(&self) -> PathBuf {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        self.resolve_new_pane_cwd(None)
+            .filter(|p| p != &PathBuf::from("/"))
+            .unwrap_or(home)
+    }
+
+    /// Shared creation helper: construct `launch` into a single-pane window at
+    /// `(grid_x, grid_y)` in `context_id` and make it the active window. The
+    /// launch's directory is used as given.
     pub(crate) fn create_page_at(
         &mut self,
         grid_x: u32,
         grid_y: u32,
         context_id: u64,
-        options: super::create::TerminalSpawnOptions<'_>,
-    ) {
-        let super::create::TerminalSpawnOptions {
-            initial_cmd,
-            close_on_exit,
-            cwd_override,
-            agent_pane,
-            inject_folder_secrets,
-        } = options;
+        launch: super::construct::TerminalLaunch,
+    ) -> Option<PaneId> {
+        let pane_id = launch.pane_id();
+        let pane = match self.construct_terminal(launch) {
+            Ok(pane) => pane,
+            Err(error) => {
+                log::error!("create_page_at({grid_x},{grid_y}): pane {pane_id}: {error}");
+                return None;
+            }
+        };
+        Some(self.install_new_window(grid_x, grid_y, context_id, pane))
+    }
+
+    /// Install a constructed terminal as the only pane of a new window at
+    /// `(grid_x, grid_y)` in `context_id` and make it the active window. The
+    /// window's path is the pane's directory (home for a backend default).
+    pub(crate) fn install_new_window(
+        &mut self,
+        grid_x: u32,
+        grid_y: u32,
+        context_id: u64,
+        pane: TerminalPane,
+    ) -> PaneId {
+        let pane_id = pane.id;
+        let path = pane
+            .initial_cwd
+            .clone()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("/"));
+        log::info!(
+            "install_new_window({grid_x},{grid_y}): pane_id={pane_id} cwd={} context_id={context_id}",
+            path.display()
+        );
         let old_window_id = self.windows[self.active_window].window_id;
         let old_focus = self.windows[self.active_window].focused_pane;
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let cwd = cwd_override
-            .or_else(|| self.resolve_new_pane_cwd(None))
-            .filter(|p| p != &PathBuf::from("/"))
-            .unwrap_or(home);
-        log::info!(
-            "create_page_at({grid_x},{grid_y}): cwd={} context_id={context_id} close_on_exit={close_on_exit}",
-            cwd.display()
-        );
-        let context_env = self.pane_context_env_for_context(context_id);
-        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(
-            &context_env,
-            Some(cwd.clone()),
-            initial_cmd,
-            close_on_exit,
-            agent_pane,
-            inject_folder_secrets,
-        ) else {
-            log::error!("Failed to create terminal for new page at ({grid_x}, {grid_y})");
-            return;
-        };
-        let name = String::new();
-        let ctx_id = context_id;
+        let mut tiles = egui_tiles::Tiles::default();
+        let root_tile = tiles.insert_pane(pane_id);
+        let panes: crate::host::context::PaneMap =
+            [(pane_id, crate::host::pane::Pane::Terminal(Box::new(pane)))]
+                .into_iter()
+                .collect();
         let win_id = self.next_window_id;
         self.next_window_id += 1;
         self.push_focus_history(old_window_id, old_focus);
         self.windows.push(Window {
-            name,
-            path: cwd,
-            tree,
+            name: String::new(),
+            path,
+            tree: egui_tiles::Tree::new("plexi", root_tile, tiles),
             panes,
             focused_pane: Some(root_tile),
             zoomed_pane: None,
             grid_x,
             grid_y,
             window_id: win_id,
-            context_id: ctx_id,
+            context_id,
+            tree_history: Default::default(),
         });
         self.active_window = self.windows.len() - 1;
-        self.context_active_window.insert(ctx_id, win_id);
-        log::info!("window: created window={win_id} context={ctx_id}");
+        self.context_active_window.insert(context_id, win_id);
+        log::info!("window: created window={win_id} context={context_id}");
         self.minimap.visible = true;
+        pane_id
     }
 
-    /// The single install point for a context's base root terminal pane. Creates
-    /// a fresh single-pane terminal tree via
-    /// [`create_single_pane_tree`](Self::create_single_pane_tree) and installs it
-    /// into window `win_idx` in place — replacing its tree/panes, focusing the
-    /// root tile, and clearing any zoom. Every path that must leave a context
-    /// with a live root terminal funnels here: fresh-profile first boot,
-    /// [`new_context_empty`](Self::new_context_empty),
-    /// [`new_context_at_path`](Self::new_context_at_path), and the spawn-queue
-    /// fallback ([`seed_root_pane`](Self::seed_root_pane)).
+    /// The single install point for a context's base root terminal pane:
+    /// constructs `launch` and installs it as window `win_idx`'s only pane.
+    /// Every path that must leave a context with a live root terminal funnels
+    /// here: fresh-profile first boot,
+    /// [`new_context_empty`](Self::new_context_empty) and
+    /// [`new_context_at_path`](Self::new_context_at_path).
     ///
-    /// Context metadata for the terminal's backend settings is read from the
-    /// *active* window (see `create_single_pane_tree`). New-context callers seed
-    /// before switching `active_window`, so that historical env-var context is
-    /// preserved unchanged.
-    ///
-    /// Returns `(pane_id, root_tile)`, or `None` if the PTY-backed terminal
-    /// failed to spawn — the caller decides how to degrade.
+    /// Returns `(pane_id, root_tile)`, or `None` if the terminal failed to
+    /// construct — the caller decides how to degrade.
     pub(crate) fn seed_window_root_pane(
         &mut self,
         win_idx: usize,
-        context: &super::create::PaneContextEnv,
-        cwd: PathBuf,
-        options: super::create::TerminalSpawnOptions<'_>,
+        launch: super::construct::TerminalLaunch,
     ) -> Option<(PaneId, egui_tiles::TileId)> {
-        let super::create::TerminalSpawnOptions {
-            initial_cmd,
-            close_on_exit,
-            cwd_override: _,
-            agent_pane,
-            inject_folder_secrets,
-        } = options;
         let spawn_start = std::time::Instant::now();
-        let (tree, panes, root_tile) = self.create_single_pane_tree(
-            context,
-            Some(cwd),
-            initial_cmd,
-            close_on_exit,
-            agent_pane,
-            inject_folder_secrets,
-        )?;
-        let spawn_duration = spawn_start.elapsed();
-        let pane_id = *panes
-            .keys()
-            .next()
-            .expect("create_single_pane_tree always yields exactly one pane");
+        let pane_id = launch.pane_id();
+        let pane = match self.construct_terminal(launch) {
+            Ok(pane) => pane,
+            Err(error) => {
+                log::error!("seed_window_root_pane: pane {pane_id}: {error}");
+                return None;
+            }
+        };
+        let root_tile = self.install_window_root(win_idx, pane);
         log::info!(
-            "seed_window_root_pane: spawned root pane {pane_id} in {spawn_duration:?} (win_idx={win_idx}, context_id={})",
-            context.context_id
+            "seed_window_root_pane: spawned root pane {pane_id} in {:?} (win_idx={win_idx})",
+            spawn_start.elapsed()
         );
-        let win = &mut self.windows[win_idx];
-        win.tree = tree;
-        win.panes = panes;
-        win.focused_pane = Some(root_tile);
-        win.zoomed_pane = None;
         Some((pane_id, root_tile))
     }
 
-    /// Seed a root terminal pane into the active window when it has no tree root
-    /// and no focused pane yet (the windowless-boot state). Returns the id of the
-    /// pane actually created, or `None` if terminal creation failed.
-    ///
-    /// The spawn_pane IPC fallback needs this because `split_focused` returns
-    /// early when there is no focused pane to split, silently dropping the spawn.
-    /// Unlike `create_page_at`, this populates the *existing* active window in
-    /// place rather than pushing a new one, so a seeded/queued `pane new` lands
-    /// in the window the host booted with.
-    pub(crate) fn seed_root_pane(
+    /// Install a constructed terminal as window `win_idx`'s whole tree,
+    /// replacing its tree and panes, focusing it and clearing any zoom.
+    pub(crate) fn install_window_root(
         &mut self,
-        initial_cmd: Option<&str>,
-        close_on_exit: bool,
-        cwd_override: Option<PathBuf>,
-        agent_pane: bool,
-        inject_folder_secrets: bool,
-    ) -> Option<crate::spatial::tiling::PaneId> {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let cwd = cwd_override
-            .or_else(|| self.resolve_new_pane_cwd(None))
-            .filter(|p| p != &PathBuf::from("/"))
-            .unwrap_or(home);
-        let active = self.active_window;
-        let context = self.pane_context_env_for_window(active);
-        let Some((pane_id, _root_tile)) = self.seed_window_root_pane(
-            active,
-            &context,
-            cwd,
-            super::create::TerminalSpawnOptions {
-                initial_cmd,
-                close_on_exit,
-                cwd_override: None,
-                agent_pane,
-                inject_folder_secrets,
-            },
-        ) else {
-            log::error!("seed_root_pane: failed to create terminal for empty active window");
-            return None;
-        };
-        let window_id = self.windows[active].window_id;
-        log::info!(
-            "seed_root_pane: seeded root pane_id={pane_id} into empty window_id={window_id} (windowless-boot spawn fallback) close_on_exit={close_on_exit} inject_folder_secrets={inject_folder_secrets}"
-        );
-        Some(pane_id)
+        win_idx: usize,
+        pane: TerminalPane,
+    ) -> egui_tiles::TileId {
+        let pane_id = pane.id;
+        let mut tiles = egui_tiles::Tiles::default();
+        let root_tile = tiles.insert_pane(pane_id);
+        let panes: crate::host::context::PaneMap =
+            [(pane_id, crate::host::pane::Pane::Terminal(Box::new(pane)))]
+                .into_iter()
+                .collect();
+        let win = &mut self.windows[win_idx];
+        win.tree = egui_tiles::Tree::new("plexi", root_tile, tiles);
+        win.panes = panes;
+        win.focused_pane = Some(root_tile);
+        win.zoomed_pane = None;
+        win.note_tree_rebuilt();
+        root_tile
     }
 
     pub(crate) fn reset_active_context(&mut self) {
@@ -1125,18 +1163,18 @@ impl PlexiApp {
             self.router.active().root
         );
         let context = self.pane_context_env_for_window(self.active_window);
-        let Some((tree, panes, root_tile)) =
-            self.create_single_pane_tree(&context, Some(cwd), None, false, false, true)
-        else {
+        let launch = self.desktop_terminal_launch(context, Some(cwd), None);
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(launch) else {
             log::error!("Failed to create terminal for reset context");
             return;
         };
 
         let ctx = &mut self.windows[self.active_window];
         ctx.tree = tree;
-        ctx.panes = panes;
+        ctx.panes = panes.into();
         ctx.focused_pane = Some(root_tile);
         ctx.zoomed_pane = None;
+        ctx.note_tree_rebuilt();
     }
 
     pub(crate) fn delete_context(&mut self, ws_index: usize) {
@@ -1194,10 +1232,7 @@ impl PlexiApp {
             .windows
             .iter()
             .filter(|window| deleted.contains(&window.context_id))
-            .flat_map(|window| {
-                revoke_window_pane_credentials(window);
-                window.panes.keys().copied().collect::<Vec<_>>()
-            })
+            .flat_map(|window| window.panes.keys().copied().collect::<Vec<_>>())
             .collect();
         for context_id in &deleted {
             let panes: Vec<_> = self
@@ -1224,18 +1259,8 @@ impl PlexiApp {
             self.windows = kept;
             doomed
         };
-        log::info!(
-            "delete_context: disposing {} window(s) off UI thread (ctx_id={target_ctx_id})",
-            doomed.len()
-        );
-        std::thread::spawn(move || {
-            let start = std::time::Instant::now();
-            drop(doomed);
-            log::debug!(
-                "delete_context: window disposal thread finished in {:?}",
-                start.elapsed()
-            );
-        });
+        log::info!("delete_context: removed ctx_id={target_ctx_id}");
+        dispose_removed_windows(doomed, "delete_context");
 
         // 4. Remove Portal tiles in surviving windows that point to any deleted ctx.
         for win in &mut self.windows {
@@ -1250,7 +1275,7 @@ impl PlexiApp {
                 .map(|(id, _)| *id)
                 .collect();
             for pane_id in portal_pane_ids {
-                win.panes.remove(&pane_id);
+                win.take_pane(pane_id);
                 if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
                     win.tree.remove_recursively(tile_id);
                 }
@@ -1598,19 +1623,9 @@ impl PlexiApp {
         for pane in self.windows[index].panes.values() {
             self.record_closed_agent_pane(removed_ws_id, &self.windows[index].path, pane);
         }
-        revoke_window_pane_credentials(&self.windows[index]);
         let removed_window = self.windows.remove(index);
-        log::info!(
-            "delete_window: disposing window off UI thread (window_id={removed_win_id}, ctx_id={removed_ws_id})"
-        );
-        std::thread::spawn(move || {
-            let start = std::time::Instant::now();
-            drop(removed_window);
-            log::debug!(
-                "delete_window: window disposal thread finished in {:?}",
-                start.elapsed()
-            );
-        });
+        log::info!("delete_window: removed window_id={removed_win_id} ctx_id={removed_ws_id}");
+        dispose_removed_windows(vec![removed_window], "delete_window");
 
         // If the deleted window was the stored last-visited for its context,
         // point to another window in the same context so the palette doesn't
@@ -1878,7 +1893,11 @@ impl PlexiApp {
     }
 
     /// Explicit folder navigation, independent of terminal cwd observations.
-    pub(crate) fn open_context_root(&mut self, root: &std::path::Path) -> Result<u64, String> {
+    pub(crate) fn open_context_root(
+        &mut self,
+        root: &std::path::Path,
+        source: crate::broker::pane_authority::GrantSource,
+    ) -> Result<u64, String> {
         let root = root
             .canonicalize()
             .map_err(|error| format!("open context {}: {error}", root.display()))?;
@@ -1895,7 +1914,7 @@ impl PlexiApp {
             self.switch_workspace(index);
         } else {
             let count = self.router.len();
-            self.new_context_at_path(root.clone());
+            self.new_context_at_path(root.clone(), source);
             if self.router.len() == count {
                 return Err(format!("could not create context at {}", root.display()));
             }
@@ -1925,13 +1944,24 @@ impl PlexiApp {
         auto_init_workspace(&root);
         let context_id = self.router.get(idx).context_id;
         let old_root = self.router.get(idx).root.clone();
-        for pane_id in self
+        // One host-authorized scope change, published through each live
+        // terminal's handle: both of its credentials observe the new root at
+        // the same revision, and anything admitted under the old one is
+        // rechecked before it takes effect (stint 1632).
+        let scoped_root = crate::platform::path::canonical_or_self(&root);
+        let revision = self.context_scope_revisions.entry(context_id).or_default();
+        *revision += 1;
+        log::info!("set_context_root: context {context_id} scope revision {revision}");
+        for terminal in self
             .windows
             .iter()
             .filter(|window| window.context_id == context_id)
-            .flat_map(|window| window.panes.keys())
+            .flat_map(|window| window.panes.values())
+            .filter_map(crate::host::pane::Pane::terminal_incarnation)
         {
-            crate::app::host_mcp::rebind_pane_credential(*pane_id, root.clone());
+            if let Some(authority) = terminal.authority() {
+                authority.publish_scope(scoped_root.clone());
+            }
         }
         self.router.get_mut(idx).root = root.clone();
 
@@ -2082,7 +2112,7 @@ impl PlexiApp {
             log::warn!(
                 "dissolve_portal: ctx={child_ctx_id} has no child windows; removing portal only"
             );
-            self.windows[parent_idx].panes.remove(&portal_pane_id);
+            self.windows[parent_idx].take_pane(portal_pane_id);
             self.windows[parent_idx]
                 .tree
                 .remove_recursively(portal_tile_id);
@@ -2142,10 +2172,9 @@ impl PlexiApp {
                 return;
             };
 
-            parent_win.panes.remove(&portal_pane_id);
-            parent_win
-                .panes
-                .extend(std::mem::take(&mut primary_child_win.panes));
+            parent_win.take_pane(portal_pane_id);
+            parent_win.adopt_panes(std::mem::take(&mut primary_child_win.panes));
+            primary_child_win.note_tree_rebuilt();
             if let Some(parent_tile) = parent_win.tree.tiles.parent_of(portal_tile_id) {
                 if let Some(Tile::Container(parent_container)) =
                     parent_win.tree.tiles.get_mut(parent_tile)
@@ -2197,7 +2226,7 @@ impl PlexiApp {
             );
         }
 
-        for window in self.windows.iter().filter(|window| {
+        for window in self.windows.iter_mut().filter(|window| {
             window.window_id == primary_child_window_id || window.context_id == child_ctx_id
         }) {
             // The primary window's panes were grafted into the parent above,
@@ -2236,7 +2265,7 @@ impl PlexiApp {
                 .map(|(pane_id, _)| *pane_id)
                 .collect();
             for pane_id in stale_portal_ids {
-                win.panes.remove(&pane_id);
+                win.take_pane(pane_id);
                 if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
                     win.tree.remove_recursively(tile_id);
                 }
@@ -2257,6 +2286,8 @@ impl PlexiApp {
             self.reload_config_for_active_context();
         }
 
+        // The grafted and promoted panes now live in the parent context.
+        self.rescope_moved_panes();
         self.pending_notifications.retain(|n| {
             !(matches!(n.scope, crate::protocol::NotifyScope::Context)
                 && n.source_context_id == child_ctx_id)
@@ -2409,7 +2440,7 @@ impl PlexiApp {
 
         for win in &self.windows {
             let mut saved_panes = Vec::new();
-            for (&id, pane) in &win.panes {
+            for (&id, pane) in win.panes.iter() {
                 debug_assert_eq!(pane.id(), id);
                 if let Some(t) = pane.as_terminal() {
                     let cwd = t
@@ -2441,6 +2472,19 @@ impl PlexiApp {
                         agent_session: t.build_saved_agent_session_with_scrollback(
                             self.config.standby_scrollback_lines(),
                         ),
+                        // The whole grant and its effective scope, from one
+                        // revision, for every terminal (stint 1632).
+                        authority: t.authority().and_then(|authority| {
+                            serde_json::to_value(
+                                crate::broker::pane_authority::SavedPaneAuthority::of(authority),
+                            )
+                            .inspect_err(|error| {
+                                log::error!(
+                                    "workspace_save: pane {id} grant not serialized: {error}"
+                                )
+                            })
+                            .ok()
+                        }),
                     });
                 } else if let Some(a) = pane.as_view() {
                     if let crate::host::pane::ViewRuntime::Builtin(view) = &a.runtime {
@@ -2465,6 +2509,7 @@ impl PlexiApp {
                         continue;
                     }
                     saved_panes.push(crate::workspace::SavedPane {
+                        authority: None,
                         id,
                         kind: crate::workspace::SavedPaneKind::View,
                         cwd: a.workspace_root.clone(),
@@ -2492,6 +2537,7 @@ impl PlexiApp {
                     });
                 } else if let Some(child_ctx_id) = pane.portal_target() {
                     saved_panes.push(crate::workspace::SavedPane {
+                        authority: None,
                         id,
                         kind: crate::workspace::SavedPaneKind::Portal {
                             context_id: child_ctx_id,
@@ -2567,6 +2613,7 @@ mod tests {
             panes: ids
                 .iter()
                 .map(|id| crate::workspace::SavedPane {
+                    authority: None,
                     id: *id,
                     kind: crate::workspace::SavedPaneKind::View,
                     cwd: std::env::temp_dir(),

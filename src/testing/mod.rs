@@ -334,6 +334,7 @@ impl HostHarness {
         // and balloons any test that renders the pane by gigabytes.
         let browser_root = self._workspace_dir.path().to_path_buf();
         let view_pane = ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -352,7 +353,9 @@ impl HostHarness {
         };
 
         let win = &mut self.app.windows[0];
-        win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
+        win.panes
+            .insert(pane_id, Pane::View(Box::new(view_pane)))
+            .unwrap();
         let tile_id = win.tree.tiles.insert_pane(pane_id);
         if win.tree.root.is_none() {
             win.tree.root = Some(tile_id);
@@ -418,6 +421,7 @@ impl HostHarness {
             context_id,
         );
         let view_pane = ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             runtime: ViewRuntime::Builtin(Box::new(assistant)),
@@ -433,7 +437,9 @@ impl HostHarness {
             semantic_state: Default::default(),
         };
         let win = &mut self.app.windows[win_idx];
-        win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
+        win.panes
+            .insert(pane_id, Pane::View(Box::new(view_pane)))
+            .unwrap();
         let tile_id = win.tree.tiles.insert_pane(pane_id);
         // Join the layout so this pane actually renders each frame — a tile
         // outside the root container would never reach the tiling behavior.
@@ -721,13 +727,33 @@ impl HostHarness {
         self
     }
 
+    /// Inject a launch request (`spawn_pane`, `agent_spawn`, `agent_open`)
+    /// as a verified in-process caller would send it: its claimed pane is
+    /// trusted. A request deserialized from wire JSON is otherwise
+    /// `Unverified` and refused (stint 1632).
+    pub fn inject_in_process(&self, mut cmd: HostRequest) -> &Self {
+        match &mut cmd {
+            HostRequest::SpawnPane { source, .. }
+            | HostRequest::AgentSpawn { source, .. }
+            | HostRequest::AgentOpen { source, .. }
+            | HostRequest::AgentReopen { source, .. }
+            | HostRequest::CreateContext { source, .. }
+            | HostRequest::CreateSubContext { source, .. }
+            | HostRequest::FocusContext { source, .. } => {
+                *source = crate::protocol::SpawnSource::InProcess;
+            }
+            _ => panic!("inject_in_process: not a launch request"),
+        }
+        self.inject_ipc(cmd)
+    }
+
     /// Launch a real process plugin from `plugins/dev/<name>` and return its pane
     /// id, without waiting for the guest's first render. Use this when the
     /// test drives startup itself (a title-phase poll, a scheduler-wake
     /// probe); otherwise prefer `launch_dev_view`, which also waits.
     pub fn launch_dev_view_without_render(&mut self, name: &str) -> PaneId {
-        let plugin_dir =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("plugins/dev/{name}"));
+        let plugin_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("plugins/dev/{name}"));
         let before = self.state().open_panes;
         let focused = self
             .app

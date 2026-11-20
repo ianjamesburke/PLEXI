@@ -199,7 +199,7 @@ pub struct Window {
     pub name: String,
     pub path: PathBuf,
     pub tree: Tree<PaneId>,
-    pub panes: HashMap<PaneId, Pane>,
+    pub(crate) panes: PaneMap,
     pub focused_pane: Option<TileId>,
     pub zoomed_pane: Option<TileId>,
     /// Spatial grid coordinates within the context's window grid.
@@ -211,9 +211,226 @@ pub struct Window {
     pub window_id: u64,
     /// The context this window belongs to.
     pub context_id: u64,
+    /// Rebuilds and departures since the window was created, which admitted
+    /// launches bind (stint 1632). Every in-place tree rebuild calls
+    /// [`Window::note_tree_rebuilt`] and every pane removal calls
+    /// [`Window::note_pane_departed`].
+    pub tree_history: TreeHistory,
+}
+
+/// A window's panes by id. Reads see a plain map. Membership changes go
+/// through [`Window`] so each one advances the window's [`TreeHistory`]
+/// (stint 1632): there is no way to overwrite an occupied slot, or to take a
+/// pane out and put another under its id, without recording it.
+#[derive(Default)]
+pub(crate) struct PaneMap(HashMap<PaneId, Pane>);
+
+/// An install into a slot that is already occupied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OccupiedSlot(pub(crate) PaneId);
+
+impl std::ops::Deref for PaneMap {
+    type Target = HashMap<PaneId, Pane>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PaneMap {
+    pub(crate) fn get_mut(&mut self, pane_id: &PaneId) -> Option<&mut Pane> {
+        self.0.get_mut(pane_id)
+    }
+
+    pub(crate) fn values_mut(&mut self) -> std::collections::hash_map::ValuesMut<'_, PaneId, Pane> {
+        self.0.values_mut()
+    }
+
+    pub(crate) fn iter_mut(&mut self) -> std::collections::hash_map::IterMut<'_, PaneId, Pane> {
+        self.0.iter_mut()
+    }
+
+    /// Install `pane` under a vacant id. An occupied slot keeps its occupant;
+    /// the rejected pane is dropped.
+    pub(crate) fn insert(&mut self, pane_id: PaneId, pane: Pane) -> Result<(), OccupiedSlot> {
+        match self.0.entry(pane_id) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                log::error!("pane_map: refused to overwrite occupied pane slot {pane_id}");
+                Err(OccupiedSlot(pane_id))
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                mark_installed(&pane);
+                slot.insert(pane);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// A terminal's authority handle becomes `Live` when the pane is installed
+/// (stint 1632).
+fn mark_installed(pane: &Pane) {
+    if let Some(authority) = pane.terminal_incarnation().and_then(|t| t.authority()) {
+        authority.mark_live();
+    }
+}
+
+impl From<HashMap<PaneId, Pane>> for PaneMap {
+    fn from(panes: HashMap<PaneId, Pane>) -> Self {
+        panes.values().for_each(mark_installed);
+        Self(panes)
+    }
+}
+
+impl FromIterator<(PaneId, Pane)> for PaneMap {
+    fn from_iter<I: IntoIterator<Item = (PaneId, Pane)>>(iter: I) -> Self {
+        let panes: HashMap<PaneId, Pane> = iter.into_iter().collect();
+        panes.values().for_each(mark_installed);
+        Self(panes)
+    }
+}
+
+impl IntoIterator for PaneMap {
+    type Item = (PaneId, Pane);
+    type IntoIter = std::collections::hash_map::IntoIter<PaneId, Pane>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+/// What happened to a window's tree, for launches admitted against it. Tile
+/// ids restart when a tree is rebuilt, so a `TileId` or an empty tree means
+/// the same node only while no rebuild happened; a pane anchor means the same
+/// placement only while that pane never left the window.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TreeHistory {
+    generation: u64,
+    rebuilt_at: u64,
+    /// Generation at which each pane last left. Bounded by the panes that
+    /// ever left this window during the host's lifetime.
+    departed_at: HashMap<PaneId, u64>,
+}
+
+impl TreeHistory {
+    /// Advances on every rebuild, every departure and every occupant swap.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn rebuilt_since(&self, generation: u64) -> bool {
+        self.rebuilt_at > generation
+    }
+
+    pub(crate) fn departed_since(&self, pane_id: PaneId, generation: u64) -> bool {
+        self.departed_at
+            .get(&pane_id)
+            .is_some_and(|&at| at > generation)
+    }
 }
 
 impl Window {
+    /// Record that the tree was replaced in place: every earlier tile id and
+    /// pane membership is void.
+    pub(crate) fn note_tree_rebuilt(&mut self) {
+        let history = &mut self.tree_history;
+        history.generation += 1;
+        history.rebuilt_at = history.generation;
+    }
+
+    /// Record a structural edit that kept every pane in the window (a drag
+    /// and drop): container nodes admitted before it are stale even if a
+    /// later edit restores the same shape (stint 1632).
+    pub(crate) fn note_structural_edit(&mut self) {
+        self.tree_history.generation += 1;
+        log::info!(
+            "tree_history: window {} structural edit -> generation {}",
+            self.window_id,
+            self.tree_history.generation
+        );
+    }
+
+    /// Record that `pane_id` left this window.
+    pub(crate) fn note_pane_departed(&mut self, pane_id: PaneId) {
+        let history = &mut self.tree_history;
+        history.generation += 1;
+        history.departed_at.insert(pane_id, history.generation);
+    }
+
+    /// Exchange the panes occupying tiles `a` and `b`. Both panes stay in the
+    /// window, but every container above them changed what it holds, so the
+    /// edit advances the generation: a container anchor admitted before a
+    /// swap is stale even after a swap back (stint 1632). Returns the panes
+    /// now at `a` and `b`, or `None` (and changes nothing) unless both tiles
+    /// hold panes.
+    pub(crate) fn swap_tile_occupants(&mut self, a: TileId, b: TileId) -> Option<(PaneId, PaneId)> {
+        let pane_at = |tile| match self.tree.tiles.get(tile) {
+            Some(Tile::Pane(pane_id)) => Some(*pane_id),
+            _ => None,
+        };
+        let (pane_a, pane_b) = (pane_at(a)?, pane_at(b)?);
+        for (tile, occupant) in [(a, pane_b), (b, pane_a)] {
+            if let Some(Tile::Pane(pane_id)) = self.tree.tiles.get_mut(tile) {
+                *pane_id = occupant;
+            }
+        }
+        self.tree_history.generation += 1;
+        Some((pane_b, pane_a))
+    }
+
+    /// Move every pane of `other` into this window's vacant slots. A pane
+    /// whose id is already taken here is refused and dropped.
+    pub(crate) fn adopt_panes(&mut self, other: PaneMap) {
+        for (pane_id, pane) in other {
+            let _refused_and_logged = self.panes.insert(pane_id, pane);
+        }
+    }
+
+    /// Replace whatever occupies `pane_id`'s slot with `pane` (test
+    /// fixtures that swap a placeholder for a real terminal).
+    #[cfg(test)]
+    pub(crate) fn replace_pane_for_test(&mut self, pane_id: PaneId, pane: Pane) {
+        let _placeholder = self.take_pane(pane_id);
+        self.panes
+            .insert(pane_id, pane)
+            .expect("the slot is vacant once its occupant is taken");
+    }
+
+    /// Take `pane_id` out of this window, recording that it left.
+    pub(crate) fn take_pane(&mut self, pane_id: PaneId) -> Option<Pane> {
+        let pane = self.panes.0.remove(&pane_id)?;
+        self.note_pane_departed(pane_id);
+        Some(pane)
+    }
+
+    /// Cover the occupant of `pane_id`'s slot with `build(occupant)`. The slot
+    /// keeps its pane and tile ids, but its occupant changed, so a launch
+    /// admitted against it is stale (stint 1632). `false` when the slot is
+    /// empty.
+    pub(crate) fn push_overlay(
+        &mut self,
+        pane_id: PaneId,
+        build: impl FnOnce(Pane) -> Pane,
+    ) -> bool {
+        let Some(occupant) = self.panes.0.remove(&pane_id) else {
+            return false;
+        };
+        self.panes.0.insert(pane_id, build(occupant));
+        self.note_pane_departed(pane_id);
+        true
+    }
+
+    /// Hand `pane_id`'s slot back to the pane its overlay covers and return
+    /// the overlay. Advances membership like [`Self::push_overlay`]; a probe
+    /// that finds no overlay changes nothing.
+    pub(crate) fn pop_overlay(&mut self, pane_id: PaneId) -> Option<Pane> {
+        let covered = match self.panes.get_mut(&pane_id) {
+            Some(Pane::View(view)) => view.overlay_replaced.take()?,
+            _ => return None,
+        };
+        let overlay = self.panes.0.insert(pane_id, *covered);
+        self.note_pane_departed(pane_id);
+        overlay
+    }
+
     pub(crate) fn find_ancestor_tabs(&self, tile_id: TileId) -> Option<(TileId, TileId)> {
         let mut current = tile_id;
         loop {

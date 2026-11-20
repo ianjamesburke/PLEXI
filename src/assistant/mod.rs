@@ -1076,8 +1076,13 @@ impl AssistantView {
             log::info!("assistant: already subscribed to '{target}'");
             return;
         }
+        // "All streams" is the streams declared now, each decided as
+        // itself; a stream declared later is never delivered (stint 1632).
         let event_names = if event == "*" {
-            Vec::new()
+            self.timeline
+                .lock()
+                .unwrap()
+                .declared_stream_names(self.context_id, app)
         } else {
             vec![event.to_string()]
         };
@@ -1308,8 +1313,13 @@ impl AssistantView {
     }
 
     fn event_stream_decision(&self, app: &str, event: &str) -> Decision {
+        // "All streams" is the streams declared now, each decided as
+        // itself; a stream declared later is never delivered (stint 1632).
         let event_names = if event == "*" {
-            Vec::new()
+            self.timeline
+                .lock()
+                .unwrap()
+                .declared_stream_names(self.context_id, app)
         } else {
             vec![event.to_string()]
         };
@@ -5130,6 +5140,7 @@ impl View for AssistantView {
                     type_id: "permissions".to_string(),
                     layout: Some("split_v".to_string()),
                     args: Vec::new(),
+                    emitter: None,
                 });
             }
             Some(ComposerEvent::OverlayConfirm) => self.confirm_overlay(),

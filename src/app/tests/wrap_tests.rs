@@ -537,13 +537,14 @@ fn close_unpack_respects_other_pages_and_missing_targets() {
         name: String::new(),
         path: parent_window.path.clone(),
         tree: egui_tiles::Tree::empty("empty-second-page"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: 987_654_321,
         context_id: parent,
+        tree_history: Default::default(),
     });
     h.app.close_pane_by_id(outside);
     assert_eq!(
@@ -616,13 +617,14 @@ fn close_unpack_chooses_populated_child_page_over_remembered_empty_page() {
         name: String::new(),
         path: child_path,
         tree: egui_tiles::Tree::empty("empty-child-page"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: empty_window,
         context_id: child,
+        tree_history: Default::default(),
     });
     assert!(h.app.zoom_out_of_context());
     h.app.context_active_window.insert(child, empty_window);
@@ -660,7 +662,7 @@ fn close_unpack_when_last_sibling_page_is_removed() {
             all_panes_must_have_tabs: true,
             ..Default::default()
         });
-    let outside_pane = parent_window.panes.remove(&outside).unwrap();
+    let outside_pane = parent_window.take_pane(outside).unwrap();
     let path = parent_window.path.clone();
     let mut tree = egui_tiles::Tree::empty("sibling-page");
     let tile = tree.tiles.insert_pane(outside);
@@ -669,13 +671,14 @@ fn close_unpack_when_last_sibling_page_is_removed() {
         name: String::new(),
         path,
         tree,
-        panes: std::collections::HashMap::from([(outside, outside_pane)]),
+        panes: (std::collections::HashMap::from([(outside, outside_pane)])).into(),
         focused_pane: Some(tile),
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: 987_654_323,
         context_id: parent,
+        tree_history: Default::default(),
     });
     h.app.close_pane_by_id(outside);
     assert_eq!(h.app.router.active().context_id, parent);

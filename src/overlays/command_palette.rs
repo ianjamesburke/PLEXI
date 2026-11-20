@@ -2436,24 +2436,31 @@ impl PlexiApp {
         let target_tile = self.windows[win_idx]
             .find_ancestor_tabs(tile)
             .map_or(tile, |(tabs, _)| tabs);
-        let pane_id = self.spawn_terminal_pane_at(crate::pane_ops::create::SpawnTerminalAtSpec {
-            win_idx,
-            target_tile,
-            vertical: true,
-            new_pane_first: false,
-            keep_focus: false,
-            options: crate::pane_ops::create::TerminalSpawnOptions {
-                initial_cmd: Some(shell_cmd),
+        let context = self.pane_context_env_for_window(win_idx);
+        // A user command runs the workspace's command, not a shell for its
+        // folder: no folder secrets.
+        let launch = self.terminal_launch_with(
+            crate::broker::pane_authority::GrantSource::DesktopInput,
+            context,
+            ws_root,
+            Some(crate::pane_ops::construct::LaunchCommand {
+                command: shell_cmd.to_string(),
                 close_on_exit: false,
-                cwd_override: ws_root,
-                agent_pane: false,
-                inject_folder_secrets: false,
+            }),
+            false,
+        );
+        self.spawn_terminal_pane_at(
+            crate::pane_ops::create::SplitPlacement {
+                win_idx,
+                target_tile,
+                vertical: true,
+                new_pane_first: false,
+                keep_focus: false,
             },
-        });
-        self.windows[win_idx]
-            .panes
-            .contains_key(&pane_id)
-            .then_some(pane_id)
+            launch,
+        )
+        .map_err(|error| log::warn!("user_command: terminal not created: {error}"))
+        .ok()
     }
 
     fn idle_shell_pane_id(&self, pane_id: u64) -> Option<u64> {
@@ -2690,7 +2697,7 @@ impl PlexiApp {
                         boot_timeout_secs: boot_timeout,
                         worktree,
                         result_schema: parsed_result_schema,
-                        peer_ancestry: None,
+                        source: crate::protocol::SpawnSource::InProcess,
                     };
                     self.handle_pane_ipc_request(req);
                     let mut created_pane_id = self.user_command_focused_pane(command);
@@ -2892,7 +2899,12 @@ impl PlexiApp {
                     .unwrap_or_else(|| command.context_root.clone());
                 // The entire saved command now runs in logic, so admission
                 // and resolution can finish before the next step executes.
-                match self.open_named_agent(&name, &eff_cwd, default_pane_id, None) {
+                match self.open_named_agent(
+                    &name,
+                    &eff_cwd,
+                    default_pane_id,
+                    &crate::protocol::SpawnSource::InProcess,
+                ) {
                     Ok(_) => HostStepOutcome::Exited(0),
                     Err(error) => {
                         self.notify_command_refused(&format!("agent open {name}"), &error);
@@ -3015,7 +3027,7 @@ impl PlexiApp {
                     boot_timeout_secs: None,
                     worktree: None,
                     result_schema: None,
-                    peer_ancestry: None,
+                    source: crate::protocol::SpawnSource::InProcess,
                 };
                 self.handle_pane_ipc_request(req);
                 if let Ok(content) = std::fs::read_to_string(&resp_path) {
@@ -3158,6 +3170,7 @@ mod tests {
             grid_y: 0,
             window_id: h.app.next_window_id,
             context_id: context.context_id,
+            tree_history: Default::default(),
         });
         h.app.next_window_id += 1;
         h.app.router.push(context);
@@ -3296,7 +3309,7 @@ mod tests {
             if close_context {
                 h.app.router.get_mut(0).context_id += 100;
             } else {
-                h.app.windows[0].panes.remove(&pane);
+                h.app.windows[0].take_pane(pane);
             }
             h.app.drain_pending_user_commands();
             assert!(!marker.exists(), "closed source must not execute steps");
@@ -4325,13 +4338,14 @@ mod tests {
             name: "test".to_string(),
             path: std::path::PathBuf::from("/tmp"),
             tree,
-            panes,
+            panes: panes.into(),
             focused_pane,
             zoomed_pane: None,
             grid_x,
             grid_y,
             window_id,
             context_id,
+            tree_history: Default::default(),
         }
     }
 
@@ -4347,6 +4361,7 @@ mod tests {
         use crate::host::pane::{ViewPane, ViewRuntime};
 
         Pane::View(Box::new(ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id,
             runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -4395,13 +4410,14 @@ mod tests {
             name: "test".to_string(),
             path: std::path::PathBuf::from("/tmp"),
             tree: egui_tiles::Tree::new("test", root, tiles),
-            panes,
+            panes: panes.into(),
             focused_pane,
             zoomed_pane: None,
             grid_x: 0,
             grid_y: 0,
             window_id,
             context_id,
+            tree_history: Default::default(),
         }
     }
 
@@ -5248,6 +5264,7 @@ mod tests {
 
         let make_app = |manifest_id: &str, name: &str| {
             Pane::View(Box::new(ViewPane {
+                incarnation: Default::default(),
                 pip_status: None,
                 id: 99,
                 runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -5703,9 +5720,15 @@ steps = [
                 let mut reader = std::io::BufReader::new(stream);
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_ok() && !line.trim().is_empty() {
-                    if let Ok(req) =
+                    if let Ok(mut req) =
                         serde_json::from_str::<crate::protocol::HostRequest>(line.trim())
                     {
+                        // Stamp the peer the way the socket handler does: the
+                        // CLI runs on a thread of this test process.
+                        if let crate::protocol::HostRequest::SpawnPane { source, .. } = &mut req {
+                            *source =
+                                crate::protocol::SpawnSource::SocketPeer(vec![std::process::id()]);
+                        }
                         h.app.handle_pane_ipc_request(req);
                     }
                 }
@@ -6277,9 +6300,15 @@ steps = [
                 let mut reader = std::io::BufReader::new(stream);
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_ok() && !line.trim().is_empty() {
-                    if let Ok(req) =
+                    if let Ok(mut req) =
                         serde_json::from_str::<crate::protocol::HostRequest>(line.trim())
                     {
+                        // Stamp the peer the way the socket handler does: the
+                        // CLI runs on a thread of this test process.
+                        if let crate::protocol::HostRequest::SpawnPane { source, .. } = &mut req {
+                            *source =
+                                crate::protocol::SpawnSource::SocketPeer(vec![std::process::id()]);
+                        }
                         if let crate::protocol::HostRequest::SpawnPane { from_pane_id, .. } = &req {
                             seen_from_ids.push(*from_pane_id);
                         }

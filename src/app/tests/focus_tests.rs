@@ -33,6 +33,7 @@ fn add_theme_event_recorder(
     let events = Arc::new(Mutex::new(Vec::new()));
     let pane_id = app.host.alloc_pane_id();
     let pane = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+        incarnation: Default::default(),
         pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(ThemeEventRecorder {
@@ -49,7 +50,10 @@ fn add_theme_event_recorder(
         slots: HashMap::new(),
         semantic_state: Default::default(),
     }));
-    app.windows[window_index].panes.insert(pane_id, pane);
+    app.windows[window_index]
+        .panes
+        .insert(pane_id, pane)
+        .unwrap();
     let tile = app.windows[window_index].tree.tiles.insert_pane(pane_id);
     if app.windows[window_index].tree.root().is_none() {
         app.windows[window_index].tree.root = Some(tile);
@@ -67,13 +71,14 @@ fn theme_broadcast_reaches_background_apps_in_every_window() {
         name: "inactive".to_string(),
         path: "/tmp".into(),
         tree: egui_tiles::Tree::empty("inactive-theme-window"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: 2,
         context_id: 2,
+        tree_history: Default::default(),
     });
     let inactive_events = add_theme_event_recorder(&mut app, 1);
     let parked_events = Arc::new(Mutex::new(Vec::new()));
@@ -452,13 +457,14 @@ fn switch_workspace_pushes_focus_history() {
         name: String::new(),
         path: std::path::PathBuf::from("/tmp"),
         tree: egui_tiles::Tree::empty("test_ctx_b"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_b_id,
+        tree_history: Default::default(),
     });
     app.context_active_window.insert(ctx_b_id, win_b_id);
     let ctx_b_idx = app.router.len() - 1;
@@ -523,13 +529,14 @@ fn switch_workspace_no_double_push_during_history_navigation() {
         name: String::new(),
         path: std::path::PathBuf::from("/tmp"),
         tree: egui_tiles::Tree::empty("test_ctx_b2"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_b_id,
+        tree_history: Default::default(),
     });
     app.context_active_window.insert(ctx_b_id, win_b_id);
     let ctx_b_idx = app.router.len() - 1;
@@ -578,13 +585,14 @@ fn focus_history_restores_context_minimap_visibility() {
         name: String::new(),
         path: std::path::PathBuf::from("/tmp"),
         tree: egui_tiles::Tree::empty("test_ctx_b_minimap"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_b_id,
+        tree_history: Default::default(),
     });
     app.context_active_window.insert(ctx_b_id, win_b_id);
     let ctx_b_idx = app.router.len() - 1;
@@ -651,13 +659,14 @@ fn pane_navigate_same_context_records_destination_active_window() {
         name: String::new(),
         path: std::path::PathBuf::from("/tmp"),
         tree,
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: Some(tile_b),
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: win_b_id,
         context_id: ctx_id,
+        tree_history: Default::default(),
     });
 
     assert!(app.pane_navigate(pane_b_id));
@@ -725,6 +734,7 @@ fn navigate_to_activates_ancestor_tabs() {
 fn open_note_in_editor(app: &mut PlexiApp, path: &std::path::Path) {
     let (_tile, pane_id) = app.add_test_pane();
     let view_pane = crate::host::pane::ViewPane {
+        incarnation: Default::default(),
         pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
@@ -741,9 +751,11 @@ fn open_note_in_editor(app: &mut PlexiApp, path: &std::path::Path) {
         slots: std::collections::HashMap::new(),
         semantic_state: Default::default(),
     };
+    app.windows[0].take_pane(pane_id);
     app.windows[0]
         .panes
-        .insert(pane_id, crate::host::pane::Pane::View(Box::new(view_pane)));
+        .insert(pane_id, crate::host::pane::Pane::View(Box::new(view_pane)))
+        .unwrap();
 }
 
 /// Cmd+P lists the notes you have open, not every note on disk. A note
@@ -811,6 +823,7 @@ fn open_note_entries_ignores_non_note_editor_panes() {
 
     let (_tile, pane_id) = app.add_test_pane();
     let view_pane = crate::host::pane::ViewPane {
+        incarnation: Default::default(),
         pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
@@ -827,9 +840,11 @@ fn open_note_entries_ignores_non_note_editor_panes() {
         slots: std::collections::HashMap::new(),
         semantic_state: Default::default(),
     };
+    app.windows[0].take_pane(pane_id);
     app.windows[0]
         .panes
-        .insert(pane_id, crate::host::pane::Pane::View(Box::new(view_pane)));
+        .insert(pane_id, crate::host::pane::Pane::View(Box::new(view_pane)))
+        .unwrap();
 
     assert!(
         app.open_note_entries().is_empty(),
@@ -858,6 +873,7 @@ fn palette_finds_open_note_editor_in_a_non_active_window() {
     panes.insert(
         pane_id,
         crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
@@ -882,13 +898,14 @@ fn palette_finds_open_note_editor_in_a_non_active_window() {
         name: "second".to_string(),
         path: crate::testing::scratch_context_root("focus"),
         tree: egui_tiles::Tree::new("second", tile, tiles),
-        panes,
+        panes: panes.into(),
         focused_pane: Some(tile),
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id,
         context_id: app.router.active().context_id,
+        tree_history: Default::default(),
     });
 
     assert_eq!(

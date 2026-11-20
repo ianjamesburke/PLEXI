@@ -139,7 +139,7 @@ impl PlexiApp {
                 }));
                 let mut panes = Vec::new();
                 for window in &self.windows {
-                    for (pane_id, pane) in &window.panes {
+                    for (pane_id, pane) in window.panes.iter() {
                         let Some(tile) = window.tree.tiles.find_pane(pane_id) else {
                             continue;
                         };
@@ -715,11 +715,12 @@ impl PlexiApp {
             }));
             return;
         }
-        let context_id = if verified.context_id != 0 {
-            verified.context_id
-        } else if let Some(pane_id) = verified.pane_id {
-            match self.find_pane_in_any_window(pane_id) {
-                Some((win_idx, _)) => self.windows[win_idx].context_id,
+        // A pane caller must be live, however it authenticated: a credential
+        // carries the context it was issued in, never proof the pane still
+        // exists (stint 1632).
+        let live_context = match verified.pane_id {
+            Some(pane_id) => match self.find_pane_in_any_window(pane_id) {
+                Some((win_idx, _)) => Some(self.windows[win_idx].context_id),
                 None => {
                     log::warn!("plugin_call: refused — verified pane {pane_id} is not live");
                     reply(serde_json::json!({
@@ -729,7 +730,13 @@ impl PlexiApp {
                     }));
                     return;
                 }
-            }
+            },
+            None => None,
+        };
+        let context_id = if verified.context_id != 0 {
+            verified.context_id
+        } else if let Some(context_id) = live_context {
+            context_id
         } else {
             // A no-pane session may ask in an explicit context. It is not the human.
             self.windows[self.active_window].context_id
@@ -749,9 +756,31 @@ impl PlexiApp {
         );
         scope.actor_type = verified.actor_type;
         scope.actor_scope = verified.actor_scope;
-        scope.posture = verified
-            .pane_id
-            .and_then(|pid| self.pane_permission_posture(pid));
+        // A pane credential carries its pane's ceiling; a peer-verified
+        // caller's comes from the pane it resolved to (stint 1632).
+        let ceiling = match &verified.authority {
+            Some(authority) => authority
+                .grant()
+                .posture()
+                .map(|p| p.cloned())
+                .map_err(|sealed| sealed.to_string()),
+            None => verified
+                .pane_id
+                .map_or(Ok(None), |pid| self.pane_ceiling(pid)),
+        };
+        scope.posture = match ceiling {
+            Ok(posture) => posture,
+            Err(error) => {
+                log::info!(
+                    "plugin_call: caller pane {:?} refused: {error}",
+                    verified.pane_id
+                );
+                reply(
+                    serde_json::json!({"ok":false, "error_code":"permission_denied", "error": error}),
+                );
+                return;
+            }
+        };
         let mut dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::namespaced_for(
             scope,
             std::sync::Arc::clone(&monitor),

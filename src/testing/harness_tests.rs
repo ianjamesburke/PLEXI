@@ -305,13 +305,14 @@ pub(super) fn push_secondary_context(
         name: String::new(),
         path: root.to_path_buf(),
         tree: egui_tiles::Tree::empty("tool_dispatch_context_b"),
-        panes: std::collections::HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 1,
         grid_y: 0,
         window_id: win_id,
         context_id,
+        tree_history: Default::default(),
     });
     h.app.router.push(crate::host::context::Context {
         name: "context-b".to_string().into(),
@@ -593,29 +594,28 @@ fn register_top_view_tool(h: &HostHarness, pane_id: u64, plugin_id: &str, tool: 
 /// `hint = "overlay"`: the overlay reuses the pane id and stashes the covered
 /// pane in `overlay_replaced`.
 fn overlay_view_on(h: &mut HostHarness, pane_id: u64, manifest_id: &str) {
-    let covered = h.app.windows[0]
-        .panes
-        .remove(&pane_id)
-        .expect("covered pane is in the pane map");
     let cwd = h.workspace_root();
-    let overlay = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
-        pip_status: None,
-        id: pane_id,
-        permissions: crate::app::permissions::PluginPermissions::builtin(),
-        runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
-            crate::file_browser::FileBrowserView::new(cwd.clone()),
-        )),
-        workspace_root: cwd,
-        manifest_id: manifest_id.to_string(),
-        name: manifest_id.to_string(),
-        pane_group: None,
-        linked_pane_id: None,
-        overlay_replaced: Some(Box::new(covered)),
-        agent: None,
-        slots: std::collections::HashMap::new(),
-        semantic_state: Default::default(),
-    }));
-    h.app.windows[0].panes.insert(pane_id, overlay);
+    let covered = h.app.windows[0].push_overlay(pane_id, |covered| {
+        crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+            incarnation: Default::default(),
+            pip_status: None,
+            id: pane_id,
+            permissions: crate::app::permissions::PluginPermissions::builtin(),
+            runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
+                crate::file_browser::FileBrowserView::new(cwd.clone()),
+            )),
+            workspace_root: cwd,
+            manifest_id: manifest_id.to_string(),
+            name: manifest_id.to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: Some(Box::new(covered)),
+            agent: None,
+            slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
+        }))
+    });
+    assert!(covered, "covered pane is in the pane map");
 }
 
 /// `(plugin_id, pane_id, provider tool name)` for every tool live in the
@@ -1640,6 +1640,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                 path: root_a.path().to_path_buf(),
                 tree: tree_a,
                 panes: vec![crate::workspace::SavedPane {
+                    authority: None,
                     id: 41,
                     kind: crate::workspace::SavedPaneKind::Portal { context_id: 20 },
                     cwd: root_a.path().to_path_buf(),
@@ -1667,6 +1668,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                 path: root_b.path().to_path_buf(),
                 tree: tree_b,
                 panes: vec![crate::workspace::SavedPane {
+                    authority: None,
                     id: 42,
                     kind: crate::workspace::SavedPaneKind::View,
                     cwd: root_b.path().to_path_buf(),
@@ -1869,6 +1871,7 @@ fn restore_view_pane_fails_visibly_when_plugin_dir_is_gone() {
 #[test]
 fn legacy_view_pane_restores_as_launch_failed_never_a_terminal() {
     let record = crate::workspace::SavedPane {
+        authority: None,
         id: 7,
         kind: crate::workspace::SavedPaneKind::View,
         cwd: std::path::PathBuf::from("/tmp"),
@@ -3357,7 +3360,7 @@ fn workspace_clean_slots_lists_and_removes_dead_pane_slot_dirs() {
         .join(pane.to_string());
     assert!(slot_dir.exists(), "slot dir should exist before clean");
 
-    h.app.windows[0].panes.remove(&pane);
+    h.app.windows[0].take_pane(pane);
 
     let dry_run_file = temp_response(tmp.path(), "slot-clean-dry-run");
     h.inject_ipc(HostRequest::WorkspaceCleanSlots {
@@ -4110,13 +4113,14 @@ fn portal_context_state_refreshes_when_child_context_changes() {
         name: String::new(),
         path: std::path::PathBuf::from("/tmp/harness_2023_child"),
         tree: egui_tiles::Tree::empty("harness_2023_child"),
-        panes: HashMap::new(),
+        panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
         grid_x: 0,
         grid_y: 0,
         window_id: child_win_id,
         context_id: child_ctx_id,
+        tree_history: Default::default(),
     });
     add_view_pane_to_window(&mut h, child_win_id, "portal-child-one");
 
@@ -4125,14 +4129,16 @@ fn portal_context_state_refreshes_when_child_context_changes() {
     {
         let win = &mut h.app.windows[0];
         let _ = win.tree.tiles.insert_pane(portal_pane_id);
-        win.panes.insert(
-            portal_pane_id,
-            Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                pane_id: portal_pane_id,
-                target_context_id: child_ctx_id,
-                context_state: None,
-            })),
-        );
+        win.panes
+            .insert(
+                portal_pane_id,
+                Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                    pane_id: portal_pane_id,
+                    target_context_id: child_ctx_id,
+                    context_state: None,
+                })),
+            )
+            .unwrap();
     }
 
     let portal_state = |h: &HostHarness| {
@@ -4622,9 +4628,26 @@ fn add_pipe_test_pane(
     u64,
     std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>,
 ) {
-    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let pane_id = h.app.host.alloc_pane_id();
+    let (pane, received) = pipe_test_view(pane_id);
+    h.app.windows[win_idx].panes.insert(pane_id, pane).unwrap();
+    let tile = h.app.windows[win_idx].tree.tiles.insert_pane(pane_id);
+    if h.app.windows[win_idx].tree.root().is_none() {
+        h.app.windows[win_idx].tree.root = Some(tile);
+    }
+    (pane_id, received)
+}
+
+/// A fresh pipe test view instance for slot `pane_id`, and its inbox.
+fn pipe_test_view(
+    pane_id: u64,
+) -> (
+    crate::host::pane::Pane,
+    std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>,
+) {
+    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let pane = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
+        incarnation: Default::default(),
         pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(PipeTestView {
@@ -4642,12 +4665,7 @@ fn add_pipe_test_pane(
         slots: std::collections::HashMap::new(),
         semantic_state: Default::default(),
     }));
-    h.app.windows[win_idx].panes.insert(pane_id, pane);
-    let tile = h.app.windows[win_idx].tree.tiles.insert_pane(pane_id);
-    if h.app.windows[win_idx].tree.root().is_none() {
-        h.app.windows[win_idx].tree.root = Some(tile);
-    }
-    (pane_id, received)
+    (pane, received)
 }
 
 /// Queue `cmd` onto `pane_id`'s own outgoing queue, exactly as if the plugin
@@ -4672,6 +4690,273 @@ fn queue_pipe_command(h: &mut HostHarness, pane_id: u64, cmd: crate::app::view_t
         .expect("pipe test pane must be a PipeTestView")
         .outgoing
         .push(cmd);
+}
+
+/// An app's terminal `SpawnPane` is answered with the pane that was actually
+/// installed, and a construction failure is answered with `PaneSpawnError`,
+/// never a `PaneSpawned` for an id nothing occupies (stint 1632, round 3 R1).
+#[test]
+fn launch_plan_plugin_spawn_pane_reports_the_installed_terminal_or_its_failure() {
+    use crate::protocol::PlexiEvent;
+    let mut h = HostHarness::new();
+    let (requester, received) = add_pipe_test_pane(&mut h, 0);
+    h.focus_pane(requester);
+    let spawn = |request_id: &str| crate::app::view_trait::ViewCommand::SpawnPane {
+        type_id: "terminal".to_string(),
+        layout: "split_h".to_string(),
+        args: Vec::new(),
+        from_pane_id: None,
+        request_id: Some(request_id.to_string()),
+        target_context: None,
+        emitter: None,
+    };
+    let panes_before = h.app.windows[0].panes.len();
+    {
+        let _entry = crate::pane_ops::construct::probes::on_backend_entry(|_| {
+            Err("injected backend failure".into())
+        });
+        queue_pipe_command(&mut h, requester, spawn("fails"));
+        h.run_hidden_frames(1);
+    }
+    let events = received.lock().expect("event log").clone();
+    assert!(
+        events.iter().any(|event| matches!(event,
+            PlexiEvent::PaneSpawnError { reason, request_id: Some(id) }
+                if id == "fails" && reason.contains("injected backend failure"))),
+        "a failed construction is reported: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|event| matches!(event,
+            PlexiEvent::PaneSpawned { request_id: Some(id), .. } if id == "fails")),
+        "no PaneSpawned for a pane that was never installed: {events:?}"
+    );
+    assert_eq!(h.app.windows[0].panes.len(), panes_before);
+
+    queue_pipe_command(&mut h, requester, spawn("starts"));
+    h.run_hidden_frames(1);
+    let events = received.lock().expect("event log").clone();
+    let spawned = events
+        .iter()
+        .find_map(|event| match event {
+            PlexiEvent::PaneSpawned {
+                pane_id,
+                request_id: Some(id),
+            } if id == "starts" => Some(*pane_id),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("a started terminal is reported: {events:?}"));
+    assert!(
+        h.app.windows[0]
+            .panes
+            .get(&spawned)
+            .and_then(crate::host::pane::Pane::as_terminal)
+            .is_some(),
+        "PaneSpawned names the installed terminal {spawned}"
+    );
+}
+
+/// Round 3/4 R1: an SDK `spawn_pane` is answered exactly once, with its
+/// request id, to the view that emitted it, whatever window or view has focus
+/// and wherever the pane lands. A background view in context A asks for a
+/// terminal in A's child context B while B's window focuses another view:
+/// success, a construction failure, an invalid target, an empty target
+/// window, and a request held behind an overlay each reach the requester and
+/// no other view.
+#[test]
+fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
+    use crate::protocol::PlexiEvent;
+    let mut h = HostHarness::new();
+    let context_a = h.app.windows[0].context_id;
+    let (requester, received) = add_pipe_test_pane(&mut h, 0);
+    let (_, _) = add_pipe_test_pane(&mut h, 0);
+    let context_b = crate::testing::reserve_test_context_id();
+    let root_b = tempfile::tempdir().expect("root b");
+    let win_b = push_secondary_context(&mut h, context_b, root_b.path());
+    if let Some(index) = h.app.router.position(|c| c.context_id == context_b) {
+        h.app.router.get_mut(index).parent_id = Some(context_a);
+    }
+    h.app.host.add_context(context_b, Some(context_a));
+    let (bystander, overheard) = add_pipe_test_pane(&mut h, win_b);
+    // B's window focuses the bystander, and B is the active window.
+    let focus_bystander = |h: &mut HostHarness| {
+        h.app.active_window = win_b;
+        let tile = h.app.windows[win_b]
+            .tree
+            .tiles
+            .find_pane(&bystander)
+            .unwrap();
+        h.app.set_window_focused_pane(win_b, tile);
+    };
+    focus_bystander(&mut h);
+    assert_eq!(h.app.windows[h.app.active_window].context_id, context_b);
+    let spawn =
+        |request_id: &str, target: Option<u64>| crate::app::view_trait::ViewCommand::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: "split_h".to_string(),
+            args: Vec::new(),
+            from_pane_id: None,
+            request_id: Some(request_id.to_string()),
+            target_context: target,
+            emitter: None,
+        };
+    let replies_to = |log: &std::sync::Arc<std::sync::Mutex<Vec<PlexiEvent>>>, id: &str| {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                matches!(event,
+                    PlexiEvent::PaneSpawned { request_id: Some(r), .. }
+                    | PlexiEvent::PaneSpawnError { request_id: Some(r), .. } if r == id)
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    queue_pipe_command(&mut h, requester, spawn("ok", Some(context_b)));
+    h.run_hidden_frames(1);
+    let ok = replies_to(&received, "ok");
+    assert!(
+        matches!(ok.as_slice(), [PlexiEvent::PaneSpawned { pane_id, .. }]
+            if h.app.windows[win_b].panes.get(pane_id).is_some_and(|p| p.as_terminal().is_some())),
+        "one PaneSpawned naming the installed terminal: {ok:?}"
+    );
+
+    {
+        let _entry = crate::pane_ops::construct::probes::on_backend_entry(|_| {
+            Err("injected backend failure".into())
+        });
+        queue_pipe_command(&mut h, requester, spawn("fails", Some(context_b)));
+        h.run_hidden_frames(1);
+    }
+    assert!(matches!(
+        replies_to(&received, "fails").as_slice(),
+        [PlexiEvent::PaneSpawnError { .. }]
+    ));
+
+    queue_pipe_command(&mut h, requester, spawn("invalid", Some(u64::MAX)));
+    h.run_hidden_frames(1);
+    assert!(matches!(
+        replies_to(&received, "invalid").as_slice(),
+        [PlexiEvent::PaneSpawnError { .. }]
+    ));
+
+    let context_c = crate::testing::reserve_test_context_id();
+    let root_c = tempfile::tempdir().expect("root c");
+    push_secondary_context(&mut h, context_c, root_c.path());
+    if let Some(index) = h.app.router.position(|c| c.context_id == context_c) {
+        h.app.router.get_mut(index).parent_id = Some(context_a);
+    }
+    h.app.host.add_context(context_c, Some(context_a));
+    queue_pipe_command(&mut h, requester, spawn("empty", Some(context_c)));
+    h.run_hidden_frames(1);
+    assert!(matches!(
+        replies_to(&received, "empty").as_slice(),
+        [PlexiEvent::PaneSpawnError { .. }]
+    ));
+
+    // Held behind an overlay, then released.
+    h.app.attention_queue.open = true;
+    queue_pipe_command(&mut h, requester, spawn("held", Some(context_b)));
+    h.run_hidden_frames(1);
+    assert!(
+        replies_to(&received, "held").is_empty(),
+        "held while the overlay owns input"
+    );
+    focus_bystander(&mut h);
+    h.app.attention_queue.open = false;
+    h.run_hidden_frames(1);
+    assert!(matches!(
+        replies_to(&received, "held").as_slice(),
+        [PlexiEvent::PaneSpawned { .. }]
+    ));
+
+    for id in ["ok", "fails", "invalid", "empty", "held"] {
+        assert!(
+            replies_to(&overheard, id).is_empty(),
+            "the focused bystander heard {id}"
+        );
+    }
+
+    // Round 5 P2-2: the emitter's slot is taken by a different view while
+    // its request is held. The reply belongs to the emitting instance, which
+    // is gone, so the replacement in the same slot hears nothing.
+    h.app.attention_queue.open = true;
+    queue_pipe_command(&mut h, requester, spawn("replaced", Some(context_b)));
+    h.run_hidden_frames(1);
+    let (replacement, replacement_heard) = pipe_test_view(requester);
+    h.app.windows[0]
+        .take_pane(requester)
+        .expect("the emitter's slot");
+    h.app.windows[0]
+        .panes
+        .insert(requester, replacement)
+        .unwrap();
+    h.app.attention_queue.open = false;
+    h.run_hidden_frames(1);
+    assert!(
+        replies_to(&replacement_heard, "replaced").is_empty(),
+        "a view that later occupies the slot hears nothing"
+    );
+    assert!(replies_to(&received, "replaced").is_empty());
+}
+
+/// Round 6 P2-2: a request held behind an overlay belongs to the guest that
+/// made it. A hot reload ends that guest: its held requests are retired and
+/// none is carried out or answered for the relaunched guest.
+#[test]
+fn sdk_held_request_is_retired_by_a_guest_reload() {
+    let mut h = HostHarness::new();
+    let pane_id = h.launch_dev_view("node-click-probe");
+    let incarnation = h
+        .app
+        .windows
+        .iter()
+        .find_map(|w| w.panes.get(&pane_id))
+        .and_then(crate::host::pane::Pane::as_view)
+        .unwrap()
+        .incarnation;
+    h.app.attention_queue.open = true;
+    h.app
+        .overlay_held_cmds
+        .push(crate::app::view_trait::ViewCommand::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: "split_h".to_string(),
+            args: Vec::new(),
+            from_pane_id: None,
+            request_id: Some("held".to_string()),
+            target_context: None,
+            emitter: Some(crate::app::view_trait::ViewEmitter {
+                pane_id,
+                incarnation,
+            }),
+        });
+    assert!(h
+        .app
+        .reload_view_pane(pane_id, "test: reload during a held request"));
+    assert!(
+        h.app.overlay_held_cmds.is_empty(),
+        "the old guest's request is retired"
+    );
+    let renewed = h
+        .app
+        .windows
+        .iter()
+        .find_map(|w| w.panes.get(&pane_id))
+        .and_then(crate::host::pane::Pane::as_view)
+        .unwrap()
+        .incarnation;
+    assert_ne!(
+        renewed, incarnation,
+        "the relaunched guest is a new emitter"
+    );
+    let panes = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
+    h.app.attention_queue.open = false;
+    h.run_hidden_frames(2);
+    assert_eq!(
+        h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>(),
+        panes,
+        "nothing launched for the ended guest"
+    );
 }
 
 /// Falsifying regression #1: before stint 0724 Phase D 2/2, `OpenDirectedPipe`
@@ -5909,15 +6194,8 @@ fn first_boot_seam_seeds_base_root_pane() {
 
     let cwd = std::env::temp_dir();
     let context = h.app.pane_context_env_for_window(0);
-    if h.app
-        .seed_window_root_pane(
-            0,
-            &context,
-            cwd,
-            crate::pane_ops::create::TerminalSpawnOptions::default(),
-        )
-        .is_none()
-    {
+    let launch = h.app.desktop_terminal_launch(context, Some(cwd), None);
+    if h.app.seed_window_root_pane(0, launch).is_none() {
         // No PTY in this env — the installer degrades to the welcome screen,
         // matching first boot's documented fallback. Nothing more to assert.
         return;
@@ -5944,22 +6222,16 @@ fn first_boot_shape_matches_new_context() {
     let mut h = HostHarness::new();
     let cwd = std::env::temp_dir();
     let context = h.app.pane_context_env_for_window(0);
-    if h.app
-        .seed_window_root_pane(
-            0,
-            &context,
-            cwd,
-            crate::pane_ops::create::TerminalSpawnOptions::default(),
-        )
-        .is_none()
-    {
+    let launch = h.app.desktop_terminal_launch(context, Some(cwd), None);
+    if h.app.seed_window_root_pane(0, launch).is_none() {
         return; // no PTY in this env
     }
     let boot_pane_count = h.app.windows[0].panes.len();
     let boot_has_root = h.app.windows[0].tree.root.is_some();
     let boot_has_focus = h.app.windows[0].focused_pane.is_some();
 
-    h.app.new_context();
+    h.app
+        .new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     if h.app.router.len() == 1 {
         return; // new_context degraded (no PTY) — nothing to compare
     }
@@ -5993,13 +6265,9 @@ fn new_context_fixture() -> (HostHarness, tempfile::TempDir, tempfile::TempDir) 
     let mut h = HostHarness::new();
     let root = h.workspace_root();
     let context0 = h.app.pane_context_env_for_window(0);
+    let launch = h.app.desktop_terminal_launch(context0, Some(root), None);
     h.app
-        .seed_window_root_pane(
-            0,
-            &context0,
-            root,
-            crate::pane_ops::create::TerminalSpawnOptions::default(),
-        )
+        .seed_window_root_pane(0, launch)
         .expect("PTY and shell must be available for the new-context root pane");
     let empty_dir = tempfile::tempdir().expect("create empty tempdir");
     let project_dir = tempfile::tempdir().expect("create project tempdir");
@@ -6050,15 +6318,22 @@ fn new_context_initialization_records_stage_timing() {
         active
     };
 
-    h.app.new_context_at_path(empty_dir.path().to_path_buf());
+    h.app.new_context_at_path(
+        empty_dir.path().to_path_buf(),
+        crate::broker::pane_authority::GrantSource::DesktopInput,
+    );
     check(&mut h, crate::pane_ops::NewContextKind::AtPath, 2);
 
-    h.app.new_context_at_path(project_dir.path().to_path_buf());
+    h.app.new_context_at_path(
+        project_dir.path().to_path_buf(),
+        crate::broker::pane_authority::GrantSource::DesktopInput,
+    );
     let project = check(&mut h, crate::pane_ops::NewContextKind::AtPath, 3);
     assert_eq!(project.name.displayed(), "anchor-project");
     assert_eq!(project.description.as_deref(), Some("test anchor project"));
 
-    h.app.new_context();
+    h.app
+        .new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     check(&mut h, crate::pane_ops::NewContextKind::Empty, 4);
 }
 
@@ -6073,7 +6348,10 @@ fn perf_gate_new_context_latency() {
 
     for (label, dir) in [("Empty", &empty_dir), ("Project", &project_dir)] {
         let start = std::time::Instant::now();
-        h.app.new_context_at_path(dir.path().to_path_buf());
+        h.app.new_context_at_path(
+            dir.path().to_path_buf(),
+            crate::broker::pane_authority::GrantSource::DesktopInput,
+        );
         let host_elapsed = start.elapsed();
         let timing = h
             .app
@@ -6112,8 +6390,10 @@ fn perf_gate_new_context_latency() {
 
     for i in 0..5 {
         let warm_empty_sub = tempfile::tempdir().expect("create warm empty tempdir");
-        h.app
-            .new_context_at_path(warm_empty_sub.path().to_path_buf());
+        h.app.new_context_at_path(
+            warm_empty_sub.path().to_path_buf(),
+            crate::broker::pane_authority::GrantSource::DesktopInput,
+        );
         let t_empty = h
             .app
             .last_new_context_timing
@@ -6160,8 +6440,10 @@ fn perf_gate_new_context_latency() {
             format!("id = \"warm-{i}\"\n\n[context]\nname = \"warm-{i}\"\n"),
         )
         .expect("write sub workspace.toml");
-        h.app
-            .new_context_at_path(warm_project_sub.path().to_path_buf());
+        h.app.new_context_at_path(
+            warm_project_sub.path().to_path_buf(),
+            crate::broker::pane_authority::GrantSource::DesktopInput,
+        );
         let t_proj = h
             .app
             .last_new_context_timing
@@ -8307,7 +8589,7 @@ fn blank_text_editor_open_acquires_input_focus() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     // R3 moved IPC draining into logic so the editor can be opened while eframe
     // skips ui for an occluded window. At this point no text surface has
@@ -10155,6 +10437,7 @@ mod routine_firing {
     ) -> PaneId {
         let pane_id = h.app.host.alloc_pane_id();
         let pane = ViewPane {
+            incarnation: Default::default(),
             pip_status: None,
             id: pane_id,
             runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -10172,7 +10455,9 @@ mod routine_firing {
             semantic_state: Default::default(),
         };
         let win = &mut h.app.windows[win_idx];
-        win.panes.insert(pane_id, Pane::View(Box::new(pane)));
+        win.panes
+            .insert(pane_id, Pane::View(Box::new(pane)))
+            .unwrap();
         let tile_id = win.tree.tiles.insert_pane(pane_id);
         if win.tree.root.is_none() {
             win.tree.root = Some(tile_id);
@@ -10193,13 +10478,14 @@ mod routine_firing {
             name: String::new(),
             path: root.to_path_buf(),
             tree: egui_tiles::Tree::empty("plexi"),
-            panes: std::collections::HashMap::new(),
+            panes: Default::default(),
             focused_pane: None,
             zoomed_pane: None,
             grid_x: 1,
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
+            tree_history: Default::default(),
         });
         let win_idx = h.app.windows.len() - 1;
         add_focused_view_pane(h, win_idx, root);
@@ -10391,7 +10677,7 @@ mod routine_firing {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
 
         let reply = read_json_response(&response);
@@ -10443,7 +10729,7 @@ mod routine_firing {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
 
         let reply = read_json_response(&response);
@@ -10887,7 +11173,7 @@ mod agent_boot {
             boot_timeout_secs,
             worktree: None,
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         response
     }
@@ -11104,7 +11390,7 @@ mod agent_boot {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.run_frames(1);
 
@@ -13129,7 +13415,7 @@ mod pane_lifecycle_events {
             initial_slots: vec![],
             focus: false,
             response_file: spawn_reply.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
 
@@ -13265,7 +13551,7 @@ mod pane_lifecycle_events {
             initial_slots: vec![],
             focus: false,
             response_file: spawn_reply.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
 
@@ -13335,7 +13621,7 @@ mod pane_lifecycle_events {
             initial_slots: vec![],
             focus: false,
             response_file: spawn_reply.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
         let spawned = read_json_response(&spawn_reply);
@@ -13475,7 +13761,7 @@ mod pane_lifecycle_events {
                 initial_slots: vec![],
                 focus: false,
                 response_file: reply.clone(),
-                peer_ancestry: None,
+                source: crate::protocol::SpawnSource::InProcess,
             });
             h.hidden_frame();
             let spawned = read_json_response(&reply);
@@ -14011,7 +14297,7 @@ mod pane_worktree_tests {
             boot_timeout_secs: None,
             worktree: Some("feature/0668-clean".to_string()),
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.run_frames(1);
 
@@ -14090,7 +14376,7 @@ mod pane_worktree_tests {
             boot_timeout_secs: None,
             worktree: Some("feature/0668-dirty".to_string()),
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.run_frames(1);
 
@@ -14165,7 +14451,7 @@ mod pane_worktree_tests {
             boot_timeout_secs: None,
             worktree: Some("feature/0668-ahead".to_string()),
             result_schema: None,
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.run_frames(1);
 
@@ -14251,7 +14537,7 @@ mod pane_result_harness_tests {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: Some(schema),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.run_frames(1);
 
@@ -14618,6 +14904,7 @@ mod agent_state_restoration_tests {
                     tree: active_tree,
                     panes: vec![
                         SavedPane {
+                            authority: None,
                             id: 10,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -14652,6 +14939,7 @@ mod agent_state_restoration_tests {
                             }),
                         },
                         SavedPane {
+                            authority: None,
                             id: 11,
                             kind: SavedPaneKind::Portal { context_id: 2 },
                             cwd: PathBuf::new(),
@@ -14665,6 +14953,7 @@ mod agent_state_restoration_tests {
                             agent_session: None,
                         },
                         SavedPane {
+                            authority: None,
                             id: 12,
                             kind: SavedPaneKind::Portal { context_id: 3 },
                             cwd: PathBuf::new(),
@@ -14689,6 +14978,7 @@ mod agent_state_restoration_tests {
                     path: tmp.path().to_path_buf(),
                     tree: bg_tree,
                     panes: vec![SavedPane {
+                        authority: None,
                         id: 20,
                         kind: SavedPaneKind::Terminal,
                         cwd: tmp.path().to_path_buf(),
@@ -14735,6 +15025,7 @@ mod agent_state_restoration_tests {
                     path: tmp.path().to_path_buf(),
                     tree: ephemeral_tree,
                     panes: vec![SavedPane {
+                        authority: None,
                         id: 30,
                         kind: SavedPaneKind::Terminal,
                         cwd: tmp.path().to_path_buf(),
@@ -15068,7 +15359,7 @@ mod agent_state_restoration_tests {
             initial_slots: vec![("summary".into(), "Auth audit passed".into())],
             focus: false,
             response_file: spawn_reply.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
         let spawned = read_json_response(&spawn_reply);
@@ -15131,10 +15422,11 @@ mod agent_state_restoration_tests {
 
         // Reopen by session_id (`pi-sess-900`) via `HostRequest::AgentReopen`.
         let reopen_reply = temp_response(tmp.path(), "reopen-worker");
-        h.inject_ipc(HostRequest::AgentReopen {
+        h.inject_in_process(HostRequest::AgentReopen {
             query: "pi-sess-900".into(),
             subcontext: None,
             response_file: reopen_reply.clone(),
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
 
@@ -15223,6 +15515,7 @@ mod agent_state_restoration_tests {
                     panes: vec![
                         // Pane 10: Pi agent pane with `session_id: None` -> bare `pi` launch.
                         SavedPane {
+                            authority: None,
                             id: 10,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -15256,6 +15549,7 @@ mod agent_state_restoration_tests {
                         },
                         // Pane 11: Pi agent pane with unpersisted `session_id` (no file on disk) -> bare `pi` launch.
                         SavedPane {
+                            authority: None,
                             id: 11,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -15289,6 +15583,7 @@ mod agent_state_restoration_tests {
                         },
                         // Pane 12: Pi agent pane with persisted `session_id` on disk -> `pi --session pi-persisted-12`.
                         SavedPane {
+                            authority: None,
                             id: 12,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -15334,6 +15629,7 @@ mod agent_state_restoration_tests {
                     panes: vec![
                         // Pane 20: Standby Pi pane with `session_id: None` -> bare `pi` on wake.
                         SavedPane {
+                            authority: None,
                             id: 20,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -15367,6 +15663,7 @@ mod agent_state_restoration_tests {
                         },
                         // Pane 21: Standby Pi pane with missing `session_id` -> bare `pi` on wake.
                         SavedPane {
+                            authority: None,
                             id: 21,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -15944,24 +16241,28 @@ fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
     let ctx_id = h.app.windows[win_idx].context_id;
     live.set_pane_id(wasm_pane_id);
     live.set_context_id(ctx_id);
-    h.app.windows[win_idx].panes.insert(
-        wasm_pane_id,
-        Pane::View(Box::new(crate::host::pane::ViewPane {
-            pip_status: None,
-            id: wasm_pane_id,
-            runtime: crate::host::pane::ViewRuntime::Wasm(Box::new(live)),
-            workspace_root: std::env::temp_dir(),
-            permissions: crate::app::permissions::PluginPermissions::default(),
-            manifest_id: "sysmon".to_string(),
-            name: "sysmon".to_string(),
-            pane_group: None,
-            linked_pane_id: None,
-            overlay_replaced: None,
-            agent: None,
-            slots: std::collections::HashMap::new(),
-            semantic_state: Default::default(),
-        })),
-    );
+    h.app.windows[win_idx]
+        .panes
+        .insert(
+            wasm_pane_id,
+            Pane::View(Box::new(crate::host::pane::ViewPane {
+                incarnation: Default::default(),
+                pip_status: None,
+                id: wasm_pane_id,
+                runtime: crate::host::pane::ViewRuntime::Wasm(Box::new(live)),
+                workspace_root: std::env::temp_dir(),
+                permissions: crate::app::permissions::PluginPermissions::default(),
+                manifest_id: "sysmon".to_string(),
+                name: "sysmon".to_string(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
+            })),
+        )
+        .unwrap();
     let _ = h.app.windows[win_idx].tree.tiles.insert_pane(wasm_pane_id);
 
     queue_pipe_command(
@@ -16404,7 +16705,7 @@ fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_an
 
     let plugin_req: HostRequest =
         serde_json::from_value(req_json).expect("valid AgentSpawn request");
-    h.inject_ipc(plugin_req);
+    h.inject_in_process(plugin_req);
     h.hidden_frame();
 
     let spawned = read_json_response(&spawn_reply);
@@ -16436,8 +16737,9 @@ fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_an
         Some(pane_id.to_string().as_str())
     );
     let posture = term
-        .agent_permission_posture
-        .as_ref()
+        .permission_ceiling()
+        .ok()
+        .flatten()
         .expect("permission posture snapshotted from settings.toml");
     assert!(
         posture.allow.iter().any(|s| s == "pane.send"),
@@ -16524,7 +16826,14 @@ impl AgentFocusFixture {
         payload["command"] = serde_json::Value::String("sleep 30".into());
         payload["response_file"] =
             serde_json::Value::String(temp_response(self.home.path(), "agent-focus"));
-        serde_json::from_value(payload).expect("valid AgentSpawn request")
+        let mut request: HostRequest =
+            serde_json::from_value(payload).expect("valid AgentSpawn request");
+        // The harness stands in for the verified socket path: the claimed
+        // caller is trusted as an in-process caller's is.
+        if let HostRequest::AgentSpawn { source, .. } = &mut request {
+            *source = crate::protocol::SpawnSource::InProcess;
+        }
+        request
     }
 
     fn start(&self, caller: Option<u64>) -> HostRequest {
@@ -16726,7 +17035,7 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
         initial_slots: vec![],
         focus: false,
         response_file: spawn_lead_reply.clone(),
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let lead_resp = read_json_response(&spawn_lead_reply);
@@ -16751,7 +17060,7 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
         initial_slots: vec![],
         focus: false,
         response_file: spawn_child_reply.clone(),
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let child_resp = read_json_response(&spawn_child_reply);
@@ -16882,7 +17191,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
         initial_slots: vec![],
         focus: false,
         response_file: lead_reply.clone(),
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let lead_id = read_json_response(&lead_reply)["pane_id"].as_u64().unwrap();
@@ -16906,7 +17215,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
             initial_slots: vec![],
             focus: false,
             response_file: rep.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
         child_ids.push(read_json_response(&rep)["pane_id"].as_u64().unwrap());
@@ -17094,7 +17403,7 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
         initial_slots: vec![],
         focus: false,
         response_file: spawn_reply.clone(),
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let spawn_json = read_json_response(&spawn_reply);
@@ -17269,7 +17578,7 @@ allow = ["pane.send"]
     let mut req_1 = start_payload_no_msg.clone();
     req_1["command"] = serde_json::Value::String("sleep 30".to_string());
     req_1["response_file"] = serde_json::Value::String(spawn_reply_1.clone());
-    h.inject_ipc(serde_json::from_value(req_1).unwrap());
+    h.inject_in_process(serde_json::from_value(req_1).unwrap());
     h.hidden_frame();
 
     let spawn_resp_1 = read_json_response(&spawn_reply_1);
@@ -17310,7 +17619,7 @@ allow = ["pane.send"]
         initial_slots: vec![],
         focus: false,
         response_file: spawn_claude_reply.clone(),
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let claude_resp = read_json_response(&spawn_claude_reply);
@@ -17344,7 +17653,7 @@ allow = ["pane.send"]
     let mut req_2 = spawn_payload.clone();
     req_2["command"] = serde_json::Value::String("sleep 30".to_string());
     req_2["response_file"] = serde_json::Value::String(spawn_reply_2.clone());
-    h.inject_ipc(serde_json::from_value(req_2).unwrap());
+    h.inject_in_process(serde_json::from_value(req_2).unwrap());
     h.hidden_frame();
 
     let spawn_resp_2 = read_json_response(&spawn_reply_2);
@@ -17511,7 +17820,7 @@ allow = ["pane.send"]
     let mut failed_request = failed_spawn_payload;
     failed_request["command"] = serde_json::Value::String("sleep 30".to_string());
     failed_request["response_file"] = serde_json::Value::String(failed_spawn_reply.clone());
-    h.inject_ipc(serde_json::from_value(failed_request).unwrap());
+    h.inject_in_process(serde_json::from_value(failed_request).unwrap());
     h.hidden_frame();
     let failed_child_pane_id = read_json_response(&failed_spawn_reply)["pane_id"]
         .as_u64()
@@ -17619,6 +17928,7 @@ ask = ["pane.send"]
             tree,
             panes: vec![
                 crate::workspace::SavedPane {
+                    authority: None,
                     id: 10,
                     kind: crate::workspace::SavedPaneKind::Terminal,
                     cwd: ws_dir.path().to_path_buf(),
@@ -17651,6 +17961,7 @@ ask = ["pane.send"]
                     }),
                 },
                 crate::workspace::SavedPane {
+                    authority: None,
                     id: 11,
                     kind: crate::workspace::SavedPaneKind::Terminal,
                     cwd: ws_dir.path().to_path_buf(),
@@ -17678,7 +17989,7 @@ ask = ["pane.send"]
     let mut h = HostHarness::from_profile_dir(profile_dir.path());
     let restored_posture = h
         .app
-        .pane_permission_posture(10)
+        .pane_ceiling_or_none(10)
         .expect("restored agent pane must have permission posture");
     assert!(
         restored_posture.ask.iter().any(|rule| rule == "pane.send"),
@@ -18152,7 +18463,7 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
             initial_slots: vec![],
             focus: false,
             response_file: lead_reply.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
         let lead_id = read_json_response(&lead_reply)["pane_id"]
@@ -18175,7 +18486,7 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
             initial_slots: vec![],
             focus: false,
             response_file: helper_reply.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
         let helper_id = read_json_response(&helper_reply)["pane_id"]
@@ -18282,7 +18593,7 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
         initial_slots: vec![],
         focus: false,
         response_file: spawn_reply.clone(),
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let oneshot_pane = read_json_response(&spawn_reply)["pane_id"]
@@ -18411,6 +18722,7 @@ mod restore_followups_0983b {
                 path: tmp.path().to_path_buf(),
                 tree,
                 panes: vec![SavedPane {
+                    authority: None,
                     id: 30,
                     kind: SavedPaneKind::Terminal,
                     cwd: tmp.path().to_path_buf(),
@@ -18552,7 +18864,7 @@ mod restore_followups_0983b {
                 initial_slots: vec![],
                 focus: false,
                 response_file: spawn_reply.clone(),
-                peer_ancestry: None,
+                source: crate::protocol::SpawnSource::InProcess,
             });
             h.hidden_frame();
             let child_id = read_json_response(&spawn_reply)["pane_id"]
@@ -18951,7 +19263,7 @@ mod tiled_navigation_frame_tests {
         let ctx_id = h.app.router.active().context_id;
         h.app.focus_pane_in_strip(panes[2]);
         let tile = h.app.windows[0].tree.tiles.find_pane(&panes[2]).unwrap();
-        let removed = h.app.windows[0].panes.remove(&panes[2]).unwrap();
+        let removed = h.app.windows[0].take_pane(panes[2]).unwrap();
         let strip = h.app.host.strip(ctx_id).cloned();
         let pane_ids: std::collections::BTreeSet<_> =
             h.app.windows[0].panes.keys().copied().collect();
@@ -18977,7 +19289,7 @@ mod tiled_navigation_frame_tests {
         );
         assert_eq!(h.app.windows[0].tree.tiles.len(), tree_count);
         assert_eq!(h.app.windows[0].focused_pane, Some(tile));
-        h.app.windows[0].panes.insert(panes[2], removed);
+        h.app.windows[0].panes.insert(panes[2], removed).unwrap();
     }
 
     #[test]
@@ -19118,7 +19430,12 @@ mod tiled_navigation_frame_tests {
                 "the real split path must report terminal spawn failure"
             );
         }
-        h.app.new_tab(0, None, false, None, false, false);
+        let anchor = h.app.focused_tab_anchor(0);
+        let context_id = h.app.windows[0].context_id;
+        let launch = h
+            .app
+            .test_terminal_launch(context_id, Some(h.workspace_root()), None);
+        let _ = h.app.new_tab(0, anchor, launch);
         let events = crate::host::event_log::test_take_events();
         assert!(
             !events
@@ -20935,7 +21252,12 @@ mod zoomed_pane_input_tests {
         let first = h.add_test_pane();
         h.focus_pane(first);
         h.run_frames(1);
-        h.app.new_tab(0, None, false, None, false, false);
+        let anchor = h.app.focused_tab_anchor(0);
+        let context_id = h.app.windows[0].context_id;
+        let launch = h
+            .app
+            .test_terminal_launch(context_id, Some(h.workspace_root()), None);
+        let _ = h.app.new_tab(0, anchor, launch);
         h.run_frames(2);
         let focused = h.app.windows[0].focused_pane.expect("focused tab");
         h.app.windows[0].zoom_to(focused);
@@ -20976,6 +21298,7 @@ fn researcher_history_record(
         harness: harness.into(),
         config_name: Some("researcher".into()),
         permission_posture: None,
+        authority: None,
         session_id: Some(session_id.into()),
         cwd: cwd.to_path_buf(),
         ephemeral: false,
@@ -21044,7 +21367,12 @@ fn named_agent_focuses_when_running() {
 
     let outcome = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect("open");
     h.run_frames(2);
 
@@ -21081,7 +21409,12 @@ fn named_agent_resumes_last_chat_when_stopped() {
 
     let outcome = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect("open");
     h.run_frames(2);
 
@@ -21146,7 +21479,12 @@ fn named_agent_resumes_exited_chat_before_closed_history() {
         assert!(!t.exited);
         let outcome = h
             .app
-            .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+            .open_named_agent(
+                "researcher",
+                &fx.proj_dir,
+                Some(caller),
+                &crate::protocol::SpawnSource::InProcess,
+            )
             .unwrap();
         let crate::app::agent_open::AgentOpenOutcome::Resumed {
             pane_id,
@@ -21185,7 +21523,12 @@ fn named_agent_resumes_exited_chat_before_closed_history() {
         h.app.fleet_history.borrow_mut().clear();
         assert_eq!(
             h.app
-                .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+                .open_named_agent(
+                    "researcher",
+                    &fx.proj_dir,
+                    Some(caller),
+                    &crate::protocol::SpawnSource::InProcess
+                )
                 .unwrap(),
             crate::app::agent_open::AgentOpenOutcome::Focused { pane_id }
         );
@@ -21222,7 +21565,12 @@ fn named_agent_exited_chat_selects_newest_eligible_pane() {
     h.app.pane_navigate(older);
     let resumed = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .unwrap();
     assert_eq!(
         resumed,
@@ -21276,7 +21624,12 @@ fn named_agent_exited_chat_selects_newest_eligible_pane() {
         }
         let resumed = h
             .app
-            .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+            .open_named_agent(
+                "researcher",
+                &fx.proj_dir,
+                Some(caller),
+                &crate::protocol::SpawnSource::InProcess,
+            )
             .unwrap();
         assert_eq!(
             resumed,
@@ -21292,7 +21645,12 @@ fn named_agent_exited_chat_selects_newest_eligible_pane() {
     let live = start_researcher(&mut h, &fx, caller);
     assert_eq!(
         h.app
-            .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+            .open_named_agent(
+                "researcher",
+                &fx.proj_dir,
+                Some(caller),
+                &crate::protocol::SpawnSource::InProcess
+            )
             .unwrap(),
         crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: live },
         "live agents still precede exited chats",
@@ -21329,7 +21687,12 @@ fn named_agent_starts_new_when_never_run() {
 
     let outcome = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect("open");
     h.run_frames(2);
 
@@ -21350,7 +21713,12 @@ fn named_agent_starts_new_when_never_run() {
 
     let missing = h
         .app
-        .open_named_agent("no-such-agent", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "no-such-agent",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect_err("unknown agents fail before launch");
     assert!(missing.contains("no-such-agent"), "{missing}");
 }
@@ -21381,7 +21749,7 @@ fn cli_agent_open_matches_palette() {
         cwd: fx.proj_dir.to_string_lossy().into_owned(),
         caller_pane_id: Some(caller),
         response_file: cli_reply.clone(),
-        peer_ancestry: None,
+        source: crate::protocol::SpawnSource::InProcess,
     });
     h.run_frames(2);
     let cli = read_json_response(&cli_reply);
@@ -21439,7 +21807,12 @@ fn named_agent_focuses_standby_pane_without_waking_it() {
 
     let outcome = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect("open");
     h.run_frames(2);
 
@@ -21510,7 +21883,12 @@ fn named_agent_focuses_most_recently_focused_of_several() {
 
     let outcome = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect("open");
 
     assert_eq!(
@@ -21543,7 +21921,12 @@ fn named_agent_skips_exited_pane() {
 
     let outcome = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect("open");
 
     let crate::app::agent_open::AgentOpenOutcome::Started { pane_id } = outcome else {
@@ -21570,7 +21953,12 @@ fn named_agent_resumes_beside_unfocused_caller() {
 
     let outcome = h
         .app
-        .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+        .open_named_agent(
+            "researcher",
+            &fx.proj_dir,
+            Some(caller),
+            &crate::protocol::SpawnSource::InProcess,
+        )
         .expect("open");
     h.run_frames(2);
 
@@ -21616,7 +22004,7 @@ fn named_agent_resume_uses_verified_caller_not_claimed() {
             "researcher",
             &fx.proj_dir,
             Some(claimed),
-            Some(&[verified_pid]),
+            &crate::protocol::SpawnSource::SocketPeer(vec![verified_pid]),
         )
         .expect("open");
     h.run_frames(2);
@@ -21825,7 +22213,12 @@ fn named_agent_counts_detected_agent_after_launch_ended() {
     h.app.pane_navigate(caller);
     assert_eq!(
         h.app
-            .open_named_agent("researcher", &fx.proj_dir, Some(caller), None)
+            .open_named_agent(
+                "researcher",
+                &fx.proj_dir,
+                Some(caller),
+                &crate::protocol::SpawnSource::InProcess
+            )
             .expect("open"),
         crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: shell }
     );
@@ -21995,7 +22388,7 @@ fn assert_agent_mesh_ipc_gate_enabled(route: &str, enabled: bool) {
             cwd: fx.proj_dir.to_string_lossy().into_owned(),
             caller_pane_id: Some(caller),
             response_file: response.clone(),
-            peer_ancestry: None,
+            source: crate::protocol::SpawnSource::InProcess,
         },
         "AgentSpawn" => {
             let mut request = fx.spawn(Some(caller));
@@ -22011,13 +22404,14 @@ fn assert_agent_mesh_ipc_gate_enabled(route: &str, enabled: bool) {
                 query: record.run_id,
                 subcontext: None,
                 response_file: response.clone(),
+                source: crate::protocol::SpawnSource::InProcess,
             }
         }
         _ => panic!("unknown route"),
     };
     let before = pane_total(&h);
     let logs = crate::testing::test_log::capture();
-    h.inject_ipc(request);
+    h.inject_in_process(request);
     h.run_frames(2);
     let reply = read_json_response(&response);
     assert_eq!(reply["ok"], enabled, "{route} enabled={enabled}: {reply}");
