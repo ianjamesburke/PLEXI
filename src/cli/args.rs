@@ -1804,7 +1804,7 @@ pub enum HostCmd {
     /// declared panes via the spawn-queue before the plugin boots, so they
     /// appear on its first frame.
     ///
-    /// Example: plexi-pr-2357 host start --pane 'cwd=/tmp,cmd=htop'
+    /// Example: plexi host start --pane 'cwd=/tmp,cmd=htop'
     Start {
         /// TOML file with `[[pane]]` tables to seed on boot
         #[arg(long)]
@@ -1867,7 +1867,7 @@ pub enum HostCmd {
     /// Inject a key or chord into the host-level keyboard path.
     ///
     /// This is a validation seam for host shortcuts: it does not send bytes
-    /// to a focused pane. Example: `plexi-pr-2906 host key cmd+1`.
+    /// to a focused pane. Example: `plexi host key cmd+1`.
     Key {
         /// Single key, named key, or chord such as `cmd+1` or `cmd+shift+2`.
         key: String,

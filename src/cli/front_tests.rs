@@ -418,16 +418,15 @@ fn sample_value(arg: &clap::Arg) -> String {
         .unwrap_or_else(|| "1".to_string())
 }
 
-/// argv shapes for one command: its positionals filled, then each of its own
-/// options at every value count it accepts (up to two).
+/// argv shapes for one command: with and without its positionals filled, and
+/// each of its own long options at every value count it accepts (up to two).
 fn shapes(node: &Command, p: &[String]) -> Vec<Vec<String>> {
-    let mut base: Vec<String> = std::iter::once(BIN.to_string())
+    let bare: Vec<String> = std::iter::once(BIN.to_string())
         .chain(p.iter().cloned())
         .collect();
-    for arg in node.get_positionals() {
-        base.push(sample_value(arg));
-    }
-    let mut out = vec![base.clone()];
+    let mut filled = bare.clone();
+    filled.extend(node.get_positionals().map(sample_value));
+    let mut out = vec![bare.clone(), filled.clone()];
     for arg in node
         .get_arguments()
         .filter(|a| !a.is_positional() && !a.is_global_set() && takes_values(a))
@@ -435,66 +434,278 @@ fn shapes(node: &Command, p: &[String]) -> Vec<Vec<String>> {
         let Some(long) = arg.get_long() else { continue };
         let (min, max) = values(arg);
         for count in min..=max.min(2) {
-            let mut shape = base.clone();
-            shape.push(format!("--{long}"));
-            shape.extend(std::iter::repeat_n(sample_value(arg), count));
-            out.push(shape);
+            for base in [&bare, &filled] {
+                let mut shape = base.clone();
+                if arg.is_require_equals_set() && count == 1 {
+                    shape.push(format!("--{long}={}", sample_value(arg)));
+                } else {
+                    shape.push(format!("--{long}"));
+                    shape.extend(std::iter::repeat_n(sample_value(arg), count));
+                }
+                out.push(shape);
+            }
         }
     }
+    out.dedup();
     out
 }
 
-/// The differential: for every command path and option-arity shape that clap
-/// accepts, insert `--profile t1` or `--help` at every position. Whenever the
-/// outcome accepts the input, recognition's value ownership must equal clap's
-/// own matches for the same argv with the inserted tokens removed; when the
-/// inserted tokens are data, clap's matches for the argv as given.
+/// The oracle's grammar: the public grammar (run requirements waived when
+/// help is being asked for), `--profile` declared as a global option whose
+/// occurrences are counted, and help as a flag that does not stop the parse.
+/// Built from clap alone.
+fn oracle_grammar(
+    occurrences: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    display: bool,
+) -> Command {
+    fn own_help(cmd: Command) -> Command {
+        cmd.disable_help_flag(true).mut_subcommands(own_help)
+    }
+    let base = if display {
+        display_grammar(grammar(BIN))
+    } else {
+        grammar(BIN)
+    };
+    own_help(base)
+        .disable_version_flag(true)
+        .arg(
+            clap::Arg::new("oracle_profile")
+                .long("profile")
+                .global(true)
+                .action(ArgAction::Append)
+                .value_parser(move |value: &str| {
+                    occurrences.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok::<String, String>(value.to_string())
+                }),
+        )
+        .arg(
+            clap::Arg::new("oracle_help")
+                .short('h')
+                .long("help")
+                .global(true)
+                .action(ArgAction::SetTrue),
+        )
+}
+
+type Reading = (Vec<String>, Vec<(Vec<String>, String, Vec<String>)>);
+
+/// Clap's reading of an argv: the subcommand path, and the values every
+/// non-global argument took from the command line.
+fn clap_reading(tree: &Command, matches: &clap::ArgMatches) -> Reading {
+    let mut path = Vec::new();
+    let mut values = Vec::new();
+    let mut level = Some(matches);
+    while let Some(m) = level {
+        let node = path
+            .iter()
+            .try_fold(tree, |node: &Command, name: &String| {
+                node.find_subcommand(name)
+            })
+            .unwrap();
+        for arg in node
+            .get_arguments()
+            .filter(|a| !a.is_global_set() && takes_values(a))
+        {
+            let id = arg.get_id().as_str();
+            if m.value_source(id) == Some(clap::parser::ValueSource::CommandLine) {
+                let raw: Vec<String> = m
+                    .get_raw(id)
+                    .map(|raw| raw.map(|v| v.to_string_lossy().into_owned()).collect())
+                    .unwrap_or_default();
+                values.push((path.clone(), id.to_string(), raw));
+            }
+        }
+        level = m.subcommand().map(|(name, sub)| {
+            path.push(name.to_string());
+            sub
+        });
+    }
+    values.sort();
+    (path, values)
+}
+
+/// The front end's reading of a `Run`: its path and the values its captured
+/// ownership assigns to each non-global argument.
+fn run_reading(tree: &Command, run: &Run) -> Reading {
+    let mut values: Vec<(Vec<String>, String, Vec<String>)> = Vec::new();
+    for (token, owner) in run.tokens.iter().zip(&run.owners) {
+        let Some(owner) = owner else { continue };
+        let global = owner
+            .path
+            .iter()
+            .try_fold(tree, |node: &Command, name: &String| {
+                node.find_subcommand(name)
+            })
+            .and_then(|node| {
+                node.get_arguments()
+                    .find(|a| a.get_id() == owner.id.as_str())
+            })
+            .is_some_and(clap::Arg::is_global_set);
+        if global {
+            continue;
+        }
+        let value = token[owner.prefix..].to_string();
+        match values
+            .iter_mut()
+            .find(|(path, id, _)| *path == owner.path && *id == owner.id)
+        {
+            Some((_, _, list)) => list.push(value),
+            None => values.push((owner.path.clone(), owner.id.clone(), vec![value])),
+        }
+    }
+    values.sort();
+    (run.surface.path.clone(), values)
+}
+
+/// Clap fills an option given with no value token from its default-missing
+/// value; the front end records no token for it. Drop such entries, found from
+/// the literal option tokens the generator wrote.
+fn without_bare_options(tree: &Command, argv: &[String], reading: &mut Reading) {
+    reading.1.retain(|(path, id, _)| {
+        let Some(arg) = path
+            .iter()
+            .try_fold(tree, |node: &Command, name: &String| {
+                node.find_subcommand(name)
+            })
+            .and_then(|node| node.get_arguments().find(|a| a.get_id() == id.as_str()))
+        else {
+            return true;
+        };
+        let Some(long) = arg.get_long() else {
+            return true;
+        };
+        let flag = format!("--{long}");
+        let at = argv.iter().position(|token| *token == flag);
+        // Bare when the option token takes no value through `=`-less
+        // spelling, or is last, or is followed by another option.
+        !at.is_some_and(|at| {
+            arg.is_require_equals_set() || argv.get(at + 1).is_none_or(|next| next.starts_with('-'))
+        })
+    });
+}
+
+/// The differential, with its verdict computed from clap alone. For every
+/// command path and option-arity shape, insert `--profile t1` or `--help` at
+/// every position. Clap with `--profile` and help declared reads the argv as
+/// written; clap without them reads the argv with the inserted tokens removed.
+/// When the inserted tokens are Plexi controls and both readings agree, the
+/// front end must accept with that reading; when they disagree, a removal
+/// would move a value and the front end must refuse. When clap reads the
+/// inserted tokens as data, the front end must accept with clap's reading.
+/// The one documented exception: a control placed between a command whose
+/// arguments conflict with subcommands and its subcommand never changes the
+/// command (`a_selector_does_not_change_args_conflicts_with_subcommands_nodes`).
 #[test]
 fn ownership_equals_clap_at_every_insertion_position() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     let mut tree = grammar(BIN);
     tree.build();
-    let display = display_grammar(grammar(BIN));
-    let mut checked = 0usize;
+    let occurrences = Arc::new(AtomicUsize::new(0));
+    let oracle_display = oracle_grammar(occurrences.clone(), true);
+    let oracle_run = oracle_grammar(occurrences.clone(), false);
+    let without_display = display_grammar(grammar(BIN));
+    let without_run = grammar(BIN);
+    let (mut agreed, mut moved, mut data) = (0usize, 0usize, 0usize);
     for p in every_path() {
-        let node = node_at(&tree, &p).unwrap();
+        let node = p
+            .iter()
+            .try_fold(&tree, |node: &Command, name: &String| {
+                node.find_subcommand(name)
+            })
+            .unwrap();
         for shape in shapes(node, &p) {
-            let Ok(clean) = display.clone().try_get_matches_from(&shape) else {
-                continue;
-            };
+            let removed_display = without_display.clone().try_get_matches_from(&shape);
+            let removed_run = without_run.clone().try_get_matches_from(&shape);
             for insert in [&["--profile", "t1"][..], &["--help"]] {
                 for at in 1..=shape.len() {
+                    // argv[1..at] is the path before the inserted tokens.
+                    let conflicting_node = at <= p.len()
+                        && p[..at - 1]
+                            .iter()
+                            .try_fold(&tree, |node: &Command, name: &String| {
+                                node.find_subcommand(name)
+                            })
+                            .is_some_and(Command::is_args_conflicts_with_subcommands_set);
+                    if conflicting_node {
+                        continue;
+                    }
                     let mut x = shape.clone();
                     for (k, token) in insert.iter().enumerate() {
                         x.insert(at + k, token.to_string());
                     }
-                    let accepted = matches!(
-                        outcome(BIN, &x),
-                        Outcome::Run(_)
-                            | Outcome::Launch(_)
-                            | Outcome::Help(_)
-                            | Outcome::Completions { .. }
-                    );
-                    if let Outcome::UsageError(UsageError::Internal(message)) = outcome(BIN, &x) {
-                        panic!("{x:?}: {message}");
+                    // Help is a display request only where clap reads it as
+                    // the flag; run requirements are waived only then.
+                    let help_control = insert[0] == "--help"
+                        && oracle_display
+                            .clone()
+                            .try_get_matches_from(&x)
+                            .is_ok_and(|m| m.get_flag("oracle_help"));
+                    occurrences.store(0, Ordering::SeqCst);
+                    let written = if help_control {
+                        oracle_display.clone()
+                    } else {
+                        oracle_run.clone()
                     }
-                    if !accepted {
+                    .try_get_matches_from(&x);
+                    let removed = if help_control {
+                        &removed_display
+                    } else {
+                        &removed_run
+                    };
+                    if written.is_err() && removed.is_err() {
                         continue;
                     }
-                    let r = recognize(&tree, &x);
-                    let removed = !r.profiles.is_empty() || r.help.is_some();
-                    let reference = if removed {
-                        assert_eq!(r.kept, shape, "{x:?}");
-                        clean.clone()
-                    } else {
-                        display.clone().try_get_matches_from(&x).unwrap()
+                    let got = outcome(BIN, &x);
+                    let accepted = !matches!(got, Outcome::UsageError(_));
+                    if let Outcome::UsageError(UsageError::Internal(message)) = &got {
+                        panic!("{x:?}: {message}");
+                    }
+                    let Ok(written) = written else {
+                        // Clap rejects the argv as written but accepts it with
+                        // the inserted tokens removed: removal would change it.
+                        assert!(!accepted, "{x:?}: clap rejects it as written");
+                        moved += 1;
+                        continue;
                     };
-                    assert!(rebinding(&tree, &r, &x, &reference).is_none(), "{x:?}");
-                    checked += 1;
+                    let control = if insert[0] == "--profile" {
+                        occurrences.load(Ordering::SeqCst) > 0
+                    } else {
+                        help_control
+                    };
+                    let mut as_written = clap_reading(&tree, &written);
+                    let expected = if control {
+                        let Ok(removed) = removed else {
+                            assert!(!accepted, "{x:?}: clap rejects it without the control");
+                            continue;
+                        };
+                        let mut without_reading = clap_reading(&tree, removed);
+                        without_bare_options(&tree, &shape, &mut without_reading);
+                        without_bare_options(&tree, &x, &mut as_written);
+                        if as_written != without_reading {
+                            assert!(!accepted, "{x:?}: removing the control moves a value");
+                            moved += 1;
+                            continue;
+                        }
+                        agreed += 1;
+                        without_reading
+                    } else {
+                        without_bare_options(&tree, &x, &mut as_written);
+                        data += 1;
+                        as_written
+                    };
+                    assert!(accepted, "{x:?}: clap accepts it, the front end refused");
+                    if let Outcome::Run(run) = &got {
+                        assert_eq!(run_reading(&tree, run), expected, "{x:?}");
+                    }
                 }
             }
         }
     }
-    assert!(checked > 1000, "only {checked} cases checked");
+    assert!(
+        agreed > 1000 && moved > 0 && data > 0,
+        "agreed={agreed} moved={moved} data={data}"
+    );
 }
 
 fn visible_paths(cmd: &Command, prefix: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
@@ -738,4 +949,53 @@ fn non_utf8_argv_is_a_usage_error() {
         parse(&argv).outcome,
         Outcome::UsageError(UsageError::NotUtf8 { index: 3 })
     ));
+}
+
+/// Round 2: argv received from another process is confirmed only by the full
+/// grammar; an incomplete invocation stays fully redacted.
+#[test]
+fn received_argv_is_confirmed_only_when_it_could_run() {
+    let incomplete: Vec<String> = ["plexi", "pane", "send", "SENTINEL"]
+        .map(str::to_string)
+        .to_vec();
+    assert!(argument_owners(&incomplete).is_none());
+    let safe = crate::cli::trace::redact_argv(&incomplete, &[]);
+    assert!(!safe.join(" ").contains("SENTINEL"), "{safe:?}");
+    let complete: Vec<String> = ["plexi", "pane", "send", "42", "hello"]
+        .map(str::to_string)
+        .to_vec();
+    assert!(argument_owners(&complete).is_some());
+}
+
+#[test]
+fn hidden_aliases_and_arguments_are_never_suggested_or_completed() {
+    let text = error_text(&["plugin", "delet"]);
+    assert!(!text.contains("`delete`"), "{text}");
+    let text = error_text(&["secret", "set", "KEY", "--folde"]);
+    assert!(!text.contains("--folder"), "{text}");
+    for shell in ["bash", "zsh", "fish", "elvish", "powershell"] {
+        let script =
+            String::from_utf8(crate::cli::completions::render_completions(shell, BIN).unwrap())
+                .unwrap();
+        assert!(!script.contains("--folder"), "{shell} completes --folder");
+    }
+}
+
+#[test]
+fn help_names_the_invoked_binary_everywhere() {
+    for p in [path(&["secret", "set"]), path(&["host", "start"])] {
+        let text = render_node_help(BIN, &p, true).to_string();
+        for line in text.lines() {
+            assert!(
+                !line.contains("plexi ") && !line.contains("plexi-pr-2"),
+                "{p:?}: {line}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_unknown_flag_in_a_display_cluster_is_named() {
+    let text = error_text(&["-hx"]);
+    assert!(text.contains("'-x'"), "{text}");
 }

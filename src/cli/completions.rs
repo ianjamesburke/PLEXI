@@ -111,24 +111,40 @@ pub fn render_completions(shell: &str, binary_name: &str) -> Result<Vec<u8>, Str
     }
 }
 
-/// A copy of `cmd` holding only visible subcommands. clap_complete lists every
-/// subcommand it is given, hidden or not, and clap cannot remove one, so a
-/// command group is rebuilt from its name, text, aliases and arguments, which
-/// is everything a completion script reads.
+/// A copy of `cmd` holding only what public help shows: visible commands,
+/// visible aliases and visible arguments. clap_complete offers every
+/// subcommand, alias and argument it is given, hidden or not, and clap cannot
+/// remove one, so each command is rebuilt from its name, text, aliases and
+/// arguments, which is everything a completion script reads. Relationships to
+/// arguments left out are dropped with them.
 fn visible_only(cmd: &clap::Command) -> clap::Command {
-    if !cmd.has_subcommands() {
-        return cmd.clone();
-    }
+    use clap::builder::Resettable;
     let visible: Vec<String> = cmd.get_visible_aliases().map(str::to_string).collect();
-    let hidden: Vec<String> = cmd
-        .get_all_aliases()
-        .filter(|alias| !visible.iter().any(|v| v == alias))
-        .map(str::to_string)
-        .collect();
     let mut out = clap::Command::new(cmd.get_name().to_string())
-        .aliases(hidden)
         .visible_aliases(visible)
-        .args(cmd.get_arguments().cloned())
+        .args(
+            cmd.get_arguments()
+                .filter(|arg| !arg.is_hide_set())
+                .map(|arg| {
+                    let aliases: Vec<String> = arg
+                        .get_visible_aliases()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect();
+                    let shorts = arg.get_visible_short_aliases().unwrap_or_default();
+                    arg.clone()
+                        .alias(Resettable::<clap::builder::Str>::Reset)
+                        .short_alias(Resettable::<char>::Reset)
+                        .visible_aliases(aliases)
+                        .visible_short_aliases(shorts)
+                        .conflicts_with(Resettable::<clap::Id>::Reset)
+                        .overrides_with(Resettable::<clap::Id>::Reset)
+                        .requires(Resettable::<clap::Id>::Reset)
+                        .required_unless_present(Resettable::<clap::Id>::Reset)
+                        .group(Resettable::<clap::Id>::Reset)
+                }),
+        )
         .subcommands(
             cmd.get_subcommands()
                 .filter(|sub| !sub.is_hide_set())

@@ -50,7 +50,56 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
 /// never read a profile. Hidden commands still parse; dispatch admission
 /// (`admission`) refuses an experiment that is off.
 pub fn public_command(bin: &str) -> clap::Command {
-    gate_command(Cli::command(), |_| false, bin)
+    name_binary(gate_command(Cli::command(), |_| false, bin), bin)
+}
+
+/// Help text writes commands as `plexi <command>`; a channel-named binary
+/// shows its own name in every example and instruction instead.
+fn name_binary(cmd: clap::Command, bin: &str) -> clap::Command {
+    if bin == "plexi" {
+        return cmd;
+    }
+    let rename = |text: &clap::builder::StyledStr| -> String {
+        static COMMAND: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        COMMAND
+            .get_or_init(|| {
+                regex::Regex::new(r#"(^|[\s`'"(\[])plexi(\s)"#).expect("static binary-name regex")
+            })
+            .replace_all(&text.to_string(), format!("${{1}}{bin}${{2}}"))
+            .into_owned()
+    };
+    let mut cmd = cmd;
+    if let Some(text) = cmd.get_about().map(&rename) {
+        cmd = cmd.about(text);
+    }
+    if let Some(text) = cmd.get_long_about().map(&rename) {
+        cmd = cmd.long_about(text);
+    }
+    if let Some(text) = cmd.get_before_help().map(&rename) {
+        cmd = cmd.before_help(text);
+    }
+    if let Some(text) = cmd.get_after_help().map(&rename) {
+        cmd = cmd.after_help(text);
+    }
+    if let Some(text) = cmd.get_before_long_help().map(&rename) {
+        cmd = cmd.before_long_help(text);
+    }
+    if let Some(text) = cmd.get_after_long_help().map(&rename) {
+        cmd = cmd.after_long_help(text);
+    }
+    cmd.mut_args(|arg| {
+        let help = arg.get_help().map(&rename);
+        let long_help = arg.get_long_help().map(&rename);
+        let arg = match help {
+            Some(text) => arg.help(text),
+            None => arg,
+        };
+        match long_help {
+            Some(text) => arg.long_help(text),
+            None => arg,
+        }
+    })
+    .mut_subcommands(|sub| name_binary(sub, bin))
 }
 
 /// Append the active channel's `plexi run` paths to `run`'s help. Pure path
@@ -241,7 +290,7 @@ pub(crate) fn closest_subcommand_suggestion<'a>(
     let threshold = (word.chars().count() / 3).max(1);
     let mut best: Option<(usize, &'a str)> = None;
     for sub in cmd.get_subcommands().filter(|sub| !sub.is_hide_set()) {
-        for candidate in std::iter::once(sub.get_name()).chain(sub.get_all_aliases()) {
+        for candidate in std::iter::once(sub.get_name()).chain(sub.get_visible_aliases()) {
             let dist = osa_distance(word, candidate);
             if dist <= threshold && best.is_none_or(|(best_dist, _)| dist < best_dist) {
                 best = Some((dist, candidate));

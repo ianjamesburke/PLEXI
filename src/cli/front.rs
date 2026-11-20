@@ -163,7 +163,8 @@ pub fn parse(argv: &[std::ffi::OsString]) -> Invocation {
 }
 
 fn outcome(bin: &str, argv: &[String]) -> Outcome {
-    let mut tree = grammar(bin);
+    let public = grammar(bin);
+    let mut tree = public.clone();
     tree.build();
     let r = recognize(&tree, argv);
     if let Some(Stop::Own(error)) = r.stop {
@@ -181,7 +182,7 @@ fn outcome(bin: &str, argv: &[String]) -> Outcome {
     if let Some(Stop::Clap { prefix }) = r.stop {
         // Clap reports the token recognition stopped at. The prefix ends at
         // that token, so nothing after it can change clap's diagnosis.
-        let error = match display_grammar(grammar(bin)).try_get_matches_from(&r.kept[..prefix]) {
+        let error = match display_grammar(public).try_get_matches_from(&r.kept[..prefix]) {
             Err(error) => error,
             // Clap accepts what recognition rejected only when a removed
             // token let clap read the stop token as an earlier option's value.
@@ -204,7 +205,7 @@ fn outcome(bin: &str, argv: &[String]) -> Outcome {
     }
     let help_request = r.help.clone().or_else(|| r.help_subcommand.clone());
     if help_request.is_some() || r.version {
-        let matches = match display_grammar(grammar(bin)).try_get_matches_from(&r.kept) {
+        let matches = match display_grammar(public).try_get_matches_from(&r.kept) {
             Ok(matches) => matches,
             Err(error) => return grammar_error(bin, &r.path, error),
         };
@@ -222,7 +223,7 @@ fn outcome(bin: &str, argv: &[String]) -> Outcome {
             None => Outcome::Version,
         };
     }
-    let mut matches = match grammar(bin).try_get_matches_from(&r.kept) {
+    let mut matches = match public.try_get_matches_from(&r.kept) {
         Ok(matches) => matches,
         Err(error) => return grammar_error(bin, &r.path, error),
     };
@@ -317,10 +318,59 @@ fn grammar_error(bin: &str, path: &[String], error: clap::Error) -> Outcome {
         }
         _ => {
             let note = missing_value_note(bin, path, &error);
-            UsageError::Grammar { error, note }
+            UsageError::Grammar {
+                error: without_hidden_suggestions(bin, path, error),
+                note,
+            }
         }
     };
     Outcome::UsageError(error)
+}
+
+/// Clap suggests from every name it knows, hidden ones included. Public
+/// diagnostics suggest only what public help shows.
+fn without_hidden_suggestions(bin: &str, path: &[String], mut error: clap::Error) -> clap::Error {
+    let mut tree = grammar(bin);
+    tree.build();
+    let Some(node) = node_at(&tree, path) else {
+        return error;
+    };
+    if let Some(ContextValue::String(suggested)) = error.get(ContextKind::SuggestedArg) {
+        let name = suggested.trim_start_matches('-');
+        let hidden = node.get_arguments().any(|arg| {
+            arg.is_hide_set()
+                && (arg.get_long() == Some(name)
+                    || arg.get_all_aliases().is_some_and(|a| a.contains(&name))
+                    || (name.chars().count() == 1 && arg.get_short() == name.chars().next()))
+        });
+        if hidden {
+            error.remove(ContextKind::SuggestedArg);
+        }
+    }
+    if let Some(ContextValue::Strings(names)) = error.get(ContextKind::SuggestedSubcommand) {
+        let visible: Vec<String> = names
+            .iter()
+            .filter(|name| {
+                node.get_subcommands().any(|sub| {
+                    !sub.is_hide_set()
+                        && (sub.get_name() == name.as_str()
+                            || sub
+                                .get_visible_aliases()
+                                .any(|alias| alias == name.as_str()))
+                })
+            })
+            .cloned()
+            .collect();
+        if visible.is_empty() {
+            error.remove(ContextKind::SuggestedSubcommand);
+        } else {
+            error.insert(
+                ContextKind::SuggestedSubcommand,
+                ContextValue::Strings(visible),
+            );
+        }
+    }
+    error
 }
 
 /// Static guidance for a missing value of an experiment-owned option. It names
@@ -421,15 +471,16 @@ impl Owner {
 /// invocation's own ownership travels in [`Run`].
 pub(crate) fn argument_owners(argv: &[String]) -> Option<Vec<Option<Owner>>> {
     let bin = "plexi";
-    let mut tree = grammar(bin);
+    let public = grammar(bin);
+    let mut tree = public.clone();
     tree.build();
     let r = recognize(&tree, argv);
-    if r.stop.is_some() || r.help_subcommand.is_some() {
+    if r.stop.is_some() || r.help_subcommand.is_some() || r.help.is_some() || r.version {
         return None;
     }
-    let matches = display_grammar(grammar(bin))
-        .try_get_matches_from(&r.kept)
-        .ok()?;
+    // The full grammar, run requirements included: only an invocation that
+    // could have run is confirmed. Anything incomplete fails closed.
+    let matches = public.try_get_matches_from(&r.kept).ok()?;
     if path_disagreement(&r.path, &matches).is_some()
         || rebinding(&tree, &r, argv, &matches).is_some()
     {
@@ -779,7 +830,9 @@ fn recognize(tree: &Command, argv: &[String]) -> Recognized {
                     let mut next_state = State::Done;
                     for (at, c) in flags.char_indices() {
                         let Some(arg) = find_short(node, c) else {
-                            r.kept.push(token.clone());
+                            // Clap names the unknown flag; display flags
+                            // already recognized are not replayed to it.
+                            r.kept.push(format!("-{kept_flags}{c}"));
                             return stop_at_end(r);
                         };
                         if is_display(arg) {
