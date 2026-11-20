@@ -6278,6 +6278,12 @@ pub(crate) fn restore_workspace(
                                 },
                             )
                         });
+                    // Only a session the restore mode keeps narrows the grant.
+                    let grant = if effective_session.is_some() {
+                        crate::app::authority_import::agent_session_narrowed(saved_pane.id, grant)
+                    } else {
+                        grant
+                    };
                     let launch = crate::pane_ops::construct::TerminalLaunch {
                         authority: crate::broker::pane_authority::LivePaneAuthority::new(
                             grant, scope,

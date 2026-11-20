@@ -4744,4 +4744,52 @@ mod tests {
             "control"
         );
     }
+
+    /// Round 7: with `restore_mode = "off"` the saved session is dropped and
+    /// the pane restores as a plain shell. It keeps its saved desktop grant,
+    /// across a save and another restart; only a kept session narrows it.
+    #[test]
+    fn grant_restore_mode_off_keeps_the_shells_saved_grant() {
+        let profile = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let agent = {
+            let mut h = HostHarness::from_profile_dir(profile.path());
+            let agent = h.add_focused_terminal();
+            h.app.set_context_root(root.path().to_path_buf(), None);
+            let win = window_of(&h, agent);
+            let terminal = h.app.windows[win]
+                .panes
+                .get_mut(&agent)
+                .and_then(|p| p.as_terminal_mut())
+                .unwrap();
+            terminal.agent_harness = Some("pi".into());
+            terminal.agent = Some(crate::protocol::PaneAgentState {
+                pane_id: agent,
+                state: crate::protocol::AgentState::Idle,
+                agent: "pi".into(),
+                detail: None,
+                session_id: None,
+            });
+            assert!(h.app.save_workspace_now(), "saved");
+            agent
+        };
+        std::fs::write(
+            profile.path().join("config.toml"),
+            "[agents]\nrestore_mode = \"off\"\n",
+        )
+        .unwrap();
+        for pass in ["first restart", "after a save and another restart"] {
+            let mut h = HostHarness::from_profile_dir(profile.path());
+            assert!(
+                !h.app.terminal_incarnation(agent).unwrap().is_agent_pane(),
+                "fixture: the session was dropped ({pass})"
+            );
+            let grant = grant_of(&h, agent);
+            assert!(
+                grant.is_desktop() && grant.secrets.workspace_terminal_env,
+                "the plain shell keeps its saved grant ({pass}): {grant:?}"
+            );
+            assert!(h.app.save_workspace_now(), "saved");
+        }
+    }
 }

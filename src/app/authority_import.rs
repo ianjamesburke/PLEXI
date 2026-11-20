@@ -177,7 +177,7 @@ impl Importer<'_> {
     ) -> (PaneAuthority, LiveScope) {
         let scope = self.scope_of(pane, context_id);
         match self.current(pane, context_id) {
-            Some(Ok(saved)) => return (agent_session_narrowed(pane, saved.grant), saved.scope),
+            Some(Ok(saved)) => return (saved.grant, saved.scope),
             Some(Err(problem)) => {
                 log::warn!(
                     "workspace_restore: pane {} grant refused: {problem}; sealed",
@@ -371,17 +371,15 @@ fn legacy_plain_shell(pane_id: u64) -> Restriction {
     Restriction::sealed(SealReason::OlderSave)
 }
 
-/// A pane saved with an agent session resumes that agent: it is restricted
-/// and resolves no secret, whatever its grant allowed the shell it started
-/// in (stint 1632, round 6; alpha withheld secrets from every restored
-/// agent session).
-fn agent_session_narrowed(pane: &SavedPane, mut grant: PaneAuthority) -> PaneAuthority {
-    if pane.agent_session.is_some()
-        && (grant.ownership == Ownership::Desktop || grant.secrets != SecretEligibility::none())
-    {
+/// A pane restored with an effective agent session (one the restore mode
+/// keeps) resumes that agent: it is restricted and resolves no secret,
+/// whatever its grant allowed the shell it started in. Alpha withheld secrets
+/// on exactly this condition. A session the restore mode drops leaves a
+/// plain shell under its saved grant (stint 1632, rounds 6 and 7).
+pub(crate) fn agent_session_narrowed(pane_id: u64, mut grant: PaneAuthority) -> PaneAuthority {
+    if grant.ownership == Ownership::Desktop || grant.secrets != SecretEligibility::none() {
         log::info!(
-            "workspace_restore: pane {} resumes an agent session; restricted, no secrets",
-            pane.id
+            "workspace_restore: pane {pane_id} resumes an agent session; restricted, no secrets"
         );
         grant.ownership = Ownership::Restricted;
         grant.secrets = SecretEligibility::none();
