@@ -2437,7 +2437,10 @@ impl PlexiApp {
             .find_ancestor_tabs(tile)
             .map_or(tile, |(tabs, _)| tabs);
         let context = self.pane_context_env_for_window(win_idx);
-        let mut launch = self.host_terminal_launch(
+        // A user command runs the workspace's command, not a shell for its
+        // folder: no folder secrets.
+        let launch = self.terminal_launch_with(
+            crate::broker::pane_authority::GrantSource::DesktopInput,
             context,
             ws_root,
             Some(crate::pane_ops::construct::LaunchCommand {
@@ -2446,9 +2449,6 @@ impl PlexiApp {
             }),
             false,
         );
-        // A user command runs the workspace's command, not a shell for its
-        // folder: no folder secrets.
-        launch.secrets.folder = false;
         self.spawn_terminal_pane_at(
             crate::pane_ops::create::SplitPlacement {
                 win_idx,

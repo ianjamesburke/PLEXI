@@ -1650,6 +1650,7 @@ impl TextEditorView {
             from_pane_id: self.host_pane_id,
             request_id: None,
             target_context: None,
+            emitter: None,
         });
     }
 }

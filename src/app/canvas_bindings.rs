@@ -63,8 +63,8 @@ impl PlexiApp {
         };
 
         let context_env = self.pane_context_env_for_window(active);
-        let launch = self.host_terminal_launch(context_env, resolved_cwd, None, false);
-        let new_id = launch.pane_id;
+        let launch = self.desktop_terminal_launch(context_env, resolved_cwd, None);
+        let new_id = launch.pane_id();
         let term = match self.construct_terminal(launch) {
             Ok(term) => term,
             Err(error) => {

@@ -204,7 +204,9 @@ pub struct SubscriptionRecord {
     pub subscriber_id: String,
     /// App package identity whose events are subscribed.
     pub plugin_id: String,
-    /// Declared stream names. Empty = all streams the plugin declares.
+    /// The concrete stream names this subscription delivers. An empty list
+    /// delivers nothing: "all streams" is expanded to its declared members
+    /// when the subscription is admitted (stint 1632).
     pub event_names: Vec<String>,
     pub payload_mode: PayloadMode,
     pub trigger_mode: TriggerMode,
@@ -219,6 +221,46 @@ pub struct SubscriptionRecord {
     pub subscriber_context_id: u64,
     /// RFC 3339.
     pub created_at: String,
+    /// The pane scope the subscription was admitted under, for a pane
+    /// subscriber. Deliveries stop once it no longer holds.
+    #[serde(skip)]
+    pub admitted: Option<AdmittedScope>,
+}
+
+/// A pane incarnation and the scope revision something was admitted under.
+#[derive(Debug, Clone)]
+pub struct AdmittedScope {
+    pub(crate) authority: std::sync::Arc<crate::broker::pane_authority::LivePaneAuthority>,
+    pub(crate) revision: u64,
+}
+
+impl AdmittedScope {
+    pub(crate) fn of(
+        authority: &std::sync::Arc<crate::broker::pane_authority::LivePaneAuthority>,
+    ) -> Self {
+        Self {
+            revision: authority.scope().revision,
+            authority: authority.clone(),
+        }
+    }
+
+    /// The incarnation, while it is unrevoked and at the admitted revision.
+    pub(crate) fn current(
+        &self,
+    ) -> Result<&std::sync::Arc<crate::broker::pane_authority::LivePaneAuthority>, String> {
+        if self.authority.is_revoked() {
+            return Err(format!("pane {} was closed", self.authority.pane_id()));
+        }
+        let now = self.authority.scope().revision;
+        if now != self.revision {
+            return Err(format!(
+                "pane {}'s scope changed (revision {} -> {now})",
+                self.authority.pane_id(),
+                self.revision
+            ));
+        }
+        Ok(&self.authority)
+    }
 }
 
 impl SubscriptionRecord {
@@ -242,7 +284,14 @@ impl SubscriptionRecord {
         {
             return false;
         }
-        if !self.event_names.is_empty() && !self.event_names.contains(&record.event) {
+        if !self.event_names.contains(&record.event) {
+            return false;
+        }
+        if let Some(stale) = self.admitted.as_ref().and_then(|a| a.current().err()) {
+            log::info!(
+                "plugin_timeline: subscription {} delivers nothing: {stale}",
+                self.subscription_id
+            );
             return false;
         }
         match &self.resource_id {
@@ -399,6 +448,17 @@ impl PluginTimeline {
     /// an O(1) lookup (mirrors `record_event`'s declared-stream check), for
     /// callers that only need existence and not the full `EventStreamDecl`
     /// list.
+    /// The streams `plugin_id` has declared in `context_id`, sorted.
+    pub fn declared_stream_names(&self, context_id: u64, plugin_id: &str) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .streams
+            .get(&(context_id, plugin_id.to_string()))
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
     pub fn has_stream(&self, context_id: u64, plugin_id: &str, name: &str) -> bool {
         self.streams
             .get(&(context_id, plugin_id.to_string()))
@@ -1129,6 +1189,7 @@ mod tests {
             duration: GrantDuration::Session,
             subscriber_context_id: CTX,
             created_at: "2026-06-11T00:00:00Z".to_string(),
+            admitted: None,
         }
     }
 

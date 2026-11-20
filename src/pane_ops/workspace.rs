@@ -332,6 +332,8 @@ pub(crate) struct ChildContextSpec {
     pub panes: Vec<Option<String>>,
     /// How the seeded panes are arranged inside the child's single window.
     pub layout: crate::protocol::SubContextLayout,
+    /// The verified source the seeded panes are admitted from (stint 1632).
+    pub source: crate::broker::pane_authority::GrantSource,
 }
 
 impl ChildContextSpec {
@@ -354,6 +356,7 @@ impl ChildContextSpec {
             anchor_pane,
             panes: vec![None],
             layout: crate::protocol::SubContextLayout::default(),
+            source: crate::broker::pane_authority::GrantSource::DesktopInput,
         }
     }
 }
@@ -409,6 +412,7 @@ impl PlexiApp {
             anchor_pane,
             panes: pane_commands,
             layout,
+            source,
         } = spec;
         if pane_commands.is_empty() {
             return Err("child context requires at least one pane".to_string());
@@ -473,15 +477,10 @@ impl PlexiApp {
             root: Some(path.clone()),
             depth: child_depth,
         };
-        let caller_is_agent = anchor_pane.is_some_and(|pid| !self.is_human_owned_pane(pid));
+        // The seeded panes are admitted from the request's verified source;
+        // the anchor pane is placement only.
         let Some((child_tree, child_panes, child_root_tile, child_pane_ids)) = self
-            .create_context_pane_set(
-                &child_env,
-                path.clone(),
-                &pane_commands,
-                layout,
-                caller_is_agent,
-            )
+            .create_context_pane_set(&child_env, path.clone(), &pane_commands, layout, &source)
         else {
             log::error!("new_child_context: failed to create terminals for child context");
             return Err("failed to create terminals for child context".to_string());
@@ -670,9 +669,9 @@ impl PlexiApp {
         self.wrap_panes_to_subcontext(&[pane_id], pane_id, name);
     }
 
-    pub(crate) fn new_context(&mut self) {
+    pub(crate) fn new_context(&mut self, source: crate::broker::pane_authority::GrantSource) {
         log::info!("new_context: creating new top-level context");
-        self.new_context_empty();
+        self.new_context_empty(source);
     }
 
     pub(crate) fn auto_context_name_for_path(
@@ -786,7 +785,7 @@ impl PlexiApp {
     }
 
     /// Create a new standalone empty context at the home directory.
-    fn new_context_empty(&mut self) {
+    fn new_context_empty(&mut self, source: crate::broker::pane_authority::GrantSource) {
         let total_start = std::time::Instant::now();
         let cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         log::info!("new_context_empty: cwd={}", cwd.display());
@@ -824,7 +823,7 @@ impl PlexiApp {
             tree_history: Default::default(),
         });
         let new_idx = self.windows.len() - 1;
-        let launch = self.host_terminal_launch(context_env.clone(), Some(cwd.clone()), None, false);
+        let launch = self.terminal_launch(source, context_env.clone(), Some(cwd.clone()), None);
         if self.seed_window_root_pane(new_idx, launch).is_none() {
             log::error!("new_context_empty: failed to seed root pane — aborting new context");
             self.windows.pop();
@@ -882,7 +881,11 @@ impl PlexiApp {
     /// opens at `path` and the context root is set to it. Named after the
     /// directory basename, unless the path has a `.plexi/workspace.toml` with
     /// `[context]` defaults. Callers must call `mark_workspace_dirty()` afterward.
-    pub(crate) fn new_context_at_path(&mut self, path: PathBuf) {
+    pub(crate) fn new_context_at_path(
+        &mut self,
+        path: PathBuf,
+        source: crate::broker::pane_authority::GrantSource,
+    ) {
         let total_start = std::time::Instant::now();
         log::info!("new_context_at_path: path={}", path.display());
 
@@ -950,7 +953,7 @@ impl PlexiApp {
         });
         let new_idx = self.windows.len() - 1;
         let launch =
-            self.host_terminal_launch(context_env.clone(), Some(path.clone()), None, false);
+            self.terminal_launch(source, context_env.clone(), Some(path.clone()), None);
         if self.seed_window_root_pane(new_idx, launch).is_none() {
             log::error!(
                 "new_context_at_path: failed to seed root pane for {} — aborting new context",
@@ -1013,7 +1016,7 @@ impl PlexiApp {
         };
         let context = self.pane_context_env_for_context(ws_id);
         let cwd = self.default_page_cwd();
-        let launch = self.host_terminal_launch(context, Some(cwd), None, false);
+        let launch = self.desktop_terminal_launch(context, Some(cwd), None);
         self.create_page_at(new_x, active_y, ws_id, launch);
     }
 
@@ -1037,7 +1040,7 @@ impl PlexiApp {
         context_id: u64,
         launch: super::construct::TerminalLaunch,
     ) -> Option<PaneId> {
-        let pane_id = launch.pane_id;
+        let pane_id = launch.pane_id();
         let pane = match self.construct_terminal(launch) {
             Ok(pane) => pane,
             Err(error) => {
@@ -1114,7 +1117,7 @@ impl PlexiApp {
         launch: super::construct::TerminalLaunch,
     ) -> Option<(PaneId, egui_tiles::TileId)> {
         let spawn_start = std::time::Instant::now();
-        let pane_id = launch.pane_id;
+        let pane_id = launch.pane_id();
         let pane = match self.construct_terminal(launch) {
             Ok(pane) => pane,
             Err(error) => {
@@ -1161,7 +1164,7 @@ impl PlexiApp {
             self.router.active().root
         );
         let context = self.pane_context_env_for_window(self.active_window);
-        let launch = self.host_terminal_launch(context, Some(cwd), None, false);
+        let launch = self.desktop_terminal_launch(context, Some(cwd), None);
         let Some((tree, panes, root_tile)) = self.create_single_pane_tree(launch) else {
             log::error!("Failed to create terminal for reset context");
             return;
@@ -1891,7 +1894,11 @@ impl PlexiApp {
     }
 
     /// Explicit folder navigation, independent of terminal cwd observations.
-    pub(crate) fn open_context_root(&mut self, root: &std::path::Path) -> Result<u64, String> {
+    pub(crate) fn open_context_root(
+        &mut self,
+        root: &std::path::Path,
+        source: crate::broker::pane_authority::GrantSource,
+    ) -> Result<u64, String> {
         let root = root
             .canonicalize()
             .map_err(|error| format!("open context {}: {error}", root.display()))?;
@@ -1908,7 +1915,7 @@ impl PlexiApp {
             self.switch_workspace(index);
         } else {
             let count = self.router.len();
-            self.new_context_at_path(root.clone());
+            self.new_context_at_path(root.clone(), source);
             if self.router.len() == count {
                 return Err(format!("could not create context at {}", root.display()));
             }
@@ -1938,6 +1945,11 @@ impl PlexiApp {
         auto_init_workspace(&root);
         let context_id = self.router.get(idx).context_id;
         let old_root = self.router.get(idx).root.clone();
+        // One host-authorized scope change, published through each live
+        // terminal's handle: both of its credentials observe the new root at
+        // the same revision, and anything admitted under the old one is
+        // rechecked before it takes effect (stint 1632).
+        let scoped_root = crate::platform::path::canonical_or_self(&root);
         for terminal in self
             .windows
             .iter()
@@ -1945,8 +1957,8 @@ impl PlexiApp {
             .flat_map(|window| window.panes.values())
             .filter_map(crate::host::pane::Pane::terminal_incarnation)
         {
-            if let Some(credentials) = terminal.credentials() {
-                credentials.rebind_workspace(root.clone());
+            if let Some(authority) = terminal.authority() {
+                authority.publish_scope(scoped_root.clone());
             }
         }
         self.router.get_mut(idx).root = root.clone();
@@ -2456,13 +2468,16 @@ impl PlexiApp {
                         agent_session: t.build_saved_agent_session_with_scrollback(
                             self.config.standby_scrollback_lines(),
                         ),
-                        authority: t.authority().map(|authority| {
-                            crate::workspace::SavedPaneAuthority {
-                                posture: authority.posture.clone(),
-                                spawned_by: authority.spawned_by.clone(),
-                                terminal_secrets: authority.secrets.terminal,
-                                folder_secrets: authority.secrets.folder,
-                            }
+                        // The whole grant and its effective scope, from one
+                        // revision, for every terminal (stint 1632).
+                        authority: t.authority().and_then(|authority| {
+                            serde_json::to_value(
+                                crate::broker::pane_authority::SavedPaneAuthority::of(authority),
+                            )
+                            .inspect_err(|error| {
+                                log::error!("workspace_save: pane {id} grant not serialized: {error}")
+                            })
+                            .ok()
                         }),
                     });
                 } else if let Some(a) = pane.as_view() {

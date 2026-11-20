@@ -867,7 +867,7 @@ impl PlexiApp {
         }
 
         if add_clicked {
-            self.new_context();
+            self.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
         }
     }
 

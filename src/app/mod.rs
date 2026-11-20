@@ -1,6 +1,7 @@
 pub mod account;
 pub(crate) mod agent_open;
 mod agent_tools;
+pub(crate) mod authority_import;
 pub mod agents_dashboard_view;
 pub(crate) mod agents_view;
 pub(crate) mod approval_keyboard;
@@ -30,6 +31,7 @@ pub(crate) mod input_router;
 pub(crate) mod install_swap;
 mod launch_notices;
 pub(crate) mod launch_plan;
+mod sdk_spawn;
 pub(crate) mod launch_spec;
 mod lifecycle;
 pub mod marketplace;
@@ -890,7 +892,11 @@ pub(crate) fn handle_socket_line_in(
                 }
                 crate::protocol::HostRequest::SpawnPane { source, .. }
                 | crate::protocol::HostRequest::AgentSpawn { source, .. }
-                | crate::protocol::HostRequest::AgentOpen { source, .. } => {
+                | crate::protocol::HostRequest::AgentOpen { source, .. }
+                | crate::protocol::HostRequest::AgentReopen { source, .. }
+                | crate::protocol::HostRequest::CreateContext { source, .. }
+                | crate::protocol::HostRequest::CreateSubContext { source, .. }
+                | crate::protocol::HostRequest::FocusContext { source, .. } => {
                     // An uncaptured peer stays `Unverified`: it can never pass
                     // for an in-process caller (stint 1632).
                     *source = match peer_ancestry {
@@ -2306,7 +2312,7 @@ impl PlexiApp {
         // still renders for any genuinely-empty window elsewhere.
         let seed_cwd = app.windows[0].path.clone();
         let seed_context = app.pane_context_env_for_window(0);
-        let seed = app.host_terminal_launch(seed_context, Some(seed_cwd), None, false);
+        let seed = app.desktop_terminal_launch(seed_context, Some(seed_cwd), None);
         if app.seed_window_root_pane(0, seed).is_some() {
             log::info!("first boot: seeded base root pane in context 1");
         } else {
@@ -2394,18 +2400,60 @@ impl PlexiApp {
             .terminal_incarnation()
     }
 
-    /// The pane's ceiling from its authority binding, installed when it was
-    /// constructed (stint 1632). The binding belongs to the pane, not the
-    /// mutable agent registry: a worker that changed directory or whose
-    /// settings.toml was edited keeps it. A legacy restored session's role
-    /// posture is resolved at restore, into the binding.
-    pub(crate) fn pane_permission_posture(
+    /// The live terminal's handle to its grant (stint 1632), covered by an
+    /// overlay or not.
+    pub(crate) fn pane_authority(
+        &self,
+        pane_id: crate::spatial::tiling::PaneId,
+    ) -> Option<std::sync::Arc<crate::broker::pane_authority::LivePaneAuthority>> {
+        self.terminal_incarnation(pane_id)?.authority().cloned()
+    }
+
+    /// The pane's ceiling, from the grant fixed at its admission (stint
+    /// 1632). The grant belongs to the pane, not the mutable agent registry:
+    /// a worker that changed directory or whose settings.toml was edited
+    /// keeps it. `Ok(None)` is the baseline (and every non-terminal pane); a
+    /// terminal without an established grant is refused.
+    pub(crate) fn pane_ceiling(
+        &self,
+        pane_id: crate::spatial::tiling::PaneId,
+    ) -> Result<Option<crate::broker::PermissionPosture>, String> {
+        match self.terminal_incarnation(pane_id) {
+            Some(terminal) => terminal
+                .permission_ceiling()
+                .map(|p| p.cloned())
+                .map_err(|sealed| sealed.to_string()),
+            None => Ok(None),
+        }
+    }
+
+    /// The pane's ceiling, with a sealed grant reading as none (tests).
+    #[cfg(test)]
+    pub(crate) fn pane_ceiling_or_none(
         &self,
         pane_id: crate::spatial::tiling::PaneId,
     ) -> Option<crate::broker::PermissionPosture> {
-        self.terminal_incarnation(pane_id)?
-            .permission_posture()
-            .cloned()
+        self.pane_ceiling(pane_id).ok().flatten()
+    }
+
+    /// The principal a verified event-bus caller subscribes as.
+    pub(crate) fn subscriber_authority(
+        &self,
+        verified_pane: Option<crate::spatial::tiling::PaneId>,
+    ) -> crate::host::event_subscriptions::SubscriberAuthority {
+        use crate::host::event_subscriptions::SubscriberAuthority;
+        let Some(pane_id) = verified_pane else {
+            return SubscriberAuthority::External;
+        };
+        match self.terminal_incarnation(pane_id) {
+            Some(terminal) => match terminal.authority() {
+                Some(authority) => SubscriberAuthority::Pane(
+                    crate::host::plugin_timeline::AdmittedScope::of(authority),
+                ),
+                None => SubscriberAuthority::Sealed,
+            },
+            None => SubscriberAuthority::External,
+        }
     }
 
     /// Canonical context root that bounds a pane's authority.
@@ -2859,7 +2907,7 @@ impl PlexiApp {
             subscriber_type_override: Some(crate::broker::ActorType::Plugin),
             broker_actor_override: Some(subscriber_plugin_id),
             workspace_root_override: Some(workspace_root),
-            posture_ceiling: None,
+            subscriber_authority: crate::host::event_subscriptions::SubscriberAuthority::Plugin,
             context_id_override: context_id,
             // This request never travels over the raw event-bus socket — the
             // pane id is already host-known (the WASM/Python plugin dispatch
@@ -3287,14 +3335,13 @@ impl PlexiApp {
         command: Option<&str>,
     ) -> crate::pane_ops::construct::TerminalLaunch {
         let context = self.pane_context_env_for_context(context_id);
-        self.host_terminal_launch(
+        self.desktop_terminal_launch(
             context,
             cwd,
             command.map(|command| crate::pane_ops::construct::LaunchCommand {
                 command: command.to_string(),
                 close_on_exit: false,
             }),
-            false,
         )
     }
 
@@ -4616,7 +4663,7 @@ impl PlexiApp {
                 let anchor = self.focused_tab_anchor(win_idx);
                 let context = self.pane_context_env_for_window(win_idx);
                 let cwd = self.tab_cwd(win_idx, anchor);
-                let launch = self.host_terminal_launch(context, Some(cwd), None, false);
+                let launch = self.desktop_terminal_launch(context, Some(cwd), None);
                 if let Err(error) = self.new_tab(win_idx, anchor, launch) {
                     log::warn!("new_tab: {error}");
                 }
@@ -4852,7 +4899,7 @@ impl PlexiApp {
                 self.mark_workspace_dirty();
             }
             Action::NewContext => {
-                self.new_context();
+                self.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
                 self.mark_workspace_dirty();
             }
             Action::NewChildContext => {
@@ -5833,8 +5880,28 @@ pub(crate) fn restore_workspace(
         .map(|c| (c.context_id, c.depth))
         .collect();
 
-    // Every saved pane by id, across windows and contexts: a restored pane's
-    // parent can live in any of them (stint 1632).
+    // Every terminal's grant, decided in one pass over the whole workspace
+    // before any pane is built (stint 1632).
+    let mut restored_grants = crate::app::authority_import::import(
+        &ws,
+        collaborators.profile_dir,
+        &|role, cwd| {
+            let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(cwd);
+            crate::cli::agent::resolve_agent_definition_in(
+                role,
+                collaborators.profile_dir,
+                lookup_root.as_deref(),
+            )
+            .ok()
+            .map(|(def, _)| crate::broker::pane_authority::AdmittedRole {
+                id: def.id,
+                posture: def.posture,
+                can_call: def.can_call,
+                can_handoff: def.can_handoff,
+            })
+        },
+    );
+    // Every saved pane by id, for display provenance only.
     let saved_panes_by_id: HashMap<u64, crate::workspace::SavedPane> = ws
         .windows
         .iter()
@@ -6168,83 +6235,40 @@ pub(crate) fn restore_workspace(
                             })
                         })
                         .flatten();
-                    // The pane is constructed under the authority it was saved
-                    // with, agent session or not (stint 1632). A save that
-                    // predates that record resolves the ceiling before
-                    // construction, including the legacy fallback for a
-                    // session saved without one: the role's posture under its
-                    // lookup root, narrowed by the parent's saved ceiling,
-                    // wherever the parent was saved.
-                    let saved_authority = saved_pane.authority.as_ref();
-                    let legacy_posture = effective_session.as_ref().and_then(|session| {
-                        session.permission_posture.clone().or_else(|| {
-                            let role = session.config_name.as_deref()?;
-                            let lookup_root = cwd
-                                .as_deref()
-                                .and_then(crate::app::registry::resolve_agent_lookup_workspace_root)
-                                .or_else(|| ctx_root.cloned());
-                            let role_posture = crate::cli::agent::resolve_agent_definition_in(
-                                role,
-                                collaborators.profile_dir,
-                                lookup_root.as_deref(),
+                    // The pane is constructed under the grant the importer
+                    // decided for it, agent session or not (stint 1632).
+                    let (grant, scope) =
+                        restored_grants.remove(&saved_pane.id).unwrap_or_else(|| {
+                            log::warn!(
+                                "workspace_restore: pane {} has no imported grant; sealed",
+                                saved_pane.id
+                            );
+                            let scope = crate::broker::pane_authority::CredentialScope {
+                                context_id: saved_win.context_id,
+                                workspace_root: PathBuf::new(),
+                            };
+                            (
+                                crate::broker::pane_authority::PaneAuthority::sealed(
+                                    collaborators.profile_dir,
+                                    saved_pane.id,
+                                    crate::broker::pane_authority::Provenance::LegacyImport,
+                                    None,
+                                    "unknown".into(),
+                                    scope,
+                                ),
+                                crate::broker::pane_authority::LiveScope {
+                                    context_id: saved_win.context_id,
+                                    workspace_root: PathBuf::new(),
+                                    revision: 0,
+                                },
                             )
-                            .ok()
-                            .map(|(def, _)| def.posture)?;
-                            let parent_posture = session.parent_pane_id.and_then(|pid| {
-                                let parent = saved_panes_by_id.get(&pid)?;
-                                parent
-                                    .authority
-                                    .as_ref()
-                                    .and_then(|a| a.posture.as_ref())
-                                    .or_else(|| {
-                                        parent
-                                            .agent_session
-                                            .as_ref()
-                                            .and_then(|s| s.permission_posture.as_ref())
-                                    })
-                            });
-                            Some(match parent_posture {
-                                Some(parent) => role_posture.restricted_by(parent),
-                                None => role_posture,
-                            })
-                        })
-                    });
-                    let agent_pane = effective_session.is_some();
-                    let (posture, spawned_by, secrets) = match saved_authority {
-                        Some(saved) => (
-                            saved.posture.clone(),
-                            saved.spawned_by.clone(),
-                            shell::SecretPolicy {
-                                terminal: saved.terminal_secrets,
-                                folder: saved.folder_secrets,
-                            },
-                        ),
-                        None => (
-                            legacy_posture,
-                            effective_session
-                                .as_ref()
-                                .and_then(|session| session.spawned_by.clone()),
-                            if agent_pane {
-                                shell::SecretPolicy::NONE
-                            } else {
-                                shell::SecretPolicy::ALL
-                            },
-                        ),
-                    };
-                    log::info!(
-                        "workspace_restore: pane {} authority from {} posture={} secrets={secrets:?}",
-                        saved_pane.id,
-                        if saved_authority.is_some() { "its saved record" } else { "legacy fields" },
-                        posture.is_some()
-                    );
+                        });
                     let launch = crate::pane_ops::construct::TerminalLaunch {
-                        pane_id: saved_pane.id,
-                        posture,
-                        spawned_by,
+                        authority: crate::broker::pane_authority::LivePaneAuthority::new(
+                            grant, scope,
+                        ),
                         context: context_env,
                         cwd: cwd.clone(),
-                        secrets,
-                        agent_pane,
                         command: launch_command,
                         ephemeral: false,
                         env: worker_env,

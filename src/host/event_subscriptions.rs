@@ -96,8 +96,9 @@ pub fn evaluate_and_record_subscription(
 }
 
 /// The broker target ids a subscription (read) touches: one `"<plugin>::<event>"`
-/// per requested event, or a single `"<plugin>::*"` when subscribing to every
-/// stream.
+/// per concrete member. An all-streams request is expanded to its members
+/// before it gets here, so no synthetic `"<plugin>::*"` target is ever
+/// decided for a read (stint 1632).
 ///
 /// Read and write grants must never satisfy each other: an Allow-Always the user
 /// granted on a read prompt must not silently authorize an emit, and vice versa.
@@ -105,20 +106,19 @@ pub fn evaluate_and_record_subscription(
 /// a `publish:` prefix ([`publish_targets`]) so a grant matches only the
 /// operation it was granted for.
 fn subscription_targets(publisher_plugin_id: &str, event_names: &[String]) -> Vec<String> {
-    if event_names.is_empty() {
-        vec![format!("{publisher_plugin_id}::*")]
-    } else {
-        event_names
-            .iter()
-            .map(|n| format!("{publisher_plugin_id}::{n}"))
-            .collect()
-    }
+    event_names
+        .iter()
+        .map(|n| format!("{publisher_plugin_id}::{n}"))
+        .collect()
 }
 
 /// The broker target ids a publish (declare/emit) touches — the subscribe
 /// targets with a `publish:` prefix so publish grants and subscribe grants are
 /// distinct and can never match each other (see [`subscription_targets`]).
 fn publish_targets(plugin_id: &str, event_names: &[String]) -> Vec<String> {
+    if event_names.is_empty() {
+        return vec![format!("publish:{plugin_id}::*")];
+    }
     subscription_targets(plugin_id, event_names)
         .into_iter()
         .map(|t| format!("publish:{t}"))
@@ -269,6 +269,7 @@ pub fn record_subscription(
         duration,
         subscriber_context_id,
         created_at: event_log::now_timestamp(),
+        admitted: None,
     };
     log::info!(
         "event_subscriptions: recorded subscription {subscription_id} for {subscriber_type:?} \
@@ -276,6 +277,45 @@ pub fn record_subscription(
          (payload={payload_mode:?}, trigger={trigger_mode:?})"
     );
     timeline.lock().unwrap().add_subscription(record);
+    subscription_id
+}
+
+/// [`record_subscription`] for an admitted request: a pane subscriber's
+/// deliveries stop when its incarnation is revoked or its scope moves.
+#[allow(clippy::too_many_arguments)]
+fn record_admitted_subscription(
+    timeline: &Arc<Mutex<PluginTimeline>>,
+    publisher_plugin_id: &str,
+    subscriber_type: ActorType,
+    subscriber_id: &str,
+    subscriber_context_id: u64,
+    event_names: Vec<String>,
+    payload_mode: PayloadMode,
+    trigger_mode: TriggerMode,
+    resource_id: Option<String>,
+    admitted: Option<crate::host::plugin_timeline::AdmittedScope>,
+) -> String {
+    let subscription_id = format!("sub-{}", uuid::Uuid::new_v4());
+    log::info!(
+        "event_subscriptions: recorded subscription {subscription_id} for {subscriber_type:?} \
+         '{subscriber_id}' (context={subscriber_context_id}) -> '{publisher_plugin_id}' \
+         {event_names:?} admitted_scope={:?}",
+        admitted.as_ref().map(|a| a.revision)
+    );
+    timeline.lock().unwrap().add_subscription(SubscriptionRecord {
+        subscription_id: subscription_id.clone(),
+        subscriber_type,
+        subscriber_id: subscriber_id.to_string(),
+        plugin_id: publisher_plugin_id.to_string(),
+        event_names,
+        payload_mode,
+        trigger_mode,
+        resource_id,
+        duration: GrantDuration::Session,
+        subscriber_context_id,
+        created_at: event_log::now_timestamp(),
+        admitted,
+    });
     subscription_id
 }
 
@@ -317,11 +357,11 @@ pub struct HostSubscribeRequest {
     /// connection), in which case the broker check runs with no workspace
     /// context.
     pub workspace_root_override: Option<PathBuf>,
-    /// The subscriber pane's own ceiling, when the transport authenticated
-    /// one (a host-MCP pane bearer, stint 1632). The subscription is
-    /// evaluated under the meet of this and the host posture, so a pane's
-    /// explicit deny is never weakened to a prompt or a grant.
-    pub posture_ceiling: Option<PermissionPosture>,
+    /// Who the subscriber is, resolved by the transport (stint 1632). A pane
+    /// subscriber is evaluated under the meet of its grant's ceiling and the
+    /// host posture, so a pane's explicit deny is never weakened to a prompt
+    /// or a grant; there is no pane variant without its grant.
+    pub subscriber_authority: SubscriberAuthority,
     /// The subscriber's host-established context id, resolved the same way
     /// as `workspace_root_override` — the viewer side of `evaluate_reach`
     /// for every stream this subscription will ever match against. `None`
@@ -343,6 +383,47 @@ pub struct HostSubscribeRequest {
     pub reply: SyncSender<HostSubscribeReply>,
 }
 
+/// The resolved principal behind a subscribe request.
+#[derive(Clone, Debug)]
+pub enum SubscriberAuthority {
+    /// A pane incarnation, at the scope revision the request was admitted
+    /// under. The revision must still hold when consent is given and at
+    /// every delivery.
+    Pane(crate::host::plugin_timeline::AdmittedScope),
+    /// A plugin view instance: bounded by its capabilities, not a pane grant.
+    Plugin,
+    /// A team run principal whose token acts for no pane.
+    Run,
+    /// A caller the host identified as no pane of its own.
+    External,
+    /// A pane caller whose authority could not be established: refused.
+    Sealed,
+}
+
+impl SubscriberAuthority {
+    /// The pane grant's ceiling, or a refusal for a sealed or revoked one.
+    fn ceiling(&self) -> Result<Option<PermissionPosture>, String> {
+        match self {
+            Self::Pane(admitted) => admitted.current().and_then(|authority| {
+                authority
+                    .grant()
+                    .posture()
+                    .map(|p| p.cloned())
+                    .map_err(|sealed| sealed.to_string())
+            }),
+            Self::Plugin | Self::Run | Self::External => Ok(None),
+            Self::Sealed => Err(crate::broker::pane_authority::SealedAuthority.to_string()),
+        }
+    }
+
+    fn admitted(&self) -> Option<crate::host::plugin_timeline::AdmittedScope> {
+        match self {
+            Self::Pane(admitted) => Some(admitted.clone()),
+            Self::Plugin | Self::Run | Self::External | Self::Sealed => None,
+        }
+    }
+}
+
 /// A subscribe or publish request the broker answered with `Ask`: it needs an
 /// explicit user decision before the effect is applied. The UI thread parks one
 /// of these (holding the transport's live `reply` channel inside `action`) and
@@ -362,9 +443,13 @@ pub struct PendingEventConsent {
     pub broker_actor_id: String,
     /// App-id namespace the streams live under.
     pub plugin_id: String,
-    /// Stream names touched (empty = all of the plugin's declared streams). Drives
-    /// both the consent label and the `AllowAlways` grant targets.
+    /// Concrete stream names touched; an all-streams request was expanded to
+    /// its declared members at admission. Drives both the consent label and
+    /// the `AllowAlways` grant targets.
     pub event_names: Vec<String>,
+    /// The pane scope the request was admitted under: consent given after a
+    /// scope change cannot release the effect.
+    pub admitted: Option<crate::host::plugin_timeline::AdmittedScope>,
     /// The subscriber/publisher's host-established context id, resolved once
     /// at classify time and carried in the parked struct — never re-resolved
     /// when the user later answers the modal (command-handler data must be
@@ -408,12 +493,7 @@ impl PendingEventConsent {
 
     /// Human-readable target for the consent modal: `"<plugin> :: <events>"`.
     pub fn target_label(&self) -> String {
-        let streams = if self.event_names.is_empty() {
-            "* (all streams)".to_string()
-        } else {
-            self.event_names.join(", ")
-        };
-        format!("{} :: {streams}", self.plugin_id)
+        format!("{} :: {}", self.plugin_id, self.event_names.join(", "))
     }
 
     /// Verb for the consent modal copy: readers subscribe, publishers emit.
@@ -666,6 +746,31 @@ impl HostSubscriptionService {
             });
             return None;
         }
+        // "All streams" is the declared, reachable members now, each
+        // authorized as itself: a `plugin::*` grant cannot stand in for a
+        // member's decision, and a stream declared later needs its own
+        // admission (stint 1632).
+        let mut req = req;
+        if req.event_names.is_empty() {
+            req.event_names = self
+                .timeline
+                .lock()
+                .unwrap()
+                .declared_stream_names(subscriber_context_id, &req.publisher_plugin_id);
+            log::info!(
+                "event_subscriptions: all-streams request for '{}' expanded to {:?}",
+                req.publisher_plugin_id,
+                req.event_names
+            );
+        }
+        let ceiling = match req.subscriber_authority.ceiling() {
+            Ok(ceiling) => ceiling,
+            Err(message) => {
+                log::info!("event_subscriptions: refused {subscriber_id}: {message}");
+                let _ = req.reply.send(HostSubscribeReply::Err { message });
+                return None;
+            }
+        };
         let Some(subscriber) =
             Principal::from_actor(subscriber_type, &broker_actor_id, req.from_pane_id)
         else {
@@ -677,7 +782,7 @@ impl HostSubscriptionService {
             });
             return None;
         };
-        let posture = match (&self.posture, &req.posture_ceiling) {
+        let posture = match (&self.posture, &ceiling) {
             (Some(host), Some(pane)) => Some(host.clone().restricted_by(pane)),
             (host, None) => host.clone(),
             (None, Some(pane)) => Some(pane.clone()),
@@ -692,9 +797,15 @@ impl HostSubscriptionService {
             None,
             &req.event_names,
         );
+        // An empty expansion authorizes zero deliveries.
+        let decision = if req.event_names.is_empty() {
+            Decision::Allow
+        } else {
+            decision
+        };
         match decision {
             Decision::Allow => {
-                let subscription_id = record_subscription(
+                let subscription_id = record_admitted_subscription(
                     &self.timeline,
                     &req.publisher_plugin_id,
                     subscriber_type,
@@ -704,7 +815,7 @@ impl HostSubscriptionService {
                     req.payload_mode,
                     req.trigger_mode,
                     req.resource_id,
-                    GrantDuration::Session,
+                    req.subscriber_authority.admitted(),
                 );
                 if req
                     .reply
@@ -744,6 +855,7 @@ impl HostSubscriptionService {
                     broker_actor_id,
                     plugin_id: req.publisher_plugin_id,
                     event_names: req.event_names,
+                    admitted: req.subscriber_authority.admitted(),
                     subscriber_context_id,
                     workspace_root: req.workspace_root_override.clone().unwrap_or_default(),
                     action: ConsentAction::Subscribe {
@@ -780,10 +892,26 @@ impl HostSubscriptionService {
             broker_actor_id,
             plugin_id,
             event_names,
+            admitted,
             subscriber_context_id,
             workspace_root,
             action,
         } = consent;
+        // Consent applies to the scope the request was admitted under. A
+        // revoked pane or a moved scope releases nothing under it.
+        if let Some(stale) = admitted.as_ref().and_then(|a| a.current().err()) {
+            log::info!("event_subscriptions: consent for '{subscriber_id}' refused: {stale}");
+            let message = format!("consent no longer applies: {stale}");
+            match action {
+                ConsentAction::Subscribe { reply, .. } => {
+                    let _ = reply.send(HostSubscribeReply::Err { message });
+                }
+                ConsentAction::Publish { reply, .. } => {
+                    let _ = reply.send(HostPublishReply::Err { message });
+                }
+            }
+            return;
+        }
 
         if choice == ConsentChoice::AllowAlways {
             // Persist against the same operation-qualified targets the matching
@@ -838,7 +966,7 @@ impl HostSubscriptionService {
                     });
                     return;
                 }
-                let subscription_id = record_subscription(
+                let subscription_id = record_admitted_subscription(
                     &self.timeline,
                     &plugin_id,
                     subscriber_type,
@@ -848,7 +976,7 @@ impl HostSubscriptionService {
                     payload_mode,
                     trigger_mode,
                     resource_id,
-                    GrantDuration::Session,
+                    admitted,
                 );
                 if reply
                     .send(HostSubscribeReply::Ok {
@@ -1069,6 +1197,7 @@ impl HostSubscriptionService {
                     subscriber_id: actor_id,
                     plugin_id: req.plugin_id,
                     event_names,
+                    admitted: None,
                     subscriber_context_id: context_id,
                     workspace_root: req.workspace_root_override.clone().unwrap_or_default(),
                     action: ConsentAction::Publish {
@@ -1251,7 +1380,7 @@ mod tests {
             subscriber_type_override: Some(ActorType::Plugin),
             broker_actor_override: Some("notes-app".to_string()),
             workspace_root_override: Some(PathBuf::from("/workspace/notes")),
-            posture_ceiling: None,
+            subscriber_authority: SubscriberAuthority::External,
             context_id_override: Some(CTX),
             peer_ancestry: None,
             cancelled: None,
@@ -1295,7 +1424,7 @@ mod tests {
             subscriber_type_override: None,
             broker_actor_override: None,
             workspace_root_override: Some(PathBuf::from("/tmp/ws")),
-            posture_ceiling: None,
+            subscriber_authority: SubscriberAuthority::External,
             context_id_override: Some(CTX),
             peer_ancestry: None,
             cancelled: None,
@@ -1326,7 +1455,7 @@ mod tests {
             subscriber_type_override: None,
             broker_actor_override: Some(broker_actor.to_string()),
             workspace_root_override: Some(PathBuf::from("/tmp/ws")),
-            posture_ceiling: None,
+            subscriber_authority: SubscriberAuthority::External,
             context_id_override: Some(CTX),
             peer_ancestry: None,
             cancelled: None,

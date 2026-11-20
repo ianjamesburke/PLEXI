@@ -4695,6 +4695,7 @@ fn launch_plan_plugin_spawn_pane_reports_the_installed_terminal_or_its_failure()
         from_pane_id: None,
         request_id: Some(request_id.to_string()),
         target_context: None,
+        emitter: None,
     };
     let panes_before = h.app.windows[0].panes.len();
     {
@@ -5976,7 +5977,7 @@ fn first_boot_seam_seeds_base_root_pane() {
 
     let cwd = std::env::temp_dir();
     let context = h.app.pane_context_env_for_window(0);
-    let launch = h.app.host_terminal_launch(context, Some(cwd), None, false);
+    let launch = h.app.desktop_terminal_launch(context, Some(cwd), None);
     if h.app.seed_window_root_pane(0, launch).is_none() {
         // No PTY in this env — the installer degrades to the welcome screen,
         // matching first boot's documented fallback. Nothing more to assert.
@@ -6004,7 +6005,7 @@ fn first_boot_shape_matches_new_context() {
     let mut h = HostHarness::new();
     let cwd = std::env::temp_dir();
     let context = h.app.pane_context_env_for_window(0);
-    let launch = h.app.host_terminal_launch(context, Some(cwd), None, false);
+    let launch = h.app.desktop_terminal_launch(context, Some(cwd), None);
     if h.app.seed_window_root_pane(0, launch).is_none() {
         return; // no PTY in this env
     }
@@ -6012,7 +6013,7 @@ fn first_boot_shape_matches_new_context() {
     let boot_has_root = h.app.windows[0].tree.root.is_some();
     let boot_has_focus = h.app.windows[0].focused_pane.is_some();
 
-    h.app.new_context();
+    h.app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     if h.app.router.len() == 1 {
         return; // new_context degraded (no PTY) — nothing to compare
     }
@@ -6048,7 +6049,7 @@ fn new_context_fixture() -> (HostHarness, tempfile::TempDir, tempfile::TempDir) 
     let context0 = h.app.pane_context_env_for_window(0);
     let launch = h
         .app
-        .host_terminal_launch(context0, Some(root), None, false);
+        .desktop_terminal_launch(context0, Some(root), None);
     h.app
         .seed_window_root_pane(0, launch)
         .expect("PTY and shell must be available for the new-context root pane");
@@ -6101,15 +6102,15 @@ fn new_context_initialization_records_stage_timing() {
         active
     };
 
-    h.app.new_context_at_path(empty_dir.path().to_path_buf());
+    h.app.new_context_at_path(empty_dir.path().to_path_buf(), crate::broker::pane_authority::GrantSource::DesktopInput);
     check(&mut h, crate::pane_ops::NewContextKind::AtPath, 2);
 
-    h.app.new_context_at_path(project_dir.path().to_path_buf());
+    h.app.new_context_at_path(project_dir.path().to_path_buf(), crate::broker::pane_authority::GrantSource::DesktopInput);
     let project = check(&mut h, crate::pane_ops::NewContextKind::AtPath, 3);
     assert_eq!(project.name.displayed(), "anchor-project");
     assert_eq!(project.description.as_deref(), Some("test anchor project"));
 
-    h.app.new_context();
+    h.app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     check(&mut h, crate::pane_ops::NewContextKind::Empty, 4);
 }
 
@@ -6124,7 +6125,7 @@ fn perf_gate_new_context_latency() {
 
     for (label, dir) in [("Empty", &empty_dir), ("Project", &project_dir)] {
         let start = std::time::Instant::now();
-        h.app.new_context_at_path(dir.path().to_path_buf());
+        h.app.new_context_at_path(dir.path().to_path_buf(), crate::broker::pane_authority::GrantSource::DesktopInput);
         let host_elapsed = start.elapsed();
         let timing = h
             .app
@@ -6164,7 +6165,7 @@ fn perf_gate_new_context_latency() {
     for i in 0..5 {
         let warm_empty_sub = tempfile::tempdir().expect("create warm empty tempdir");
         h.app
-            .new_context_at_path(warm_empty_sub.path().to_path_buf());
+            .new_context_at_path(warm_empty_sub.path().to_path_buf(), crate::broker::pane_authority::GrantSource::DesktopInput);
         let t_empty = h
             .app
             .last_new_context_timing
@@ -6212,7 +6213,7 @@ fn perf_gate_new_context_latency() {
         )
         .expect("write sub workspace.toml");
         h.app
-            .new_context_at_path(warm_project_sub.path().to_path_buf());
+            .new_context_at_path(warm_project_sub.path().to_path_buf(), crate::broker::pane_authority::GrantSource::DesktopInput);
         let t_proj = h
             .app
             .last_new_context_timing
@@ -15194,6 +15195,7 @@ mod agent_state_restoration_tests {
             query: "pi-sess-900".into(),
             subcontext: None,
             response_file: reopen_reply.clone(),
+            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
 
@@ -16503,7 +16505,7 @@ fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_an
         Some(pane_id.to_string().as_str())
     );
     let posture = term
-        .permission_posture()
+        .permission_ceiling().ok().flatten()
         .expect("permission posture snapshotted from settings.toml");
     assert!(
         posture.allow.iter().any(|s| s == "pane.send"),
@@ -17753,7 +17755,7 @@ ask = ["pane.send"]
     let mut h = HostHarness::from_profile_dir(profile_dir.path());
     let restored_posture = h
         .app
-        .pane_permission_posture(10)
+        .pane_ceiling_or_none(10)
         .expect("restored agent pane must have permission posture");
     assert!(
         restored_posture.ask.iter().any(|rule| rule == "pane.send"),
@@ -21062,6 +21064,7 @@ fn researcher_history_record(
         harness: harness.into(),
         config_name: Some("researcher".into()),
         permission_posture: None,
+        authority: None,
         session_id: Some(session_id.into()),
         cwd: cwd.to_path_buf(),
         ephemeral: false,
@@ -22167,6 +22170,7 @@ fn assert_agent_mesh_ipc_gate_enabled(route: &str, enabled: bool) {
                 query: record.run_id,
                 subcontext: None,
                 response_file: response.clone(),
+                source: crate::protocol::SpawnSource::InProcess,
             }
         }
         _ => panic!("unknown route"),

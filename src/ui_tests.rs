@@ -6936,7 +6936,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         h.with_app_mut(|app| {
             app.sidebar_visible = true;
             let before = app.router.len();
-            app.new_context();
+            app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
             assert_eq!(app.router.len(), before + 1, "new context created");
             assert_eq!(app.context_rename, None, "rename overlay stays closed");
         });
@@ -7564,7 +7564,12 @@ open(out + ".done", "w").close()
             )
             .expect("start paste fixture");
             terminal.backend.enable_input_tap();
-            app.windows[app.active_window]
+            // The fixture replaces the pane the helper installed in that slot.
+            let win = app.active_window;
+            app.windows[win]
+                .take_pane(id)
+                .expect("the helper installed a pane");
+            app.windows[win]
                 .panes
                 .insert(id, Pane::Terminal(Box::new(terminal)))
                 .unwrap();
@@ -14261,6 +14266,7 @@ open(out + ".done", "w").close()
                     anchor_pane: Some(anchor),
                     panes: vec![None, None, None],
                     layout,
+                    source: crate::broker::pane_authority::GrantSource::DesktopInput,
                 })
                 .expect("create 3-pane squad");
             let child_idx = app.router.len() - 1;
@@ -16384,12 +16390,11 @@ open(out + ".done", "w").close()
         .unwrap();
         let (terminal, first_editor) = h.with_app_mut(|app| {
             let context = app.router.active().context_id;
-            let mut launch = app.test_terminal_launch(
+            let launch = app.test_terminal_launch(
                 context,
                 path.parent().map(|p| p.to_path_buf()),
                 Some("printf 'Second window ready\\n'"),
             );
-            launch.secrets.folder = false;
             app.create_page_at(1, 0, context, launch);
             let terminal = app.focused_pane_id().expect("new page terminal");
             let previous: std::collections::HashSet<_> = app.windows[app.active_window]

@@ -1403,14 +1403,19 @@ mod tests {
                 Err("stopped at backend entry".into())
             });
             let (tx, _rx) = std::sync::mpsc::channel();
-            let launch = crate::pane_ops::construct::TerminalLaunch {
+            let mut grant = crate::broker::pane_authority::PaneAuthority::for_test(
                 pane_id,
-                posture: None,
-                spawned_by: None,
+                crate::broker::pane_authority::Ceiling::Baseline,
+                context.context_id,
+                cwd.clone(),
+            );
+            if !agent_pane {
+                grant.ownership = crate::broker::pane_authority::Ownership::Desktop;
+            }
+            let launch = crate::pane_ops::construct::TerminalLaunch {
+                authority: crate::broker::pane_authority::LivePaneAuthority::admitted(grant),
                 context: context.clone(),
                 cwd: Some(cwd.clone()),
-                secrets: SecretPolicy::NONE,
-                agent_pane,
                 command: None,
                 ephemeral: false,
                 env: Vec::new(),

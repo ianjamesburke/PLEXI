@@ -43,7 +43,7 @@ fn several_contexts_flush_identical_bytes_twice() {
     let context = h.app.router.active().context_id;
     h.app.set_context_columns(context, vec![vec![pane]]);
     for _ in 0..4 {
-        h.app.new_context();
+        h.app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     }
     h.run_frames(2);
     assert!(
@@ -1357,7 +1357,7 @@ fn new_context_creates_top_level_empty_context() {
         "setup: 1 pane before new_context"
     );
 
-    app.new_context();
+    app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
 
     // PTY may be unavailable in test env -- new_context_empty returns early.
     if app.router.len() == 1 {
@@ -1475,11 +1475,11 @@ fn contexts_with_matching_auto_names_are_disambiguated() {
     std::fs::create_dir(&second).expect("second project");
 
     let before = h.app.router.len();
-    h.app.new_context_at_path(first);
+    h.app.new_context_at_path(first, crate::broker::pane_authority::GrantSource::DesktopInput);
     if h.app.router.len() == before {
         return; // PTY unavailable in this test environment.
     }
-    h.app.new_context_at_path(second);
+    h.app.new_context_at_path(second, crate::broker::pane_authority::GrantSource::DesktopInput);
     if h.app.router.len() == before + 1 {
         return; // PTY became unavailable between the two requests.
     }
@@ -1496,7 +1496,7 @@ fn new_context_root_pty_env_uses_its_own_context_identity() {
     let mut h = crate::testing::HostHarness::new();
     let previous_context_id = h.app.router.active().context_id;
 
-    h.app.new_context();
+    h.app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     h.app.resolve_auto_context_names();
 
     let new_context = h.app.router.active().clone();
@@ -1776,9 +1776,14 @@ fn credentialed_terminal(
     crate::app::host_mcp::ensure_test_discovery();
     let terminal = app
         .construct_terminal(crate::pane_ops::construct::TerminalLaunch {
-            pane_id,
-            posture: None,
-            spawned_by: None,
+            authority: crate::broker::pane_authority::LivePaneAuthority::admitted(
+                crate::broker::pane_authority::PaneAuthority::for_test(
+                    pane_id,
+                    crate::broker::pane_authority::Ceiling::Baseline,
+                    context_id,
+                    std::path::PathBuf::from(root),
+                ),
+            ),
             context: crate::pane_ops::create::PaneContextEnv {
                 context_id,
                 name: "test".to_string(),
@@ -1787,8 +1792,6 @@ fn credentialed_terminal(
                 depth: 0,
             },
             cwd: None,
-            secrets: crate::host::shell::SecretPolicy::NONE,
-            agent_pane: false,
             command: None,
             ephemeral: false,
             env: Vec::new(),
@@ -2281,7 +2284,7 @@ fn create_context_with_windows_adds_extra_pages() {
 
     // Create a new context (simulates the no-parent branch of CreateContext).
     let ctx_count_before = app.router.len();
-    app.new_context();
+    app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     // PTY may be unavailable in CI — new_context returns early without creating a context.
     if app.router.len() == ctx_count_before {
         return;
@@ -3204,13 +3207,12 @@ fn make_backend_settings_stamps_the_context_it_is_given() {
         root: Some(std::path::PathBuf::from("/tmp/squad")),
         depth: 3,
     };
-    let launch = app.host_terminal_launch(
+    let launch = app.desktop_terminal_launch(
         context_env,
         Some(std::path::PathBuf::from("/tmp")),
         None,
-        false,
     );
-    let pane_id = launch.pane_id;
+    let pane_id = launch.pane_id();
     struct Settings {
         env: std::collections::HashMap<String, String>,
     }
@@ -3301,6 +3303,7 @@ fn child_context_takes_its_name_from_the_spec_not_the_path() {
             anchor_pane: None,
             panes: vec![None, None],
             layout: crate::protocol::SubContextLayout::Tiled,
+            source: crate::broker::pane_authority::GrantSource::DesktopInput,
         })
         .expect("child create should succeed");
 

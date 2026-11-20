@@ -83,25 +83,22 @@ impl PlexiApp {
             .find(|c| c.context_id == origin_context_id)
             .map(|c| c.root.clone())
             .ok_or_else(|| format!("origin context {origin_context_id} no longer exists"))?;
-        let caller_role = caller
-            .and_then(|id| self.terminal_incarnation(id))
-            .and_then(|t| t.agent_role.as_deref());
-        if let Some(caller_role) = caller_role {
-            let workspace = crate::app::registry::resolve_agent_lookup_workspace_root(&root);
-            let (def, _) = crate::cli::agent::resolve_agent_definition_in(
-                caller_role,
-                &crate::config::config_dir(),
-                workspace.as_deref(),
-            )?;
-            let allowed = if handoff {
-                &def.can_handoff
-            } else {
-                &def.can_call
-            };
-            if !allowed.iter().any(|r| r == role) {
+        // The caller's delegation limit is fixed in its grant (stint 1632):
+        // a plain shell carries the limits it inherited with no role of its
+        // own, and a role file edited later cannot widen a running pane.
+        if let Some(id) = caller {
+            let authority = self
+                .pane_authority(id)
+                .ok_or_else(|| format!("permission_denied: caller pane {id} has no grant"))?;
+            let grant = authority.grant();
+            if !grant.delegation(handoff).allows(role) {
                 let field = if handoff { "can_handoff" } else { "can_call" };
+                log::info!(
+                    "agent_call: pane {id} (role {:?}) may not delegate '{role}' ({field})",
+                    grant.role
+                );
                 return Err(format!(
-                    "permission_denied: agent '{caller_role}' does not list '{role}' in {field}"
+                    "permission_denied: pane {id} may not delegate to '{role}': not in its {field} grant"
                 ));
             }
         }

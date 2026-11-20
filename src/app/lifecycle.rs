@@ -144,6 +144,15 @@ impl PlexiApp {
                 req.from_pane_id = verified_pane_id;
                 req.context_id_override = context_id;
                 req.workspace_root_override = workspace_root;
+                // A verified pane subscribes under its own grant, at one
+                // scope snapshot, exactly as its MCP bearer would (stint 1632).
+                req.subscriber_authority = self.subscriber_authority(verified_pane_id);
+                if let crate::host::event_subscriptions::SubscriberAuthority::Pane(admitted) =
+                    &req.subscriber_authority
+                {
+                    req.workspace_root_override =
+                        Some(admitted.authority.scope().workspace_root);
+                }
             }
             if req.cancelled.is_some() {
                 req.broker_actor_override = Some(
@@ -339,7 +348,7 @@ impl PlexiApp {
         else {
             return serde_json::json!({ "ok": false, "error": "agent_spawn_reply: not an agent_spawn request" });
         };
-        let super::launch_plan::ResolvedSource {
+        let super::launch_plan::LaunchCaller {
             caller_pane: effective_parent,
             spawned_by,
             ..
@@ -420,11 +429,17 @@ impl PlexiApp {
     /// Resume one closed agent run from its history record in a new pane, with
     /// the harness resume command, and return the JSON reply. Shared by
     /// `plexi agent reopen` and `agent open` (stint 1396).
+    /// A reopen is a new admission under the authenticated `caller` and its
+    /// `source`, narrowed by the restrictions the record kept (stint 1632).
+    /// The record's own parent is history, never authority: with no
+    /// authenticated caller the run opens beside the focused pane with no
+    /// parent.
     pub(crate) fn reopen_agent_record(
         &mut self,
         record: &crate::workspace::AgentHistoryRecord,
         subcontext: Option<&str>,
-        parent_pane_id: Option<u64>,
+        caller: Option<u64>,
+        source: crate::broker::pane_authority::GrantSource,
     ) -> serde_json::Value {
         let resume_cmd = match record.session_id.as_deref() {
             Some(sid) if !sid.trim().is_empty() => {
@@ -447,28 +462,34 @@ impl PlexiApp {
             .clone()
             .or_else(|| record.pane_name.clone())
             .unwrap_or_else(|| record.harness.clone());
-        // The reopened run's ceiling is today's role and parent narrowed by
-        // the one the record saved: a reopen never runs wider than the run
-        // it resumes (stint 1632).
+        // The reopened run's grant is today's role under the authenticated
+        // caller, narrowed by the one the record kept: a reopen never runs
+        // wider than the run it resumes (stint 1632).
+        let recorded = crate::broker::pane_authority::PaneAuthority::recorded(
+            record.authority.as_ref(),
+            record.permission_posture.as_ref(),
+            record.pane_id,
+        );
         let result = self
             .resolve_agent_spawn_location(
                 subcontext.map(crate::pane_ops::create::SubcontextTarget::Named),
-                parent_pane_id,
+                caller,
                 Some(record.cwd.clone()),
                 false,
                 crate::pane_ops::create::AgentOrigin::Active,
             )
             .and_then(|placement| {
-                let authority = self
-                    .agent_worker_authority(
-                        &role,
-                        &placement.effective_cwd,
-                        placement.parent_pane_id,
-                    )
-                    .narrowed_by(record.permission_posture.as_ref());
+                let role_grant = match record.config_name.as_deref() {
+                    Some(name) => Some(self.admit_worker_role(name, &placement.effective_cwd)?),
+                    None => None,
+                };
                 self.launch_agent_worker(
                     crate::pane_ops::create::AgentWorkerLaunch {
-                        authority,
+                        grant: crate::pane_ops::create::AgentWorkerGrant {
+                            source,
+                            role: role_grant,
+                            recorded,
+                        },
                         pane_id: None,
                         spawned_by: None,
                         role: &role,
@@ -2716,10 +2737,24 @@ impl PlexiApp {
                         self.resolve_socket_peer_pane(ancestry)
                             .map(|(caller, _, _)| caller)
                     })
-                    .and_then(|caller| match self.pane_permission_posture(caller) {
-                        Some(posture) => Some((caller, Some(posture))),
-                        None if self.is_human_owned_pane(caller) => None,
-                        None => {
+                    .and_then(|caller| match self.pane_ceiling(caller) {
+                        Ok(Some(posture)) => Some((caller, Some(posture))),
+                        // A pane whose authority was never established sends
+                        // nothing under it: an explicit deny no grant beats.
+                        Err(error) => {
+                            log::info!("pane_ipc: send_to_pane: caller pane_id={caller}: {error}");
+                            Some((
+                                caller,
+                                Some(crate::broker::PermissionPosture {
+                                    default_posture: crate::broker::Decision::Deny,
+                                    allow: Vec::new(),
+                                    ask: Vec::new(),
+                                    deny: vec!["pane.send".to_string()],
+                                }),
+                            ))
+                        }
+                        Ok(None) if self.is_human_owned_pane(caller) => None,
+                        Ok(None) => {
                             log::info!(
                                 "pane_ipc: send_to_pane: caller pane_id={caller} has no posture snapshot — pane.send defaults to broker Ask (target pane_id={pane_id})"
                             );
@@ -4794,7 +4829,20 @@ impl PlexiApp {
                 portal_direction,
                 anchor_pane,
                 response_file,
+                source,
             } => {
+                // The panes this request creates are admitted from its
+                // verified source; an uncaptured peer creates nothing.
+                let caller = match self.resolve_launch_source(source, None) {
+                    Ok(caller) => caller,
+                    Err(error) => {
+                        log::warn!("pane_ipc: create_context refused: {error}");
+                        if let Some(rf) = response_file {
+                            write_json_response(rf, serde_json::json!({ "error": error }));
+                        }
+                        return;
+                    }
+                };
                 // Map direction string to insert_split_tile params.
                 // vertical=true  → side-by-side (left/right)
                 // vertical=false → stacked (up/down)
@@ -4843,16 +4891,16 @@ impl PlexiApp {
                     let current_ctx_id = self.router.active().context_id;
                     let current_win_id = self.windows[self.active_window].window_id;
                     let current_focused = self.windows[self.active_window].focused_pane;
-                    if let Err(e) =
-                        self.new_child_context(crate::pane_ops::ChildContextSpec::single_terminal(
-                            *parent_context_id,
-                            pname.clone(),
-                            path,
-                            portal_vertical,
-                            portal_first,
-                            *anchor_pane,
-                        ))
-                    {
+                    let mut spec = crate::pane_ops::ChildContextSpec::single_terminal(
+                        *parent_context_id,
+                        pname.clone(),
+                        path,
+                        portal_vertical,
+                        portal_first,
+                        *anchor_pane,
+                    );
+                    spec.source = caller.source.clone();
+                    if let Err(e) = self.new_child_context(spec) {
                         log::warn!("pane_ipc: create_context with parent failed: {e}");
                         ctx_ok = false;
                     } else {
@@ -4883,9 +4931,9 @@ impl PlexiApp {
                     }
                 } else {
                     if let Some(r) = root {
-                        self.new_context_at_path(r.clone());
+                        self.new_context_at_path(r.clone(), caller.source.clone());
                     } else {
-                        self.new_context();
+                        self.new_context(caller.source.clone());
                     }
                     if let Some(n) = name {
                         let idx = self.router.len() - 1;
@@ -4915,14 +4963,14 @@ impl PlexiApp {
                         );
                         let context = self.pane_context_env_for_context(new_ctx_id);
                         let cwd = self.default_page_cwd();
-                        let launch = self.host_terminal_launch(
+                        let launch = self.terminal_launch(
+                            caller.source.clone(),
                             context,
                             Some(cwd),
                             Some(crate::pane_ops::construct::LaunchCommand {
                                 command: cmd.clone(),
                                 close_on_exit: false,
                             }),
-                            false,
                         );
                         self.create_page_at(new_x, active_y, new_ctx_id, launch);
                     }
@@ -4976,7 +5024,18 @@ impl PlexiApp {
                 focus,
                 anchor_pane,
                 response_file,
+                source,
             } => {
+                let caller = match self.resolve_launch_source(source, None) {
+                    Ok(caller) => caller,
+                    Err(error) => {
+                        log::warn!("pane_ipc: create_sub_context refused: {error}");
+                        if let Some(rf) = response_file {
+                            write_json_response(rf, serde_json::json!({ "error": error }));
+                        }
+                        return;
+                    }
+                };
                 // Resolve the parent up front: everything below (depth push,
                 // window bookkeeping) is relative to it, and a bad parent must
                 // fail before any pane is spawned.
@@ -5024,6 +5083,7 @@ impl PlexiApp {
                     anchor_pane: *anchor_pane,
                     panes: panes.clone(),
                     layout: resolved_layout,
+                    source: caller.source,
                 };
                 let child = match self.new_child_context(spec) {
                     Ok(child) => child,
@@ -5099,8 +5159,12 @@ impl PlexiApp {
             crate::protocol::HostRequest::FocusContext {
                 root,
                 response_file,
+                source,
             } => {
-                let reply = match self.open_context_root(root) {
+                let reply = match self
+                    .resolve_launch_source(source, None)
+                    .and_then(|caller| self.open_context_root(root, caller.source))
+                {
                     Ok(context_id) => {
                         serde_json::json!({"context_id":context_id, "root":self.router.active().root})
                     }
@@ -5484,6 +5548,7 @@ impl PlexiApp {
                 query,
                 subcontext,
                 response_file,
+                source,
             } => {
                 if let Err(error) = super::agent_open::admit_agent_mesh_route("AgentReopen") {
                     write_json_response(
@@ -5508,8 +5573,15 @@ impl PlexiApp {
                     );
                     return;
                 };
-                let payload =
-                    self.reopen_agent_record(&record, subcontext.as_deref(), record.parent_pane_id);
+                let payload = match self.resolve_launch_source(source, None) {
+                    Ok(caller) => self.reopen_agent_record(
+                        &record,
+                        subcontext.as_deref(),
+                        caller.caller_pane,
+                        caller.source,
+                    ),
+                    Err(error) => serde_json::json!({ "ok": false, "error": error }),
+                };
                 write_json_response(response_file, payload);
             }
             crate::protocol::HostRequest::Wake => {
@@ -5912,7 +5984,7 @@ impl PlexiApp {
                 {
                     let departed = t.last_observed_agent.take();
                     let hand_launched = t.parent_pane_id.is_none()
-                        && !t.agent_spawned
+                        && t.is_desktop_granted()
                         && !t
                             .spawned_by
                             .as_deref()
@@ -6270,17 +6342,16 @@ impl PlexiApp {
             .context_spawn_target(target_ctx_id)
             .and_then(|(win, tile)| {
                 let context = self.pane_context_env_for_window(win);
-                let mut launch = self.host_terminal_launch(
+                // The scheduler is the spawner: system provenance from the start.
+                let launch = self.terminal_launch(
+                    crate::broker::pane_authority::GrantSource::HostSystem,
                     context,
                     cwd,
                     Some(crate::pane_ops::construct::LaunchCommand {
                         command: command.to_string(),
                         close_on_exit: ephemeral,
                     }),
-                    false,
                 );
-                // The scheduler is the spawner: system provenance from the start.
-                launch.spawned_by = Some("system".to_string());
                 // vertical=true → side-by-side, matching the previous
                 // split_focused(false, ..) behavior (its LinearDir is inverted).
                 self.spawn_terminal_pane_at(

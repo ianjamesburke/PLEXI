@@ -555,6 +555,8 @@ pub(crate) fn forward_host_launch(
         Some(root) => crate::protocol::HostRequest::FocusContext {
             root: root.to_path_buf(),
             response_file: Some(response_file.clone()),
+            // Stamped by the host from the socket peer, never sent.
+            source: Default::default(),
         },
         None => crate::protocol::HostRequest::ShowHost {
             response_file: response_file.clone(),

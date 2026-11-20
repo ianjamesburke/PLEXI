@@ -25,9 +25,8 @@ use serde_json::{json, Value};
 use super::agent_tools::{AgentCallRequest, AgentCaller};
 use super::launch_spec::PaneLaunchSpec;
 use super::PlexiApp;
-use crate::broker::PermissionPosture;
 use crate::host::worktree::ManagedWorktree;
-use crate::pane_ops::create::{AgentOrigin, AgentWorkerAuthority, SubcontextTarget};
+use crate::pane_ops::create::{AgentOrigin, SubcontextTarget};
 use crate::protocol::SpawnSource;
 use crate::spatial::tiling::PaneId;
 
@@ -83,40 +82,47 @@ pub(crate) enum TerminalDestination {
     },
 }
 
+impl TerminalDestination {
+    /// The context the destination is in.
+    pub(crate) fn context_id(&self) -> u64 {
+        match self {
+            Self::Split { at, .. } | Self::Tab { at, .. } | Self::SeedEmptyRoot { at } => {
+                at.context_id
+            }
+            Self::NewWindow { context_id, .. } => *context_id,
+        }
+    }
+}
+
 /// A launch's submitter as the host established it: the one answer every
-/// launch route (`spawn_pane` of any target, `agent spawn`, `agent open`)
-/// gets from [`PlexiApp::resolve_launch_source`] (stint 1632).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ResolvedSource {
-    /// The verified pane that asked. Only it supplies parent authority and
-    /// provenance; a claimed pane id from the wire never does.
+/// launch route (`spawn_pane` of any target, `agent spawn`, `agent open`,
+/// `context new`) gets from [`PlexiApp::resolve_launch_source`] (stint 1632).
+#[derive(Clone, Debug)]
+pub(crate) struct LaunchCaller {
+    /// The verified pane that asked (or the pane in-process host code
+    /// names). Only a verified pane supplies parent authority; a claimed
+    /// pane id from the wire never does.
     pub(crate) caller_pane: Option<PaneId>,
-    /// The caller is a pane process (resolved through any overlay).
-    pub(crate) requester_is_pane: bool,
-    /// The directory-derived secret classes the launch is eligible for.
-    pub(crate) secrets: crate::host::shell::SecretPolicy,
+    /// The source the new pane's grant is admitted from.
+    pub(crate) source: crate::broker::pane_authority::GrantSource,
     pub(crate) spawned_by: String,
 }
 
-/// What a terminal launch may have, decided at admission.
+/// The caller incarnation a plan was admitted for. Commit refuses unless
+/// the same incarnation still holds the same grant.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TerminalAuthority {
-    pub(crate) agent_pane: bool,
-    /// The workspace's terminal secrets; withheld from a source with no
-    /// verifiable identity (the spawn queue).
-    pub(crate) inject_terminal_secrets: bool,
-    /// Folder secrets for exactly the plan's `cwd` (or its prepared checkout);
-    /// never set without a directory bound at admission.
-    pub(crate) inject_folder_secrets: bool,
-    /// The verified caller pane the posture ceiling came from.
-    pub(crate) caller_pane: Option<PaneId>,
-    pub(crate) spawned_by: String,
-    pub(crate) inherited_posture: Option<PermissionPosture>,
+pub(crate) struct AdmittedIncarnation {
+    pub(crate) pane_id: PaneId,
+    pub(crate) incarnation: u64,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct TerminalLaunchPlan {
-    pub(crate) authority: TerminalAuthority,
+    /// The new pane's grant, admitted for its reserved id. It fixes the
+    /// pane's credential scope; commit refuses if the destination's scope no
+    /// longer matches it.
+    pub(crate) grant: crate::broker::pane_authority::PaneAuthority,
+    pub(crate) caller: Option<AdmittedIncarnation>,
     pub(crate) destination: TerminalDestination,
     /// The working directory, resolved once at admission from the explicit
     /// cwd or the destination's default. A prepared checkout replaces it.
@@ -152,7 +158,10 @@ pub(crate) struct AgentCallAuthority {
     pub(crate) command: String,
     pub(crate) ephemeral: bool,
     pub(crate) result_schema: Option<Value>,
-    pub(crate) worker: AgentWorkerAuthority,
+    /// The role as admitted for the worker's grant.
+    pub(crate) worker_role: crate::broker::pane_authority::AdmittedRole,
+    /// The caller's grant, which bounds the worker's.
+    pub(crate) caller_grant: Option<crate::broker::pane_authority::PaneAuthority>,
 }
 
 /// The existing window an agent worker lands in, and the node it splits
@@ -444,79 +453,76 @@ impl PlexiApp {
     }
 
     /// Resolve who submitted a launch from its host-stamped source. A
-    /// request whose socket peer was not captured is refused; a claimed pane
-    /// names the caller only for an in-process request; a captured peer is
-    /// the terminal process it resolves to, covered by an overlay or not.
+    /// request whose socket peer was not captured is refused. A captured peer
+    /// is the terminal process it resolves to, covered by an overlay or not,
+    /// and the new pane is bounded by that pane's grant; a captured peer that
+    /// is no pane is an outside process. In-process host code acts on the
+    /// person's own input: the pane it names is placement and tree parent,
+    /// never a grant to inherit.
     pub(crate) fn resolve_launch_source(
         &self,
         source: &SpawnSource,
         claimed: Option<PaneId>,
-    ) -> Result<ResolvedSource, String> {
-        use crate::host::shell::SecretPolicy;
-        let (caller_pane, requester_is_pane, secrets) = match source {
+    ) -> Result<LaunchCaller, String> {
+        use crate::broker::pane_authority::GrantSource;
+        let (caller_pane, grant_source) = match source {
             SpawnSource::Unverified => {
                 return Err(refused(
                     "the launch arrived without a verified socket peer identity".into(),
                 ))
             }
-            SpawnSource::InProcess => (claimed, false, SecretPolicy::ALL),
+            SpawnSource::InProcess => (claimed, GrantSource::DesktopInput),
             SpawnSource::SocketPeer(pids) => match self.resolve_socket_peer_pane(pids) {
-                // A pane process gets its workspace's terminal secrets, never
-                // folder secrets.
-                Some((pane, _, _)) => (
-                    Some(pane),
-                    true,
-                    SecretPolicy {
-                        terminal: true,
-                        folder: false,
-                    },
-                ),
-                None => (None, false, SecretPolicy::ALL),
+                Some((pane, _, _)) => (Some(pane), self.caller_grant_source(pane)),
+                None => (None, GrantSource::OutsideProcess),
             },
-            // Anyone who can write the profile's queue directory: no
-            // identity, so no caller pane and no secrets of either class.
-            SpawnSource::SpawnQueue => (None, false, SecretPolicy::NONE),
+            SpawnSource::SpawnQueue => (None, GrantSource::SpawnQueue),
+            SpawnSource::PluginInstance(pane_id) => {
+                (None, GrantSource::PluginInstance { pane_id: *pane_id })
+            }
         };
-        let resolved = ResolvedSource {
+        let spawned_by = self.spawned_by_for(&grant_source);
+        log::info!(
+            "launch_plan: resolved source {source:?} claimed={claimed:?} -> caller={caller_pane:?} spawned_by={spawned_by}"
+        );
+        Ok(LaunchCaller {
             caller_pane,
-            requester_is_pane,
-            secrets,
-            spawned_by: self.derive_spawned_by_for_parent(caller_pane),
-        };
-        log::info!("launch_plan: resolved source {source:?} claimed={claimed:?} -> {resolved:?}");
-        Ok(resolved)
+            source: grant_source,
+            spawned_by,
+        })
     }
 
-    /// Admit a terminal `spawn_pane`: what the new pane may have, where it
-    /// goes and its directory. Names, focus and defaults are resolved here,
-    /// once.
-    pub(crate) fn admit_terminal_launch(
+    /// The caller incarnation a plan binds: a verified pane caller only.
+    pub(crate) fn admitted_incarnation(
         &self,
+        source: &crate::broker::pane_authority::GrantSource,
+    ) -> Option<AdmittedIncarnation> {
+        match source {
+            crate::broker::pane_authority::GrantSource::VerifiedPane(caller) => self
+                .pane_authority(caller.pane_id)
+                .map(|live| AdmittedIncarnation {
+                    pane_id: caller.pane_id,
+                    incarnation: live.incarnation(),
+                }),
+            _ => None,
+        }
+    }
+
+    /// Admit a terminal `spawn_pane`: the new pane's grant for a reserved
+    /// id, where it goes and its directory. Names, focus and defaults are
+    /// resolved here, once.
+    pub(crate) fn admit_terminal_launch(
+        &mut self,
         spec: &PaneLaunchSpec,
     ) -> Result<TerminalLaunchPlan, String> {
         let layout = spec.layout.as_deref().unwrap_or("split_h");
         let active = self.active_window;
-        // Provenance, the posture ceiling and secret eligibility come from the
-        // host-stamped source. A wire `from_pane_id` is a placement origin; it
-        // names the caller only for an in-process request (stint 1632).
-        let ResolvedSource {
-            caller_pane,
-            requester_is_pane,
-            secrets: eligible,
-            spawned_by,
+        // The grant comes from the host-stamped source. A wire
+        // `from_pane_id` is a placement origin only (stint 1632).
+        let LaunchCaller {
+            source, spawned_by, ..
         } = self.resolve_launch_source(&spec.source, spec.from_pane_id)?;
-        let requester_is_agent = caller_pane.is_some_and(|pid| !self.is_human_owned_pane(pid))
-            || spec
-                .from_pane_id
-                .is_some_and(|pid| !self.is_human_owned_pane(pid));
-        let agent_pane = spec.agent.is_some() || requester_is_agent;
-        if requester_is_pane {
-            log::info!(
-                "pane_ipc: spawn_pane requester is a pane (peer_pane={caller_pane:?}, is_agent_pane={agent_pane}); withholding folder secrets"
-            );
-        }
-        let inherited_posture = caller_pane.and_then(|id| self.pane_permission_posture(id));
-
+        let caller = self.admitted_incarnation(&source);
         let vertical = matches!(layout, "split_h" | "split_right" | "split_left");
         let new_pane_first = matches!(layout, "split_above" | "split_left");
         let origin = self.explicit_origin(spec.from_pane_id)?;
@@ -622,25 +628,45 @@ impl PlexiApp {
             .worktree
             .as_ref()
             .map(|branch| (branch.clone(), self.resolve_worktree_anchor(spec)));
-        // Folder secrets belong to one directory decided now: the bound cwd or
-        // the checkout prepared for this plan. No directory, no secrets.
-        let inject_folder_secrets = eligible.folder
-            && (cwd.is_some() || worktree.is_some())
-            && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets);
+        // The credential scope is the destination context's, bound now.
+        let context = self.pane_context_env_for_context(destination.context_id());
+        let scope = crate::pane_ops::grant::credential_scope(&context, cwd.as_deref());
+        // Secrets belong to one directory decided now. A checkout's
+        // directory does not exist yet, so a checkout launch gets none.
+        let secret_directory = if worktree.is_some() {
+            None
+        } else {
+            cwd.clone()
+        };
+        let pane_id = self.host.alloc_pane_id();
+        let parent = match &source {
+            crate::broker::pane_authority::GrantSource::VerifiedPane(caller) => {
+                Some(caller.pane_id)
+            }
+            _ => None,
+        };
+        let grant = crate::broker::pane_authority::PaneAuthority::admit(
+            &crate::config::config_dir(),
+            crate::broker::pane_authority::GrantRequest {
+                pane_id,
+                source,
+                parent,
+                role: None,
+                scope,
+                secret_directory,
+                folder_secrets: true,
+                agent_command: spec.agent.is_some(),
+                spawned_by,
+            },
+        );
         log::info!(
-            "launch_plan: admitted terminal destination={destination:?} cwd={cwd:?} agent_pane={agent_pane} inject_folder_secrets={inject_folder_secrets} caller_pane={caller_pane:?} inherits_posture={} worktree={:?}",
-            inherited_posture.is_some(),
+            "launch_plan: admitted terminal pane_id={pane_id} destination={destination:?} cwd={cwd:?} caller={caller:?} scope={:?} worktree={:?}",
+            grant.scope,
             worktree.as_ref().map(|(branch, _)| branch)
         );
         Ok(TerminalLaunchPlan {
-            authority: TerminalAuthority {
-                agent_pane,
-                inject_terminal_secrets: eligible.terminal,
-                inject_folder_secrets,
-                caller_pane,
-                spawned_by,
-                inherited_posture,
-            },
+            grant,
+            caller,
             destination,
             cwd,
             worktree,
@@ -677,19 +703,44 @@ impl PlexiApp {
         }
     }
 
-    /// The posture ceiling a live caller grants now. A caller that closed
-    /// keeps the admitted ceiling: it is not required, and the plan never
-    /// widens beyond what it recorded.
-    fn verify_terminal_authority(&self, authority: &TerminalAuthority) -> Result<(), String> {
-        let Some(caller) = authority.caller_pane else {
+    /// The admitted caller incarnation is still live and holds the grant the
+    /// plan was admitted from. A caller that closed or was replaced refuses.
+    pub(crate) fn verify_caller_incarnation(
+        &self,
+        caller: Option<&AdmittedIncarnation>,
+    ) -> Result<(), String> {
+        let Some(caller) = caller else {
             return Ok(());
         };
-        if self.find_pane_in_any_window(caller).is_none() {
-            return Ok(());
-        }
-        if self.pane_permission_posture(caller) != authority.inherited_posture {
+        let live = self
+            .pane_authority(caller.pane_id)
+            .filter(|live| live.incarnation() == caller.incarnation && !live.is_revoked());
+        if live.is_none() {
             return Err(refused(format!(
-                "caller pane {caller}'s permission posture changed after admission"
+                "caller pane {} closed or was replaced after admission",
+                caller.pane_id
+            )));
+        }
+        Ok(())
+    }
+
+    /// The destination still has the credential scope the grant was
+    /// admitted with. Checked before any secret is read, credential issued
+    /// or backend started.
+    fn verify_admitted_scope(
+        &self,
+        grant: &crate::broker::pane_authority::PaneAuthority,
+        context: &crate::pane_ops::create::PaneContextEnv,
+        cwd: Option<&std::path::Path>,
+    ) -> Result<(), String> {
+        let now = crate::pane_ops::grant::credential_scope(context, cwd);
+        if now != grant.scope {
+            return Err(refused(format!(
+                "the destination's scope changed after admission: context {} root {} -> context {} root {}",
+                grant.scope.context_id,
+                grant.scope.workspace_root.display(),
+                now.context_id,
+                now.workspace_root.display()
             )));
         }
         Ok(())
@@ -778,9 +829,8 @@ impl PlexiApp {
         plan: &TerminalLaunchPlan,
         prepared: Option<&ManagedWorktree>,
     ) -> Result<PaneId, String> {
-        self.verify_terminal_authority(&plan.authority)?;
+        self.verify_caller_incarnation(plan.caller.as_ref())?;
         let placement = self.resolve_terminal_placement(&plan.destination)?;
-        let authority = &plan.authority;
         let context = match &placement {
             TerminalPlacement::Split(at) => self.pane_context_env_for_window(at.win_idx),
             TerminalPlacement::Tab { win_idx, .. } | TerminalPlacement::Root { win_idx } => {
@@ -790,19 +840,15 @@ impl PlexiApp {
                 self.pane_context_env_for_context(*context_id)
             }
         };
+        self.verify_admitted_scope(&plan.grant, &context, plan.cwd.as_deref())?;
         // The directory is the admitted one, or the checkout prepared for
-        // this plan; the secret classes are the admitted ones for it.
+        // this plan; everything else about the pane is its admitted grant.
         let launch = crate::pane_ops::construct::TerminalLaunch {
-            pane_id: self.host.alloc_pane_id(),
-            posture: authority.inherited_posture.clone(),
-            spawned_by: Some(authority.spawned_by.clone()),
+            authority: crate::broker::pane_authority::LivePaneAuthority::admitted(
+                plan.grant.clone(),
+            ),
             context,
             cwd: prepared.map(|wt| wt.path.clone()).or(plan.cwd.clone()),
-            secrets: crate::host::shell::SecretPolicy {
-                terminal: !authority.agent_pane && authority.inject_terminal_secrets,
-                folder: !authority.agent_pane && authority.inject_folder_secrets,
-            },
-            agent_pane: authority.agent_pane,
             command: plan.initial_cmd.clone().map(|command| {
                 crate::pane_ops::construct::LaunchCommand {
                     command,
@@ -894,7 +940,15 @@ impl PlexiApp {
             adapter,
             crate::cli::agent::build_agent_spawn_command(&def, adapter, task_text)?,
         );
-        let parent_posture = parent.and_then(|id| self.pane_permission_posture(id));
+        let caller_grant = match parent {
+            Some(id) => Some(
+                self.pane_authority(id)
+                    .ok_or_else(|| format!("permission_denied: caller pane {id} has no grant"))?
+                    .grant()
+                    .clone(),
+            ),
+            None => None,
+        };
         Ok(AgentCallAuthority {
             parent,
             grant_root,
@@ -903,7 +957,13 @@ impl PlexiApp {
             command,
             ephemeral: harness.ephemeral,
             result_schema: harness.result_schema.clone(),
-            worker: AgentWorkerAuthority::ceiling(def.posture.clone(), parent_posture.as_ref()),
+            worker_role: crate::broker::pane_authority::AdmittedRole {
+                id: def.id.clone(),
+                posture: def.posture.clone(),
+                can_call: def.can_call.clone(),
+                can_handoff: def.can_handoff.clone(),
+            },
+            caller_grant,
         })
     }
 
@@ -1176,7 +1236,16 @@ impl PlexiApp {
         let authority = &plan.authority;
         let (pane_id, _) = self.launch_agent_worker(
             crate::pane_ops::create::AgentWorkerLaunch {
-                authority: authority.worker.clone(),
+                grant: crate::pane_ops::create::AgentWorkerGrant {
+                    source: match &authority.caller_grant {
+                        Some(caller) => crate::broker::pane_authority::GrantSource::VerifiedPane(
+                            Box::new(caller.clone()),
+                        ),
+                        None => crate::broker::pane_authority::GrantSource::OutsideProcess,
+                    },
+                    role: Some(authority.worker_role.clone()),
+                    recorded: None,
+                },
                 pane_id: plan.successor,
                 spawned_by: None,
                 role: &authority.role,
@@ -1442,7 +1511,7 @@ mod tests {
             let context = h.app.pane_context_env_for_window(win_idx);
             let launch = h
                 .app
-                .host_terminal_launch(context, Some(h.workspace_root()), None, false);
+                .desktop_terminal_launch(context, Some(h.workspace_root()), None);
             h.app
                 .seed_window_root_pane(win_idx, launch)
                 .expect("rebuilt root terminal");
@@ -1551,7 +1620,7 @@ mod tests {
         let context = h.app.pane_context_env_for_window(0);
         let launch = h
             .app
-            .host_terminal_launch(context, Some(h.workspace_root()), None, false);
+            .desktop_terminal_launch(context, Some(h.workspace_root()), None);
         let filler = h.app.new_tab(0, None, launch).expect("filler tab");
         h.app.close_pane_by_id(filler);
         assert!(
@@ -1768,7 +1837,7 @@ mod tests {
         let caller = spawn_tester(&mut h, &root);
         let ceiling = h
             .app
-            .pane_permission_posture(caller)
+            .pane_ceiling_or_none(caller)
             .expect("caller ceiling");
         assert_eq!(ceiling.deny, vec!["tool.secret".to_string()]);
         let plan = h
@@ -1777,7 +1846,7 @@ mod tests {
             .unwrap();
         assert_eq!(plan.authority.inherited_posture.as_ref(), Some(&ceiling));
         let pane = apply(&mut h, &plan).expect("inherited terminal launches");
-        assert_eq!(h.app.pane_permission_posture(pane), Some(ceiling));
+        assert_eq!(h.app.pane_ceiling_or_none(pane), Some(ceiling));
     }
 
     /// Finding 6, agent call: the worker's ceiling is the one admitted. A
@@ -1811,7 +1880,7 @@ mod tests {
         assert_eq!(term.initial_cwd.as_deref(), Some(path.as_path()));
         let installed = h
             .app
-            .pane_permission_posture(pane)
+            .pane_ceiling_or_none(pane)
             .expect("ceiling installed");
         assert_eq!(installed.deny, vec!["tool.secret".to_string()]);
         assert!(
@@ -2683,7 +2752,7 @@ mod tests {
         let root = h.workspace_root();
         h.app.set_context_root(root.clone(), None);
         let caller = spawn_tester(&mut h, &root);
-        let posture = h.app.pane_permission_posture(caller);
+        let posture = h.app.pane_ceiling_or_none(caller);
         assert!(
             posture.is_some(),
             "fixture: the tester runs under a ceiling"
@@ -2704,7 +2773,7 @@ mod tests {
             Some(caller),
             "the covered terminal's process is still that pane"
         );
-        assert_eq!(h.app.pane_permission_posture(caller), posture);
+        assert_eq!(h.app.pane_ceiling_or_none(caller), posture);
         let mut socket = spec(&h, "split_h", None, None);
         socket.source = SpawnSource::SocketPeer(vec![pid]);
         let plan = h.app.admit_terminal_launch(&socket).expect("admits");

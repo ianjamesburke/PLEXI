@@ -1344,6 +1344,7 @@ impl AgentHost {
                     // is simply the context that reload last observed.
                     subscriber_context_id: self.context_id,
                     created_at: crate::host::event_log::now_timestamp(),
+                    admitted: None,
                 },
             );
             subscription_ids.push(subscription_id);

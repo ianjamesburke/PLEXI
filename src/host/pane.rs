@@ -848,10 +848,6 @@ pub struct TerminalPane {
     pub spawned_by: Option<String>,
     /// Queued child `agent done` results waiting for this interactive parent pane to become Idle.
     pub pending_child_results: Vec<crate::workspace::QueuedChildResult>,
-    /// True when the pane was spawned for or by an agent (including plain shells
-    /// created by an agent via `plexi pane new`). Disqualifies the pane from
-    /// human-owned user authority (`is_human_owned`).
-    pub agent_spawned: bool,
     /// Configured or hook-detected CLI agent harness (`claude`, `codex`, `pi`, `agy`).
     pub agent_harness: Option<String>,
     /// Latest captured CLI agent session ID for resume (`claude --resume <id>`, etc.).
@@ -1053,7 +1049,7 @@ impl TerminalPane {
             .and_then(|v| v.parse::<u64>().ok());
         let spawned_by = credentials
             .as_ref()
-            .and_then(|c| c.authority().spawned_by.clone())
+            .map(|c| c.authority().grant().spawned_by.clone())
             .or_else(|| settings.env.get("PLEXI_SPAWNED_BY").cloned())
             .filter(|s| !s.trim().is_empty())
             // A pane nobody stamped (new window/split/first shell) was opened by the
@@ -1061,13 +1057,7 @@ impl TerminalPane {
             .or_else(|| Some("human".to_string()));
         let agent_harness = settings.env.get("PLEXI_AGENT_HARNESS").cloned();
         let agent_role = settings.env.get("PLEXI_AGENT_ROLE").cloned();
-        let agent_spawned = settings
-            .env
-            .get("PLEXI_AGENT_SPAWNED")
-            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            || parent_pane_id.is_some()
-            || agent_harness.is_some()
-            || agent_role.is_some();
+
         let last_resumed_command = settings.env.get("PLEXI_RESUME_COMMAND").cloned();
         let initial_cwd = settings.working_directory.clone();
         let placeholder_title = if settings.env.contains_key("PLEXI_CONTEXT_NAME") {
@@ -1137,7 +1127,6 @@ impl TerminalPane {
             parent_pane_id,
             spawned_by,
             pending_child_results: Vec::new(),
-            agent_spawned,
             agent_harness,
             agent_session_id: None,
             agent_role,
@@ -1197,13 +1186,17 @@ impl TerminalPane {
             || self.standby_session.is_some()
     }
 
-    /// True when this terminal pane is a human-owned user session: spawned
-    /// directly by the host for the user, with no agent harness, agent role,
-    /// hook/observed agent run, Standby session, parent pane, or agent-spawned
-    /// lineage (`PLEXI_AGENT_SPAWNED`). Panes an agent creates (including via
-    /// `plexi pane new`) never qualify.
+    /// True when this terminal pane is a human-owned user session: its grant
+    /// records desktop ownership, fixed at admission from positive evidence
+    /// (stint 1632), and no agent runs in it now. Nothing observed later
+    /// (a session, a role, a badge) can make a restricted pane human-owned.
     pub fn is_human_owned(&self) -> bool {
-        !self.is_agent_pane() && !self.agent_spawned && self.parent_pane_id.is_none()
+        self.is_desktop_granted() && !self.is_agent_pane()
+    }
+
+    /// The pane's grant records desktop ownership.
+    pub(crate) fn is_desktop_granted(&self) -> bool {
+        self.authority().is_some_and(|a| a.grant().is_desktop())
     }
 
     /// Human-readable provenance badge for GUI headers (`"spawned by you"`, `"spawned by researcher"`, etc.).
@@ -1641,16 +1634,23 @@ impl TerminalPane {
         }
     }
 
-    /// The authority binding this pane was constructed under, if it has one.
+    /// This incarnation's handle to the grant it was constructed under.
     pub(crate) fn authority(
         &self,
-    ) -> Option<&std::sync::Arc<crate::broker::pane_authority::PaneAuthority>> {
+    ) -> Option<&std::sync::Arc<crate::broker::pane_authority::LivePaneAuthority>> {
         self.credentials.as_ref().map(|c| c.authority())
     }
 
-    /// The pane's permission ceiling, fixed at construction.
-    pub(crate) fn permission_posture(&self) -> Option<&crate::broker::PermissionPosture> {
-        self.authority().and_then(|a| a.posture.as_ref())
+    /// The pane's permission ceiling, fixed at admission: `Ok(None)` is the
+    /// baseline. A pane with no grant, or a sealed one, is refused.
+    pub(crate) fn permission_ceiling(
+        &self,
+    ) -> Result<Option<&crate::broker::PermissionPosture>, crate::broker::pane_authority::SealedAuthority>
+    {
+        self.authority()
+            .ok_or(crate::broker::pane_authority::SealedAuthority)?
+            .grant()
+            .posture()
     }
 
     /// Revoke this pane's credentials at its logical removal, before its
@@ -1661,8 +1661,17 @@ impl TerminalPane {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn credentials(&self) -> Option<&crate::pane_ops::construct::PaneCredentials> {
         self.credentials.as_ref()
+    }
+
+    /// Run this pane under `grant` from now on, with no credential (tests).
+    #[cfg(test)]
+    pub(crate) fn replace_grant_for_test(&mut self, grant: crate::broker::pane_authority::PaneAuthority) {
+        let live = crate::broker::pane_authority::LivePaneAuthority::admitted(grant);
+        live.mark_live();
+        self.credentials = Some(crate::pane_ops::construct::PaneCredentials::without_tokens(live));
     }
 
     /// Build the persisted [`crate::workspace::SavedAgentSession`] for this pane
@@ -1687,7 +1696,7 @@ impl TerminalPane {
             if let Some(ref role) = self.agent_role {
                 s.config_name = Some(role.clone());
             }
-            if let Some(posture) = self.permission_posture() {
+            if let Ok(Some(posture)) = self.permission_ceiling() {
                 s.permission_posture = Some(posture.clone());
             }
             (s.last_state, s.last_detail) = self.effective_agent_state();
@@ -1735,7 +1744,7 @@ impl TerminalPane {
             fleet_since: self.fleet_since,
             harness,
             config_name: self.agent_role.clone(),
-            permission_posture: self.permission_posture().cloned(),
+            permission_posture: self.permission_ceiling().ok().flatten().cloned(),
             session_id,
             last_state,
             last_blocked_reason: self.last_blocked_reason,
@@ -1786,6 +1795,9 @@ impl TerminalPane {
             harness: session.harness,
             config_name: session.config_name,
             permission_posture: session.permission_posture,
+            authority: self
+                .authority()
+                .and_then(|a| serde_json::to_value(a.grant()).ok()),
             session_id: session.session_id,
             cwd,
             ephemeral: session.ephemeral,

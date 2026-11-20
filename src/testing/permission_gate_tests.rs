@@ -1966,7 +1966,12 @@ fn agent_spawned_pane_does_not_get_human_authority() {
     // 1. Spawn an agent pane (`agent_pane: true`).
     let (_, human_tile) = h.app.find_pane_in_any_window(human_pane).unwrap();
     let context = h.app.pane_context_env_for_window(0);
-    let launch = h.app.host_terminal_launch(context, None, None, true);
+    let launch = h.app.terminal_launch(
+        crate::broker::pane_authority::GrantSource::OutsideProcess,
+        context,
+        None,
+        None,
+    );
     let agent_pane = h
         .app
         .spawn_terminal_pane_at(

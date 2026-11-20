@@ -545,6 +545,9 @@ pub struct PlexiBehavior<'a> {
     /// Presentation snapshot for the active strip (`StripLayout`).
     pub strip_layout: Option<crate::strip::StripLayout>,
     pub resized: bool,
+    /// A tile was dropped somewhere new this frame: a structural edit that
+    /// voids container anchors admitted before it (stint 1632).
+    pub tile_dropped: bool,
 }
 
 /// Where one pane is presented this frame. The tiled tree derives it from the
@@ -873,8 +876,10 @@ impl PlexiBehavior<'_> {
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
     fn on_edit(&mut self, action: egui_tiles::EditAction) {
-        if matches!(action, egui_tiles::EditAction::TileResized) {
-            self.resized = true;
+        match action {
+            egui_tiles::EditAction::TileResized => self.resized = true,
+            egui_tiles::EditAction::TileDropped => self.tile_dropped = true,
+            egui_tiles::EditAction::TileDragged | egui_tiles::EditAction::TabSelected => {}
         }
     }
 

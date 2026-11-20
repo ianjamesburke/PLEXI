@@ -1,20 +1,23 @@
 //! The one terminal constructor (stint 1632).
 //!
 //! Every terminal pane is built by [`PlexiApp::construct_terminal`] from an
-//! owned [`TerminalLaunch`], in this order:
+//! owned [`TerminalLaunch`] carrying an admitted (or validated restored)
+//! grant's live handle, in this order:
 //!
-//! 1. create the pane's authority binding for its real id;
+//! 1. the handle exists for the pane's real id before anything can
+//!    authenticate;
 //! 2. bind the working directory exactly as the launch states it;
 //! 3. build the permitted environment, resolving only the secret classes the
-//!    launch is eligible for, from that directory;
-//! 4. issue the call credential and the host-MCP bearer from the installed
-//!    binding, last, and start the backend.
+//!    grant is eligible for, from the directory the grant bounds them to;
+//! 4. issue the call credential and the host-MCP bearer from the handle,
+//!    last, and start the backend.
 //!
-//! Both credentials carry the binding, so every authenticator resolves the
-//! ceiling from the credential itself. The returned pane owns its
-//! credentials; dropping a pane that was never installed (or closing an
-//! installed one) revokes both. Placement receives a finished pane;
-//! it never chooses a directory, a secret class, or an authority.
+//! Both credentials carry the handle, so every authenticator resolves the
+//! grant and the current scope revision from the credential itself. A sealed
+//! grant gets neither credential. The returned pane owns its credentials;
+//! dropping a pane that was never installed (or closing an installed one)
+//! revokes the handle and both credentials. Placement receives a finished
+//! pane; it never chooses a directory, a secret class, or an authority.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -22,11 +25,9 @@ use std::sync::Arc;
 
 use crate::app::PlexiApp;
 use crate::broker::gate::PermissionMonitor;
-use crate::broker::pane_authority::PaneAuthority;
-use crate::broker::PermissionPosture;
+use crate::broker::pane_authority::LivePaneAuthority;
 use crate::host::pane::{TerminalPane, TerminalSpawnError};
-use crate::host::shell::{self, SecretPolicy};
-use crate::spatial::tiling::PaneId;
+use crate::host::shell;
 
 use super::create::PaneContextEnv;
 
@@ -47,17 +48,14 @@ pub(crate) enum McpBearer {
 }
 
 /// Everything a terminal is constructed from, decided before construction.
+/// Who the pane is comes only from `authority`.
 #[derive(Clone, Debug)]
 pub(crate) struct TerminalLaunch {
-    pub(crate) pane_id: PaneId,
-    pub(crate) posture: Option<PermissionPosture>,
-    pub(crate) spawned_by: Option<String>,
+    pub(crate) authority: Arc<LivePaneAuthority>,
     pub(crate) context: PaneContextEnv,
     /// Exactly the directory the shell starts in; `None` is the backend
-    /// default, for which no directory-derived secret is resolved.
+    /// default.
     pub(crate) cwd: Option<PathBuf>,
-    pub(crate) secrets: SecretPolicy,
-    pub(crate) agent_pane: bool,
     pub(crate) command: Option<LaunchCommand>,
     /// The pane closes when its shell exits, with or without a command.
     pub(crate) ephemeral: bool,
@@ -67,6 +65,13 @@ pub(crate) struct TerminalLaunch {
     pub(crate) profile_dir: PathBuf,
 }
 
+impl TerminalLaunch {
+    /// The pane id the grant was admitted for.
+    pub(crate) fn pane_id(&self) -> u64 {
+        self.authority.pane_id()
+    }
+}
+
 /// The credentials issued for one pane and the binding they were issued
 /// from. Owned by the pane: each credential is held by its exact handle, so
 /// revoking them can never touch another pane's, even one that reuses this
@@ -74,16 +79,17 @@ pub(crate) struct TerminalLaunch {
 /// ([`Self::revoke`]), and at the latest when they drop.
 pub(crate) struct PaneCredentials {
     call: Option<(Arc<PermissionMonitor>, String)>,
-    /// This pane's own host-MCP registration. `None` under a team run token
-    /// or with no MCP server.
+    /// This pane's own host-MCP registration, or the run token whose
+    /// association with this pane it holds. `None` with no MCP server.
     mcp: Option<String>,
-    authority: Arc<PaneAuthority>,
+    authority: Arc<LivePaneAuthority>,
 }
 
 impl std::fmt::Debug for PaneCredentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PaneCredentials")
-            .field("pane_id", &self.authority.pane_id)
+            .field("pane_id", &self.authority.pane_id())
+            .field("incarnation", &self.authority.incarnation())
             .field("call", &self.call.is_some())
             .field("mcp", &self.mcp.is_some())
             .finish()
@@ -94,13 +100,24 @@ impl PaneCredentials {
     /// Issue the pane's credentials from its installed binding and publish
     /// them into `env`. This is the first instant either can authenticate.
     fn issue(
-        authority: Arc<PaneAuthority>,
+        authority: Arc<LivePaneAuthority>,
         profile_dir: &std::path::Path,
         mcp: &McpBearer,
         env: &mut HashMap<String, String>,
     ) -> Self {
         let binding = authority.clone();
-        let pane_id = binding.pane_id;
+        let pane_id = binding.pane_id();
+        if binding.grant().posture().is_err() {
+            log::info!("pane_env: pane {pane_id} is sealed; no credential issued");
+            let credentials = Self {
+                call: None,
+                mcp: None,
+                authority,
+            };
+            #[cfg(test)]
+            probes::published(&credentials, env);
+            return credentials;
+        }
         let call = match PermissionMonitor::for_profile(profile_dir) {
             Ok(monitor) => {
                 let token = monitor.issue_pane_credential(&binding);
@@ -125,7 +142,10 @@ impl PaneCredentials {
                     env.insert("PLEXI_HOST_MCP_PORT".into(), port.to_string());
                 }
                 env.insert("PLEXI_HOST_MCP_TOKEN".into(), token.clone());
-                None
+                // The run acts for this pane too: requests under its token
+                // are bounded by the run's limits and this pane's ceiling.
+                crate::app::host_mcp::associate_run_token(token, &binding);
+                Some(token.clone())
             }
         };
         let credentials = Self {
@@ -138,13 +158,14 @@ impl PaneCredentials {
         credentials
     }
 
-    pub(crate) fn authority(&self) -> &Arc<PaneAuthority> {
+    pub(crate) fn authority(&self) -> &Arc<LivePaneAuthority> {
         &self.authority
     }
 
-    /// Revoke both credentials now. Idempotent: the handles are taken, so a
-    /// later call (or the drop) revokes nothing further.
+    /// Revoke the handle and both credentials now. Idempotent: the tokens
+    /// are taken, so a later call (or the drop) revokes nothing further.
     pub(crate) fn revoke(&mut self) {
+        self.authority.revoke();
         let call = self.call.take();
         let mcp = self.mcp.take();
         if call.is_none() && mcp.is_none() {
@@ -156,13 +177,20 @@ impl PaneCredentials {
         if let Some(token) = mcp {
             crate::app::host_mcp::revoke_pane_bearer(&token);
         }
-        log::info!("pane_credentials: revoked pane={}", self.authority.pane_id);
+        log::info!(
+            "pane_credentials: revoked pane={} incarnation={}",
+            self.authority.pane_id(),
+            self.authority.incarnation()
+        );
     }
 
-    /// Point this pane's MCP registration at a moved context root.
-    pub(crate) fn rebind_workspace(&self, workspace_root: PathBuf) {
-        if let Some(token) = &self.mcp {
-            crate::app::host_mcp::rebind_pane_bearer(token, workspace_root);
+    /// A holder of `authority` with no credential issued (tests).
+    #[cfg(test)]
+    pub(crate) fn without_tokens(authority: Arc<LivePaneAuthority>) -> Self {
+        Self {
+            call: None,
+            mcp: None,
+            authority,
         }
     }
 
@@ -210,40 +238,30 @@ impl PlexiApp {
         launch: TerminalLaunch,
     ) -> Result<TerminalPane, TerminalSpawnError> {
         let TerminalLaunch {
-            pane_id,
-            posture,
-            spawned_by,
+            authority,
             context,
             cwd,
-            secrets,
-            agent_pane,
             command,
             ephemeral,
             env: worker_env,
             mcp,
             profile_dir,
         } = launch;
-        // 1. Authority for the real id, before anything can authenticate.
-        let workspace_root = context
-            .root
-            .clone()
-            .or_else(|| cwd.clone())
-            .unwrap_or_default();
-        let authority = Arc::new(PaneAuthority {
-            pane_id,
-            posture,
-            spawned_by,
-            context_id: context.context_id,
-            workspace_root,
-            secrets,
-        });
+        // 1. The handle for the real id exists before anything can
+        // authenticate.
+        let grant = authority.grant();
+        let pane_id = grant.pane_id;
+        let agent_pane = !grant.is_desktop();
+        let secrets = grant.secrets.policy();
 
-        // 2 and 3. The bound directory and the environment permitted for it.
+        // 2 and 3. The bound directory and the environment permitted for it,
+        // with secrets resolved only from the directory the grant bounds.
         log::info!(
-            "construct_terminal: pane_id={pane_id} context_id={} cwd={cwd:?} secrets={secrets:?} agent_pane={agent_pane}",
-            context.context_id
+            "construct_terminal: pane_id={pane_id} context_id={} cwd={cwd:?} secrets={secrets:?} secret_dir={:?} agent_pane={agent_pane}",
+            context.context_id,
+            grant.secrets.directory
         );
-        let mut env = shell::build_env_with_secrets(cwd.as_deref(), secrets);
+        let mut env = shell::build_env_with_secrets(grant.secrets.directory.as_deref(), secrets);
         for name in [
             "PLEXI_PARENT_PANE",
             "PLEXI_EPHEMERAL",
@@ -352,7 +370,7 @@ pub(crate) mod probes {
     }
 
     pub(super) fn published(credentials: &super::PaneCredentials, env: &HashMap<String, String>) {
-        let pane_id = credentials.authority().pane_id;
+        let pane_id = credentials.authority().pane_id();
         PUBLISHED.with(|p| {
             if let Some(probe) = p.borrow_mut().as_mut() {
                 probe(pane_id, env);

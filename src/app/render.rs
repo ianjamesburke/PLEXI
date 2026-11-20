@@ -49,7 +49,7 @@ impl PlexiApp {
         );
         if let Some(ctx_path) = crate::config::take_adopted_context_path() {
             log::info!("adopted context path: {}", ctx_path.display());
-            self.new_context_at_path(ctx_path);
+            self.new_context_at_path(ctx_path, crate::broker::pane_authority::GrantSource::DesktopInput);
             self.mark_workspace_dirty();
         }
         #[cfg(target_os = "macos")]
@@ -63,7 +63,7 @@ impl PlexiApp {
                 if !finder_paths.is_empty() {
                     for path in finder_paths {
                         log::info!("finder_service: opening context for {}", path.display());
-                        self.new_context_at_path(path);
+                        self.new_context_at_path(path, crate::broker::pane_authority::GrantSource::DesktopInput);
                     }
                     self.mark_workspace_dirty();
                 }
@@ -801,6 +801,7 @@ impl PlexiApp {
                     strip_layout_jump: false,
                     strip_layout: None,
                     resized: false,
+                    tile_dropped: false,
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ui.scope(|ui| {
@@ -942,6 +943,7 @@ impl PlexiApp {
                 // call ctx.navigate_to() after behavior is dropped (navigate_to
                 // needs &mut ctx but behavior holds &mut ctx.panes).
                 let resized = behavior.resized;
+                let tile_dropped = behavior.tile_dropped;
                 let new_focused = behavior.new_focused;
                 let clicked_tile = behavior.clicked;
                 let pane_clicked = clicked_tile.is_some();
@@ -952,6 +954,9 @@ impl PlexiApp {
                 let child_agent_dive = behavior.child_agent_dive.take();
 
                 drop(behavior);
+                if tile_dropped {
+                    ctx.note_structural_edit();
+                }
 
                 // Tree::ui can still restructure the tree (a tab or pane drag);
                 // heal focus and zoom against the tree it left (stint 1230).

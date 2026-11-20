@@ -5,9 +5,10 @@
 //!
 //! Each owner call (ledger row 104) sits behind one function, so changing a
 //! pick is a local edit: [`PlexiApp::running_named_agent_pane`] (which pane
-//! counts as running), [`PlexiApp::last_named_agent_chat`] (which history record
-//! is the last chat) and [`PlexiApp::agent_open_parent`] (where a resumed or
-//! started pane opens).
+//! counts as running) and [`PlexiApp::last_named_agent_chat`] (which history
+//! record is the last chat). A resumed or started pane opens beside its
+//! authenticated caller, or for a caller with no pane beside the focused pane,
+//! which is placement only (stint 1632).
 
 use std::path::Path;
 
@@ -104,7 +105,8 @@ impl PlexiApp {
         source: &crate::protocol::SpawnSource,
         admitted: AdmittedAgentMeshRoute,
     ) -> Result<AgentOpenOutcome, String> {
-        let verified_caller = self.resolve_launch_source(source, caller)?.caller_pane;
+        let launch_caller = self.resolve_launch_source(source, caller)?;
+        let verified_caller = launch_caller.caller_pane;
         if let Some(pane_id) = self.running_named_agent_pane(name) {
             // A standby pane is focused and left in Standby: it resumes only
             // on Enter or `pane send` (src/cli/AGENTS.md, owner rule).
@@ -121,13 +123,15 @@ impl PlexiApp {
         // The definition decides the harness; unknown agents fail here, before
         // anything is launched (same resolution as `agent start`).
         let stops = crate::app::registry::workspace_walk_stops()?;
-        let parent = self.agent_open_parent(verified_caller);
+        // The start payload names the verified caller only: the spawn it
+        // becomes resolves its own source, and a pane id in it is trusted
+        // only for in-process requests (stint 1632).
         let payload = crate::cli::agent::resolve_agent_start_in_stopping_at(
             name,
             &crate::config::config_dir(),
             cwd,
             None,
-            parent,
+            verified_caller,
             &stops,
         )?;
         let harness = payload
@@ -140,9 +144,13 @@ impl PlexiApp {
         if let Some(record) = open_chat.or_else(|| self.last_named_agent_chat(name, &harness, cwd))
         {
             let session_id = record.session_id.clone().unwrap_or_default();
-            let reply = self.reopen_agent_record(&record, None, parent);
+            // A reopen is admitted under the authenticated caller only. An
+            // outside caller's run opens beside the focused pane (placement)
+            // with no parent and no borrowed authority.
+            let reply =
+                self.reopen_agent_record(&record, None, verified_caller, launch_caller.source);
             let pane_id = spawned_pane_id(&reply)?;
-            self.focus_started_agent_pane(pane_id, parent);
+            self.focus_started_agent_pane(pane_id, verified_caller);
             log::info!(
                 "agent_open: name={name} outcome=resumed pane={pane_id} run_id={} session_id={session_id}",
                 record.run_id
@@ -372,12 +380,6 @@ impl PlexiApp {
         found
     }
 
-    /// Owner call 3: where a resumed or started pane opens. Beside the calling
-    /// pane, in its context, as `agent start` does; with no caller, the focused
-    /// pane of the active context.
-    pub(crate) fn agent_open_parent(&self, caller: Option<u64>) -> Option<u64> {
-        caller.or_else(|| self.focused_pane_id())
-    }
 }
 
 /// The workspace a chat belongs to: the nearest project root (`.plexi` or

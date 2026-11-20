@@ -258,6 +258,7 @@ impl PaneMap {
                 Err(OccupiedSlot(pane_id))
             }
             std::collections::hash_map::Entry::Vacant(slot) => {
+                mark_installed(&pane);
                 slot.insert(pane);
                 Ok(())
             }
@@ -265,15 +266,26 @@ impl PaneMap {
     }
 }
 
+/// A terminal's authority handle becomes `Live` when the pane is installed
+/// (stint 1632).
+fn mark_installed(pane: &Pane) {
+    if let Some(authority) = pane.terminal_incarnation().and_then(|t| t.authority()) {
+        authority.mark_live();
+    }
+}
+
 impl From<HashMap<PaneId, Pane>> for PaneMap {
     fn from(panes: HashMap<PaneId, Pane>) -> Self {
+        panes.values().for_each(mark_installed);
         Self(panes)
     }
 }
 
 impl FromIterator<(PaneId, Pane)> for PaneMap {
     fn from_iter<I: IntoIterator<Item = (PaneId, Pane)>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
+        let panes: HashMap<PaneId, Pane> = iter.into_iter().collect();
+        panes.values().for_each(mark_installed);
+        Self(panes)
     }
 }
 
@@ -322,6 +334,18 @@ impl Window {
         let history = &mut self.tree_history;
         history.generation += 1;
         history.rebuilt_at = history.generation;
+    }
+
+    /// Record a structural edit that kept every pane in the window (a drag
+    /// and drop): container nodes admitted before it are stale even if a
+    /// later edit restores the same shape (stint 1632).
+    pub(crate) fn note_structural_edit(&mut self) {
+        self.tree_history.generation += 1;
+        log::info!(
+            "tree_history: window {} structural edit -> generation {}",
+            self.window_id,
+            self.tree_history.generation
+        );
     }
 
     /// Record that `pane_id` left this window.

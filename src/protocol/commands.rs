@@ -152,6 +152,8 @@ pub enum SpawnSource {
     /// A file in the profile's spawn queue: an outside caller with no
     /// verifiable identity.
     SpawnQueue,
+    /// A plugin view instance acting in-process (the Assistant's host tools).
+    PluginInstance(u64),
 }
 
 /// App-to-host requests — go to `route_command`.
@@ -929,6 +931,11 @@ pub enum HostRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subcontext: Option<String>,
         response_file: String,
+        /// Who submitted this request, stamped by the host and never read
+        /// from the wire (stint 1632): the panes it creates are admitted from
+        /// it.
+        #[serde(skip)]
+        source: SpawnSource,
     },
 
     /// Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.
@@ -1335,6 +1342,11 @@ pub enum HostRequest {
         /// If set, the host writes a JSON response (context_id, windows) to this path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
+        /// Who submitted this request, stamped by the host and never read
+        /// from the wire (stint 1632): the panes it creates are admitted from
+        /// it.
+        #[serde(skip)]
+        source: SpawnSource,
     },
 
     /// Create a sub-context under the caller's context, pre-populated with a
@@ -1376,12 +1388,22 @@ pub enum HostRequest {
         /// to this path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
+        /// Who submitted this request, stamped by the host and never read
+        /// from the wire (stint 1632): the panes it creates are admitted from
+        /// it.
+        #[serde(skip)]
+        source: SpawnSource,
     },
     /// Focus existing context by root, or create one. Sent by `plexi context open`.
     FocusContext {
         root: std::path::PathBuf,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
+        /// Who submitted this request, stamped by the host and never read
+        /// from the wire (stint 1632): a context it creates seeds a pane
+        /// admitted from it.
+        #[serde(skip)]
+        source: SpawnSource,
     },
     /// Set/update the root of a context. Sent by `plexi context set-root`.
     /// `context_id` targets the caller's context (PLEXI_CONTEXT_ID); when
@@ -1915,6 +1937,10 @@ impl HostRequest {
                 | Self::CallerContext { .. }
                 | Self::AgentSpawn { .. }
                 | Self::AgentOpen { .. }
+                | Self::AgentReopen { .. }
+                | Self::CreateContext { .. }
+                | Self::CreateSubContext { .. }
+                | Self::FocusContext { .. }
                 | Self::AgentWait { .. }
                 | Self::PaneMessageSend { .. }
                 | Self::SendToPane { .. }

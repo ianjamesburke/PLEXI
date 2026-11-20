@@ -66,6 +66,10 @@ pub enum ViewCommand {
         type_id: String,
         layout: Option<String>,
         args: Vec<String>,
+        /// The view that emitted the request: the one recipient of its
+        /// reply. Bridges leave it `None`; the host stamps it when it drains
+        /// the view's commands (stint 1632).
+        emitter: Option<u64>,
     },
     /// Unified spawn (#592). Mirrors DrawCommand::SpawnPane after capability check.
     SpawnPane {
@@ -75,6 +79,9 @@ pub enum ViewCommand {
         from_pane_id: Option<u64>,
         request_id: Option<String>,
         target_context: Option<u64>,
+        /// The view that emitted the request, stamped at drain like
+        /// `SpawnView::emitter`.
+        emitter: Option<u64>,
     },
     /// Forward a capability-gated pane read/control `HostRequest` (ListPanes,
     /// FocusPane, SendToPane, ...) into the host's pane-IPC handler — the

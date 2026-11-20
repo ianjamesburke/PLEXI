@@ -66,7 +66,7 @@ impl PlexiApp {
         let actor = format!("pane:{pane}");
         let call = format!("secret-list-{}", uuid::Uuid::new_v4());
         let input = serde_json::json!({"path": root}).to_string();
-        let posture = self.pane_permission_posture(pane);
+        let posture = self.pane_ceiling(pane)?;
         match monitor.admit_with_posture(AdmitRequest {
             call_id: &call, tool: "secret.list", input_json: &input,
             principal: &crate::broker::principal::Principal::agent(&actor), actor_scope: ActorScope::User,
@@ -173,7 +173,18 @@ impl PlexiApp {
         );
         // Keychain authentication can wait for a human. Keep servicing the
         // host while the exact admitted request finishes; no re-admission loop.
-        let posture = self.pane_permission_posture(pane_id);
+        let posture = match self.pane_ceiling(pane_id) {
+            Ok(posture) => posture,
+            Err(error) => {
+                log::info!("secret_get: pane={pane_id} refused: {error}");
+                write_reply(
+                    &reply_path,
+                    serde_json::json!({"status": "error", "error": error}),
+                    false,
+                );
+                return;
+            }
+        };
         let name = name.to_string();
         let profile = crate::config::config_dir();
         let failure_path = reply_path.clone();
@@ -315,13 +326,19 @@ mod list_tests {
             request(&mut h, &context, pid, &[])["error_code"],
             "permission_denied"
         );
+        let restricted = crate::broker::pane_authority::PaneAuthority::for_test(
+            pane,
+            crate::broker::pane_authority::Ceiling::Baseline,
+            h.app.windows[0].context_id,
+            h.workspace_root(),
+        );
         h.app.windows[0]
             .panes
             .get_mut(&pane)
             .unwrap()
             .as_terminal_mut()
             .unwrap()
-            .agent_spawned = true;
+            .replace_grant_for_test(restricted);
         let denied = request(&mut h, &context, pid, &[pid]);
         let error = denied["error"].as_str().unwrap();
         assert!(error.contains("secret.list") && error.contains("Needs you"));
@@ -627,7 +644,7 @@ mod list_tests {
 
         // Missing posture snapshot: pane_permission_posture returns None.
         assert!(
-            h.app.pane_permission_posture(worker_pane).is_none(),
+            h.app.pane_ceiling_or_none(worker_pane).is_none(),
             "unconfigured worker must have no posture snapshot"
         );
 
@@ -705,7 +722,7 @@ mod list_tests {
             "fixture must be a human-owned terminal pane"
         );
         assert!(
-            h.app.pane_permission_posture(human_pane).is_none(),
+            h.app.pane_ceiling_or_none(human_pane).is_none(),
             "human-owned pane must have no posture snapshot"
         );
 

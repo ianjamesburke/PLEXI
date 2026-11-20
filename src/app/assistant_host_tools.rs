@@ -886,7 +886,9 @@ impl PlexiApp {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            source: crate::protocol::SpawnSource::InProcess,
+            // The Assistant is a plugin instance acting in-process, never
+            // the person at the keyboard (stint 1632).
+            source: crate::protocol::SpawnSource::PluginInstance(origin_pane_id),
         });
         let result = if let Some(created) = self
             .windows

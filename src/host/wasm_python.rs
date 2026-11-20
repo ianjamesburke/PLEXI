@@ -6744,6 +6744,7 @@ fn plugin_command_from_python_message(
                 .and_then(Value::as_str)
                 .map(str::to_string),
             args: Vec::new(),
+            emitter: None,
         }),
         "spawn_pane" => Some(ViewCommand::SpawnPane {
             type_id: text("plugin_id"),
@@ -6752,6 +6753,7 @@ fn plugin_command_from_python_message(
             from_pane_id: None,
             request_id: None,
             target_context: None,
+            emitter: None,
         }),
         "focus_pane" => Some(ViewCommand::ForwardPaneRequest {
             request: crate::protocol::HostRequest::FocusPane {

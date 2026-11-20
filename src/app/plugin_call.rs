@@ -758,11 +758,23 @@ impl PlexiApp {
         scope.actor_scope = verified.actor_scope;
         // A pane credential carries its pane's ceiling; a peer-verified
         // caller's comes from the pane it resolved to (stint 1632).
-        scope.posture = match &verified.authority {
-            Some(authority) => authority.posture.clone(),
+        let ceiling = match &verified.authority {
+            Some(authority) => authority
+                .grant()
+                .posture()
+                .map(|p| p.cloned())
+                .map_err(|sealed| sealed.to_string()),
             None => verified
                 .pane_id
-                .and_then(|pid| self.pane_permission_posture(pid)),
+                .map_or(Ok(None), |pid| self.pane_ceiling(pid)),
+        };
+        scope.posture = match ceiling {
+            Ok(posture) => posture,
+            Err(error) => {
+                log::info!("plugin_call: caller pane {:?} refused: {error}", verified.pane_id);
+                reply(serde_json::json!({"ok":false, "error_code":"permission_denied", "error": error}));
+                return;
+            }
         };
         let mut dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::namespaced_for(
             scope,

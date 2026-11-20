@@ -195,6 +195,7 @@ mod tests {
                 trigger_mode: TriggerMode::Conversation,
                 duration: GrantDuration::Session,
                 created_at: "test".into(),
+                admitted: None,
             });
         }
         let outcome = timeline

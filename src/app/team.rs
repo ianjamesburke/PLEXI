@@ -797,15 +797,20 @@ impl PlexiApp {
                 false,
                 crate::pane_ops::create::AgentOrigin::Active,
             )?;
-            let authority = self.agent_worker_authority(
-                &member.role,
-                &placement.effective_cwd,
-                placement.parent_pane_id,
-            );
+            // A member is admitted under the task pane's grant and its own
+            // role, which must resolve (stint 1632).
+            let grant = crate::pane_ops::create::AgentWorkerGrant {
+                source: match placement.parent_pane_id {
+                    Some(parent) => self.caller_grant_source(parent),
+                    None => crate::broker::pane_authority::GrantSource::Team,
+                },
+                role: Some(self.admit_worker_role(&member.role, &placement.effective_cwd)?),
+                recorded: None,
+            };
             let run_token = field(&child, "run_token")?;
             let (pane, _) = self.launch_agent_worker(
                 crate::pane_ops::create::AgentWorkerLaunch {
-                    authority,
+                    grant,
                     pane_id: None,
                     spawned_by: Some(format!("team:{}/{}", run.team_name, run.run_ids[0])),
                     role: &member.role,

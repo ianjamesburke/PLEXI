@@ -36,7 +36,7 @@ fn split_horizontal_adds_pane() {
 fn new_context_adds_window() {
     let mut h = HostHarness::new();
     assert_eq!(h.window_count(), 1);
-    h.app.new_context();
+    h.app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     assert_eq!(
         h.window_count(),
         2,
@@ -241,7 +241,7 @@ fn save_workspace_after_zoom_and_split_has_valid_focused_tile() {
     h.app.split_focused(false, None, false, false, None);
     h.run_frames(2);
     let background = h.app.active_window;
-    h.app.new_context();
+    h.app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     h.run_frames(3);
     assert_ne!(h.app.active_window, background);
     let focused = h.app.windows[background].focused_pane.and_then(|t| match h.app.windows[background].tree.tiles.get(t) {
@@ -266,7 +266,7 @@ fn save_reconciles_stale_focus_in_background_window() {
     let background = h.app.active_window;
     let root = h.app.windows[background].tree.root.unwrap();
     assert!(matches!(h.app.windows[background].tree.tiles.get(root), Some(egui_tiles::Tile::Container(_))));
-    h.app.new_context();
+    h.app.new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
     assert_ne!(h.app.active_window, background);
     h.app.windows[background].focused_pane = Some(root);
     assert_save_ok(&mut h, "stale background focus without a frame");

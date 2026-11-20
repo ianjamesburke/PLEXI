@@ -60,112 +60,118 @@ struct McpCaller {
     /// Set when the bearer is an agent run token rather than a pane credential.
     run_id: Option<String>,
     actor_id: Option<String>,
-    /// The authority binding a pane bearer was registered from (stint
-    /// 1632). `None` for run tokens; a pane bearer without one is refused.
-    authority: Option<Arc<crate::broker::pane_authority::PaneAuthority>>,
+    /// The incarnation a pane bearer was registered from, or the pane a run
+    /// token acts for (stint 1632). `context_id` and `workspace_root` are one
+    /// snapshot of its scope at `scope_revision`.
+    authority: Option<Arc<LivePaneAuthority>>,
+    scope_revision: Option<u64>,
 }
 
-/// Pane bearers by token. Each registration is its own entry under a token
-/// minted for it, so the token is the registration's exact handle: a second
-/// registration under the same pane id gets a different token, and only the
-/// handle's owner can rebind or revoke it (stint 1632).
-static CREDENTIALS: OnceLock<Mutex<HashMap<String, McpCaller>>> = OnceLock::new();
+use crate::broker::pane_authority::{LivePaneAuthority, SealedAuthority};
 
-fn credentials() -> &'static Mutex<HashMap<String, McpCaller>> {
+/// Pane bearers by token. Each registration is its own entry under a token
+/// minted for it, holding only its incarnation's handle: the token is the
+/// registration's exact handle, so a second registration under the same pane
+/// id gets a different token and only its owner can revoke it. Scope is read
+/// through the handle at every request, never stored here (stint 1632).
+static CREDENTIALS: OnceLock<Mutex<HashMap<String, Arc<LivePaneAuthority>>>> = OnceLock::new();
+
+fn credentials() -> &'static Mutex<HashMap<String, Arc<LivePaneAuthority>>> {
     CREDENTIALS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Register a new bearer for one pane incarnation, carrying the authority
-/// binding it was issued from. The caller's context and workspace come from
-/// host-owned pane construction, never the MCP request.
-fn register_pane_credential(
-    authority: Option<Arc<crate::broker::pane_authority::PaneAuthority>>,
-    pane_id: u64,
-    context_id: u64,
-    workspace_root: PathBuf,
-) -> String {
-    let mut registry = credentials().lock().unwrap();
-    let caller = McpCaller {
-        pane_id,
-        context_id,
-        workspace_root: workspace_root.clone(),
-        run_id: None,
-        actor_id: None,
-        authority,
-    };
+/// The pane each team run token acts for, so a run-token request is bounded
+/// by that pane's ceiling as well as the run's own limits.
+static RUN_PANES: OnceLock<Mutex<HashMap<String, Arc<LivePaneAuthority>>>> = OnceLock::new();
+
+fn run_panes() -> &'static Mutex<HashMap<String, Arc<LivePaneAuthority>>> {
+    RUN_PANES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Register a new bearer for one pane incarnation.
+fn register_pane_credential(binding: Arc<LivePaneAuthority>) -> String {
     let token = uuid::Uuid::new_v4().to_string();
-    registry.insert(token.clone(), caller);
     log::info!(
-        "host_mcp: registered scoped credential pane={pane_id} context={context_id} workspace={}",
-        workspace_root.display()
+        "host_mcp: registered scoped credential pane={} incarnation={}",
+        binding.pane_id(),
+        binding.incarnation()
     );
+    credentials().lock().unwrap().insert(token.clone(), binding);
     token
 }
 
-/// Register the bearer for a constructed pane from its authority binding and
-/// return it with the endpoint. Only pane construction calls this
+/// Register the bearer for a constructed pane from its incarnation handle
+/// and return it with the endpoint. Only pane construction calls this
 /// (`PaneCredentials::issue`).
-pub(crate) fn register_pane_bearer(
-    binding: &Arc<crate::broker::pane_authority::PaneAuthority>,
-) -> Option<(u16, String)> {
-    discovery().map(|port| {
-        let token = register_pane_credential(
-            Some(binding.clone()),
-            binding.pane_id,
-            binding.context_id,
-            binding.workspace_root.clone(),
-        );
-        (port, token)
-    })
+pub(crate) fn register_pane_bearer(binding: &Arc<LivePaneAuthority>) -> Option<(u16, String)> {
+    discovery().map(|port| (port, register_pane_credential(binding.clone())))
 }
 
-/// Revoke exactly the registration `token` names. Another registration for
-/// the same pane id is untouched.
+/// Record that the run `token` acts for the pane `binding` names.
+pub(crate) fn associate_run_token(token: &str, binding: &Arc<LivePaneAuthority>) {
+    log::info!(
+        "host_mcp: run token acts for pane={} incarnation={}",
+        binding.pane_id(),
+        binding.incarnation()
+    );
+    run_panes()
+        .lock()
+        .unwrap()
+        .insert(token.to_string(), binding.clone());
+}
+
+/// Revoke exactly the registration `token` names (a pane bearer, or a run
+/// token's association with its pane). Another registration for the same
+/// pane id is untouched.
 pub(crate) fn revoke_pane_bearer(token: &str) {
-    if let Some(caller) = credentials().lock().unwrap().remove(token) {
+    if let Some(binding) = credentials().lock().unwrap().remove(token) {
         log::info!(
-            "host_mcp: revoked scoped credential pane={}",
-            caller.pane_id
+            "host_mcp: revoked scoped credential pane={} incarnation={}",
+            binding.pane_id(),
+            binding.incarnation()
         );
     }
-}
-
-/// Update the trusted workspace attached to the registration `token` names,
-/// without rotating it. Context roots can change while their panes remain
-/// alive; the registration's context is carried forward.
-pub(crate) fn rebind_pane_bearer(token: &str, workspace_root: PathBuf) {
-    let mut registry = credentials().lock().unwrap();
-    let Some(caller) = registry.get_mut(token) else {
-        return;
-    };
-    caller.workspace_root = workspace_root.clone();
-    log::info!(
-        "host_mcp: rebound scoped credential pane={} context={} workspace={}",
-        caller.pane_id,
-        caller.context_id,
-        workspace_root.display()
-    );
+    if let Some(binding) = run_panes().lock().unwrap().remove(token) {
+        log::info!(
+            "host_mcp: run token released pane={}",
+            binding.pane_id()
+        );
+    }
 }
 
 fn authenticate(token: &str) -> Option<McpCaller> {
-    if let Some(caller) = credentials().lock().unwrap().get(token).cloned() {
-        // A pane bearer authorizes only under the authority it was issued
-        // from; without one there is no ceiling to apply, so the bearer is
-        // refused rather than evaluated more loosely (stint 1632).
-        if caller.authority.is_none() {
+    let pane = credentials().lock().unwrap().get(token).cloned();
+    if let Some(binding) = pane {
+        if binding.is_revoked() {
             log::warn!(
-                "host_mcp: bearer for pane {} has no authority binding; refused",
-                caller.pane_id
+                "host_mcp: bearer for revoked pane {} incarnation {}; refused",
+                binding.pane_id(),
+                binding.incarnation()
             );
             return None;
         }
-        return Some(caller);
+        let scope = binding.scope();
+        return Some(McpCaller {
+            pane_id: binding.pane_id(),
+            context_id: scope.context_id,
+            workspace_root: scope.workspace_root,
+            run_id: None,
+            actor_id: None,
+            authority: Some(binding),
+            scope_revision: Some(scope.revision),
+        });
     }
     let auth = crate::agent::runs::authenticate_run_token(token)?;
+    let pane = run_panes().lock().unwrap().get(token).cloned();
+    if pane.as_ref().is_some_and(|p| p.is_revoked()) {
+        log::warn!("host_mcp: run {} acts for a revoked pane; refused", auth.run_id);
+        return None;
+    }
     log::info!(
-        "host_mcp: authenticated agent run {} actor={}",
+        "host_mcp: authenticated agent run {} actor={} pane={:?}",
         auth.run_id,
-        auth.actor_id
+        auth.actor_id,
+        pane.as_ref().map(|p| p.pane_id())
     );
     Some(McpCaller {
         pane_id: 0,
@@ -173,26 +179,25 @@ fn authenticate(token: &str) -> Option<McpCaller> {
         workspace_root: auth.workspace,
         run_id: Some(auth.run_id),
         actor_id: Some(auth.actor_id),
-        authority: None,
+        scope_revision: pane.as_ref().map(|p| p.scope().revision),
+        authority: pane,
     })
 }
 
-/// Register a bearer for a test pane under a posture-less binding.
+/// Register a bearer for a test pane under a baseline grant.
 #[cfg(test)]
 pub(crate) fn register_pane_credential_for_test(
     pane_id: u64,
     context_id: u64,
     workspace_root: PathBuf,
 ) -> String {
-    let binding = Arc::new(crate::broker::pane_authority::PaneAuthority {
-        secrets: crate::host::shell::SecretPolicy::NONE,
+    let grant = crate::broker::pane_authority::PaneAuthority::for_test(
         pane_id,
-        posture: None,
-        spawned_by: None,
+        crate::broker::pane_authority::Ceiling::Baseline,
         context_id,
-        workspace_root: workspace_root.clone(),
-    });
-    register_pane_credential(Some(binding), pane_id, context_id, workspace_root)
+        workspace_root,
+    );
+    register_pane_credential(LivePaneAuthority::admitted(grant))
 }
 
 /// Make sure an MCP endpoint is bound, so constructed panes get bearers.
@@ -216,7 +221,7 @@ pub(crate) fn ensure_test_discovery() {
 pub(crate) fn authenticated_posture_for_test(
     token: &str,
 ) -> Option<Option<crate::broker::PermissionPosture>> {
-    authenticate(token).map(|caller| caller.authority.and_then(|a| a.posture.clone()))
+    authenticate(token).map(|caller| caller.ceiling().ok().flatten())
 }
 
 #[cfg(test)]
@@ -413,8 +418,9 @@ fn handle_connection(
     crate::mcp_http::handle_connection(stream, authenticate, |json, caller| {
         let dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::from_namespaced_registry(
             crate::plexi_ai::tool_dispatch::DispatchScope {
-                // The pane's ceiling, from the binding its bearer carries.
-                posture: caller.ceiling(),
+                // The pane's ceiling, from the grant its bearer carries. A
+                // sealed grant never reaches here: `call_route` refuses it.
+                posture: caller.ceiling().ok().flatten(),
                 ..crate::plexi_ai::tool_dispatch::DispatchScope::new(
                     caller.pane_id,
                     format!("mcp:pane:{}", caller.pane_id),
@@ -490,10 +496,13 @@ fn handle_connection(
 
 impl McpCaller {
     /// The pane ceiling every route of this caller is bounded by: the
-    /// posture of the binding its bearer carries. `None` for a run token or
-    /// an unrestricted pane.
-    fn ceiling(&self) -> Option<crate::broker::PermissionPosture> {
-        self.authority.as_ref().and_then(|a| a.posture.clone())
+    /// posture of the grant its bearer (or run token) acts for. `Ok(None)`
+    /// for a baseline grant or a run with no pane; a sealed grant refuses.
+    fn ceiling(&self) -> Result<Option<crate::broker::PermissionPosture>, SealedAuthority> {
+        match &self.authority {
+            Some(authority) => authority.grant().posture().map(|p| p.cloned()),
+            None => Ok(None),
+        }
     }
 }
 
@@ -566,7 +575,11 @@ fn call_route(
     subscribe_tx: &UiMailbox<HostSubscribeRequest>,
     profile: &std::path::Path,
 ) -> Result<String, String> {
-    let ceiling = caller.ceiling();
+    let ceiling = caller.ceiling().map_err(|sealed| {
+        log::info!("host_mcp: pane {} is sealed; refused", caller.pane_id);
+        serde_json::json!({"ok": false, "error_code": "permission_denied", "error": sealed.to_string()})
+            .to_string()
+    })?;
     if let (Some(target), Some(posture)) = (route.unbrokered_target(), ceiling.as_ref()) {
         if posture.denies(target) {
             log::info!(
@@ -583,7 +596,7 @@ fn call_route(
         McpRoute::Permissions(op) => tool_permissions(op, arguments, profile, caller),
         McpRoute::ListEventStreams => tool_list_event_streams(caller),
         McpRoute::SubscribeAndWait => {
-            tool_subscribe_and_wait(arguments, subscribe_tx, caller, ceiling)
+            tool_subscribe_and_wait(arguments, subscribe_tx, caller)
         }
         McpRoute::Agents(tool) => {
             let input_json = serde_json::to_string(arguments)
@@ -693,7 +706,6 @@ fn tool_subscribe_and_wait(
     args: &serde_json::Value,
     subscribe_tx: &UiMailbox<HostSubscribeRequest>,
     caller: &McpCaller,
-    ceiling: Option<crate::broker::PermissionPosture>,
 ) -> Result<String, String> {
     let plugin_id = args
         .get("plugin_id")
@@ -740,7 +752,15 @@ fn tool_subscribe_and_wait(
         subscriber_type_override: None,
         broker_actor_override: Some(actor_id),
         workspace_root_override: Some(caller.workspace_root.clone()),
-        posture_ceiling: ceiling,
+        subscriber_authority: match &caller.authority {
+            Some(authority) => crate::host::event_subscriptions::SubscriberAuthority::Pane(
+                crate::host::plugin_timeline::AdmittedScope {
+                    authority: authority.clone(),
+                    revision: caller.scope_revision.unwrap_or_default(),
+                },
+            ),
+            None => crate::host::event_subscriptions::SubscriberAuthority::Run,
+        },
         context_id_override: Some(caller.context_id),
         // The authenticated bearer credential already establishes this
         // caller's identity (bound to `caller.pane_id`/`context_id` at
@@ -976,95 +996,83 @@ mod tests {
         assert_eq!(loaded.port, 4242);
     }
 
-    /// A pane bearer authorizes only under the authority it was issued
-    /// from, and its caller carries that ceiling; without a binding it
-    /// authenticates nothing (stint 1632).
-    #[test]
-    fn pane_bearer_requires_and_carries_its_authority_binding() {
-        let pane_id = 65_300_310u64;
-        let root = PathBuf::from("/workspace/unbound");
-        let token = register_pane_credential(None, pane_id, 1, root.clone());
-        assert!(authenticate(&token).is_none(), "no binding, no caller");
-        let posture = crate::broker::PermissionPosture {
-            default_posture: crate::broker::Decision::Deny,
-            allow: Vec::new(),
-            ask: Vec::new(),
-            deny: vec!["tool.secret".into()],
-        };
-        let binding = Arc::new(crate::broker::pane_authority::PaneAuthority {
-            secrets: crate::host::shell::SecretPolicy::NONE,
+    fn live(
+        pane_id: u64,
+        default_posture: crate::broker::Decision,
+        deny: &[&str],
+        root: &Path,
+    ) -> Arc<LivePaneAuthority> {
+        LivePaneAuthority::admitted(crate::broker::pane_authority::PaneAuthority::for_test(
             pane_id,
-            posture: Some(posture.clone()),
-            spawned_by: Some("agent:x".into()),
-            context_id: 1,
-            workspace_root: root.clone(),
-        });
-        let token = register_pane_bearer_for(&binding, root);
-        assert_eq!(authenticated_posture_for_test(&token), Some(Some(posture)));
+            crate::broker::pane_authority::Ceiling::Posture {
+                posture: crate::broker::PermissionPosture {
+                    default_posture,
+                    allow: Vec::new(),
+                    ask: Vec::new(),
+                    deny: deny.iter().map(|d| d.to_string()).collect(),
+                },
+            },
+            1,
+            root.to_path_buf(),
+        ))
+    }
+
+    fn posture_of(live: &LivePaneAuthority) -> Option<crate::broker::PermissionPosture> {
+        live.grant().posture().ok().flatten().cloned()
+    }
+
+    /// A pane bearer resolves the grant its incarnation carries; a revoked
+    /// incarnation or registration authenticates nothing (stint 1632).
+    #[test]
+    fn pane_bearer_carries_its_grant_and_refuses_once_revoked() {
+        let root = PathBuf::from("/workspace/unbound");
+        let binding = live(65_300_310, crate::broker::Decision::Deny, &["tool.secret"], &root);
+        let token = register_pane_credential(binding.clone());
+        assert_eq!(authenticated_posture_for_test(&token), Some(posture_of(&binding)));
+        binding.revoke();
+        assert!(authenticate(&token).is_none(), "a revoked incarnation is refused");
+        let fresh = live(65_300_310, crate::broker::Decision::Deny, &[], &root);
+        let token = register_pane_credential(fresh);
         revoke_pane_bearer(&token);
         assert!(authenticate(&token).is_none(), "revoked bearer refused");
     }
 
     /// Round 3 item 3a: each registration is its own handle. A second
     /// registration under a reused pane id gets a different token; the first
-    /// bearer keeps resolving its own binding, and revoking either leaves
+    /// bearer keeps resolving its own incarnation, and revoking either leaves
     /// the other intact.
     #[test]
     fn pane_bearer_registrations_are_exact_handles() {
         let pane_id = 900_100_002u64;
         let root = PathBuf::from("/workspace/host-mcp-reuse");
-        let binding = |posture: crate::broker::Decision| {
-            Arc::new(crate::broker::pane_authority::PaneAuthority {
-                secrets: crate::host::shell::SecretPolicy::NONE,
-                pane_id,
-                posture: Some(crate::broker::PermissionPosture {
-                    default_posture: posture,
-                    allow: Vec::new(),
-                    ask: Vec::new(),
-                    deny: Vec::new(),
-                }),
-                spawned_by: None,
-                context_id: 1,
-                workspace_root: root.clone(),
-            })
-        };
-        let (first, second) = (
-            binding(crate::broker::Decision::Deny),
-            binding(crate::broker::Decision::Ask),
-        );
-        let first_token = register_pane_bearer_for(&first, root.clone());
-        let second_token = register_pane_bearer_for(&second, root.clone());
+        let first = live(pane_id, crate::broker::Decision::Deny, &[], &root);
+        let second = live(pane_id, crate::broker::Decision::Ask, &[], &root);
+        let first_token = register_pane_credential(first.clone());
+        let second_token = register_pane_credential(second.clone());
         assert_ne!(
             first_token, second_token,
             "a reused pane id gets a new token"
         );
         assert_eq!(
             authenticated_posture_for_test(&first_token),
-            Some(first.posture.clone()),
-            "the first bearer still resolves its own binding"
+            Some(posture_of(&first)),
+            "the first bearer still resolves its own incarnation"
         );
         revoke_pane_bearer(&second_token);
         assert_eq!(
             authenticated_posture_for_test(&first_token),
-            Some(first.posture.clone()),
+            Some(posture_of(&first)),
             "the second owner's revocation leaves the first registration"
         );
-        let third_token = register_pane_bearer_for(&second, root);
+        let third_token = register_pane_credential(second.clone());
         revoke_pane_bearer(&first_token);
         assert!(authenticate(&first_token).is_none());
         assert_eq!(
             authenticated_posture_for_test(&third_token),
-            Some(second.posture.clone()),
+            Some(posture_of(&second)),
             "the first owner's revocation leaves the later registration"
         );
         revoke_pane_bearer(&third_token);
-    }
-
-    fn register_pane_bearer_for(
-        binding: &Arc<crate::broker::pane_authority::PaneAuthority>,
-        root: PathBuf,
-    ) -> String {
-        register_pane_credential(Some(binding.clone()), binding.pane_id, 1, root)
     }
 
     #[test]
@@ -1350,20 +1358,15 @@ mod tests {
     /// A second bearer for the pane `token` belongs to, under `posture`.
     fn bearer_with_ceiling(token: &str, posture: crate::broker::PermissionPosture) -> String {
         let caller = authenticate(token).expect("live bearer");
-        let binding = Arc::new(crate::broker::pane_authority::PaneAuthority {
-            secrets: crate::host::shell::SecretPolicy::NONE,
-            pane_id: caller.pane_id,
-            posture: Some(posture),
-            spawned_by: None,
-            context_id: caller.context_id,
-            workspace_root: caller.workspace_root.clone(),
-        });
-        register_pane_credential(
-            Some(binding),
-            caller.pane_id,
-            caller.context_id,
-            caller.workspace_root,
-        )
+        let binding = LivePaneAuthority::admitted(
+            crate::broker::pane_authority::PaneAuthority::for_test(
+                caller.pane_id,
+                crate::broker::pane_authority::Ceiling::Posture { posture },
+                caller.context_id,
+                caller.workspace_root,
+            ),
+        );
+        register_pane_credential(binding)
     }
 
     fn tool_call(port: u16, token: &str, name: &str, arguments: &str) -> (bool, String) {

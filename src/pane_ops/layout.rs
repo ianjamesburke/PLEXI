@@ -326,7 +326,7 @@ impl PlexiApp {
             if self.windows[active].panes.is_empty() {
                 let context = self.pane_context_env_for_window(active);
                 let cwd = context.root.clone();
-                let launch = self.host_terminal_launch(context, cwd, None, false);
+                let launch = self.desktop_terminal_launch(context, cwd, None);
                 if let Some((tree, panes, root_tile)) = self.create_single_pane_tree(launch) {
                     self.windows[active].tree = tree;
                     self.windows[active].panes = panes.into();
@@ -426,20 +426,19 @@ impl PlexiApp {
             .map(|w| w.context_id)
             .unwrap_or(0);
         let context_env = self.pane_context_env_for_context(ctx_id);
-        let launch = self.host_terminal_launch(
+        let launch = self.desktop_terminal_launch(
             context_env,
             cwd,
             initial_cmd.map(|command| super::construct::LaunchCommand {
                 command: command.to_string(),
                 close_on_exit,
             }),
-            false,
         );
         let launch = super::construct::TerminalLaunch {
             ephemeral: close_on_exit,
             ..launch
         };
-        let new_id = launch.pane_id;
+        let new_id = launch.pane_id();
         let pane = match self.construct_terminal(launch) {
             Ok(pane) => pane,
             Err(error) => {

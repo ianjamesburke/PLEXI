@@ -150,7 +150,16 @@ fn agent_pane_env_carries_no_workspace_or_folder_secrets() {
         };
         let launch = h
             .app
-            .host_terminal_launch(context_env, Some(root.clone()), None, agent_pane);
+            .terminal_launch(
+                if agent_pane {
+                    crate::broker::pane_authority::GrantSource::OutsideProcess
+                } else {
+                    crate::broker::pane_authority::GrantSource::DesktopInput
+                },
+                context_env,
+                Some(root.clone()),
+                None,
+            );
         crate::pane_ops::construct::probes::env_at_backend_entry(launch)
     };
     let human = settings(false);
@@ -212,7 +221,12 @@ fn cli_secret_set_does_not_enable_terminal_injection() {
 fn spawn_second_terminal(h: &mut HostHarness, beside: u64) -> u64 {
     let (_, tile) = h.app.find_pane_in_any_window(beside).unwrap();
     let context = h.app.pane_context_env_for_window(0);
-    let launch = h.app.host_terminal_launch(context, None, None, true);
+    let launch = h.app.terminal_launch(
+        crate::broker::pane_authority::GrantSource::OutsideProcess,
+        context,
+        None,
+        None,
+    );
     h.app
         .spawn_terminal_pane_at(
             crate::pane_ops::create::SplitPlacement {

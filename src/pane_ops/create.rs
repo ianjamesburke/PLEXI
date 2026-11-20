@@ -104,7 +104,7 @@ enum StagedAgentDestination {
 
 /// What an agent worker runs and under which ceiling.
 pub(crate) struct AgentWorkerLaunch<'a> {
-    pub(crate) authority: AgentWorkerAuthority,
+    pub(crate) grant: AgentWorkerGrant,
     /// A reserved id (a handoff successor), or `None` to allocate one.
     pub(crate) pane_id: Option<PaneId>,
     /// Provenance decided at admission (`team:...`); `None` derives it from
@@ -162,38 +162,16 @@ impl<'a> SubcontextTarget<'a> {
     }
 }
 
-/// The permission ceiling an agent worker pane is created under, prepared
-/// before the pane exists (stint 1632).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AgentWorkerAuthority {
-    pub(crate) posture: Option<crate::broker::PermissionPosture>,
-}
-
-impl AgentWorkerAuthority {
-    /// `role` narrowed by the parent's posture, when the parent has one.
-    pub(crate) fn ceiling(
-        role: crate::broker::PermissionPosture,
-        parent: Option<&crate::broker::PermissionPosture>,
-    ) -> Self {
-        Self {
-            posture: Some(match parent {
-                Some(parent) => role.restricted_by(parent),
-                None => role,
-            }),
-        }
-    }
-
-    /// This ceiling, never wider than `saved`: a pane relaunched from a
-    /// record runs under at most the authority it ran under then.
-    pub(crate) fn narrowed_by(self, saved: Option<&crate::broker::PermissionPosture>) -> Self {
-        Self {
-            posture: match (self.posture, saved) {
-                (Some(current), Some(saved)) => Some(current.restricted_by(saved)),
-                (None, Some(saved)) => Some(saved.clone()),
-                (current, None) => current,
-            },
-        }
-    }
+/// What an agent worker's grant is admitted from, prepared before the pane
+/// exists (stint 1632): the verified source that bounds it, the role it was
+/// admitted for, and any recorded restriction a relaunch must keep.
+#[derive(Clone, Debug)]
+pub(crate) struct AgentWorkerGrant {
+    pub(crate) source: crate::broker::pane_authority::GrantSource,
+    /// `None` only for a pane that runs no named role (a team coordinator,
+    /// a reopened harness run with no role).
+    pub(crate) role: Option<crate::broker::pane_authority::AdmittedRole>,
+    pub(crate) recorded: Option<crate::broker::pane_authority::PaneAuthority>,
 }
 
 pub(crate) struct IdViewLaunchOptions {
@@ -1544,7 +1522,7 @@ impl PlexiApp {
         cwd: PathBuf,
         commands: &[Option<String>],
         layout: crate::protocol::SubContextLayout,
-        agent_pane: bool,
+        source: &crate::broker::pane_authority::GrantSource,
     ) -> Option<ContextPaneSet> {
         if commands.is_empty() {
             log::error!("create_context_pane_set: refusing to build a window with zero panes");
@@ -1554,16 +1532,16 @@ impl PlexiApp {
         let mut panes: HashMap<PaneId, Pane> = HashMap::new();
         let mut pane_ids: Vec<PaneId> = Vec::with_capacity(total);
         for (idx, initial_cmd) in commands.iter().enumerate() {
-            let launch = self.host_terminal_launch(
+            let launch = self.terminal_launch(
+                source.clone(),
                 context.clone(),
                 Some(cwd.clone()),
                 initial_cmd.as_ref().map(|command| LaunchCommand {
                     command: command.clone(),
                     close_on_exit: false,
                 }),
-                agent_pane,
             );
-            let new_id = launch.pane_id;
+            let new_id = launch.pane_id();
             // A failure drops the panes already built: their credentials are
             // revoked and their shells released. No partial squad installs.
             let mut pane = match self.construct_terminal(launch) {
@@ -1603,43 +1581,13 @@ impl PlexiApp {
         Some((tree, panes, first_tile, pane_ids))
     }
 
-    /// A terminal launch the host admits for itself (its UI, boot and system
-    /// paths): no inherited ceiling, a pane bearer, and the secret classes a
-    /// human shell in `cwd` is eligible for (none for an agent pane).
-    pub(crate) fn host_terminal_launch(
-        &mut self,
-        context: PaneContextEnv,
-        cwd: Option<PathBuf>,
-        command: Option<LaunchCommand>,
-        agent_pane: bool,
-    ) -> TerminalLaunch {
-        TerminalLaunch {
-            pane_id: self.host.alloc_pane_id(),
-            posture: None,
-            spawned_by: None,
-            context,
-            cwd,
-            secrets: if agent_pane {
-                crate::host::shell::SecretPolicy::NONE
-            } else {
-                crate::host::shell::SecretPolicy::ALL
-            },
-            agent_pane,
-            ephemeral: command.as_ref().is_some_and(|c| c.close_on_exit),
-            command,
-            env: Vec::new(),
-            mcp: McpBearer::Pane,
-            profile_dir: crate::config::config_dir(),
-        }
-    }
-
     /// Construct `launch` into a single-pane tree. `None` when construction
     /// fails; nothing it acquired survives.
     pub(super) fn create_single_pane_tree(
         &mut self,
         launch: TerminalLaunch,
     ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
-        let new_id = launch.pane_id;
+        let new_id = launch.pane_id();
         let pane = match self.construct_terminal(launch) {
             Ok(pane) => pane,
             Err(error) => {
@@ -1783,7 +1731,7 @@ impl PlexiApp {
         };
         let spawned_by = term
             .authority()
-            .and_then(|a| a.spawned_by.clone())
+            .map(|a| a.grant().spawned_by.clone())
             .or_else(|| term.spawned_by.clone());
         crate::host::flight_recorder::record(
             "pane_provenance",
@@ -2170,11 +2118,25 @@ impl PlexiApp {
             conjoined,
             origin,
         )?;
-        let authority =
-            self.agent_worker_authority(role, &placement.effective_cwd, placement.parent_pane_id);
+        // The worker's source is its verified parent's grant, a team run, or
+        // an outside caller; a named role must resolve or nothing starts.
+        let source = match (run_token, placement.parent_pane_id) {
+            (_, Some(parent)) => self.caller_grant_source(parent),
+            (Some(_), None) => crate::broker::pane_authority::GrantSource::Team,
+            (None, None) => crate::broker::pane_authority::GrantSource::OutsideProcess,
+        };
+        let role_grant = if harness == "team" {
+            None
+        } else {
+            Some(self.admit_worker_role(role, &placement.effective_cwd)?)
+        };
         self.launch_agent_worker(
             AgentWorkerLaunch {
-                authority,
+                grant: AgentWorkerGrant {
+                    source,
+                    role: role_grant,
+                    recorded: None,
+                },
                 pane_id: None,
                 spawned_by: None,
                 role,
@@ -2189,37 +2151,30 @@ impl PlexiApp {
         )
     }
 
-    /// Resolve `role`'s permission ceiling from the definition visible at
-    /// `lookup_cwd`, narrowed by the parent pane's posture. `None` posture when
-    /// the role does not resolve, which the broker treats as `Ask`.
-    pub(crate) fn agent_worker_authority(
+    /// `role`'s definition visible at `lookup_cwd`, admitted for a new named
+    /// worker. A role that does not resolve refuses the launch (stint 1632):
+    /// a missing definition never means the baseline.
+    pub(crate) fn admit_worker_role(
         &self,
         role: &str,
         lookup_cwd: &Path,
-        parent_pane_id: Option<u64>,
-    ) -> AgentWorkerAuthority {
+    ) -> Result<crate::broker::pane_authority::AdmittedRole, String> {
         let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(lookup_cwd);
-        let posture = crate::cli::agent::resolve_agent_definition_in(
+        let (definition, _) = crate::cli::agent::resolve_agent_definition_in(
             role,
             &crate::config::config_dir(),
             lookup_root.as_deref(),
         )
-        .map(|(definition, _)| {
-            AgentWorkerAuthority::ceiling(
-                definition.posture,
-                parent_pane_id
-                    .and_then(|parent| self.pane_permission_posture(parent))
-                    .as_ref(),
-            )
-            .posture
-        })
         .map_err(|error| {
-            log::info!("agent_spawn: no posture snapshot for role={role}: {error}");
-            error
+            log::info!("agent_spawn: role={role} not admitted: {error}");
+            format!("permission_denied: agent role '{role}' did not resolve: {error}")
+        })?;
+        Ok(crate::broker::pane_authority::AdmittedRole {
+            id: definition.id,
+            posture: definition.posture,
+            can_call: definition.can_call,
+            can_handoff: definition.can_handoff,
         })
-        .ok()
-        .flatten();
-        AgentWorkerAuthority { posture }
     }
 
     /// Construct and install an agent worker at `placement` under an already
@@ -2233,7 +2188,7 @@ impl PlexiApp {
         placement: AgentPlacement,
     ) -> Result<(PaneId, u64), String> {
         let AgentWorkerLaunch {
-            authority,
+            grant,
             pane_id,
             spawned_by,
             role,
@@ -2279,14 +2234,29 @@ impl PlexiApp {
             StagedAgentDestination::Window(context)
             | StagedAgentDestination::NewSubcontext { context, .. } => context.clone(),
         };
+        let pane_id = pane_id.unwrap_or_else(|| self.host.alloc_pane_id());
+        let scope = super::grant::credential_scope(&context, Some(&placement.effective_cwd));
+        let authority = crate::broker::pane_authority::LivePaneAuthority::admitted(
+            crate::broker::pane_authority::PaneAuthority::admit(
+                &crate::config::config_dir(),
+                crate::broker::pane_authority::GrantRequest {
+                    pane_id,
+                    source: grant.source,
+                    parent: parent_pane_id,
+                    role: grant.role,
+                    scope,
+                    secret_directory: None,
+                    folder_secrets: false,
+                    agent_command: true,
+                    spawned_by: spawned_by.clone(),
+                },
+            )
+            .narrowed_by(grant.recorded.as_ref()),
+        );
         let launch = TerminalLaunch {
-            pane_id: pane_id.unwrap_or_else(|| self.host.alloc_pane_id()),
-            posture: authority.posture,
-            spawned_by: Some(spawned_by.clone()),
+            authority,
             context,
             cwd: Some(placement.effective_cwd.clone()),
-            secrets: crate::host::shell::SecretPolicy::NONE,
-            agent_pane: true,
             // Completion closes ephemeral workers after the exit report;
             // failures retain the shell and its output for inspection.
             command: Some(LaunchCommand {
@@ -2301,7 +2271,7 @@ impl PlexiApp {
             },
             profile_dir: crate::config::config_dir(),
         };
-        let new_id = launch.pane_id;
+        let new_id = launch.pane_id();
         let mut pane = self.construct_terminal(launch).map_err(|error| {
             log::error!("{error}");
             format!("failed to create terminal pane for agent role '{role}': {error}")
@@ -2311,7 +2281,7 @@ impl PlexiApp {
         pane.agent_harness = Some(harness.to_string());
         pane.agent_role = Some(role.to_string());
         pane.begin_agent_launch(crate::host::pane::AgentLaunchKind::Command);
-        if let Some(posture) = pane.permission_posture() {
+        if let Ok(Some(posture)) = pane.permission_ceiling() {
             log::info!(
                 "agent_spawn: posture snapshot for role={role} pane={new_id}: default={}",
                 posture.default_posture.as_str()
@@ -4232,7 +4202,7 @@ mod tests {
             h.assert_window_settled(0, "fixture");
             let tile = h.app.windows[0].tree.tiles.find_pane(&a).unwrap();
             let context = h.app.pane_context_env_for_window(0);
-            let launch = h.app.host_terminal_launch(context, None, None, false);
+            let launch = h.app.desktop_terminal_launch(context, None, None);
             let new_id = h
                 .app
                 .spawn_terminal_pane_at(
