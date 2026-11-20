@@ -205,8 +205,9 @@ fn claim_within(
     })?;
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
-    // The lock is this profile's own file: never followed through a symlink
-    // or shared by hard link, so the pid never lands in another profile.
+    // On Unix the lock is this profile's own file: never followed through a
+    // symlink or shared by hard link, so the pid never lands in another
+    // profile. Windows has no such link refusal here.
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;

@@ -437,7 +437,9 @@ fn detect_pid(socket_path: &Path) -> Option<u32> {
     let lock = socket_path.parent()?.join(host_presence::LOCK_FILE);
     let file = match std::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        // O_NONBLOCK: a FIFO here must not hang the open before the type
+        // check below refuses it.
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(&lock)
     {
         Ok(file) => file,
@@ -2326,6 +2328,31 @@ mod tests {
         std::fs::remove_file(&lock).unwrap();
         std::fs::hard_link(&other_lock, &lock).unwrap();
         assert_eq!(detect_pid(&endpoint), None, "hard-linked lock");
+    }
+
+    /// Round 8: a FIFO at host.lock is refused promptly with no PID instead
+    /// of hanging every lifecycle verb on its open.
+    #[cfg(unix)]
+    #[test]
+    fn detect_pid_returns_promptly_for_a_fifo_lock() {
+        let profile = tempfile::tempdir().unwrap();
+        let lock = profile
+            .path()
+            .join(plexi_distribution::host_presence::LOCK_FILE);
+        let c = std::ffi::CString::new(lock.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: c is a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let endpoint = endpoint_in(profile.path());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || sender.send(detect_pid(&endpoint)));
+        match receiver.recv_timeout(Duration::from_secs(5)) {
+            Ok(pid) => assert_eq!(pid, None),
+            Err(_) => {
+                // Unblock the hung open so the thread can finish.
+                let _ = std::fs::OpenOptions::new().write(true).open(&lock);
+                panic!("detect_pid hung on a FIFO host.lock");
+            }
+        }
     }
 
     #[cfg(unix)]
