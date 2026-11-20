@@ -9869,6 +9869,10 @@ fn screenshot_delivered_capture_still_fulfills() {
     let ctx = h.ctx.clone();
     h.app.fulfill_screenshot_events(&ctx, &raw_input);
     // The hook only matches the capture; `App::logic` writes it.
+    assert!(
+        !std::path::Path::new(&response_file).exists(),
+        "raw_input_hook does no file I/O"
+    );
     h.app.write_completed_screenshots();
 
     let response = read_json_response(&response_file);
@@ -22322,4 +22326,36 @@ fn agent_mesh_gate_queued_palette_open_shows_denial() {
         .iter()
         .any(|n| n.body.contains("experiments enable agent_mesh")));
     assert!(h.app.pending_user_commands.is_empty());
+}
+
+/// The notes picker's trash is filesystem I/O: routing the key (the hook)
+/// only queues it, and `App::logic` performs it in the same pass.
+#[test]
+fn notes_picker_delete_routes_in_the_hook_and_trashes_in_logic() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    let dir = tempfile::tempdir().unwrap();
+    let path = notes_delete_fixture(&mut h, dir.path());
+    let ctx = h.ctx.clone();
+    let mut raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        events: vec![egui::Event::Key {
+            key: egui::Key::Backspace,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        }],
+        ..Default::default()
+    };
+    use eframe::App;
+    h.app.raw_input_hook(&ctx, &mut raw);
+    assert!(path.exists(), "raw_input_hook does no file I/O");
+    assert_eq!(h.app.notes_picker_effects.len(), 1, "the delete is queued");
+    h.run_frames(1);
+    assert!(!path.exists(), "App::logic trashed it");
 }
