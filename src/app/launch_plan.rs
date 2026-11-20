@@ -3940,6 +3940,18 @@ mod tests {
         );
         drop(entry);
 
+        // A raw spawn whose role label has no definition runs unconfigured,
+        // still bounded by its parent's grant.
+        let parent = spawn_tester(&mut h, &root);
+        let labelled = worker(&mut h, &root, "unlisted-label", Some(parent), None);
+        assert!(
+            h.app
+                .pane_ceiling(labelled)
+                .unwrap()
+                .is_some_and(|p| p.denies("tool.secret")),
+            "an unconfigured worker keeps its parent's ceiling"
+        );
+
         write_role_settings(&root, "tester", "[permissions]\ndefault_posture='ask'\n");
         let recorded = {
             let mut grant = crate::broker::pane_authority::PaneAuthority::for_test(
