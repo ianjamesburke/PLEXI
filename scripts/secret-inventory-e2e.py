@@ -11,6 +11,8 @@ import json, os, pathlib, subprocess, sys, tempfile, uuid
 if sys.platform != "darwin":
     raise SystemExit("This check uses the macOS throwaway-keychain backend.")
 binary = str(pathlib.Path(sys.argv[1]).absolute())
+# Help and usage errors name the invoked binary; runtime refusals say `plexi`.
+enable_hint = f'{pathlib.Path(binary).name} experiments enable folder_secrets'
 def keychain_snapshot():
     return tuple(subprocess.run(["security", operation], capture_output=True, check=True).stdout
                  for operation in ["default-keychain", "list-keychains"])
@@ -28,11 +30,11 @@ with tempfile.TemporaryDirectory(prefix='plexi-secrets-', dir='/tmp') as scratch
     rows=json.loads(run('experiments','list','--json'))
     assert not next(row for row in rows if row['name']=='folder_secrets')['enabled']
     help=run('secret','set','--help')
-    assert '--folder' in help and 'plexi experiments enable folder_secrets' in help
+    assert '--folder' in help and enable_hint in help
     refusal=run('secret','set','DEMO_TOKEN','--folder','.','--from-env',ok=False)
     assert 'plexi experiments enable folder_secrets' in refusal
     refusal=run('secret','set','DEMO_TOKEN','--folder',ok=False)
-    assert 'plexi experiments enable folder_secrets' in refusal
+    assert enable_hint in refusal
     run('experiments','enable','folder_secrets')
     empty=json.loads(run('secret','list','--json'))
     assert not any(row['name']=='DEMO_TOKEN' for row in empty['entries'])

@@ -622,6 +622,7 @@ pub fn resolve_opt_pane_target(target: Option<&PaneTarget>) -> Result<Option<u64
 }
 pub mod crawl;
 pub mod experiments;
+pub mod front;
 pub mod help;
 pub mod introspect;
 mod pane_caller;

@@ -2006,10 +2006,52 @@ default = "ask"
                     &profile,
                     &serde_json::json!({
                         "id": uuid::Uuid::new_v4().to_string(), "phase": "exit", "exit_code": 0,
-                        "pane_id": 42, "argv": crate::cli::trace::redact_argv(&argv, &[])
+                        // A sender's claim to have redacted changes nothing.
+                        "pane_id": 42, "redacted": true, "argv": argv
                     }),
                 )
                 .unwrap();
+            }
+            // Frames from a client that did not redact them, carrying invalid
+            // and repeated selectors, and this process's own front end on the
+            // same argv: neither the trace nor the log may hold the values.
+            for args in [
+                vec!["plexi", "--profile", SENTINEL, "host", "stop"],
+                vec!["plexi", "--profile", "one", "host", "stop", "--profile", SENTINEL],
+                vec!["plexi", "pane", "send", SENTINEL],
+            ] {
+                let argv: Vec<String> = args.into_iter().map(str::to_string).collect();
+                crate::host::flight_recorder::handle_cli_trace(
+                    &profile,
+                    &serde_json::json!({
+                        "id": uuid::Uuid::new_v4().to_string(), "phase": "exit", "exit_code": 2,
+                        "pane_id": 42, "argv": argv
+                    }),
+                )
+                .unwrap();
+                let os: Vec<std::ffi::OsString> = argv.iter().map(Into::into).collect();
+                assert!(matches!(
+                    crate::cli::front::parse(&os).outcome,
+                    crate::cli::front::Outcome::UsageError(_)
+                ));
+            }
+            // argv that is not a list of strings, and a line that is not
+            // JSON at all: the diagnostics name a kind and a size only.
+            let wrong_type = serde_json::json!({
+                "id": uuid::Uuid::new_v4().to_string(), "phase": "exit", "exit_code": 0,
+                "argv": SENTINEL,
+            });
+            assert!(crate::host::flight_recorder::handle_cli_trace(&profile, &wrong_type).is_err());
+            let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
+                egui::Context::default(),
+            ));
+            let (mailbox, _receiver) =
+                crate::app::ui_mailbox::UiMailbox::channel(wake, "sentinel_test");
+            for line in [
+                wrong_type.to_string(),
+                format!("{{\"type\":\"cli_trace\",\"argv\":[\"{SENTINEL}\""),
+            ] {
+                crate::app::handle_socket_line_in(&profile, &line, &mailbox, None, &mut Vec::new());
             }
             log::logger().flush();
             let log = std::fs::read_to_string(profile.join("plexi.log")).unwrap();
@@ -2019,7 +2061,9 @@ default = "ask"
             assert!(!trace.contains(SENTINEL), "sentinel leaked to session");
             assert!(log.contains(&format!("len={}", SENTINEL.chars().count())));
             assert!(log.contains(&format!("payload_len={}", SENTINEL.chars().count() + 1)));
-            assert!(trace.contains(&format!("len={}", SENTINEL.chars().count())));
+            // The host records traced calls without values; an argv the
+            // grammar rejects is the fixed label.
+            assert!(trace.contains("<unparsed>"));
             return;
         }
         let profile = tempfile::tempdir().unwrap();

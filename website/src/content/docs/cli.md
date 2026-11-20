@@ -1270,7 +1270,6 @@ Use --open to launch it in a split-right pane after scaffolding. See `sdk/python
 | `--lang` | string | no | Plugin language/template: `python` (declarative UI). Use `--wasm <name>` for a Rust WASM component Default: `python`. |
 | `--global` | flag | no | Scaffold into the global plugin registry instead of the workspace |
 | `--open` | flag | no | Open the plugin in a split-right pane after scaffolding |
-| `--no-open` | flag | no | Deprecated compatibility flag. Plugin init no longer opens by default |
 | `--from` | string | no | Open the new pane relative to this pane id or name. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 
 ### `plexi plugin validate`
@@ -2588,7 +2587,7 @@ Launch this channel's plugin bundle detached and wait for readiness.
 
 Errors if a host for this channel is already running. Seeds any declared panes via the spawn-queue before the plugin boots, so they appear on its first frame.
 
-Example: plexi-pr-2357 host start --pane 'cwd=/tmp,cmd=htop'
+Example: plexi host start --pane 'cwd=/tmp,cmd=htop'
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -2636,7 +2635,7 @@ Example: plexi host screenshot --pane 3 --output /tmp/pane3.png
 
 Inject a key or chord into the host-level keyboard path.
 
-This is a validation seam for host shortcuts: it does not send bytes to a focused pane. Example: `plexi-pr-2906 host key cmd+1`.
+This is a validation seam for host shortcuts: it does not send bytes to a focused pane. Example: `plexi host key cmd+1`.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|

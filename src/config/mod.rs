@@ -1,5 +1,8 @@
 pub mod edit;
+mod profile_name;
 pub mod watcher;
+
+pub use profile_name::{ProfileName, ProfileSelection};
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -1588,17 +1591,17 @@ pub struct ThemeConfig {
 
 use std::sync::{Mutex, OnceLock};
 
-static PROFILE_OVERRIDE: OnceLock<Option<String>> = OnceLock::new();
+static PROFILE_OVERRIDE: OnceLock<Option<ProfileName>> = OnceLock::new();
 
-/// Set the active profile. Called once from main() after CLI parsing.
-/// `None` or `Some("default")` → fall through to binary-name detection.
-/// `Some(name)` → use `.plexi-<name>` as the config dir.
-pub fn set_profile(name: Option<String>) {
-    let normalized = match name.as_deref() {
-        None | Some("") | Some("default") => None,
-        Some(_) => name,
-    };
-    let _ = PROFILE_OVERRIDE.set(normalized);
+/// Install the invocation's validated profile selection. Called once from
+/// `main` with the selection the CLI front end validated. `Default` falls
+/// through to binary-name detection; `Named` uses `.plexi-<name>`.
+pub fn set_profile(selection: ProfileSelection) {
+    let name = selection.into_name();
+    log::info!("config: profile selection {name:?}");
+    if PROFILE_OVERRIDE.set(name).is_err() {
+        log::error!("config: profile selection was already installed; keeping the first");
+    }
 }
 
 /// Read-only freshness check shared by both sides of the initialization lock.
@@ -2025,7 +2028,7 @@ pub fn workspace_channel_dir() -> String {
         return format!(".plexi-{channel}");
     }
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
-        return format!(".plexi-{profile}");
+        return format!(".plexi-{}", profile.as_str());
     }
     let channel_dir = process_channel_dir();
     #[cfg(test)]

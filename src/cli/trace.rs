@@ -4,10 +4,27 @@
 mod tests {
     use super::*;
 
+    fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
+        recorded_argv(argv, known, false)
+    }
+
+    /// The host's record of an argv the static grammar rejects.
+    const UNPARSED: [&str; 2] = ["plexi", "<unparsed>"];
+
+    /// A recorded argv is stable under recording again, except the fixed
+    /// label for an unparsable one (which itself parses as a bare launch).
+    fn assert_stable(safe: &[String], known: &[String]) {
+        if safe != UNPARSED {
+            assert_eq!(redact_argv(safe, known), safe);
+        }
+    }
+
     #[test]
     fn cli_trace_redacts_secret_values_and_assignments() {
         let argv = ["plexi", "secret", "set", "FOO", "bar"];
-        assert_eq!(redact_argv(&argv.map(str::to_string), &[])[4], "<redacted>");
+        assert!(!redact_argv(&argv.map(str::to_string), &[])
+            .join(" ")
+            .contains("bar"));
         let argv = [
             "plexi",
             "pane",
@@ -20,10 +37,9 @@ mod tests {
             "--secret=other",
         ];
         let redacted = redact_argv(&argv.map(str::to_string), &["CUSTOM_TOKEN".into()]);
-        assert_eq!(redacted[4], "<redacted>");
-        assert!(is_text_placeholder(&redacted[5]));
-        assert_eq!(redacted[7], "<redacted>");
-        assert!(!redacted[8].contains("other"));
+        // `pane new` declares no `--secret`: clap rejects it, so the host
+        // records only the fixed label.
+        assert_eq!(redacted, UNPARSED);
         assert!(!redacted.join(" ").contains("private"));
     }
 
@@ -105,7 +121,7 @@ mod tests {
         assert!(!text.contains("hidden value"), "{text}");
         assert!(!text.contains("other"), "{text}");
         assert!(!text.contains("private value"), "{text}");
-        assert_eq!(redact_argv(&safe, &["CUSTOM_NAME".into()]), safe);
+        assert_stable(&safe, &["CUSTOM_NAME".into()]);
     }
 
     #[test]
@@ -126,11 +142,7 @@ mod tests {
         ]
         .map(str::to_string);
         let safe = redact_argv(&argv, &[]);
-        assert!(safe[4..8].iter().all(|arg| is_text_placeholder(arg)));
-        assert_eq!(safe[9], "<redacted>");
-        assert!(is_text_placeholder(&safe[10]));
-        assert!(is_text_placeholder(&safe[11]));
-        assert_eq!(redact_argv(&safe, &[]), safe);
+        assert_eq!(safe, UNPARSED);
     }
 
     #[test]
@@ -150,10 +162,7 @@ mod tests {
             crate::host::flight_recorder::read_session(dir.path(), "sess-grants").unwrap();
         let calls = crate::host::flight_recorder::cli_calls(rows, Some(19));
         let argv = &calls[0]["data"]["argv"];
-        assert!(is_text_placeholder(argv[4].as_str().unwrap()));
-        assert_eq!(argv[6], "<redacted>");
-        assert!(is_text_placeholder(argv[7].as_str().unwrap()));
-        assert_eq!(argv[9], "<redacted>");
+        assert_eq!(argv, &json!(UNPARSED));
     }
 
     #[test]
@@ -316,7 +325,7 @@ mod tests {
                 .collect();
             let safe = redact_argv(&argv, &[]);
             assert!(!safe.join(" ").contains("SENTINEL"), "{case:?}: {safe:?}");
-            assert_eq!(redact_argv(&safe, &[]), safe, "{case:?}");
+            assert_stable(&safe, &[]);
         }
     }
 
@@ -389,15 +398,37 @@ mod tests {
     #[test]
     fn cli_trace_capture_opt_in_keeps_content_but_still_hides_secrets() {
         let args = ["plexi", "pane", "send", "42", "hello world"].map(str::to_string);
-        assert_eq!(redact_argv_with_content(&args, &[], true), args);
+        assert_eq!(recorded_argv(&args, &[], true), args);
         let args = ["plexi", "pane", "send", "42", "API_KEY=private"].map(str::to_string);
-        assert!(!redact_argv_with_content(&args, &[], true).join(" ").contains("private"));
-        let args = ["plexi", "agent", "call", "reviewer", "--task=API_KEY=private"].map(str::to_string);
-        assert!(!redact_argv_with_content(&args, &[], true).join(" ").contains("private"));
-        let args = ["plexi", "agent", "call", "reviewer", "--task=--token=private"].map(str::to_string);
-        assert!(!redact_argv_with_content(&args, &[], true).join(" ").contains("private"));
+        assert!(!recorded_argv(&args, &[], true)
+            .join(" ")
+            .contains("private"));
+        let args = [
+            "plexi",
+            "agent",
+            "call",
+            "reviewer",
+            "--task=API_KEY=private",
+        ]
+        .map(str::to_string);
+        assert!(!recorded_argv(&args, &[], true)
+            .join(" ")
+            .contains("private"));
+        let args = [
+            "plexi",
+            "agent",
+            "call",
+            "reviewer",
+            "--task=--token=private",
+        ]
+        .map(str::to_string);
+        assert!(!recorded_argv(&args, &[], true)
+            .join(" ")
+            .contains("private"));
         let invalid = ["plexi", "pane", "send", "42", "private", "extra"].map(str::to_string);
-        assert!(!redact_argv_with_content(&invalid, &[], true).join(" ").contains("private"));
+        assert!(!recorded_argv(&invalid, &[], true)
+            .join(" ")
+            .contains("private"));
     }
 }
 
@@ -418,7 +449,7 @@ fn active() -> &'static Mutex<Option<Invocation>> {
 
 /// Begin once per CLI process, before dispatch. Debug/skill readers are excluded
 /// so a review-only draft does not mutate the session it is reading.
-pub fn begin(argv: &[String]) {
+pub fn begin(argv: &[String], owners: &[Option<super::front::Owner>]) {
     let socket =
         super::resolve_command_socket().unwrap_or_else(crate::platform::ipc::endpoint_path);
     let mut slot = active().lock().unwrap_or_else(|e| e.into_inner());
@@ -428,7 +459,12 @@ pub fn begin(argv: &[String]) {
     let id = uuid::Uuid::new_v4().to_string();
     let frame = json!({
         "type": "cli_trace", "id": id, "phase": "start",
-        "argv": redact_argv(argv, &known_secret_names(&crate::config::config_dir())),
+        "argv": redact_owned(
+            argv,
+            owners,
+            &known_secret_names(&crate::config::config_dir()),
+            capture_content(),
+        ),
         "pane_id": std::env::var("PLEXI_PANE_ID").ok().and_then(|v| v.parse::<u64>().ok()),
         "agent_session_id": std::env::var("PLEXI_AGENT_SESSION_ID").ok(),
         "ts": crate::platform::clock::now_rfc3339(),
@@ -600,145 +636,139 @@ fn content_id(id: &str) -> bool {
     )
 }
 
-fn content_values(matches: &clap::ArgMatches) -> Vec<String> {
-    content_values_at(matches, &[])
+/// Free-form payload arguments, by command path and argument id.
+fn is_content(path: &[String], id: &str, present: impl Fn(&str) -> bool) -> bool {
+    let at = |want: &[&str]| path.iter().map(String::as_str).eq(want.iter().copied());
+    content_id(id)
+        || (at(&["pane", "result"]) && id == "write")
+        || (at(&["pane", "result", "write"])
+            && (id == "second" || (id == "first" && !present("second"))))
 }
 
-fn content_values_at(matches: &clap::ArgMatches, path: &[&str]) -> Vec<String> {
-    let mut values = Vec::new();
-    for id in matches.ids().filter(|id| {
-        content_id(id.as_str())
-            || (path == ["pane", "result"] && id.as_str() == "write")
-            || (path == ["pane", "result", "write"]
-                && (id.as_str() == "second"
-                    || (id.as_str() == "first" && !matches.contains_id("second"))))
-    }) {
-        if matches.value_source(id.as_str()) == Some(clap::parser::ValueSource::CommandLine) {
-            if let Some(raw) = matches.get_raw(id.as_str()) {
-                values.extend(raw.map(|value| value.to_string_lossy().into_owned()));
+/// The host's record of a traced invocation. A trace frame can come from any
+/// process, so nothing it sends is kept as written. Clap parses the argv with
+/// the full static grammar (run requirements enforced; `--profile` declared so
+/// a selector parses, and never recorded). A parse yields the label `plexi`,
+/// the subcommand path and the option names actually given; values, and the
+/// positional and forwarded arguments that carry them, are never recorded. An
+/// argv clap rejects yields only `plexi <unparsed>`.
+pub(crate) fn host_record(argv: &[String]) -> Vec<String> {
+    use clap::CommandFactory;
+    const LABEL: &str = "plexi";
+    let mut command = super::args::Cli::command().arg(
+        clap::Arg::new("profile")
+            .long("profile")
+            .global(true)
+            .hide(true)
+            .action(clap::ArgAction::Append),
+    );
+    command.build();
+    let Ok(matches) = command.clone().try_get_matches_from(argv) else {
+        return vec![LABEL.to_string(), "<unparsed>".to_string()];
+    };
+    let mut record = vec![LABEL.to_string()];
+    let mut options: Vec<String> = Vec::new();
+    let mut node = &command;
+    let mut level = Some(&matches);
+    while let Some(m) = level {
+        for id in m.ids() {
+            let id = id.as_str();
+            if id == "profile" || m.value_source(id) != Some(clap::parser::ValueSource::CommandLine)
+            {
+                continue;
+            }
+            let Some(arg) = node.get_arguments().find(|arg| arg.get_id() == id) else {
+                continue;
+            };
+            if arg.is_positional() {
+                continue;
+            }
+            let name = match (arg.get_long(), arg.get_short()) {
+                (Some(long), _) => format!("--{long}"),
+                (None, Some(short)) => format!("-{short}"),
+                (None, None) => continue,
+            };
+            if !options.contains(&name) {
+                options.push(name);
             }
         }
+        level = m.subcommand().map(|(name, sub)| {
+            record.push(name.to_string());
+            node = node
+                .find_subcommand(name)
+                .expect("clap matched a declared subcommand");
+            sub
+        });
     }
-    if let Some((name, child)) = matches.subcommand() {
-        let mut path = path.to_vec();
-        path.push(name);
-        values.extend(content_values_at(child, &path));
-    }
-    values
+    record.extend(options);
+    record
 }
 
-/// On an invalid invocation, retain only grammar-recognized flags and the
-/// unambiguous command prefix. Unknown hyphen tokens might themselves be text.
-fn fail_closed(command: &clap::Command, argv: &[String]) -> Vec<Option<String>> {
-    fn flags(command: &clap::Command, out: &mut Vec<String>) {
-        for arg in command.get_arguments() {
-            if let Some(long) = arg.get_long() {
-                out.push(format!("--{long}"));
-            }
-            if let Some(short) = arg.get_short() {
-                out.push(format!("-{short}"));
-            }
-        }
-        for child in command.get_subcommands() {
-            flags(child, out);
-        }
-    }
-    let mut known = vec!["--".to_string()];
-    flags(command, &mut known);
-    let mut node = command;
-    let mut prefix = true;
+/// Content values by this invocation's captured ownership.
+fn redact_content(argv: &[String], owners: &[Option<super::front::Owner>]) -> Vec<Option<String>> {
     argv.iter()
-        .enumerate()
-        .map(|(index, arg)| {
-            if index == 0 {
-                return None;
-            }
-            if prefix {
-                if let Some(child) = node.find_subcommand(arg) {
-                    node = child;
-                    return None;
-                }
-                // Once a token is ambiguous, do not guess further command positions.
-                prefix = false;
-            }
-            if known.contains(arg) {
-                return None;
-            }
-            if let Some((flag, value)) = arg.split_once('=') {
-                if known.iter().any(|known| known == flag) {
-                    return Some(format!("{flag}={}", text_placeholder(value)));
-                }
-            }
-            Some(text_placeholder(arg))
+        .zip(owners)
+        .map(|(token, owner)| {
+            let owner = owner.as_ref()?;
+            let present = |id: &str| {
+                owners
+                    .iter()
+                    .flatten()
+                    .any(|other| other.path == owner.path && other.id == id)
+            };
+            is_content(&owner.path, &owner.id, present).then(|| {
+                let (prefix, value) = token.split_at(owner.prefix);
+                format!("{prefix}{}", text_placeholder(value))
+            })
         })
         .collect()
 }
 
-fn redact_content(argv: &[String]) -> (Vec<Option<String>>, bool) {
-    use clap::CommandFactory;
-    // main uses this same grammar through help::gated_command. Its additional
-    // transforms only hide help and consult runtime profiles; tracing must not.
-    let command = super::args::Cli::command();
-    let Ok(matches) = command.clone().try_get_matches_from(argv) else {
-        return (fail_closed(&command, argv), true);
-    };
-    let values = content_values(&matches);
-    let mut replacements = vec![None; argv.len()];
-    // Clap indices are logical indices (equals syntax and short clusters expand
-    // them), not argv offsets. Reparse candidate substitutions to prove ownership
-    // instead. This also disambiguates a payload equal to an id or command name.
-    let mut marker = "plexi_trace_content_probe".to_string();
-    while argv.iter().any(|arg| arg.contains(&marker)) {
-        marker.push('_');
+/// Redact an invocation's argv by its captured ownership before transport.
+/// Keep option names so the sequence remains useful; mask uppercase env
+/// assignments, secret keys, and arguments that carry free-form text.
+pub(crate) fn redact_owned(
+    argv: &[String],
+    owners: &[Option<super::front::Owner>],
+    known: &[String],
+    capture: bool,
+) -> Vec<String> {
+    if owners.len() != argv.len() {
+        log::warn!("cli_trace: ownership does not match argv; masking every value");
+        return host_record(argv);
     }
-    for value in values {
-        let mut mapped = false;
-        for (index, arg) in argv.iter().enumerate().skip(1) {
-            let prefix = if arg == &value {
-                ""
-            } else if let Some((flag, rhs)) = arg.split_once('=') {
-                if rhs != value || !flag.starts_with('-') {
-                    continue;
-                }
-                &arg[..flag.len() + 1]
-            } else {
-                continue;
-            };
-            let mut probe = argv.to_vec();
-            probe[index] = format!("{prefix}{marker}");
-            if command
-                .clone()
-                .try_get_matches_from(&probe)
-                .ok()
-                .is_some_and(|parsed| content_values(&parsed).contains(&marker))
-            {
-                replacements[index] = Some(format!("{prefix}{}", text_placeholder(&value)));
-                mapped = true;
-            }
-        }
-        if !mapped {
-            return (fail_closed(&command, argv), true);
-        }
-    }
-    (replacements, false)
+    let content = redact_content(argv, owners);
+    redact_owned_tail(argv, content, known, capture)
 }
 
-/// Redact before transport and again before persistence. Keep option names so
-/// the sequence remains useful; mask uppercase env assignments, secret keys,
-/// and command arguments that carry free-form user or agent text.
-pub(crate) fn redact_argv(argv: &[String], known: &[String]) -> Vec<String> {
-    let capture = std::env::var("PLEXI_TRACE_CAPTURE_CONTENT").is_ok_and(|value| value == "1");
-    redact_argv_with_content(argv, known, capture)
+/// What a trace records for `argv`: an invocation that runs is redacted by
+/// its captured ownership on the CLI side; anything else never traces locally
+/// and is masked when it arrives from another process.
+#[cfg(test)]
+pub(crate) fn recorded_argv(argv: &[String], known: &[String], capture: bool) -> Vec<String> {
+    let os: Vec<std::ffi::OsString> = argv.iter().map(Into::into).collect();
+    match super::front::parse(&os).outcome {
+        super::front::Outcome::Run(run) => redact_owned(&run.tokens, &run.owners, known, capture),
+        _ => host_record(argv),
+    }
 }
 
-fn redact_argv_with_content(argv: &[String], known: &[String], capture: bool) -> Vec<String> {
-    let (content, fallback) = redact_content(argv);
+fn capture_content() -> bool {
+    std::env::var("PLEXI_TRACE_CAPTURE_CONTENT").is_ok_and(|value| value == "1")
+}
+
+fn redact_owned_tail(
+    argv: &[String],
+    content: Vec<Option<String>>,
+    known: &[String],
+    capture: bool,
+) -> Vec<String> {
     let mut hide_next = false;
     let secret_set = argv.windows(2).position(|pair| pair == ["secret", "set"]);
     argv.iter()
         .enumerate()
         .map(|(index, arg)| {
-            if !fallback && !capture {
+            if !capture {
                 if let Some(redacted) = &content[index] {
                     return redacted.clone();
                 }
@@ -752,11 +782,6 @@ fn redact_argv_with_content(argv: &[String], known: &[String], capture: bool) ->
                 return "<redacted>".to_string();
             }
             if let Some((key, value)) = arg.split_once('=') {
-                // In an invalid call, even an assignment's key can be payload.
-                // Only retain an option prefix that the grammar recognized.
-                if let Some(redacted) = content[index].as_ref().filter(|_| fallback || !capture) {
-                    return redacted.clone();
-                }
                 if !key.contains(char::is_whitespace) && secret_assignment(key, known) {
                     return format!("{key}=<redacted>");
                 }
@@ -771,9 +796,6 @@ fn redact_argv_with_content(argv: &[String], known: &[String], capture: bool) ->
             {
                 hide_next = true;
                 return content[index].clone().unwrap_or_else(|| arg.clone());
-            }
-            if let Some(redacted) = content[index].as_ref().filter(|_| fallback || !capture) {
-                return redacted.clone();
             }
             if arg.starts_with("--") && !arg.contains('=') && !arg.contains(char::is_whitespace) {
                 return arg.clone();

@@ -1011,7 +1011,14 @@ pub(crate) fn handle_socket_line_in(
                 }
                 return;
             }
-            log::warn!("pane_ipc: parse error: {e}  line={line:?}");
+            // Kind and position only: the request can carry user data.
+            log::warn!(
+                "pane_ipc: parse error {:?} at line {} column {} in a {}-byte request",
+                e.classify(),
+                e.line(),
+                e.column(),
+                line.len()
+            );
             // A caller waiting on a reply (an older or newer CLI sending a
             // field this host does not accept) gets the reason, not a timeout.
             if crate::rpc::extract_response_file_token(line).is_some() {

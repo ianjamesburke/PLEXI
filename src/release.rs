@@ -141,8 +141,14 @@ pub fn feature_unavailable_message(feature: ReleaseFeature) -> String {
 /// The user-facing unavailable text without the block-log side effect, for
 /// static surfaces such as generated help.
 pub fn feature_unavailable_text(feature: ReleaseFeature) -> String {
+    experiment_text(feature, "plexi")
+}
+
+/// How to turn `feature` on with the binary `bin`. States no profile's
+/// current setting, so profile-independent help can show it.
+pub fn experiment_text(feature: ReleaseFeature, bin: &str) -> String {
     format!(
-        "{key} is an experiment. Turn it on with: plexi experiments enable {key}",
+        "{key} is an experiment. Turn it on with: {bin} experiments enable {key}",
         key = feature.key()
     )
 }

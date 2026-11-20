@@ -527,10 +527,16 @@ pub(crate) fn handle_cli_trace(profile: &Path, frame: &Value) -> Result<(), Stri
         Some("exit") if frame["exit_code"].as_i64().is_some() => "cli_call",
         _ => return Err("cli_trace: invalid phase or exit code".into()),
     };
-    let argv: Vec<String> = serde_json::from_value(frame["argv"].clone())
-        .map_err(|error| format!("cli_trace: invalid argv: {error}"))?;
-    let argv =
-        crate::cli::trace::redact_argv(&argv, &crate::cli::trace::known_secret_names(profile));
+    // A static kind and a size only: the field is sender data.
+    let argv: Vec<String> = serde_json::from_value(frame["argv"].clone()).map_err(|_| {
+        format!(
+            "cli_trace: argv is not a list of strings ({} bytes)",
+            frame["argv"].to_string().len()
+        )
+    })?;
+    // The host cannot tell who sent a frame, so it builds every record itself
+    // from the static grammar and keeps no sender value.
+    let argv = crate::cli::trace::host_record(&argv);
     let pane = frame["pane_id"].as_u64();
     let agent_session = frame["agent_session_id"]
         .as_str()
@@ -669,12 +675,11 @@ mod cli_trace_tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0]["data"]["argv"],
-            json!(["plexi-alpha", "pane", "new", "--right"])
+            json!(["plexi", "pane", "new", "--right"])
         );
         assert_eq!(calls[0]["data"]["exit_code"], 2);
         assert_eq!(calls[0]["data"]["agent_session_id"], "agent-19");
         let calls = cli_calls(rows, Some(20));
-        assert_eq!(calls[0]["data"]["argv"][4], "<redacted>");
         assert!(calls[0]["data"]["exit_code"].is_null());
         assert!(
             !std::fs::read_to_string(dir.path().join("sessions/sess-test-cli.jsonl"))

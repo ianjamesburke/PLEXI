@@ -152,7 +152,8 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize, is_last: bool
 
     let args: Vec<&Arg> = cmd
         .get_arguments()
-        .filter(|a| a.get_id() != "help" && a.get_id() != "version")
+        // A hidden arg is undocumented by definition.
+        .filter(|a| a.get_id() != "help" && a.get_id() != "version" && !a.is_hide_set())
         .collect();
 
     if !subs.is_empty() {

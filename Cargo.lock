@@ -4234,6 +4234,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "plexi"
 version = "0.5.3"
 dependencies = [
+ "anstream",
  "arboard",
  "base64 0.22.1",
  "block2 0.6.2",
