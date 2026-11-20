@@ -345,12 +345,6 @@ pub struct PlexiApp {
     /// resolves against its OWN root's view, never whichever context was last
     /// active. See `crate::app::registry_views` for the invalidation rules.
     pub(crate) registries: crate::app::registry_views::RegistryViews,
-    pub(crate) show_command_palette: bool,
-    pub(crate) palette_query: String,
-    pub(crate) palette_selected: usize,
-    /// Stable identity of the selected palette result. The numeric index is
-    /// only a rendering/navigation position and may change on live updates.
-    pub(crate) palette_selected_key: Option<String>,
     /// Cached workspace root for the focused pane at the moment the palette
     /// was opened. Resolved once on open, not per-frame, to avoid repeated
     /// filesystem traversal in the egui draw loop.
@@ -363,13 +357,10 @@ pub struct PlexiApp {
     /// time, cleared on close. Re-read on every open so edits hot-reload without
     /// a restart — same pattern as `palette_notes`.
     pub(crate) palette_commands: Vec<crate::cli::ResolvedUserCommand>,
-    /// Set to true on palette open; consumed on the first draw frame to reset
-    /// the scroll area back to the top before egui can apply the stale offset.
-    pub(crate) palette_scroll_reset: bool,
-    /// Last agent-pane count logged by the palette. The palette rebuilds its
-    /// rows every draw frame, so the collection trace fires only when the
-    /// count changes — never once per frame.
-    pub(crate) palette_agent_count_logged: Option<usize>,
+    /// Pane-pip decoration of the Commands stop's rows, by row key. Refreshed
+    /// with every answer of the Commands source.
+    pub(crate) palette_row_pips:
+        std::collections::HashMap<crate::host::picker::RowKey, crate::ui::list::ListRowPips>,
     pub(crate) context_visit_history: Vec<u64>,
     pub(crate) renaming_pane: Option<PaneId>,
     /// Active text-input overlay and its dispatch target.
@@ -1866,17 +1857,12 @@ impl PlexiApp {
                     description_session: crate::ui::text_field::OpenSession::new(),
                     drag_context: None,
                     parked_section_expanded: false,
-                    show_command_palette: false,
-                    palette_query: String::new(),
-                    palette_selected: 0,
-                    palette_selected_key: None,
                     palette_workspace_root: None,
                     palette_config_workspace_root: None,
                     palette_workspace_config_exists: false,
                     palette_notes: Vec::new(),
                     palette_commands: Vec::new(),
-                    palette_scroll_reset: false,
-                    palette_agent_count_logged: None,
+                    palette_row_pips: std::collections::HashMap::new(),
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
                     text_overlay: None,
@@ -2162,17 +2148,12 @@ impl PlexiApp {
             description_session: crate::ui::text_field::OpenSession::new(),
             drag_context: None,
             parked_section_expanded: false,
-            show_command_palette: false,
-            palette_query: String::new(),
-            palette_selected: 0,
-            palette_selected_key: None,
             palette_workspace_root: None,
             palette_config_workspace_root: None,
             palette_workspace_config_exists: false,
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
-            palette_scroll_reset: false,
-            palette_agent_count_logged: None,
+            palette_row_pips: std::collections::HashMap::new(),
             context_visit_history: Vec::new(),
             renaming_pane: None,
             text_overlay: None,
@@ -3151,17 +3132,12 @@ impl PlexiApp {
             description_session: crate::ui::text_field::OpenSession::new(),
             drag_context: None,
             parked_section_expanded: false,
-            show_command_palette: false,
-            palette_query: String::new(),
-            palette_selected: 0,
-            palette_selected_key: None,
             palette_workspace_root: None,
             palette_config_workspace_root: None,
             palette_workspace_config_exists: false,
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
-            palette_scroll_reset: false,
-            palette_agent_count_logged: None,
+            palette_row_pips: std::collections::HashMap::new(),
             context_visit_history: Vec::new(),
             renaming_pane: None,
             text_overlay: None,
@@ -4747,12 +4723,12 @@ impl PlexiApp {
                 }
             }
             Action::ToggleCommandPalette => {
-                self.show_command_palette = !self.show_command_palette;
-                if self.show_command_palette {
-                    self.palette_query.clear();
-                    self.palette_selected = 0;
-                    self.palette_selected_key = None;
-                    self.palette_scroll_reset = true;
+                if self.command_palette_open() {
+                    self.close_command_palette();
+                    self.palette_workspace_root = None;
+                    self.palette_notes.clear();
+                    self.palette_commands.clear();
+                } else {
                     // Resolve focused pane workspace once at open-time — not per draw-frame —
                     // to avoid filesystem traversal in the egui hot path.
                     self.palette_workspace_root = None;
@@ -4781,10 +4757,7 @@ impl PlexiApp {
                         "palette: loaded {} user command(s)",
                         self.palette_commands.len()
                     );
-                } else {
-                    self.palette_workspace_root = None;
-                    self.palette_notes.clear();
-                    self.palette_commands.clear();
+                    self.open_command_palette("");
                 }
             }
             Action::RenamePane => {
@@ -4897,13 +4870,9 @@ impl PlexiApp {
                     .palette_config_workspace_root
                     .as_deref()
                     .is_some_and(|root| crate::config::workspace_config_path(root).exists());
-                self.palette_query = "open config:".to_owned();
-                self.palette_selected = 0;
-                self.palette_selected_key = None;
-                self.palette_scroll_reset = true;
                 self.palette_notes.clear();
                 self.palette_commands.clear();
-                self.show_command_palette = true;
+                self.open_command_palette("open config:");
                 log::info!(
                     "palette: opened config chooser workspace={:?}",
                     self.palette_workspace_root

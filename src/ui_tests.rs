@@ -1350,7 +1350,7 @@ mod tests {
             h.harness().key_press(egui::Key::Escape);
             h.run_steps(3);
 
-            h.with_app_mut(|app| app.show_command_palette = true);
+            h.with_app_mut(|app| app.open_command_palette(""));
             h.run_steps(3);
             assert_inside(
                 "command palette",
@@ -1360,7 +1360,7 @@ mod tests {
             );
             h.harness().key_press(egui::Key::Escape);
             h.run_steps(3);
-            h.with_app_mut(|app| app.show_command_palette = false);
+            h.with_app_mut(|app| app.close_command_palette());
 
             h.with_app_mut(|app| app.open_quick_note_modal());
             h.run_steps(3);
@@ -8354,10 +8354,7 @@ open(out + ".done", "w").close()
         h.step();
         h.with_app_mut(|app| {
             set_update_ready(app, "0.5.1");
-            app.show_command_palette = true;
-            app.palette_selected = 0;
-            app.palette_selected_key = None;
-            app.sync_command_palette_focus();
+            app.open_command_palette("");
         });
         h.run_steps(3);
         let row = h.harness().get_by_label("Update ready: v0.5.1").rect();
@@ -8367,8 +8364,8 @@ open(out + ".done", "w").close()
             "the update row sits above every other result"
         );
         assert_eq!(
-            h.with_app(|app| app.palette_selected_key.clone()),
-            Some("update-ready:0.5.1".to_string()),
+            h.with_app(|app| app.palette_selected_key()),
+            Some("commands:update/0.5.1".to_string()),
             "Enter on a fresh palette lands on the update row"
         );
         h.save_screenshot(&evidence_png!()).expect("render failed");
@@ -8376,8 +8373,7 @@ open(out + ".done", "w").close()
 
         h.with_app_mut(|app| {
             app.update_status = crate::host::update_status::UpdateStatus::default();
-            app.show_command_palette = true;
-            app.palette_selected_key = None;
+            app.open_command_palette("");
         });
         h.run_steps(2);
         assert!(
@@ -9170,13 +9166,12 @@ open(out + ".done", "w").close()
                 window_id: extra_window_id,
                 context_id: ctx_id,
             });
-            app.show_command_palette = true;
-            app.sync_command_palette_focus();
+            app.open_command_palette("");
         });
         h.run_steps(3);
         h.save_screenshot(&evidence_png!()).expect("render failed");
         assert!(
-            h.with_app(|app| app.show_command_palette
+            h.with_app(|app| app.command_palette_open()
                 && app.windows[app.active_window]
                     .panes
                     .contains_key(&first_pane_id)),
@@ -10925,11 +10920,7 @@ open(out + ".done", "w").close()
         h.run_steps(1);
         let window = h.with_app(|app| app.windows[app.active_window].window_id);
         h.with_app_mut(|app| {
-            app.show_command_palette = true;
-            app.palette_query = "close selected".into();
-            app.palette_selected = 0;
-            app.palette_selected_key = None;
-            app.sync_command_palette_focus();
+            app.open_command_palette("close selected");
         });
         h.run_steps(3);
         let row = h.harness().get_by_label("Close selected panes").rect();
@@ -10979,11 +10970,7 @@ open(out + ".done", "w").close()
         h.run_steps(1);
         let parent = h.with_app(|app| app.router.active().context_id);
         h.with_app_mut(|app| {
-            app.show_command_palette = true;
-            app.palette_query = "wrap selection".into();
-            app.palette_selected = 0;
-            app.palette_selected_key = None;
-            app.sync_command_palette_focus();
+            app.open_command_palette("wrap selection");
         });
         h.run_steps(3);
         let row = h.harness().get_by_label("Wrap selection or enter pane").rect();
@@ -11871,13 +11858,11 @@ open(out + ".done", "w").close()
             win.tree.root = Some(win.tree.tiles.insert_tab_tile(tiles));
         });
         h.with_app_mut(|app| {
-            app.show_command_palette = true;
-            app.palette_query = "agents".into();
+            app.open_command_palette("agents");
         });
         h.run_steps(2);
-        h.with_app(|app| assert_eq!(app.palette_agent_count_logged, Some(0)));
         h.save_screenshot(&evidence_png!("_before")).unwrap();
-        h.with_app_mut(|app| app.show_command_palette = false);
+        h.with_app_mut(|app| app.close_command_palette());
         h.step();
         let agents_id = h.open_builtin_by_id("agents", &root, &[]).unwrap();
         h.run_steps(3);
@@ -12014,15 +11999,11 @@ open(out + ".done", "w").close()
     /// read by walking the selection down the list.
     fn palette_result_keys(h: &mut PlexiUiHarness, query: &str) -> Vec<String> {
         h.with_app_mut(|app| {
-            app.show_command_palette = true;
-            app.palette_query = query.to_string();
-            app.palette_selected = 0;
-            app.palette_selected_key = None;
-            app.sync_command_palette_focus();
+            app.open_command_palette(query);
         });
         h.run_steps(2);
         let mut keys: Vec<String> = Vec::new();
-        while let Some(key) = h.with_app(|app| app.palette_selected_key.clone()) {
+        while let Some(key) = h.with_app(|app| app.palette_selected_key()) {
             if keys.last() == Some(&key) {
                 break;
             }
@@ -12036,7 +12017,7 @@ open(out + ".done", "w").close()
 
     fn keys_for_pane(keys: &[String], pane_id: u64) -> Vec<&String> {
         keys.iter()
-            .filter(|key| key.rsplit(':').next() == Some(pane_id.to_string().as_str()))
+            .filter(|key| key.rsplit('/').next() == Some(pane_id.to_string().as_str()))
             .collect()
     }
 
@@ -12062,7 +12043,7 @@ open(out + ".done", "w").close()
         assert_eq!(
             keys_for_pane(&keys, active_id),
             vec![&format!(
-                "context:{}:{}:{active_id}",
+                "commands:focus/{}/{}/{active_id}",
                 h.with_app(|app| app.router.active().context_id),
                 h.with_app(|app| app.windows[app.active_window].window_id)
             )],
@@ -12076,14 +12057,13 @@ open(out + ".done", "w").close()
         let hits = keys_for_pane(&keys, inactive_id);
         assert_eq!(hits.len(), 1, "inactive agent pane found by name: {keys:?}");
         assert!(
-            hits[0].starts_with(&format!("context:{inactive_ctx}:")),
+            hits[0].starts_with(&format!("commands:focus/{inactive_ctx}/")),
             "as a pane row in its own context: {hits:?}"
         );
         for query in ["plexi-pm", "night-shift"] {
             palette_result_keys(&mut h, query);
             h.with_app_mut(|app| {
-                app.palette_selected = 0;
-                app.palette_selected_key = None;
+                app.apply_palette_command(crate::host::picker::PickerCommand::Move(-10_000))
             });
             h.run_steps(3);
             h.save_screenshot(&evidence_png!(format!("_{query}")))
@@ -12091,10 +12071,11 @@ open(out + ".done", "w").close()
         }
     }
 
-    /// Stint 1621: with `agents.palette_agent_results = true`, an agent pane
-    /// is listed exactly once, as its Agent row, never also as a pane row.
+    /// Stint 1391: agents and files have their own stops. Even with the
+    /// retired `agents.palette_agent_results` set, an agent pane is listed
+    /// once, as a pane row, and no row comes from another stop's source.
     #[test]
-    fn palette_lists_agent_pane_once_when_agent_rows_enabled() {
+    fn commands_stop_never_lists_files_or_agents() {
         let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
         h.with_app_mut(|app| {
             app.config
@@ -12110,20 +12091,24 @@ open(out + ".done", "w").close()
             ("night-shift", inactive_id),
         ] {
             let keys = palette_result_keys(&mut h, query);
+            assert!(
+                keys.iter().all(|key| key.starts_with("commands:")),
+                "query {query:?}: only Commands-source rows: {keys:?}"
+            );
             let hits = keys_for_pane(&keys, pane_id);
             assert_eq!(hits.len(), 1, "query {query:?}: exactly one row: {keys:?}");
             assert!(
-                hits[0].starts_with("agent:"),
-                "query {query:?}: the agent row: {hits:?}"
+                hits[0].starts_with("commands:focus/"),
+                "query {query:?}: the pane row: {hits:?}"
             );
         }
-        palette_result_keys(&mut h, "plexi-pm");
-        h.with_app_mut(|app| {
-            app.palette_selected = 0;
-            app.palette_selected_key = None;
+        h.with_app(|app| {
+            let picker = app
+                .host
+                .picker(crate::host::picker::PickerId::Palette)
+                .expect("palette picker");
+            assert_eq!(picker.active_stop().id, "commands");
         });
-        h.run_steps(3);
-        h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
     /// Visual review surface for stint 0565: the palette rendering an agent
@@ -12133,12 +12118,6 @@ open(out + ".done", "w").close()
     #[test]
     fn screenshot_command_palette_agent_fleet() {
         let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
-        h.with_app_mut(|app| {
-            app.config
-                .agents
-                .get_or_insert_with(Default::default)
-                .palette_agent_results = Some(true)
-        });
         add_focused_pane(&mut h);
         let browser_root = h.workspace.path().to_path_buf();
 
@@ -12290,36 +12269,28 @@ open(out + ".done", "w").close()
             });
             app.next_window_id += 1;
 
-            app.show_command_palette = true;
-            app.palette_selected = 0;
-            app.sync_command_palette_focus();
+            app.open_command_palette("");
         });
 
         h.run_steps(3);
         h.save_screenshot(&evidence_png!()).expect("render failed");
 
         h.with_app_mut(|app| {
-            app.palette_query = "squad-alpha".to_string();
-            app.palette_selected = 0;
-            app.palette_selected_key = None;
+            app.set_palette_query("squad-alpha");
         });
         h.run_steps(3);
         h.save_screenshot(&evidence_png!("_context"))
             .expect("render failed");
 
         h.with_app_mut(|app| {
-            app.palette_query = "build log".to_string();
-            app.palette_selected = 0;
-            app.palette_selected_key = None;
+            app.set_palette_query("build log");
         });
         h.run_steps(3);
         h.save_screenshot(&evidence_png!("_pane"))
             .expect("render failed");
 
         h.with_app_mut(|app| {
-            app.palette_query = " blocked ".to_string();
-            app.palette_selected = 0;
-            app.palette_selected_key = None;
+            app.set_palette_query(" blocked ");
         });
         h.run_steps(3);
         h.save_screenshot(&evidence_png!("_agent"))
@@ -12334,11 +12305,128 @@ open(out + ".done", "w").close()
             .expect("render failed");
 
         assert!(
-            h.with_app(|app| app.show_command_palette && app.palette_agent_count_logged == Some(4)),
+            h.with_app(|app| app.command_palette_open()),
             "the palette should be open over all four agent panes"
         );
         println!(
             "Screenshots saved to /tmp/plexi_command_palette_agent_fleet*.png (wide + narrow)"
+        );
+    }
+
+    fn palette_picker(h: &PlexiUiHarness) -> (String, &'static str, Option<String>) {
+        h.with_app(|app| {
+            let picker = app
+                .host
+                .picker(crate::host::picker::PickerId::Palette)
+                .expect("palette picker");
+            (
+                picker.query().to_owned(),
+                picker.active_stop().id,
+                app.palette_selected_key(),
+            )
+        })
+    }
+
+    fn type_palette_text(h: &mut PlexiUiHarness, text: &str) {
+        for ch in text.chars() {
+            let key = egui::Key::from_name(&ch.to_string()).expect("letter key");
+            h.harness().key_press(key);
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::Text(ch.to_string()));
+            h.step();
+        }
+    }
+
+    /// Stint 1391: Cmd+P then typing a, b, c reads "abc" in the field and in
+    /// the picker's one query; no key the picker claims writes into it.
+    #[test]
+    fn palette_typing_abc_reads_abc() {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+        add_focused_pane(&mut h);
+        h.step();
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::P);
+        h.run_steps(2);
+        assert!(h.with_app(|app| app.command_palette_open()));
+        type_palette_text(&mut h, "abc");
+        h.run_steps(2);
+        assert_eq!(palette_picker(&h).0, "abc");
+        assert!(
+            h.harness().query_all_by_value("abc").next().is_some(),
+            "the field shows the picker's query"
+        );
+        for (modifiers, key) in [
+            (egui::Modifiers::NONE, egui::Key::ArrowDown),
+            (egui::Modifiers::NONE, egui::Key::ArrowUp),
+            (egui::Modifiers::NONE, egui::Key::Tab),
+            (egui::Modifiers::SHIFT, egui::Key::Tab),
+            (egui::Modifiers::COMMAND, egui::Key::J),
+            (egui::Modifiers::COMMAND, egui::Key::K),
+        ] {
+            h.harness().key_press_modifiers(modifiers, key);
+            h.step();
+            assert_eq!(palette_picker(&h).0, "abc", "{modifiers:?}+{key:?}");
+            assert_eq!(
+                h.with_app(|app| app.ctx.memory(|m| m.focused())),
+                Some(egui::Id::new("palette_search")),
+                "{modifiers:?}+{key:?} keeps focus in the palette field"
+            );
+            assert!(
+                h.harness().query_by_label("Empty directory").is_some(),
+                "{modifiers:?}+{key:?} never reaches the explorer behind the palette"
+            );
+        }
+        h.save_screenshot(&evidence_png!()).expect("render failed");
+    }
+
+    /// Stint 1391: Cmd+P opens on the Commands stop with today's rows and
+    /// the first row selected; Tab and Shift+Tab keep the query (one stop
+    /// today, so the stop stays put); Enter runs the selected row.
+    #[test]
+    fn palette_commands_stop() {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+        add_focused_pane(&mut h);
+        h.step();
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::P);
+        h.run_steps(3);
+        let (query, stop, selected) = palette_picker(&h);
+        assert_eq!((query.as_str(), stop), ("", "commands"));
+        assert!(
+            selected
+                .as_deref()
+                .is_some_and(|k| k.starts_with("commands:")),
+            "a fresh palette selects its first row: {selected:?}"
+        );
+        h.harness().get_by_label("CONTEXTS");
+        h.harness().get_by_label("COMMANDS");
+        h.save_screenshot(&evidence_png!("_empty"))
+            .expect("render failed");
+
+        type_palette_text(&mut h, "keyboard");
+        h.run_steps(2);
+        let (_, _, selected) = palette_picker(&h);
+        assert_eq!(
+            selected.as_deref(),
+            Some("commands:cmd/Keyboard shortcuts"),
+            "typed query selects its best match"
+        );
+        h.save_screenshot(&evidence_png!("_query"))
+            .expect("render failed");
+        for modifiers in [egui::Modifiers::NONE, egui::Modifiers::SHIFT] {
+            h.harness().key_press_modifiers(modifiers, egui::Key::Tab);
+            h.step();
+            let (query, stop, _) = palette_picker(&h);
+            assert_eq!((query.as_str(), stop), ("keyboard", "commands"));
+        }
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert!(!h.with_app(|app| app.command_palette_open()));
+        assert!(
+            h.with_app(|app| app.show_shortcuts),
+            "Enter ran the selected Keyboard shortcuts row"
         );
     }
 
@@ -12355,8 +12443,7 @@ open(out + ".done", "w").close()
                 crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
             );
             crate::ui::theme::setup_style(&app.ctx, &app.colors);
-            app.show_command_palette = true;
-            app.sync_command_palette_focus();
+            app.open_command_palette("");
         });
         h.run_steps(3);
         let img = h.render().expect("render failed");
@@ -12410,14 +12497,12 @@ open(out + ".done", "w").close()
                     split: false,
                 },
             ];
-            app.show_command_palette = true;
-            app.palette_selected = 0;
-            app.sync_command_palette_focus();
+            app.open_command_palette("");
         });
         h.run_steps(3);
         h.save_screenshot(&evidence_png!()).expect("render failed");
         assert!(
-            h.with_app(|app| app.show_command_palette && app.palette_commands.len() == 3),
+            h.with_app(|app| app.command_palette_open() && app.palette_commands.len() == 3),
             "palette should be open with the injected user commands"
         );
         println!("Screenshot saved to {}", evidence_png!());
@@ -12438,9 +12523,7 @@ open(out + ".done", "w").close()
                     modified: None,
                 })
                 .collect();
-            app.show_command_palette = true;
-            app.palette_selected = 0;
-            app.sync_command_palette_focus();
+            app.open_command_palette("");
         });
 
         h.run_steps(2);
@@ -12452,8 +12535,8 @@ open(out + ".done", "w").close()
 
         let (open, selected, focused) = h.with_app(|app| {
             (
-                app.show_command_palette,
-                app.palette_selected,
+                app.command_palette_open(),
+                app.palette_selected_index().unwrap_or(0),
                 app.ctx.memory(|m| m.focused()),
             )
         });
