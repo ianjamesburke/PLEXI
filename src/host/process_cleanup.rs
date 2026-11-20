@@ -266,13 +266,14 @@ pub(crate) struct KillReport {
 }
 
 /// `default_grace` is the caller's budget between HUP/TERM and SIGKILL;
-/// `PLEXI_QUIT_GRACE_MS` overrides it when set. Terminal panes are first
-/// closed by their shells' owner (`stop_terminal_panes`); work it reports
-/// unresolved counts as remaining, which withholds the clean stamp.
+/// `PLEXI_QUIT_GRACE_MS` overrides it when set. After the marker sweep, the
+/// terminal panes are closed by their shells' owner (`stop_terminal_panes`);
+/// work it reports unresolved counts as remaining, which withholds the
+/// clean stamp. The sweep runs first, while the panes' shells are still
+/// open and unreaped, so its descendant search still starts from them.
 pub(crate) fn stop_pane_processes(default_grace: Duration) -> KillReport {
-    let unresolved = stop_terminal_panes(Instant::now() + PANE_SHUTDOWN_BUDGET);
     let mut report = stop_pane_processes_for_marker(session_marker(), default_grace);
-    report.remaining += unresolved;
+    report.remaining += stop_terminal_panes(Instant::now() + PANE_SHUTDOWN_BUDGET);
     report
 }
 
