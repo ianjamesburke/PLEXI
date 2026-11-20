@@ -109,10 +109,38 @@ fn main() -> eframe::Result {
         cli::front::Outcome::Run(run) => Startup::Run(run),
         cli::front::Outcome::Launch(launch) => Startup::Launch(launch),
     };
-    // Resolve routing before profile/workspace setup or any pane defaults read
-    // inherited identity. This is still single-threaded process startup.
+    // Install the validated selection, then settle the caller's identity
+    // against the endpoint this command addresses, before profile/workspace
+    // setup or any pane default reads inherited identity. This is still
+    // single-threaded process startup.
+    crate::config::set_profile(match &startup {
+        Startup::Run(run) => run.selection.clone(),
+        Startup::Launch(launch) => launch.selection.clone(),
+    });
+    // A lifecycle command addresses its validated profile host and nothing
+    // else: a refused target exits here, before any connection or trace.
+    let lifecycle_socket = match &startup {
+        Startup::Run(run)
+            if run
+                .cli
+                .command
+                .as_ref()
+                .is_some_and(cli::host::addresses_profile_host) =>
+        {
+            match cli::host::host_target() {
+                Ok(target) => Some(target.socket()),
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    cli::trace::exit(1);
+                }
+            }
+        }
+        _ => None,
+    };
     let dropped_identity = match &startup {
-        Startup::Run(run) => cli::drop_foreign_channel_identity(run.cli.socket.is_some()),
+        Startup::Run(run) => {
+            cli::settle_caller_identity(run.cli.socket.as_deref(), lifecycle_socket.as_deref())
+        }
         Startup::Launch(_) => Vec::new(),
     };
     let boot_state = crate::workspace::consume_host_boot_state();
@@ -133,10 +161,6 @@ fn main() -> eframe::Result {
     };
     let is_plugin_prune_command = surface_path.starts_with(&["plugin".into(), "prune".into()]);
 
-    crate::config::set_profile(match &startup {
-        Startup::Run(run) => run.selection.clone(),
-        Startup::Launch(launch) => launch.selection.clone(),
-    });
     // A bad [experiments] table fails every command except the ones needed to
     // fix it, so the user is never locked out of repairing the config.
     if let Some(error) = crate::release::experiments_error() {
@@ -461,7 +485,7 @@ fn main() -> eframe::Result {
                     cli::resolve_opt_context_target(t).unwrap_or_else(|code| cli::trace::exit(code))
                 };
                 if !matches!(&cmd, Commands::Debug { .. } | Commands::Skill { .. }) {
-                    cli::trace::begin(&tokens, &owners);
+                    cli::trace::begin(&tokens, &owners, lifecycle_socket.clone());
                 }
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {

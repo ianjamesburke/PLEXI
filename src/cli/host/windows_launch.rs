@@ -10,7 +10,7 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_INFORMATION, STARTUPINFOW,
 };
 
-pub(super) fn spawn(binary: &Path, env: &[(String, String)]) -> io::Result<u32> {
+pub(super) fn spawn(binary: &Path, args: &[String], env: &[(String, String)]) -> io::Result<u32> {
     let mut application: Vec<u16> = binary.as_os_str().encode_wide().collect();
     if application.contains(&0) {
         return Err(io::Error::new(
@@ -20,7 +20,17 @@ pub(super) fn spawn(binary: &Path, env: &[(String, String)]) -> io::Result<u32> 
     }
     let mut command_line = vec![b'"' as u16];
     command_line.extend_from_slice(&application);
-    command_line.extend([b'"' as u16, 0]);
+    command_line.push(b'"' as u16);
+    for arg in args {
+        if arg.contains('\0') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "NUL in host argument",
+            ));
+        }
+        append_quoted_arg(&mut command_line, arg);
+    }
+    command_line.push(0);
     application.push(0);
     // CreateProcess requires a sorted, double-NUL-terminated Unicode block.
     let mut entries = env.to_vec();
@@ -45,7 +55,7 @@ pub(super) fn spawn(binary: &Path, env: &[(String, String)]) -> io::Result<u32> 
     if environment.len() == 1 {
         environment.push(0);
     }
-    // No args. Quote argv[0] as well as passing lpApplicationName separately:
+    // Quote argv[0] as well as passing lpApplicationName separately:
     // the module path chooses the executable, but the command line is what
     // Rust parses into arguments when the install directory contains spaces.
     // No STARTF_USESTDHANDLES: this detached GUI host has no standard streams.
@@ -81,4 +91,30 @@ pub(super) fn spawn(binary: &Path, env: &[(String, String)]) -> io::Result<u32> 
         process.dwProcessId
     );
     Ok(process.dwProcessId)
+}
+
+/// Append ` "<arg>"` quoted so the child's argument parser (the MSVC rules
+/// Rust's runtime follows) reads back exactly `arg`: backslashes are literal
+/// unless they precede a quote, where each is doubled and the quote escaped.
+fn append_quoted_arg(command_line: &mut Vec<u16>, arg: &str) {
+    let backslash = b'\\' as u16;
+    let quote = b'"' as u16;
+    command_line.extend([b' ' as u16, quote]);
+    let mut backslashes = 0;
+    for unit in arg.encode_utf16() {
+        if unit == backslash {
+            backslashes += 1;
+            continue;
+        }
+        let escaped = if unit == quote {
+            2 * backslashes + 1
+        } else {
+            backslashes
+        };
+        command_line.extend(std::iter::repeat_n(backslash, escaped));
+        command_line.push(unit);
+        backslashes = 0;
+    }
+    command_line.extend(std::iter::repeat_n(backslash, 2 * backslashes));
+    command_line.push(quote);
 }

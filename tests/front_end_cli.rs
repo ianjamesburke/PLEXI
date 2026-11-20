@@ -103,14 +103,25 @@ impl Probe {
     }
 
     fn run(&self, binary: &Path, profile_dir: &Path, config: &str, args: &[&str]) -> Observed {
-        let listener = UnixListener::bind(&self.socket).unwrap();
-        listener.set_nonblocking(true).unwrap();
+        let watched = self.watched_profiles(profile_dir, args);
+        // The ambient socket and every watched profile's own endpoint: an
+        // explicit `--profile` addresses that profile's host (stint 1655).
+        let sockets: Vec<PathBuf> = std::iter::once(self.socket.clone())
+            .chain(watched.iter().map(|dir| dir.join("notify.sock")))
+            .collect();
+        let listeners: Vec<UnixListener> = sockets
+            .iter()
+            .map(|socket| {
+                let listener = UnixListener::bind(socket).unwrap();
+                listener.set_nonblocking(true).unwrap();
+                listener
+            })
+            .collect();
         let done = Arc::new(AtomicBool::new(false));
         let opens = Arc::new(AtomicUsize::new(0));
         let accepts = Arc::new(AtomicUsize::new(0));
-        let fifos: Vec<PathBuf> = self
-            .watched_profiles(profile_dir, args)
-            .into_iter()
+        let fifos: Vec<PathBuf> = watched
+            .iter()
             .map(|dir| dir.join("config.toml"))
             .filter(|config| {
                 use std::os::unix::fs::FileTypeExt;
@@ -142,14 +153,21 @@ impl Probe {
         let socket_watcher = {
             let (done, accepts) = (done.clone(), accepts.clone());
             std::thread::spawn(move || loop {
-                match listener.accept() {
-                    Ok((stream, _)) => {
+                let mut accepted = false;
+                for listener in &listeners {
+                    if let Ok((stream, _)) = listener.accept() {
                         accepts.fetch_add(1, Ordering::SeqCst);
+                        accepted = true;
                         drop(stream);
                     }
-                    Err(_) if done.load(Ordering::SeqCst) => break,
-                    Err(_) => std::thread::sleep(Duration::from_millis(2)),
                 }
+                if accepted {
+                    continue;
+                }
+                if done.load(Ordering::SeqCst) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
             })
         };
         let stop = move || {
@@ -196,7 +214,9 @@ impl Probe {
             }
         };
         stop();
-        std::fs::remove_file(&self.socket).unwrap();
+        for socket in &sockets {
+            std::fs::remove_file(socket).unwrap();
+        }
         Observed {
             output,
             config_opens: opens.load(Ordering::SeqCst),

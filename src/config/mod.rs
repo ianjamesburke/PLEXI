@@ -1604,6 +1604,26 @@ pub fn set_profile(selection: ProfileSelection) {
     }
 }
 
+/// The profile named by an explicit `--profile <name>`, if any. It is target
+/// routing that outranks the binary's channel and every environment variable:
+/// the profile dir, the host endpoint and child host processes all follow it.
+pub fn explicit_profile() -> Option<&'static str> {
+    PROFILE_OVERRIDE
+        .get()
+        .and_then(|profile| profile.as_ref())
+        .map(ProfileName::as_str)
+}
+
+/// The profile dir name for an explicit `--profile <name>`: `.plexi-<name>`.
+pub fn explicit_profile_dir_name() -> Option<String> {
+    explicit_profile().map(named_profile_dir_name)
+}
+
+/// The profile dir name for a profile named by `--profile <name>`.
+pub fn named_profile_dir_name(profile: &str) -> String {
+    format!(".plexi-{profile}")
+}
+
 /// Read-only freshness check shared by both sides of the initialization lock.
 fn profile_initialization_needed() -> Result<bool, String> {
     let dir = config_dir();
@@ -2027,8 +2047,8 @@ pub fn workspace_channel_dir() -> String {
     if let Some(channel) = test_channel_override() {
         return format!(".plexi-{channel}");
     }
-    if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
-        return format!(".plexi-{}", profile.as_str());
+    if let Some(dir) = explicit_profile_dir_name() {
+        return dir;
     }
     let channel_dir = process_channel_dir();
     #[cfg(test)]

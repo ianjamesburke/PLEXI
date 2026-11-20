@@ -203,13 +203,36 @@ fn claim_within(
     std::fs::create_dir_all(profile_dir).map_err(|error| {
         Refusal::LockUnavailable(format!("create {}: {error}", profile_dir.display()))
     })?;
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    // On Unix the lock is this profile's own file: never followed through a
+    // symlink or shared by hard link, so the pid never lands in another
+    // profile. Windows has no such link refusal here.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options
         .open(&path)
         .map_err(|error| Refusal::LockUnavailable(format!("open {}: {error}", path.display())))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = file.metadata().map_err(|error| {
+            Refusal::LockUnavailable(format!("inspect {}: {error}", path.display()))
+        })?;
+        if !meta.file_type().is_file() || meta.nlink() != 1 {
+            log::error!(
+                "host_instance: refusing linked lock {path:?} (links={})",
+                meta.nlink()
+            );
+            return Err(Refusal::LockUnavailable(format!(
+                "refusing linked host lock {}",
+                path.display()
+            )));
+        }
+    }
     let read_pid = |path: &Path| {
         std::fs::read_to_string(path)
             .ok()
@@ -277,6 +300,34 @@ fn claim_within(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 7: host startup never writes its pid through a linked lock.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_lock_is_refused_and_left_untouched() {
+        let home = tempfile::tempdir().unwrap();
+        let other = home.path().join("other.lock");
+        std::fs::write(&other, "4242\n").unwrap();
+        for link in ["symlink", "hard"] {
+            let profile = home.path().join(format!(".plexi-{link}"));
+            std::fs::create_dir(&profile).unwrap();
+            let lock = profile.join(LOCK_FILE);
+            if link == "symlink" {
+                std::os::unix::fs::symlink(&other, &lock).unwrap();
+            } else {
+                std::fs::hard_link(&other, &lock).unwrap();
+            }
+            let endpoint = endpoint_in(&profile);
+            let refusal = claim_within(&profile, &endpoint, Duration::ZERO, &|_| false)
+                .err()
+                .unwrap_or_else(|| panic!("{link}: a linked lock was claimed"));
+            assert!(
+                matches!(&refusal, Refusal::LockUnavailable(why) if why.contains("lock")),
+                "{link}"
+            );
+            assert_eq!(std::fs::read_to_string(&other).unwrap(), "4242\n", "{link}");
+        }
+    }
 
     #[test]
     fn activation_is_yielded_to_the_live_host_before_show_request() {
