@@ -245,6 +245,43 @@ fn host_restart_with_profile_from_its_own_pane_asks_for_confirmation() {
     }
 }
 
+/// Lifecycle verbs address their profile's host, not `--socket`: a pane of
+/// the named host that also passes another host's socket is still that
+/// host's own pane, so restart asks for `--yes` and sends no shutdown.
+#[test]
+fn host_restart_from_its_own_pane_ignores_an_explicit_socket() {
+    let fixture = fixture();
+    let own = fixture.home.join(format!(".plexi-{PROFILE}/notify.sock"));
+    let other = fixture.home.join(format!(".plexi-{CHANNEL}/notify.sock"));
+    let output = spawn_raw(
+        &fixture,
+        &[
+            "--profile",
+            PROFILE,
+            "--socket",
+            other.to_str().unwrap(),
+            "host",
+            "restart",
+        ],
+        &[
+            ("PLEXI_SOCKET", own.as_path()),
+            ("PLEXI_PANE_ID", Path::new("7")),
+        ],
+    )
+    .wait_with_output()
+    .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("host restart --yes"), "{stderr}");
+    for host in [&fixture.named_host, &fixture.default_host] {
+        assert!(
+            !host.requests().iter().any(|kind| kind == "shutdown"),
+            "restart from its own pane sent a shutdown: {:?}",
+            host.requests()
+        );
+    }
+}
+
 fn run_raw(fixture: &Fixture, args: &[&str]) -> std::process::Output {
     spawn_raw(fixture, args, &[]).wait_with_output().unwrap()
 }
