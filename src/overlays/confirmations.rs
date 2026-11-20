@@ -55,34 +55,7 @@ impl PlexiApp {
             self.draw_quit_save_failure(ctx, &cause);
             return;
         }
-        let actions = [
-            crate::ui::dialog::DialogAction::new(
-                "close",
-                if self.pending_quit {
-                    "Quit Plexi and stop them"
-                } else {
-                    "Close"
-                },
-                crate::ui::button::ButtonKind::Danger,
-            )
-            .destructive()
-            .shortcut(crate::ui::dialog::DialogShortcut::new(
-                &["Enter"],
-                egui::Modifiers::NONE,
-                egui::Key::Enter,
-            )),
-            crate::ui::dialog::DialogAction::new(
-                "cancel",
-                "Cancel",
-                crate::ui::button::ButtonKind::Secondary,
-            )
-            .refuses()
-            .shortcut(crate::ui::dialog::DialogShortcut::new(
-                &["Esc"],
-                egui::Modifiers::NONE,
-                egui::Key::Escape,
-            )),
-        ];
+        let actions = crate::app::routed_input::confirm_close_actions(self.pending_quit);
         let title = if self.pending_quit {
             let count = self.working_agent_count();
             if count == 1 {
@@ -96,25 +69,36 @@ impl PlexiApp {
                 None => "Close pane?".to_string(),
             }
         };
+        let caption = if self.pending_quit {
+            "Every pane process in this Plexi instance will be stopped."
+        } else {
+            "The running process will be terminated."
+        };
+        let colors = self.colors;
+        let modal = crate::ui::dialog::ActionModal::new("confirm_close_overlay", &title, &actions)
+            .focus_surface(crate::ui::focus::SurfaceKey::Overlay(
+                crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::ConfirmClose),
+            ))
+            .width(super::MODAL_WIDTH);
+        if let Some(dialog) = self.router_dialog() {
+            // The host router owns this opening's decisions (stint 1659):
+            // paint draws its logical focus and publishes where its buttons
+            // are, and decides nothing.
+            let focused = self
+                .host_router
+                .dialog_focus(dialog.opening)
+                .map(str::to_owned);
+            let presented = modal.present(ctx, &colors, focused.as_deref(), |ui| {
+                crate::ui::typography::caption(ui, caption, &colors);
+            });
+            self.publish_dialog_presentation(dialog.opening, presented);
+            return;
+        }
         let response =
-            crate::ui::dialog::ActionModal::new("confirm_close_overlay", &title, &actions)
-                .focus_surface(crate::ui::focus::SurfaceKey::Overlay(
-                    crate::app::input_owner::OverlaySurface::Layer(
-                        crate::app::FocusKind::ConfirmClose,
-                    ),
-                ))
+            modal
                 .destructive_input(self.synthetic_input_frame)
-                .width(super::MODAL_WIDTH)
-                .show(ctx, &self.colors, |ui| {
-                    crate::ui::typography::caption(
-                        ui,
-                        if self.pending_quit {
-                            "Every pane process in this Plexi instance will be stopped."
-                        } else {
-                            "The running process will be terminated."
-                        },
-                        &self.colors,
-                    );
+                .show(ctx, &colors, |ui| {
+                    crate::ui::typography::caption(ui, caption, &colors);
                 });
 
         let confirmed = response.selected == Some("close");
@@ -122,13 +106,13 @@ impl PlexiApp {
 
         if self.pending_quit && (confirmed || cancelled) {
             self.resolve_quit_confirmation(confirmed);
-        } else if confirmed {
-            self.pending_close = false;
-            if !self.confirm_close_batch_pane() {
-                self.confirm_single_close();
-            }
-            self.close_confirm_target = None;
-        } else if cancelled {
+        } else if confirmed || cancelled {
+            // Only the quit dialog decides here; a pane close is routed.
+            log::warn!(
+                "close_confirm: legacy decision with no routed opening; pending_close={} target={:?}",
+                self.pending_close,
+                self.close_confirm_target.as_ref().map(|t| t.pane)
+            );
             self.pending_close = false;
             self.close_confirm_target = None;
         }

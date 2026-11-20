@@ -159,7 +159,8 @@ impl<'a> ModalShell<'a> {
                 });
         }
 
-        egui::Area::new(self.id.with("overlay"))
+        let mut sizing = false;
+        let area = egui::Area::new(self.id.with("overlay"))
             .anchor(self.anchor, self.offset)
             .order(self.order)
             .fade_in(false)
@@ -169,6 +170,7 @@ impl<'a> ModalShell<'a> {
                 // modal. Discard this pass and re-run the frame so both paint
                 // together. Only fires the frame a modal opens.
                 if ui.is_sizing_pass() {
+                    sizing = true;
                     ctx.request_discard("modal first-frame sizing pass");
                 }
                 egui::Frame::new()
@@ -194,7 +196,10 @@ impl<'a> ModalShell<'a> {
                     .inner
             });
 
-        ModalResponse { dismissed }
+        ModalResponse {
+            dismissed,
+            panel: (!sizing).then_some(area.response.rect),
+        }
     }
 
     fn show_content<R>(
@@ -283,4 +288,7 @@ fn within_width<R>(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui
 
 pub(crate) struct ModalResponse {
     pub(crate) dismissed: bool,
+    /// The panel as presented this pass; `None` for a discarded sizing pass,
+    /// which must not publish hit targets.
+    pub(crate) panel: Option<egui::Rect>,
 }

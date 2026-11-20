@@ -256,15 +256,8 @@ impl PlexiApp {
     /// Render the toolbar, toolbar separator, sidebar, central panel, quit overlay,
     /// feature effects, and focus re-request blocks. Called at the end of `update()`
     /// after all overlay dispatch and command draining.
-    pub(super) fn render_panels(
-        &mut self,
-        ui: &mut egui::Ui,
-        focused_terminal_input: Option<crate::render::terminal_pane::TerminalInput>,
-    ) {
+    pub(super) fn render_panels(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        // Taken exactly once by whichever production path renders the focused
-        // terminal this frame: the tiling behavior or the zoom overlay.
-        let mut focused_terminal_input = focused_terminal_input;
         // The native button area is in macOS points; egui coordinates also
         // include Plexi's zoom, so reserve it in logical points here.
         let safe_area = crate::platform::titlebar::logical_safe_area(&ctx);
@@ -601,7 +594,7 @@ impl PlexiApp {
                     ui.ctx().data_mut(|d| d.insert_temp(lineage_log_id, pane_lineage.clone()));
                 }
                 let focus_painter = ui.painter().clone();
-                let right = self.render_conjoined_parent(ui, &mut focused_terminal_input);
+                let right = self.render_conjoined_parent(ui);
                 let owner_pane = self.visual_owner_pane();
                 let mut child_ui;
                 let ui = if let Some(rect) = right {
@@ -794,7 +787,6 @@ impl PlexiApp {
                     pane_corner_radius: self.config.pane_corner_radius,
                     pane_title_font_size: self.config.pane_title_font_size.unwrap_or(12.0).clamp(6.0, 32.0),
                     portal_zoom_request: None,
-                    focused_terminal_input: focused_terminal_input.take(),
                     frame_modifiers: ui.input(|i| i.modifiers),
                     pending_pane_clicks: &mut pending_pane_clicks,
                     off_strip_panes: Default::default(),

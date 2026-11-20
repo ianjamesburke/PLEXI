@@ -34,14 +34,11 @@ fn header_pip_center_x(bar: egui::Rect) -> f32 {
     bar.left() + crate::ui::style::PANE_CONTENT_INSET + crate::ui::style::PANE_HEADER_GLYPH / 2.0
 }
 
-/// Host-supplied, frame-scoped keyboard input for one terminal pane
-/// (stint 0387). Built in `PlexiApp::update` by taking the frame's
-/// `PlexiInput` ownership buffer *before* the render pass and threaded down to
-/// the focused terminal so egui's render-time widget machinery can't swallow a
-/// key (e.g. Cmd+A) first. The focused pane receives the taken events;
-/// unfocused panes receive an empty `keyboard_events` list (they only need
-/// pointer/wheel, which stays on the ctx path).
-#[derive(Default)]
+/// Host-supplied keyboard input for one terminal pane: what the host input
+/// router admitted for it, in delivery order, since it last painted (stint
+/// 1659). egui never sees these events, so its render-time widget machinery
+/// cannot swallow a key (e.g. Cmd+A) first. Pointer and wheel stay on the
+/// ctx path.
 pub struct TerminalInput {
     pub keyboard_events: Vec<egui::Event>,
     pub modifiers: egui::Modifiers,

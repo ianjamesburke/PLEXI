@@ -224,63 +224,6 @@ impl PlexiApp {
         }
     }
 
-    /// If the focused pane in the active window is a terminal and no overlay
-    /// owns keyboard input, take this frame's input-intent events out of `ctx`
-    /// and return them for the focused terminal (stint 0387). The caller threads
-    /// the result into `render_panels`, where whichever pane path is active
-    /// (tiled or zoomed) passes it to the focused `TerminalView`, so the events
-    /// reach the terminal without egui's render-time widget machinery getting
-    /// a chance to consume them first.
-    ///
-    /// Returns `None` (leaving `ctx` untouched) unless the frame's derived
-    /// [`crate::app::input_owner::InputOwner`] is a terminal pane. The single
-    /// derivation covers every case the old ad-hoc gates covered: overlays on
-    /// the focus stack, including context rename, an unfocused OS
-    /// window, and a non-terminal focused pane.
-    ///
-    /// This is a read of focus state only; it never mutates `active_window` or
-    /// `focused_pane` to steer the lookup (repo trap: don't switch global state
-    /// to thread data through a function).
-    pub(super) fn take_focused_terminal_input(
-        &mut self,
-        ctx: &egui::Context,
-    ) -> Option<crate::render::terminal_pane::TerminalInput> {
-        let crate::app::input_owner::InputOwner::Pane(pane_id) = self.input_owner(ctx) else {
-            return None;
-        };
-        // The owner pane must be a terminal (including an exited one — its
-        // "[process exited]" view auto-closes on the next keypress, which it now
-        // reads from this buffer).
-        self.windows
-            .iter()
-            .find_map(|w| w.panes.get(&pane_id))?
-            .as_terminal()?;
-
-        let router = crate::app::input_router::PlexiInput::take_from(ctx);
-        let (keyboard_events, modifiers) = router.into_events_and_modifiers();
-
-        // Feature instrumentation (stint 0387): confirm the structural handoff
-        // delivered Cmd+A (egui's built-in select-all, the bug's signature) to
-        // the terminal rather than letting a widget swallow it. Targeted — only
-        // fires on the select-all chord, never per keystroke.
-        if keyboard_events.iter().any(|e| {
-            matches!(
-                e,
-                egui::Event::Key { key: egui::Key::A, pressed: true, modifiers: m, .. }
-                    if m.command
-            )
-        }) {
-            log::info!(
-                "terminal_input: routed Cmd+A (select-all) to focused terminal pane_id={pane_id} via ownership transfer"
-            );
-        }
-
-        Some(crate::render::terminal_pane::TerminalInput {
-            keyboard_events,
-            modifiers,
-        })
-    }
-
     /// True when any pane or parked background plugin needing a headless tick
     /// (a non-active context always; the active context too when
     /// `window_hidden`, per the same reasoning as

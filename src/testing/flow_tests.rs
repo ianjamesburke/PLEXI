@@ -55,6 +55,7 @@ fn ordinary_splits_keep_nested_split_inside_selected_pane() {
         egui::Key::D,
         egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
     );
+    h.release_key(egui::Key::D, egui::Modifiers::NONE);
     h.run_frames(2);
     let bottom = h
         .app
@@ -158,6 +159,7 @@ fn ordinary_splits_resized_nested_tree_survives_save_reload() {
         egui::Key::D,
         egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
     );
+    h.release_key(egui::Key::D, egui::Modifiers::NONE);
     h.run_frames(2);
     h.press_key(egui::Key::D, egui::Modifiers::COMMAND);
     h.run_frames(2);

@@ -119,6 +119,16 @@ impl<'a> DialogAction<'a> {
         self
     }
 
+    /// This action as a host dialog owner sees it (stint 1659).
+    pub(crate) fn spec(&self) -> crate::app::host_router::dialog::ActionSpec {
+        crate::app::host_router::dialog::ActionSpec {
+            id: self.id.to_string(),
+            shortcut: self.shortcut.map(|s| (s.modifiers, s.key)),
+            destructive: self.destructive,
+            refuses: self.refuses,
+        }
+    }
+
     fn alternate(mut self, shortcut: Option<DialogShortcut<'a>>) -> Self {
         self.alternate = shortcut;
         self
@@ -405,50 +415,14 @@ impl<'a> ActionModal<'a> {
             }
         }
 
-        let mut shell = ModalShell::centered(self.id)
-            .title(self.title)
-            .width(self.width);
-        if field.is_some() {
-            shell = shell
-                .anchor(
-                    egui::Align2::CENTER_TOP,
-                    egui::vec2(0.0, style::FIELD_MODAL_TOP),
-                )
-                .scrim(false);
-        } else if self.banner {
-            shell = shell
-                .anchor(
-                    egui::Align2::CENTER_BOTTOM,
-                    egui::vec2(0.0, -style::SPACE_MD),
-                )
-                .scrim(false);
+        let (response, buttons, clicked) = self.paint(ctx, colors, field, add_body, None);
+        if clicked.is_some() {
+            selected = clicked;
         }
-
-        let mut action_ids: Vec<(String, egui::Id)> = Vec::new();
-        let response = shell.show(ctx, colors, |ui| {
-            add_body(ui);
-            if let Some(field) = field {
-                field.show(ui, self.id, colors);
-            }
-            ui.add_space(style::SPACE_MD + style::SPACE_SM);
-            let row = ButtonRow {
-                modal: self.id,
-                actions: self.actions,
-                colors,
-                // A guarded dialog's buttons take Tab focus only inside a
-                // focus trap (stint 1493); elsewhere a focused button would
-                // take egui's Space/Enter click, which no guard sees (stints
-                // 1498, 1513).
-                focusable: trap_key.is_some()
-                    || (self.consent_input.is_none() && self.destructive_input.is_none()),
-                // A consent dialog draws its approving actions disabled until
-                // it arms (stint 1498).
-                consent: self.consent_input,
-            };
-            if let Some(id) = row.show(ui, &mut action_ids) {
-                selected = Some(id);
-            }
-        });
+        let action_ids: Vec<(String, egui::Id)> = buttons
+            .iter()
+            .map(|b| (b.action.clone(), b.egui_id))
+            .collect();
         if let Some(key) = trap_key {
             let mut ids: Vec<egui::Id> = action_ids.iter().map(|(_, id)| *id).collect();
             if let Some(field_id) = field_id {
@@ -476,8 +450,107 @@ impl<'a> ActionModal<'a> {
             log::info!("ui: field modal {} chose {id}", self.id);
         }
         ctx.data_mut(|d| d.insert_temp(action_ids_slot(self.id), action_ids));
+        self.guard(selected, response.dismissed)
+    }
 
-        let mut dismissed = response.dismissed;
+    /// Paint a dialog whose decisions a host owner makes (stint 1659): the
+    /// router reduces Enter, Space, Tab, shortcuts and clicks against the
+    /// owner's model, so this reads no input. `focused` is the owner's
+    /// logical focus, projected onto the button's egui focus for its ring and
+    /// accessibility. Returns what was presented, or `None` on a discarded
+    /// sizing pass, which must not publish hit targets.
+    pub(crate) fn present(
+        self,
+        ctx: &egui::Context,
+        colors: &Colors,
+        focused: Option<&str>,
+        add_body: impl FnOnce(&mut egui::Ui),
+    ) -> Option<PresentedDialog> {
+        let (response, buttons, _clicked) = self.paint(ctx, colors, None, add_body, focused);
+        if let (Some(key), Some(button)) = (
+            self.focus_surface,
+            focused.and_then(|id| buttons.iter().find(|b| b.action == id)),
+        ) {
+            crate::ui::focus::claim_text_surface(ctx, key, button.egui_id);
+        }
+        let panel = response.panel?;
+        Some(PresentedDialog {
+            panel,
+            buttons: buttons
+                .into_iter()
+                .map(|b| (b.action, b.rect, b.enabled))
+                .collect(),
+        })
+    }
+
+    /// The shell, body and button row. `present_focus` is `Some` only for a
+    /// host-owned dialog, whose buttons are focusable for projection alone.
+    fn paint(
+        &self,
+        ctx: &egui::Context,
+        colors: &Colors,
+        field: Option<DialogField<'_>>,
+        add_body: impl FnOnce(&mut egui::Ui),
+        present_focus: Option<&str>,
+    ) -> (
+        crate::ui::overlay::ModalResponse,
+        Vec<RowButton>,
+        Option<&'a str>,
+    ) {
+        let trap_key = self
+            .focus_surface
+            .or(field.as_ref().map(|field| field.surface));
+        let mut shell = ModalShell::centered(self.id)
+            .title(self.title)
+            .width(self.width);
+        if field.is_some() {
+            shell = shell
+                .anchor(
+                    egui::Align2::CENTER_TOP,
+                    egui::vec2(0.0, style::FIELD_MODAL_TOP),
+                )
+                .scrim(false);
+        } else if self.banner {
+            shell = shell
+                .anchor(
+                    egui::Align2::CENTER_BOTTOM,
+                    egui::vec2(0.0, -style::SPACE_MD),
+                )
+                .scrim(false);
+        }
+
+        let mut buttons: Vec<RowButton> = Vec::new();
+        let mut clicked = None;
+        let response = shell.show(ctx, colors, |ui| {
+            add_body(ui);
+            if let Some(field) = field {
+                field.show(ui, self.id, colors);
+            }
+            ui.add_space(style::SPACE_MD + style::SPACE_SM);
+            let row = ButtonRow {
+                modal: self.id,
+                actions: self.actions,
+                colors,
+                // A guarded dialog's buttons take Tab focus only inside a
+                // focus trap (stint 1493); elsewhere a focused button would
+                // take egui's Space/Enter click, which no guard sees (stints
+                // 1498, 1513). A host-owned dialog's buttons receive no input,
+                // so focus there only projects the owner's.
+                focusable: present_focus.is_some()
+                    || trap_key.is_some()
+                    || (self.consent_input.is_none() && self.destructive_input.is_none()),
+                // A consent dialog draws its approving actions disabled until
+                // it arms (stint 1498).
+                consent: self.consent_input,
+            };
+            clicked = row.show(ui, &mut buttons);
+        });
+        (response, buttons, clicked)
+    }
+
+    /// The consent and destructive guards over a decision this modal made.
+    fn guard(&self, mut selected: Option<&'a str>, dismissed: bool) -> DialogResponse<'a> {
+        let mut dismissed = dismissed;
         if let Some(input) = self.consent_input {
             let refuses = |id: &str| self.actions.iter().any(|a| a.id == id && a.refuses);
             if selected.is_some_and(|id| !input.admits(refuses(id))) {
@@ -518,6 +591,22 @@ impl<'a> ActionModal<'a> {
             dismissed,
         }
     }
+}
+
+/// What a host-owned dialog presented this pass (stint 1659).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PresentedDialog {
+    pub(crate) panel: egui::Rect,
+    /// Action id, hit rect, enabled.
+    pub(crate) buttons: Vec<(String, egui::Rect, bool)>,
+}
+
+/// One painted button of a row.
+struct RowButton {
+    action: String,
+    egui_id: egui::Id,
+    rect: egui::Rect,
+    enabled: bool,
 }
 
 /// A Tab-focused destructive row (stint 1513): every Enter and Space press
@@ -579,7 +668,7 @@ struct ButtonRow<'a, 'c> {
 }
 
 impl<'a> ButtonRow<'a, '_> {
-    fn show(self, ui: &mut egui::Ui, action_ids: &mut Vec<(String, egui::Id)>) -> Option<&'a str> {
+    fn show(self, ui: &mut egui::Ui, buttons: &mut Vec<RowButton>) -> Option<&'a str> {
         let Self {
             modal,
             actions,
@@ -622,7 +711,12 @@ impl<'a> ButtonRow<'a, '_> {
                     ui.add_enabled(enabled, button)
                 })
                 .inner;
-            action_ids.push((action.id.to_string(), response.id));
+            buttons.push(RowButton {
+                action: action.id.to_string(),
+                egui_id: response.id,
+                rect: response.rect,
+                enabled,
+            });
             reports.push(super::layout_report::Action {
                 id: action.id.into(),
                 name: action.label.into(),

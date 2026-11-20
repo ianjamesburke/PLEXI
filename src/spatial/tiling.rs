@@ -523,15 +523,8 @@ pub struct PlexiBehavior<'a> {
     pub pane_corner_radius: Option<u8>,
     /// Resolved pane title bar font size (from config, default 11.0).
     pub pane_title_font_size: f32,
-    /// Keyboard input the host took from `ctx` before the render pass, destined
-    /// for the focused terminal pane (stint 0387). Consumed (via `take`) by the
-    /// pane whose `is_focused` is true, so egui's render-time widget machinery
-    /// can't swallow a key (Cmd+A) first. `None` when the focused pane is not a
-    /// terminal (or an overlay owns input).
-    pub focused_terminal_input: Option<crate::render::terminal_pane::TerminalInput>,
-    /// This frame's modifier state, used to build the empty [`TerminalInput`]
-    /// for unfocused terminals (which still need current modifiers for pointer
-    /// link-hover and mouse reporting).
+    /// This frame's modifier state, passed with each terminal's routed
+    /// keyboard input (pointer link-hover and mouse reporting read it too).
     pub frame_modifiers: egui::Modifiers,
     /// Pending `HostRequest::ClickPane` injections, keyed by target pane.
     /// Consumed (via `remove`) by whichever pane actually renders this frame —
@@ -760,20 +753,11 @@ impl PlexiBehavior<'_> {
                 .rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
             let mut terminal_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
             terminal_ui.set_clip_rect(clip_rect);
-            // The focused terminal consumes the host-supplied keyboard buffer;
-            // every other terminal gets an empty one (pointer/wheel only).
-            let terminal_input = if is_focused {
-                self.focused_terminal_input.take().unwrap_or_else(|| {
-                    render::terminal_pane::TerminalInput {
-                        keyboard_events: Vec::new(),
-                        modifiers: self.frame_modifiers,
-                    }
-                })
-            } else {
-                render::terminal_pane::TerminalInput {
-                    keyboard_events: Vec::new(),
-                    modifiers: self.frame_modifiers,
-                }
+            // Each terminal takes the keyboard input the host router queued
+            // for it (stint 1659); pointer and wheel stay on the ctx path.
+            let terminal_input = render::terminal_pane::TerminalInput {
+                keyboard_events: std::mem::take(&mut terminal.routed_input),
+                modifiers: self.frame_modifiers,
             };
             let (close_exited, tab_action) = crate::platform::ui_profile::time("terminal", || {
                 render::terminal_pane::render(

@@ -799,6 +799,10 @@ pub struct TerminalPane {
     /// Pane ID — matches the key used in HashMap<PaneId, Pane>.
     pub id: PaneId,
     pub backend: TerminalBackend,
+    /// Keyboard input the host router admitted for this pane, in delivery
+    /// order (stint 1659). Logic queues it; the pane's widget takes it the
+    /// next time it paints, where search, copy mode and the encoder live.
+    pub routed_input: Vec<egui::Event>,
     pub exited: bool,
     /// Observed PTY exit status (`Code`, `Signal`, or `Unknown`), recorded in
     /// `drain_pty_events` or `AgentDone` so `ContextState::compute` and crash
@@ -1058,6 +1062,7 @@ impl TerminalPane {
             _process_group: process_group,
             id,
             backend,
+            routed_input: Vec::new(),
             exited: false,
             exit_status: None,
             name: None,

@@ -31,6 +31,8 @@
 
 #[cfg(test)]
 mod harness_hook;
+#[cfg(test)]
+mod host_router;
 
 use std::path::Path;
 use std::sync::atomic::AtomicU64;

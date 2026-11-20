@@ -153,6 +153,10 @@ fn conjoined_strip_keyboard_navigation_routes_input_and_restores_context() {
         .backend;
     backend.enable_input_tap();
     h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+    // A physical key is released before it is pressed again: the router
+    // pairs each press with its release (stint 1659), so a second press with
+    // no release between is a repeat of the first.
+    h.release_key(egui::Key::Tab, egui::Modifiers::NONE);
     let backend = &mut h.app.windows[1]
         .panes
         .get_mut(&child)
@@ -976,6 +980,7 @@ fn toggle_zoom_requires_a_sibling_pane_in_the_active_window() {
         h.app.windows[0].zoomed_pane.is_none(),
         "zoom must be ignored when the active window has only one pane"
     );
+    h.release_key(egui::Key::Enter, egui::Modifiers::NONE);
 
     let second = h
         .app
@@ -1720,6 +1725,7 @@ fn two_over_four(h: &mut HostHarness) -> (u64, u64, Vec<u64>) {
     let top_left = h.add_focused_terminal();
     let split = |h: &mut HostHarness, modifiers: egui::Modifiers| {
         h.press_key(egui::Key::D, modifiers);
+        h.release_key(egui::Key::D, egui::Modifiers::NONE);
         h.run_frames(3);
         h.app.active_focused_pane_id().expect("split pane focused")
     };

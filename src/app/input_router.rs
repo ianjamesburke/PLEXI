@@ -19,17 +19,12 @@
 //!   3. `dispatch_plugin_key_events` — the focused view pane's `App::handle_key`,
 //!      which reads this buffer directly (see [`PlexiInput::events`] /
 //!      [`PlexiInput::key_pressed`]) instead of `ctx.input()`.
-//!   4. The focused terminal widget. Because the host takes this buffer *before*
-//!      the render pass and hands the events straight to `egui_term` via
-//!      `TerminalView::with_input`, egui's own render-time widget machinery can
-//!      no longer swallow a key (e.g. Cmd+A select-all) before the terminal
-//!      sees it — the structural fix for the terminal Cmd+A bug.
 //!
 //! Overlay and plugin/global consumers `give_back` whatever they don't claim so
-//! the render pass (focused `TextEdit` widgets) still sees it. The focused
-//! terminal is the sole intended keyboard consumer for its frame, so its host
-//! handoff does *not* give events back: anything the terminal ignores is
-//! correctly dropped rather than leaking to an unfocused widget.
+//! the render pass (focused `TextEdit` widgets) still sees it. A focused
+//! terminal's input never reaches this buffer: the host input router
+//! (`crate::app::host_router`) takes it in `raw_input_hook` and `App::logic`
+//! applies it (stint 1659).
 //!
 //! Mouse events, scroll, hover, and paint requests are untouched: this router
 //! is keyboard/text-input scoped only. `Event::Ime` composition is also
@@ -131,14 +126,6 @@ impl PlexiInput {
     /// nothing leaks to underlying panes or widgets.
     pub(crate) fn clear(&mut self) {
         self.events.clear();
-    }
-
-    /// Consume the whole buffer into its owned events + modifiers. Used by the
-    /// focused-terminal handoff, which hands every remaining event straight to
-    /// `egui_term` (the sole intended keyboard consumer for its frame) and
-    /// never gives events back to `ctx`.
-    pub(crate) fn into_events_and_modifiers(self) -> (Vec<egui::Event>, egui::Modifiers) {
-        (self.events, self.modifiers)
     }
 
     /// Consume the first matching key-press event, removing it from the
@@ -406,22 +393,6 @@ mod tests {
             let input = PlexiInput::take_from(ctx);
             assert!(input.key_pressed(egui::Key::A));
             assert!(!input.key_pressed(egui::Key::B));
-        });
-    }
-
-    #[test]
-    fn into_events_and_modifiers_yields_the_owned_buffer() {
-        let ctx = egui::Context::default();
-        let mut raw = egui::RawInput::default();
-        raw.modifiers = egui::Modifiers::COMMAND;
-        raw.events
-            .push(key_event(egui::Key::A, egui::Modifiers::COMMAND));
-        let _ = ctx.run_ui(raw, |ui| {
-            let ctx = ui.ctx();
-            let input = PlexiInput::take_from(ctx);
-            let (events, modifiers) = input.into_events_and_modifiers();
-            assert_eq!(events.len(), 1);
-            assert!(modifiers.command);
         });
     }
 }

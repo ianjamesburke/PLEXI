@@ -16108,6 +16108,7 @@ fn zoom_cmd_enter_and_cli_toggle_both_ways_and_bare_escape_passes_through_withou
     assert!(h.app.windows[0].zoomed_pane.is_some());
     h.terminal_backend(term).enable_input_tap();
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    h.release_key(egui::Key::Escape, egui::Modifiers::NONE);
     let tapped = h.terminal_backend(term).take_input_tap();
     assert!(
         tapped.contains(&0x1b),
@@ -20095,6 +20096,7 @@ fn changelog_escape_restores_pane_and_closed_escape_reaches_terminal() {
     h.run_frames(1);
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
     assert!(!h.app.show_changelog, "Escape must close the changelog");
+    h.release_key(egui::Key::Escape, egui::Modifiers::NONE);
     assert!(h.app.focus_stack.is_empty());
     assert_eq!(h.app.host_input_owner(), InputOwner::Pane(pane));
     assert!(
