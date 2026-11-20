@@ -1945,11 +1945,19 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
     });
     app.router
         .push_depth(child_ctx_id, child_win_id, Some(child_right_tile));
+    let parent_root = app
+        .router
+        .iter()
+        .find(|c| c.context_id == parent_ctx_id)
+        .map(|c| crate::platform::path::canonical_or_self(&c.root))
+        .unwrap();
     app.dissolve_portal(child_ctx_id);
 
+    // The moved pane keeps its credentials, now scoped to the context it
+    // lives in (stint 1632, round 5 P1-4).
     assert_eq!(
         crate::app::host_mcp::authenticated_workspace_for_test(&moved_token),
-        Some(std::path::PathBuf::from("/tmp/dissolve_single_child")),
+        Some(parent_root),
         "dissolving a context moves its panes and must not revoke their credentials"
     );
 

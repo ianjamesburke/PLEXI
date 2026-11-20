@@ -229,6 +229,11 @@ pub(crate) fn authenticated_workspace_for_test(token: &str) -> Option<PathBuf> {
     authenticate(token).map(|caller| caller.workspace_root)
 }
 
+#[cfg(test)]
+pub(crate) fn authenticated_context_for_test(token: &str) -> Option<u64> {
+    authenticate(token).map(|caller| caller.context_id)
+}
+
 /// Persisted host-MCP endpoint (`config_dir/host_mcp.json`). Credentials are
 /// deliberately runtime-only because they carry a live pane identity.
 #[derive(serde::Serialize, serde::Deserialize)]

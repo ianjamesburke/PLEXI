@@ -155,7 +155,7 @@ impl Importer<'_> {
             Some(format!("admitted in profile {}", grant.profile.display()))
         } else if grant.pane_id != pane.id {
             Some(format!("record names pane {}", grant.pane_id))
-        } else if grant.scope.context_id != context_id || saved.scope.context_id != context_id {
+        } else if saved.scope.context_id != context_id {
             Some(format!(
                 "record names context {}, saved in context {context_id}",
                 saved.scope.context_id

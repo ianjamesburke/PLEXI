@@ -2283,6 +2283,8 @@ impl PlexiApp {
             self.reload_config_for_active_context();
         }
 
+        // The grafted and promoted panes now live in the parent context.
+        self.rescope_moved_panes();
         self.pending_notifications.retain(|n| {
             !(matches!(n.scope, crate::protocol::NotifyScope::Context)
                 && n.source_context_id == child_ctx_id)

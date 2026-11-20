@@ -4459,4 +4459,59 @@ mod tests {
             "the role's deny applies under the team harness"
         );
     }
+
+    /// Round 5 P1-4: wrapping a live pane into a sub-context, and dissolving
+    /// that sub-context back, moves the pane's grant with it as a scope
+    /// revision: its bearer reports the context it lives in, and a restart
+    /// restores it under its grant instead of sealing it.
+    #[test]
+    fn grant_wrap_and_dissolve_move_the_grant_and_survive_restart() {
+        crate::app::host_mcp::ensure_test_discovery();
+        let profile = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let bearer_context = |h: &HostHarness, pane: PaneId| {
+            let token = h
+                .app
+                .terminal_incarnation(pane)
+                .unwrap()
+                .credentials()
+                .unwrap()
+                .mcp_token()
+                .unwrap()
+                .to_string();
+            crate::app::host_mcp::authenticated_context_for_test(&token)
+        };
+        let restarted_ceiling = |pane: PaneId| {
+            let h = HostHarness::from_profile_dir(profile.path());
+            h.app.pane_ceiling(pane)
+        };
+        let pane = {
+            let mut h = HostHarness::from_profile_dir(profile.path());
+            h.add_test_pane();
+            h.app.set_context_root(root.path().to_path_buf(), None);
+            let pane = spawn_tester(&mut h, root.path());
+            let win = window_of(&h, pane);
+            h.app.active_window = win;
+            let parent = h.app.windows[win].context_id;
+            assert!(h.app.wrap_panes_to_subcontext(&[pane], pane, Some("wrapped".into())));
+            let child = h.app.windows[window_of(&h, pane)].context_id;
+            assert_ne!(child, parent, "fixture: the pane moved");
+            assert_eq!(bearer_context(&h, pane), Some(child), "the bearer follows the wrap");
+            assert!(h.app.save_workspace_now(), "saved");
+            pane
+        };
+        let ceiling = restarted_ceiling(pane).expect("a wrapped pane is not sealed on restart");
+        assert!(ceiling.is_some_and(|p| p.denies("tool.secret")));
+        {
+            let mut h = HostHarness::from_profile_dir(profile.path());
+            let child = h.app.windows[window_of(&h, pane)].context_id;
+            h.app.dissolve_portal(child);
+            let now = h.app.windows[window_of(&h, pane)].context_id;
+            assert_ne!(now, child, "fixture: the pane moved back");
+            assert_eq!(bearer_context(&h, pane), Some(now), "the bearer follows the dissolve");
+            assert!(h.app.save_workspace_now(), "saved");
+        }
+        let ceiling = restarted_ceiling(pane).expect("a dissolved pane is not sealed on restart");
+        assert!(ceiling.is_some_and(|p| p.denies("tool.secret")));
+    }
 }

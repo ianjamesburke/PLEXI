@@ -665,6 +665,23 @@ impl LivePaneAuthority {
         scope.revision
     }
 
+    /// Publish a host-authorized move of the pane into another context (a
+    /// wrap into a sub-context, a dissolve back into the parent). Both
+    /// credentials observe the new context and root at once.
+    pub(crate) fn publish_move(&self, context_id: u64, workspace_root: PathBuf) -> u64 {
+        let mut scope = self.scope.write().unwrap_or_else(|e| e.into_inner());
+        scope.context_id = context_id;
+        scope.workspace_root = workspace_root;
+        scope.revision += 1;
+        log::info!(
+            "pane_authority: pane {} moved to context {context_id} root {} (revision {})",
+            self.grant.pane_id,
+            scope.workspace_root.display(),
+            scope.revision
+        );
+        scope.revision
+    }
+
     pub(crate) fn lifecycle(&self) -> Lifecycle {
         match self.state.load(Ordering::Acquire) {
             0 => Lifecycle::Constructing,

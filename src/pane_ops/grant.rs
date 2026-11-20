@@ -218,4 +218,27 @@ impl PlexiApp {
         }
         opened.ok()
     }
+
+    /// After panes move between contexts, publish each moved terminal's new
+    /// context and root through its handle, so its credentials, its peer
+    /// lookup and its saved record agree on where it lives (stint 1632).
+    pub(crate) fn rescope_moved_panes(&mut self) {
+        let mut moved = Vec::new();
+        for win in &self.windows {
+            for (pane_id, pane) in win.panes.iter() {
+                let Some(authority) = pane.terminal_incarnation().and_then(|t| t.authority()) else {
+                    continue;
+                };
+                if authority.scope().context_id != win.context_id {
+                    moved.push((*pane_id, authority.clone(), win.context_id));
+                }
+            }
+        }
+        for (pane_id, authority, context_id) in moved {
+            let context = self.pane_context_env_for_context(context_id);
+            let scope = credential_scope(&context, None);
+            log::info!("pane_grant: pane {pane_id} now lives in context {context_id}");
+            authority.publish_move(scope.context_id, scope.workspace_root);
+        }
+    }
 }
