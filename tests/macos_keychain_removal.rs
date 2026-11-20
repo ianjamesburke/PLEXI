@@ -1,22 +1,21 @@
-//! `secret rm --folder` through the real binary against private keychain
-//! files (stint 1635). `MacKeychain` is compiled out of test builds, so only
+//! `secret rm --folder` through the real binary against a private keychain
+//! file (stint 1635). `MacKeychain` is compiled out of test builds, so only
 //! the binary exercises the production selector and delete.
 //!
-//! Every run points `PLEXI_KEYCHAIN_PATH` at a file inside this test's temp
-//! dir, with a fixture password, an isolated `HOME` and profile, and every
-//! inherited `PLEXI_*` variable removed. A one-file case uses only that
-//! shipped hook. Ordered multi-file cases also set the fixture variables,
-//! which only this `keychain-fixture` build reads; `PLEXI_KEYCHAIN_PATH`
-//! then names a separate file so the host seal key stays contained too. The
-//! binary opens those files by path; the user's search list and default
-//! keychain are never read or changed. This process seeds items itself with Keychain interaction
-//! disabled and create-only adds, so the binary never writes them.
+//! Every run points the shipped `PLEXI_KEYCHAIN_PATH` hook at one file inside
+//! this test's temp dir, with a fixture password, an isolated `HOME` and
+//! profile, and every inherited `PLEXI_*` variable removed. The binary opens
+//! that file by path; the user's search list and default keychain are never
+//! read or changed. Ordered multi-file scope and duplicates are covered by
+//! the fake-native tests in `src/workspace/secrets/mac_keychain.rs`. This
+//! process seeds items itself with Keychain interaction disabled and
+//! create-only adds, so the binary never writes them.
 //!
 //! An item this process creates trusts only this process to read its data.
-//! The binary runs with interaction disabled, so if it requested that data
-//! the request would fail instead of raising a dialog. A removal that
-//! succeeds on such an item therefore never requested the password. The
-//! negative control shows the same item refusing the binary's data request.
+//! The binary runs with interaction disabled, so a data request on it fails
+//! instead of raising a dialog. The binary also traces every native data
+//! copy, success included. Each `rm` must show zero copies and succeed on
+//! such an item; the controls show both detectors firing.
 #![cfg(target_os = "macos")]
 
 use std::io::Read;
@@ -34,6 +33,7 @@ const LIMIT: Duration = Duration::from_secs(60);
 const UI_ALLOWED: &str = "SecKeychainSetUserInteractionAllowed(true)";
 const DELETE_CALL: &str = "SecKeychainItemDelete status=";
 const DATA_CALL: &str = "SecKeychainItemCopyContent status=";
+const KEYCHAIN: &str = "a.keychain-db";
 
 /// Interaction stays off for this whole test process.
 fn interaction_off() {
@@ -56,7 +56,7 @@ impl Sandbox {
         let folder = root.path().join("folder");
         std::fs::create_dir_all(&folder).unwrap();
         let sandbox = Self { root, folder };
-        let enable = sandbox.run(&[], None, &["experiments", "enable", "folder_secrets"]);
+        let (enable, _) = sandbox.run(KEYCHAIN, &["experiments", "enable", "folder_secrets"]);
         assert!(enable.status.success(), "{}", text(&enable.stderr));
         sandbox
     }
@@ -142,41 +142,29 @@ impl Sandbox {
         .unwrap();
     }
 
-    fn log(&self) -> String {
-        std::fs::read_to_string(self.profile().join("plexi.log")).unwrap_or_default()
+    fn log_len(&self) -> usize {
+        std::fs::metadata(self.profile().join("plexi.log")).map_or(0, |meta| meta.len() as usize)
     }
 
-    /// Runs the binary with only these keychain files in its domain, killed
-    /// if it does not finish within [`LIMIT`].
-    fn run(&self, search: &[&str], default: Option<&str>, args: &[&str]) -> Output {
+    /// Runs the binary with `keychain` as its whole domain, killed if it does
+    /// not finish within [`LIMIT`]. Returns this command's slice of
+    /// `plexi.log`; a missing log fails the test.
+    fn run(&self, keychain: &str, args: &[&str]) -> (Output, String) {
+        self.run_with(keychain, &[], args)
+    }
+
+    fn run_with(&self, keychain: &str, env: &[(&str, &str)], args: &[&str]) -> (Output, String) {
         let home = self.root.path().join("home");
+        let path = self.file(keychain);
+        assert!(
+            path.starts_with(self.root.path()),
+            "{path:?} escapes the sandbox"
+        );
         let mut command = Command::new(env!("CARGO_BIN_EXE_plexi"));
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("PLEXI_") {
                 command.env_remove(key);
             }
-        }
-        let names: Vec<&str> = if search.is_empty() {
-            vec!["unused.keychain-db"]
-        } else {
-            search.to_vec()
-        };
-        let fixture = names.len() > 1 || default.is_some();
-        let host = if fixture {
-            "host.keychain-db"
-        } else {
-            names[0]
-        };
-        let paths: Vec<PathBuf> = names.iter().map(|name| self.file(name)).collect();
-        for path in paths
-            .iter()
-            .chain(default.map(|name| self.file(name)).iter())
-            .chain(std::iter::once(&self.file(host)))
-        {
-            assert!(
-                path.starts_with(self.root.path()),
-                "{path:?} escapes the sandbox"
-            );
         }
         command
             .args(["--profile", PROFILE])
@@ -185,32 +173,38 @@ impl Sandbox {
             .env("HOME", &home)
             .env("XDG_CONFIG_HOME", home.join(".config"))
             .env("XDG_DATA_HOME", home.join(".local/share"))
-            .env("PLEXI_KEYCHAIN_PATH", self.file(host))
+            .env("PLEXI_KEYCHAIN_PATH", &path)
             .env("PLEXI_KEYCHAIN_PASSWORD", PASSWORD)
             .env(NAME, "t1635-value")
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if fixture {
-            command.env(
-                "PLEXI_TEST_KEYCHAIN_SEARCH",
-                std::env::join_paths(&paths).unwrap(),
-            );
-            if let Some(default) = default {
-                command.env("PLEXI_TEST_KEYCHAIN_DEFAULT", self.file(default));
-            }
-        }
-        bounded(command)
+        let before = self.log_len();
+        let output = bounded(command);
+        let log = std::fs::read(self.profile().join("plexi.log"))
+            .unwrap_or_else(|error| panic!("plexi.log missing after {args:?}: {error}"));
+        assert!(log.len() > before, "{args:?} wrote nothing to plexi.log");
+        (output, String::from_utf8_lossy(&log[before..]).into_owned())
     }
 
-    fn rm(&self, search: &[&str], default: Option<&str>) -> Output {
+    fn rm(&self, keychain: &str) -> (Output, String) {
         let folder = self.folder.to_str().unwrap().to_string();
-        self.run(
-            search,
-            default,
-            &["secret", "rm", NAME, "--folder", &folder],
-        )
+        self.run(keychain, &["secret", "rm", NAME, "--folder", &folder])
     }
+}
+
+/// The removal-side guarantees on one command's log: no data copy, no UI.
+fn assert_no_password_request(log: &str) {
+    assert_eq!(
+        log.matches(DATA_CALL).count(),
+        0,
+        "removal requested item data: {log}"
+    );
+    assert!(
+        !log.contains(UI_ALLOWED),
+        "removal allowed Keychain UI: {log}"
+    );
 }
 
 fn bounded(mut command: Command) -> Output {
@@ -255,26 +249,27 @@ fn removed(output: &Output) -> bool {
 }
 
 /// An unindexed item this process wrote is removed by reference: no index
-/// entry is needed, no password is requested and UI is never allowed. A
-/// repeat removal reports the no-match and fails.
+/// entry is needed, no data copy happens and UI is never allowed. A repeat
+/// removal reports the no-match and fails.
 #[test]
 fn unindexed_item_is_removed_without_a_password_request() {
     let sandbox = Sandbox::new();
     let account = sandbox.account();
-    sandbox.seed("a.keychain-db", &account, "seeded-by-test");
+    sandbox.seed(KEYCHAIN, &account, "seeded-by-test");
 
-    let first = sandbox.rm(&["a.keychain-db"], None);
+    let (first, log) = sandbox.rm(KEYCHAIN);
     assert!(removed(&first), "{}", text(&first.stderr));
-    assert!(!sandbox.holds("a.keychain-db", &account));
-    let log = sandbox.log();
-    assert!(log.contains(&format!("{DELETE_CALL}0")), "{log}");
-    assert!(!log.contains(UI_ALLOWED), "{log}");
+    assert!(!sandbox.holds(KEYCHAIN, &account));
+    assert_eq!(log.matches(&format!("{DELETE_CALL}0")).count(), 1, "{log}");
+    assert_no_password_request(&log);
 
-    let again = sandbox.rm(&["a.keychain-db"], None);
+    let (again, log) = sandbox.rm(KEYCHAIN);
     assert!(!again.status.success());
     let err = text(&again.stderr);
     assert!(err.contains("returned no match"), "{err}");
     assert!(!text(&again.stdout).contains("Removed"));
+    assert!(!log.contains(DELETE_CALL), "{log}");
+    assert_no_password_request(&log);
 }
 
 /// A stale index entry over an already-created empty file is never success.
@@ -282,13 +277,14 @@ fn unindexed_item_is_removed_without_a_password_request() {
 fn stale_cached_name_in_an_empty_file_is_a_reported_no_match() {
     let sandbox = Sandbox::new();
     let account = sandbox.account();
-    sandbox.keychain("empty.keychain-db");
+    sandbox.keychain(KEYCHAIN);
     sandbox.index(&[&account]);
-    let out = sandbox.rm(&["empty.keychain-db"], None);
+    let (out, log) = sandbox.rm(KEYCHAIN);
     assert!(!out.status.success());
     let err = text(&out.stderr);
     assert!(err.contains("returned no match"), "{err}");
     assert!(!text(&out.stdout).contains("Removed"));
+    assert_no_password_request(&log);
 }
 
 /// A damaged file fails at its own stage, never as a no-match, and no other
@@ -297,7 +293,7 @@ fn stale_cached_name_in_an_empty_file_is_a_reported_no_match() {
 fn damaged_keychain_is_an_open_error_not_a_no_match() {
     let sandbox = Sandbox::new();
     std::fs::write(sandbox.file("damaged.keychain-db"), b"not a keychain").unwrap();
-    let out = sandbox.rm(&["damaged.keychain-db"], None);
+    let (out, _) = sandbox.rm("damaged.keychain-db");
     let err = text(&out.stderr);
     assert!(!out.status.success(), "{err}");
     assert!(err.contains("open the keychain (status "), "{err}");
@@ -305,85 +301,65 @@ fn damaged_keychain_is_an_open_error_not_a_no_match() {
     assert!(!text(&out.stdout).contains("Removed"));
 }
 
-/// R2.1: an item only in a searched non-default keychain is removed; an
-/// item only in a default keychain excluded from the search is not, and
-/// nothing reports success for it.
+/// Controls for the detectors. A background data request on an item this
+/// process wrote is refused and traced; a background read of an item the
+/// binary wrote itself is traced with status 0; and a write that allows UI
+/// leaves the UI trace. Removal must leave none of these.
 #[test]
-fn removal_uses_the_search_domain_not_the_default_keychain() {
-    let sandbox = Sandbox::new();
-    let account = sandbox.account();
-    sandbox.keychain("a.keychain-db");
-    sandbox.seed("b.keychain-db", &account, "in-b");
-    let out = sandbox.rm(&["a.keychain-db", "b.keychain-db"], Some("a.keychain-db"));
-    assert!(removed(&out), "{}", text(&out.stderr));
-    assert!(!sandbox.holds("b.keychain-db", &account));
-
-    sandbox.seed("c.keychain-db", &account, "in-excluded-default");
-    let out = sandbox.rm(&["a.keychain-db"], Some("c.keychain-db"));
-    assert!(!out.status.success());
-    assert!(text(&out.stderr).contains("returned no match"));
-    assert!(sandbox.holds("c.keychain-db", &account));
-}
-
-/// Duplicates: each removal deletes the first visible copy only.
-#[test]
-fn one_removal_deletes_one_duplicate() {
-    let sandbox = Sandbox::new();
-    let account = sandbox.account();
-    sandbox.seed("a.keychain-db", &account, "first");
-    sandbox.seed("b.keychain-db", &account, "second");
-    let search = ["a.keychain-db", "b.keychain-db"];
-
-    let first = sandbox.rm(&search, None);
-    assert!(removed(&first), "{}", text(&first.stderr));
-    assert!(!sandbox.holds("a.keychain-db", &account));
-    assert!(sandbox.holds("b.keychain-db", &account));
-    let second = sandbox.rm(&search, None);
-    assert!(removed(&second), "{}", text(&second.stderr));
-    assert!(!sandbox.holds("b.keychain-db", &account));
-    assert!(!sandbox.rm(&search, None).status.success());
-}
-
-/// Negative controls for the detectors above. A background data request
-/// on an item this process wrote is refused without a dialog, so the trap
-/// that proves removal never requested a password is live. And a write
-/// that does allow UI leaves the trace removal must never leave.
-#[test]
-fn negative_controls_show_the_detectors_fire() {
+fn controls_show_each_detector_fire() {
     let sandbox = Sandbox::new();
     // Alias migration reads the legacy value in the background.
     let legacy = "plexi:user:openrouter-api-key";
-    sandbox.seed("a.keychain-db", legacy, "trap-value");
+    sandbox.seed(KEYCHAIN, legacy, "trap-value");
     sandbox.index(&[legacy]);
-    let list = sandbox.run(&["a.keychain-db"], None, &["secret", "list", "--global"]);
-    let log = sandbox.log();
+    let (list, log) = sandbox.run(KEYCHAIN, &["secret", "list", "--global"]);
     assert!(
         log.contains(&format!("could not read '{legacy}' to migrate")),
         "the binary's data request was not refused: {}\n{log}",
         text(&list.stderr)
     );
-    let refused = log
+    let refused: Vec<&str> = log
         .lines()
-        .find(|line| line.contains(DATA_CALL))
-        .unwrap_or_else(|| panic!("no {DATA_CALL} trace: {log}"));
-    assert!(!refused.ends_with(&format!("{DATA_CALL}0")), "{refused}");
+        .filter(|line| line.contains(DATA_CALL))
+        .collect();
+    assert_eq!(refused.len(), 1, "{log}");
     assert!(
-        sandbox.holds("a.keychain-db", legacy),
+        !refused[0].ends_with(&format!("{DATA_CALL}0")),
+        "{}",
+        refused[0]
+    );
+    assert!(
+        sandbox.holds(KEYCHAIN, legacy),
         "the trap item must survive"
     );
-    assert!(!sandbox.holds("a.keychain-db", "plexi:user:OPENROUTER_API_KEY"));
     assert!(!log.contains(UI_ALLOWED), "{log}");
 
-    let folder = sandbox.folder.to_str().unwrap().to_string();
-    let set = sandbox.run(
-        &["a.keychain-db"],
-        None,
-        &["secret", "set", NAME, "--from-env", "--folder", &folder],
+    // An item the binary writes itself is readable by it: the migration's
+    // two background reads each trace status 0.
+    let mine = "plexi:user:openrouter-api-key";
+    let fresh = "b.keychain-db";
+    let (set, log) = sandbox.run_with(
+        fresh,
+        &[("openrouter-api-key", "binary-owned")],
+        &[
+            "secret",
+            "set",
+            "openrouter-api-key",
+            "--global",
+            "--from-env",
+        ],
     );
     assert!(set.status.success(), "{}", text(&set.stderr));
-    assert!(sandbox.log().contains(UI_ALLOWED), "{}", sandbox.log());
+    assert!(log.contains(UI_ALLOWED), "set must allow UI: {log}");
+    sandbox.index(&[mine]);
+    let (list, log) = sandbox.run(fresh, &["secret", "list", "--global"]);
+    assert!(list.status.success(), "{}", text(&list.stderr));
+    assert!(
+        log.matches(&format!("{DATA_CALL}0")).count() >= 1,
+        "a successful data copy must be traced: {log}"
+    );
+    assert!(!log.contains(UI_ALLOWED), "{log}");
 }
-
 /// A native delete refusal after a successful selection reaches the CLI as
 /// a failure with its status, and the item survives. The selected file sits
 /// in a read-only directory, so selection succeeds and
@@ -400,7 +376,7 @@ fn native_delete_refusal_fails_with_its_status_and_keeps_the_item() {
     };
     set_mode(sandbox.file("ro/a.keychain-db"), 0o444);
     set_mode(sandbox.file("ro"), 0o555);
-    let out = sandbox.rm(&["ro/a.keychain-db"], None);
+    let (out, log) = sandbox.rm("ro/a.keychain-db");
     set_mode(sandbox.file("ro"), 0o755);
     set_mode(sandbox.file("ro/a.keychain-db"), 0o644);
 
@@ -408,7 +384,7 @@ fn native_delete_refusal_fails_with_its_status_and_keeps_the_item() {
     assert!(!out.status.success(), "{err}");
     assert!(!text(&out.stdout).contains("Removed"));
     assert!(err.contains("delete the selected item (status "), "{err}");
-    let log = sandbox.log();
+    assert_no_password_request(&log);
     let call = log
         .lines()
         .find(|line| line.contains(DELETE_CALL))

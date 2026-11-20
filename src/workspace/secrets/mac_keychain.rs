@@ -3,8 +3,7 @@
 //! Reads, removals and updates share one selector: the first generic-password
 //! item for service `plexi` and the full account, searched in the
 //! operation's ordered domain. The domain is the user's keychain search list,
-//! or only the `PLEXI_KEYCHAIN_PATH` test files. It is resolved once per
-//! operation. Selection asks `SecKeychainFindGenericPassword` for the item
+//! captured once per operation, or only the `PLEXI_KEYCHAIN_PATH` test file. Selection asks `SecKeychainFindGenericPassword` for the item
 //! reference only (both password outputs null), so it never evaluates the
 //! item's value ACL. A removal deletes the reference it selected and keeps
 //! the status `SecKeychainItemDelete` returns.
@@ -27,14 +26,21 @@ const ITEM_NOT_FOUND: i32 = -25300;
 /// `errSecDuplicateItem`.
 const DUPLICATE_ITEM: i32 = -25299;
 
-/// The keychains one operation searches.
+/// The keychains one operation searches, captured once.
 pub(super) struct Domain<K> {
     /// Ordered keychains a selection searches; the first match wins.
     pub search: Vec<K>,
-    /// Whether an attributes-only query can enumerate `search` (the user's
-    /// search list). An explicit file is off-list, so a scan confirms known
-    /// names by selection instead.
-    pub enumerable: bool,
+    /// Where a new item goes: the captured file itself, or the member of
+    /// `search` that the OS default keychain names.
+    pub destination: Destination,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Destination {
+    /// The `PLEXI_KEYCHAIN_PATH` file, which is `search[0]`.
+    OnlyFile,
+    /// The OS default keychain, looked up only when a create happens.
+    OsDefault,
 }
 
 /// One method per Security call this backend makes. The production
@@ -47,12 +53,12 @@ pub(super) trait Native {
     /// Opens the operation's domain. An error opening an explicit file is
     /// terminal; no other keychain is consulted.
     fn open_domain(&self) -> Result<Domain<Self::Keychain>, SecretError>;
-    /// Opens the destination for a new item. Called only when a write is
-    /// about to create one; removal and reads never open it.
-    fn open_default(&self) -> Result<Self::Keychain, SecretError>;
-    /// Attributes-only enumeration of accounts under `service` in the search
-    /// list. `errSecItemNotFound` is an empty list.
-    fn list_accounts(&self, service: &str) -> Result<Vec<String>, i32>;
+    /// `SecKeychainCopyDefault`. Called only by a write that is about to
+    /// create an item; reads, removals, scans and updates never call it.
+    fn default_keychain(&self) -> Result<Self::Keychain, SecretError>;
+    /// Attributes-only enumeration of accounts under `service`, bound to the
+    /// captured `search` handles. `errSecItemNotFound` is an empty list.
+    fn list_accounts(&self, search: &[Self::Keychain], service: &str) -> Result<Vec<String>, i32>;
     /// `SecKeychainFindGenericPassword` over `search` with both password
     /// outputs null: the item reference only, never its data.
     fn find_item(
@@ -227,25 +233,44 @@ pub(super) fn read<N: Native>(
     }
 }
 
-/// Inventory for reconciliation. Interaction is turned off first, as for
-/// every other call. The search list is enumerated attributes-only; an
-/// explicit file is not enumerable, so the names the index already holds are
-/// confirmed with the reference-only selector in one opened domain.
-pub(super) fn scan<N: Native>(native: &N, indexed: &[String]) -> Result<Vec<String>, SecretError> {
+/// Inventory for reconciliation: attributes-only over the captured domain,
+/// after turning Keychain UI off as every other call does. A failure
+/// propagates before reconciliation can rewrite the index.
+pub(super) fn scan<N: Native>(native: &N) -> Result<Vec<String>, SecretError> {
     suppress_ui(native)?;
     let domain = native.open_domain()?;
-    if domain.enumerable {
-        return native
-            .list_accounts(KEYCHAIN_SERVICE)
-            .map_err(|status| fail(KeychainStage::Select, status));
+    if domain.search.is_empty() {
+        log::info!("workspace_secrets::scan: the keychain search list is empty");
+        return Ok(Vec::new());
     }
-    let mut found = Vec::new();
-    for account in indexed {
-        if select(native, &domain.search, account)?.is_some() {
-            found.push(account.clone());
+    native
+        .list_accounts(&domain.search, KEYCHAIN_SERVICE)
+        .map_err(|status| fail(KeychainStage::Select, status))
+}
+
+/// The member of the captured domain a new item goes to. The OS default is
+/// looked up once, here, and must be one of the searched keychains, so a new
+/// item is readable afterwards; an excluded default fails before any add.
+fn create_destination<'d, N: Native>(
+    native: &N,
+    domain: &'d Domain<N::Keychain>,
+) -> Result<&'d N::Keychain, SecretError> {
+    match domain.destination {
+        Destination::OnlyFile => domain
+            .search
+            .first()
+            .ok_or_else(|| SecretError::Backend("the keychain domain is empty".to_string())),
+        Destination::OsDefault => {
+            let default = native.default_keychain()?;
+            domain
+                .search
+                .iter()
+                .find(|member| native.same_keychain(member, &default))
+                .ok_or_else(|| SecretError::Backend(
+                    "the default keychain is not in the keychain search list, so a new secret there could not be read back; nothing was stored. Add it to the search list or choose a default keychain that is on it".to_string(),
+                ))
         }
     }
-    Ok(found)
 }
 
 /// Upsert (`create_only == false`) updates the selected item in place, or
@@ -274,17 +299,14 @@ pub(super) fn write<N: Native>(
             };
         }
     }
-    let default = native.open_default()?;
-    if !domain
-        .search
-        .iter()
-        .any(|keychain| native.same_keychain(keychain, &default))
-    {
-        return Err(SecretError::Backend(
-            "the default keychain is not in the keychain search list, so a new secret there could not be read back; nothing was stored. Add it to the search list or choose a default keychain that is on it".to_string(),
-        ));
-    }
-    match native.add_item(&default, KEYCHAIN_SERVICE, account, label, value.as_bytes()) {
+    let destination = create_destination(native, &domain)?;
+    match native.add_item(
+        destination,
+        KEYCHAIN_SERVICE,
+        account,
+        label,
+        value.as_bytes(),
+    ) {
         0 => Ok(()),
         DUPLICATE_ITEM if create_only => Err(SecretError::AlreadyExists(account.to_string())),
         status => Err(fail(KeychainStage::Add, status)),
@@ -303,10 +325,9 @@ mod production {
     use security_framework_sys::base::{SecKeychainItemRef, SecKeychainRef};
     use zeroize::Zeroizing;
 
-    use super::{Domain, Native};
+    use super::{Destination, Domain, Native};
     use crate::workspace::secrets::store::{
-        explicit_keychain_password, fixture_selection, keychain_path_choice, KeychainPathChoice,
-        KeychainStage, SecretError,
+        explicit_keychain_password, keychain_path_override, KeychainStage, SecretError,
     };
 
     #[link(name = "Security", kind = "framework")]
@@ -346,19 +367,6 @@ mod production {
         }
         buffer.truncate(length as usize);
         Some(buffer)
-    }
-
-    /// Resolved once per call from the environment. A release build passes
-    /// no fixture selection, so only `PLEXI_KEYCHAIN_PATH` can apply.
-    fn choice() -> Result<KeychainPathChoice, SecretError> {
-        let fixture = fixture_selection();
-        keychain_path_choice(
-            std::env::var_os("PLEXI_KEYCHAIN_PATH").as_deref(),
-            fixture
-                .as_ref()
-                .map(|(search, default)| (search.as_os_str(), default.as_deref())),
-        )
-        .map_err(|error| SecretError::Backend(error.to_string()))
     }
 
     fn test_password() -> Result<Zeroizing<String>, SecretError> {
@@ -424,69 +432,57 @@ mod production {
             status
         }
 
-        /// A test file is created with `SecKeychainCreate` when missing,
-        /// then opened and unlocked with its password. None of these calls
-        /// change the user's search list or default keychain.
+        /// Captures the user's search list once, or opens the one
+        /// `PLEXI_KEYCHAIN_PATH` file. That file is created with
+        /// `SecKeychainCreate` when missing, then opened and unlocked; none of
+        /// these calls change the user's search list or default keychain. An
+        /// invalid override is an error here, before any keychain is touched.
         fn open_domain(&self) -> Result<Domain<SecKeychain>, SecretError> {
-            let paths = match choice()? {
-                KeychainPathChoice::SearchList => {
-                    let mut list: core_foundation::array::CFArrayRef = std::ptr::null();
-                    let status = unsafe { SecKeychainCopySearchList(&mut list) };
-                    if status != 0 || list.is_null() {
-                        return Err(SecretError::Keychain {
-                            stage: KeychainStage::Open,
-                            status,
-                        });
-                    }
-                    let list: CFArray<SecKeychain> =
-                        unsafe { CFArray::wrap_under_create_rule(list) };
-                    return Ok(Domain {
-                        search: list.iter().map(|keychain| (*keychain).clone()).collect(),
-                        enumerable: true,
+            let Some(path) = keychain_path_override().map_err(SecretError::Backend)? else {
+                let mut list: core_foundation::array::CFArrayRef = std::ptr::null();
+                let status = unsafe { SecKeychainCopySearchList(&mut list) };
+                if status != 0 || list.is_null() {
+                    return Err(SecretError::Keychain {
+                        stage: KeychainStage::Open,
+                        status,
                     });
                 }
-                KeychainPathChoice::File(path) => vec![path],
-                KeychainPathChoice::Fixture { search, .. } => search,
+                let list: CFArray<SecKeychain> = unsafe { CFArray::wrap_under_create_rule(list) };
+                return Ok(Domain {
+                    search: list.iter().map(|keychain| (*keychain).clone()).collect(),
+                    destination: Destination::OsDefault,
+                });
             };
-            let password = test_password()?;
             static LOGGED: std::sync::Once = std::sync::Once::new();
             LOGGED.call_once(|| {
                 log::info!(
-                    "workspace_secrets: test keychains {paths:?} opened by path; search list and default keychain unchanged"
+                    "workspace_secrets: test keychain {} opened by path; search list and default keychain unchanged",
+                    path.display()
                 );
             });
             Ok(Domain {
-                search: paths
-                    .iter()
-                    .map(|path| open_test_file(path, &password))
-                    .collect::<Result<Vec<_>, _>>()?,
-                enumerable: false,
+                search: vec![open_test_file(&path, &test_password()?)?],
+                destination: Destination::OnlyFile,
             })
         }
 
-        fn open_default(&self) -> Result<SecKeychain, SecretError> {
-            let path = match choice()? {
-                KeychainPathChoice::SearchList => {
-                    return SecKeychain::default().map_err(|error| SecretError::Keychain {
-                        stage: KeychainStage::DefaultKeychain,
-                        status: error.code(),
-                    })
-                }
-                KeychainPathChoice::File(path) => path,
-                KeychainPathChoice::Fixture { default, .. } => default,
-            };
-            open_test_file(&path, &test_password()?)
+        fn default_keychain(&self) -> Result<SecKeychain, SecretError> {
+            SecKeychain::default().map_err(|error| SecretError::Keychain {
+                stage: KeychainStage::DefaultKeychain,
+                status: error.code(),
+            })
         }
 
-        fn list_accounts(&self, service: &str) -> Result<Vec<String>, i32> {
+        fn list_accounts(&self, search: &[SecKeychain], service: &str) -> Result<Vec<String>, i32> {
             use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
-            let mut search = ItemSearchOptions::new();
-            search
+            let mut query = ItemSearchOptions::new();
+            query
                 .class(ItemClass::generic_password())
                 .service(service)
+                .keychains(search)
                 .load_attributes(true)
                 .limit(Limit::All);
-            let results = match search.search() {
+            let results = match query.search() {
                 Ok(results) => results,
                 Err(error) if error.code() == super::ITEM_NOT_FOUND => return Ok(Vec::new()),
                 Err(error) => return Err(error.code()),
@@ -545,8 +541,10 @@ mod production {
                     &mut data,
                 )
             };
+            // One status-only trace per native return, success included,
+            // before any branch: every data request is observable.
+            log::info!("workspace_secrets: SecKeychainItemCopyContent status={status}");
             if status != 0 {
-                log::warn!("workspace_secrets: SecKeychainItemCopyContent status={status}");
                 return Err(status);
             }
             if data.is_null() {
@@ -631,7 +629,7 @@ mod tests {
     enum Call {
         Interaction(bool),
         Open,
-        OpenDefault,
+        DefaultLookup,
         ListAccounts,
         Find,
         CopyData,
@@ -647,7 +645,7 @@ mod tests {
         suppress_status: i32,
         search: Vec<u8>,
         default: Result<u8, i32>,
-        enumerable: bool,
+        destination: Destination,
         items: RefCell<Vec<(u8, String, String)>>,
         find_override: Option<(i32, bool)>,
         delete_status: Option<i32>,
@@ -661,7 +659,7 @@ mod tests {
                 suppress_status: 0,
                 search: search.to_vec(),
                 default: Ok(default),
-                enumerable: false,
+                destination: Destination::OsDefault,
                 items: RefCell::new(Vec::new()),
                 find_override: None,
                 delete_status: None,
@@ -705,26 +703,30 @@ mod tests {
             self.calls.borrow_mut().push(Call::Open);
             Ok(Domain {
                 search: self.search.clone(),
-                enumerable: self.enumerable,
+                destination: self.destination,
             })
         }
 
-        fn open_default(&self) -> Result<u8, SecretError> {
-            self.calls.borrow_mut().push(Call::OpenDefault);
+        fn default_keychain(&self) -> Result<u8, SecretError> {
+            self.calls.borrow_mut().push(Call::DefaultLookup);
             self.default.map_err(|status| SecretError::Keychain {
                 stage: KeychainStage::DefaultKeychain,
                 status,
             })
         }
 
-        fn list_accounts(&self, service: &str) -> Result<Vec<String>, i32> {
+        fn list_accounts(&self, search: &[u8], service: &str) -> Result<Vec<String>, i32> {
             assert_eq!(service, KEYCHAIN_SERVICE);
+            assert!(
+                !search.is_empty(),
+                "an empty domain is handled before the native call"
+            );
             self.calls.borrow_mut().push(Call::ListAccounts);
             Ok(self
                 .items
                 .borrow()
                 .iter()
-                .filter(|(k, _, _)| self.search.contains(k))
+                .filter(|(k, _, _)| search.contains(k))
                 .map(|(_, a, _)| a.clone())
                 .collect())
         }
@@ -1022,61 +1024,99 @@ mod tests {
     }
 
     #[test]
-    fn scan_turns_ui_off_before_enumerating() {
-        let mut fake = Fake::new(&[1], 1).holding(1, ACCOUNT, "v");
-        fake.enumerable = true;
+    fn scan_turns_ui_off_before_enumerating_the_captured_domain() {
+        let fake =
+            Fake::new(&[1], 1)
+                .holding(1, ACCOUNT, "v")
+                .holding(2, "plexi:user:UNSEARCHED", "w");
         fake.interaction.set(true);
-        assert_eq!(scan(&fake, &[]).unwrap(), vec![ACCOUNT.to_string()]);
+        assert_eq!(scan(&fake).unwrap(), vec![ACCOUNT.to_string()]);
         let calls = fake.calls();
-        assert_eq!(calls[0], Call::Interaction(false), "{calls:?}");
-        assert!(!calls.contains(&Call::CopyData), "{calls:?}");
+        assert_eq!(
+            calls,
+            vec![Call::Interaction(false), Call::Open, Call::ListAccounts]
+        );
 
-        fake.suppress_status = -25291;
-        let fresh_calls = fake.calls().len();
-        let error = scan(&fake, &[]).unwrap_err();
+        let mut failing = Fake::new(&[1], 1).holding(1, ACCOUNT, "v");
+        failing.suppress_status = -25291;
+        let error = scan(&failing).unwrap_err();
         assert_eq!(stage_status(&error), (KeychainStage::SuppressUi, -25291));
         assert_eq!(
-            &fake.calls()[fresh_calls..],
-            &[Call::Interaction(false)],
+            failing.calls(),
+            vec![Call::Interaction(false)],
             "a failed suppression must stop before the scan"
         );
     }
 
     #[test]
-    fn scan_of_an_explicit_file_confirms_indexed_names_by_reference() {
-        let fake = Fake::new(&[1], 1).holding(1, ACCOUNT, "v");
-        let indexed = [ACCOUNT.to_string(), "plexi:user:ABSENT".to_string()];
-        assert_eq!(scan(&fake, &indexed).unwrap(), vec![ACCOUNT.to_string()]);
-        let calls = fake.calls();
-        assert_eq!(calls.iter().filter(|c| **c == Call::Open).count(), 1);
-        assert!(!calls.contains(&Call::ListAccounts), "{calls:?}");
-        assert!(!calls.contains(&Call::CopyData), "{calls:?}");
-        assert!(!calls.contains(&Call::Interaction(true)), "{calls:?}");
+    fn scan_of_an_empty_domain_lists_nothing_without_a_native_query() {
+        let fake = Fake::new(&[], 1);
+        assert!(scan(&fake).unwrap().is_empty());
+        assert!(!fake.calls().contains(&Call::ListAccounts));
     }
 
     #[test]
-    fn only_a_create_opens_the_default_keychain() {
-        let fake = Fake::new(&[1], 1).holding(1, ACCOUNT, "v");
+    fn only_a_create_looks_up_the_default_and_adds_to_the_captured_member() {
+        let fake = Fake::new(&[2, 1], 1).holding(2, ACCOUNT, "v");
         read(&fake, ACCOUNT, false).unwrap();
         read(&fake, ACCOUNT, true).unwrap();
         remove_if_value(&fake, "plexi:user:ABSENT", "x").unwrap();
         write(&fake, ACCOUNT, "label", "updated", false).unwrap();
+        scan(&fake).unwrap();
         remove(&fake, ACCOUNT).unwrap();
         remove(&fake, ACCOUNT).unwrap();
-        scan(&fake, &[ACCOUNT.to_string()]).unwrap();
         assert!(
-            !fake.calls().contains(&Call::OpenDefault),
+            !fake.calls().contains(&Call::DefaultLookup),
             "{:?}",
             fake.calls()
         );
         write(&fake, ACCOUNT, "label", "created", false).unwrap();
+        let calls = fake.calls();
         assert_eq!(
-            fake.calls()
-                .iter()
-                .filter(|c| **c == Call::OpenDefault)
-                .count(),
+            calls.iter().filter(|c| **c == Call::DefaultLookup).count(),
             1
         );
+        assert_eq!(calls.last(), Some(&Call::Interaction(false)));
+        assert!(calls.contains(&Call::Add(1)), "{calls:?}");
+        assert_eq!(fake.in_keychain(1, ACCOUNT).as_deref(), Some("created"));
+    }
+
+    #[test]
+    fn a_single_file_domain_creates_in_that_file_without_a_default_lookup() {
+        let mut fake = Fake::new(&[3], 1);
+        fake.destination = Destination::OnlyFile;
+        write(&fake, ACCOUNT, "label", "v", true).unwrap();
+        assert_eq!(fake.in_keychain(3, ACCOUNT).as_deref(), Some("v"));
+        assert!(!fake.calls().contains(&Call::DefaultLookup));
+    }
+
+    #[test]
+    fn duplicates_follow_search_order_in_either_direction() {
+        for (order, first, second) in [([1u8, 2u8], 1u8, 2u8), ([2, 1], 2, 1)] {
+            let fake = Fake::new(&order, order[0])
+                .holding(1, ACCOUNT, "one")
+                .holding(2, ACCOUNT, "two");
+            let expect = |k: u8| if k == 1 { "one" } else { "two" };
+            assert_eq!(
+                read(&fake, ACCOUNT, false).unwrap().unwrap().as_str(),
+                expect(first)
+            );
+            let removal = remove(&fake, ACCOUNT).unwrap();
+            assert_eq!(removal.outcome, DeleteOutcome::Deleted);
+            assert!(
+                matches!(removal.survivor, Some(Ok(true))),
+                "the surviving copy keeps its cached name"
+            );
+            assert_eq!(fake.in_keychain(first, ACCOUNT), None);
+            assert_eq!(
+                fake.in_keychain(second, ACCOUNT).as_deref(),
+                Some(expect(second))
+            );
+            assert_eq!(
+                read(&fake, ACCOUNT, false).unwrap().unwrap().as_str(),
+                expect(second)
+            );
+        }
     }
 
     #[test]
