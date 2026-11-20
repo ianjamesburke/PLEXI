@@ -764,8 +764,9 @@ impl PlexiApp {
 fn gallery_scope_switcher(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
     let id = egui::Id::new("host_ui_gallery_scope_switcher");
     let active = ui.ctx().data(|d| d.get_temp::<usize>(id)).unwrap_or(0);
-    if let Some(scope) =
-        ScopeSwitcher::new("ui_gallery", &["Commands", "Files", "Agents"], active).show(ui, colors)
+    if let Some(scope) = ScopeSwitcher::new("ui_gallery", &["Commands", "Files", "Agents"], active)
+        .in_scroll_body()
+        .show(ui, colors)
     {
         ui.ctx().data_mut(|d| d.insert_temp(id, scope));
     }

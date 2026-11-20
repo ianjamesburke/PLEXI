@@ -25,6 +25,7 @@ pub(crate) struct ScopeSwitcher<'a> {
     id: &'a str,
     scopes: &'a [&'a str],
     active: usize,
+    in_scroll_body: bool,
 }
 
 impl<'a> ScopeSwitcher<'a> {
@@ -32,7 +33,20 @@ impl<'a> ScopeSwitcher<'a> {
     pub(crate) fn new(id: &'a str, scopes: &'a [&'a str], active: usize) -> Self {
         debug_assert!(scopes.len() >= 2, "a scope switcher needs an alternative");
         debug_assert!(active < scopes.len(), "active scope out of range");
-        Self { id, scopes, active }
+        Self {
+            id,
+            scopes,
+            active,
+            in_scroll_body: false,
+        }
+    }
+
+    /// The row sits inside a scroll body, whose viewport may clip a partly
+    /// visible row; the layout report then checks labels against their chips,
+    /// not the viewport.
+    pub(crate) fn in_scroll_body(mut self) -> Self {
+        self.in_scroll_body = true;
+        self
     }
 
     /// Returns the scope a click chose, never the active one. Chips stay out
@@ -72,7 +86,10 @@ impl<'a> ScopeSwitcher<'a> {
             WRAPPED.call_once(|| log::info!("ui: scope switcher {} wraps its chips", self.id));
         }
 
-        let capture = super::layout_report::Capture::begin(ui.painter(), "scope_switcher");
+        let mut capture = super::layout_report::Capture::begin(ui.painter(), "scope_switcher");
+        if self.in_scroll_body {
+            capture.scrolling();
+        }
         let start = ui.cursor().min;
         let mut chosen = None;
         let mut actions = Vec::with_capacity(self.scopes.len());
@@ -127,7 +144,11 @@ impl<'a> ScopeSwitcher<'a> {
                 .response
                 .rect;
         }
-        capture.finish(ui.painter(), rect, colors.bg_sidebar, actions, vec![]);
+        // Kit buttons skip painting outside the viewport, so a row scrolled
+        // wholly out of view has no paint to report.
+        if ui.is_rect_visible(rect) {
+            capture.finish(ui.painter(), rect, colors.bg_sidebar, actions, vec![]);
+        }
         if let Some(i) = chosen {
             log::info!(
                 "ui: scope switcher {} chip click -> {}",
