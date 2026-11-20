@@ -678,12 +678,70 @@ fn signal(key: u64, entry: &mut Entry, signal: libc::c_int) {
     testing::record(key, testing::Event::Signal(-pid, signal));
     #[cfg(not(any(test, feature = "testing")))]
     let _ = key;
-    let outcome = if pid > 1 && unsafe { libc::kill(-pid, signal) } != 0 {
-        io::Error::last_os_error().to_string()
+    let result = if pid > 1 && unsafe { libc::kill(-pid, signal) } != 0 {
+        Err(io::Error::last_os_error())
     } else {
-        "ok".to_string()
+        Ok(())
     };
-    entry.signals.push(format!("{signal}:{outcome}"));
+    let exited = result.is_err()
+        && (entry
+            .status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+            || leader_exited(pid));
+    entry
+        .signals
+        .push(format!("{signal}:{}", signal_outcome(&result, exited)));
+}
+
+/// How a group signal ended, for the close log. A group whose leader has
+/// exited and has no live member answers ESRCH, or EPERM on macOS when only
+/// the zombie leader is left: that is an already-exited group, not a failure.
+fn signal_outcome(result: &io::Result<()>, leader_exited: bool) -> String {
+    match result {
+        Ok(()) => "ok".to_string(),
+        Err(error)
+            if error.raw_os_error() == Some(libc::ESRCH)
+                || (leader_exited
+                    && error.raw_os_error() == Some(libc::EPERM)) =>
+        {
+            "already exited".to_string()
+        },
+        Err(error) => error.to_string(),
+    }
+}
+
+/// Whether the owned leader has exited (still unreaped), for the log only.
+fn leader_exited(pid: libc::pid_t) -> bool {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    rc == 0 && unsafe { info.si_pid() } == pid
+}
+
+#[cfg(test)]
+mod tests {
+    use super::signal_outcome;
+    use std::io;
+
+    /// The tester saw `1:Operation not permitted` for a group left with only
+    /// its zombie leader; that is logged as already exited.
+    #[test]
+    fn a_zombie_only_group_logs_as_already_exited() {
+        let eperm = || Err(io::Error::from_raw_os_error(libc::EPERM));
+        let esrch = Err(io::Error::from_raw_os_error(libc::ESRCH));
+        assert_eq!(signal_outcome(&eperm(), true), "already exited");
+        assert_eq!(signal_outcome(&esrch, false), "already exited");
+        assert_eq!(signal_outcome(&Ok(()), false), "ok");
+        assert_ne!(signal_outcome(&eperm(), false), "already exited");
+    }
 }
 
 /// Where the worker probes a shell; named so tests can fail one probe.
