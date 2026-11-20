@@ -100,7 +100,10 @@ fn sealed_notice(
                 .size((terminal.font_size - 1.0).max(9.0))
                 .color(colors.text_primary),
         );
-        if ui.button("Open a new pane").clicked() {
+        if ui
+            .add(crate::ui::button::KitButton::new("Open a new pane", colors).compact())
+            .clicked()
+        {
             log::info!(
                 "sealed_notice: pane {} asked for a new pane in its place",
                 terminal.id
