@@ -244,6 +244,18 @@
             }
           ]
         },
+        "OpenPlacement": {
+          "description": "Where `HostRequest::FileOpen` places the handler pane, relative to its\nanchor.",
+          "enum": [
+            "right",
+            "left",
+            "up",
+            "down",
+            "tab",
+            "window"
+          ],
+          "type": "string"
+        },
         "PathTokenMode": {
           "description": "Replace-vs-append behaviour for `HostRequest::InsertPathToken`.",
           "oneOf": [
@@ -3113,6 +3125,68 @@
           },
           "required": [
             "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Open one file or directory in the Plexi surface that handles it\n(`plexi file open`, `plexi open`). The host resolves a relative `path`\nonce against `cwd`, classifies the target, places the handler beside\nthe anchor pane and answers with one receipt.",
+          "properties": {
+            "caller_pane_id": {
+              "description": "The pane the caller claims to run in (`PLEXI_PANE_ID`). Checked\nagainst the socket peer; a mismatch is a stale caller.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cwd": {
+              "description": "Working directory of the invoking process. Absent when the CLI\ncould not read it; a relative `path` is then an error.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "from_pane_id": {
+              "description": "Placement anchor. It never changes what `path` means.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "no_focus": {
+              "type": "boolean"
+            },
+            "path": {
+              "description": "The path exactly as the caller typed it.",
+              "type": "string"
+            },
+            "placement": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/OpenPlacement"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Explicit placement. Absent means a right sibling of the anchor."
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "file_open",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path",
             "response_file"
           ],
           "type": "object"

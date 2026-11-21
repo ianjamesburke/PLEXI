@@ -1061,6 +1061,26 @@ impl PlexiApp {
                     }),
                 );
             }
+            crate::protocol::HostRequest::FileOpen {
+                path,
+                cwd,
+                caller_pane_id,
+                from_pane_id,
+                placement,
+                no_focus,
+                peer,
+                response_file,
+            } => {
+                let request = super::file_open::FileOpenRequest {
+                    path,
+                    cwd: cwd.as_deref().map(std::path::Path::new),
+                    caller_pane_id: *caller_pane_id,
+                    from_pane_id: *from_pane_id,
+                    placement: *placement,
+                    no_focus: *no_focus,
+                };
+                self.serve_file_open(&request, peer.as_ref(), response_file);
+            }
             crate::protocol::HostRequest::ListNeedsYou { response_file } => {
                 self.observe_needs_you("list", None, None, response_file);
             }

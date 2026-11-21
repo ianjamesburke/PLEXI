@@ -266,7 +266,12 @@ pub fn parse_step(step: &str) -> ParsedStep {
                     tokens[0] = "plexi".to_string();
                     return ParsedStep::PlexiCli(tokens);
                 }
-            } else if super::known_subcommands().contains(first.as_str()) {
+            } else if super::known_subcommands().contains(first.as_str())
+                && !RETIRED_STEP_COMMANDS.iter().any(|(word, _)| word == first)
+            {
+                // A retired short form keeps its refusal even when a command
+                // of the same name exists again (`plexi open`): a saved
+                // `open <x>` step meant the old view launch or the OS opener.
                 tokens.insert(0, "plexi".to_string());
                 return ParsedStep::PlexiCli(tokens);
             }
@@ -306,7 +311,7 @@ pub(crate) fn retired_step_error(step: &str) -> Option<String> {
         None => "it has no replacement; remove the step".to_string(),
     };
     Some(format!(
-        "step `{step}` starts with `{word}`, which is no longer a Plexi command and is not run as a shell command; {fix}"
+        "step `{step}` starts with `{word}`, which is no longer a Plexi step shorthand and is not run as a shell command; {fix}"
     ))
 }
 
@@ -1584,12 +1589,20 @@ mod step_classification_tests {
     }
 
     /// Step classification is derived from the clap tree: every top-level
-    /// command name and alias routes to the CLI. A hand-kept classifier list
-    /// that drifts from the tree fails here.
+    /// command name and alias routes to the CLI, except a retired short form
+    /// (`open`), whose refusal outranks a command of the same name. A
+    /// hand-kept classifier list that drifts from the tree fails here.
     #[test]
     fn step_classification_matches_the_clap_tree() {
         for sub in crate::cli::args::Cli::command().get_subcommands() {
-            for name in std::iter::once(sub.get_name()).chain(sub.get_all_aliases()) {
+            for name in std::iter::once(sub.get_name())
+                .chain(sub.get_all_aliases())
+                .filter(|name| {
+                    !super::RETIRED_STEP_COMMANDS
+                        .iter()
+                        .any(|(word, _)| word == name)
+                })
+            {
                 let step = format!("{name} --help");
                 assert_eq!(
                     parse_step(&step),

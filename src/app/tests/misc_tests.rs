@@ -431,7 +431,10 @@ fn pane_send_human_explicit_operation_id_is_rejected_before_socket_dispatch() {
                 mailbox,
                 subscribe,
                 publish,
-                Some(vec![std::process::id(), caller_pid]),
+                Some(crate::protocol::PeerAncestry {
+                    pids: vec![std::process::id(), caller_pid],
+                    end: crate::protocol::AncestryEnd::ReachedRoot,
+                }),
             )
         });
         writeln!(client, "{payload}").unwrap();
@@ -505,7 +508,10 @@ fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
             mailbox,
             subscribe,
             publish,
-            Some(vec![std::process::id(), caller_pid]),
+            Some(crate::protocol::PeerAncestry {
+                pids: vec![std::process::id(), caller_pid],
+                end: crate::protocol::AncestryEnd::ReachedRoot,
+            }),
         );
     });
     writeln!(client, "{payload}").unwrap();
@@ -716,10 +722,10 @@ fn file_handler_config_routes_extension_to_plugin() {
 
     // sender_pane_id = 0 -> no pane -> workspace path check is bypassed
     // (trusted host path), so a temp .md path opens cleanly.
-    let path = std::env::temp_dir()
-        .join("note.md")
-        .to_string_lossy()
-        .to_string();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("note.md");
+    std::fs::write(&path, "# note").expect("write note");
+    let path = path.to_string_lossy().to_string();
     app.dispatch_open_artifact(0, path, crate::protocol::ArtifactOpenMode::OpenInPane);
 
     let panes_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
@@ -748,6 +754,9 @@ fn stable_routes_only_images_to_native_viewer_apps() {
     let ft = crate::platform::logging::new_frame_tick();
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, ft);
     let (_tile, _pane) = app.add_test_pane();
+    // Gated players fall back to the OS opener; never launch a real app.
+    crate::app::canvas_bindings::set_test_opener(Some("/usr/bin/true"));
+    let dir = tempfile::tempdir().expect("tempdir");
 
     for (filename, expected_id, opens_pane) in [
         ("photo.png", "image-viewer", true),
@@ -755,10 +764,9 @@ fn stable_routes_only_images_to_native_viewer_apps() {
         ("song.mp3", "audio-player", false),
     ] {
         let panes_before: usize = app.windows.iter().map(|w| w.panes.len()).sum();
-        let path = std::env::temp_dir()
-            .join(filename)
-            .to_string_lossy()
-            .to_string();
+        let path = dir.path().join(filename);
+        std::fs::write(&path, b"media bytes").expect("write media");
+        let path = path.to_string_lossy().to_string();
 
         app.dispatch_open_artifact(0, path, crate::protocol::ArtifactOpenMode::OpenInPane);
 
@@ -1894,4 +1902,89 @@ fn client_waits_for_the_identity_ack_so_a_late_accept_still_sees_its_pid() {
     crate::cli::await_peer_identity_ack(&mut client, &line);
     drop(client);
     assert!(server.join().unwrap().is_some());
+}
+
+/// The ancestry walk keeps why it ended; only reaching the OS root is a
+/// complete lineage.
+#[test]
+fn peer_ancestry_walk_records_how_it_ended() {
+    use crate::protocol::AncestryEnd;
+    let chain = |pairs: &'static [(u32, u32)]| {
+        move |pid: u32| pairs.iter().find(|(child, _)| *child == pid).map(|(_, p)| *p)
+    };
+    let walk = super::super::walk_peer_ancestry(30, chain(&[(30, 20), (20, 1)]));
+    assert_eq!((walk.pids, walk.end), (vec![30, 20], AncestryEnd::ReachedRoot));
+    let walk = super::super::walk_peer_ancestry(30, chain(&[(30, 20)]));
+    assert_eq!((walk.pids, walk.end), (vec![30, 20], AncestryEnd::LookupFailed));
+    let walk = super::super::walk_peer_ancestry(30, chain(&[(30, 20), (20, 30)]));
+    assert_eq!((walk.pids, walk.end), (vec![30, 20], AncestryEnd::Cycle));
+    let walk = super::super::walk_peer_ancestry(1_000, |pid| Some(pid + 1));
+    assert_eq!(walk.end, AncestryEnd::HopLimit);
+    assert_eq!(walk.pids.len(), 32);
+}
+
+/// Through a real socket: the listener's kernel credential walk reaches the
+/// root for this process, the connection stamps it onto `FileOpen`, and a
+/// wire `peer` field is not accepted.
+#[cfg(unix)]
+#[test]
+fn file_open_peer_walk_is_stamped_by_the_listener_not_the_wire() {
+    use std::io::Write as _;
+    let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+    let pid = super::super::resolve_socket_peer_pid(&server).expect("kernel peer pid");
+    assert_eq!(pid, std::process::id());
+    let walk = super::super::capture_peer_ancestry(pid);
+    assert_eq!(walk.pids.first(), Some(&pid));
+    assert_eq!(walk.end, crate::protocol::AncestryEnd::ReachedRoot, "{walk:?}");
+
+    let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
+        egui::Context::default(),
+    ));
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::channel(wake.clone(), "file-open");
+    let (subscribe, _s) = crate::app::ui_mailbox::UiMailbox::<
+        crate::host::event_subscriptions::HostSubscribeRequest,
+    >::channel(wake.clone(), "subscribe");
+    let (publish, _p) = crate::app::ui_mailbox::UiMailbox::<
+        crate::host::event_subscriptions::HostPublishRequest,
+    >::channel(wake, "publish");
+    drop(client);
+    drop(server);
+    let profile = tempfile::tempdir().unwrap();
+    let forged = serde_json::json!({
+        "type": "file_open", "path": "a.txt", "response_file": "x",
+        "peer": {"pids": [1], "end": "ReachedRoot"},
+    });
+    let honest = serde_json::json!({"type": "file_open", "path": "a.txt", "response_file": "y"});
+    // One request per connection, as the CLI sends them.
+    for line in [forged, honest] {
+        let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
+        writeln!(client, "{line}").unwrap();
+        drop(client);
+        let (profile_path, stamped) = (profile.path().to_path_buf(), walk.clone());
+        let (mailbox, subscribe, publish) = (mailbox.clone(), subscribe.clone(), publish.clone());
+        std::thread::spawn(move || {
+            super::super::handle_socket_connection(
+                &profile_path,
+                server,
+                mailbox,
+                subscribe,
+                publish,
+                Some(stamped),
+            )
+        })
+        .join()
+        .unwrap();
+    }
+    let mut seen = Vec::new();
+    while let Ok(request) = rx.try_recv() {
+        seen.push(request);
+    }
+    assert_eq!(seen.len(), 1, "the forged line is refused: {seen:?}");
+    match &seen[0] {
+        crate::protocol::HostRequest::FileOpen { peer, response_file, .. } => {
+            assert_eq!(response_file, "y");
+            assert_eq!(peer.as_ref(), Some(&walk));
+        }
+        other => panic!("expected file_open, got {other:?}"),
+    }
 }

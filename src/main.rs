@@ -406,7 +406,7 @@ fn main() -> eframe::Result {
     use crate::cli::args::{
         AccountCmd, AgentCmd, AgentsDashboardCmd, AiCmd, AssistantCmd, AssistantPermissionCmd,
         ChangesCmd, CliSetupCmd, Commands, ConfigCmd, ContextCmd, DebugCmd, DebugSessionCmd,
-        DescriptorCmd, EventsCmd, HookAction, HostCmd, LedgerCmd, NeedsYouCmd, NotifyCmd, PaneCmd,
+        DescriptorCmd, EventsCmd, FileCmd, HookAction, HostCmd, LedgerCmd, NeedsYouCmd, NotifyCmd, PaneCmd,
         PaneMessageCmd, PaneResultCmd, PaneSlotCmd, PermissionsCmd, PluginCmd, PluginStateCmd,
         RegistryCmd, RoutineCmd, SecretCmd, SkillCmd, ViewCmd, WorkspaceCmd,
     };
@@ -1010,6 +1010,13 @@ fn main() -> eframe::Result {
                             cli::trace::exit(cli::folder_secret_exec(&cwd, &command))
                         }
                     },
+                    Commands::Open(args)
+                    | Commands::File {
+                        cmd: FileCmd::Open(args),
+                    } => {
+                        let from = resolve_opt_pane(args.from.as_ref());
+                        cli::trace::exit(cli::file_open_cli(&args, from, json))
+                    }
                     Commands::View { cmd } => match cmd {
                         ViewCmd::List => cli::trace::exit(cli::view_list(json)),
                         ViewCmd::Open {

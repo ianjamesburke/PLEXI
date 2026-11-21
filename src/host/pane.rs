@@ -2489,6 +2489,15 @@ impl ViewRuntime {
         }
     }
 
+    /// Whether a built-in view loaded its document ([`View::document_load`]).
+    /// Process plugins report load problems themselves.
+    pub(crate) fn document_load(&self) -> Option<Result<(), String>> {
+        match self {
+            ViewRuntime::Builtin(app) => app.document_load(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => None,
+        }
+    }
+
     pub(crate) fn editor_buffer(&self) -> Option<crate::host::changes::OpenEditorBuffer> {
         match self {
             ViewRuntime::Builtin(app) => app.editor_buffer(),

@@ -908,6 +908,20 @@ Ask the host which pane (if any) the socket peer lives in and that pane's live c
 |-------|------|----------|
 | `response_file` | `string` | yes |
 
+### `file_open`
+
+Open one file or directory in the Plexi surface that handles it (`plexi file open`, `plexi open`). The host resolves ...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `caller_pane_id` | `integer?` | no |
+| `cwd` | `string?` | no |
+| `from_pane_id` | `integer?` | no |
+| `no_focus` | `boolean` | no |
+| `path` | `string` | yes |
+| `placement` | `variant` | no |
+| `response_file` | `string` | yes |
+
 ### `list_needs_you`
 
 List items waiting on the human. The host expires due items first.

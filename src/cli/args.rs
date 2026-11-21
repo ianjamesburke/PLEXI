@@ -295,6 +295,16 @@ pub enum Commands {
         cmd: ViewCmd,
     },
 
+    /// Open a file or directory in the Plexi view that handles it.
+    #[command(about = FILE_OPEN_ABOUT, long_about = FILE_OPEN_LONG_ABOUT)]
+    Open(FileOpenArgs),
+
+    /// Open files in Plexi.
+    File {
+        #[command(subcommand)]
+        cmd: FileCmd,
+    },
+
     /// Acquire capacity before starting work (paused: exit 2)
     ///
     /// Acquire process-lifetime capacity before starting work. Pauses exit with code 2.
@@ -809,7 +819,9 @@ impl Commands {
                 ViewCmd::Open { .. } => false,
             },
             Self::Doctor => true,
-            Self::Lease { .. }
+            Self::Open(_)
+            | Self::File { .. }
+            | Self::Lease { .. }
             | Self::Assistant { .. }
             | Self::AgentsDashboard { .. }
             | Self::Run { .. }
@@ -1883,6 +1895,87 @@ pub enum ViewCmd {
         #[arg(long)]
         png: bool,
     },
+}
+
+const FILE_OPEN_ABOUT: &str = "Open a file or directory in the Plexi view that handles it";
+const FILE_OPEN_LONG_ABOUT: &str = "Open a file or directory in the Plexi view that handles it.
+
+`plexi open` is the shorthand for `plexi file open`; both send the same request.
+PATH is always a file path, never a view id: `plexi open git` opens a file named
+`git`. A relative path resolves against the current directory. Put `--` before
+a name that starts with `-`.
+
+A directory opens in Explorer. A file opens with your `[file_handlers]`
+association, then a plugin that declares its type, then the built-in media
+players, then the text editor for text. The new pane opens right of the calling
+pane unless a placement flag says otherwise.
+
+Prints the pane id. With --json, prints one receipt: status, path, handler,
+matched_by, context_id, pane_id, placement, focused. A refusal exits 1 with an
+error_code such as not_found, no_handler or stale_caller.
+
+Example: plexi open README.md
+Example: plexi file open docs --down --no-focus";
+
+#[derive(Subcommand)]
+pub enum FileCmd {
+    #[command(about = FILE_OPEN_ABOUT, long_about = FILE_OPEN_LONG_ABOUT)]
+    Open(FileOpenArgs),
+}
+
+/// Arguments shared by `plexi file open` and `plexi open`.
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct FileOpenArgs {
+    /// File or directory to open
+    #[arg(value_hint = ValueHint::AnyPath)]
+    pub path: String,
+    /// Split right (the default)
+    #[arg(long, short = 'r', conflicts_with_all = ["down", "left", "up", "tab", "window", "split"])]
+    pub right: bool,
+    /// Split left
+    #[arg(long, short = 'l', conflicts_with_all = ["down", "right", "up", "tab", "window", "split"])]
+    pub left: bool,
+    /// Split above
+    #[arg(long, short = 'u', conflicts_with_all = ["down", "left", "right", "tab", "window", "split"])]
+    pub up: bool,
+    /// Split below
+    #[arg(long, short = 'd', conflicts_with_all = ["left", "right", "up", "tab", "window", "split"])]
+    pub down: bool,
+    /// New tab beside the anchor pane
+    #[arg(long, conflicts_with_all = ["down", "left", "right", "up", "window", "split"])]
+    pub tab: bool,
+    /// New window in the anchor pane's context
+    #[arg(long, conflicts_with_all = ["down", "left", "right", "up", "tab", "split"])]
+    pub window: bool,
+    /// Placement by name
+    #[arg(long, value_enum, value_name = "PLACEMENT")]
+    pub split: Option<crate::protocol::OpenPlacement>,
+    /// Place the new pane relative to this pane id or name instead of the
+    /// calling pane. It does not change what PATH means.
+    #[arg(long, value_name = "PANE_ID")]
+    pub from: Option<PaneTarget>,
+    /// Open without moving focus
+    #[arg(long)]
+    pub no_focus: bool,
+}
+
+impl FileOpenArgs {
+    /// The explicit placement, or `None` so the host applies its default.
+    pub fn placement(&self) -> Option<crate::protocol::OpenPlacement> {
+        use crate::protocol::OpenPlacement;
+        self.split.or_else(|| {
+            [
+                (self.right, OpenPlacement::Right),
+                (self.left, OpenPlacement::Left),
+                (self.up, OpenPlacement::Up),
+                (self.down, OpenPlacement::Down),
+                (self.tab, OpenPlacement::Tab),
+                (self.window, OpenPlacement::Window),
+            ]
+            .into_iter()
+            .find_map(|(set, placement)| set.then_some(placement))
+        })
+    }
 }
 
 /// `plexi host <cmd>` — CLI-driven host launch with declarative boot state.

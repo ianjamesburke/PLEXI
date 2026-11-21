@@ -554,7 +554,19 @@ impl PlexiApp {
             .insert(new_id, Pane::Terminal(Box::new(pane)))
             .map_err(|_| format!("pane id {new_id} is already installed"))?;
         self.push_focus_history(old_window_id, old_focus);
+        self.insert_pane_as_tab(target_win_idx, focused, new_id);
+        Ok(new_id)
+    }
 
+    /// Install `new_id` (already in the window's pane map) as a tab beside the
+    /// `focused` pane tile and focus it. Joins the tile's tab group, or wraps
+    /// the tile in a new one.
+    pub(crate) fn insert_pane_as_tab(
+        &mut self,
+        target_win_idx: usize,
+        focused: egui_tiles::TileId,
+        new_id: PaneId,
+    ) {
         let ctx = &mut self.windows[target_win_idx];
         let new_tile = ctx.tree.tiles.insert_pane(new_id);
 
@@ -582,7 +594,6 @@ impl PlexiApp {
 
         ctx.navigate_to(new_tile);
         ctx.simplify_and_reconcile();
-        Ok(new_id)
     }
 
     /// The directory a tab in `win_idx` beside `anchor` starts in: the

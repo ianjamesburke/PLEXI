@@ -23,6 +23,8 @@ Plugins:
   events        Subscribe to plugin event streams
 
 Panes:
+  open          Open a file or directory in the Plexi view that handles it
+  file          Open files in Plexi
   pane          List, focus, send input to and capture panes
   notify        Send a notification to the Plexi UI
 

@@ -1203,6 +1203,35 @@ pub enum HostRequest {
         peer_ancestry: Option<Vec<u32>>,
         response_file: String,
     },
+    /// Open one file or directory in the Plexi surface that handles it
+    /// (`plexi file open`, `plexi open`). The host resolves a relative `path`
+    /// once against `cwd`, classifies the target, places the handler beside
+    /// the anchor pane and answers with one receipt.
+    FileOpen {
+        /// The path exactly as the caller typed it.
+        path: String,
+        /// Working directory of the invoking process. Absent when the CLI
+        /// could not read it; a relative `path` is then an error.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        /// The pane the caller claims to run in (`PLEXI_PANE_ID`). Checked
+        /// against the socket peer; a mismatch is a stale caller.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller_pane_id: Option<u64>,
+        /// Placement anchor. It never changes what `path` means.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_pane_id: Option<u64>,
+        /// Explicit placement. Absent means a right sibling of the anchor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        placement: Option<OpenPlacement>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        no_focus: bool,
+        /// Kernel-verified socket peer ancestry and how its walk ended,
+        /// stamped by the listener. Never read from the wire.
+        #[serde(skip)]
+        peer: Option<PeerAncestry>,
+        response_file: String,
+    },
     /// List items waiting on the human. The host expires due items first.
     ListNeedsYou { response_file: String },
     /// Resolve one needs-you item. Approving a click approval is refused:
@@ -1935,6 +1964,7 @@ impl HostRequest {
                 | Self::AgentAsk { .. }
                 | Self::Permissions { .. }
                 | Self::CallerContext { .. }
+                | Self::FileOpen { .. }
                 | Self::AgentSpawn { .. }
                 | Self::AgentOpen { .. }
                 | Self::AgentReopen { .. }
@@ -2011,6 +2041,67 @@ pub enum PathTokenMode {
     Replace,
     /// Write the path verbatim at the cursor position.
     Append,
+}
+
+/// How the host's walk up a socket peer's process ancestry ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AncestryEnd {
+    /// The walk reached the OS root process: the lineage is complete.
+    ReachedRoot,
+    /// A parent lookup failed before the root.
+    LookupFailed,
+    /// A process repeated.
+    Cycle,
+    /// The walk stopped at its hop limit.
+    HopLimit,
+}
+
+/// A socket peer's ancestor pids, nearest first, and how the walk ended.
+/// Captured by the listener at accept time; never part of the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerAncestry {
+    pub pids: Vec<u32>,
+    pub end: AncestryEnd,
+}
+
+/// Where `HostRequest::FileOpen` places the handler pane, relative to its
+/// anchor.
+#[derive(
+    Serialize, Deserialize, JsonSchema, clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenPlacement {
+    Right,
+    Left,
+    Up,
+    Down,
+    Tab,
+    Window,
+}
+
+impl OpenPlacement {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Right => "right",
+            Self::Left => "left",
+            Self::Up => "up",
+            Self::Down => "down",
+            Self::Tab => "tab",
+            Self::Window => "window",
+        }
+    }
+
+    /// The host layout hint for a pane placed inside the anchor's window.
+    /// `Window` creates a new window first and installs the pane as its root.
+    pub fn layout_hint(self) -> &'static str {
+        match self {
+            Self::Right | Self::Window => "split_h",
+            Self::Left => "split_left",
+            Self::Up => "split_above",
+            Self::Down => "split_v",
+            Self::Tab => "tab",
+        }
+    }
 }
 
 /// Routing target for `HostRequest::OpenArtifact`.

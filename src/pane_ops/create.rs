@@ -267,6 +267,20 @@ pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<B
     }
 }
 
+/// Whether launching `id` with a file path as its first argument opens that
+/// file. The built-in document viewers do; every other built-in pane type
+/// (`builtin_factory`, plus `terminal` and `assistant`) treats the argument
+/// differently or ignores it. An installed plugin receives its arguments as
+/// launch args and is trusted to open them.
+pub(crate) fn opens_path_argument(id: &str) -> bool {
+    match id {
+        "text-editor" | "image-viewer" | "video-player" | "audio-player" => true,
+        "terminal" | "assistant" | "agents" | "mcp-renderer" | "cli-renderer" | "file_browser"
+        | "secrets_manager" | "agents-dashboard" => false,
+        _ => true,
+    }
+}
+
 fn release_feature_for_plugin_id(id: &str) -> Option<crate::release::ReleaseFeature> {
     match id {
         "audio-player" | "video-player" => Some(crate::release::ReleaseFeature::MediaIo),
@@ -783,6 +797,8 @@ impl PlexiApp {
     ///   id and stashing the displaced pane in `overlay_replaced` so closing the
     ///   plugin restores it (see `restore_overlay_replacement`). Falls through to
     ///   the root/split path when the context is empty.
+    /// * `Some("tab")` — add a tab beside the focused pane; an empty context
+    ///   gets a root pane.
     /// * any other hint — split beside the focused pane, or install as the tree
     ///   root when no pane is focused.
     ///
@@ -855,6 +871,25 @@ impl PlexiApp {
 
         // Record which terminal we're splitting from before focus moves.
         let linked_pane_id = self.focused_terminal_id(active);
+        if matches!(hint, Some("tab")) {
+            let focused = self.windows[active]
+                .focused_pane
+                .and_then(|tile| self.windows[active].find_first_pane_in(tile));
+            if let Some(focused) = focused {
+                let new_id = self.host.alloc_pane_id();
+                let pane = build(new_id, linked_pane_id, None);
+                if self.windows[active].panes.insert(new_id, pane).is_err() {
+                    return None;
+                }
+                // Same history step a split records, so Back returns here.
+                let window_id = self.windows[active].window_id;
+                let old_focus = self.windows[active].focused_pane;
+                self.push_focus_history(window_id, old_focus);
+                self.insert_pane_as_tab(active, focused, new_id);
+                log::info!("plugin::{plugin_id}: launched as tab pane {new_id}");
+                return Some(new_id);
+            }
+        }
         let share = Self::share_ratio_from_fraction(plugin_id, share_hint);
         let (new_id, vertical, new_pane_first) = self.open_pane_layout(plugin_id, hint);
         let pane = build(new_id, linked_pane_id, None);
@@ -2756,6 +2791,35 @@ impl PlexiApp {
         )
     }
 
+    /// The id a launch of `id` in context `context_id` dispatches on: the
+    /// owning plugin of an installed plugin or contributed view, else `id`
+    /// itself (a built-in). Callers that gate on the handler decide on this.
+    pub(crate) fn resolve_launch_id(
+        &mut self,
+        context_id: u64,
+        id: &str,
+    ) -> Result<String, String> {
+        let registry = self.registries.view_for_context(context_id, &self.router);
+        let installed = registry.get(id).or_else(|| {
+            registry
+                .list()
+                .into_iter()
+                .find(|plugin| plugin.contributes.views.iter().any(|view| view.id == id))
+        });
+        match installed {
+            Some(plugin) => {
+                let view = plugin.contributes.resolve_view(&plugin.manifest.id, id)?;
+                log::info!(
+                    "view_open: plugin_id={} view_id={} context_id={context_id}",
+                    plugin.manifest.id,
+                    crate::host::guest_text::shown(&view.id)
+                );
+                Ok(plugin.manifest.id.clone())
+            }
+            None => Ok(id.to_string()),
+        }
+    }
+
     pub(crate) fn launch_view_by_id_with_layout_at(
         &mut self,
         options: IdViewLaunchOptions,
@@ -2784,28 +2848,8 @@ impl PlexiApp {
             follow_file_browser_cwd,
         } = options;
         let context_id = self.windows[target_win].context_id;
-        let resolved_plugin = {
-            let registry = self.registries.view_for_context(context_id, &self.router);
-            let installed = registry.get(id).or_else(|| {
-                registry
-                    .list()
-                    .into_iter()
-                    .find(|plugin| plugin.contributes.views.iter().any(|view| view.id == id))
-            });
-            match installed {
-                Some(plugin) => {
-                    let view = plugin.contributes.resolve_view(&plugin.manifest.id, id)?;
-                    log::info!(
-                        "view_open: plugin_id={} view_id={} context_id={context_id}",
-                        plugin.manifest.id,
-                        crate::host::guest_text::shown(&view.id)
-                    );
-                    Some(plugin.manifest.id.clone())
-                }
-                None => None,
-            }
-        };
-        let id = resolved_plugin.as_deref().unwrap_or(id);
+        let resolved = self.resolve_launch_id(context_id, id)?;
+        let id = resolved.as_str();
         // Resolve an implicit Explorer caller before on-launch policy can move focus.
         let cwd_override =
             if id == "file_browser" && follow_file_browser_cwd && cwd_override.is_none() {

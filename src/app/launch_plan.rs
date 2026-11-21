@@ -2383,11 +2383,15 @@ mod tests {
         };
         let profile = h.profile_dir().to_path_buf();
         let stamp = |ancestry: Option<&[u32]>, extra: &str| {
+            let peer = ancestry.map(|pids| crate::protocol::PeerAncestry {
+                pids: pids.to_vec(),
+                end: crate::protocol::AncestryEnd::ReachedRoot,
+            });
             super::super::handle_socket_line_in(
                 &profile,
                 &line(extra),
                 &mailbox,
-                ancestry,
+                peer.as_ref(),
                 &mut Vec::new(),
             );
             rx.try_recv().ok()

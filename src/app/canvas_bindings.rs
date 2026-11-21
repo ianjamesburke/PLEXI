@@ -275,16 +275,16 @@ impl PlexiApp {
     /// On non-macOS platforms `open` is unavailable; the host logs a
     /// warning and the request becomes a no-op rather than failing the
     /// frame.
-    pub(super) fn dispatch_open_artifact(
+    pub(crate) fn dispatch_open_artifact(
         &mut self,
         sender_pane_id: PaneId,
         path: String,
         mode: ArtifactOpenMode,
     ) {
-        let active = self.active_window;
-        let workspace_root = self.windows[active]
-            .panes
-            .get(&sender_pane_id)
+        // The sender may live in any window, not only the active one.
+        let workspace_root = self
+            .find_pane_in_any_window(sender_pane_id)
+            .and_then(|(window, _)| self.windows[window].panes.get(&sender_pane_id))
             .and_then(|p| p.as_view())
             .map(|a| a.workspace_root.clone());
         // workspace_root is None for builtin plugins (which run with trusted
@@ -300,48 +300,52 @@ impl PlexiApp {
         //      lives inside the workspace but points outside passes the lexical
         //      check, so `open` would follow it out of the sandbox (#2242). The
         //      canonical gate rejects targets whose *real* path escapes the root.
-        if let Some(ref root) = workspace_root {
-            let p = std::path::Path::new(&path);
-            let absolute = if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                root.join(p)
-            };
-            let normalized = normalize_path(&absolute);
-            if !normalized.starts_with(root) {
-                log::warn!(
-                    "OpenArtifact: pane {sender_pane_id} rejected — path {path:?} outside \
-                     workspace {root:?}"
-                );
-                return;
+        // The canonical path the second gate checked is the only one any mode
+        // opens, so check and use name the same file.
+        let target = match &workspace_root {
+            Some(root) => {
+                let p = std::path::Path::new(&path);
+                let absolute = if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    root.join(p)
+                };
+                if !normalize_path(&absolute).starts_with(root) {
+                    log::warn!(
+                        "OpenArtifact: pane {sender_pane_id} rejected — path {path:?} outside \
+                         workspace {root:?}"
+                    );
+                    return;
+                }
+                let checked = canonicalize_existing_prefix(&absolute);
+                if !within_canonical_root(root, &checked) {
+                    log::warn!(
+                        "OpenArtifact: pane {sender_pane_id} rejected — real path of {path:?} \
+                         escapes workspace {root:?} (symlink)"
+                    );
+                    return;
+                }
+                checked
             }
-            if !canonical_within_workspace(root, &absolute) {
-                log::warn!(
-                    "OpenArtifact: pane {sender_pane_id} rejected — real path of {path:?} \
-                     escapes workspace {root:?} (symlink)"
-                );
-                return;
-            }
-        }
-        log::info!("OpenArtifact: path={path:?} mode={mode:?}");
+            None => std::path::PathBuf::from(&path),
+        };
+        log::info!("OpenArtifact: path={path:?} target={target:?} mode={mode:?}");
         match mode {
             ArtifactOpenMode::OpenInPane => {
                 // Directories open the file browser; files run through the
-                // single open resolver (#2283): `[file_handlers]` → manifest
-                // `file_types` → builtin media players → OS default.
-                let p = std::path::PathBuf::from(&path);
-                if p.is_dir() {
-                    // Reuse the file-browser open path, but anchored at
-                    // the requested cwd. The current `open_file_browser`
-                    // anchors at the focused pane's cwd; we replicate
-                    // its body here with our path.
-                    self.open_file_browser_at(p);
+                // shared `file.open` classification (`super::file_open`).
+                if target.is_dir() {
+                    self.open_file_browser_at(target);
                 } else {
-                    self.open_file_in_view(sender_pane_id, &path);
+                    self.open_file_in_view(sender_pane_id, &target);
                 }
             }
-            ArtifactOpenMode::RevealInFinder => shell_open(&path, true),
-            ArtifactOpenMode::OpenWithDefault => shell_open(&path, false),
+            ArtifactOpenMode::RevealInFinder => {
+                let _logged = shell_open(&target, true);
+            }
+            ArtifactOpenMode::OpenWithDefault => {
+                let _logged = shell_open(&target, false);
+            }
         }
     }
 
@@ -379,24 +383,22 @@ impl PlexiApp {
         );
     }
 
-    /// The single file-open resolver (#2283). Decides which handler opens
-    /// `path` and launches it. Resolution order, first match wins:
-    ///   (a) user `[file_handlers]` override
-    ///   (b) plugin manifest `file_types` association
-    ///   (c) builtin media players (`MediaKind`)
-    ///   (d) builtin text-editor for text/source files
-    ///   (e) OS default opener — mandatory fallback
-    /// Any `plugin:` target that is absent or fails to launch falls through to the
-    /// OS opener rather than silently doing nothing — this is what makes
-    /// "Enter on a video with no installed player" open in the OS player
-    /// instead of vanishing. `sender_pane_id` is the pane that requested the
-    /// open (the explorer, or the terminal behind it); the text-editor lands as
-    /// a split to its right.
-    fn open_file_in_view(&mut self, sender_pane_id: PaneId, path: &str) {
+    /// Explorer file activation: open `path` with the handler
+    /// `super::file_open::classify_open_target` picks in the sender's context
+    /// (`[file_handlers]`, manifest `file_types`, media players, text editor).
+    /// A manifest handler that fails to launch hands the file to the rest of
+    /// the cascade; any other unavailable handler, or a regular file no Plexi
+    /// handler claims, goes to the OS default opener. A special file (FIFO,
+    /// device, socket) is refused. `sender_pane_id` is the pane that requested
+    /// the open (the explorer, or the terminal behind it); the text-editor
+    /// lands as a split to its right.
+    fn open_file_in_view(&mut self, sender_pane_id: PaneId, target: &std::path::Path) {
+        use super::file_open::{
+            classify_open_target, handler_arg, FileOpenError, MatchedBy, OpenHandler,
+        };
         if self.plugin_blocked("file viewer / text-editor") {
             return;
         }
-        use crate::app::file_handlers::FileHandler;
         // Resolve the registry view against the REQUESTING pane's own
         // context, not whichever context is currently active (stint 0724
         // Phase B) — `find_pane_in_any_window` finds it via the pane table,
@@ -406,82 +408,64 @@ impl PlexiApp {
             .find_pane_in_any_window(sender_pane_id)
             .map(|(window_index, _)| self.windows[window_index].context_id)
             .unwrap_or_else(|| self.windows[self.active_window].context_id);
-        let ext = std::path::Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        // (a) user `[file_handlers]` override.
-        if let Some(spec) = self
-            .config
-            .file_handlers
-            .as_ref()
-            .and_then(|m| m.get(&ext))
-            .cloned()
-        {
-            match FileHandler::parse(&spec) {
-                Ok(FileHandler::Os) => {
-                    log::info!("open: '{path}' → OS default (file_handlers override)");
-                    shell_open(path, false);
+        let mut associations = self.open_associations(context_id, target);
+        loop {
+            let classified = match classify_open_target(target, &associations) {
+                Ok(classified) => classified,
+                Err(error @ FileOpenError::SpecialFile { .. }) => {
+                    log::warn!("open: {target:?} refused ({error})");
                     return;
                 }
-                Ok(FileHandler::View(id)) => {
-                    if self.launch_view_with_path(&id, path) {
-                        log::info!("open: '{path}' → plugin '{id}' (file_handlers override)");
+                Err(error) => {
+                    log::info!("open: {target:?} → OS default ({error})");
+                    let _logged = shell_open(target, false);
+                    return;
+                }
+            };
+            let matched_by = classified.matched_by.as_str();
+            // String-argument handlers need a lossless string form of the path.
+            let arg = |handler: &str| match handler_arg(target, handler) {
+                Ok(arg) => Some(arg),
+                Err(error) => {
+                    log::warn!("open: {target:?} refused ({error})");
+                    None
+                }
+            };
+            match classified.handler {
+                OpenHandler::System => {
+                    log::info!("open: {target:?} → OS default ({matched_by})");
+                    let _logged = shell_open(target, false);
+                }
+                OpenHandler::Explorer => self.open_file_browser_at(target.to_path_buf()),
+                OpenHandler::TextEditor => {
+                    let Some(path) = arg("text-editor") else {
                         return;
-                    }
-                    log::warn!(
-                        "open: file_handler plugin '{id}' for .{ext} unavailable — OS fallback for '{path}'"
+                    };
+                    log::info!(
+                        "open: '{path}' → builtin text-editor ({matched_by}, split right of pane {sender_pane_id})"
                     );
-                    shell_open(path, false);
-                    return;
+                    self.open_text_file_in_split(sender_pane_id, &path);
                 }
-                Err(err) => log::warn!(
-                    "open: file_handlers.{ext} ignored ({err}) — continuing resolution for '{path}'"
-                ),
+                OpenHandler::View(id) => {
+                    let Some(path) = arg(&id) else {
+                        return;
+                    };
+                    if self.launch_view_with_path(&id, &path) {
+                        log::info!("open: '{path}' → plugin '{id}' ({matched_by})");
+                    } else if classified.matched_by == MatchedBy::Manifest {
+                        log::warn!(
+                            "open: manifest handler '{id}' failed — continuing resolution for '{path}'"
+                        );
+                        associations.manifest_handler = None;
+                        continue;
+                    } else {
+                        log::warn!("open: handler '{id}' unavailable — OS fallback for '{path}'");
+                        let _logged = shell_open(target, false);
+                    }
+                }
             }
-        }
-
-        // (b) plugin manifest `file_types` association.
-        if let Some(id) = self
-            .registries
-            .view_for_context(context_id, &self.router)
-            .handler_for_ext(&ext)
-            .map(|s| s.to_string())
-        {
-            if self.launch_view_with_path(&id, path) {
-                log::info!("open: '{path}' → plugin '{id}' (manifest file_types)");
-                return;
-            }
-            log::warn!("open: manifest handler '{id}' for .{ext} failed — continuing resolution");
-        }
-
-        // (c) builtin media players.
-        if let Some(id) =
-            crate::file_browser::MediaKind::for_path(std::path::Path::new(path)).player_plugin_id()
-        {
-            if self.launch_view_with_path(id, path) {
-                log::info!("open: '{path}' → builtin media player '{id}'");
-                return;
-            }
-            log::warn!("open: media player '{id}' not installed — OS fallback for '{path}'");
-        }
-
-        // (d) builtin text-editor: text and source files open in a split to
-        // the right of the requesting pane. Sits below user/manifest overrides
-        // so a user-configured handler for e.g. `.md` still wins.
-        if crate::app::text_editor_view::is_text_editable_ext(&ext) {
-            log::info!(
-                "open: '{path}' → builtin text-editor (split right of pane {sender_pane_id})"
-            );
-            self.open_text_file_in_split(sender_pane_id, path);
             return;
         }
-
-        // (e) OS default — mandatory fallback.
-        log::info!("open: '{path}' → OS default (resolver fallthrough: no Plexi handler)");
-        shell_open(path, false);
     }
 
     /// Open `path` in the builtin text-editor as a `split_h` anchored at
@@ -526,7 +510,7 @@ impl PlexiApp {
         ) {
             log::warn!("open: text-editor launch for '{path}' failed — {e}; OS fallback");
             self.active_window = original_active_window;
-            shell_open(path, false);
+            let _logged = shell_open(std::path::Path::new(path), false);
             return;
         }
         self.active_window = original_active_window;
@@ -629,69 +613,84 @@ pub fn open_http_url(url: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_OPENER: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Replace the OS opener program on this thread, so tests never launch a
+/// real application. `None` restores the platform opener.
+#[cfg(test)]
+pub(crate) fn set_test_opener(program: Option<&str>) {
+    TEST_OPENER.with(|opener| *opener.borrow_mut() = program.map(str::to_string));
+}
+
+fn opener_program(platform: &str) -> String {
+    #[cfg(test)]
+    if let Some(program) = TEST_OPENER.with(|opener| opener.borrow().clone()) {
+        return program;
+    }
+    platform.to_string()
+}
+
 /// Cross-platform helper: shell out to `open` (macOS) / `xdg-open`
-/// (Linux). On Windows we currently log + skip — the binding-primitives
-/// surface is macOS-first for v3.5; cross-platform reveals can land in
-/// a follow-up.
-#[cfg(not(target_arch = "wasm32"))]
-fn shell_open(path: &str, reveal: bool) {
+/// (Linux). Other platforms have no opener yet and return an error. A spawn
+/// failure is logged and returned so a caller with a receipt can report it.
+pub(super) fn shell_open(path: &std::path::Path, reveal: bool) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "detached: the opened app must outlive the opener"
-        )]
-        let mut cmd = std::process::Command::new("open");
+    let (program, args) = {
+        let mut args: Vec<&std::ffi::OsStr> = Vec::new();
         if reveal {
-            cmd.arg("-R");
+            args.push("-R".as_ref());
         }
-        cmd.arg(path);
-        match cmd.spawn() {
-            Ok(_) => log::debug!(
-                "OpenArtifact: spawned `open{}` for {path}",
-                if reveal { " -R" } else { "" }
-            ),
-            Err(e) => log::error!("OpenArtifact: `open` failed for {path}: {e}"),
-        }
-    }
+        args.push(path.as_os_str());
+        (opener_program("open"), args)
+    };
     #[cfg(target_os = "linux")]
-    {
-        // `xdg-open` has no "reveal" flag; fall back to opening the
-        // parent directory when reveal=true.
+    let (program, args) = {
+        // `xdg-open` has no "reveal" flag; open the parent directory instead.
         let target = if reveal {
-            std::path::Path::new(path)
-                .parent()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| path.to_string())
+            path.parent().unwrap_or(path)
         } else {
-            path.to_string()
+            path
         };
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "detached: the opened app must outlive the opener"
-        )]
-        match std::process::Command::new("xdg-open").arg(&target).spawn() {
-            Ok(_) => log::debug!("OpenArtifact: spawned xdg-open for {target}"),
-            Err(e) => log::error!("OpenArtifact: xdg-open failed for {target}: {e}"),
-        }
-    }
+        (opener_program("xdg-open"), vec![target.as_os_str()])
+    };
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        let _ = (path, reveal);
-        log::warn!(
-            "OpenArtifact: shell-open is macOS/Linux-only in v3.5; \
-             dropping reveal={reveal} path={path}"
-        );
+        let _ = opener_program;
+        let error = format!("no OS opener on this platform for {path:?} (reveal={reveal})");
+        log::warn!("OpenArtifact: {error}");
+        return Err(error);
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "detached: the opened app must outlive the opener"
+        )]
+        let spawned = std::process::Command::new(&program).args(&args).spawn();
+        match spawned {
+            Ok(_) => {
+                log::debug!("OpenArtifact: spawned `{program}` for {path:?} reveal={reveal}");
+                Ok(())
+            }
+            Err(e) => {
+                let error = format!("`{program}` failed for {path:?}: {e}");
+                log::error!("OpenArtifact: {error}");
+                Err(error)
+            }
+        }
     }
 }
 
-/// True when the *real* (symlink-resolved) path of `absolute` stays inside the
+/// True when an already-canonical `checked` path stays inside the
 /// canonicalized `workspace_root`. Complements the lexical `normalize_path`
 /// check: a symlink inside the workspace pointing outside it passes the lexical
 /// gate but fails here (#2242).
-fn canonical_within_workspace(root: &std::path::Path, absolute: &std::path::Path) -> bool {
+fn within_canonical_root(root: &std::path::Path, checked: &std::path::Path) -> bool {
     let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    canonicalize_existing_prefix(absolute).starts_with(&canonical_root)
+    checked.starts_with(&canonical_root)
 }
 
 /// Canonicalize the deepest existing ancestor of `path` (resolving any symlinks
@@ -730,8 +729,8 @@ fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_within_workspace, linked_terminal_payload_log_message, normalize_path,
-        quote_for_shell,
+        canonicalize_existing_prefix, linked_terminal_payload_log_message, normalize_path,
+        quote_for_shell, within_canonical_root,
     };
     use std::path::PathBuf;
 
@@ -761,7 +760,7 @@ mod tests {
         );
         // Canonically, its real path escapes the workspace and must be rejected.
         assert!(
-            !canonical_within_workspace(&workspace, &via_symlink),
+            !within_canonical_root(&workspace, &canonicalize_existing_prefix(&via_symlink)),
             "canonical check must reject a symlink escaping the workspace"
         );
 
@@ -769,7 +768,7 @@ mod tests {
         let inside = workspace.join("ok.txt");
         std::fs::write(&inside, b"fine").unwrap();
         assert!(
-            canonical_within_workspace(&workspace, &inside),
+            within_canonical_root(&workspace, &canonicalize_existing_prefix(&inside)),
             "canonical check must accept a real in-workspace file"
         );
 
