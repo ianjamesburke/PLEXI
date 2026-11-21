@@ -599,20 +599,30 @@ impl WasmPane {
         });
     }
 
-    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> Result<(), String> {
-        self.app.register_directed_pipe(pipe_id)
+    pub fn register_directed_pipe(&mut self, pipe_id: &str, generation: u64) -> Result<(), String> {
+        self.app.register_directed_pipe(pipe_id, generation)
     }
 
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         self.app.has_pipe_reader(pipe_id)
     }
 
-    pub fn close_directed_pipe(&mut self, pipe_id: &str) {
-        self.app.close_directed_pipe(pipe_id);
+    pub fn close_directed_pipe(&mut self, pipe_id: &str, generation: u64) {
+        self.app.close_directed_pipe(pipe_id, generation);
     }
 
-    pub fn json_pipe_handle(&self, pipe_id: &str) -> Option<u32> {
-        self.app.json_pipe_handle(pipe_id)
+    pub fn directed_pipe_handle(&self, generation: u64) -> Option<u32> {
+        self.app.directed_pipe_handle(generation)
+    }
+
+    #[cfg(test)]
+    pub fn open_binary_pipe_for_test(&mut self, id: &str) -> Result<u32, String> {
+        self.app.open_binary_pipe_for_test(id)
+    }
+
+    #[cfg(test)]
+    pub fn send_binary_for_test(&mut self, handle: u32, frame: Vec<u8>) -> Result<(), String> {
+        self.app.send_binary_for_test(handle, frame)
     }
 
     pub fn with_remembered_capabilities(
@@ -2189,16 +2199,31 @@ impl LiveWasmPane {
         self.inner.set_context_id(context_id);
     }
 
-    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> Result<(), String> {
-        self.inner.register_directed_pipe(pipe_id)
+    pub fn register_directed_pipe(&mut self, pipe_id: &str, generation: u64) -> Result<(), String> {
+        self.inner.register_directed_pipe(pipe_id, generation)
     }
 
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         self.inner.has_pipe_reader(pipe_id)
     }
 
-    pub fn close_directed_pipe(&mut self, pipe_id: &str) {
-        self.inner.close_directed_pipe(pipe_id);
+    pub fn close_directed_pipe(&mut self, pipe_id: &str, generation: u64) {
+        self.inner.close_directed_pipe(pipe_id, generation);
+    }
+
+    #[cfg(test)]
+    pub fn directed_pipe_handle(&self, generation: u64) -> Option<u32> {
+        self.inner.directed_pipe_handle(generation)
+    }
+
+    #[cfg(test)]
+    pub fn open_binary_pipe_for_test(&mut self, id: &str) -> Result<u32, String> {
+        self.inner.open_binary_pipe_for_test(id)
+    }
+
+    #[cfg(test)]
+    pub fn send_binary_for_test(&mut self, handle: u32, frame: Vec<u8>) -> Result<(), String> {
+        self.inner.send_binary_for_test(handle, frame)
     }
 
     pub fn take_host_effects(&mut self) -> Vec<WasmHostEffect> {
@@ -2266,15 +2291,16 @@ impl LiveWasmPane {
                     _ => Err("emit event returned no result".to_string()),
                 })
             }
-            crate::protocol::PlexiEvent::PipeMessage { pipe_id, payload } => {
-                if !self.inner.has_pipe_reader(&pipe_id) {
-                    if let Err(error) = self.inner.register_directed_pipe(&pipe_id) {
-                        log::warn!("wasm input: {error}");
-                    }
-                }
-                let Some(handle) = self.inner.json_pipe_handle(&pipe_id) else {
+            crate::protocol::PlexiEvent::PipeMessage {
+                pipe_id,
+                generation,
+                payload,
+            } => {
+                // The handle was bound to this connection when the host
+                // registered it; nothing is registered lazily by name.
+                let Some(handle) = self.inner.directed_pipe_handle(generation) else {
                     log::warn!(
-                        "wasm input: dropping PipeMessage for unregistered pipe '{pipe_id}'",
+                        "wasm input: dropping PipeMessage on '{pipe_id}' connection {generation}, which has no handle",
                         pipe_id = guest_text::shown(&pipe_id)
                     );
                     return;
@@ -2284,16 +2310,22 @@ impl LiveWasmPane {
                     payload: PipePayload::Json(payload.to_string()),
                 })
             }
-            crate::protocol::PlexiEvent::PipeClosed { pipe_id, reason } => {
-                // The host already closed the pipe on this instance's
-                // registry; the guest interface has no pipe-closed input yet,
-                // so the guest learns of it only when its next send is dropped.
-                log::info!(
-                    "wasm input: directed pipe '{pipe_id}' retired ({}); guest interface has no pipe-closed input",
-                    reason.as_str(),
-                    pipe_id = guest_text::shown(&pipe_id)
-                );
-                return;
+            crate::protocol::PlexiEvent::PipeClosed {
+                pipe_id,
+                generation,
+                reason,
+            } => {
+                // Delivered on the handle the connection was bound to; the
+                // host drops that binding only after this event is mapped.
+                let Some(handle) = self.inner.directed_pipe_handle(generation) else {
+                    log::warn!(
+                        "wasm input: '{pipe_id}' connection {generation} closed ({}) but has no handle",
+                        reason.as_str(),
+                        pipe_id = guest_text::shown(&pipe_id)
+                    );
+                    return;
+                };
+                InputEvent::PipeClosed(handle)
             }
             other => {
                 log::warn!("wasm input: unsupported host event {other:?}");

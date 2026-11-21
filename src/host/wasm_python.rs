@@ -3256,6 +3256,9 @@ impl LivePythonPane {
 
     /// Register a host-directed duplex JSON pipe on this Python instance's
     /// typed-pipe registry so `has_pipe_reader` reflects the connection.
+    /// Record directed pipe `pipe_id` in this instance's registry, a cache of
+    /// the host's decision: called only once the host accepted the open
+    /// (stint 1681). One connection per name per context, so the name keys it.
     pub fn register_directed_pipe(&mut self, pipe_id: &str) -> Result<(), String> {
         match self.pipes.open_json(
             pipe_id.to_string(),
@@ -3976,6 +3979,21 @@ impl LivePythonPane {
                                 self.plugin_id,
                                 guest_text::shown(message_type.unwrap_or("<missing>"))
                             );
+                            // An open is a request; the guest is answered.
+                            if let crate::app::view_trait::ViewCommand::OpenDirectedPipe {
+                                request_id,
+                                pipe_id,
+                                ..
+                            } = command
+                            {
+                                self.queue_outbound_event(
+                                    crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
+                                        request_id,
+                                        pipe_id,
+                                        reason: crate::protocol::PipeOpenRefusal::Denied,
+                                    },
+                                );
+                            }
                             return;
                         }
                     }
@@ -3983,15 +4001,6 @@ impl LivePythonPane {
                     // (admission matrix row Python/Notify); should that change,
                     // the text is already made safe here.
                     sanitize_guest_notification(&self.plugin_id, &mut command);
-                    if let crate::app::view_trait::ViewCommand::OpenDirectedPipe {
-                        ref pipe_id,
-                        ..
-                    } = command
-                    {
-                        if let Err(error) = self.register_directed_pipe(pipe_id) {
-                            log::warn!("plugin::{}: {error}", self.plugin_id);
-                        }
-                    }
                     self.pending_commands.push(command);
                 }
                 Ok(None) => self.warn_unhandled_cpython_message(&message),
@@ -6623,6 +6632,39 @@ fn plugin_command_from_python_message(
             ));
         }
     }
+    // Typed parse: a send names the connection generation and an open carries
+    // its request id; the older name-only shapes are rejected (stint 1681).
+    if matches!(message_type, "pipe_send" | "pipe_open_directed") {
+        let request = serde_json::from_value::<crate::protocol::HostRequest>(message.clone())
+            .map_err(|error| {
+                format!(
+                    "{message_type} needs a connection generation (pipe_send) or a request id (pipe_open_directed): {error}"
+                )
+            })?;
+        return match request {
+            crate::protocol::HostRequest::PipeSend {
+                generation,
+                payload,
+            } => Ok(Some(ViewCommand::DeliverPipeMessage {
+                sender_pane_id: 0,
+                generation,
+                payload,
+                emitter: None,
+            })),
+            crate::protocol::HostRequest::PipeOpenDirected {
+                request_id,
+                pipe_id,
+                target_pane_id,
+            } => Ok(Some(ViewCommand::OpenDirectedPipe {
+                sender_pane_id: 0,
+                request_id,
+                pipe_id,
+                target_pane_id,
+                emitter: None,
+            })),
+            other => Err(format!("{message_type} parsed as {other:?}")),
+        };
+    }
     let command = (|| match message_type {
         "expose_tools" => serde_json::from_value(message.get("tools")?.clone())
             .ok()
@@ -6788,21 +6830,6 @@ fn plugin_command_from_python_message(
                     .and_then(Value::as_u64)
                     .unwrap_or_default(),
             },
-        }),
-        "pipe_send" => Some(ViewCommand::DeliverPipeMessage {
-            sender_pane_id: 0,
-            pipe_id: text("pipe_id"),
-            payload: message.get("payload").cloned().unwrap_or(Value::Null),
-            route: None,
-        }),
-        "pipe_open_directed" => Some(ViewCommand::OpenDirectedPipe {
-            sender_pane_id: 0,
-            pipe_id: text("pipe_id"),
-            target_pane_id: message
-                .get("target_pane_id")
-                .and_then(Value::as_u64)
-                .unwrap_or_default(),
-            emitter: None,
         }),
         "run_update" => Some(ViewCommand::DeliverRunUpdate {
             originator_type_id: text("originator_type_id"),

@@ -32,20 +32,6 @@ pub struct ViewEmitter {
     pub(crate) incarnation: crate::host::pane::ViewIncarnation,
 }
 
-/// The two view instances a directed pipe joins, in open order: the opener,
-/// then the target. Endpoints are instances, not pane slots, so a slot whose
-/// occupant changes (overlay, reload) never inherits the pipe (stint 1681).
-pub(crate) type DirectedPipePair = (ViewEmitter, ViewEmitter);
-
-/// What a send was addressed on, fixed when the host drained it: the sender
-/// instance and the pair it was an end of then, if any.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct DirectedPipeRoute {
-    pub(crate) context_id: u64,
-    pub(crate) sender: ViewEmitter,
-    pub(crate) pair: Option<DirectedPipePair>,
-}
-
 /// Commands a plugin can issue back to the system.
 pub enum ViewCommand {
     Fleet(crate::app::agents_view::FleetAction),
@@ -122,23 +108,23 @@ pub enum ViewCommand {
         cwd: String,
         sender_pane_id: u64,
     },
-    /// Deliver a JSON pipe message on a directed pipe (#286): the host routes
-    /// it to the non-sender member of the recorded `(sender, target)` pair.
-    /// A send on a pipe that was never opened directed is dropped — the legacy
-    /// non-directed peer-broadcast fan-out was removed in 0327.
+    /// Deliver a JSON message on directed pipe connection `generation`
+    /// (#286, stint 1681): the guest names the generation when it emits the
+    /// send, and the host delivers it to the sender's peer on that connection
+    /// only while it is live.
     DeliverPipeMessage {
         sender_pane_id: u64,
-        pipe_id: String,
+        generation: u64,
         payload: serde_json::Value,
-        /// Stamped at drain; runtimes emit `None`.
-        route: Option<DirectedPipeRoute>,
+        /// The sending view instance, stamped at drain.
+        emitter: Option<ViewEmitter>,
     },
-    /// Open a *directed* JSON pipe (#286) — only the sender and the named
-    /// target pane subscribe to subsequent `PipeMessage` deliveries.
-    /// Routed by the host because the target pane lives outside the sender's
-    /// process and the sender has no other way to subscribe peers.
+    /// Request a *directed* JSON pipe (#286) to the view now in
+    /// `target_pane_id`. The host answers `request_id` with
+    /// `DirectedPipeOpened` or `DirectedPipeOpenRefused` (stint 1681).
     OpenDirectedPipe {
         sender_pane_id: u64,
+        request_id: String,
         pipe_id: String,
         target_pane_id: u64,
         /// The opening view instance, stamped at drain.

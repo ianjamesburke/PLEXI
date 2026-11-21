@@ -832,7 +832,7 @@ impl PlexiApp {
         self.observe_pane_spawns();
         // While the pane is still present, so its own registry and plugin id
         // are reachable.
-        self.retire_directed_pipes_in_slot(closing);
+        self.retire_directed_pipes_in_slot(closing, crate::protocol::PipeCloseReason::PeerClosed);
         // Resolved up front, before Phase 3 takes a mutable borrow of
         // `self.windows[ctx_idx]` that would otherwise conflict with a
         // `&self` router lookup at the `PaneClosed` emit site below.

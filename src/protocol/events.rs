@@ -146,9 +146,11 @@ pub enum PlexiEvent {
         status: String,
         payload: serde_json::Value,
     },
-    /// Typed pipe message (JSON mode only; binary mode travels on the side channel).
+    /// A message on directed pipe connection `generation` (JSON mode only;
+    /// binary mode travels on the side channel).
     PipeMessage {
         pipe_id: String,
+        generation: u64,
         payload: serde_json::Value,
     },
     /// Pane group CWD broadcast. **Declared, never constructed** — no host path
@@ -194,12 +196,31 @@ pub enum PlexiEvent {
         pipe_id: String,
         socket_path: String,
     },
-    /// A directed pipe this app was an end of has been retired because the
-    /// other end closed or reloaded, or this app's open of `pipe_id` was
-    /// refused because the id is in use. Sends on `pipe_id` are dropped until
-    /// a new `PipeOpenDirected` opens it.
+    /// This app's `PipeOpenDirected` `request_id` was accepted: sends name
+    /// connection `generation`.
+    DirectedPipeOpened {
+        request_id: String,
+        pipe_id: String,
+        generation: u64,
+    },
+    /// This app's `PipeOpenDirected` `request_id` was refused; nothing opened.
+    DirectedPipeOpenRefused {
+        request_id: String,
+        pipe_id: String,
+        reason: PipeOpenRefusal,
+    },
+    /// Another view opened directed pipe `pipe_id` to this app as
+    /// connection `generation`. Sent before the connection's first message.
+    DirectedPipeIncoming {
+        pipe_id: String,
+        generation: u64,
+        peer_pane_id: u64,
+    },
+    /// Directed pipe connection `generation` ended. Sends naming it are
+    /// dropped; a reopen is a new connection with a new generation.
     PipeClosed {
         pipe_id: String,
+        generation: u64,
         reason: PipeCloseReason,
     },
     /// Binary pipe backpressure — host dropped `dropped_frames` frames from the ring.
@@ -579,17 +600,16 @@ pub enum PlexiEvent {
     },
 }
 
-/// Why the host closed a directed pipe, from the receiving end's view.
+/// Why a directed pipe connection ended, from the surviving end's view.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PipeCloseReason {
-    /// The other end's pane closed.
+    /// The other end's view closed.
     PeerClosed,
     /// The other end's app reloaded; its new instance holds none of the old one's pipes.
     PeerReloaded,
-    /// This app's open was refused: the id is already open between other
-    /// views in this context, or names a binary pipe on one end.
-    InUse,
+    /// An end moved to another context.
+    PeerMoved,
 }
 
 impl PipeCloseReason {
@@ -597,7 +617,38 @@ impl PipeCloseReason {
         match self {
             Self::PeerClosed => "peer_closed",
             Self::PeerReloaded => "peer_reloaded",
+            Self::PeerMoved => "peer_moved",
+        }
+    }
+}
+
+/// Why the host refused a `PipeOpenDirected`.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PipeOpenRefusal {
+    /// The app lacks the `pipe.open` capability.
+    Denied,
+    /// No pane has the target id.
+    NoTarget,
+    /// The target pane is not a plugin view.
+    NotAPlugin,
+    /// The target is in another context.
+    OutOfReach,
+    /// The id is already open between other views in this context.
+    InUse,
+    /// An end already uses the id for a pipe of another kind.
+    NameConflict,
+}
+
+impl PipeOpenRefusal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Denied => "denied",
+            Self::NoTarget => "no_target",
+            Self::NotAPlugin => "not_a_plugin",
+            Self::OutOfReach => "out_of_reach",
             Self::InUse => "in_use",
+            Self::NameConflict => "name_conflict",
         }
     }
 }

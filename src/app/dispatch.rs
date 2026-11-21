@@ -1052,68 +1052,59 @@ impl PlexiApp {
                 }
                 ViewCommand::DeliverPipeMessage {
                     sender_pane_id,
-                    pipe_id,
+                    generation,
                     payload,
-                    route,
+                    emitter,
                 } => {
                     // JSON pipe messages route only through directed pipes
                     // (#286); event streams replace the non-directed fan-out
-                    // removed in 0327. The drain stamped the pair this send
-                    // was addressed on, keyed by the sender's own
-                    // host-established context (stint 0724 Phase D 2/2), and
-                    // it is delivered only on that exact pair of view
-                    // instances: a pipe retired since, even one reopened
-                    // under the same id, drops it (stint 1681). A send with
-                    // no pair when drained can only be its sender's own open
-                    // in the same batch, handled first because one view's
-                    // commands keep their order; so it rides the current
-                    // pair only when the sender opened it. A peer's send
-                    // from before a retirement never does.
-                    let Some(route) = route else {
+                    // removed in 0327. The guest named the connection when it
+                    // emitted the send, so the send reaches the sender's peer
+                    // on that connection while it is live and nothing else:
+                    // not a reopened pipe of the same name, not a view that
+                    // later took the peer's slot (stint 1681).
+                    let Some(sender) = emitter else {
                         log::warn!(
-                            "DeliverPipeMessage: '{pipe_id}' from pane {sender_pane_id} was never drained; dropping",
-                            pipe_id = crate::host::guest_text::shown(&pipe_id)
+                            "DeliverPipeMessage: send on connection {generation} from pane {sender_pane_id} was never drained; dropping"
                         );
                         continue;
                     };
-                    let current = self
-                        .directed_pipes
-                        .get(&(route.context_id, pipe_id.clone()))
-                        .copied();
-                    let pair = match (route.pair, current) {
-                        (Some(addressed), Some(current)) if addressed == current => current,
-                        (None, Some(current)) if current.0 == route.sender => current,
-                        _ => {
-                            log::warn!(
-                                "DeliverPipeMessage: '{pipe_id}' from pane {sender_pane_id} is on no directed pipe of its view (addressed {:?}, now {current:?}); dropping",
-                                route.pair,
-                                pipe_id = crate::host::guest_text::shown(&pipe_id)
-                            );
-                            continue;
-                        }
+                    let Some(pipe) = self.directed_pipes.get(generation) else {
+                        log::warn!(
+                            "DeliverPipeMessage: connection {generation} from pane {sender_pane_id} is not live; dropping"
+                        );
+                        continue;
                     };
-                    let (a, b) = pair;
-                    let target = if route.sender == a { b } else { a };
+                    let Some(target) = pipe.peer_of(sender) else {
+                        log::warn!(
+                            "DeliverPipeMessage: {sender:?} is not an end of connection {generation}; dropping"
+                        );
+                        continue;
+                    };
+                    let event = crate::protocol::PlexiEvent::PipeMessage {
+                        pipe_id: pipe.pipe_id.clone(),
+                        generation,
+                        payload,
+                    };
                     match self.view_instance_mut(target) {
-                        Some(view) => view.runtime.queue_outbound_event(
-                            crate::protocol::PlexiEvent::PipeMessage { pipe_id, payload },
-                        ),
+                        Some(view) => view.runtime.queue_outbound_event(event),
                         None => log::warn!(
-                            "DeliverPipeMessage: '{pipe_id}' target {target:?} has ended; dropping",
-                            pipe_id = crate::host::guest_text::shown(&pipe_id)
+                            "DeliverPipeMessage: connection {generation} peer {target:?} has ended; dropping"
                         ),
                     }
                 }
                 ViewCommand::OpenDirectedPipe {
                     sender_pane_id,
+                    request_id,
                     pipe_id,
                     target_pane_id,
                     emitter,
                 } => {
-                    let Some(sender) = emitter else {
+                    use crate::protocol::PipeOpenRefusal;
+                    let Some(opener) = emitter else {
                         log::warn!(
-                            "OpenDirectedPipe: pipe '{pipe_id}' from pane {sender_pane_id} carried no emitting view; dropped",
-                            pipe_id = crate::host::guest_text::shown(&pipe_id)
+                            "OpenDirectedPipe: request '{request_id}' from pane {sender_pane_id} was never drained; dropped",
+                            request_id = crate::host::guest_text::shown(&request_id)
                         );
                         continue;
                     };
@@ -1128,9 +1119,7 @@ impl PlexiApp {
                         continue;
                     };
                     let Some(target_origin) = self.origin_for_pane(target_pane_id) else {
-                        log::warn!(
-                            "OpenDirectedPipe: target pane {target_pane_id} not found; pipe '{pipe_id}' dropped", pipe_id = crate::host::guest_text::shown(&pipe_id)
-                        );
+                        self.refuse_directed_pipe_open(opener, &request_id, &pipe_id, PipeOpenRefusal::NoTarget);
                         continue;
                     };
                     // A directed pipe is an exclusive channel to ONE named
@@ -1145,10 +1134,7 @@ impl PlexiApp {
                     if crate::host::scope::evaluate_reach(&owner, sender_origin.context_id, None)
                         == crate::host::scope::Reach::Rejected
                     {
-                        log::warn!(
-                            "OpenDirectedPipe: target {target_pane_id} is in context {} but caller {sender_pane_id} is in context {} — rejected",
-                            target_origin.context_id, sender_origin.context_id
-                        );
+                        self.refuse_directed_pipe_open(opener, &request_id, &pipe_id, PipeOpenRefusal::OutOfReach);
                         continue;
                     }
                     // The pipe joins the view instance now in the target
@@ -1165,72 +1151,40 @@ impl PlexiApp {
                             }
                         }
                         Some(_) => {
-                            log::warn!(
-                                "OpenDirectedPipe: target {target_pane_id} is not a plugin view — pipe '{pipe_id}' not subscribed", pipe_id = crate::host::guest_text::shown(&pipe_id)
-                            );
+                            self.refuse_directed_pipe_open(opener, &request_id, &pipe_id, PipeOpenRefusal::NotAPlugin);
                             continue;
                         }
                         None => {
-                            log::warn!(
-                                "OpenDirectedPipe: target pane {target_pane_id} closed before registration; pipe '{pipe_id}' dropped", pipe_id = crate::host::guest_text::shown(&pipe_id)
-                            );
+                            self.refuse_directed_pipe_open(opener, &request_id, &pipe_id, PipeOpenRefusal::NoTarget);
                             continue;
                         }
                     };
-                    if self.view_instance_mut(sender).is_none() {
+                    if self.view_instance_mut(opener).is_none() {
                         log::warn!(
-                            "OpenDirectedPipe: opener {sender:?} ended before its open of '{pipe_id}' was handled; dropped", pipe_id = crate::host::guest_text::shown(&pipe_id)
+                            "OpenDirectedPipe: opener {opener:?} ended before its request '{request_id}' was handled; dropped",
+                            request_id = crate::host::guest_text::shown(&request_id)
                         );
                         continue;
                     }
-                    let key = (sender_origin.context_id, pipe_id.clone());
-                    if let Some(&(a, b)) = self.directed_pipes.get(&key) {
-                        if (a, b) == (sender, target) || (a, b) == (target, sender) {
+                    let context_id = sender_origin.context_id;
+                    match self
+                        .directed_pipes
+                        .check_open(context_id, &pipe_id, opener, target)
+                    {
+                        crate::app::directed_pipes::OpenCheck::AlreadyOpen(generation) => {
                             log::info!(
-                                "OpenDirectedPipe: '{pipe_id}' already joins pane {sender_pane_id} and pane {target_pane_id}; nothing to do", pipe_id = crate::host::guest_text::shown(&pipe_id)
+                                "OpenDirectedPipe: '{pipe_id}' is already connection {generation} between pane {sender_pane_id} and pane {target_pane_id}",
+                                pipe_id = crate::host::guest_text::shown(&pipe_id)
                             );
-                        } else {
-                            log::warn!(
-                                "OpenDirectedPipe: '{pipe_id}' is already open in context {} between {a:?} and {b:?}; open by {sender:?} refused",
-                                sender_origin.context_id, pipe_id = crate::host::guest_text::shown(&pipe_id)
-                            );
-                            // An opener that is an end of the open pipe keeps
-                            // its registration; it still belongs to that pipe.
-                            self.refuse_directed_pipe_open(
-                                sender,
-                                &pipe_id,
-                                a != sender && b != sender,
-                            );
+                            self.answer_directed_pipe_open(opener, request_id, pipe_id, generation);
                         }
-                        continue;
-                    }
-                    // Register the pipe on both ends' local registries so
-                    // `has_pipe_reader` reflects it on `Wasm` and `Python`
-                    // runtimes (stint 0742). A builtin has none, which is fine:
-                    // delivery is host-mediated. A registry that already holds
-                    // the id as a different kind of pipe refuses the open.
-                    let registered = [sender, target].map(|end| {
-                        self.view_instance_mut(end)
-                            .map_or(Ok(false), |view| register_directed_pipe_on(view, &pipe_id))
-                    });
-                    if let Some(Err(reason)) = registered.iter().find(|r| r.is_err()) {
-                        log::warn!(
-                            "OpenDirectedPipe: '{pipe_id}' refused: {reason}",
-                            pipe_id = crate::host::guest_text::shown(&pipe_id)
-                        );
-                        self.refuse_directed_pipe_open(sender, &pipe_id, true);
-                        if registered[1] == Ok(true) && target != sender {
-                            if let Some(view) = self.view_instance_mut(target) {
-                                view.runtime.close_directed_pipe(&pipe_id);
-                            }
+                        crate::app::directed_pipes::OpenCheck::InUse => {
+                            self.refuse_directed_pipe_open(opener, &request_id, &pipe_id, PipeOpenRefusal::InUse);
                         }
-                        continue;
+                        crate::app::directed_pipes::OpenCheck::Free => {
+                            self.open_directed_pipe(context_id, opener, target, request_id, pipe_id);
+                        }
                     }
-                    self.directed_pipes.insert(key, (sender, target));
-                    log::info!(
-                        "OpenDirectedPipe: '{pipe_id}' subscribed pane {sender_pane_id} ↔ pane {target_pane_id} (context {})",
-                        sender_origin.context_id, pipe_id = crate::host::guest_text::shown(&pipe_id)
-                    );
                 }
                 ViewCommand::RequestLinkedTerminal {
                     sender_pane_id,
@@ -1611,37 +1565,29 @@ impl PlexiApp {
                     // directed-pipe reachability check to see a real caller
                     // at all, not just cosmetic).
                     //
-                    // A send is also stamped with the pipe it was addressed
-                    // on as of this drain, before any open in this batch
-                    // runs: a pipe retired earlier and reopened later in the
-                    // batch is a different pair, and the send must not reach
-                    // it (stint 1681).
+                    // The emitting instance is stamped too: a pipe joins
+                    // instances, not slots (stint 1681).
                     ViewCommand::DeliverPipeMessage {
-                        pipe_id, payload, ..
+                        generation,
+                        payload,
+                        ..
                     } => {
-                        let pair = self
-                            .directed_pipes
-                            .get(&(context_id, pipe_id.clone()))
-                            .filter(|(a, b)| *a == emitter || *b == emitter)
-                            .copied();
                         deferred.push(ViewCommand::DeliverPipeMessage {
                             sender_pane_id: pane_id,
-                            pipe_id,
+                            generation,
                             payload,
-                            route: Some(crate::app::view_trait::DirectedPipeRoute {
-                                context_id,
-                                sender: emitter,
-                                pair,
-                            }),
+                            emitter: Some(emitter),
                         });
                     }
                     ViewCommand::OpenDirectedPipe {
+                        request_id,
                         pipe_id,
                         target_pane_id,
                         ..
                     } => {
                         deferred.push(ViewCommand::OpenDirectedPipe {
                             sender_pane_id: pane_id,
+                            request_id,
                             pipe_id,
                             target_pane_id,
                             emitter: Some(emitter),
@@ -1699,58 +1645,172 @@ impl PlexiApp {
         deferred
     }
 
-    /// Retire every directed pipe the view instance `ended` is an end of,
-    /// because it closed, was uncovered as an overlay, or its guest was
-    /// replaced. The pair leaves `directed_pipes`, so a send addressed on it
-    /// is dropped; the surviving instance's registry closes it and that
-    /// instance is told with `PipeClosed`. `ended`'s own registry goes with
-    /// it (or, on relaunch, is cleared by the runtime).
+    /// Open a directed pipe whose name `check_open` found free: record the
+    /// connection, register it on both ends' local registries, and tell the
+    /// target (incoming) before the opener (opened), so each end knows the
+    /// generation before its first message. An end that cannot register it
+    /// refuses the open, and whatever the other end registered is undone.
+    fn open_directed_pipe(
+        &mut self,
+        context_id: u64,
+        opener: crate::app::view_trait::ViewEmitter,
+        target: crate::app::view_trait::ViewEmitter,
+        request_id: String,
+        pipe_id: String,
+    ) {
+        let generation = self
+            .directed_pipes
+            .commit(context_id, &pipe_id, opener, target);
+        let ends: Vec<_> = if opener == target {
+            vec![opener]
+        } else {
+            vec![opener, target]
+        };
+        let mut registered = Vec::new();
+        for &end in &ends {
+            let result = self.view_instance_mut(end).map_or(Ok(false), |view| {
+                register_directed_pipe_on(view, &pipe_id, generation)
+            });
+            match result {
+                Ok(true) => registered.push(end),
+                Ok(false) => {}
+                Err(reason) => {
+                    log::warn!(
+                        "OpenDirectedPipe: '{pipe_id}' refused, {end:?} cannot register it: {reason}",
+                        pipe_id = crate::host::guest_text::shown(&pipe_id)
+                    );
+                    self.directed_pipes.revoke(generation);
+                    for end in registered {
+                        if let Some(view) = self.view_instance_mut(end) {
+                            view.runtime.close_directed_pipe(&pipe_id, generation);
+                        }
+                    }
+                    self.refuse_directed_pipe_open(
+                        opener,
+                        &request_id,
+                        &pipe_id,
+                        crate::protocol::PipeOpenRefusal::NameConflict,
+                    );
+                    return;
+                }
+            }
+        }
+        log::info!(
+            "OpenDirectedPipe: '{pipe_id}' is connection {generation}: pane {} ↔ pane {} (context {context_id})",
+            opener.pane_id,
+            target.pane_id,
+            pipe_id = crate::host::guest_text::shown(&pipe_id)
+        );
+        if target != opener {
+            if let Some(view) = self.view_instance_mut(target) {
+                view.runtime
+                    .queue_outbound_event(crate::protocol::PlexiEvent::DirectedPipeIncoming {
+                        pipe_id: pipe_id.clone(),
+                        generation,
+                        peer_pane_id: opener.pane_id,
+                    });
+            }
+        }
+        self.answer_directed_pipe_open(opener, request_id, pipe_id, generation);
+    }
+
+    fn answer_directed_pipe_open(
+        &mut self,
+        opener: crate::app::view_trait::ViewEmitter,
+        request_id: String,
+        pipe_id: String,
+        generation: u64,
+    ) {
+        if let Some(view) = self.view_instance_mut(opener) {
+            view.runtime
+                .queue_outbound_event(crate::protocol::PlexiEvent::DirectedPipeOpened {
+                    request_id,
+                    pipe_id,
+                    generation,
+                });
+        }
+    }
+
+    /// Answer `opener`'s request with `DirectedPipeOpenRefused`.
+    pub(crate) fn refuse_directed_pipe_open(
+        &mut self,
+        opener: crate::app::view_trait::ViewEmitter,
+        request_id: &str,
+        pipe_id: &str,
+        reason: crate::protocol::PipeOpenRefusal,
+    ) {
+        log::info!(
+            "OpenDirectedPipe: request '{request_id}' for '{pipe_id}' from {opener:?} refused ({})",
+            reason.as_str(),
+            request_id = crate::host::guest_text::shown(request_id),
+            pipe_id = crate::host::guest_text::shown(pipe_id)
+        );
+        if let Some(view) = self.view_instance_mut(opener) {
+            view.runtime
+                .queue_outbound_event(crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
+                    request_id: request_id.to_string(),
+                    pipe_id: pipe_id.to_string(),
+                    reason,
+                });
+        }
+    }
+
+    /// Retire every directed pipe connection the view instance `ended` is an
+    /// end of, because it closed, was uncovered as an overlay, moved context,
+    /// or its guest was replaced. The generation is revoked first, so no send
+    /// or reopen reaches it; the surviving instance's registry drops it and
+    /// that instance gets `PipeClosed`. `ended`'s own registry goes with it
+    /// (or, on relaunch, is cleared by the runtime).
     pub(crate) fn retire_directed_pipes_for(
         &mut self,
         ended: crate::app::view_trait::ViewEmitter,
         plugin_id: &str,
         reason: crate::protocol::PipeCloseReason,
     ) {
-        let retired: Vec<_> = self
-            .directed_pipes
-            .iter()
-            .filter(|(_, (a, b))| *a == ended || *b == ended)
-            .map(|(key, &pair)| (key.clone(), pair))
-            .collect();
-        for ((context_id, pipe_id), (a, b)) in retired {
-            self.directed_pipes.remove(&(context_id, pipe_id.clone()));
-            let peer = if a == ended { b } else { a };
+        for (generation, pipe) in self.directed_pipes.retire_endpoint(ended) {
+            let peer = pipe
+                .peer_of(ended)
+                .expect("retire_endpoint returns only connections `ended` is an end of");
             if peer != ended {
                 if let Some(view) = self.view_instance_mut(peer) {
-                    view.runtime.close_directed_pipe(&pipe_id);
+                    // Told first: a WASM guest hears of it on the handle the
+                    // registry is about to drop.
                     view.runtime
                         .queue_outbound_event(crate::protocol::PlexiEvent::PipeClosed {
-                            pipe_id: pipe_id.clone(),
+                            pipe_id: pipe.pipe_id.clone(),
+                            generation,
                             reason,
                         });
+                    view.runtime.close_directed_pipe(&pipe.pipe_id, generation);
                 }
             }
             log::info!(
-                "retire_directed_pipes_for: '{pipe_id}' retired ({}) plugin={plugin_id} pane={} peer_pane={} context={context_id}",
+                "retire_directed_pipes_for: '{pipe_id}' connection {generation} retired ({}) plugin={plugin_id} pane={} peer_pane={} context={}",
                 reason.as_str(),
                 ended.pane_id,
                 peer.pane_id,
-                pipe_id = crate::host::guest_text::shown(&pipe_id)
+                pipe.context_id,
+                pipe_id = crate::host::guest_text::shown(&pipe.pipe_id)
             );
             crate::host::event_log::emit_scoped(
                 crate::host::event_log::HostEvent::PipeClosed {
                     from_plugin: plugin_id.to_string(),
-                    channel: pipe_id,
+                    channel: pipe.pipe_id,
                     timestamp: crate::host::event_log::now_timestamp(),
                 },
-                self.context_root_for(context_id).as_deref(),
+                self.context_root_for(pipe.context_id).as_deref(),
             );
         }
     }
 
     /// Retire the directed pipes of every view instance in `pane_id`'s slot,
-    /// the visible one and any it covers, because the slot is closing.
-    pub(crate) fn retire_directed_pipes_in_slot(&mut self, pane_id: u64) {
+    /// the visible one and any it covers, because the slot is closing or
+    /// leaving its context.
+    pub(crate) fn retire_directed_pipes_in_slot(
+        &mut self,
+        pane_id: u64,
+        reason: crate::protocol::PipeCloseReason,
+    ) {
         let mut instances = Vec::new();
         let mut next = self.windows.iter().find_map(|w| w.panes.get(&pane_id));
         while let Some(crate::host::pane::Pane::View(view)) = next {
@@ -1764,31 +1824,7 @@ impl PlexiApp {
             next = view.overlay_replaced.as_deref();
         }
         for (instance, plugin_id) in instances {
-            self.retire_directed_pipes_for(
-                instance,
-                &plugin_id,
-                crate::protocol::PipeCloseReason::PeerClosed,
-            );
-        }
-    }
-
-    /// Refuse `opener`'s open of `pipe_id` with `PipeClosed { in_use }`,
-    /// closing the registration its runtime made for it when `close_local`.
-    fn refuse_directed_pipe_open(
-        &mut self,
-        opener: crate::app::view_trait::ViewEmitter,
-        pipe_id: &str,
-        close_local: bool,
-    ) {
-        if let Some(view) = self.view_instance_mut(opener) {
-            if close_local {
-                view.runtime.close_directed_pipe(pipe_id);
-            }
-            view.runtime
-                .queue_outbound_event(crate::protocol::PlexiEvent::PipeClosed {
-                    pipe_id: pipe_id.to_string(),
-                    reason: crate::protocol::PipeCloseReason::InUse,
-                });
+            self.retire_directed_pipes_for(instance, &plugin_id, reason);
         }
     }
 }
