@@ -339,19 +339,27 @@ impl HostCtx {
             .ok_or_else(|| format!("unknown pipe handle {handle}"))
     }
 
-    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
+    /// Register a host-directed duplex JSON pipe. A binary pipe already open
+    /// under the same name refuses it: the two would share one id.
+    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> Result<(), String> {
+        if self.pipes.is_binary(pipe_id) {
+            return Err(format!(
+                "'{}' is already open as a binary pipe on plugin {}",
+                guest_text::shown(pipe_id),
+                self.plugin_id
+            ));
+        }
         match self.pipes.open_json(
             pipe_id.to_string(),
             crate::host::typed_pipes::PipeDirection::Duplex,
         ) {
             Ok(()) | Err(crate::host::typed_pipes::PipeError::AlreadyOpen(_)) => {}
             Err(e) => {
-                log::warn!(
-                    "plugin::{}: failed to register directed pipe '{pipe_id}': {e}",
-                    self.plugin_id,
-                    pipe_id = guest_text::shown(pipe_id)
-                );
-                return false;
+                return Err(format!(
+                    "registering directed pipe '{}' on plugin {}: {e}",
+                    guest_text::shown(pipe_id),
+                    self.plugin_id
+                ));
             }
         }
         if self.json_pipe_handle(pipe_id).is_none() {
@@ -371,11 +379,19 @@ impl HostCtx {
             self.plugin_id,
             pipe_id = guest_text::shown(pipe_id)
         );
-        true
+        Ok(())
     }
 
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         self.pipes.has_reader(pipe_id)
+    }
+
+    /// Close a host-retired directed pipe and drop its guest handle, so a
+    /// later message on the same id cannot reach the guest through it.
+    pub fn close_directed_pipe(&mut self, pipe_id: &str) {
+        self.pipes.close_json(pipe_id);
+        self.pipe_handles
+            .retain(|_, binding| binding.binary || binding.id != pipe_id);
     }
 
     pub fn json_pipe_handle(&self, pipe_id: &str) -> Option<u32> {
@@ -938,13 +954,18 @@ impl WasmView {
 
     /// Register a host-directed duplex JSON pipe on this WASM instance's
     /// typed-pipe registry and ensure a handle exists for inbound delivery.
-    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
+    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> Result<(), String> {
         self.store.data_mut().register_directed_pipe(pipe_id)
     }
 
     /// True when `pipe_id` is open on this WASM instance's typed-pipe registry.
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         self.store.data().has_pipe_reader(pipe_id)
+    }
+
+    /// Close a host-retired directed pipe on this WASM instance.
+    pub fn close_directed_pipe(&mut self, pipe_id: &str) {
+        self.store.data_mut().close_directed_pipe(pipe_id);
     }
 
     /// Look up the guest-facing handle for a JSON pipe registered on this WASM
@@ -1377,7 +1398,7 @@ mod tests {
     fn register_directed_pipe_allows_guest_to_claim_handle() {
         use pipes::{Host, PipeDirection, PipeType};
         let mut ctx = host_ctx_with_pipes();
-        assert!(ctx.register_directed_pipe("directed.pipe"));
+        assert_eq!(ctx.register_directed_pipe("directed.pipe"), Ok(()));
         assert!(ctx.has_pipe_reader("directed.pipe"));
         let host_handle = ctx
             .json_pipe_handle("directed.pipe")
@@ -1399,6 +1420,35 @@ mod tests {
             .is_err(),
             "second guest open on an already-claimed pipe must return AlreadyOpen"
         );
+    }
+
+    /// Stint 1681: a directed JSON pipe never shares an id with a binary pipe
+    /// the guest opened, and retiring a directed pipe leaves a binary pipe of
+    /// the same name running.
+    #[test]
+    fn directed_pipe_registration_and_retirement_leave_a_binary_pipe_alone() {
+        use pipes::{Host, PipeDirection, PipeType};
+        let mut ctx = host_ctx_with_pipes();
+        let binary = ctx
+            .open("frames".to_string(), PipeType::Binary, PipeDirection::Out)
+            .expect("open binary");
+        assert!(
+            ctx.register_directed_pipe("frames").is_err(),
+            "a directed pipe may not take a binary pipe's id"
+        );
+        assert_eq!(ctx.json_pipe_handle("frames"), None);
+
+        ctx.close_directed_pipe("frames");
+        assert!(ctx.pipes.is_binary("frames"), "the binary pipe stays open");
+        assert!(ctx.pipe_handles.contains_key(&binary));
+        ctx.send_binary(binary, vec![1, 2, 3])
+            .expect("the binary ring still takes frames");
+
+        assert_eq!(ctx.register_directed_pipe("directed"), Ok(()));
+        ctx.close_directed_pipe("directed");
+        assert!(!ctx.has_pipe_reader("directed"));
+        assert_eq!(ctx.json_pipe_handle("directed"), None);
+        ctx.close(binary).expect("close binary");
     }
 
     // G12 (host side): a plexi-audio-plugin component links audio-rt-control and

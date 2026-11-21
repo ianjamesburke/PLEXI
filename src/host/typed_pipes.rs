@@ -447,6 +447,27 @@ impl TypedPipeRegistry {
         }
     }
 
+    /// Close `pipe_id` if it is a JSON pipe. A binary pipe of the same name is
+    /// left running.
+    pub fn close_json(&mut self, pipe_id: &str) {
+        if matches!(self.pipes.get(pipe_id), Some(PipeEntry::Json(_))) {
+            self.pipes.remove(pipe_id);
+        }
+    }
+
+    /// True when `pipe_id` is open as a binary pipe.
+    pub fn is_binary(&self, pipe_id: &str) -> bool {
+        matches!(self.pipes.get(pipe_id), Some(PipeEntry::Binary(_)))
+    }
+
+    /// Close every pipe in this registry.
+    pub fn close_all(&mut self) {
+        let ids: Vec<String> = self.pipes.keys().cloned().collect();
+        for id in ids {
+            self.close(&id);
+        }
+    }
+
     /// Borrow a clone of the binary pipe's frame ring, suitable for handing
     /// to a real-time producer (e.g. the cpal capture callback). Returns
     /// `None` if the pipe doesn't exist or is JSON-mode.
@@ -501,10 +522,7 @@ impl TypedPipeRegistry {
 
 impl Drop for TypedPipeRegistry {
     fn drop(&mut self) {
-        let ids: Vec<String> = self.pipes.keys().cloned().collect();
-        for id in ids {
-            self.close(&id);
-        }
+        self.close_all();
     }
 }
 
@@ -837,7 +855,7 @@ mod tests {
     #[test]
     fn open_json_rejects_duplicate_pipe_id_on_same_registry() {
         // A single registry must reject opening the same pipe id twice —
-        // this is what the host's `register_directed_pipe_on_target`
+        // this is what the host's `register_directed_pipe_on`
         // helper has to handle gracefully when the target pane has
         // independently opened the pipe (treats AlreadyOpen as success).
         let (mut reg, _dir) = test_registry();
