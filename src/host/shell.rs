@@ -187,6 +187,80 @@ pub fn scrub_launcher_color_overrides() {
     );
 }
 
+/// The host environment variables a pane inherits (stint 1682). A pane's
+/// environment is this base plus its launch plan (`build_env_with_secrets`
+/// and the pane's own additions); everything else the host's launcher
+/// exported, a workspace or folder secret included, is withheld. Locale
+/// variables (`LC_*`) pass too. User shell config reaches a pane through the
+/// pane's own login shell, which sources it.
+const PANE_BASE_ENV: &[&str] = &[
+    // Identity and session.
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "PATH",
+    "TMPDIR",
+    "SSH_AUTH_SOCK",
+    // Locale.
+    "LANG",
+    "LANGUAGE",
+    "__CF_USER_TEXT_ENCODING",
+    // Linux desktop session.
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
+    "XDG_SESSION_TYPE",
+    "XDG_CURRENT_DESKTOP",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CONFIG_DIRS",
+    "XDG_DATA_DIRS",
+];
+
+fn is_pane_base_env(name: &str) -> bool {
+    PANE_BASE_ENV.contains(&name) || name.starts_with("LC_")
+}
+
+/// The allowlisted part of `host_env`. A non-UTF-8 entry is withheld.
+fn pane_base_env(
+    host_env: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> HashMap<String, String> {
+    host_env
+        .into_iter()
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+        .filter(|(k, _)| is_pane_base_env(k))
+        .collect()
+}
+
+/// Names (never values) of host environment variables no pane inherits.
+fn withheld_pane_env_names(
+    host_env: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<String> {
+    let mut names: Vec<String> = host_env
+        .into_iter()
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .filter(|k| !is_pane_base_env(k))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Trace, once the host's own environment is settled, which inherited
+/// variables panes will not receive.
+pub fn log_withheld_pane_env() {
+    let names = withheld_pane_env_names(std::env::vars_os());
+    log::info!(
+        "shell: {} host environment variable(s) withheld from panes: [{}]",
+        names.len(),
+        names.join(", ")
+    );
+}
+
 /// Adopt user-defined env vars from the login shell that are missing from the
 /// process environment.
 ///
@@ -422,7 +496,7 @@ pub(crate) fn build_env_with_secrets(
     working_directory: Option<&Path>,
     secrets: SecretPolicy,
 ) -> HashMap<String, String> {
-    let mut env = HashMap::new();
+    let mut env = pane_base_env(std::env::vars_os());
 
     env.insert("TERM".into(), "xterm-256color".into());
     log::info!("shell::build_env: TERM=xterm-256color");
@@ -1303,6 +1377,36 @@ pub(crate) fn shell_quote(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+
+    fn host_env(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+            .collect()
+    }
+
+    /// Stint 1682: a pane inherits only the documented base from the host.
+    #[test]
+    fn pane_base_env_keeps_the_allowlist_and_withholds_the_rest() {
+        let env = host_env(&[
+            ("HOME", "/Users/u"),
+            ("PATH", "/usr/bin"),
+            ("LC_CTYPE", "UTF-8"),
+            ("SSH_AUTH_SOCK", "/tmp/agent.sock"),
+            ("OPENAI_API_KEY", "secret"),
+            ("PLEXI_SOCKET", "/tmp/other.sock"),
+        ]);
+        let base = pane_base_env(env.clone());
+        let mut kept: Vec<&str> = base.keys().map(String::as_str).collect();
+        kept.sort();
+        assert_eq!(kept, ["HOME", "LC_CTYPE", "PATH", "SSH_AUTH_SOCK"]);
+        assert_eq!(
+            withheld_pane_env_names(env),
+            ["OPENAI_API_KEY", "PLEXI_SOCKET"]
+        );
+    }
+
     use super::*;
 
     struct LauncherColorEnvGuard {

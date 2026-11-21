@@ -5035,6 +5035,89 @@ fn spawn_secrets_linked_terminal_and_routine_resolve_no_secret() {
     );
 }
 
+/// Stint 1682: a host whose own environment carries a secret, as one started
+/// from a pane that exported it, does not hand it to a no-secret pane. The
+/// test re-runs itself with the sentinel in the host process environment and
+/// reads the environment the pane's real child process saw.
+#[test]
+#[ignore = "requires-pty"]
+fn no_secret_pane_child_env_excludes_host_inherited_secret() {
+    const CHILD: &str = "PLEXI_TEST_1682_CHILD_ENV_OUT";
+    const SENTINEL: &str = "PLEXI_TEST_1682_INHERITED_SECRET";
+    if let Some(out) = std::env::var_os(CHILD) {
+        let out = std::path::PathBuf::from(out);
+        let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+        let mut h = HostHarness::new();
+        // A routine splits an existing pane.
+        let _anchor = add_pipe_test_pane(&mut h, 0);
+        let dir = h.workspace_root().to_path_buf();
+        let command = format!(
+            "/usr/bin/env > '{}.tmp' && /bin/mv '{0}.tmp' '{0}'",
+            out.display()
+        );
+        let pane = h
+            .app
+            .fire_routine("env-probe-1682", &command, "", false, &dir)
+            .expect("routine pane");
+        let grant = h.app.pane_authority(pane).expect("grant").grant().clone();
+        assert_eq!(
+            grant.secrets,
+            crate::broker::pane_authority::SecretEligibility::none()
+        );
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+        while !out.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the routine's child never wrote its environment"
+            );
+            h.run_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("output dir");
+    let out = tmp.path().join("child.env");
+    let run = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .args([
+            "--ignored",
+            "--exact",
+            "testing::harness_tests::no_secret_pane_child_env_excludes_host_inherited_secret",
+            "--nocapture",
+        ])
+        .env(CHILD, &out)
+        .env(SENTINEL, "inherited-1682")
+        .env("LC_MESSAGES", "C")
+        .output()
+        .expect("run the host with a sentinel in its environment");
+    assert!(
+        run.status.success(),
+        "host run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let env = std::fs::read_to_string(&out).expect("child environment");
+    let names: Vec<&str> = env
+        .lines()
+        .filter_map(|l| l.split_once('=').map(|(k, _)| k))
+        .collect();
+    assert!(
+        names.contains(&"PLEXI_PANE_ID"),
+        "the launch plan reached the child: {names:?}"
+    );
+    assert!(
+        env.lines().any(|l| l == "LC_MESSAGES=C"),
+        "the base allowlist reached the child: {names:?}"
+    );
+    assert!(
+        !names.contains(&SENTINEL),
+        "the host's inherited secret reached a no-secret pane"
+    );
+    assert!(
+        !names.contains(&CHILD),
+        "an unlisted host variable reached the pane: {names:?}"
+    );
+}
+
 /// Stint 1666: an SDK terminal lands only in its validated destination, the
 /// requester's own context or a descendant it names, and takes its
 /// credential scope from there. An anchor outside that destination is

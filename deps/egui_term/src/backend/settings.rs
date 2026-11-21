@@ -14,6 +14,9 @@ pub struct BackendSettings {
     pub shell: String,
     pub args: Vec<String>,
     pub working_directory: Option<PathBuf>,
+    /// The child's complete environment. The spawn inherits nothing from
+    /// the hosting process; it adds only `USER`, `HOME`, `WINDOWID` and
+    /// `ALACRITTY_WINDOW_ID`, each of which an entry here overrides.
     pub env: HashMap<String, String>,
     pub dynamic_colors: HashMap<usize, [u8; 3]>,
     /// Optional observe-only tap on PTY output (see `PtyByteTap`).

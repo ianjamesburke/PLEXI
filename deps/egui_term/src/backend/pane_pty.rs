@@ -130,13 +130,14 @@ pub(super) fn prepare(
     command.stderr(slave.try_clone()?);
     command.stdout(slave);
     let pane_id = pane.to_string();
+    // The child's environment is exactly what the caller states: nothing is
+    // inherited from the process that hosts the terminal.
+    command.env_clear();
     command.env("ALACRITTY_WINDOW_ID", &pane_id);
     command.env("USER", env_or_passwd("USER", |pw| pw.0)?);
     command.env("HOME", env_or_passwd("HOME", |pw| pw.1)?);
     command.env("WINDOWID", &pane_id);
     command.envs(&settings.env);
-    command.env_remove("XDG_ACTIVATION_TOKEN");
-    command.env_remove("DESKTOP_STARTUP_ID");
     let working_directory = settings.working_directory;
     unsafe {
         command.pre_exec(move || {
