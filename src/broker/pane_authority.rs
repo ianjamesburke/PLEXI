@@ -288,8 +288,10 @@ impl PaneAuthority {
     /// A plain pane inherits its verified caller's ownership, delegation
     /// limits and ceiling unchanged; a named worker gets the meet of those
     /// and its admitted role, independently for call and handoff. Only
-    /// input the host owns yields secrets (stint 1285's desktop-only rule):
-    /// a pane created on behalf of any other source receives none.
+    /// desktop input yields secrets (stint 1285's desktop-only rule, which
+    /// stint 1666 holds for host-internal producers): a pane created on
+    /// behalf of any other source, the host's own scheduler included,
+    /// receives none.
     pub(crate) fn admit(profile: &Path, request: GrantRequest) -> Self {
         let GrantRequest {
             pane_id,
@@ -302,7 +304,7 @@ impl PaneAuthority {
             agent_command,
             spawned_by,
         } = request;
-        let (provenance, ownership, ceiling, can_call, can_handoff, host_owned) = match source {
+        let (provenance, ownership, ceiling, can_call, can_handoff, desktop_input) = match source {
             GrantSource::DesktopInput => (
                 Provenance::DesktopInput,
                 Ownership::Desktop,
@@ -311,13 +313,15 @@ impl PaneAuthority {
                 Delegation::Unrestricted,
                 true,
             ),
+            // A scheduled routine is the host acting, not the person at the
+            // keyboard: no secrets (stint 1666).
             GrantSource::HostSystem => (
                 Provenance::HostSystem,
                 Ownership::Desktop,
                 Ceiling::Baseline,
                 Delegation::Unrestricted,
                 Delegation::Unrestricted,
-                true,
+                false,
             ),
             GrantSource::VerifiedPane(caller) => (
                 Provenance::VerifiedPane {
@@ -349,7 +353,7 @@ impl PaneAuthority {
             None if agent_command => (Ownership::Restricted, ceiling, can_call, can_handoff, None),
             None => (ownership, ceiling, can_call, can_handoff, None),
         };
-        let secrets = if host_owned && ownership == Ownership::Desktop {
+        let secrets = if desktop_input && ownership == Ownership::Desktop {
             SecretEligibility {
                 workspace_terminal_env: true,
                 folder: folder_secrets

@@ -138,10 +138,11 @@ impl PlexiApp {
     ) -> Result<u64, String> {
         // The requester's own context bounds `target_context` (#1518): the
         // emitting view's window, never whichever window is active.
-        let requester_context_id = self
+        let requester_win = self
             .emitter_window(emitter)
-            .map(|win| self.windows[win].context_id)
             .ok_or_else(|| "the requesting view is no longer open".to_string())?;
+        let requester_context_id = self.windows[requester_win].context_id;
+        let mut destination = requester_win;
         if let Some(target_ctx_id) = target_context {
             let target_exists = self.router.iter().any(|c| c.context_id == target_ctx_id);
             let is_descendant = self
@@ -160,6 +161,7 @@ impl PlexiApp {
                 .ok_or_else(|| format!("target_context {target_ctx_id} has no window"))?;
             log::info!("SpawnPane: target_context={target_ctx_id} -> window index {win_idx}");
             self.active_window = win_idx;
+            destination = win_idx;
         }
         let active = self.active_window;
         if type_id == "terminal" {
@@ -169,18 +171,30 @@ impl PlexiApp {
             let initial_cmd = super::cmd_from_args(&args);
             // An SDK-spawned terminal with a command closes on exit.
             let close_on_exit = initial_cmd.is_some();
-            let (target_win, target_tile) = match from_pane_id {
-                Some(from_id) => self
-                    .find_pane_in_any_window(from_id)
-                    .ok_or_else(|| format!("origin pane {from_id} not found"))?,
-                None => {
-                    let tile = self.windows[active]
-                        .focused_pane
-                        .or(self.windows[active].tree.root)
-                        .ok_or("the target window is empty")?;
-                    (active, tile)
-                }
+            // The validated destination is the named target context's
+            // window, or else the requester's own; never the active window.
+            // The anchor resolves only inside it, so the credential scope is
+            // the destination's (stint 1666).
+            let target_win = destination;
+            let destination_ctx = self.windows[target_win].context_id;
+            let target_tile = match from_pane_id {
+                Some(from_id) => self.windows[target_win]
+                    .tree
+                    .tiles
+                    .find_pane(&from_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "origin pane {from_id} is not in destination context {destination_ctx}"
+                        )
+                    })?,
+                None => self.windows[target_win]
+                    .focused_pane
+                    .or(self.windows[target_win].tree.root)
+                    .ok_or("the target window is empty")?,
             };
+            log::info!(
+                "SpawnPane: terminal for emitter={emitter:?} destination context={destination_ctx} anchor={from_pane_id:?}"
+            );
             // Directory as the anchor shows it now: this spawn is admitted
             // and applied in this turn. The coordinator keeps focus.
             let cwd = self.windows[target_win].get_focused_pane_cwd(target_tile);

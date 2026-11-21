@@ -4900,6 +4900,212 @@ fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
     assert!(replies_to(&received, "replaced").is_empty());
 }
 
+/// Stint 1666: only input the host owns resolves secrets. A linked terminal
+/// a view asks for and a scheduled routine start in a directory holding a
+/// folder secret, and neither reads nor receives it; a desktop terminal in
+/// the same directory is the control. Each admission traces its provenance
+/// and secret policy.
+#[test]
+fn spawn_secrets_linked_terminal_and_routine_resolve_no_secret() {
+    use crate::broker::pane_authority::{Provenance, SecretEligibility};
+    use crate::protocol::PlexiEvent;
+    use std::collections::HashMap;
+    let _features =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+    let logs = crate::testing::test_log::capture();
+    let mut h = HostHarness::new();
+    let tmp = tempfile::tempdir().expect("secret dir");
+    let dir = crate::platform::path::canonical_or_self(tmp.path());
+    let sentinel = "PLEXI_FOLDER_SENTINEL_1666";
+    crate::workspace::secrets::set_folder_secret(
+        crate::workspace::secrets::folder_store(),
+        sentinel,
+        &dir,
+        "folder-1666",
+    )
+    .expect("in-memory folder store");
+    assert_eq!(crate::workspace::secrets::backend_label(), "in-memory");
+    let (view, received) = add_pipe_test_pane(&mut h, 0);
+    h.focus_pane(view);
+    h.app.set_context_root(dir.clone(), None);
+
+    // Control: a desktop terminal in the directory resolves the secret.
+    crate::host::shell::secret_reads::take();
+    let context = h.app.pane_context_env_for_window(0);
+    let launch = h
+        .app
+        .desktop_terminal_launch(context, Some(dir.clone()), None);
+    let env = crate::pane_ops::construct::probes::env_at_backend_entry(launch);
+    assert_eq!(env.get(sentinel).map(String::as_str), Some("folder-1666"));
+    assert!(crate::host::shell::secret_reads::take().contains(&("folder", dir.clone())));
+
+    let envs = std::rc::Rc::new(std::cell::RefCell::new(
+        Vec::<HashMap<String, String>>::new(),
+    ));
+    let record = envs.clone();
+    let _entry = crate::pane_ops::construct::probes::on_backend_entry(move |settings| {
+        record.borrow_mut().push(settings.env.clone());
+        Ok(())
+    });
+    let no_secret = |h: &HostHarness, label: &str, pane: u64, provenance: Provenance| {
+        let reads = crate::host::shell::secret_reads::take();
+        assert_eq!(reads, Vec::new(), "{label}: no secret resolver read");
+        let env = envs.borrow_mut().pop().expect("backend entered");
+        assert!(
+            !env.contains_key(sentinel),
+            "{label}: folder secret arrived"
+        );
+        let grant = h.app.pane_authority(pane).expect("grant").grant().clone();
+        assert_eq!(grant.provenance, provenance, "{label}");
+        assert_eq!(grant.secrets, SecretEligibility::none(), "{label}");
+        let trace = format!("pane_authority: admitted pane={pane} provenance={provenance:?}");
+        assert!(
+            logs.lines().iter().any(|line| line.contains(&trace)
+                && line.contains("secrets=SecretPolicy { terminal: false, folder: false }")),
+            "{label}: admission traces provenance and secret policy"
+        );
+    };
+
+    let routine = h
+        .app
+        .fire_routine("secret-probe-1666", "true", "", false, &dir)
+        .expect("routine pane");
+    no_secret(&h, "routine", routine, Provenance::HostSystem);
+
+    queue_pipe_command(
+        &mut h,
+        view,
+        crate::app::view_trait::ViewCommand::RequestLinkedTerminal {
+            sender_pane_id: view,
+            request_id: "linked-1666".to_string(),
+            cwd: Some(dir.to_string_lossy().into_owned()),
+            label: None,
+            place_below: true,
+        },
+    );
+    h.run_hidden_frames(1);
+    let linked = received
+        .lock()
+        .expect("event log")
+        .iter()
+        .find_map(|event| match event {
+            PlexiEvent::LinkedTerminalReady {
+                request_id,
+                terminal_pane_id,
+            } if request_id == "linked-1666" => Some(*terminal_pane_id),
+            _ => None,
+        })
+        .expect("linked terminal ready");
+    assert_ne!(linked, 0, "the linked terminal was installed");
+    no_secret(
+        &h,
+        "linked terminal",
+        linked,
+        Provenance::PluginInstance { pane_id: view },
+    );
+}
+
+/// Stint 1666: an SDK terminal lands only in its validated destination, the
+/// requester's own context or a descendant it names, and takes its
+/// credential scope from there. An anchor outside that destination is
+/// refused, with or without a target context, and an unnamed destination is
+/// the requester's context, never whichever window is active.
+#[test]
+fn sdk_terminal_spawn_takes_credentials_only_from_its_validated_destination() {
+    use crate::protocol::PlexiEvent;
+    let mut h = HostHarness::new();
+    let context_a = h.app.windows[0].context_id;
+    let root_a = tempfile::tempdir().expect("root a");
+    h.app
+        .set_context_root(root_a.path().to_path_buf(), Some(context_a));
+    let (requester, received) = add_pipe_test_pane(&mut h, 0);
+    let context_b = crate::testing::reserve_test_context_id();
+    let root_b = tempfile::tempdir().expect("root b");
+    let win_b = push_secondary_context(&mut h, context_b, root_b.path());
+    if let Some(index) = h.app.router.position(|c| c.context_id == context_b) {
+        h.app.router.get_mut(index).parent_id = Some(context_a);
+    }
+    h.app.host.add_context(context_b, Some(context_a));
+    let (inside_b, _) = add_pipe_test_pane(&mut h, win_b);
+    // C is no descendant of A.
+    let context_c = crate::testing::reserve_test_context_id();
+    let root_c = tempfile::tempdir().expect("root c");
+    let win_c = push_secondary_context(&mut h, context_c, root_c.path());
+    h.app.host.add_context(context_c, None);
+    let (outside, _) = add_pipe_test_pane(&mut h, win_c);
+    let spawn = |id: &str, from: Option<u64>, target: Option<u64>| {
+        crate::app::view_trait::ViewCommand::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: "split_h".to_string(),
+            args: Vec::new(),
+            from_pane_id: from,
+            request_id: Some(id.to_string()),
+            target_context: target,
+            emitter: None,
+        }
+    };
+    let outcome = |h: &mut HostHarness, id: &str, from: Option<u64>, target: Option<u64>| {
+        queue_pipe_command(h, requester, spawn(id, from, target));
+        h.run_hidden_frames(1);
+        received
+            .lock()
+            .expect("event log")
+            .iter()
+            .find_map(|event| match event {
+                PlexiEvent::PaneSpawned {
+                    pane_id,
+                    request_id: Some(r),
+                } if r == id => Some(Ok(*pane_id)),
+                PlexiEvent::PaneSpawnError {
+                    reason,
+                    request_id: Some(r),
+                } if r == id => Some(Err(reason.clone())),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{id}: one reply"))
+    };
+    let scope_of = |h: &HostHarness, pane: u64| {
+        let scope = h
+            .app
+            .pane_authority(pane)
+            .expect("grant")
+            .grant()
+            .scope
+            .clone();
+        (scope.context_id, scope.workspace_root)
+    };
+    let canonical = |p: &std::path::Path| crate::platform::path::canonical_or_self(p);
+    let c_panes = h.app.windows[win_c].panes.len();
+
+    let error = outcome(&mut h, "outside-target", Some(outside), Some(context_b))
+        .expect_err("an anchor outside the target context is refused");
+    assert!(error.contains(&format!("origin pane {outside}")), "{error}");
+    let error = outcome(&mut h, "outside-untargeted", Some(outside), None)
+        .expect_err("an anchor outside the requester's reach is refused");
+    assert!(error.contains(&format!("origin pane {outside}")), "{error}");
+    assert_eq!(
+        h.app.windows[win_c].panes.len(),
+        c_panes,
+        "nothing landed in C"
+    );
+
+    let pane = outcome(&mut h, "inside-target", Some(inside_b), Some(context_b))
+        .expect("an anchor inside the target context starts");
+    assert!(h.app.windows[win_b].panes.get(&pane).is_some());
+    assert_eq!(scope_of(&h, pane), (context_b, canonical(root_b.path())));
+
+    // C's window is active; the requester names no destination.
+    h.app.active_window = win_c;
+    let pane = outcome(&mut h, "unnamed", None, None).expect("lands in the requester's context");
+    assert!(h.app.windows[0].panes.get(&pane).is_some());
+    assert_eq!(scope_of(&h, pane), (context_a, canonical(root_a.path())));
+    assert_eq!(
+        h.app.windows[win_c].panes.len(),
+        c_panes,
+        "nothing landed in C"
+    );
+}
+
 /// Round 6 P2-2: a request held behind an overlay belongs to the guest that
 /// made it. A hot reload ends that guest: its held requests are retired and
 /// none is carried out or answered for the relaunched guest.
