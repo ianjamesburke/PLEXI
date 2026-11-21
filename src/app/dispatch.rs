@@ -841,9 +841,23 @@ impl PlexiApp {
                     // real existing instance's id (#0336): `Ok(Some(id))` means
                     // the launch focused a live instance instead of spawning.
                     let predicted_pane_id = self.host.next_pane_id();
-                    let new_pane_id = match self
-                        .launch_view_by_id_with_layout(&type_id, layout, &args, None)
-                    {
+                    // A view's terminal is that view's, in its own context:
+                    // the same emitter-bound admission as `SpawnPane`, never
+                    // a desktop terminal in the active window (stint 1666).
+                    let launched = if type_id == "terminal" {
+                        self.serve_sdk_spawn_pane(
+                            emitter,
+                            "terminal",
+                            layout.as_deref().unwrap_or("split_h"),
+                            args,
+                            None,
+                            None,
+                        )
+                        .map(Some)
+                    } else {
+                        self.launch_view_by_id_with_layout(&type_id, layout, &args, None)
+                    };
+                    let new_pane_id = match launched {
                         Ok(Some(existing_id)) => existing_id,
                         Ok(None) => predicted_pane_id,
                         Err(e) => {

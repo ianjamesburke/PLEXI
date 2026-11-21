@@ -5009,11 +5009,29 @@ fn spawn_secrets_linked_terminal_and_routine_resolve_no_secret() {
 /// requester's own context or a descendant it names, and takes its
 /// credential scope from there. An anchor outside that destination is
 /// refused, with or without a target context, and an unnamed destination is
-/// the requester's context, never whichever window is active.
+/// the requester's context, never whichever window is active. The legacy
+/// `SpawnView("terminal")` route is admitted the same way. Both issued
+/// credentials authenticate to the destination's scope.
 #[test]
 fn sdk_terminal_spawn_takes_credentials_only_from_its_validated_destination() {
     use crate::protocol::PlexiEvent;
+    crate::app::host_mcp::ensure_test_discovery();
     let mut h = HostHarness::new();
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+    let issued = std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::<
+        u64,
+        (String, String),
+    >::new()));
+    let record = issued.clone();
+    let _publish = crate::pane_ops::construct::probes::on_publish(move |pane_id, env| {
+        record.borrow_mut().insert(
+            pane_id,
+            (
+                env["PLEXI_CALL_CREDENTIAL"].clone(),
+                env["PLEXI_HOST_MCP_TOKEN"].clone(),
+            ),
+        );
+    });
     let context_a = h.app.windows[0].context_id;
     let root_a = tempfile::tempdir().expect("root a");
     h.app
@@ -5064,6 +5082,7 @@ fn sdk_terminal_spawn_takes_credentials_only_from_its_validated_destination() {
             })
             .unwrap_or_else(|| panic!("{id}: one reply"))
     };
+    // The recorded grant and both issued credentials agree on one scope.
     let scope_of = |h: &HostHarness, pane: u64| {
         let scope = h
             .app
@@ -5072,6 +5091,27 @@ fn sdk_terminal_spawn_takes_credentials_only_from_its_validated_destination() {
             .grant()
             .scope
             .clone();
+        let (call, mcp) = issued.borrow()[&pane].clone();
+        let bound = monitor
+            .credential_authority(&call)
+            .expect("the call credential authenticates");
+        assert_eq!(bound.pane_id(), pane);
+        let live = bound.scope();
+        assert_eq!(
+            (live.context_id, live.workspace_root),
+            (scope.context_id, scope.workspace_root.clone()),
+            "call credential scope"
+        );
+        assert_eq!(
+            crate::app::host_mcp::authenticated_context_for_test(&mcp),
+            Some(scope.context_id),
+            "host MCP bearer context"
+        );
+        assert_eq!(
+            crate::app::host_mcp::authenticated_workspace_for_test(&mcp),
+            Some(scope.workspace_root.clone()),
+            "host MCP bearer root"
+        );
         (scope.context_id, scope.workspace_root)
     };
     let canonical = |p: &std::path::Path| crate::platform::path::canonical_or_self(p);
@@ -5099,6 +5139,45 @@ fn sdk_terminal_spawn_takes_credentials_only_from_its_validated_destination() {
     let pane = outcome(&mut h, "unnamed", None, None).expect("lands in the requester's context");
     assert!(h.app.windows[0].panes.get(&pane).is_some());
     assert_eq!(scope_of(&h, pane), (context_a, canonical(root_a.path())));
+    assert_eq!(
+        h.app.windows[win_c].panes.len(),
+        c_panes,
+        "nothing landed in C"
+    );
+
+    // The legacy `SpawnView` route, with C still active.
+    h.app.active_window = win_c;
+    queue_pipe_command(
+        &mut h,
+        requester,
+        crate::app::view_trait::ViewCommand::SpawnView {
+            type_id: "terminal".to_string(),
+            layout: None,
+            args: Vec::new(),
+            emitter: None,
+        },
+    );
+    h.run_hidden_frames(1);
+    let opened = received
+        .lock()
+        .expect("event log")
+        .iter()
+        .find_map(|event| match event {
+            PlexiEvent::ViewOpened { pane_id, type_id } if type_id == "terminal" => Some(*pane_id),
+            _ => None,
+        })
+        .expect("ViewOpened for the terminal");
+    assert!(h.app.windows[0].panes.get(&opened).is_some());
+    let grant = h.app.pane_authority(opened).expect("grant").grant().clone();
+    assert_eq!(
+        grant.provenance,
+        crate::broker::pane_authority::Provenance::PluginInstance { pane_id: requester }
+    );
+    assert_eq!(
+        grant.secrets,
+        crate::broker::pane_authority::SecretEligibility::none()
+    );
+    assert_eq!(scope_of(&h, opened), (context_a, canonical(root_a.path())));
     assert_eq!(
         h.app.windows[win_c].panes.len(),
         c_panes,

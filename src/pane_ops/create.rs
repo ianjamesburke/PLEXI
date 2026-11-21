@@ -2861,7 +2861,8 @@ impl PlexiApp {
                 cwd_override
             };
         // "terminal" is a builtin pane type, not in the plugin registry.
-        // Reached via SDK ViewCommand::SpawnView("terminal", ...) and legacy paths.
+        // Admitted as desktop input. An SDK view's `SpawnView("terminal")` is
+        // admitted as that view's in `serve_sdk_spawn_pane` instead (stint 1666).
         // Socket IPC and spawn-queue handle terminal inline in plugin/mod.rs.
         if id == "terminal" {
             let layout_str = layout.as_deref().unwrap_or("split_h");

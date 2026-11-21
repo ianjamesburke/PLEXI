@@ -177,7 +177,7 @@ impl Importer<'_> {
     ) -> (PaneAuthority, LiveScope) {
         let scope = self.scope_of(pane, context_id);
         match self.current(pane, context_id) {
-            Some(Ok(saved)) => return (saved.grant, saved.scope),
+            Some(Ok(saved)) => return (saved.grant.under_current_secret_rule(), saved.scope),
             Some(Err(problem)) => {
                 log::warn!(
                     "workspace_restore: pane {} grant refused: {problem}; sealed",
