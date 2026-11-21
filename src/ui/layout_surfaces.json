@@ -396,6 +396,21 @@
       "gap": "Unresolved: row has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
+      "id": "src/ui/scope_switcher.rs",
+      "fixture": {
+        "file": "src/ui_tests.rs",
+        "test": "screenshot_scope_switcher_gallery"
+      },
+      "additional_fixtures": [
+        {
+          "file": "src/ui_tests.rs",
+          "test": "notes_picker_scope_switcher_states"
+        }
+      ],
+      "states": "two scopes (notes picker) and three (gallery palette stops); Dusk/Dawn; zoom 1/2; 420pt narrow window",
+      "minimum": "chips measured with KitButton::natural_width; the hint drops before chips wrap"
+    },
+    {
       "id": "src/ui/search_bar.rs",
       "fixture": {
         "file": "src/app/text_editor_view.rs",

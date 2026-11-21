@@ -1,4 +1,4 @@
-Stint: 1390 (design), built by 1391, 1392, 1396, the Agents view stint
+Stint: 1390 (design), built by 1391, 1392, 1396, the Agents view stint; stop chips 1623
 Status: active
 
 # The palette: commands, then files, then agents
@@ -78,7 +78,7 @@ A stop is data defined in code: id, chip label, source ids, ranking preset, whet
 
 A row carries: `key` (`<source id>:<stable id>`, split on the first `:`), title, secondary text, chips, search text, score from `search::score_candidate`, modified time, group, an optional unavailable reason, a preview reference, and actions (id, label, optional chord; the first is Enter). Unavailable rows stay listed, show the reason and refuse Enter. A source may return at most `MAX_SEARCH_HITS` rows per query; a larger answer is refused with a typed error and a visible notice. Rows, keys, action ids, preset names and preview kind names hold no host paths, egui types or host enums, so 1395 can carry them across WIT unchanged.
 
-`src/ui/picker.rs` has painters that read a `PickerState` and return `PickerCommand`s: `Field` (chips, `TextField`, action list), `Results` (`ListRow`s with group headers, scroll to selection, hover and click) and `Preview`. Keys are translated in the focus owner's `handle_key`, never in a draw function. The palette shell stays `ModalShell::centered` with `FocusKind::CommandPalette`; opening keeps the invoking pane and selection as the command target.
+`src/ui/picker.rs` has painters that read a `PickerState` and return `PickerCommand`s: `Field` (the stop chips, drawn by `ui::scope_switcher::ScopeSwitcher` as the notes picker's scopes are, a chip click sending `SetStop`; `TextField`; action list), `Results` (`ListRow`s with group headers, scroll to selection, hover and click) and `Preview`. Keys are translated in the focus owner's `handle_key`, never in a draw function. The palette shell stays `ModalShell::centered` with `FocusKind::CommandPalette`; opening keeps the invoking pane and selection as the command target.
 
 ## Files
 

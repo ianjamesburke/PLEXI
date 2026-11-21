@@ -22,8 +22,12 @@ use crate::ui::{
     hints::{HintBar, HintGroup},
     list::ListRow,
     overlay::ModalShell,
+    scope_switcher::ScopeSwitcher,
     text_field::TextField,
 };
+
+/// Tab order; the index is `notes_picker_current_project_only`.
+const NOTES_PICKER_SCOPES: &[&str] = &["All notes", "Current project"];
 
 pub(crate) fn notes_picker_chip_label<'a>(
     entry: &'a crate::notes::NotePickerEntry,
@@ -1044,14 +1048,8 @@ impl PlexiApp {
                 }
             }
             Some(PickerKey::ToggleProject) => {
-                self.notes_picker_current_project_only = !self.notes_picker_current_project_only;
-                self.notes_picker_selected = 0;
-                self.notes_picker_last_drawn_selected = None;
                 self.claimed_host_key_releases.insert(egui::Key::Tab);
-                log::info!(
-                    "notes_picker: current_project_only={}",
-                    self.notes_picker_current_project_only
-                );
+                self.notes_picker_set_current_project_only(!self.notes_picker_current_project_only);
             }
             Some(PickerKey::Enter) => self.notes_picker_open_selected(),
             Some(PickerKey::Delete(key)) => {
@@ -1064,6 +1062,14 @@ impl PlexiApp {
             Some(PickerKey::OpenNew) => self.notes_picker_open_in_new(),
             None => {}
         }
+    }
+
+    /// The one scope change, from Tab or a scope chip.
+    fn notes_picker_set_current_project_only(&mut self, current_project_only: bool) {
+        self.notes_picker_current_project_only = current_project_only;
+        self.notes_picker_selected = 0;
+        self.notes_picker_last_drawn_selected = None;
+        log::info!("notes_picker: current_project_only={current_project_only}");
     }
 
     fn notes_picker_open_selected(&mut self) {
@@ -1151,6 +1157,8 @@ impl PlexiApp {
         self.notes_picker_flush_copy(ctx);
 
         let open_cell = std::cell::Cell::new(None::<usize>);
+        let scope_cell = std::cell::Cell::new(None::<bool>);
+        let current_project_only = self.notes_picker_current_project_only;
 
         let mut query = self.notes_picker_query.clone();
 
@@ -1183,15 +1191,16 @@ impl PlexiApp {
                     ))
                     .log_name("notes_picker_search")
                     .show(ui, &mut query, &colors);
-                ui.label(
-                    egui::RichText::new(if self.notes_picker_current_project_only {
-                        "Current project · Tab: all notes"
-                    } else {
-                        "All notes · Tab: current project"
-                    })
-                    .size(style::TEXT_CAPTION)
-                    .color(colors.text_dim),
-                );
+                ui.add_space(style::SPACE_SM);
+                if let Some(scope) = ScopeSwitcher::new(
+                    "notes_picker",
+                    NOTES_PICKER_SCOPES,
+                    usize::from(current_project_only),
+                )
+                .show(ui, &colors)
+                {
+                    scope_cell.set(Some(scope == 1));
+                }
                 ui.add_space(style::SPACE_SM);
 
                 if total == 0 {
@@ -1358,6 +1367,10 @@ impl PlexiApp {
             });
 
         let query_changed = self.notes_picker_apply_query(query);
+
+        if let Some(current_project_only) = scope_cell.get() {
+            self.notes_picker_set_current_project_only(current_project_only);
+        }
 
         if let Some(row) = open_cell.get() {
             self.notes_picker_selected = row;
