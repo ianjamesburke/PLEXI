@@ -187,6 +187,102 @@ pub fn scrub_launcher_color_overrides() {
     );
 }
 
+/// The host environment variables a pane inherits (stint 1682). A pane's
+/// environment is this base plus its launch plan (`build_env_with_secrets`
+/// and the pane's own additions); everything else the host's launcher
+/// exported, a workspace or folder secret included, is withheld. User shell
+/// config reaches a pane through the pane's own login shell, which sources
+/// it. No secret may take one of these names (`is_pane_base_env`).
+const PANE_BASE_ENV: &[&str] = &[
+    // Identity and session.
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "PATH",
+    "TMPDIR",
+    // Locale: POSIX categories, then glibc's.
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_COLLATE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "LC_ADDRESS",
+    "LC_IDENTIFICATION",
+    "LC_MEASUREMENT",
+    "LC_NAME",
+    "LC_PAPER",
+    "LC_TELEPHONE",
+    "__CF_USER_TEXT_ENCODING",
+    // Linux desktop session.
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
+    "XDG_SESSION_TYPE",
+    "XDG_CURRENT_DESKTOP",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CONFIG_DIRS",
+    "XDG_DATA_DIRS",
+];
+
+/// Base variables only a desktop-owned pane inherits: the SSH agent signs
+/// for whoever reaches it, so a restricted (agent or plugin) pane does not.
+const DESKTOP_PANE_ENV: &[&str] = &["SSH_AUTH_SOCK"];
+
+/// True for a name a pane may inherit from the host.
+pub(crate) fn is_pane_base_env(name: &str) -> bool {
+    PANE_BASE_ENV.contains(&name) || DESKTOP_PANE_ENV.contains(&name)
+}
+
+/// The allowlisted part of `host_env` for a pane that is (or is not)
+/// desktop-owned. A non-UTF-8 entry is withheld.
+fn pane_base_env(
+    host_env: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    desktop: bool,
+) -> HashMap<String, String> {
+    host_env
+        .into_iter()
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+        .filter(|(k, _)| {
+            PANE_BASE_ENV.contains(&k.as_str())
+                || (desktop && DESKTOP_PANE_ENV.contains(&k.as_str()))
+        })
+        .collect()
+}
+
+/// Names (never values) of host environment variables no pane inherits.
+fn withheld_pane_env_names(
+    host_env: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<String> {
+    let mut names: Vec<String> = host_env
+        .into_iter()
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .filter(|k| !is_pane_base_env(k))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Trace, once the host's own environment is settled, which inherited
+/// variables panes will not receive.
+pub fn log_withheld_pane_env() {
+    let names = withheld_pane_env_names(std::env::vars_os());
+    log::info!(
+        "shell: {} host environment variable(s) withheld from panes: [{}]",
+        names.len(),
+        names.join(", ")
+    );
+}
+
 /// Adopt user-defined env vars from the login shell that are missing from the
 /// process environment.
 ///
@@ -363,7 +459,7 @@ fn fallback_path_with_homebrew() -> Option<String> {
 }
 
 pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
-    build_env_with_secrets(working_directory, SecretPolicy::ALL)
+    build_env_with_secrets(working_directory, SecretPolicy::ALL, true)
 }
 
 /// Which secret classes a terminal environment may resolve (stint 1632).
@@ -417,18 +513,20 @@ fn is_plexi_zsh_integration_dir(candidate: &str) -> bool {
 }
 
 /// Decide injection before resolving any values: a withheld class is never
-/// read only to be removed afterwards.
+/// read only to be removed afterwards. `desktop` is the pane's ownership;
+/// only a desktop-owned pane inherits `DESKTOP_PANE_ENV`.
 pub(crate) fn build_env_with_secrets(
     working_directory: Option<&Path>,
     secrets: SecretPolicy,
+    desktop: bool,
 ) -> HashMap<String, String> {
-    let mut env = HashMap::new();
+    let mut env = pane_base_env(std::env::vars_os(), desktop);
 
     env.insert("TERM".into(), "xterm-256color".into());
     log::info!("shell::build_env: TERM=xterm-256color");
     env.insert("COLORTERM".into(), "truecolor".into());
     env.insert("PLEXI_RUNNING".into(), "1".into());
-    if let Some(channel) = crate::config::build_channel() {
+    if let Some(channel) = crate::config::process_channel() {
         log::info!("shell::build_env: PLEXI_CHANNEL={channel}");
         env.insert("PLEXI_CHANNEL".into(), channel);
     }
@@ -1303,6 +1401,42 @@ pub(crate) fn shell_quote(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+
+    fn host_env(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+            .collect()
+    }
+
+    /// Stint 1682: a pane inherits only the documented base from the host.
+    /// Locale categories are named exactly, so an `LC_`-prefixed secret is
+    /// withheld, and only a desktop-owned pane inherits the SSH agent.
+    #[test]
+    fn pane_base_env_keeps_the_allowlist_and_withholds_the_rest() {
+        let env = host_env(&[
+            ("HOME", "/Users/u"),
+            ("PATH", "/usr/bin"),
+            ("LC_CTYPE", "UTF-8"),
+            ("LC_SERVICE_TOKEN", "secret"),
+            ("SSH_AUTH_SOCK", "/tmp/agent.sock"),
+            ("OPENAI_API_KEY", "secret"),
+            ("PLEXI_SOCKET", "/tmp/other.sock"),
+        ]);
+        let kept = |desktop| {
+            let mut names: Vec<String> = pane_base_env(env.clone(), desktop).into_keys().collect();
+            names.sort();
+            names
+        };
+        assert_eq!(kept(true), ["HOME", "LC_CTYPE", "PATH", "SSH_AUTH_SOCK"]);
+        assert_eq!(kept(false), ["HOME", "LC_CTYPE", "PATH"]);
+        assert_eq!(
+            withheld_pane_env_names(env),
+            ["LC_SERVICE_TOKEN", "OPENAI_API_KEY", "PLEXI_SOCKET"]
+        );
+    }
+
     use super::*;
 
     struct LauncherColorEnvGuard {

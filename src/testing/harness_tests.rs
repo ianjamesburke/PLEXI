@@ -5035,6 +5035,136 @@ fn spawn_secrets_linked_terminal_and_routine_resolve_no_secret() {
     );
 }
 
+/// Stint 1682: a host whose own environment carries secrets, as one started
+/// from a pane that exported them, hands them to no pane. The test re-runs
+/// itself with sentinels in the host process environment, one under a
+/// locale-looking name, and reads the environment each pane's real child
+/// process saw. Only the desktop-owned pane (a routine) inherits the SSH
+/// agent socket; a plugin's restricted pane does not.
+#[test]
+#[ignore = "requires-pty"]
+fn no_secret_pane_child_env_excludes_host_inherited_secret() {
+    use crate::broker::pane_authority::{GrantSource, SecretEligibility};
+    const CHILD: &str = "PLEXI_TEST_1682_CHILD_ENV_OUT";
+    const SENTINELS: [&str; 2] = ["PLEXI_TEST_1682_INHERITED_SECRET", "LC_SERVICE_TOKEN"];
+    const SSH_SOCK: &str = "/tmp/plexi-test-1682-agent.sock";
+    if let Some(out) = std::env::var_os(CHILD) {
+        let out = std::path::PathBuf::from(out);
+        let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+        let mut h = HostHarness::new();
+        let (anchor, _received) = add_pipe_test_pane(&mut h, 0);
+        let dir = h.workspace_root().to_path_buf();
+        for (label, source, desktop) in [
+            ("desktop", GrantSource::HostSystem, true),
+            (
+                "restricted",
+                GrantSource::PluginInstance { pane_id: anchor },
+                false,
+            ),
+        ] {
+            let file = out.join(label);
+            let command = format!(
+                "/usr/bin/env > '{}.tmp' && /bin/mv '{0}.tmp' '{0}'",
+                file.display()
+            );
+            let context = h.app.pane_context_env_for_window(0);
+            let launch = h.app.terminal_launch(
+                source,
+                context,
+                Some(dir.clone()),
+                Some(crate::pane_ops::construct::LaunchCommand {
+                    command,
+                    close_on_exit: false,
+                }),
+            );
+            let (win_idx, target_tile) = h
+                .app
+                .context_spawn_target(h.app.windows[0].context_id)
+                .expect("spawn target");
+            let pane = h
+                .app
+                .spawn_terminal_pane_at(
+                    crate::pane_ops::create::SplitPlacement {
+                        win_idx,
+                        target_tile,
+                        vertical: true,
+                        new_pane_first: false,
+                        keep_focus: true,
+                    },
+                    launch,
+                )
+                .expect("pane");
+            let grant = h.app.pane_authority(pane).expect("grant").grant().clone();
+            assert_eq!(grant.is_desktop(), desktop, "{label}");
+            assert_eq!(grant.secrets, SecretEligibility::none(), "{label}");
+            let deadline = std::time::Instant::now()
+                + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+            while !file.exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{label}: the child never wrote its environment"
+                );
+                h.run_frames(1);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("output dir");
+    let mut host = std::process::Command::new(std::env::current_exe().expect("test binary"));
+    host.args([
+        "--ignored",
+        "--exact",
+        "testing::harness_tests::no_secret_pane_child_env_excludes_host_inherited_secret",
+        "--nocapture",
+    ])
+    .env(CHILD, tmp.path())
+    .env("LC_MESSAGES", "C")
+    .env("SSH_AUTH_SOCK", SSH_SOCK);
+    for sentinel in SENTINELS {
+        host.env(sentinel, "inherited-1682");
+    }
+    let run = host
+        .output()
+        .expect("run the host with sentinels in its env");
+    assert!(
+        run.status.success(),
+        "host run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    for (label, ssh) in [("desktop", true), ("restricted", false)] {
+        let env = std::fs::read_to_string(tmp.path().join(label)).expect("child environment");
+        let lines: Vec<&str> = env.lines().collect();
+        let names: Vec<&str> = lines
+            .iter()
+            .filter_map(|l| l.split_once('=').map(|(k, _)| k))
+            .collect();
+        assert!(
+            names.contains(&"PLEXI_PANE_ID"),
+            "{label}: the launch plan reached the child: {names:?}"
+        );
+        assert!(
+            lines.contains(&"LC_MESSAGES=C"),
+            "{label}: the base allowlist reached the child: {names:?}"
+        );
+        for sentinel in SENTINELS {
+            assert!(
+                !names.contains(&sentinel),
+                "{label}: the host's inherited {sentinel} reached a no-secret pane"
+            );
+        }
+        assert!(
+            !names.contains(&CHILD),
+            "{label}: an unlisted host variable reached the pane: {names:?}"
+        );
+        assert_eq!(
+            lines.contains(&format!("SSH_AUTH_SOCK={SSH_SOCK}").as_str()),
+            ssh,
+            "{label}: SSH agent socket is the desktop's only: {names:?}"
+        );
+    }
+}
+
 /// Stint 1666: an SDK terminal lands only in its validated destination, the
 /// requester's own context or a descendant it names, and takes its
 /// credential scope from there. An anchor outside that destination is

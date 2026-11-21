@@ -2194,6 +2194,7 @@ fn main() -> eframe::Result {
     crate::host::shell::scrub_launcher_color_overrides();
     crate::host::shell::install_login_shell_path();
     crate::host::shell::install_login_shell_env();
+    crate::host::shell::log_withheld_pane_env();
 
     // Shell probes are done. Start the heartbeat now so it only monitors
     // eframe operation — not pre-startup shell work (#588).

@@ -261,7 +261,11 @@ impl PlexiApp {
             context.context_id,
             grant.secrets.directory
         );
-        let mut env = shell::build_env_with_secrets(grant.secrets.directory.as_deref(), secrets);
+        let mut env = shell::build_env_with_secrets(
+            grant.secrets.directory.as_deref(),
+            secrets,
+            grant.is_desktop(),
+        );
         for name in [
             "PLEXI_PARENT_PANE",
             "PLEXI_EPHEMERAL",

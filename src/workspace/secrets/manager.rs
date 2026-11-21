@@ -279,6 +279,9 @@ pub fn mutate_secret(
     mutation: Mutation<'_>,
 ) -> Result<(), String> {
     let account = target.account(name)?;
+    if matches!(mutation, Mutation::Set(_)) {
+        super::folder::valid_secret_name(name)?;
+    }
     if matches!(mutation, Mutation::Set(value) if value.is_empty()) {
         return Err("Value cannot be empty.".into());
     }

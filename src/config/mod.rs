@@ -1929,6 +1929,23 @@ pub fn build_channel() -> Option<String> {
     channel_from_basename(&current_exe_basename()).map(str::to_string)
 }
 
+/// The channel this process runs as: its binary's, or for the bare `plexi`
+/// binary an inherited `PLEXI_CHANNEL`, the same precedence that names its
+/// profile (`resolve_channel_dir`). Panes are stamped with it (stint 1682).
+pub fn process_channel() -> Option<String> {
+    #[cfg(test)]
+    if let Some(channel) = test_channel_override() {
+        return Some(channel);
+    }
+    resolve_channel(&current_exe_basename(), env_channel().as_deref())
+}
+
+fn resolve_channel(basename: &str, env_channel: Option<&str>) -> Option<String> {
+    channel_from_basename(basename)
+        .map(str::to_string)
+        .or_else(|| env_channel.filter(|c| !c.is_empty()).map(str::to_string))
+}
+
 /// True when this binary was compiled for, and is currently running as, the
 /// same disposable per-PR test channel (`pr-<N>`).
 ///
@@ -3356,6 +3373,23 @@ pub fn active_workspace_root() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stint 1682: panes are stamped with the channel that names the host's
+    /// profile, including a bare host given one through `PLEXI_CHANNEL`.
+    #[test]
+    fn process_channel_matches_the_profile_channel() {
+        assert_eq!(
+            resolve_channel("plexi", Some("alpha")).as_deref(),
+            Some("alpha")
+        );
+        assert_eq!(resolve_channel_dir("plexi", Some("alpha")), ".plexi-alpha");
+        assert_eq!(
+            resolve_channel("plexi-beta", Some("alpha")).as_deref(),
+            Some("beta")
+        );
+        assert_eq!(resolve_channel("plexi", Some("")), None);
+        assert_eq!(resolve_channel("plexi", None), None);
+    }
     use std::fs;
 
     /// Fix round 1 defect 3: a workspace overlay setting `[notifications]

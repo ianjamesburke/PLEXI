@@ -209,6 +209,9 @@ pub fn write_terminal_env_inject(
     canonical: &str,
     enabled: bool,
 ) -> Result<(), String> {
+    if enabled {
+        super::folder::valid_secret_name(canonical)?;
+    }
     let secrets_path = workspace_root
         .join(crate::config::workspace_channel_dir())
         .join("secrets.toml");
