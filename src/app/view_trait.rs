@@ -241,6 +241,35 @@ pub enum ViewCommand {
     },
 }
 
+impl ViewCommand {
+    /// The command's variant name, for traces.
+    pub(crate) fn verb(&self) -> &'static str {
+        match self {
+            Self::Fleet(_) => "Fleet",
+            Self::WasmHostEffect { .. } => "WasmHostEffect",
+            Self::ExposeTools { .. } => "ExposeTools",
+            Self::ToolResult { .. } => "ToolResult",
+            Self::PluginEventRequest { .. } => "PluginEventRequest",
+            Self::AssistantHostTool { .. } => "AssistantHostTool",
+            Self::SpawnView { .. } => "SpawnView",
+            Self::SpawnPane { .. } => "SpawnPane",
+            Self::ForwardPaneRequest { .. } => "ForwardPaneRequest",
+            Self::CdRequest { .. } => "CdRequest",
+            Self::DeliverPipeMessage { .. } => "DeliverPipeMessage",
+            Self::OpenDirectedPipe { .. } => "OpenDirectedPipe",
+            Self::DeliverRunUpdate { .. } => "DeliverRunUpdate",
+            Self::ShowNotification { .. } => "ShowNotification",
+            Self::DeliverNotifyAction { .. } => "DeliverNotifyAction",
+            Self::RequestLinkedTerminal { .. } => "RequestLinkedTerminal",
+            Self::RunInLinkedTerminal { .. } => "RunInLinkedTerminal",
+            Self::InsertPathToken { .. } => "InsertPathToken",
+            Self::RequestCommandPreview { .. } => "RequestCommandPreview",
+            Self::OpenArtifact { .. } => "OpenArtifact",
+            Self::QueryContextState { .. } => "QueryContextState",
+        }
+    }
+}
+
 /// The trait all Plexi plugins implement.
 ///
 /// Plugins live inside `Pane::App` runtimes.
