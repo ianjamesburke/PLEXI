@@ -13,7 +13,6 @@ REMOVED_EVENTS = [
     "SystemStatsResult",
     "AiStreamChunk",
     "PipePeerConnected",
-    "PipeClosed",
     "PipeError",
     "PaymentComplete",
     "PaymentFailed",

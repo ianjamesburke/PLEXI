@@ -327,6 +327,17 @@ class PipeMessage:
 
 
 @dataclass
+class PipeClosed:
+    """Directed pipe ``pipe_id`` is closed: the other end's pane closed
+    (``reason == "peer_closed"``) or its app reloaded (``"peer_reloaded"``),
+    or this app's open was refused because the id is in use
+    (``"in_use"``). Sends on ``pipe_id`` are dropped until a new
+    :class:`effects.PipeOpenDirected` opens it."""
+    pipe_id: str
+    reason: str
+
+
+@dataclass
 class StateChanged:
     """A state scope's backing file changed outside this app's own persist
     flow — an external edit (CLI, agent, editor), or a persist this app lost

@@ -3256,7 +3256,7 @@ impl LivePythonPane {
 
     /// Register a host-directed duplex JSON pipe on this Python instance's
     /// typed-pipe registry so `has_pipe_reader` reflects the connection.
-    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
+    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> Result<(), String> {
         match self.pipes.open_json(
             pipe_id.to_string(),
             crate::host::typed_pipes::PipeDirection::Duplex,
@@ -3267,21 +3267,24 @@ impl LivePythonPane {
                     self.plugin_id,
                     pipe_id = guest_text::shown(pipe_id)
                 );
-                true
+                Ok(())
             }
-            Err(error) => {
-                log::warn!(
-                    "plugin::{}: failed to register directed pipe '{pipe_id}' on Python runtime: {error}",
-                    self.plugin_id, pipe_id = guest_text::shown(pipe_id)
-                );
-                false
-            }
+            Err(error) => Err(format!(
+                "registering directed pipe '{}' on plugin {}: {error}",
+                guest_text::shown(pipe_id),
+                self.plugin_id
+            )),
         }
     }
 
     /// True when `pipe_id` is open on this Python instance's typed-pipe registry.
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         self.pipes.has_reader(pipe_id)
+    }
+
+    /// Close a host-retired directed pipe on this Python instance's registry.
+    pub fn close_directed_pipe(&mut self, pipe_id: &str) {
+        self.pipes.close_json(pipe_id);
     }
 
     /// Refresh the live context root this pane resolves state paths against.
@@ -3985,7 +3988,9 @@ impl LivePythonPane {
                         ..
                     } = command
                     {
-                        let _ = self.register_directed_pipe(pipe_id);
+                        if let Err(error) = self.register_directed_pipe(pipe_id) {
+                            log::warn!("plugin::{}: {error}", self.plugin_id);
+                        }
                     }
                     self.pending_commands.push(command);
                 }
@@ -5839,6 +5844,9 @@ impl LivePythonPane {
             self.with_cli_service(|service, who, env| service.retire(who, env));
         }
         self.retire_consent_asks();
+        // The old guest's pipe registrations end with it; the host retires
+        // the pipes themselves and tells their peers (stint 1681).
+        self.pipes.close_all();
         // Commands the old guest queued but the host has not drained would be
         // stamped as the new guest's at drain time; they have no requester
         // left, so they are dropped here, where the guest is replaced.
@@ -6785,6 +6793,7 @@ fn plugin_command_from_python_message(
             sender_pane_id: 0,
             pipe_id: text("pipe_id"),
             payload: message.get("payload").cloned().unwrap_or(Value::Null),
+            route: None,
         }),
         "pipe_open_directed" => Some(ViewCommand::OpenDirectedPipe {
             sender_pane_id: 0,
@@ -6793,6 +6802,7 @@ fn plugin_command_from_python_message(
                 .get("target_pane_id")
                 .and_then(Value::as_u64)
                 .unwrap_or_default(),
+            emitter: None,
         }),
         "run_update" => Some(ViewCommand::DeliverRunUpdate {
             originator_type_id: text("originator_type_id"),

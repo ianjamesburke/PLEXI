@@ -5067,6 +5067,26 @@
           ],
           "type": "string"
         },
+        "PipeCloseReason": {
+          "description": "Why the host closed a directed pipe, from the receiving end's view.",
+          "oneOf": [
+            {
+              "const": "peer_closed",
+              "description": "The other end's pane closed.",
+              "type": "string"
+            },
+            {
+              "const": "peer_reloaded",
+              "description": "The other end's app reloaded; its new instance holds none of the old one's pipes.",
+              "type": "string"
+            },
+            {
+              "const": "in_use",
+              "description": "This app's open was refused: the id is already open between other\nviews in this context, or names a binary pipe on one end.",
+              "type": "string"
+            }
+          ]
+        },
         "Rect": {
           "description": "A simple rectangle (logical coordinates).",
           "properties": {
@@ -5815,6 +5835,27 @@
             "type",
             "pipe_id",
             "socket_path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A directed pipe this app was an end of has been retired because the\nother end closed or reloaded, or this app's open of `pipe_id` was\nrefused because the id is in use. Sends on `pipe_id` are dropped until\na new `PipeOpenDirected` opens it.",
+          "properties": {
+            "pipe_id": {
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/PipeCloseReason"
+            },
+            "type": {
+              "const": "pipe_closed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pipe_id",
+            "reason"
           ],
           "type": "object"
         },

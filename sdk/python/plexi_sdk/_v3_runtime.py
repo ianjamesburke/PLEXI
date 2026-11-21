@@ -325,6 +325,11 @@ class PluginRuntime:
             self._handle_state_changed(ev)
         elif t == "pipe_message":
             self._handle_pipe_message(ev)
+        elif t == "pipe_closed":
+            self._dispatch(events.PipeClosed(
+                pipe_id=str(ev.get("pipe_id", "")),
+                reason=str(ev.get("reason", "")),
+            ))
 
     def _handle_pipe_message(self, ev: dict) -> None:
         pipe_id = str(ev.get("pipe_id", ""))

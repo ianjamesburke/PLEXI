@@ -599,12 +599,16 @@ impl WasmPane {
         });
     }
 
-    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
+    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> Result<(), String> {
         self.app.register_directed_pipe(pipe_id)
     }
 
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         self.app.has_pipe_reader(pipe_id)
+    }
+
+    pub fn close_directed_pipe(&mut self, pipe_id: &str) {
+        self.app.close_directed_pipe(pipe_id);
     }
 
     pub fn json_pipe_handle(&self, pipe_id: &str) -> Option<u32> {
@@ -2185,12 +2189,16 @@ impl LiveWasmPane {
         self.inner.set_context_id(context_id);
     }
 
-    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
+    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> Result<(), String> {
         self.inner.register_directed_pipe(pipe_id)
     }
 
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         self.inner.has_pipe_reader(pipe_id)
+    }
+
+    pub fn close_directed_pipe(&mut self, pipe_id: &str) {
+        self.inner.close_directed_pipe(pipe_id);
     }
 
     pub fn take_host_effects(&mut self) -> Vec<WasmHostEffect> {
@@ -2260,7 +2268,9 @@ impl LiveWasmPane {
             }
             crate::protocol::PlexiEvent::PipeMessage { pipe_id, payload } => {
                 if !self.inner.has_pipe_reader(&pipe_id) {
-                    let _ = self.inner.register_directed_pipe(&pipe_id);
+                    if let Err(error) = self.inner.register_directed_pipe(&pipe_id) {
+                        log::warn!("wasm input: {error}");
+                    }
                 }
                 let Some(handle) = self.inner.json_pipe_handle(&pipe_id) else {
                     log::warn!(
@@ -2273,6 +2283,17 @@ impl LiveWasmPane {
                     handle,
                     payload: PipePayload::Json(payload.to_string()),
                 })
+            }
+            crate::protocol::PlexiEvent::PipeClosed { pipe_id, reason } => {
+                // The host already closed the pipe on this instance's
+                // registry; the guest interface has no pipe-closed input yet,
+                // so the guest learns of it only when its next send is dropped.
+                log::info!(
+                    "wasm input: directed pipe '{pipe_id}' retired ({}); guest interface has no pipe-closed input",
+                    reason.as_str(),
+                    pipe_id = guest_text::shown(&pipe_id)
+                );
+                return;
             }
             other => {
                 log::warn!("wasm input: unsupported host event {other:?}");
