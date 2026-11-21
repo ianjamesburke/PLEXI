@@ -63,7 +63,9 @@ impl PlexiApp {
         };
 
         let context_env = self.pane_context_env_for_window(active);
-        let launch = self.desktop_terminal_launch(context_env, resolved_cwd, None);
+        // The view asked for this terminal, not the person: it is admitted as
+        // that view's, with no secrets (stint 1666).
+        let launch = self.plugin_terminal_launch(sender_pane_id, context_env, resolved_cwd, None);
         let new_id = launch.pane_id();
         let term = match self.construct_terminal(launch) {
             Ok(term) => term,

@@ -660,3 +660,126 @@ fn raw_set_permission_socket_line_writes_no_grant() {
         );
     }
 }
+
+/// Stint 1666: a routine saved while routines still received secrets (a
+/// `HostSystem` grant recording secret eligibility, as alpha saved it)
+/// restores without them. A desktop terminal saved beside it in the same
+/// directory is the control and still receives its workspace-injected and
+/// its folder secret after the restart.
+#[test]
+fn restored_routine_grant_drops_its_saved_secret_eligibility() {
+    use crate::broker::pane_authority::{Provenance, SavedPaneAuthority, SecretEligibility};
+    use std::collections::HashMap;
+    let _features =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+    let profile = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = crate::platform::path::canonical_or_self(tmp.path());
+    let (injected, injected_value) = ("API_KEY_1666", "workspace-1666-canary");
+    let (folder, folder_value) = ("PLEXI_FOLDER_1666_RESTORE", "folder-1666-canary");
+    let (desktop, routine) = {
+        let mut h = HostHarness::from_profile_dir(profile.path());
+        write_workspace(&root, "ws-1666", &[injected]);
+        crate::workspace::secrets::system_store()
+            .set(&format!("plexi:ws-1666:{injected}"), injected_value)
+            .unwrap();
+        crate::workspace::secrets::set_folder_secret(
+            crate::workspace::secrets::folder_store(),
+            folder,
+            &root,
+            folder_value,
+        )
+        .unwrap();
+        let view = h.add_test_pane();
+        h.focus_pane(view);
+        h.app.set_context_root(root.clone(), None);
+        let tile = h.app.windows[0].tree.tiles.find_pane(&view).unwrap();
+        let context = h.app.pane_context_env_for_window(0);
+        let launch = h
+            .app
+            .desktop_terminal_launch(context, Some(root.clone()), None);
+        let desktop = h
+            .app
+            .spawn_terminal_pane_at(
+                crate::pane_ops::create::SplitPlacement {
+                    win_idx: 0,
+                    target_tile: tile,
+                    vertical: true,
+                    new_pane_first: false,
+                    keep_focus: true,
+                },
+                launch,
+            )
+            .expect("desktop terminal");
+        let routine = h
+            .app
+            .fire_routine("restore-1666", "sleep 30", "", false, &root)
+            .expect("routine pane");
+        assert!(h.app.save_workspace_now(), "saved");
+        (desktop, routine)
+    };
+    // As alpha saved the routine: secret-eligible, bound to its directory.
+    let mut ws = crate::workspace::WorkspaceFile::load_from(profile.path()).expect("saved");
+    let pane = ws
+        .windows
+        .iter_mut()
+        .flat_map(|w| w.panes.iter_mut())
+        .find(|p| p.id == routine)
+        .expect("routine saved");
+    let mut saved: SavedPaneAuthority =
+        serde_json::from_value(pane.authority.clone().expect("routine grant saved")).unwrap();
+    assert_eq!(saved.grant.provenance, Provenance::HostSystem);
+    saved.grant.secrets = SecretEligibility {
+        workspace_terminal_env: true,
+        folder: true,
+        directory: Some(root.clone()),
+    };
+    pane.authority = Some(serde_json::to_value(&saved).unwrap());
+    ws.save_to(profile.path()).expect("rewrite save");
+
+    let envs = std::rc::Rc::new(std::cell::RefCell::new(HashMap::<
+        u64,
+        HashMap<String, String>,
+    >::new()));
+    let record = envs.clone();
+    let _entry = crate::pane_ops::construct::probes::on_backend_entry(move |settings| {
+        if let Some(id) = settings
+            .env
+            .get("PLEXI_PANE_ID")
+            .and_then(|id| id.parse().ok())
+        {
+            record.borrow_mut().insert(id, settings.env.clone());
+        }
+        Ok(())
+    });
+    let h = HostHarness::from_profile_dir(profile.path());
+    let envs = envs.borrow();
+    let control = envs.get(&desktop).expect("desktop control restored");
+    assert_eq!(
+        control.get(injected).map(String::as_str),
+        Some(injected_value),
+        "control: workspace-injected secret"
+    );
+    assert_eq!(
+        control.get(folder).map(String::as_str),
+        Some(folder_value),
+        "control: folder secret"
+    );
+    let restored = envs.get(&routine).expect("routine restored");
+    assert!(
+        !restored.contains_key(injected),
+        "routine: workspace-injected secret arrived"
+    );
+    assert!(
+        !restored.contains_key(folder),
+        "routine: folder secret arrived"
+    );
+    let grant = h
+        .app
+        .pane_authority(routine)
+        .expect("grant")
+        .grant()
+        .clone();
+    assert_eq!(grant.provenance, Provenance::HostSystem);
+    assert_eq!(grant.secrets, SecretEligibility::none());
+}

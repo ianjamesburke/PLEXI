@@ -95,6 +95,16 @@ pub(crate) enum Provenance {
     LegacyImport,
 }
 
+impl Provenance {
+    /// Whether a pane of this provenance may receive secrets: only input the
+    /// person gave the host's own UI (stint 1285's desktop-only rule). The
+    /// host's scheduler, a view and every other producer act without the
+    /// person, so they get none (stint 1666).
+    pub(crate) fn yields_secrets(&self) -> bool {
+        matches!(self, Self::DesktopInput)
+    }
+}
+
 /// The pane's permission ceiling.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -288,8 +298,10 @@ impl PaneAuthority {
     /// A plain pane inherits its verified caller's ownership, delegation
     /// limits and ceiling unchanged; a named worker gets the meet of those
     /// and its admitted role, independently for call and handoff. Only
-    /// input the host owns yields secrets (stint 1285's desktop-only rule):
-    /// a pane created on behalf of any other source receives none.
+    /// desktop input yields secrets (stint 1285's desktop-only rule, which
+    /// stint 1666 holds for host-internal producers): a pane created on
+    /// behalf of any other source, the host's own scheduler included,
+    /// receives none.
     pub(crate) fn admit(profile: &Path, request: GrantRequest) -> Self {
         let GrantRequest {
             pane_id,
@@ -302,14 +314,13 @@ impl PaneAuthority {
             agent_command,
             spawned_by,
         } = request;
-        let (provenance, ownership, ceiling, can_call, can_handoff, host_owned) = match source {
+        let (provenance, ownership, ceiling, can_call, can_handoff) = match source {
             GrantSource::DesktopInput => (
                 Provenance::DesktopInput,
                 Ownership::Desktop,
                 Ceiling::Baseline,
                 Delegation::Unrestricted,
                 Delegation::Unrestricted,
-                true,
             ),
             GrantSource::HostSystem => (
                 Provenance::HostSystem,
@@ -317,7 +328,6 @@ impl PaneAuthority {
                 Ceiling::Baseline,
                 Delegation::Unrestricted,
                 Delegation::Unrestricted,
-                true,
             ),
             GrantSource::VerifiedPane(caller) => (
                 Provenance::VerifiedPane {
@@ -327,7 +337,6 @@ impl PaneAuthority {
                 caller.ceiling,
                 caller.can_call,
                 caller.can_handoff,
-                false,
             ),
             GrantSource::PluginInstance { pane_id } => {
                 restricted(Provenance::PluginInstance { pane_id })
@@ -349,7 +358,7 @@ impl PaneAuthority {
             None if agent_command => (Ownership::Restricted, ceiling, can_call, can_handoff, None),
             None => (ownership, ceiling, can_call, can_handoff, None),
         };
-        let secrets = if host_owned && ownership == Ownership::Desktop {
+        let secrets = if provenance.yields_secrets() && ownership == Ownership::Desktop {
             SecretEligibility {
                 workspace_terminal_env: true,
                 folder: folder_secrets
@@ -414,6 +423,21 @@ impl PaneAuthority {
             secrets: SecretEligibility::none(),
             scope,
         }
+    }
+
+    /// A saved grant under today's secret rule. A provenance that no longer
+    /// yields secrets loses them, so a routine saved when routines still got
+    /// secrets restores without them (stint 1666).
+    pub(crate) fn under_current_secret_rule(mut self) -> Self {
+        if !self.provenance.yields_secrets() && self.secrets != SecretEligibility::none() {
+            log::info!(
+                "pane_authority: pane {} provenance={:?} restored without its saved secret eligibility",
+                self.pane_id,
+                self.provenance
+            );
+            self.secrets = SecretEligibility::none();
+        }
+        self
     }
 
     /// This grant, never wider than `recorded`: a pane relaunched from a
@@ -563,16 +587,13 @@ impl PaneAuthority {
     }
 }
 
-fn restricted(
-    provenance: Provenance,
-) -> (Provenance, Ownership, Ceiling, Delegation, Delegation, bool) {
+fn restricted(provenance: Provenance) -> (Provenance, Ownership, Ceiling, Delegation, Delegation) {
     (
         provenance,
         Ownership::Restricted,
         Ceiling::Baseline,
         Delegation::Unrestricted,
         Delegation::Unrestricted,
-        false,
     )
 }
 

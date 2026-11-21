@@ -2839,9 +2839,14 @@ impl PlexiApp {
             log::info!("launch refused: requested id '{shown}' is not a plugin or view id");
             return Err(format!("no plugin or view '{shown}'"));
         }
-        if id != "terminal" {
-            self.require_plugin(id)?;
+        // A terminal is not a view. Each producer admits its terminal with
+        // the source it is (desktop input, a view, the scheduler), so no
+        // route that names "terminal" here can open one (stint 1666).
+        if id == "terminal" {
+            log::info!("launch refused: 'terminal' is not a view; admit it through its caller's launch route");
+            return Err("'terminal' is not a view".to_string());
         }
+        self.require_plugin(id)?;
         let IdViewLaunchOptions {
             target_win,
             bypass_on_launch,
@@ -2860,31 +2865,6 @@ impl PlexiApp {
             } else {
                 cwd_override
             };
-        // "terminal" is a builtin pane type, not in the plugin registry.
-        // Reached via SDK ViewCommand::SpawnView("terminal", ...) and legacy paths.
-        // Socket IPC and spawn-queue handle terminal inline in plugin/mod.rs.
-        if id == "terminal" {
-            let layout_str = layout.as_deref().unwrap_or("split_h");
-            let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
-            let new_pane_first = matches!(layout_str, "split_above" | "split_left");
-            let initial_cmd = if args.is_empty() {
-                None
-            } else {
-                Some(crate::host::shell::shell_join(args))
-            };
-            log::info!(
-                "SpawnPane: terminal layout='{layout_str}' vertical={vertical} new_pane_first={new_pane_first}", layout_str = crate::host::guest_text::shown(layout_str)
-            );
-            self.split_focused(
-                vertical,
-                initial_cmd.as_deref(),
-                false,
-                new_pane_first,
-                None,
-            );
-            return Ok(None);
-        }
-
         // The Assistant is a compiled-in plugin whose constructor needs the live
         // broker and channel profile, so it cannot participate in the
         // broker-free `builtin_factory`. Keep it on the same generic plugin-open

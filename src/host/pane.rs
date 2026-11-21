@@ -2270,7 +2270,11 @@ impl ViewRuntime {
             ViewRuntime::Wasm(app) => app
                 .take_host_effects()
                 .into_iter()
-                .map(|effect| ViewCommand::WasmHostEffect { pane_id: 0, effect })
+                .map(|effect| ViewCommand::WasmHostEffect {
+                    pane_id: 0,
+                    effect,
+                    emitter: None,
+                })
                 .collect(),
         }
     }

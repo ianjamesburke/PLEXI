@@ -40,6 +40,9 @@ pub enum ViewCommand {
     WasmHostEffect {
         pane_id: u64,
         effect: crate::host::wasm_pane::WasmHostEffect,
+        /// The view that emitted the effect, stamped at drain like
+        /// `SpawnView::emitter`.
+        emitter: Option<ViewEmitter>,
     },
     /// Register the plugin's v3.7 connector tools with the host broker.
     ExposeTools {
