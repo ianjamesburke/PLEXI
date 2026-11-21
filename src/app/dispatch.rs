@@ -467,13 +467,10 @@ impl PlexiApp {
                             // like `SpawnPane` (stint 1666).
                             let result = if plugin_id == "terminal" {
                                 match emitter {
-                                    Some(emitter) => self.serve_sdk_spawn_pane(
+                                    Some(emitter) => self.serve_legacy_view_terminal(
                                         Some(emitter),
-                                        "terminal",
-                                        layout.as_deref().unwrap_or("split_h"),
-                                        args,
-                                        None,
-                                        None,
+                                        layout.as_deref(),
+                                        &args,
                                     ),
                                     None => {
                                         log::warn!(
@@ -868,15 +865,8 @@ impl PlexiApp {
                     // the same emitter-bound admission as `SpawnPane`, never
                     // a desktop terminal in the active window (stint 1666).
                     let launched = if type_id == "terminal" {
-                        self.serve_sdk_spawn_pane(
-                            emitter,
-                            "terminal",
-                            layout.as_deref().unwrap_or("split_h"),
-                            args,
-                            None,
-                            None,
-                        )
-                        .map(Some)
+                        self.serve_legacy_view_terminal(emitter, layout.as_deref(), &args)
+                            .map(Some)
                     } else {
                         self.launch_view_by_id_with_layout(&type_id, layout, &args, None)
                     };

@@ -4925,11 +4925,28 @@ fn spawn_secrets_linked_terminal_and_routine_resolve_no_secret() {
     )
     .expect("in-memory folder store");
     assert_eq!(crate::workspace::secrets::backend_label(), "in-memory");
+    // The directory is also a workspace that injects a terminal secret.
+    let injected = "API_KEY_1666_FRESH";
+    let workspace_dir = dir.join(crate::config::workspace_channel_dir());
+    std::fs::create_dir_all(&workspace_dir).expect("workspace dir");
+    std::fs::write(
+        workspace_dir.join("workspace.toml"),
+        "id = \"ws-1666-fresh\"\n",
+    )
+    .expect("workspace.toml");
+    std::fs::write(
+        workspace_dir.join("secrets.toml"),
+        format!("fallback = true\n\n[terminal.env]\ninject = [\"{injected}\"]\n"),
+    )
+    .expect("secrets.toml");
+    crate::workspace::secrets::system_store()
+        .set(&format!("plexi:ws-1666-fresh:{injected}"), "workspace-1666")
+        .expect("in-memory system store");
     let (view, received) = add_pipe_test_pane(&mut h, 0);
     h.focus_pane(view);
     h.app.set_context_root(dir.clone(), None);
 
-    // Control: a desktop terminal in the directory resolves the secret.
+    // Control: a desktop terminal in the directory resolves both secrets.
     crate::host::shell::secret_reads::take();
     let context = h.app.pane_context_env_for_window(0);
     let launch = h
@@ -4937,7 +4954,16 @@ fn spawn_secrets_linked_terminal_and_routine_resolve_no_secret() {
         .desktop_terminal_launch(context, Some(dir.clone()), None);
     let env = crate::pane_ops::construct::probes::env_at_backend_entry(launch);
     assert_eq!(env.get(sentinel).map(String::as_str), Some("folder-1666"));
-    assert!(crate::host::shell::secret_reads::take().contains(&("folder", dir.clone())));
+    assert_eq!(
+        env.get(injected).map(String::as_str),
+        Some("workspace-1666")
+    );
+    let reads = crate::host::shell::secret_reads::take();
+    assert!(reads.contains(&("folder", dir.clone())), "{reads:?}");
+    assert!(
+        reads.iter().any(|(class, _)| *class == "terminal"),
+        "{reads:?}"
+    );
 
     let envs = std::rc::Rc::new(std::cell::RefCell::new(
         Vec::<HashMap<String, String>>::new(),
@@ -4954,6 +4980,10 @@ fn spawn_secrets_linked_terminal_and_routine_resolve_no_secret() {
         assert!(
             !env.contains_key(sentinel),
             "{label}: folder secret arrived"
+        );
+        assert!(
+            !env.contains_key(injected),
+            "{label}: workspace-injected secret arrived"
         );
         let grant = h.app.pane_authority(pane).expect("grant").grant().clone();
         assert_eq!(grant.provenance, provenance, "{label}");
@@ -5308,6 +5338,104 @@ fn plugin_terminal_routes_all_admit_the_requesting_view() {
             .launch_view_by_id_with_layout("terminal", None, &[], None),
         Err("'terminal' is not a view".to_string())
     );
+}
+
+/// Stint 1666 review round 2: the legacy view terminal routes keep alpha's
+/// launch while taking the view's admission. One argument naming an
+/// executable whose path holds a space and a shell metacharacter runs as
+/// exactly that argv word, and the terminal stays open and focused after the
+/// command returns.
+#[test]
+#[ignore = "requires-pty"]
+fn legacy_view_terminal_routes_run_argv_and_stay_open() {
+    use crate::app::view_trait::ViewCommand;
+    use std::os::unix::fs::PermissionsExt;
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    let mut h = HostHarness::new();
+    let (view, _received) = add_pipe_test_pane(&mut h, 0);
+    let tmp = tempfile::tempdir().expect("script dir");
+    let dir = tmp.path().join("dir with space;semi");
+    std::fs::create_dir_all(&dir).expect("script dir");
+    let terminals = |h: &HostHarness| -> std::collections::HashSet<u64> {
+        h.app.windows[0]
+            .panes
+            .iter()
+            .filter(|(_, pane)| pane.as_terminal().is_some())
+            .map(|(id, _)| *id)
+            .collect()
+    };
+    let routes: [(&str, fn(Vec<String>) -> ViewCommand); 2] = [
+        ("spawn-view", |args| ViewCommand::SpawnView {
+            type_id: "terminal".to_string(),
+            layout: None,
+            args,
+            emitter: None,
+        }),
+        ("component-spawn", |args| ViewCommand::WasmHostEffect {
+            pane_id: 0,
+            effect: crate::host::wasm_pane::WasmHostEffect::Spawn {
+                plugin_id: "terminal".to_string(),
+                layout: None,
+                args,
+            },
+            emitter: None,
+        }),
+    ];
+    for (label, command) in routes {
+        let marker = tmp.path().join(format!("{label}.out"));
+        let script = dir.join(format!("run {label};$x.sh"));
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s|%s' \"$#\" \"$0\" > '{}'\n",
+                marker.display()
+            ),
+        )
+        .expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        h.focus_pane(view);
+        let before = terminals(&h);
+        queue_pipe_command(
+            &mut h,
+            view,
+            command(vec![script.to_string_lossy().into_owned()]),
+        );
+        h.run_hidden_frames(1);
+        let opened: Vec<u64> = terminals(&h).difference(&before).copied().collect();
+        let [terminal] = opened[..] else {
+            panic!("{label}: one terminal opened, got {opened:?}");
+        };
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+        while std::fs::read_to_string(&marker).map_or(true, |out| out.is_empty()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{label}: the script did not run as one argv word"
+            );
+            h.run_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            std::fs::read_to_string(&marker).expect("marker"),
+            format!("0|{}", script.display()),
+            "{label}: exact argv"
+        );
+        // The command has returned; the terminal outlives it.
+        for _ in 0..30 {
+            h.run_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            terminals(&h).contains(&terminal),
+            "{label}: the terminal stays open after its command"
+        );
+        let focused = h.app.windows[0].focused_pane.expect("focus");
+        assert_eq!(
+            h.app.windows[0].tree.tiles.get(focused),
+            Some(&egui_tiles::Tile::Pane(terminal)),
+            "{label}: the new terminal takes focus"
+        );
+    }
 }
 
 /// Round 6 P2-2: a request held behind an overlay belongs to the guest that
