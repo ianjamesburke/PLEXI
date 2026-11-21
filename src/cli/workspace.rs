@@ -332,6 +332,13 @@ pub fn workspace_secret_set(
     // `friendly` is the canonical name (env var name used in plugin code).
     // `alias` overrides the Keychain entry name when the user wants a different friendly name.
     let effective_friendly = alias.unwrap_or(friendly);
+    for name in [friendly, effective_friendly] {
+        if let Err(error) = crate::workspace::secrets::valid_secret_name(name) {
+            log::info!("secret_set:cli: refused name {name}: {error}");
+            eprintln!("error: {error}");
+            return 1;
+        }
+    }
     log::info!(
         "secret_set:cli: canonical={friendly} effective_friendly={effective_friendly} from_env={from_env} global={global}"
     );

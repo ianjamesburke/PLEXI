@@ -73,6 +73,24 @@ pub fn valid_env_name(name: &str) -> bool {
     chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
+/// A name a new secret may take: an environment variable name that is not
+/// one a pane inherits from its host (`shell::is_pane_base_env`). A secret
+/// under such a name would reach a no-secret pane as base environment once
+/// an eligible pane that received it launches a host (stint 1682).
+pub fn valid_secret_name(name: &str) -> Result<(), String> {
+    if !valid_env_name(name) {
+        return Err(format!(
+            "secret name '{name}' is not an environment variable name"
+        ));
+    }
+    if crate::host::shell::is_pane_base_env(name) {
+        return Err(format!(
+            "secret name '{name}' is a variable every pane inherits from Plexi; choose another name"
+        ));
+    }
+    Ok(())
+}
+
 pub fn canonical_folder(path: &Path) -> Result<PathBuf, String> {
     let abs = if path.is_absolute() {
         path.to_path_buf()
@@ -96,11 +114,7 @@ pub fn set_folder_secret(
     folder: &Path,
     value: &str,
 ) -> Result<PathBuf, String> {
-    if !valid_env_name(name) {
-        return Err(format!(
-            "secret name '{name}' is not an environment variable name"
-        ));
-    }
+    valid_secret_name(name)?;
     if value.is_empty() {
         return Err("empty value, nothing stored".to_string());
     }
@@ -1204,6 +1218,48 @@ mod tests {
             .collect()
     }
 
+    /// Stint 1682: a new secret cannot take a name panes inherit from the
+    /// host. One already stored under such a name reaches only a pane
+    /// eligible for folder secrets, where it overrides the base value.
+    #[test]
+    fn base_env_names_are_refused_and_a_stored_collision_stays_grant_gated() {
+        let _enabled =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        let root = scratch();
+        let _profile = crate::config::set_test_profile_dir(root.path().join("profile"));
+        let folder = canonical_folder(root.path()).unwrap();
+        let store = super::super::folder_store();
+        for name in ["LC_PAPER", "SSH_AUTH_SOCK", "PATH"] {
+            assert!(
+                set_folder_secret(store, name, &folder, "x").is_err(),
+                "{name}"
+            );
+        }
+        assert!(valid_secret_name("LC_SERVICE_TOKEN").is_ok());
+        // Stored before the rule existed.
+        store
+            .set(&account_name(&folder, "LC_PAPER"), "stored-1682")
+            .unwrap();
+        let eligible = crate::host::shell::build_env_with_secrets(
+            Some(&folder),
+            crate::host::shell::SecretPolicy::ALL,
+            true,
+        );
+        assert_eq!(
+            eligible.get("LC_PAPER").map(String::as_str),
+            Some("stored-1682")
+        );
+        let withheld = crate::host::shell::build_env_with_secrets(
+            Some(&folder),
+            crate::host::shell::SecretPolicy::NONE,
+            false,
+        );
+        assert_ne!(
+            withheld.get("LC_PAPER").map(String::as_str),
+            Some("stored-1682")
+        );
+    }
+
     #[test]
     fn build_env_injects_only_inside_the_folder() {
         let _enabled =
@@ -1239,6 +1295,7 @@ mod tests {
                 terminal: true,
                 folder: false,
             },
+            false,
         );
         assert!(
             !withheld.contains_key(name),
@@ -1487,7 +1544,7 @@ mod lazy_startup_tests {
             } else {
                 crate::host::shell::SecretPolicy::ALL
             };
-            let env = crate::host::shell::build_env_with_secrets(Some(&folder), policy);
+            let env = crate::host::shell::build_env_with_secrets(Some(&folder), policy, !enabled);
             assert!(!env.contains_key("DEMO_TOKEN_0957"));
             assert_eq!(
                 super::super::store::take_test_value_reads(),

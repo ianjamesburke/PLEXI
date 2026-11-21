@@ -190,9 +190,9 @@ pub fn scrub_launcher_color_overrides() {
 /// The host environment variables a pane inherits (stint 1682). A pane's
 /// environment is this base plus its launch plan (`build_env_with_secrets`
 /// and the pane's own additions); everything else the host's launcher
-/// exported, a workspace or folder secret included, is withheld. Locale
-/// variables (`LC_*`) pass too. User shell config reaches a pane through the
-/// pane's own login shell, which sources it.
+/// exported, a workspace or folder secret included, is withheld. User shell
+/// config reaches a pane through the pane's own login shell, which sources
+/// it. No secret may take one of these names (`is_pane_base_env`).
 const PANE_BASE_ENV: &[&str] = &[
     // Identity and session.
     "HOME",
@@ -201,10 +201,22 @@ const PANE_BASE_ENV: &[&str] = &[
     "SHELL",
     "PATH",
     "TMPDIR",
-    "SSH_AUTH_SOCK",
-    // Locale.
+    // Locale: POSIX categories, then glibc's.
     "LANG",
     "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_COLLATE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "LC_ADDRESS",
+    "LC_IDENTIFICATION",
+    "LC_MEASUREMENT",
+    "LC_NAME",
+    "LC_PAPER",
+    "LC_TELEPHONE",
     "__CF_USER_TEXT_ENCODING",
     // Linux desktop session.
     "DISPLAY",
@@ -222,18 +234,28 @@ const PANE_BASE_ENV: &[&str] = &[
     "XDG_DATA_DIRS",
 ];
 
-fn is_pane_base_env(name: &str) -> bool {
-    PANE_BASE_ENV.contains(&name) || name.starts_with("LC_")
+/// Base variables only a desktop-owned pane inherits: the SSH agent signs
+/// for whoever reaches it, so a restricted (agent or plugin) pane does not.
+const DESKTOP_PANE_ENV: &[&str] = &["SSH_AUTH_SOCK"];
+
+/// True for a name a pane may inherit from the host.
+pub(crate) fn is_pane_base_env(name: &str) -> bool {
+    PANE_BASE_ENV.contains(&name) || DESKTOP_PANE_ENV.contains(&name)
 }
 
-/// The allowlisted part of `host_env`. A non-UTF-8 entry is withheld.
+/// The allowlisted part of `host_env` for a pane that is (or is not)
+/// desktop-owned. A non-UTF-8 entry is withheld.
 fn pane_base_env(
     host_env: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    desktop: bool,
 ) -> HashMap<String, String> {
     host_env
         .into_iter()
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
-        .filter(|(k, _)| is_pane_base_env(k))
+        .filter(|(k, _)| {
+            PANE_BASE_ENV.contains(&k.as_str())
+                || (desktop && DESKTOP_PANE_ENV.contains(&k.as_str()))
+        })
         .collect()
 }
 
@@ -437,7 +459,7 @@ fn fallback_path_with_homebrew() -> Option<String> {
 }
 
 pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
-    build_env_with_secrets(working_directory, SecretPolicy::ALL)
+    build_env_with_secrets(working_directory, SecretPolicy::ALL, true)
 }
 
 /// Which secret classes a terminal environment may resolve (stint 1632).
@@ -491,18 +513,20 @@ fn is_plexi_zsh_integration_dir(candidate: &str) -> bool {
 }
 
 /// Decide injection before resolving any values: a withheld class is never
-/// read only to be removed afterwards.
+/// read only to be removed afterwards. `desktop` is the pane's ownership;
+/// only a desktop-owned pane inherits `DESKTOP_PANE_ENV`.
 pub(crate) fn build_env_with_secrets(
     working_directory: Option<&Path>,
     secrets: SecretPolicy,
+    desktop: bool,
 ) -> HashMap<String, String> {
-    let mut env = pane_base_env(std::env::vars_os());
+    let mut env = pane_base_env(std::env::vars_os(), desktop);
 
     env.insert("TERM".into(), "xterm-256color".into());
     log::info!("shell::build_env: TERM=xterm-256color");
     env.insert("COLORTERM".into(), "truecolor".into());
     env.insert("PLEXI_RUNNING".into(), "1".into());
-    if let Some(channel) = crate::config::build_channel() {
+    if let Some(channel) = crate::config::process_channel() {
         log::info!("shell::build_env: PLEXI_CHANNEL={channel}");
         env.insert("PLEXI_CHANNEL".into(), channel);
     }
@@ -1387,23 +1411,29 @@ mod tests {
     }
 
     /// Stint 1682: a pane inherits only the documented base from the host.
+    /// Locale categories are named exactly, so an `LC_`-prefixed secret is
+    /// withheld, and only a desktop-owned pane inherits the SSH agent.
     #[test]
     fn pane_base_env_keeps_the_allowlist_and_withholds_the_rest() {
         let env = host_env(&[
             ("HOME", "/Users/u"),
             ("PATH", "/usr/bin"),
             ("LC_CTYPE", "UTF-8"),
+            ("LC_SERVICE_TOKEN", "secret"),
             ("SSH_AUTH_SOCK", "/tmp/agent.sock"),
             ("OPENAI_API_KEY", "secret"),
             ("PLEXI_SOCKET", "/tmp/other.sock"),
         ]);
-        let base = pane_base_env(env.clone());
-        let mut kept: Vec<&str> = base.keys().map(String::as_str).collect();
-        kept.sort();
-        assert_eq!(kept, ["HOME", "LC_CTYPE", "PATH", "SSH_AUTH_SOCK"]);
+        let kept = |desktop| {
+            let mut names: Vec<String> = pane_base_env(env.clone(), desktop).into_keys().collect();
+            names.sort();
+            names
+        };
+        assert_eq!(kept(true), ["HOME", "LC_CTYPE", "PATH", "SSH_AUTH_SOCK"]);
+        assert_eq!(kept(false), ["HOME", "LC_CTYPE", "PATH"]);
         assert_eq!(
             withheld_pane_env_names(env),
-            ["OPENAI_API_KEY", "PLEXI_SOCKET"]
+            ["LC_SERVICE_TOKEN", "OPENAI_API_KEY", "PLEXI_SOCKET"]
         );
     }
 

@@ -69,7 +69,8 @@ pub use reconcile::reconcile_index_with_keychain;
 pub use folder::{
     canonical_folder, deliver_folder_secret_choice, env_for_cwd, folder_secret_sheet_pending,
     list_folder_secrets, read_folder_secret, read_through_host_gate,
-    remove_folder_secret, set_folder_secret, take_folder_secret_sheet, ReadResult, SecretActor,
+    remove_folder_secret, set_folder_secret, take_folder_secret_sheet, valid_secret_name,
+    ReadResult, SecretActor,
     SECRET_READ_TOOL,
 };
 pub use folder_store::backend_label;
