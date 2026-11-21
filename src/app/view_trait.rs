@@ -461,6 +461,13 @@ pub trait View: Send {
         false
     }
 
+    /// Whether this view holds the document it was opened on, read from
+    /// disk: `None` for a view with no document, `Some(Err(reason))` when it
+    /// did not load (including a file missing at read time).
+    fn document_load(&self) -> Option<Result<(), String>> {
+        None
+    }
+
     /// Open-buffer snapshot for change-set conflict checks. Other plugins have none.
     fn editor_buffer(&self) -> Option<crate::host::changes::OpenEditorBuffer> {
         None

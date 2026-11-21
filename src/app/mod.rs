@@ -18,6 +18,7 @@ pub(crate) mod debounce;
 mod dispatch;
 mod event_stream;
 pub mod file_handlers;
+mod file_open;
 mod fleet;
 mod focus;
 pub(crate) mod focus_journal;
@@ -809,6 +810,9 @@ impl SocketAckWriter for crate::platform::ipc::IpcStream {
 impl SocketAckWriter for Vec<u8> {}
 impl SocketAckWriter for std::io::Sink {}
 
+/// Test entry: `peer_ancestry` is a synthetic lineage taken as a complete
+/// walk (it reached the OS root). Tests about incomplete walks call
+/// [`handle_socket_line_in`] with an explicit [`crate::protocol::PeerAncestry`].
 #[cfg(test)]
 pub(crate) fn handle_socket_line(
     line: &str,
@@ -816,11 +820,15 @@ pub(crate) fn handle_socket_line(
     peer_ancestry: Option<&[u32]>,
     ack_writer: &mut impl SocketAckWriter,
 ) {
+    let peer = peer_ancestry.map(|pids| crate::protocol::PeerAncestry {
+        pids: pids.to_vec(),
+        end: crate::protocol::AncestryEnd::ReachedRoot,
+    });
     handle_socket_line_in(
         &crate::config::config_dir(),
         line,
         mailbox,
-        peer_ancestry,
+        peer.as_ref(),
         ack_writer,
     );
 }
@@ -829,9 +837,10 @@ pub(crate) fn handle_socket_line_in(
     profile: &std::path::Path,
     line: &str,
     mailbox: &ui_mailbox::UiMailbox<crate::protocol::HostRequest>,
-    peer_ancestry: Option<&[u32]>,
+    peer: Option<&crate::protocol::PeerAncestry>,
     ack_writer: &mut impl SocketAckWriter,
 ) {
+    let peer_ancestry: Option<&[u32]> = peer.map(|walk| walk.pids.as_slice());
     if let Ok(frame) = serde_json::from_str::<serde_json::Value>(line) {
         if frame["type"] == "cli_trace" {
             match crate::host::flight_recorder::handle_cli_trace(profile, &frame) {
@@ -942,6 +951,16 @@ pub(crate) fn handle_socket_line_in(
                     log::info!(
                         "pane_ipc: stamped peer ancestry ({} pid(s))",
                         p.as_ref().map(|pids| pids.len()).unwrap_or(0)
+                    );
+                }
+                crate::protocol::HostRequest::FileOpen { peer: p, .. } => {
+                    // The whole walk, with how it ended: `file.open` admits a
+                    // caller outside every pane only on a complete lineage.
+                    *p = peer.cloned();
+                    log::info!(
+                        "pane_ipc: stamped file_open peer ({} pid(s), end={:?})",
+                        p.as_ref().map_or(0, |walk| walk.pids.len()),
+                        p.as_ref().map(|walk| walk.end)
                     );
                 }
                 crate::protocol::HostRequest::AgentsApi { payload, .. } => {
@@ -1166,8 +1185,9 @@ fn handle_socket_connection(
     // `Notify`/`DismissNotification` — the request body's
     // `source_context_id`/`source_pane_id` are attacker controlled (any
     // process that can write to the socket can claim any pane).
-    peer_ancestry: Option<Vec<u32>>,
+    peer: Option<crate::protocol::PeerAncestry>,
 ) {
+    let peer_ancestry: Option<Vec<u32>> = peer.as_ref().map(|walk| walk.pids.clone());
     use std::io::{BufRead, BufReader};
     // A writable clone so a streaming handler can push NDJSON back while the
     // BufReader owns the read side.
@@ -1233,7 +1253,7 @@ fn handle_socket_connection(
         trace_profile,
         &first,
         &mailbox,
-        peer_ancestry.as_deref(),
+        peer.as_ref(),
         &mut write_half,
     );
     if crate::rpc::extract_response_file_token(&first).is_some() {
@@ -1256,7 +1276,7 @@ fn handle_socket_connection(
             trace_profile,
             &line,
             &mailbox,
-            peer_ancestry.as_deref(),
+            peer.as_ref(),
             &mut write_half,
         );
         if crate::rpc::extract_response_file_token(&line).is_some() {
@@ -1271,23 +1291,51 @@ fn handle_socket_connection(
 /// stops at pid 0/1 or a repeated pid (cycle guard). Called eagerly at
 /// socket-accept time — see the call site in `handle_socket_connection` for
 /// why this cannot be deferred to the UI thread.
-pub(crate) fn capture_peer_ancestry(peer_pid: u32) -> Vec<u32> {
+pub(crate) fn capture_peer_ancestry(peer_pid: u32) -> crate::protocol::PeerAncestry {
+    walk_peer_ancestry(peer_pid, shell::get_pid_ppid)
+}
+
+/// [`capture_peer_ancestry`] over an injected parent lookup. The result keeps
+/// why the walk ended: only reaching the OS root (pid 0 or 1) proves the
+/// lineage is complete.
+pub(crate) fn walk_peer_ancestry(
+    peer_pid: u32,
+    parent_of: impl Fn(u32) -> Option<u32>,
+) -> crate::protocol::PeerAncestry {
+    use crate::protocol::{AncestryEnd, PeerAncestry};
     const MAX_ANCESTOR_HOPS: u32 = 32;
 
-    let mut ancestry = Vec::new();
+    let mut pids = Vec::new();
     let mut candidate = peer_pid;
     let mut seen = std::collections::HashSet::new();
     for _ in 0..MAX_ANCESTOR_HOPS {
-        if candidate == 0 || candidate == 1 || !seen.insert(candidate) {
-            break;
+        if candidate == 0 || candidate == 1 {
+            return PeerAncestry {
+                pids,
+                end: AncestryEnd::ReachedRoot,
+            };
         }
-        ancestry.push(candidate);
-        match shell::get_pid_ppid(candidate) {
+        if !seen.insert(candidate) {
+            return PeerAncestry {
+                pids,
+                end: AncestryEnd::Cycle,
+            };
+        }
+        pids.push(candidate);
+        match parent_of(candidate) {
             Some(ppid) => candidate = ppid,
-            None => break,
+            None => {
+                return PeerAncestry {
+                    pids,
+                    end: AncestryEnd::LookupFailed,
+                }
+            }
         }
     }
-    ancestry
+    PeerAncestry {
+        pids,
+        end: AncestryEnd::HopLimit,
+    }
 }
 
 /// Resolve the pid of the process on the other end of a connected IPC stream.
@@ -2476,17 +2524,28 @@ impl PlexiApp {
         pane_id: crate::spatial::tiling::PaneId,
     ) -> Option<std::path::PathBuf> {
         let origin = self.origin_for_pane(pane_id)?;
-        let raw_root = crate::platform::path::canonical_or_self(&origin.context_root);
+        Some(Self::authority_root_for(&origin.context_root))
+    }
+
+    /// Canonical root that bounds authority in context `context_id`, the same
+    /// root [`Self::pane_context_authority_root`] gives any pane in it.
+    pub(crate) fn context_authority_root(&self, context_id: u64) -> Option<std::path::PathBuf> {
+        let idx = self.router.position(|c| c.context_id == context_id)?;
+        Some(Self::authority_root_for(&self.router.get(idx).root))
+    }
+
+    fn authority_root_for(context_root: &std::path::Path) -> std::path::PathBuf {
+        let raw_root = crate::platform::path::canonical_or_self(context_root);
         let ws_root = crate::app::registry::resolve_workspace_root(&raw_root)
             .map(|p| crate::platform::path::canonical_or_self(&p));
         // If `raw_root` is deeper than `ws_root` (a subdirectory context inside a
         // parent workspace), the context's own `raw_root` is the narrower authority
         // root. Otherwise use the resolved workspace root when present.
-        Some(match ws_root {
+        match ws_root {
             Some(ws) if raw_root.starts_with(&ws) && raw_root != ws => raw_root,
             Some(ws) => ws,
             None => raw_root,
-        })
+        }
     }
 
     /// True when `pane_id` has context authority over `target_path`.
@@ -2502,15 +2561,28 @@ impl PlexiApp {
         let Some(pane_root) = self.pane_context_authority_root(pane_id) else {
             return false;
         };
+        self.scope_may_access(&pane_root, target_path, self.is_human_owned_pane(pane_id))
+    }
+
+    /// The containment and nested-scope rules behind
+    /// [`Self::pane_may_access_context_root`], for a principal that is not a
+    /// pane. `target_path` must be inside `pane_root`. `human` skips the
+    /// nested-scope checks, and only a human-owned terminal may pass it.
+    pub(crate) fn scope_may_access(
+        &self,
+        pane_root: &std::path::Path,
+        target_path: &std::path::Path,
+        human: bool,
+    ) -> bool {
         let target_canon = crate::platform::path::canonical_or_self(target_path);
-        if !target_canon.starts_with(&pane_root) {
+        if !target_canon.starts_with(pane_root) {
             return false;
         }
         // A person may organize panes into nested contexts without losing
         // access to folders they already controlled. Agent panes still run
         // every narrowing check below, so cd and context creation never widen
         // their delegated reach.
-        if self.is_human_owned_pane(pane_id) {
+        if human {
             return true;
         }
         if target_canon != pane_root {
@@ -2519,7 +2591,7 @@ impl PlexiApp {
             let shadowed_by_nested_context = self.router.iter().any(|ctx| {
                 let ctx_root = crate::platform::path::canonical_or_self(&ctx.root);
                 ctx_root != pane_root
-                    && ctx_root.starts_with(&pane_root)
+                    && ctx_root.starts_with(pane_root)
                     && target_canon.starts_with(&ctx_root)
             });
             if shadowed_by_nested_context {
@@ -2546,7 +2618,7 @@ impl PlexiApp {
             .iter()
             .any(|meta| {
                 let f = crate::platform::path::canonical_or_self(&meta.folder);
-                f != pane_root && f.starts_with(&pane_root) && target_canon.starts_with(&f)
+                f != pane_root && f.starts_with(pane_root) && target_canon.starts_with(&f)
             });
             if nested_folder_secret {
                 return false;

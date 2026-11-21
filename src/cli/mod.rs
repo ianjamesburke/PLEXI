@@ -663,6 +663,8 @@ pub mod marketplace;
 pub mod notes;
 pub mod notify;
 pub mod open;
+mod file_open;
+pub use file_open::file_open_cli;
 pub mod pane;
 pub mod permissions;
 pub mod plugin;

@@ -301,6 +301,9 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
   - `plexi view open --mcp` (experiment option; see command help).
 <!-- /experiment -->
 - `plexi view render`: Render a plugin headlessly (JSON frame tree by default, or PNG with --png)
+- `plexi open`: Open a file or directory in the Plexi view that handles it
+- `plexi file`: Open files in Plexi
+- `plexi file open`: Open a file or directory in the Plexi view that handles it
 - `plexi lease`: Acquire capacity before starting work (paused: exit 2)
 - `plexi lease acquire`: Acquire one slot
 - `plexi lease release`: Release this holder's leases (or just the named pool)

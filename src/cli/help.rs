@@ -12,7 +12,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
         "Plugins",
         &["plugin", "view", "account", "registry", "events"],
     ),
-    ("Panes", &["pane", "notify"]),
+    ("Panes", &["open", "file", "pane", "notify"]),
     (
         "AI",
         &[

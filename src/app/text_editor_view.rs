@@ -244,6 +244,18 @@ impl TextEditorView {
     }
 
     pub fn new_with_workspace(path: PathBuf, workspace_root: Option<PathBuf>) -> Self {
+        let read = std::fs::read_to_string(&path);
+        Self::from_read(path, workspace_root, read)
+    }
+
+    /// Build the editor from one read of `path`. Whether the document loaded
+    /// is decided from that read alone: a missing file opens as a new, empty
+    /// document that did not load, even if the path appears afterwards.
+    pub(crate) fn from_read(
+        path: PathBuf,
+        workspace_root: Option<PathBuf>,
+        read: std::io::Result<String>,
+    ) -> Self {
         let inferred_ws_root = workspace_root.or_else(|| {
             if path.file_name().and_then(|n| n.to_str()) == Some("commands.toml")
                 && path != crate::cli::global_commands_path()
@@ -255,10 +267,10 @@ impl TextEditorView {
                 None
             }
         });
-        let (raw, load_error) = match std::fs::read_to_string(&path) {
-            Ok(s) => (s, None),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
-            Err(e) => (String::new(), Some(e.to_string())),
+        let (raw, load_error, loaded) = match read {
+            Ok(s) => (s, None, true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None, false),
+            Err(e) => (String::new(), Some(e.to_string()), false),
         };
         log::info!(
             "notes_editor: editor created for {:?} ({} bytes)",
@@ -272,7 +284,7 @@ impl TextEditorView {
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "untitled".to_string()),
         );
-        let disk_hash = (load_error.is_none() && path.exists()).then(|| fnv1a64(raw.as_bytes()));
+        let disk_hash = loaded.then(|| fnv1a64(raw.as_bytes()));
         let mode = detect_mode(&path, is_note);
         let (note_header, content, note_title) = split_note(mode.is_markdown(), raw);
         log::info!(
@@ -2337,6 +2349,16 @@ impl View for TextEditorView {
 
     fn editor_buffer(&self) -> Option<crate::host::changes::OpenEditorBuffer> {
         Some(self.open_buffer())
+    }
+
+    fn document_load(&self) -> Option<Result<(), String>> {
+        Some(match (&self.load_error, self.disk_hash) {
+            (Some(error), _) => Err(error.clone()),
+            (None, Some(_)) => Ok(()),
+            // A missing file opens as an empty new document: right for a new
+            // note, but not a load of an existing file.
+            (None, None) => Err("the file was not on disk when the editor read it".to_string()),
+        })
     }
 
     #[cfg(test)]

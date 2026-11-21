@@ -61,6 +61,82 @@ The JSON output lists, under "layout", the rect each node painted at this size, 
 | `--output` | string | no | Where to save the output (default: stdout) |
 | `--png` | flag | no | Render to a PNG image instead of JSON (default: JSON) |
 
+## `plexi open`
+
+Open a file or directory in the Plexi view that handles it.
+
+`plexi open` is the shorthand for `plexi file open`; both send the same request.
+PATH is always a file path, never a view id: `plexi open git` opens a file named
+`git`. A relative path resolves against the current directory. Put `--` before
+a name that starts with `-`.
+
+A directory opens in Explorer. A file opens with your `[file_handlers]`
+association, then a plugin that declares its type, then the built-in media
+players, then the text editor for text. The new pane opens right of the calling
+pane unless a placement flag says otherwise.
+
+Prints the pane id. With --json, prints one receipt: status, path, handler,
+matched_by, context_id, pane_id, placement, focused. A refusal exits 1 with an
+error_code such as not_found, no_handler or stale_caller.
+
+Example: plexi open README.md
+Example: plexi file open docs --down --no-focus
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | yes | File or directory to open |
+| `--right` / `-r` | flag | no | Split right (the default) |
+| `--left` / `-l` | flag | no | Split left |
+| `--up` / `-u` | flag | no | Split above |
+| `--down` / `-d` | flag | no | Split below |
+| `--tab` | flag | no | New tab beside the anchor pane |
+| `--window` | flag | no | New window in the anchor pane's context |
+| `--split` | string | no | Placement by name |
+| `--from` | string | no | Place the new pane relative to this pane id or name instead of the calling pane. It does not change what PATH means |
+| `--no-focus` | flag | no | Open without moving focus |
+
+## `plexi file`
+
+Open files in Plexi
+
+| Subcommand | Description |
+|---|---|
+| `open` | Open a file or directory in the Plexi view that handles it |
+
+### `plexi file open`
+
+Open a file or directory in the Plexi view that handles it.
+
+`plexi open` is the shorthand for `plexi file open`; both send the same request.
+PATH is always a file path, never a view id: `plexi open git` opens a file named
+`git`. A relative path resolves against the current directory. Put `--` before
+a name that starts with `-`.
+
+A directory opens in Explorer. A file opens with your `[file_handlers]`
+association, then a plugin that declares its type, then the built-in media
+players, then the text editor for text. The new pane opens right of the calling
+pane unless a placement flag says otherwise.
+
+Prints the pane id. With --json, prints one receipt: status, path, handler,
+matched_by, context_id, pane_id, placement, focused. A refusal exits 1 with an
+error_code such as not_found, no_handler or stale_caller.
+
+Example: plexi open README.md
+Example: plexi file open docs --down --no-focus
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | yes | File or directory to open |
+| `--right` / `-r` | flag | no | Split right (the default) |
+| `--left` / `-l` | flag | no | Split left |
+| `--up` / `-u` | flag | no | Split above |
+| `--down` / `-d` | flag | no | Split below |
+| `--tab` | flag | no | New tab beside the anchor pane |
+| `--window` | flag | no | New window in the anchor pane's context |
+| `--split` | string | no | Placement by name |
+| `--from` | string | no | Place the new pane relative to this pane id or name instead of the calling pane. It does not change what PATH means |
+| `--no-focus` | flag | no | Open without moving focus |
+
 ## `plexi lease`
 
 Acquire capacity before starting work (paused: exit 2)

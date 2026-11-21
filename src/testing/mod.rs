@@ -1019,6 +1019,8 @@ mod agent_security_tests;
 #[cfg(test)]
 mod cli_operation_tests;
 #[cfg(test)]
+mod file_open_tests;
+#[cfg(test)]
 mod permission_gate_tests;
 
 #[cfg(test)]
