@@ -795,7 +795,7 @@ impl PlexiApp {
     ///
     /// * `Some("overlay")` — replace the focused pane in place, reusing its pane
     ///   id and stashing the displaced pane in `overlay_replaced` so closing the
-    ///   plugin restores it (see `restore_overlay_replacement`). Falls through to
+    ///   plugin restores it (see `PlexiApp::restore_overlay_replacement`). Falls through to
     ///   the root/split path when the context is empty.
     /// * `Some("tab")` — add a tab beside the focused pane; an empty context
     ///   gets a root pane.
@@ -1370,8 +1370,15 @@ impl PlexiApp {
             pane_id,
             incarnation: view_pane.incarnation,
         };
+        let plugin_id = view_pane.manifest_id.clone();
         view_pane.incarnation = Default::default();
         self.retire_commands_from(retired);
+        // Nor does the new guest inherit the old one's directed pipes.
+        self.retire_directed_pipes_for(
+            retired,
+            &plugin_id,
+            crate::protocol::PipeCloseReason::PeerReloaded,
+        );
         true
     }
 
@@ -2584,7 +2591,7 @@ impl PlexiApp {
     /// sanctioned [`jump_to_context`](Self::jump_to_context) path; it never
     /// mutates `active_window`/`router.active` to steer the focus. An instance
     /// buried under overlays is revealed by popping those overlays via the
-    /// sanctioned [`restore_overlay_replacement`](super::layout::restore_overlay_replacement)
+    /// sanctioned [`restore_overlay_replacement`](Self::restore_overlay_replacement)
     /// path — the same restore Esc performs — before focusing. Revealing a
     /// buried instance therefore pops (and closes) every plugin overlay stacked
     /// above it, exactly as pressing Esc that many times would; this is
@@ -2660,7 +2667,7 @@ impl PlexiApp {
     fn reveal_and_focus_instance(&mut self, win_idx: usize, slot: PaneId, overlay_depth: usize) {
         let win_id = self.windows[win_idx].window_id;
         for _ in 0..overlay_depth {
-            super::layout::restore_overlay_replacement(&mut self.windows[win_idx], slot);
+            self.restore_overlay_replacement(win_idx, slot);
         }
         self.jump_to_context(win_idx, win_id, Some(slot));
     }

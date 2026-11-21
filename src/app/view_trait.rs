@@ -32,6 +32,20 @@ pub struct ViewEmitter {
     pub(crate) incarnation: crate::host::pane::ViewIncarnation,
 }
 
+/// The two view instances a directed pipe joins, in open order: the opener,
+/// then the target. Endpoints are instances, not pane slots, so a slot whose
+/// occupant changes (overlay, reload) never inherits the pipe (stint 1681).
+pub(crate) type DirectedPipePair = (ViewEmitter, ViewEmitter);
+
+/// What a send was addressed on, fixed when the host drained it: the sender
+/// instance and the pair it was an end of then, if any.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DirectedPipeRoute {
+    pub(crate) context_id: u64,
+    pub(crate) sender: ViewEmitter,
+    pub(crate) pair: Option<DirectedPipePair>,
+}
+
 /// Commands a plugin can issue back to the system.
 pub enum ViewCommand {
     Fleet(crate::app::agents_view::FleetAction),
@@ -116,6 +130,8 @@ pub enum ViewCommand {
         sender_pane_id: u64,
         pipe_id: String,
         payload: serde_json::Value,
+        /// Stamped at drain; runtimes emit `None`.
+        route: Option<DirectedPipeRoute>,
     },
     /// Open a *directed* JSON pipe (#286) — only the sender and the named
     /// target pane subscribe to subsequent `PipeMessage` deliveries.
@@ -125,6 +141,8 @@ pub enum ViewCommand {
         sender_pane_id: u64,
         pipe_id: String,
         target_pane_id: u64,
+        /// The opening view instance, stamped at drain.
+        emitter: Option<ViewEmitter>,
     },
     /// Deliver a RunUpdate event to the pane that originally issued the run,
     /// identified by its type_id.

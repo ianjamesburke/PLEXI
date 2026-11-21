@@ -194,6 +194,14 @@ pub enum PlexiEvent {
         pipe_id: String,
         socket_path: String,
     },
+    /// A directed pipe this app was an end of has been retired because the
+    /// other end closed or reloaded, or this app's open of `pipe_id` was
+    /// refused because the id is in use. Sends on `pipe_id` are dropped until
+    /// a new `PipeOpenDirected` opens it.
+    PipeClosed {
+        pipe_id: String,
+        reason: PipeCloseReason,
+    },
     /// Binary pipe backpressure — host dropped `dropped_frames` frames from the ring.
     PipeOverrun {
         pipe_id: String,
@@ -569,6 +577,29 @@ pub enum PlexiEvent {
         request_id: String,
         checkpoints: Vec<serde_json::Value>,
     },
+}
+
+/// Why the host closed a directed pipe, from the receiving end's view.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PipeCloseReason {
+    /// The other end's pane closed.
+    PeerClosed,
+    /// The other end's app reloaded; its new instance holds none of the old one's pipes.
+    PeerReloaded,
+    /// This app's open was refused: the id is already open between other
+    /// views in this context, or names a binary pipe on one end.
+    InUse,
+}
+
+impl PipeCloseReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PeerClosed => "peer_closed",
+            Self::PeerReloaded => "peer_reloaded",
+            Self::InUse => "in_use",
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]

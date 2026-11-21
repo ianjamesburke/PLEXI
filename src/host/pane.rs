@@ -2352,11 +2352,22 @@ impl ViewRuntime {
 
     /// Register a directed pipe on this runtime's local pipe registry so
     /// `has_pipe_reader` reflects the connection on the target runtime.
-    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
+    /// `Ok(false)` when the runtime keeps no local pipe registry (builtins).
+    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> Result<bool, String> {
         match self {
-            ViewRuntime::Builtin(_) => false,
-            ViewRuntime::Python(app) => app.register_directed_pipe(pipe_id),
-            ViewRuntime::Wasm(app) => app.register_directed_pipe(pipe_id),
+            ViewRuntime::Builtin(_) => Ok(false),
+            ViewRuntime::Python(app) => app.register_directed_pipe(pipe_id).map(|()| true),
+            ViewRuntime::Wasm(app) => app.register_directed_pipe(pipe_id).map(|()| true),
+        }
+    }
+
+    /// Close a host-retired directed pipe on this runtime's local pipe
+    /// registry. Builtin plugins keep none, so there is nothing to close.
+    pub fn close_directed_pipe(&mut self, pipe_id: &str) {
+        match self {
+            ViewRuntime::Builtin(_) => {}
+            ViewRuntime::Python(app) => app.close_directed_pipe(pipe_id),
+            ViewRuntime::Wasm(app) => app.close_directed_pipe(pipe_id),
         }
     }
 

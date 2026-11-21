@@ -1738,6 +1738,15 @@ Binary pipe opened — plugin connects to `socket_path` as a unix socket client.
 | `pipe_id` | `string` | yes |
 | `socket_path` | `string` | yes |
 
+### `pipe_closed`
+
+A directed pipe this app was an end of has been retired because the other end closed or reloaded, or this app's open ...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `pipe_id` | `string` | yes |
+| `reason` | `PipeCloseReason` | yes |
+
 ### `pipe_overrun`
 
 Binary pipe backpressure — host dropped `dropped_frames` frames from the ring.

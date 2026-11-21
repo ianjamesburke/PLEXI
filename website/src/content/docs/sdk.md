@@ -626,6 +626,18 @@ PipePayload(binary: Optional[bytes] = None, json: Optional[str] = None)
 PipeMessage(handle: int = 0, payload: PipePayload = PipePayload(), pipe_id: str = '', data: Optional[object] = None)
 ```
 
+### `PipeClosed`
+
+```python
+PipeClosed(pipe_id: str, reason: str)
+```
+
+Directed pipe ``pipe_id`` is closed: the other end's pane closed
+(``reason == "peer_closed"``) or its app reloaded (``"peer_reloaded"``),
+or this app's open was refused because the id is in use
+(``"in_use"``). Sends on ``pipe_id`` are dropped until a new
+:class:`effects.PipeOpenDirected` opens it.
+
 ### `StateChanged`
 
 ```python

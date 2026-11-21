@@ -48,37 +48,45 @@ impl CloseFocusRule {
     }
 }
 
-/// If `pane_id` is a view pane that was opened as an overlay over another
-/// pane (`hint = Some("overlay")`), restore the original pane and return
-/// `true`. Otherwise return `false` and leave the map unchanged.
-///
-/// Restoring NEVER writes into the restored terminal. Cwd handoff is an
-/// explicit `ViewCommand::CdRequest` only (#2145) — a coding agent may be
-/// running in the terminal behind the overlay.
-pub(super) fn restore_overlay_replacement(
-    win: &mut crate::host::context::Window,
-    pane_id: PaneId,
-) -> bool {
-    let Some(Pane::View(app)) = win.pop_overlay(pane_id) else {
-        return false;
-    };
-    let (plugin_id, type_id) = overlay_close_ids(&app.manifest_id, app.runtime.type_id());
-    log::info!(
-        "view_closed: plugin_id={plugin_id} type_id={type_id} pane_id={pane_id} reason=overlay_restored"
-    );
-    // No `PlexiApp`/router access, so no origin is resolvable here without a
-    // new ambient lookup. Global-only.
-    crate::host::event_log::emit_scoped(
-        crate::host::event_log::HostEvent::ViewClosed {
-            plugin_id,
-            type_id,
-            pane_id,
-            reason: Some("overlay_restored".to_string()),
-            timestamp: crate::host::event_log::now_timestamp(),
-        },
-        None,
-    );
-    true
+impl PlexiApp {
+    /// If `pane_id` in `windows[win_idx]` is a view pane that was opened as
+    /// an overlay over another pane (`hint = Some("overlay")`), restore the
+    /// original pane and return `true`. Otherwise return `false` and leave the
+    /// map unchanged. The departing overlay's directed pipes are retired: the
+    /// view that takes its slot back is a different instance (stint 1681).
+    ///
+    /// Restoring NEVER writes into the restored terminal. Cwd handoff is an
+    /// explicit `ViewCommand::CdRequest` only (#2145) — a coding agent may be
+    /// running in the terminal behind the overlay.
+    pub(crate) fn restore_overlay_replacement(&mut self, win_idx: usize, pane_id: PaneId) -> bool {
+        let Some(Pane::View(app)) = self.windows[win_idx].pop_overlay(pane_id) else {
+            return false;
+        };
+        let (plugin_id, type_id) = overlay_close_ids(&app.manifest_id, app.runtime.type_id());
+        log::info!(
+            "view_closed: plugin_id={plugin_id} type_id={type_id} pane_id={pane_id} reason=overlay_restored"
+        );
+        self.retire_directed_pipes_for(
+            crate::app::view_trait::ViewEmitter {
+                pane_id,
+                incarnation: app.incarnation,
+            },
+            &plugin_id,
+            crate::protocol::PipeCloseReason::PeerClosed,
+        );
+        // No router lookup here, so the event is global-only.
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::ViewClosed {
+                plugin_id,
+                type_id,
+                pane_id,
+                reason: Some("overlay_restored".to_string()),
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            None,
+        );
+        true
+    }
 }
 
 /// Catalog id vs runtime kind for an overlay close.
@@ -746,7 +754,7 @@ impl PlexiApp {
                 _ => None,
             });
         if let Some(pane_id) = focused_pane_id {
-            if restore_overlay_replacement(&mut self.windows[self.active_window], pane_id) {
+            if self.restore_overlay_replacement(self.active_window, pane_id) {
                 return;
             }
         }
@@ -812,6 +820,7 @@ impl PlexiApp {
             return;
         }
         crate::app::attention_queue::retire_requester_approvals(&[*pane_id], None);
+        let closing = *pane_id;
         let window_id = window.window_id;
         if self
             .host
@@ -821,6 +830,9 @@ impl PlexiApp {
             self.host.clear_pane_selection(window_id);
         }
         self.observe_pane_spawns();
+        // While the pane is still present, so its own registry and plugin id
+        // are reachable.
+        self.retire_directed_pipes_in_slot(closing);
         // Resolved up front, before Phase 3 takes a mutable borrow of
         // `self.windows[ctx_idx]` that would otherwise conflict with a
         // `&self` router lookup at the `PaneClosed` emit site below.
@@ -1973,7 +1985,7 @@ impl PlexiApp {
         else {
             return;
         };
-        if restore_overlay_replacement(&mut self.windows[active], pane_id) {
+        if self.restore_overlay_replacement(active, pane_id) {
             return;
         }
 

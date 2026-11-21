@@ -512,8 +512,9 @@ pub struct PlexiApp {
     /// is required, not cosmetic: two different contexts choosing the same
     /// caller-selected `pipe_id` string (e.g. both pick `"agent-chat"`) must
     /// never collide or cross-deliver, and before this phase they shared one
-    /// flat namespace. Value is the `(sender_pane_id, target_pane_id)` pair
-    /// the host scopes `PipeMessage` deliveries to. This is the sole
+    /// flat namespace. Value is the (opener, target) view-instance pair the
+    /// host scopes `PipeMessage` deliveries to (instances, not pane slots:
+    /// stint 1681). This is the sole
     /// JSON-pipe delivery path: `DeliverPipeMessage` routes ONLY to the
     /// non-sender member of the pair; a send on a pipe absent from this map
     /// is dropped. The legacy non-directed peer-broadcast fan-out was removed
@@ -527,7 +528,7 @@ pub struct PlexiApp {
     /// both pane ids live in the SAME context, making `context_id` safe to
     /// key on regardless of which side (sender or target) later calls
     /// `pipe_send`.
-    pub(crate) directed_pipes: HashMap<(u64, String), (u64, u64)>,
+    pub(crate) directed_pipes: HashMap<(u64, String), crate::app::view_trait::DirectedPipePair>,
     /// Hot-reload watcher set (#83). Owns one notify watcher per launched
     /// plugin pane; hot reload is always on.
     /// `hot_reload_rx` is drained each frame; pending requests trigger a
@@ -5880,29 +5881,27 @@ fn drive_native_pane_key(
     Ok(disposition)
 }
 
-/// Register the directed pipe on the target's own local pipe registry so a
-/// runtime that maintains one (`ViewRuntime::Wasm` and `ViewRuntime::Python`)
-/// reports `has_pipe_reader` true for it on the reverse-send path (stint 0742).
-///
-/// Builtin plugins (`ViewRuntime::Builtin`) have no per-pane `TypedPipeRegistry`
-/// and return `false`; `OpenDirectedPipe` still proceeds for them because the
-/// duplex data plane is host-mediated via `directed_pipes` +
-/// `queue_outbound_event`.
-fn register_directed_pipe_on_target(pane: &mut crate::host::pane::Pane, pipe_id: &str) -> bool {
-    let crate::host::pane::Pane::View(view_pane) = pane else {
-        return false;
-    };
-    let runtime_kind = view_pane.runtime.runtime_kind();
-    let registered = view_pane.runtime.register_directed_pipe(pipe_id)
+/// Register a directed pipe on one end's own local pipe registry so a runtime
+/// that keeps one (`ViewRuntime::Wasm` and `ViewRuntime::Python`) reports
+/// `has_pipe_reader` for it (stint 0742). `Ok(false)` for a builtin, which
+/// has none; `OpenDirectedPipe` still proceeds for it because delivery is
+/// host-mediated. `Err` when the registry refuses the id (stint 1681).
+fn register_directed_pipe_on(
+    view_pane: &mut crate::host::pane::ViewPane,
+    pipe_id: &str,
+) -> Result<bool, String> {
+    let registered = view_pane.runtime.register_directed_pipe(pipe_id)?
         && view_pane.runtime.has_pipe_reader(pipe_id);
     if registered {
         log::info!(
-            "register_directed_pipe_on_target: registered directed pipe '{pipe_id}' on target pane {} (plugin_id={}, runtime={runtime_kind})",
+            "register_directed_pipe_on: registered directed pipe '{pipe_id}' on pane {} (plugin_id={}, runtime={})",
             view_pane.id,
-            view_pane.manifest_id
+            view_pane.manifest_id,
+            view_pane.runtime.runtime_kind(),
+            pipe_id = crate::host::guest_text::shown(pipe_id)
         );
     }
-    registered
+    Ok(registered)
 }
 
 /// Explicit collaborators passed to [`restore_workspace`] so workspace
