@@ -32,7 +32,8 @@ impl PlexiApp {
         self.overlay_held_cmds.retain(|cmd| {
             !matches!(cmd,
                 ViewCommand::SpawnPane { emitter: Some(e), .. }
-                | ViewCommand::SpawnView { emitter: Some(e), .. } if *e == emitter)
+                | ViewCommand::SpawnView { emitter: Some(e), .. }
+                | ViewCommand::WasmHostEffect { emitter: Some(e), .. } if *e == emitter)
         });
         let retired = before - self.overlay_held_cmds.len();
         if retired > 0 {

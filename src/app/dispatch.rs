@@ -385,7 +385,11 @@ impl PlexiApp {
                 continue;
             }
             match cmd {
-                ViewCommand::WasmHostEffect { pane_id, effect } => {
+                ViewCommand::WasmHostEffect {
+                    pane_id,
+                    effect,
+                    emitter,
+                } => {
                     use crate::host::wasm_pane::WasmHostEffect;
                     use crate::host::wasm_view::InputEvent;
 
@@ -459,10 +463,29 @@ impl PlexiApp {
                             args,
                         } => {
                             let predicted_pane_id = self.host.next_pane_id();
-                            let result = self
-                                .launch_view_by_id_with_layout(&plugin_id, layout, &args, None)
-                                .map(|existing| existing.unwrap_or(predicted_pane_id))
-                                .map_err(|error| error.to_string());
+                            // A component's terminal is admitted as that view's,
+                            // like `SpawnPane` (stint 1666).
+                            let result = if plugin_id == "terminal" {
+                                match emitter {
+                                    Some(emitter) => self.serve_sdk_spawn_pane(
+                                        Some(emitter),
+                                        "terminal",
+                                        layout.as_deref().unwrap_or("split_h"),
+                                        args,
+                                        None,
+                                        None,
+                                    ),
+                                    None => {
+                                        log::warn!(
+                                            "wasm effect: spawn pane_id={pane_id} terminal refused: no emitting view"
+                                        );
+                                        Err("terminal spawn carried no emitting view".to_string())
+                                    }
+                                }
+                            } else {
+                                self.launch_view_by_id_with_layout(&plugin_id, layout, &args, None)
+                                    .map(|existing| existing.unwrap_or(predicted_pane_id))
+                            };
                             log::info!(
                                 "wasm effect: spawn pane_id={pane_id} plugin_id={plugin_id} ok={}",
                                 result.is_ok(),
@@ -1509,7 +1532,11 @@ impl PlexiApp {
             for cmd in cmds {
                 match cmd {
                     ViewCommand::WasmHostEffect { effect, .. } => {
-                        deferred.push(ViewCommand::WasmHostEffect { pane_id, effect });
+                        deferred.push(ViewCommand::WasmHostEffect {
+                            pane_id,
+                            effect,
+                            emitter: Some(emitter),
+                        });
                     }
                     ViewCommand::ExposeTools { tools, .. } => {
                         deferred.push(ViewCommand::ExposeTools {

@@ -268,8 +268,8 @@ fn core_only_terminal_executes_and_splits() {
     }
     assert_eq!(std::fs::read_to_string(marker).unwrap(), "success");
     h.app
-        .launch_view_by_id_with_layout("terminal", Some("split_v".into()), &[], None)
-        .unwrap();
+        .split_focused(true, None, false, false, None)
+        .expect("a desktop split opens a terminal");
     assert_eq!(
         h.app.windows[0]
             .panes

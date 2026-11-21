@@ -5185,6 +5185,131 @@ fn sdk_terminal_spawn_takes_credentials_only_from_its_validated_destination() {
     );
 }
 
+/// Stint 1666: every route a view can ask for a terminal by (`SpawnPane`,
+/// `SpawnView`, a component's `Spawn` effect, `RequestLinkedTerminal`) admits
+/// it as that view's: plugin-instance provenance, and no secret read or
+/// received in a directory holding one. View launch refuses "terminal".
+#[test]
+fn plugin_terminal_routes_all_admit_the_requesting_view() {
+    use crate::app::view_trait::ViewCommand;
+    use crate::broker::pane_authority::{Provenance, SecretEligibility};
+    let _features =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+    let mut h = HostHarness::new();
+    let tmp = tempfile::tempdir().expect("secret dir");
+    let dir = crate::platform::path::canonical_or_self(tmp.path());
+    let sentinel = "PLEXI_FOLDER_SENTINEL_1666_ROUTES";
+    crate::workspace::secrets::set_folder_secret(
+        crate::workspace::secrets::folder_store(),
+        sentinel,
+        &dir,
+        "routes-1666",
+    )
+    .expect("in-memory folder store");
+    let (view, _received) = add_pipe_test_pane(&mut h, 0);
+    h.focus_pane(view);
+    h.app.set_context_root(dir.clone(), None);
+    let envs = std::rc::Rc::new(std::cell::RefCell::new(Vec::<
+        std::collections::HashMap<String, String>,
+    >::new()));
+    let record = envs.clone();
+    let _entry = crate::pane_ops::construct::probes::on_backend_entry(move |settings| {
+        record.borrow_mut().push(settings.env.clone());
+        Ok(())
+    });
+    let terminals = |h: &HostHarness| -> std::collections::HashSet<u64> {
+        h.app
+            .windows
+            .iter()
+            .flat_map(|w| w.panes.iter())
+            .filter(|(_, pane)| pane.as_terminal().is_some())
+            .map(|(id, _)| *id)
+            .collect()
+    };
+    let routes = vec![
+        (
+            "SpawnPane",
+            ViewCommand::SpawnPane {
+                type_id: "terminal".to_string(),
+                layout: "split_h".to_string(),
+                args: Vec::new(),
+                from_pane_id: None,
+                request_id: Some("route".to_string()),
+                target_context: None,
+                emitter: None,
+            },
+        ),
+        (
+            "SpawnView",
+            ViewCommand::SpawnView {
+                type_id: "terminal".to_string(),
+                layout: None,
+                args: Vec::new(),
+                emitter: None,
+            },
+        ),
+        (
+            "component Spawn effect",
+            ViewCommand::WasmHostEffect {
+                pane_id: 0,
+                effect: crate::host::wasm_pane::WasmHostEffect::Spawn {
+                    plugin_id: "terminal".to_string(),
+                    layout: None,
+                    args: Vec::new(),
+                },
+                emitter: None,
+            },
+        ),
+        (
+            "linked terminal",
+            ViewCommand::RequestLinkedTerminal {
+                sender_pane_id: view,
+                request_id: "route".to_string(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                label: None,
+                place_below: true,
+            },
+        ),
+    ];
+    for (label, command) in routes {
+        let before = terminals(&h);
+        crate::host::shell::secret_reads::take();
+        queue_pipe_command(&mut h, view, command);
+        h.run_hidden_frames(1);
+        let opened: Vec<u64> = terminals(&h).difference(&before).copied().collect();
+        let [terminal] = opened[..] else {
+            panic!("{label}: one terminal opened, got {opened:?}");
+        };
+        let grant = h
+            .app
+            .pane_authority(terminal)
+            .expect("grant")
+            .grant()
+            .clone();
+        assert_eq!(
+            grant.provenance,
+            Provenance::PluginInstance { pane_id: view },
+            "{label}"
+        );
+        assert_eq!(grant.secrets, SecretEligibility::none(), "{label}");
+        assert_eq!(
+            crate::host::shell::secret_reads::take(),
+            Vec::new(),
+            "{label}: no secret resolver read"
+        );
+        let env = envs.borrow_mut().pop().expect("backend entered");
+        assert!(
+            !env.contains_key(sentinel),
+            "{label}: folder secret arrived"
+        );
+    }
+    assert_eq!(
+        h.app
+            .launch_view_by_id_with_layout("terminal", None, &[], None),
+        Err("'terminal' is not a view".to_string())
+    );
+}
+
 /// Round 6 P2-2: a request held behind an overlay belongs to the guest that
 /// made it. A hot reload ends that guest: its held requests are retired and
 /// none is carried out or answered for the relaunched guest.
