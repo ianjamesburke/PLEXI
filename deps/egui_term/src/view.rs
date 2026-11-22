@@ -188,6 +188,24 @@ impl Widget for TerminalView<'_> {
     }
 }
 
+/// The one mid-drag reflow a pass allows across every terminal (stint 1224),
+/// kept in egui temp data. It goes to the oldest pending resize: a terminal
+/// may take it only once its hold reaches the longest hold any terminal
+/// deferred with on the previous pass. Holds grow by one per pass, so the
+/// terminal that was oldest last pass qualifies first and the rest wait their
+/// turn; taking it in paint order instead let the first eight terminals of a
+/// nine-terminal drag take every turn. If the oldest stops deferring, no
+/// terminal qualifies for one pass and the next pass re-ranks.
+#[derive(Clone, Copy, Default)]
+struct MidDragTurn {
+    pass: u64,
+    spent: bool,
+    /// Longest hold among terminals that deferred on `pass`.
+    longest_held: u32,
+    /// Longest hold among terminals that deferred on the pass before it.
+    longest_held_before: u32,
+}
+
 impl<'a> TerminalView<'a> {
     pub fn new(ui: &mut egui::Ui, backend: &'a mut TerminalBackend) -> Self {
         let widget_id = terminal_widget_id(backend.id);
@@ -278,23 +296,34 @@ impl<'a> TerminalView<'a> {
         let timed = crate::diag::span_hook_installed();
         let start = timed.then(std::time::Instant::now);
         let pass = layout.ctx.cumulative_pass_nr();
-        let mid_drag_reflow_id = Id::new("egui_term::mid_drag_reflow_pass");
-        let may_track =
-            layout.ctx.data(|d| d.get_temp::<u64>(mid_drag_reflow_id))
-                != Some(pass);
+        let turn_id = Id::new("egui_term::mid_drag_turn");
+        let mut turn = layout
+            .ctx
+            .data(|d| d.get_temp::<MidDragTurn>(turn_id))
+            .unwrap_or_default();
+        if turn.pass != pass {
+            turn = MidDragTurn {
+                pass,
+                spent: false,
+                longest_held: 0,
+                longest_held_before: turn.longest_held,
+            };
+        }
         let outcome = self.backend.request_resize(
             Size::from(grid_size(layout.rect.size(), self.padding)),
             self.font.font_measure(&layout.ctx),
             self.resize_immediately,
-            may_track,
+            (!turn.spent).then_some(turn.longest_held_before),
         );
-        if outcome == ResizeOutcome::CommittedMidDrag {
-            // One scrollback reflow per pass across every terminal: the
-            // others keep deferring and take their turn on later frames.
-            layout
-                .ctx
-                .data_mut(|d| d.insert_temp(mid_drag_reflow_id, pass));
+        match outcome {
+            ResizeOutcome::CommittedMidDrag => turn.spent = true,
+            ResizeOutcome::Deferred => {
+                turn.longest_held =
+                    turn.longest_held.max(self.backend.held_resize_frames());
+            },
+            ResizeOutcome::Unchanged | ResizeOutcome::Committed => {},
         }
+        layout.ctx.data_mut(|d| d.insert_temp(turn_id, turn));
         if let Some(start) = start {
             crate::diag::span_note(
                 "terminal_resize",

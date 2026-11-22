@@ -181,7 +181,7 @@ pub enum ResizeOutcome {
     Committed,
     /// A sustained drag held this geometry for the full defer cap, so one
     /// mid-drag reflow ran to keep the grid tracking. The caller spent this
-    /// frame's mid-drag reflow (see `may_track` on
+    /// frame's mid-drag reflow (see `mid_drag_turn` on
     /// [`TerminalBackend::request_resize`]).
     CommittedMidDrag,
 }
@@ -1208,17 +1208,20 @@ impl TerminalBackend {
     /// geometry is already final, so deferring it only paints one frame of the
     /// stale grid inside the new rect.
     ///
-    /// `may_track` says whether this frame's one mid-drag reflow is still
-    /// unspent. Every visible terminal reaches the defer cap on the same frame
-    /// of a sustained drag; reflowing all their scrollbacks together is a
-    /// frame spike, so the caller lets one terminal per frame take its capped
-    /// reflow and the rest keep deferring until a later frame (stint 1224).
+    /// `mid_drag_turn` is this frame's one mid-drag reflow. Every visible
+    /// terminal reaches the defer cap on the same frame of a sustained drag;
+    /// reflowing all their scrollbacks together is a frame spike, so the
+    /// caller hands the reflow to one terminal per frame (stint 1224). `None`
+    /// means another terminal already took it; `Some(min_held)` means a
+    /// capped resize may take it once it has been held at least `min_held`
+    /// frames, which lets the caller give it to the oldest pending resize so
+    /// no terminal starves. The rest keep deferring.
     pub fn request_resize(
         &mut self,
         layout_size: Size,
         font_size: Size,
         immediate: bool,
-        may_track: bool,
+        mid_drag_turn: Option<u32>,
     ) -> ResizeOutcome {
         let Some(geometry) = ResizeGeometry::derive(layout_size, font_size)
         else {
@@ -1244,9 +1247,10 @@ impl TerminalBackend {
             held.map_or(0, |pending| pending.deferred_frames) + 1;
         let mid_drag = !immediate && !settled;
 
-        if mid_drag
-            && (deferred_frames < MAX_DEFERRED_RESIZE_FRAMES || !may_track)
-        {
+        let takes_turn = deferred_frames >= MAX_DEFERRED_RESIZE_FRAMES
+            && mid_drag_turn
+                .is_some_and(|min_held| deferred_frames >= min_held);
+        if mid_drag && !takes_turn {
             self.pending_resize = Some(PendingResize {
                 geometry,
                 layout_size,
@@ -1278,6 +1282,13 @@ impl TerminalBackend {
         } else {
             ResizeOutcome::Committed
         }
+    }
+
+    /// Consecutive frames the pending resize has been held back; zero when
+    /// none is pending.
+    pub fn held_resize_frames(&self) -> u32 {
+        self.pending_resize
+            .map_or(0, |pending| pending.deferred_frames)
     }
 
     fn commit_resize(

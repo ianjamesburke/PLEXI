@@ -15765,6 +15765,70 @@ mod terminal_resize_debounce_tests {
         }
     }
 
+    /// Codex round 1 on PR 3280: with more continuously resizing terminals
+    /// than the defer cap has frames, the mid-drag reflow goes to the terminal
+    /// that has waited longest, so none starves until the drag ends. Height
+    /// steps larger than a cell change every grid on every frame.
+    #[test]
+    fn long_drag_gives_every_terminal_mid_drag_reflows() {
+        const TERMINALS: usize = 9;
+        const FRAMES: u32 = 120;
+        const WIDTH: f32 = 2400.0;
+        const START_HEIGHT: f32 = 10_400.0;
+        const HEIGHT_STEP: f32 = 80.0;
+        let frame_at_height = |h: &mut HostHarness, height: f32| {
+            h.frame(RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(WIDTH, height),
+                )),
+                ..Default::default()
+            });
+        };
+        let mut h = HostHarness::new();
+        let mut terminals = vec![h.add_focused_terminal()];
+        for _ in 1..TERMINALS {
+            terminals.push(
+                h.app
+                    .split_focused(false, None, false, false, None)
+                    .expect("split must create another terminal"),
+            );
+        }
+        let ctx_id = h.app.router.active().context_id;
+        for col_idx in 0..TERMINALS {
+            h.app.set_column_width_ratio(ctx_id, col_idx, 0.105);
+        }
+        for _ in 0..4 {
+            frame_at_height(&mut h, START_HEIGHT);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        for _ in 0..8 {
+            frame_at_height(&mut h, START_HEIGHT);
+        }
+        let before = commits(&mut h, &terminals);
+        let mut previous = before.clone();
+        for frame in 0..FRAMES {
+            frame_at_height(&mut h, START_HEIGHT - (frame + 1) as f32 * HEIGHT_STEP);
+            let current = commits(&mut h, &terminals);
+            let on_frame: u64 = current.iter().zip(&previous).map(|(a, b)| a - b).sum();
+            assert!(
+                on_frame <= 1,
+                "frame {frame} reflowed {on_frame} terminals at once"
+            );
+            previous = current;
+        }
+        let per_terminal: Vec<u64> = previous.iter().zip(&before).map(|(a, b)| a - b).collect();
+        // Fair share: one reflow per frame shared by nine terminals.
+        let fair = u64::from(FRAMES) / TERMINALS as u64;
+        for (id, reflows) in terminals.iter().zip(&per_terminal) {
+            assert!(
+                *reflows + 2 >= fair,
+                "terminal {id} reflowed {reflows} times across {FRAMES} drag frames, \
+                 fair share {fair} (all: {per_terminal:?})"
+            );
+        }
+    }
+
     /// A single programmatic size change (no drag) must still land promptly. A
     /// one-frame stability wait is the cost of the debounce; an indefinite
     /// deferral would be a regression of its own.
