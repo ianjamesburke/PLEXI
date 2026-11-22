@@ -9,9 +9,9 @@
 #   scripts/e2e/ledger/run.sh
 #   PLEXI_BIN=plexi-pr-2683 scripts/e2e/ledger/run.sh
 #
-# Every invocation passes --profile-root "$HOME" (scripts/e2e/profile-root.sh)
-# and the profile is the one the binary resolves there (`plexi-pr-2683` →
-# $HOME/.plexi-pr-2683). The script truncates that profile's ai-ledger.jsonl so
+# Every invocation passes --profile-root <disposable root>
+# (scripts/e2e/profile-root.sh) and the profile is the one the binary resolves
+# there (`plexi-pr-2683` → <root>/.plexi-pr-2683). The script truncates that profile's ai-ledger.jsonl so
 # the summary counts only this run. It stops the host on exit.
 set -euo pipefail
 
@@ -24,7 +24,8 @@ fi
 
 # shellcheck source=scripts/e2e/profile-root.sh
 source "${ROOT}/scripts/e2e/profile-root.sh"
-plexi_profile_root "$HOME"
+plexi_script_root
+plexi_profile_root "$SCRIPT_ROOT"
 LEDGER="${PROFILE}/ai-ledger.jsonl"
 CONFIG="${PROFILE}/config.toml"
 SOCK="${PROFILE}/notify.sock"

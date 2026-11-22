@@ -22,11 +22,12 @@ source "$ROOT/e2e/human.sh"
 EVID="${EVID:-/tmp/plexi-w2-evidence}"
 CHANNEL="${CHANNEL:-alpha}"
 BIN="${PLEXI_BIN:-$HOME/.local/bin/plexi-$CHANNEL}"
-# Every "$BIN" call passes --profile-root "$HOME"; PROFILE is what the binary
-# resolves there (stint 1695).
+# Every "$BIN" call passes --profile-root <disposable root>; PROFILE is what
+# the binary resolves there (stint 1695). Standalone runs never use $HOME.
 # shellcheck source=scripts/e2e/profile-root.sh
 source "$ROOT/e2e/profile-root.sh"
-plexi_profile_root "$HOME"
+plexi_script_root
+plexi_profile_root "$SCRIPT_ROOT"
 WS="${WS:-/tmp/plexi-w2-ws}"
 MOCK_PORT="${MOCK_PORT:-8765}"
 DISPLAY_NUM="${DISPLAY:-:99}"

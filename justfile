@@ -572,6 +572,7 @@ test-build-inputs:
 test-infra-scripts: test-build-inputs
     uv run --no-project python scripts/test_wit_snapshots.py
     uv run --no-project python scripts/test_skill_check.py
+    uv run --no-project python scripts/test_e2e_profile_root.py
     uv run --no-project python scripts/test_release_next_tag.py
     uv run --no-project python scripts/test_docs_gate_scope.py
     uv run --no-project python scripts/test_babysitter_policy.py

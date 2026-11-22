@@ -75,3 +75,25 @@ plexi_profile_root() {
   echo "profile-root: $real resolved $PROFILE"
   export PROFILE_ROOT PROFILE CHANNEL_DIR
 }
+
+# The disposable root a script runs Plexi in (sets SCRIPT_ROOT). The V1
+# harness exports its own temp home as PLEXI_E2E_PROFILE_ROOT so its items
+# share the profile it seeded. Any other run gets a fresh temp dir, and HOME
+# moves there too, so nothing the script or its hosts write (profile,
+# context logs, config rewrites, cleanup stops) reaches the account's home or
+# its live hosts. Call before the first plexi_profile_root.
+plexi_script_root() {
+  if [[ -n "${PLEXI_E2E_PROFILE_ROOT:-}" ]]; then
+    SCRIPT_ROOT="$PLEXI_E2E_PROFILE_ROOT"
+    return 0
+  fi
+  local account_home="$HOME"
+  SCRIPT_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/plexi-e2e-root.XXXXXX")"
+  mkdir -p "$SCRIPT_ROOT/.plexi"
+  # Python apps load the WASI bundle from the profile home.
+  if [[ -d "$account_home/.plexi/wasm-bundles" ]]; then
+    ln -s "$account_home/.plexi/wasm-bundles" "$SCRIPT_ROOT/.plexi/wasm-bundles"
+  fi
+  export HOME="$SCRIPT_ROOT"
+  echo "profile-root: standalone run in disposable $SCRIPT_ROOT"
+}

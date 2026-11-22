@@ -18,11 +18,12 @@ REPO="$(cd "$ROOT/.." && pwd)"
 EVID="${EVID:-/tmp/plexi-w7-evidence}"
 CHANNEL="${CHANNEL:-alpha}"
 BIN="${PLEXI_BIN:-$HOME/.local/bin/plexi-$CHANNEL}"
-# Every "$BIN" call passes --profile-root "$HOME"; PROFILE is what the binary
-# resolves there (stint 1695).
+# Every "$BIN" call passes --profile-root <disposable root>; PROFILE is what
+# the binary resolves there (stint 1695). Standalone runs never use $HOME.
 # shellcheck source=scripts/e2e/profile-root.sh
 source "$ROOT/e2e/profile-root.sh"
-plexi_profile_root "$HOME"
+plexi_script_root
+plexi_profile_root "$SCRIPT_ROOT"
 WS="${WS:-/tmp/plexi-w7-ws}"
 DISPLAY_NUM="${DISPLAY:-:99}"
 LOG="$PROFILE/plexi.log"

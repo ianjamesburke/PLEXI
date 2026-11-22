@@ -20,10 +20,18 @@ class SkillCheckPaths(unittest.TestCase):
             # Execute the real initialization and step 1, stopping before the
             # unrelated command-surface and live-host checks.
             script.write_text(SCRIPT.read_text().split("# ── 2.", 1)[0])
+            helper = root / "scripts/e2e/profile-root.sh"
+            helper.parent.mkdir()
+            helper.write_text((ROOT / "scripts/e2e/profile-root.sh").read_text())
             binary = root / f"plexi-{channel}"
             binary.write_text(
                 '#!/bin/bash\nset -eu\n'
+                # Every call arrives through the rooted launcher (stint 1695).
+                '[ "$1" = --profile-root ] || { echo "unrooted: $*" >&2; exit 91; }\n'
+                'root="$2"; shift 2\n'
+                'echo "$root" >> "$FIXTURE_ROOTS"\n'
                 'case "$*" in\n'
+                '  "host status --json") echo "{\\"socket\\": \\"$root/.plexi-fixture/notify.sock\\"}" ;;\n'
                 '  --version) echo "plexi 1.0.0" ;;\n'
                 '  "host stop") ;;\n'
                 '  "skill install --agent all")\n'
@@ -47,8 +55,9 @@ class SkillCheckPaths(unittest.TestCase):
                 **os.environ,
                 "HOME": str(root / "home"),
                 "CHANNEL": channel,
-                "BIN": str(binary),
-                "PROFILE": str(root / "profile"),
+                "PLEXI_BIN": str(binary),
+                "TMPDIR": str(root / "tmp"),
+                "FIXTURE_ROOTS": str(root / "roots.txt"),
                 "EVID": str(root / "evidence"),
                 "XDG_RUNTIME_DIR": str(root / "runtime"),
                 "SKILL_CHECK_INNER": "1",
@@ -56,7 +65,14 @@ class SkillCheckPaths(unittest.TestCase):
                 "FIXTURE_AGENTS": " ".join(agents),
                 "PATH": f"{commands}:/usr/bin:/bin:/usr/sbin:/sbin",
             }
+            (root / "tmp").mkdir()
+            env.pop("PLEXI_E2E_PROFILE_ROOT", None)
             result = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
+            # A standalone run roots every call in a disposable dir, never HOME.
+            roots = set((root / "roots.txt").read_text().split())
+            self.assertEqual(len(roots), 1, roots)
+            self.assertTrue(roots.pop().startswith(str(root / "tmp")))
+            self.assertFalse((root / "home/.plexi-fixture").exists())
             return result
 
     def test_channel_install_paths(self):

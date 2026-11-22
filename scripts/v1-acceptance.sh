@@ -587,6 +587,8 @@ if [[ -n "$BIN" ]]; then
   # shellcheck source=scripts/e2e/profile-root.sh
   source "$REPO/scripts/e2e/profile-root.sh"
   plexi_profile_root "$WORK_HOME"
+  # Items root in this same temp home instead of making their own.
+  export PLEXI_E2E_PROFILE_ROOT="$WORK_HOME"
 fi
 
 # [ai] backend = "openrouter" from the tree's default config. Item scripts
