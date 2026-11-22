@@ -24,15 +24,15 @@ pub fn profile_dir_name(channel: &str) -> String {
     }
 }
 
-/// The endpoint belonging to a specific channel, named by its profile
-/// directory (`~/.plexi`, `~/.plexi-alpha`, `~/.plexi-pr-1604`, ...).
+/// The endpoint belonging to a specific profile, named by its profile
+/// directory (`~/.plexi`, `~/.plexi-alpha`, `/scratch/.plexi-pr-1604`, ...).
 ///
-/// Commands that target another channel (`plexi host stop`, the spawn gate,
+/// Commands that target another profile (`plexi host stop`, the spawn gate,
 /// `--socket` resolution, the installer) know the profile dir, not the
 /// endpoint. On Unix the endpoint lives inside that dir; on Windows it does
-/// not exist on disk at all, so the channel is recovered from the dir's
-/// basename and turned into a pipe name. Keeping both derivations here is
-/// what stops the two from drifting.
+/// not exist on disk at all, so the pipe name is derived from the whole dir
+/// ([`pipe_name_in`]). Keeping both derivations here is what stops the two
+/// from drifting.
 pub fn endpoint_in(profile_dir: &Path) -> PathBuf {
     #[cfg(unix)]
     {
@@ -40,29 +40,93 @@ pub fn endpoint_in(profile_dir: &Path) -> PathBuf {
     }
     #[cfg(windows)]
     {
-        PathBuf::from(pipe_name_for_channel(channel_from_profile_dir(profile_dir)))
+        let account = crate::profile_target::account_home().ok();
+        PathBuf::from(pipe_name_in(profile_dir, account.as_deref()))
     }
 }
 
-/// `~/.plexi-alpha` → `Some("alpha")`; bare `~/.plexi` → `None`.
-#[cfg(windows)]
-fn channel_from_profile_dir(profile_dir: &Path) -> Option<&str> {
-    profile_dir
+/// The Windows pipe prefix: `\\.\pipe\plexi`.
+pub const PIPE_PREFIX: &str = r"\\.\pipe\plexi";
+
+/// Separates a Windows pipe's profile name from its root digest.
+pub const ROOT_TAG: &str = "-r";
+
+/// The Windows pipe for a profile dir (stint 1695): `\\.\pipe\plexi[-<suffix>]`
+/// for a profile under the account home, and
+/// `\\.\pipe\plexi[-<suffix>]-r<root digest>` under any other root, so one
+/// profile name in two roots never shares an endpoint. Pure, so every
+/// platform tests it.
+pub fn pipe_name_in(profile_dir: &Path, account_home: Option<&Path>) -> String {
+    let suffix = profile_dir
         .file_name()
         .and_then(|name| name.to_str())
         .and_then(|name| name.strip_prefix(".plexi-"))
-        .filter(|channel| !channel.is_empty())
+        .filter(|suffix| !suffix.is_empty());
+    let mut name = match suffix {
+        Some(suffix) => format!("{PIPE_PREFIX}-{suffix}"),
+        None => PIPE_PREFIX.to_string(),
+    };
+    let root = profile_dir.parent();
+    if root.is_none() || root != account_home {
+        use sha2::Digest;
+        let root = root.unwrap_or(Path::new(""));
+        let digest = sha2::Sha256::digest(root.to_string_lossy().as_bytes());
+        let hex: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+        name.push_str(ROOT_TAG);
+        name.push_str(&hex);
+    }
+    name
 }
 
-/// `\\.\pipe\plexi` for the stable channel, `\\.\pipe\plexi-<channel>`
-/// otherwise, mirroring the `~/.plexi` vs `~/.plexi-<channel>` profile-dir
-/// split so each channel is an isolated instance here too.
-#[cfg(windows)]
-pub fn pipe_name_for_channel(channel: Option<&str>) -> String {
-    match channel {
-        Some(channel) if !channel.is_empty() => format!(r"\\.\pipe\plexi-{channel}"),
-        _ => r"\\.\pipe\plexi".to_string(),
+/// The profile's spawn-queue dir, which its host drains on its first frame.
+pub const SPAWN_QUEUE_DIR: &str = "spawn-queue";
+
+/// Refuse a profile dir (or its `host` or spawn-queue dir) that is a symlink
+/// or not a dir, and a host endpoint that is a symlink or has more than one
+/// link: resolving a host socket, seed, lock, installed marker or integrity
+/// account through one would reach another profile. Shared by the CLI
+/// lifecycle verbs and the installer. A missing entry is fine.
+pub fn ensure_real_profile_dir(profile: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let endpoint = endpoint_in(profile);
+        match std::fs::symlink_metadata(&endpoint) {
+            // A hard link names another profile's listening socket too.
+            Ok(meta) if meta.file_type().is_symlink() || meta.nlink() != 1 => {
+                log::error!(
+                    "host_presence: refusing linked host endpoint {endpoint:?} (links={})",
+                    meta.nlink()
+                );
+                return Err(format!(
+                    "refusing to address a host through linked host endpoint {}",
+                    endpoint.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("inspect {}: {error}", endpoint.display())),
+        }
     }
+    for path in [
+        profile.to_path_buf(),
+        profile.join("host"),
+        profile.join(SPAWN_QUEUE_DIR),
+    ] {
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+                log::error!("host_presence: refusing profile through non-directory {path:?}");
+                return Err(format!(
+                    "refusing to address a host through non-directory profile path {}",
+                    path.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("inspect {}: {error}", path.display())),
+        }
+    }
+    Ok(())
 }
 
 /// What showed a host to be running.
@@ -351,30 +415,41 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
+    /// Stint 1695: the same profile name in two roots gets two pipes; under
+    /// the account home the pipe keeps its plain name.
     #[test]
-    fn profile_dir_basename_picks_the_pipe() {
+    fn a_pipe_name_carries_its_profile_root() {
+        let account = Path::new("/home/ian");
         assert_eq!(
-            endpoint_in(Path::new(r"C:\Users\ian\.plexi-alpha")),
-            PathBuf::from(r"\\.\pipe\plexi-alpha")
-        );
-        assert_eq!(
-            endpoint_in(Path::new(r"C:\Users\ian\.plexi")),
-            PathBuf::from(r"\\.\pipe\plexi")
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn pipe_name_is_channel_scoped() {
-        assert_eq!(pipe_name_for_channel(None), r"\\.\pipe\plexi");
-        assert_eq!(
-            pipe_name_for_channel(Some("alpha")),
+            pipe_name_in(&account.join(".plexi-alpha"), Some(account)),
             r"\\.\pipe\plexi-alpha"
         );
+        assert_eq!(pipe_name_in(&account.join(".plexi"), Some(account)), r"\\.\pipe\plexi");
+        let scratch_a = pipe_name_in(Path::new("/scratch/a/.plexi-alpha"), Some(account));
+        let scratch_b = pipe_name_in(Path::new("/scratch/b/.plexi-alpha"), Some(account));
+        assert!(scratch_a.starts_with(r"\\.\pipe\plexi-alpha-r"), "{scratch_a}");
+        assert_ne!(scratch_a, scratch_b);
+        assert_ne!(scratch_a, r"\\.\pipe\plexi-alpha");
         assert_eq!(
-            pipe_name_for_channel(Some("pr-1604")),
-            r"\\.\pipe\plexi-pr-1604"
+            scratch_a,
+            pipe_name_in(Path::new("/scratch/a/.plexi-alpha"), Some(account))
         );
+        // No account home: every root is tagged.
+        assert_ne!(pipe_name_in(&account.join(".plexi-alpha"), None), r"\\.\pipe\plexi-alpha");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_profile_dir_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let owner = root.path().join("owner/.plexi-alpha");
+        std::fs::create_dir_all(&owner).unwrap();
+        let linked = root.path().join("scratch/.plexi-alpha");
+        std::fs::create_dir_all(linked.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&owner, &linked).unwrap();
+        let error = ensure_real_profile_dir(&linked).unwrap_err();
+        assert!(error.contains("non-directory profile path"), "{error}");
+        assert!(ensure_real_profile_dir(&owner).is_ok());
+        assert!(ensure_real_profile_dir(&root.path().join("missing")).is_ok());
     }
 }

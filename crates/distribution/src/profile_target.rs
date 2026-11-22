@@ -17,6 +17,22 @@ use std::path::{Component, Path, PathBuf};
 /// level and by the installer.
 pub const PROFILE_ROOT_FLAG: &str = "--profile-root";
 
+/// Longest accepted profile name, in bytes.
+pub const PROFILE_NAME_MAX: usize = 64;
+
+/// The `--profile` name grammar, `[A-Za-z0-9][A-Za-z0-9-]{0,63}`: one path
+/// component that cannot traverse, alias or nest. Shared by the CLI and the
+/// installer's restart.
+pub fn is_profile_name(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= PROFILE_NAME_MAX
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'-')
+}
+
 /// A validated explicit `--profile-root`: an absolute path with no `.` or
 /// `..` component that names an existing directory. Validated before any
 /// profile is read, connected to, signalled or deleted.
@@ -127,6 +143,23 @@ impl ProfileTarget {
     /// Without a root, an inherited private home is refused like the CLI
     /// refuses it ([`refuse_private_home`]).
     pub fn for_channel(root: Option<&ProfileRoot>, channel: &str) -> Result<Self, String> {
+        Self::for_build(root, None, channel)
+    }
+
+    /// The profile a build of `channel` runs on: the named profile when one
+    /// was selected (`--profile <name>`), else the channel's own, under
+    /// `root` or the account home. An update restart relaunches exactly the
+    /// selection the old host ran with.
+    pub fn for_build(
+        root: Option<&ProfileRoot>,
+        named: Option<&str>,
+        channel: &str,
+    ) -> Result<Self, String> {
+        if let Some(name) = named.filter(|name| !is_profile_name(name)) {
+            return Err(format!(
+                "invalid profile name {name:?}: use 1-{PROFILE_NAME_MAX} ASCII letters, digits or hyphens, starting with a letter or digit"
+            ));
+        }
         let (root, root_source) = match root {
             Some(root) => (root.path().to_path_buf(), RootSource::Explicit),
             None => {
@@ -135,12 +168,11 @@ impl ProfileTarget {
                 (home, RootSource::Account)
             }
         };
-        Ok(Self::new(
-            root,
-            root_source,
-            ProfileSource::Channel(channel.to_string()),
-            Some(channel.to_string()),
-        ))
+        let source = match named {
+            Some(name) => ProfileSource::Named(name.to_string()),
+            None => ProfileSource::Channel(channel.to_string()),
+        };
+        Ok(Self::new(root, root_source, source, Some(channel.to_string())))
     }
 
     /// The profile directory: config, plugins, host records, the endpoint.

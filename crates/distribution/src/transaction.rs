@@ -806,17 +806,24 @@ pub fn update(package: &Package, options: InstallOptions, expected_build: &str) 
     install_checked(package, options, Some(expected_build))
 }
 
+/// The profile an install records its build in, resolved and checked before
+/// anything changes: a refused root (a private HOME without --profile-root)
+/// or a linked profile dir, which would carry the installed marker and the
+/// host this install launches into another profile, installs nothing.
+fn install_profile(options: &InstallOptions) -> Result<ProfileTarget> {
+    let profile = ProfileTarget::for_channel(options.profile_root.as_ref(), &options.channel)
+        .map_err(Error::Invalid)?;
+    crate::host_presence::ensure_real_profile_dir(&profile.dir()).map_err(Error::Invalid)?;
+    Ok(profile)
+}
+
 fn install_checked(
     package: &Package,
     options: InstallOptions,
     expected_build: Option<&str>,
 ) -> Result<Receipt> {
     package.validate()?;
-    // The profile that records the activated build, resolved before anything
-    // changes so a refused root (a private HOME without --profile-root)
-    // installs nothing.
-    let profile = ProfileTarget::for_channel(options.profile_root.as_ref(), &options.channel)
-        .map_err(Error::Invalid)?;
+    let profile = install_profile(&options)?;
     if package.manifest.channel != options.channel
         || package.manifest.platform != release::platform()?
     {
@@ -1775,6 +1782,7 @@ pub fn launch_ready_in(
     use crate::host_presence::{Presence, probe};
     let name = display_name(&receipt.channel);
     let profile_dir = &profile.dir();
+    crate::host_presence::ensure_real_profile_dir(profile_dir).map_err(Error::Invalid)?;
     match probe(profile_dir, Instant::now() + limits.probe) {
         Presence::Running { pid, evidence } => {
             log::info!(
@@ -1848,20 +1856,27 @@ pub fn launch_ready_in(
 
 /// The update restart: wait for the old host `wait_pid` to exit, then launch
 /// the installed generation, which defers if another host started meanwhile.
-pub fn restart(root: &Path, wait_pid: u32, profile_root: Option<&ProfileRoot>) -> Result<Launched> {
-    restart_in(root, wait_pid, profile_root, &LAUNCH_LIMITS)
+pub fn restart(
+    root: &Path,
+    wait_pid: u32,
+    profile_root: Option<&ProfileRoot>,
+    profile: Option<&str>,
+) -> Result<Launched> {
+    restart_in(root, wait_pid, profile_root, profile, &LAUNCH_LIMITS)
 }
 
 fn restart_in(
     root: &Path,
     wait_pid: u32,
     profile_root: Option<&ProfileRoot>,
+    profile: Option<&str>,
     limits: &LaunchLimits,
 ) -> Result<Launched> {
     wait_for_parent(wait_pid)?;
     let receipt = read_receipt(root)?
         .ok_or_else(|| Error::Invalid("installation disappeared during restart".into()))?;
-    let profile = channel_profile(&receipt.channel, profile_root)?;
+    let profile = ProfileTarget::for_build(profile_root, profile, &receipt.channel)
+        .map_err(Error::Invalid)?;
     launch_ready_in(&receipt, &profile, limits)
 }
 
@@ -1904,9 +1919,10 @@ pub fn process_alive(pid: u32) -> bool {
     }
 }
 
-/// `profile_root` is the restarting host's explicit `--profile-root`, so
-/// the relaunch probes and starts the profile that host ran on.
-pub fn schedule_restart(receipt: &Receipt, pid: u32, profile_root: Option<&Path>) -> Result<()> {
+/// `profile` is the restarting host's selection: its explicit
+/// `--profile-root` and `--profile` are forwarded, so the relaunch probes and
+/// starts exactly the profile that host ran on.
+pub fn schedule_restart(receipt: &Receipt, pid: u32, profile: &ProfileTarget) -> Result<()> {
     let installer = receipt.active.path.join(if cfg!(windows) {
         "plexi-installer.exe"
     } else {
@@ -1921,12 +1937,8 @@ pub fn schedule_restart(receipt: &Receipt, pid: u32, profile_root: Option<&Path>
         .args(["restart", "--receipt"])
         .arg(&receipt.root)
         .arg("--wait-pid")
-        .arg(pid.to_string());
-    if let Some(root) = profile_root {
-        command
-            .arg(crate::profile_target::PROFILE_ROOT_FLAG)
-            .arg(root);
-    }
+        .arg(pid.to_string())
+        .args(profile.forward_args());
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -2649,6 +2661,39 @@ mod tests {
         file
     }
 
+    /// Stint 1695 (Codex 3288 R1): a profile dir that links into another
+    /// profile is refused before install writes its marker and before a
+    /// launch probes or starts anything.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_profile_dir_installs_and_launches_nothing() {
+        let (_root, receipt, profile) = launch_fixture("exit 0");
+        let owner = tempfile::tempdir().unwrap();
+        let owner_profile = owner.path().join(profile.dir_name());
+        fs::create_dir_all(&owner_profile).unwrap();
+        let _owner_host = hold_host_lock(&owner_profile, 4242);
+        fs::remove_dir(profile.dir()).unwrap();
+        std::os::unix::fs::symlink(&owner_profile, profile.dir()).unwrap();
+
+        let error = launch_ready_in(&receipt, &profile, &test_limits(Duration::from_secs(10)))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("non-directory profile path"), "{error}");
+        assert!(calls(&receipt.root, "c").is_empty());
+
+        let options = InstallOptions {
+            channel: receipt.channel.clone(),
+            root: receipt.root.clone(),
+            bin_dir: receipt.bin_dir.clone(),
+            applications_dir: receipt.applications_dir.clone(),
+            modify_path: false,
+            profile_root: profile.profile_root(),
+        };
+        let error = install_profile(&options).unwrap_err().to_string();
+        assert!(error.contains("non-directory profile path"), "{error}");
+        assert!(!owner_profile.join("installed_tag").exists());
+    }
+
     /// Stint 1605 (Codex R1.1): over a running host no generation is run,
     /// not the installed one and not the previous one.
     #[cfg(unix)]
@@ -2752,6 +2797,7 @@ mod tests {
             &receipt.root,
             old_pid,
             Some(&ProfileRoot::parse(profile.root().as_os_str()).unwrap()),
+            None,
             &test_limits(Duration::from_secs(10)),
         )
         .unwrap();
@@ -2761,6 +2807,55 @@ mod tests {
             Launched::Deferred(RunningHost { pid: Some(5151) })
         );
         assert!(calls(&receipt.root, "c").is_empty());
+    }
+
+    /// Stint 1695 (Codex 3288 R1): a host on `--profile team` restarts on
+    /// `.plexi-team`, not on its channel's own profile, which another host
+    /// holds here.
+    #[cfg(unix)]
+    #[test]
+    fn the_restart_relaunches_the_named_profile_the_host_ran_on() {
+        let (_root, receipt, profile) = launch_fixture("exit 0");
+        write_json(&receipt.root.join(RECEIPT), &receipt).unwrap();
+        let _channel_host = hold_host_lock(&profile.dir(), 6161);
+        let root = ProfileRoot::parse(profile.root().as_os_str()).unwrap();
+        let named = ProfileTarget::for_build(Some(&root), Some("team"), &receipt.channel).unwrap();
+        assert_eq!(
+            named.forward_args(),
+            [
+                "--profile-root".into(),
+                profile.root().as_os_str().to_os_string(),
+                "--profile".into(),
+                "team".into()
+            ]
+        );
+        let old_host = Command::new("/bin/sleep").arg("0.1").spawn().unwrap();
+        let old_pid = old_host.id();
+        let reaper = std::thread::spawn(move || {
+            let mut old_host = old_host;
+            old_host.wait()
+        });
+        let launched = restart_in(
+            &receipt.root,
+            old_pid,
+            Some(&root),
+            Some("team"),
+            &test_limits(Duration::from_secs(10)),
+        )
+        .unwrap();
+        reaper.join().unwrap().unwrap();
+        assert_eq!(launched, Launched::Ready);
+        let root = profile.root().display();
+        assert_eq!(
+            calls(&receipt.root, "c")[0],
+            format!("host start --timeout-secs 90 --profile-root {root} --profile team")
+        );
+        assert!(ProfileTarget::for_build(Some(&root_of(&profile)), Some("../x"), "stable").is_err());
+    }
+
+    #[cfg(unix)]
+    fn root_of(profile: &ProfileTarget) -> ProfileRoot {
+        ProfileRoot::parse(profile.root().as_os_str()).unwrap()
     }
 
     fn fixture_receipt(root: &Path) -> Receipt {

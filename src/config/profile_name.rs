@@ -11,8 +11,7 @@
 
 use std::fmt;
 
-/// Longest accepted profile name, in bytes.
-pub const PROFILE_NAME_MAX: usize = 64;
+pub use plexi_distribution::profile_target::{is_profile_name, PROFILE_NAME_MAX};
 
 /// A validated explicit profile name. Its spelling is preserved: on a
 /// case-sensitive volume `Team` and `team` are distinct profiles.
@@ -84,16 +83,6 @@ fn migration_example(raw: &str) -> String {
     base.chars()
         .take(PROFILE_NAME_MAX - "-legacy".len())
         .collect()
-}
-
-pub(crate) fn is_profile_name(raw: &str) -> bool {
-    let bytes = raw.as_bytes();
-    !bytes.is_empty()
-        && bytes.len() <= PROFILE_NAME_MAX
-        && bytes[0].is_ascii_alphanumeric()
-        && bytes
-            .iter()
-            .all(|b| b.is_ascii_alphanumeric() || *b == b'-')
 }
 
 #[cfg(test)]

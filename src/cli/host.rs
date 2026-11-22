@@ -223,7 +223,7 @@ fn forward_args(target: &ProfileTarget) -> Vec<String> {
 
 /// The dir `host start` seeds panes into, covered by [`host_target`]'s check.
 fn spawn_queue(target: &ProfileTarget) -> PathBuf {
-    target.dir().join(SPAWN_QUEUE_DIR)
+    target.dir().join(host_presence::SPAWN_QUEUE_DIR)
 }
 
 /// True for the commands that address their profile's host through
@@ -245,8 +245,6 @@ pub(crate) fn addresses_profile_host(command: &crate::cli::args::Commands) -> bo
     }
 }
 
-/// The profile's spawn-queue dir, which the host drains on its first frame.
-const SPAWN_QUEUE_DIR: &str = "spawn-queue";
 
 /// This invocation's validated selection. Every lifecycle path (status,
 /// start, stop, restart, log, uninstall) and its trace use only a target
@@ -272,52 +270,10 @@ fn cli_host_target() -> Result<ProfileTarget, i32> {
     })
 }
 
-/// Refuse a profile dir (or its `host` or `spawn-queue` dir) that is a
-/// symlink or not a dir, and a host endpoint that is a symlink or has more
-/// than one link: resolving a host socket, seed, lock or
-/// integrity account through one would reach another profile. Interior data
-/// symlinks are unlinked by `remove_dir_all`. A missing entry is fine.
+/// The lifecycle form of [`host_presence::ensure_real_profile_dir`], shared
+/// with the installer.
 pub(crate) fn ensure_real_profile_dir(profile: &Path) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let endpoint = endpoint_in(profile);
-        match std::fs::symlink_metadata(&endpoint) {
-            // A hard link names another profile's listening socket too.
-            Ok(meta) if meta.file_type().is_symlink() || meta.nlink() != 1 => {
-                log::error!(
-                    "host: refusing linked host endpoint {endpoint:?} (links={})",
-                    meta.nlink()
-                );
-                return Err(format!(
-                    "refusing to address a host through linked host endpoint {}",
-                    endpoint.display()
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("inspect {}: {error}", endpoint.display())),
-        }
-    }
-    for path in [
-        profile.to_path_buf(),
-        profile.join("host"),
-        profile.join(SPAWN_QUEUE_DIR),
-    ] {
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
-                log::error!("host: refusing profile through non-directory {path:?}");
-                return Err(format!(
-                    "refusing to address a host through non-directory profile path {}",
-                    path.display()
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("inspect {}: {error}", path.display())),
-        }
-    }
-    Ok(())
+    host_presence::ensure_real_profile_dir(profile)
 }
 
 /// Resolve the canonical installed target, falling back only to this executable

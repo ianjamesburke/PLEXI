@@ -66,6 +66,9 @@ enum Action {
         receipt: PathBuf,
         #[arg(long)]
         wait_pid: u32,
+        /// The named profile the restarting host ran on (`--profile`).
+        #[arg(long)]
+        profile: Option<String>,
     },
     Rollback {
         #[arg(long)]
@@ -174,10 +177,19 @@ fn run(args: Args) -> Result<i32> {
             return Ok(0);
         }
         Some(Action::Launch { receipt, args }) => return transaction::launch(&receipt, &args),
-        Some(Action::Restart { receipt, wait_pid }) => {
+        Some(Action::Restart {
+            receipt,
+            wait_pid,
+            profile,
+        }) => {
             // A deferral means another host started while this one waited;
             // that host keeps running and launch_ready has logged it.
-            transaction::restart(&receipt, wait_pid, args.profile_root.as_ref())?;
+            transaction::restart(
+                &receipt,
+                wait_pid,
+                args.profile_root.as_ref(),
+                profile.as_deref(),
+            )?;
             return Ok(0);
         }
         Some(Action::Rollback { receipt }) => {
