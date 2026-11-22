@@ -15723,6 +15723,48 @@ mod terminal_resize_debounce_tests {
         }
     }
 
+    /// Stint 1224: a long window drag reflows each terminal at most once per
+    /// `MAX_DEFERRED_RESIZE_FRAMES` frames, never two terminals on one frame,
+    /// and never saves the workspace mid-gesture. Small steps keep the cell
+    /// grid unchanged across some frames while pixels still move, which used
+    /// to pass for "settled" and reflowed mid-drag.
+    #[test]
+    fn long_drag_reflows_one_terminal_per_frame_within_the_cap() {
+        const FRAMES: u64 = 120;
+        let mut h = HostHarness::new();
+        let terminals = three_side_by_side_terminals(&mut h);
+        for _ in 0..4 {
+            frame_at_width(&mut h, START_WIDTH);
+        }
+        let before = commits(&mut h, &terminals);
+        let save_before = h.app.last_workspace_save;
+        h.app.last_workspace_save = save_before - std::time::Duration::from_secs(5);
+        let old_save = h.app.last_workspace_save;
+        h.app.workspace_dirty = true;
+        let mut previous = before.clone();
+        for frame in 0..FRAMES {
+            frame_at_width(&mut h, START_WIDTH - (frame % 60 + 1) as f32 * 8.0);
+            let current = commits(&mut h, &terminals);
+            let on_frame: u64 = current.iter().zip(&previous).map(|(a, b)| a - b).sum();
+            assert!(
+                on_frame <= 1,
+                "frame {frame} reflowed {on_frame} terminals at once"
+            );
+            assert_eq!(
+                h.app.last_workspace_save, old_save,
+                "workspace saved mid-drag on frame {frame}"
+            );
+            previous = current;
+        }
+        let per_terminal: Vec<u64> = previous.iter().zip(&before).map(|(a, b)| a - b).collect();
+        for (id, reflows) in terminals.iter().zip(&per_terminal) {
+            assert!(
+                *reflows >= 1 && *reflows <= FRAMES.div_ceil(8) + 1,
+                "terminal {id} reflowed {reflows} times across {FRAMES} drag frames (all: {per_terminal:?})"
+            );
+        }
+    }
+
     /// A single programmatic size change (no drag) must still land promptly. A
     /// one-frame stability wait is the cost of the debounce; an indefinite
     /// deferral would be a regression of its own.

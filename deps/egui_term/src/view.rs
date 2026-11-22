@@ -277,11 +277,24 @@ impl<'a> TerminalView<'a> {
         // defers takes no lock at all, which is most of the win during a drag.
         let timed = crate::diag::span_hook_installed();
         let start = timed.then(std::time::Instant::now);
+        let pass = layout.ctx.cumulative_pass_nr();
+        let mid_drag_reflow_id = Id::new("egui_term::mid_drag_reflow_pass");
+        let may_track =
+            layout.ctx.data(|d| d.get_temp::<u64>(mid_drag_reflow_id))
+                != Some(pass);
         let outcome = self.backend.request_resize(
             Size::from(grid_size(layout.rect.size(), self.padding)),
             self.font.font_measure(&layout.ctx),
             self.resize_immediately,
+            may_track,
         );
+        if outcome == ResizeOutcome::CommittedMidDrag {
+            // One scrollback reflow per pass across every terminal: the
+            // others keep deferring and take their turn on later frames.
+            layout
+                .ctx
+                .data_mut(|d| d.insert_temp(mid_drag_reflow_id, pass));
+        }
         if let Some(start) = start {
             crate::diag::span_note(
                 "terminal_resize",

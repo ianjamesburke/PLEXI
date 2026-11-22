@@ -259,6 +259,8 @@ pub struct PlexiApp {
     /// 300ms past the last signal so it doesn't flap between frames
     /// (stint 0731).
     pub(crate) drag_window_last_seen: Option<std::time::Instant>,
+    /// Always-on window-resize gesture summary (stint 1224).
+    pub(crate) resize_gesture: crate::platform::ui_profile::ResizeGesture,
     /// Screenshot requests (`plexi host screenshot`) awaiting the viewport
     /// capture that `HostRequest::Screenshot` triggered (stint 0461).
     pub(crate) pending_screenshots: Vec<crate::app::screenshot::PendingScreenshot>,
@@ -711,6 +713,16 @@ pub struct PlexiApp {
 }
 
 /// Keeps painted permission-sheet buttons only for the frame that drew them.
+/// One `App::logic` pass's view of drag/resize input. See
+/// `PlexiApp::detect_drag_active`.
+#[derive(Clone, Copy)]
+struct DragSignal {
+    /// The window's size changed since the previous pass.
+    window_resized: bool,
+    /// A window resize or pointer drag is in progress, including its hold.
+    active: bool,
+}
+
 struct SheetButtonFrame;
 
 impl SheetButtonFrame {
@@ -1881,6 +1893,7 @@ impl PlexiApp {
                     frame_diag_window: None,
                     prev_screen_rect: None,
                     drag_window_last_seen: None,
+                    resize_gesture: Default::default(),
                     pending_screenshots: Vec::new(),
                     approval_buttons: Vec::new(),
                     synthetic_input_frame: false,
@@ -2179,6 +2192,7 @@ impl PlexiApp {
             frame_diag_window: None,
             prev_screen_rect: None,
             drag_window_last_seen: None,
+            resize_gesture: Default::default(),
             pending_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
@@ -3221,6 +3235,7 @@ impl PlexiApp {
             frame_diag_window: None,
             prev_screen_rect: None,
             drag_window_last_seen: None,
+            resize_gesture: Default::default(),
             pending_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
@@ -3768,10 +3783,15 @@ impl eframe::App for PlexiApp {
         // `ui`, a fully covered host serviced no pane IPC at all: wakes fired,
         // logic-only passes ran, and queued commands sat until the window was
         // next uncovered (stint 0505 fix round 3).
+        let logic_start = std::time::Instant::now();
+        let drag = self.detect_drag_active(ctx);
+        self.resize_gesture
+            .begin_pass(logic_start, drag.window_resized, frame.info().cpu_usage);
+        crate::platform::ui_profile::set_drag_active(drag.active);
         if self.service_pending_notification_decision() {
             ctx.request_repaint();
         }
-        self.update_preamble(ctx);
+        self.update_preamble(ctx, drag.active);
         if self.service_quit(frame) {
             return;
         }
@@ -4037,6 +4057,9 @@ impl eframe::App for PlexiApp {
         // A zoom, tab switch or focus move this pass ends a selection it hid.
         self.reconcile_pane_selections();
         self.resolve_auto_context_names();
+        let logic_elapsed = logic_start.elapsed();
+        self.resize_gesture.note_app_time(logic_elapsed);
+        crate::platform::ui_profile::note_nanos("logic_total", logic_elapsed.as_nanos() as u64);
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::LogicComplete,
@@ -4053,15 +4076,14 @@ impl eframe::App for PlexiApp {
         let ctx = &ui.ctx().clone();
         // Before any overlay owner takes the frame's input buffer.
         input_owner::note_tab_key(ctx);
-        let ui_profile_start = crate::platform::ui_profile::enabled().then(std::time::Instant::now);
+        let ui_start = std::time::Instant::now();
+        #[cfg(test)]
+        let ui_cpu_start = crate::platform::ui_profile::enabled()
+            .then(crate::platform::ui_profile::thread_cpu_time);
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::UiRender,
         );
-        if crate::platform::ui_profile::enabled() {
-            let drag_active = self.detect_drag_active(ctx);
-            crate::platform::ui_profile::set_drag_active(drag_active);
-        }
         self.frame_tick
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Repaint-cause diagnostics (#2019): count this frame, attribute
@@ -4494,9 +4516,15 @@ impl eframe::App for PlexiApp {
         // widget focus (stint 0429). Everything above may change host focus
         // state; nothing after this may touch egui focus.
         self.reconcile_egui_focus(ctx);
-        if let Some(start) = ui_profile_start {
-            crate::platform::ui_profile::end_frame(start.elapsed());
+        #[cfg(test)]
+        if let Some(cpu_start) = ui_cpu_start {
+            crate::platform::ui_profile::note_cpu_frame(
+                crate::platform::ui_profile::thread_cpu_time() - cpu_start,
+            );
         }
+        let ui_elapsed = ui_start.elapsed();
+        self.resize_gesture.note_app_time(ui_elapsed);
+        crate::platform::ui_profile::end_frame(ui_elapsed);
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::RendererPresent,
@@ -5154,25 +5182,40 @@ impl PlexiApp {
         }
     }
 
-    /// True while a drag/resize gesture appears active: the pointer is down
-    /// and moving, the screen rect changed since last frame (window resize),
-    /// or either signal fired within the last 300ms (stint 0731). The
-    /// trailing hold prevents the drag window from flapping open/closed
-    /// between frames when a gesture pauses briefly mid-drag.
-    fn detect_drag_active(&mut self, ctx: &egui::Context) -> bool {
-        let screen_rect = ctx.content_rect();
-        let rect_changed = self.prev_screen_rect.replace(screen_rect) != Some(screen_rect);
+    /// Read once per `App::logic` pass. A drag/resize gesture is active while
+    /// the pointer is down and moving, the content rect changed since the
+    /// last pass (window resize), or either fired within the last 300ms
+    /// (stint 0731). The trailing hold keeps the gesture from flapping
+    /// between frames when it pauses briefly; the scheduled repaint makes
+    /// sure a pass runs after the hold, so the gesture ends (and a deferred
+    /// workspace save lands) even if no other input arrives (stint 1224).
+    fn detect_drag_active(&mut self, ctx: &egui::Context) -> DragSignal {
+        // Physical pixels, so a UI-scale change is not a window resize.
+        let screen_rect = ctx.content_rect() * ctx.pixels_per_point();
+        let window_resized = self
+            .prev_screen_rect
+            .replace(screen_rect)
+            .is_some_and(|previous| previous != screen_rect);
         let pointer_dragging = ctx.input(|i| i.pointer.any_down() && i.pointer.is_moving());
 
         let now = std::time::Instant::now();
-        if rect_changed || pointer_dragging {
+        let hold = crate::platform::ui_profile::RESIZE_GESTURE_HOLD;
+        if window_resized || pointer_dragging {
             self.drag_window_last_seen = Some(now);
-            return true;
+            let predicted = ctx.input(|i| i.predicted_dt);
+            ctx.request_repaint_after(hold + std::time::Duration::from_secs_f32(predicted));
+            return DragSignal {
+                window_resized,
+                active: true,
+            };
         }
-        matches!(
-            self.drag_window_last_seen,
-            Some(last_seen) if now.duration_since(last_seen) < std::time::Duration::from_millis(300)
-        )
+        DragSignal {
+            window_resized,
+            active: matches!(
+                self.drag_window_last_seen,
+                Some(last_seen) if now.duration_since(last_seen) < hold
+            ),
+        }
     }
 
     /// Open the Cmd+O picker from the in-memory index and refresh it off the

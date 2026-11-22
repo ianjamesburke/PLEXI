@@ -176,8 +176,14 @@ pub enum ResizeOutcome {
     /// of the drag. The caller must schedule another frame so the commit
     /// cannot be stranded by a gesture that ends between frames.
     Deferred,
-    /// `SIGWINCH` and the grid reflow ran for this geometry.
+    /// `SIGWINCH` and the grid reflow ran for this geometry: the layout
+    /// settled, or the change was immediate.
     Committed,
+    /// A sustained drag held this geometry for the full defer cap, so one
+    /// mid-drag reflow ran to keep the grid tracking. The caller spent this
+    /// frame's mid-drag reflow (see `may_track` on
+    /// [`TerminalBackend::request_resize`]).
+    CommittedMidDrag,
 }
 
 /// Longest run of consecutive frames a pending resize may be held back. A drag
@@ -230,6 +236,10 @@ impl ResizeGeometry {
 #[derive(Debug, Clone, Copy)]
 struct PendingResize {
     geometry: ResizeGeometry,
+    /// The pixel layout, which must hold still too: a slow drag keeps the
+    /// same cell grid for several frames while the pane is still moving, and
+    /// committing on that grid match reflows mid-drag (stint 1224).
+    layout_size: Size,
     /// Consecutive frames the reflow has been held back, including the frame
     /// that produced this record.
     deferred_frames: u32,
@@ -1197,11 +1207,18 @@ impl TerminalBackend {
     /// jump (a column scrolling into view, a tile swapped in): the new
     /// geometry is already final, so deferring it only paints one frame of the
     /// stale grid inside the new rect.
+    ///
+    /// `may_track` says whether this frame's one mid-drag reflow is still
+    /// unspent. Every visible terminal reaches the defer cap on the same frame
+    /// of a sustained drag; reflowing all their scrollbacks together is a
+    /// frame spike, so the caller lets one terminal per frame take its capped
+    /// reflow and the rest keep deferring until a later frame (stint 1224).
     pub fn request_resize(
         &mut self,
         layout_size: Size,
         font_size: Size,
         immediate: bool,
+        may_track: bool,
     ) -> ResizeOutcome {
         let Some(geometry) = ResizeGeometry::derive(layout_size, font_size)
         else {
@@ -1220,13 +1237,19 @@ impl TerminalBackend {
         }
 
         let held = self.pending_resize.take();
-        let settled = held.is_some_and(|pending| pending.geometry == geometry);
+        let settled = held.is_some_and(|pending| {
+            pending.geometry == geometry && pending.layout_size == layout_size
+        });
         let deferred_frames =
             held.map_or(0, |pending| pending.deferred_frames) + 1;
+        let mid_drag = !immediate && !settled;
 
-        if !immediate && !settled && deferred_frames < MAX_DEFERRED_RESIZE_FRAMES {
+        if mid_drag
+            && (deferred_frames < MAX_DEFERRED_RESIZE_FRAMES || !may_track)
+        {
             self.pending_resize = Some(PendingResize {
                 geometry,
+                layout_size,
                 deferred_frames,
             });
             return ResizeOutcome::Deferred;
@@ -1250,7 +1273,11 @@ impl TerminalBackend {
         let term = self.term.clone();
         let mut term = term.lock();
         self.commit_resize(&mut term, layout_size, geometry);
-        ResizeOutcome::Committed
+        if mid_drag {
+            ResizeOutcome::CommittedMidDrag
+        } else {
+            ResizeOutcome::Committed
+        }
     }
 
     fn commit_resize(
