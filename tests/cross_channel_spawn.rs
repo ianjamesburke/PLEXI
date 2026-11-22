@@ -24,6 +24,8 @@ fn capture_view_open(cross_channel: bool) -> (serde_json::Value, std::path::Path
         }
     }
     let mut child = command
+        .arg("--profile-root")
+        .arg(home)
         .args(["view", "open", "balls.main"])
         .current_dir(&cwd)
         .env("HOME", home)
@@ -62,6 +64,10 @@ fn capture_view_open(cross_channel: bool) -> (serde_json::Value, std::path::Path
         let mut line = String::new();
         let mut reader = BufReader::new(stream);
         reader.read_line(&mut line).unwrap();
+        // A fresh profile's presence probe connects and sends nothing.
+        if line.is_empty() {
+            continue;
+        }
         let request: serde_json::Value = serde_json::from_str(&line).unwrap();
         if request["type"] != "spawn_pane" {
             continue;

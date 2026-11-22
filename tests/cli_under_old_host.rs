@@ -19,6 +19,8 @@ fn run(home: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     }
     command
         .args(["--profile", PROFILE])
+        .arg("--profile-root")
+        .arg(home)
         .args(args)
         .current_dir(home)
         .env("HOME", home)
@@ -191,8 +193,12 @@ fn cli_under_an_old_host_runs_without_migrating_and_refuses_only_profile_command
             REFUSAL,
             "pid 4312",
             "old-build",
-            // The hint addresses this profile's host (stint 1655).
-            &format!("plexi --profile {PROFILE} host restart"),
+            // The hint addresses this profile's host, under its root
+            // (stints 1655, 1695).
+            &format!(
+                "plexi --profile-root {} --profile {PROFILE} host restart",
+                home.path().display()
+            ),
         ] {
             assert!(
                 message.contains(needle),

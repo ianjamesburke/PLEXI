@@ -15,6 +15,8 @@ fn plugin_list_json_prints_a_json_array() {
         }
     }
     let output = command
+        .arg("--profile-root")
+        .arg(home.path())
         .args(["plugin", "list", "--json"])
         .current_dir(cwd.path())
         .env("HOME", home.path())

@@ -168,6 +168,8 @@ impl Sandbox {
         }
         command
             .args(["--profile", PROFILE])
+            .arg("--profile-root")
+            .arg(&home)
             .args(args)
             .current_dir(self.root.path())
             .env("HOME", &home)

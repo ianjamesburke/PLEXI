@@ -189,6 +189,8 @@ impl Probe {
             }
         }
         let child = command
+            .arg("--profile-root")
+            .arg(self.home.path())
             .args(args)
             .current_dir(self.home.path())
             .env("HOME", self.home.path())

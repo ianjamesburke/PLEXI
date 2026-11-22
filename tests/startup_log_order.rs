@@ -33,6 +33,8 @@ fn fresh_profile_seeding_is_logged_after_logger_start() {
     // No `uv` on PATH: venv provisioning fails fast and offline, and its
     // warning must still reach the log.
     let output = command
+        .arg("--profile-root")
+        .arg(home.path())
         .args(["plugin", "list", "--json"])
         .current_dir(cwd.path())
         .env("HOME", home.path())

@@ -16,21 +16,31 @@ fn plexi(home: &std::path::Path, args: &[&str], pane_env: Option<&str>) -> Comma
             command.env_remove(key);
         }
     }
-    command.args(args).env("HOME", home).stdin(Stdio::null());
+    // A pane's endpoint lives in its host's profile directory, which is
+    // where a bare command in that pane finds its profile (stint 1695).
+    command
+        .args(args)
+        .env("HOME", home)
+        .env("PLEXI_SOCKET", pane_socket(home))
+        .stdin(Stdio::null());
     if let Some(value) = pane_env {
         command.env("PLEXI_PANE_ID", value);
     }
     command
 }
 
+fn pane_socket(home: &std::path::Path) -> std::path::PathBuf {
+    home.join(".plexi/notify.sock")
+}
+
 /// Run the CLI against a fake host and return the first request it sends.
 fn first_request(args: &[&str], pane_env: Option<&str>) -> serde_json::Value {
     let home = tempfile::tempdir().unwrap();
-    let socket = home.path().join("notify.sock");
+    let socket = pane_socket(home.path());
+    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     let listener = UnixListener::bind(&socket).unwrap();
     listener.set_nonblocking(true).unwrap();
     let mut child = plexi(home.path(), args, pane_env)
-        .env("PLEXI_SOCKET", &socket)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -42,6 +52,10 @@ fn first_request(args: &[&str], pane_env: Option<&str>) -> serde_json::Value {
                 stream.set_nonblocking(false).unwrap();
                 let mut line = String::new();
                 BufReader::new(stream).read_line(&mut line).unwrap();
+                // A fresh profile's presence probe connects and sends nothing.
+                if line.is_empty() {
+                    continue;
+                }
                 let request: serde_json::Value = serde_json::from_str(&line).expect("request json");
                 // The CLI also reports a `cli_trace` record; skip it.
                 if request["type"] == "cli_trace" {

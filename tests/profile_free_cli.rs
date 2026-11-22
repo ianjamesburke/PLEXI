@@ -17,6 +17,8 @@ fn run(home: &Path, args: &[&str]) -> Output {
     }
     command
         .args(["--profile", PROFILE])
+        .arg("--profile-root")
+        .arg(home)
         .args(args)
         .current_dir(home)
         .env("HOME", home)

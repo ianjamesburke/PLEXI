@@ -117,6 +117,8 @@ fn spawn_raw(fixture: &Fixture, args: &[&str], env: &[(&str, &Path)]) -> Child {
         }
     }
     command
+        .arg("--profile-root")
+        .arg(&fixture.home)
         .args(args)
         .current_dir(&fixture.home)
         .env("HOME", &fixture.home)
@@ -232,7 +234,8 @@ fn host_restart_with_profile_from_its_own_pane_asks_for_confirmation() {
     assert!(!output.status.success(), "{stderr}");
     assert!(
         stderr.contains(&format!(
-            "plexi-{CHANNEL} --profile {PROFILE} host restart --yes"
+            "plexi-{CHANNEL} --profile-root {} --profile {PROFILE} host restart --yes",
+            fixture.home.display()
         )),
         "{stderr}"
     );
@@ -422,7 +425,8 @@ fn a_case_alias_of_the_callers_own_host_is_the_same_host() {
     assert!(!output.status.success(), "{stderr}");
     assert!(
         stderr.contains(&format!(
-            "plexi-{CHANNEL} --profile Team host restart --yes"
+            "plexi-{CHANNEL} --profile-root {} --profile Team host restart --yes",
+            fixture.home.display()
         )),
         "{stderr}"
     );
@@ -452,6 +456,8 @@ fn a_foreign_pane_identity_never_reaches_the_named_host() {
         }
     }
     let output = command
+        .arg("--profile-root")
+        .arg(&fixture.home)
         .args([
             "--profile",
             PROFILE,

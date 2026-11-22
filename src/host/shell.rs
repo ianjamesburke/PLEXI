@@ -416,6 +416,26 @@ fn is_plexi_zsh_integration_dir(candidate: &str) -> bool {
     })
 }
 
+/// The routing values a pane of the host on `target` carries besides its
+/// endpoint (`PLEXI_SOCKET`, `target.endpoint()`, set with the pane's
+/// identity): its profile suffix (`PLEXI_CHANNEL`, none for `.plexi`) and its
+/// build (`PLEXI_BUILD_CHANNEL`, `stable` for a bare host). All come from the
+/// host's one selection, never from the environment it inherited (stint
+/// 1695).
+pub(crate) fn pane_routing_env(
+    target: &crate::config::profile_target::ProfileTarget,
+) -> Vec<(String, String)> {
+    let mut env = Vec::new();
+    if let Some(suffix) = target.routing_suffix() {
+        env.push(("PLEXI_CHANNEL".to_string(), suffix.to_string()));
+    }
+    env.push((
+        plexi_distribution::transaction::BUILD_CHANNEL_VAR.to_string(),
+        target.build_channel().unwrap_or("stable").to_string(),
+    ));
+    env
+}
+
 /// Decide injection before resolving any values: a withheld class is never
 /// read only to be removed afterwards.
 pub(crate) fn build_env_with_secrets(
@@ -433,20 +453,9 @@ pub(crate) fn build_env_with_secrets(
     // `.plexi`) and the stable launcher runs the host's build
     // (`PLEXI_BUILD_CHANNEL`, `stable` for a bare host). Both come from the
     // host's selection, never from the environment it inherited.
-    let target = crate::config::profile_target::profile_target();
-    if let Some(suffix) = target.routing_suffix() {
-        env.insert("PLEXI_CHANNEL".into(), suffix.to_string());
-    }
-    let build = target.build_channel().unwrap_or("stable").to_string();
-    log::info!(
-        "shell::build_env: PLEXI_CHANNEL={:?} {}={build}",
-        target.routing_suffix(),
-        plexi_distribution::transaction::BUILD_CHANNEL_VAR
-    );
-    env.insert(
-        plexi_distribution::transaction::BUILD_CHANNEL_VAR.into(),
-        build,
-    );
+    let routing = pane_routing_env(crate::config::profile_target::profile_target());
+    log::info!("shell::build_env: routing {routing:?}");
+    env.extend(routing);
 
     env.insert(
         "LANG".into(),
@@ -1319,6 +1328,76 @@ pub(crate) fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stint 1695: a host launched with poisoned `HOME`, `PLEXI_CHANNEL` and
+    /// `PLEXI_SOCKET` gives its panes routing values with none of those
+    /// bytes. A poisoned `HOME` without `--profile-root` launches no host.
+    #[test]
+    fn pane_routing_carries_no_inherited_bytes() {
+        use crate::config::profile_target::{select, Ambient, ProfileRoot, Role, Selectors};
+        use crate::config::ProfileSelection;
+        let account = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        const SENTINEL: &str = "sentinel1695";
+        let poisoned_home = tempfile::Builder::new().prefix(SENTINEL).tempdir().unwrap();
+        let ambient = Ambient {
+            home: Some(poisoned_home.path().into()),
+            socket: Some(format!("/{SENTINEL}/.plexi-{SENTINEL}/notify.sock").into()),
+            channel: Some(SENTINEL.into()),
+            delegated: false,
+        };
+        let refused = select(
+            Role::HostLaunch,
+            &Selectors::none(),
+            "plexi-pr-1695",
+            Ok(account.path().into()),
+            &ambient,
+        );
+        assert!(refused.is_err(), "{refused:?}");
+        for (profile, executable) in [
+            (ProfileSelection::Default, "plexi"),
+            (ProfileSelection::Default, "plexi-pr-1695"),
+            (ProfileSelection::parse("t1695").unwrap(), "plexi-pr-1695"),
+            (ProfileSelection::parse("t1695").unwrap(), "plexi"),
+        ] {
+            let selectors = Selectors {
+                profile,
+                root: Some(ProfileRoot::parse(root.path().as_os_str()).unwrap()),
+            };
+            let target = select(
+                Role::HostLaunch,
+                &selectors,
+                executable,
+                Ok(account.path().into()),
+                &ambient,
+            )
+            .unwrap();
+            let mut values = pane_routing_env(&target);
+            values.push((
+                "PLEXI_SOCKET".into(),
+                target.endpoint().to_string_lossy().into_owned(),
+            ));
+            for (key, value) in &values {
+                assert!(!value.contains(SENTINEL), "{executable}: {key}={value}");
+            }
+            assert!(target.endpoint().starts_with(root.path()), "{target:?}");
+            let build = values
+                .iter()
+                .find(|(key, _)| key == "PLEXI_BUILD_CHANNEL")
+                .map(|(_, value)| value.as_str());
+            assert_eq!(
+                build,
+                Some(if executable == "plexi" { "stable" } else { "pr-1695" })
+            );
+            // `PLEXI_CHANNEL` names the profile a bare client routes to, not
+            // the build.
+            let channel = values
+                .iter()
+                .find(|(key, _)| key == "PLEXI_CHANNEL")
+                .map(|(_, value)| value.as_str());
+            assert_eq!(channel, target.routing_suffix(), "{executable}");
+        }
+    }
 
     struct LauncherColorEnvGuard {
         prev_no_color: Option<std::ffi::OsString>,
