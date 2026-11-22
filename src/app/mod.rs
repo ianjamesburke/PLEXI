@@ -5876,8 +5876,11 @@ fn register_directed_pipe_on(
     pipe_id: &str,
     generation: u64,
 ) -> Result<bool, String> {
-    let registered = view_pane.runtime.register_directed_pipe(pipe_id, generation)?
-        && view_pane.runtime.has_pipe_reader(pipe_id);
+    // True whenever the runtime made a registration, reader or not, so a
+    // failed open can undo exactly what it made.
+    let registered = view_pane
+        .runtime
+        .register_directed_pipe(pipe_id, generation)?;
     if registered {
         log::info!(
             "register_directed_pipe_on: registered directed pipe '{pipe_id}' on pane {} (plugin_id={}, runtime={})",

@@ -2234,6 +2234,16 @@ impl LiveWasmPane {
         self.inner.send_binary_for_test(handle, frame)
     }
 
+    #[cfg(test)]
+    pub fn open_json_pipe_for_test(&mut self, id: &str) -> Result<u32, String> {
+        self.inner.app.open_json_pipe_for_test(id)
+    }
+
+    #[cfg(test)]
+    pub fn directed_handle_count_for_test(&self) -> usize {
+        self.inner.app.directed_handle_count_for_test()
+    }
+
     pub fn take_host_effects(&mut self) -> Vec<WasmHostEffect> {
         self.inner.take_host_effects()
     }

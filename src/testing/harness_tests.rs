@@ -17864,6 +17864,52 @@ fn an_open_from_an_unplaced_view_is_refused() {
     );
 }
 
+/// Stint 1681 (review round 3): an opener whose guest already opened a
+/// plain JSON pipe of the name refuses the registration before making a
+/// handle, so the refused open leaves no directed handle on either end.
+#[test]
+fn a_refused_open_leaves_no_directed_handle_on_an_end_with_a_guest_pipe_of_the_name() {
+    let mut h = HostHarness::new();
+    let win_idx = h.app.active_window;
+    let context_id = h.app.windows[win_idx].context_id;
+    let opener = add_wasm_pipe_pane(&mut h, win_idx);
+    let target = add_wasm_pipe_pane(&mut h, win_idx);
+    wasm_runtime(&mut h, opener)
+        .open_json_pipe_for_test("shared")
+        .expect("the opener's guest opens a plain JSON pipe");
+    let binary = wasm_runtime(&mut h, target)
+        .open_binary_pipe_for_test("shared")
+        .expect("the target opens a binary pipe");
+    let opener_emitter = crate::app::view_trait::ViewEmitter {
+        pane_id: opener,
+        incarnation: h.app.windows[win_idx].panes[&opener]
+            .as_view()
+            .expect("view")
+            .incarnation,
+    };
+    h.app.overlay_held_cmds = vec![crate::app::view_trait::ViewCommand::OpenDirectedPipe {
+        sender_pane_id: opener,
+        request_id: "guest-pipe".to_string(),
+        pipe_id: "shared".to_string(),
+        target_pane_id: target,
+        emitter: Some(opener_emitter),
+    }];
+    h.run_hidden_frames(1);
+
+    assert_eq!(pipe_ends(&h, &(context_id, "shared".to_string())), None);
+    assert_eq!(
+        wasm_runtime(&mut h, opener).directed_handle_count_for_test(),
+        0
+    );
+    assert_eq!(
+        wasm_runtime(&mut h, target).directed_handle_count_for_test(),
+        0
+    );
+    wasm_runtime(&mut h, target)
+        .send_binary_for_test(binary, vec![9])
+        .expect("the target's binary pipe still takes frames");
+}
+
 /// A Python directed-pipe peer: it opens `py-to-wasm` to the pane in
 /// `args[0]` and sends by name before the answer, echoes every message that
 /// is not itself an echo on the handle it arrived on, and titles itself with

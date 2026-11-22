@@ -359,6 +359,19 @@ impl HostCtx {
                 self.plugin_id
             ));
         }
+        // A pipe the guest opened itself under this name would share the
+        // registry entry, and undoing this registration would close it.
+        if self
+            .pipe_handles
+            .values()
+            .any(|binding| binding.generation.is_none() && binding.id == pipe_id)
+        {
+            return Err(format!(
+                "'{}' is already open as a guest pipe on plugin {}",
+                guest_text::shown(pipe_id),
+                self.plugin_id
+            ));
+        }
         match self.pipes.open_json(
             pipe_id.to_string(),
             crate::host::typed_pipes::PipeDirection::Duplex,
@@ -1076,6 +1089,40 @@ impl WasmView {
     #[cfg(test)]
     pub fn send_binary_for_test(&mut self, handle: u32, frame: Vec<u8>) -> Result<(), String> {
         pipes::Host::send_binary(self.store.data_mut(), handle, frame)
+    }
+
+    /// Open a plain JSON pipe as the guest would, for tests.
+    #[cfg(test)]
+    pub fn open_json_pipe_for_test(&mut self, id: &str) -> Result<u32, String> {
+        pipes::Host::open(
+            self.store.data_mut(),
+            id.to_string(),
+            pipes::PipeType::Json,
+            pipes::PipeDirection::Out,
+        )
+    }
+
+    /// Call `open-directed` as the guest would, for tests.
+    #[cfg(test)]
+    pub fn open_directed_for_test(&mut self, id: &str, target_pane: u64) -> Result<u32, String> {
+        pipes::Host::open_directed(self.store.data_mut(), id.to_string(), target_pane)
+    }
+
+    /// Close a pipe handle as the guest would, for tests.
+    #[cfg(test)]
+    pub fn close_pipe_for_test(&mut self, handle: u32) -> Result<(), String> {
+        pipes::Host::close(self.store.data_mut(), handle)
+    }
+
+    /// How many handles carry a directed connection, for tests.
+    #[cfg(test)]
+    pub fn directed_handle_count_for_test(&self) -> usize {
+        self.store
+            .data()
+            .pipe_handles
+            .values()
+            .filter(|binding| binding.generation.is_some())
+            .count()
     }
 
     /// True when the gpu capability was granted (the plugin declares a surface).
