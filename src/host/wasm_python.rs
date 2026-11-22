@@ -436,6 +436,11 @@ impl AsyncRead for AppendableStdin {
 struct OutputState {
     bytes: Vec<u8>,
     closed: bool,
+    /// Unread bytes past which the guest's writes wait for a drain; `None`
+    /// takes every write (stderr, the headless one-shot path).
+    unread_limit: Option<usize>,
+    /// The guest's write waiting for a drain.
+    writer: Option<std::task::Waker>,
 }
 
 /// Cloneable WASI output drainable without closing the guest stream. A
@@ -461,7 +466,13 @@ impl DrainableOutput {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if !state.bytes.is_empty() {
-                return Some(std::mem::take(&mut state.bytes));
+                let bytes = std::mem::take(&mut state.bytes);
+                let writer = state.writer.take();
+                drop(state);
+                if let Some(writer) = writer {
+                    writer.wake();
+                }
+                return Some(bytes);
             }
             if state.closed {
                 return None;
@@ -470,21 +481,58 @@ impl DrainableOutput {
         }
     }
 
-    fn push_bytes(&self, buf: &[u8]) {
+    /// Take `buf` unless `limit_unread` bytes are already unread: then the
+    /// write waits, with `waker`, for the reader to drain. Once closed, writes
+    /// are taken and dropped, so a guest still running is never stuck on them.
+    fn push_bytes(&self, buf: &[u8], waker: Option<&std::task::Waker>) -> bool {
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.closed {
+                return true;
+            }
+            if let (Some(limit), Some(waker)) = (state.unread_limit, waker) {
+                if state.bytes.len() >= limit {
+                    state.writer = Some(waker.clone());
+                    return false;
+                }
+            }
             state.bytes.extend_from_slice(buf);
         }
         self.signal.notify_all();
+        true
     }
 
-    /// Signal end-of-stream so a blocked decoder thread can exit.
+    /// Make the guest's writes wait while `limit` bytes are unread: the
+    /// reader, not this buffer, decides how far the guest may run ahead.
+    fn limit_unread(&self, limit: usize) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .unread_limit = Some(limit);
+    }
+
+    /// Bytes written and not yet drained.
+    #[cfg(test)]
+    fn unread_bytes(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .bytes
+            .len()
+    }
+
+    /// Signal end-of-stream so a blocked decoder thread can exit, and let a
+    /// waiting write through.
     fn close(&self) {
-        {
+        let writer = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.closed = true;
-        }
+            state.writer.take()
+        };
         self.signal.notify_all();
+        if let Some(writer) = writer {
+            writer.wake();
+        }
     }
 }
 
@@ -503,11 +551,14 @@ impl StdoutStream for DrainableOutput {
 impl AsyncWrite for DrainableOutput {
     fn poll_write(
         self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        self.push_bytes(buf);
-        Poll::Ready(Ok(buf.len()))
+        if self.push_bytes(buf, Some(cx.waker())) {
+            Poll::Ready(Ok(buf.len()))
+        } else {
+            Poll::Pending
+        }
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
@@ -1717,6 +1768,101 @@ enum DecodedOutput {
     DecodeError(String),
 }
 
+impl DecodedOutput {
+    /// The bytes this output counts against the decoded backlog: the guest
+    /// line it came from, or the error text.
+    fn backlog_bytes(&self) -> usize {
+        match self {
+            Self::Tree { bytes, .. } | Self::Message { bytes, .. } => *bytes,
+            Self::DecodeError(error) => error.len(),
+        }
+    }
+}
+
+/// Most decoded guest output, in guest-line bytes, the host may have left to
+/// take before the decoder stops reading the guest's stdout (stint 1681).
+const DECODED_BACKLOG_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+
+/// Most guest stdout bytes left unread before the guest's writes wait
+/// (stint 1681).
+const STDOUT_UNREAD_LIMIT_BYTES: usize = 1024 * 1024;
+
+/// Decoded guest output the host has not taken yet (stint 1681). Over its
+/// limit the decoder waits, so it stops reading guest stdout, whose writes
+/// then wait in turn: a guest that outpaces the host is held back rather than
+/// growing host memory. One output always fits an empty backlog, however
+/// large.
+struct DecodedBacklog {
+    state: Mutex<DecodedBacklogState>,
+    room: std::sync::Condvar,
+}
+
+struct DecodedBacklogState {
+    bytes: usize,
+    limit: usize,
+    closed: bool,
+}
+
+impl DecodedBacklog {
+    fn new(limit: usize) -> Self {
+        Self {
+            state: Mutex::new(DecodedBacklogState {
+                bytes: 0,
+                limit,
+                closed: false,
+            }),
+            room: std::sync::Condvar::new(),
+        }
+    }
+
+    fn fits(state: &DecodedBacklogState, bytes: usize) -> bool {
+        state.bytes == 0 || state.bytes.saturating_add(bytes) <= state.limit
+    }
+
+    /// Whether `bytes` more fit now.
+    fn has_room(&self, bytes: usize) -> bool {
+        Self::fits(&self.state.lock().unwrap_or_else(|e| e.into_inner()), bytes)
+    }
+
+    /// Wait until `bytes` more fit, then count them. False once closed.
+    fn admit(&self, bytes: usize) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        while !state.closed && !Self::fits(&state, bytes) {
+            state = self.room.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+        if state.closed {
+            return false;
+        }
+        state.bytes += bytes;
+        true
+    }
+
+    /// The host took an output of `bytes`.
+    fn release(&self, bytes: usize) {
+        {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.bytes = state.bytes.saturating_sub(bytes);
+        }
+        self.room.notify_all();
+    }
+
+    fn close(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).closed = true;
+        self.room.notify_all();
+    }
+
+    #[cfg(test)]
+    fn bytes(&self) -> usize {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).bytes
+    }
+
+    #[cfg(test)]
+    fn set_limit(&self, limit: usize) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).limit = limit;
+        self.room.notify_all();
+    }
+}
+
 /// Where a decoder thread wakes the paint loop once a frame is ready. Installed
 /// lazily on the first `ui()` call (egui's `Context` only exists then) and
 /// shared across `relaunch` so a fresh decoder inherits it immediately.
@@ -1782,6 +1928,7 @@ struct PythonOutputDecoder {
     /// without consuming anything — an off-screen pane is asked every frame and
     /// a peek that took a message would drop it on the floor.
     queued: Arc<std::sync::atomic::AtomicUsize>,
+    backlog: Arc<DecodedBacklog>,
 }
 
 impl PythonOutputDecoder {
@@ -1793,10 +1940,13 @@ impl PythonOutputDecoder {
     ) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         let stdout = runtime.stdout.clone();
+        stdout.limit_unread(STDOUT_UNREAD_LIMIT_BYTES);
         let stdin = runtime.stdin.clone();
         let thread_stdout = stdout.clone();
         let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let thread_queued = queued.clone();
+        let backlog = Arc::new(DecodedBacklog::new(DECODED_BACKLOG_LIMIT_BYTES));
+        let thread_backlog = Arc::clone(&backlog);
         let thread = std::thread::Builder::new()
             .name(format!("plexi-python-decode-{plugin_id}"))
             .spawn(move || {
@@ -1807,6 +1957,7 @@ impl PythonOutputDecoder {
                     tx,
                     repaint,
                     thread_queued,
+                    thread_backlog,
                     wake_schedule,
                 );
             })
@@ -1816,6 +1967,7 @@ impl PythonOutputDecoder {
             thread,
             stdout,
             queued,
+            backlog,
         }
     }
 
@@ -1823,11 +1975,25 @@ impl PythonOutputDecoder {
     /// channel. Every read of `rx` must go through here.
     fn try_recv(&self) -> Result<DecodedOutput, std::sync::mpsc::TryRecvError> {
         let output = self.rx.try_recv();
-        if output.is_ok() {
+        if let Ok(output) = &output {
             self.queued
                 .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            self.backlog.release(output.backlog_bytes());
         }
         output
+    }
+
+    /// Test hook: decoded bytes not yet taken, and guest stdout unread.
+    #[cfg(test)]
+    fn backlog_for_test(&self) -> (usize, usize) {
+        (self.backlog.bytes(), self.stdout.unread_bytes())
+    }
+
+    /// Test hook: lower both output limits.
+    #[cfg(test)]
+    fn set_output_limits_for_test(&self, backlog: usize, unread: usize) {
+        self.stdout.limit_unread(unread);
+        self.backlog.set_limit(backlog);
     }
 
     /// True when the guest has produced output the host has not read yet.
@@ -1838,6 +2004,7 @@ impl PythonOutputDecoder {
 
 impl Drop for PythonOutputDecoder {
     fn drop(&mut self) {
+        self.backlog.close();
         self.stdout.close();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -1856,8 +2023,39 @@ fn decode_loop(
     tx: std::sync::mpsc::Sender<DecodedOutput>,
     repaint: RepaintHook,
     queued: Arc<std::sync::atomic::AtomicUsize>,
+    backlog: Arc<DecodedBacklog>,
     wake_schedule: WakeSchedule,
 ) {
+    // Hand one output to the host, first waiting, with the paint loop woken
+    // to take what is already sent, while the backlog has no room for it.
+    // False once the host has dropped the pane.
+    let paused = std::cell::Cell::new(false);
+    let send = |output: DecodedOutput| -> bool {
+        let bytes = output.backlog_bytes();
+        if backlog.has_room(bytes) {
+            paused.set(false);
+        } else {
+            if !paused.replace(true) {
+                log::info!(
+                    "plugin::{plugin_id}: the host has not taken the guest's earlier output; reading guest stdout pauses until it does"
+                );
+            }
+            request_decoder_repaint(&repaint);
+        }
+        if !backlog.admit(bytes) {
+            return false;
+        }
+        // Count before sending, never after: the paint side may take the
+        // message the instant it lands, and a decrement that beat its
+        // increment would underflow the unsigned counter into "always busy".
+        queued.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        if tx.send(output).is_err() {
+            queued.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            backlog.release(bytes);
+            return false;
+        }
+        true
+    };
     let mut partial: Vec<u8> = Vec::new();
     let mut last_tree: Option<Arc<PythonUiTree>> = None;
     let mut awaiting_full = false;
@@ -1879,16 +2077,8 @@ fn decode_loop(
             let value: Value = match serde_json::from_slice(line) {
                 Ok(value) => value,
                 Err(error) => {
-                    // Count before sending, never after: the paint side may take
-                    // the message the instant it lands, and a decrement that
-                    // beat its increment would underflow the unsigned counter
-                    // into "always busy".
-                    queued.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                    if tx
-                        .send(DecodedOutput::DecodeError(error.to_string()))
-                        .is_err()
-                    {
-                        queued.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                    if !send(DecodedOutput::DecodeError(error.to_string())) {
+                        return; // paint side dropped the pane
                     }
                     produced = true;
                     continue;
@@ -1947,9 +2137,7 @@ fn decode_loop(
                 if !is_frame_cadence_output(&output) {
                     cadence_only = false;
                 }
-                queued.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                if tx.send(output).is_err() {
-                    queued.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                if !send(output) {
                     return; // paint side dropped the pane
                 }
                 produced = true;
@@ -1966,16 +2154,18 @@ fn decode_loop(
                 needed
             };
             if wake_needed {
-                if let Some((context, viewport)) =
-                    repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
-                {
-                    // A zero-delay egui request deliberately schedules an extra
-                    // settling paint; a 1ns request wakes immediately without it.
-                    context
-                        .request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
-                }
+                request_decoder_repaint(&repaint);
             }
         }
+    }
+}
+
+/// Wake the paint loop to take decoded output.
+fn request_decoder_repaint(repaint: &RepaintHook) {
+    if let Some((context, viewport)) = repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        // A zero-delay egui request deliberately schedules an extra settling
+        // paint; a 1ns request wakes immediately without it.
+        context.request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
     }
 }
 
@@ -3364,6 +3554,19 @@ impl LivePythonPane {
     pub(crate) fn intake_room_freed_for_test(&self) -> bool {
         self.intake_room_freed
             .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Test hook: decoded output bytes the host has not taken, and guest
+    /// stdout bytes not yet read.
+    #[cfg(test)]
+    pub(crate) fn output_backlog_for_test(&self) -> (usize, usize) {
+        self.decoder.backlog_for_test()
+    }
+
+    /// Test hook: lower the decoded backlog and unread stdout limits.
+    #[cfg(test)]
+    pub(crate) fn set_output_limits_for_test(&self, backlog: usize, unread: usize) {
+        self.decoder.set_output_limits_for_test(backlog, unread);
     }
 
     /// Test hook: run `hook` each time intake holds an open for room.
@@ -14140,6 +14343,7 @@ default = true
                 tx,
                 repaint,
                 thread_queued,
+                Arc::new(DecodedBacklog::new(DECODED_BACKLOG_LIMIT_BYTES)),
                 Arc::new(Mutex::new(WakeScheduleState::default())),
             );
         });
@@ -14152,12 +14356,13 @@ default = true
             "tree": encoded_value(FULL_TREE_JSON),
         }))
         .expect("serialize full frame");
-        stdout.push_bytes(full.as_bytes());
-        stdout.push_bytes(b"\n");
+        stdout.push_bytes(full.as_bytes(), None);
+        stdout.push_bytes(b"\n", None);
         stdout.push_bytes(
             br#"{"type":"tree_delta","frame_id":2,"changed":[{"id":1,"key":"0/0","data":{"type":"Text","text":"score=7"}}]}"#,
+            None,
         );
-        stdout.push_bytes(b"\n");
+        stdout.push_bytes(b"\n", None);
 
         let first = rx
             .recv_timeout(std::time::Duration::from_secs(2))
@@ -14206,12 +14411,16 @@ default = true
                 tx,
                 repaint,
                 Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                Arc::new(DecodedBacklog::new(DECODED_BACKLOG_LIMIT_BYTES)),
                 Arc::new(Mutex::new(WakeScheduleState::default())),
             );
         });
 
         // A delta with no prior full tree cannot be applied: fail-loud resync.
-        stdout.push_bytes(b"{\"type\":\"tree_delta\",\"frame_id\":1,\"changed\":[]}\n");
+        stdout.push_bytes(
+            b"{\"type\":\"tree_delta\",\"frame_id\":1,\"changed\":[]}\n",
+            None,
+        );
 
         // The decoder must have asked the guest for a full tree, and emitted no
         // frame for the dropped delta.
@@ -14245,13 +14454,14 @@ default = true
                 tx,
                 repaint,
                 Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                Arc::new(DecodedBacklog::new(DECODED_BACKLOG_LIMIT_BYTES)),
                 Arc::new(Mutex::new(WakeScheduleState::default())),
             );
         });
 
         // A full tree with no tree payload cannot be repaired by asking the
         // guest for another full tree: surface the guest error to the pane.
-        stdout.push_bytes(b"{\"type\":\"component_tree\",\"frame_id\":1}\n");
+        stdout.push_bytes(b"{\"type\":\"component_tree\",\"frame_id\":1}\n", None);
 
         let output = rx
             .recv_timeout(std::time::Duration::from_secs(2))
