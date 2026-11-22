@@ -1297,6 +1297,9 @@ class TestUnsupportedEffectsFailLoudly:
     """An effect the live runtime cannot execute must raise, never vanish."""
 
     def _run(self, tmp_path, effect_expr):
+        return self._fatal(tmp_path, effect_expr)["message"]
+
+    def _fatal(self, tmp_path, effect_expr):
         app = tmp_path / "app.py"
         app.write_text(
             "from plexi_sdk.effects import *\n"
@@ -1319,14 +1322,28 @@ class TestUnsupportedEffectsFailLoudly:
             messages = [json.loads(line) for line in proc.stdout.read().splitlines()]
             fatal = next(m for m in messages if m.get("type") == "fatal_error")
             assert fatal["phase"] == "init"
-            return fatal["message"]
+            return fatal
         finally:
             if proc.poll() is None:
                 proc.kill()
 
     def test_ai_query_with_a_malformed_message_is_refused(self, tmp_path):
         err = self._run(tmp_path, "AiQuery('r', 'fast', '', ['hi'])")
-        assert "AiQuery messages must be" in err
+        assert "AiQuery messages[0] must be" in err
+
+    def test_malformed_ai_message_keeps_prompt_out_of_the_fatal_report(self, tmp_path):
+        # The host logs the fatal message and traceback, so prompt text must
+        # not reach either. The marker is split in source so the traceback's
+        # echoed plugin line cannot contain it.
+        fatal = self._fatal(
+            tmp_path,
+            "AiQuery('r', 'fast', '', [AiMessage('user', 'ok'), "
+            "{'role': 1, 'content': 'PROMPT-' + 'LEAK-MARKER'}])",
+        )
+        assert "PROMPT-LEAK-MARKER" not in fatal["message"]
+        assert "PROMPT-LEAK-MARKER" not in fatal["traceback"]
+        assert "AiQuery messages[1] must be" in fatal["message"]
+        assert "dict" in fatal["message"]
 
     def test_unknown_effect_type_is_refused(self, tmp_path):
         err = self._run(tmp_path, "object()")

@@ -83,16 +83,19 @@ def _finish_emit_batch() -> None:
         sys.stdout.flush()
 
 
-def _ai_message_wire(message) -> dict:
+def _ai_message_wire(index: int, message) -> dict:
     """One ``AiQuery`` message on the wire. Accepts an ``AiMessage`` or a
-    ``{"role", "content"}`` dict; anything else is a plugin bug, raised here."""
+    ``{"role", "content"}`` dict; anything else is a plugin bug, raised here.
+    The error names only the index and type: message text is prompt content,
+    and the fatal report carrying this error is logged by the host."""
     if isinstance(message, effects.AiMessage):
         return {"role": message.role, "content": message.content}
     if isinstance(message, dict) and isinstance(message.get("role"), str) \
             and isinstance(message.get("content"), str):
         return {"role": message["role"], "content": message["content"]}
     raise TypeError(
-        f"AiQuery messages must be AiMessage or {{'role', 'content'}} dicts, got {message!r}"
+        f"AiQuery messages[{index}] must be an AiMessage or a dict with string "
+        f"'role' and 'content', got {type(message).__name__}"
     )
 
 
@@ -1042,7 +1045,7 @@ class PluginRuntime:
                     "request_id": str(effect.request_id),
                     "mode": effect.mode,
                     "system": effect.system,
-                    "messages": [_ai_message_wire(m) for m in effect.messages],
+                    "messages": [_ai_message_wire(i, m) for i, m in enumerate(effect.messages)],
                 })
             else:
                 raise TypeError(
