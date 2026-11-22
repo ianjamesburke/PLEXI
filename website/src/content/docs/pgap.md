@@ -332,16 +332,17 @@ Open a *directed* JSON pipe to a specific target pane (#286).
 | Field | Type | Required |
 |-------|------|----------|
 | `pipe_id` | `string` | yes |
+| `request_id` | `string` | yes |
 | `target_pane_id` | `integer` | yes |
 
 ### `pipe_send`
 
-Send a JSON-mode pipe message (not for binary pipes).
+Send a JSON message on directed pipe connection `generation`. A send naming a pipe instead of a generation is rejecte...
 
 | Field | Type | Required |
 |-------|------|----------|
+| `generation` | `integer` | yes |
 | `payload` | `any` | yes |
-| `pipe_id` | `string` | yes |
 
 ### `status_summary`
 
@@ -1653,10 +1654,11 @@ Run lifecycle update from the host.
 
 ### `pipe_message`
 
-Typed pipe message (JSON mode only; binary mode travels on the side channel).
+A message on directed pipe connection `generation` (JSON mode only; binary mode travels on the side channel).
 
 | Field | Type | Required |
 |-------|------|----------|
+| `generation` | `integer` | yes |
 | `payload` | `any` | yes |
 | `pipe_id` | `string` | yes |
 
@@ -1737,6 +1739,46 @@ Binary pipe opened — plugin connects to `socket_path` as a unix socket client.
 |-------|------|----------|
 | `pipe_id` | `string` | yes |
 | `socket_path` | `string` | yes |
+
+### `directed_pipe_opened`
+
+This app's `PipeOpenDirected` `request_id` was accepted: sends name connection `generation`.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `generation` | `integer` | yes |
+| `pipe_id` | `string` | yes |
+| `request_id` | `string` | yes |
+
+### `directed_pipe_open_refused`
+
+This app's `PipeOpenDirected` `request_id` was refused; nothing opened.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `pipe_id` | `string` | yes |
+| `reason` | `PipeOpenRefusal` | yes |
+| `request_id` | `string` | yes |
+
+### `directed_pipe_incoming`
+
+Another view opened directed pipe `pipe_id` to this app as connection `generation`. Sent before the connection's firs...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `generation` | `integer` | yes |
+| `peer_pane_id` | `integer` | yes |
+| `pipe_id` | `string` | yes |
+
+### `pipe_closed`
+
+Directed pipe connection `generation` ended. Sends naming it are dropped; a reopen is a new connection with a new gen...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `generation` | `integer` | yes |
+| `pipe_id` | `string` | yes |
+| `reason` | `PipeCloseReason` | yes |
 
 ### `pipe_overrun`
 

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 pub enum PlexiEvent {
     /// Sent exactly once on startup. App must reply with DrawCommand::Ready.
     Init {
-        /// Protocol version string, e.g. "pgap/4". App must refuse unknown versions.
+        /// Protocol version string, e.g. "pgap/5". App must refuse unknown versions.
         protocol: String,
         /// Stable identifier for this plugin instance, e.g. "audio-recorder".
         plugin_id: String,
@@ -146,9 +146,11 @@ pub enum PlexiEvent {
         status: String,
         payload: serde_json::Value,
     },
-    /// Typed pipe message (JSON mode only; binary mode travels on the side channel).
+    /// A message on directed pipe connection `generation` (JSON mode only;
+    /// binary mode travels on the side channel).
     PipeMessage {
         pipe_id: String,
+        generation: u64,
         payload: serde_json::Value,
     },
     /// Pane group CWD broadcast. **Declared, never constructed** — no host path
@@ -193,6 +195,33 @@ pub enum PlexiEvent {
     PipeOpened {
         pipe_id: String,
         socket_path: String,
+    },
+    /// This app's `PipeOpenDirected` `request_id` was accepted: sends name
+    /// connection `generation`.
+    DirectedPipeOpened {
+        request_id: String,
+        pipe_id: String,
+        generation: u64,
+    },
+    /// This app's `PipeOpenDirected` `request_id` was refused; nothing opened.
+    DirectedPipeOpenRefused {
+        request_id: String,
+        pipe_id: String,
+        reason: PipeOpenRefusal,
+    },
+    /// Another view opened directed pipe `pipe_id` to this app as
+    /// connection `generation`. Sent before the connection's first message.
+    DirectedPipeIncoming {
+        pipe_id: String,
+        generation: u64,
+        peer_pane_id: u64,
+    },
+    /// Directed pipe connection `generation` ended. Sends naming it are
+    /// dropped; a reopen is a new connection with a new generation.
+    PipeClosed {
+        pipe_id: String,
+        generation: u64,
+        reason: PipeCloseReason,
     },
     /// Binary pipe backpressure — host dropped `dropped_frames` frames from the ring.
     PipeOverrun {
@@ -571,6 +600,95 @@ pub enum PlexiEvent {
     },
 }
 
+/// Why a directed pipe connection ended, as told to an end that lives on.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PipeCloseReason {
+    /// The other end's view closed.
+    PeerClosed,
+    /// The other end's app reloaded; its new instance holds none of the old one's pipes.
+    PeerReloaded,
+    /// An end of the connection moved to another context; both ends are told.
+    Moved,
+}
+
+impl PipeCloseReason {
+    /// Every reason, so room held for a close fits whichever one it carries.
+    pub const ALL: [Self; 3] = [Self::PeerClosed, Self::PeerReloaded, Self::Moved];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PeerClosed => "peer_closed",
+            Self::PeerReloaded => "peer_reloaded",
+            Self::Moved => "moved",
+        }
+    }
+}
+
+/// Why the host refused a `PipeOpenDirected`.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PipeOpenRefusal {
+    /// The app lacks the `pipe.open` capability.
+    Denied,
+    /// No pane has the target id.
+    NoTarget,
+    /// The target pane is not a plugin view.
+    NotAPlugin,
+    /// The target is in another context.
+    OutOfReach,
+    /// The id is already open between other views in this context.
+    InUse,
+    /// An end already uses the id for a pipe of another kind.
+    NameConflict,
+    /// The opener sits in no pane the host can place in a context.
+    OpenerUnplaced,
+    /// The target could not be told of the connection.
+    TargetUnavailable,
+    /// The opener has no room now for another connection's close: it holds
+    /// too many connections, or its input is full.
+    OpenerFull,
+    /// The id is longer than [`MAX_PIPE_ID_BYTES`].
+    NameTooLong,
+}
+
+/// Longest directed pipe id, in UTF-8 bytes, mirrored (and enforced first)
+/// in the Python SDK's `effects.MAX_PIPE_ID_BYTES`. The host holds room in a
+/// Python opener's stdin for an open's answer, which names the pipe, so an
+/// SDK request is never recorded for a name the host would refuse.
+pub const MAX_PIPE_ID_BYTES: usize = 256;
+
+impl PipeOpenRefusal {
+    /// Every reason, so room held for an answer fits whichever one it carries.
+    pub const ALL: [Self; 10] = [
+        Self::Denied,
+        Self::NoTarget,
+        Self::NotAPlugin,
+        Self::OutOfReach,
+        Self::InUse,
+        Self::NameConflict,
+        Self::OpenerUnplaced,
+        Self::TargetUnavailable,
+        Self::OpenerFull,
+        Self::NameTooLong,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Denied => "denied",
+            Self::NoTarget => "no_target",
+            Self::NotAPlugin => "not_a_plugin",
+            Self::OutOfReach => "out_of_reach",
+            Self::InUse => "in_use",
+            Self::NameConflict => "name_conflict",
+            Self::OpenerUnplaced => "opener_unplaced",
+            Self::TargetUnavailable => "target_unavailable",
+            Self::OpenerFull => "opener_full",
+            Self::NameTooLong => "name_too_long",
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
 pub struct FileListEntry {
     pub name: String,
@@ -588,7 +706,7 @@ mod tests {
     #[test]
     fn init_event_serializes_pane_dimensions() {
         let event = PlexiEvent::Init {
-            protocol: "pgap/4".to_string(),
+            protocol: "pgap/5".to_string(),
             plugin_id: "test".to_string(),
             workspace_root: std::path::PathBuf::from("/tmp"),
             capabilities: vec![],
@@ -609,7 +727,7 @@ mod tests {
 
     #[test]
     fn init_event_deserializes_without_dimensions() {
-        let json = r#"{"type":"init","protocol":"pgap/4","plugin_id":"test","workspace_root":"/tmp","capabilities":[],"feature_flags":[]}"#;
+        let json = r#"{"type":"init","protocol":"pgap/5","plugin_id":"test","workspace_root":"/tmp","capabilities":[],"feature_flags":[]}"#;
         let event: PlexiEvent = serde_json::from_str(json).unwrap();
         match event {
             PlexiEvent::Init { width, height, .. } => {

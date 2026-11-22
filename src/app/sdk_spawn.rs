@@ -81,6 +81,15 @@ impl PlexiApp {
         }
     }
 
+    /// The live view instance `emitter` names, in its slot or covered by an
+    /// overlay there; `None` once that instance has ended.
+    pub(crate) fn view_instance_mut(&mut self, emitter: ViewEmitter) -> Option<&mut ViewPane> {
+        self.windows
+            .iter_mut()
+            .find_map(|w| w.panes.get_mut(&emitter.pane_id))
+            .and_then(|pane| emitter_in(pane, emitter))
+    }
+
     /// The window holding the emitting view instance, if it is still open.
     fn emitter_window(&mut self, emitter: ViewEmitter) -> Option<usize> {
         self.windows.iter_mut().position(|w| {
@@ -98,12 +107,7 @@ impl PlexiApp {
             log::warn!("sdk_reply: request carried no emitting view; {event:?} undelivered");
             return;
         };
-        let view = self
-            .windows
-            .iter_mut()
-            .find_map(|w| w.panes.get_mut(&emitter.pane_id))
-            .and_then(|pane| emitter_in(pane, emitter));
-        match view {
+        match self.view_instance_mut(emitter) {
             Some(view) => {
                 log::info!("sdk_reply: delivered to emitter {emitter:?}");
                 view.runtime.queue_outbound_event(event);

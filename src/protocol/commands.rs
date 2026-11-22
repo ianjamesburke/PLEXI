@@ -456,13 +456,20 @@ pub enum HostRequest {
     /// for a one-way agent-to-agent channel today, so the field is omitted.
     /// Mode is always `json`; binary directed pipes are out of scope until
     /// a real use case arrives.
+    ///
+    /// The open is a request: the host answers `request_id` with
+    /// `DirectedPipeOpened` (carrying the connection's generation) or
+    /// `DirectedPipeOpenRefused`, and tells the target with
+    /// `DirectedPipeIncoming` (stint 1681).
     PipeOpenDirected {
+        request_id: String,
         pipe_id: String,
         target_pane_id: u64,
     },
-    /// Send a JSON-mode pipe message (not for binary pipes).
+    /// Send a JSON message on directed pipe connection `generation`. A send
+    /// naming a pipe instead of a generation is rejected (stint 1681).
     PipeSend {
-        pipe_id: String,
+        generation: u64,
         payload: serde_json::Value,
     },
     /// Status text for the pane. The host accepts and discards it today;
@@ -2504,14 +2511,15 @@ mod tests {
 
     #[test]
     fn pipe_open_directed_drawcommand_round_trips_serde() {
-        let json =
-            r#"{"type":"pipe_open_directed","pipe_id":"coord-to-worker","target_pane_id":42}"#;
+        let json = r#"{"type":"pipe_open_directed","request_id":"r1","pipe_id":"coord-to-worker","target_pane_id":42}"#;
         let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
             HostRequest::PipeOpenDirected {
+                request_id,
                 pipe_id,
                 target_pane_id,
             } => {
+                assert_eq!(request_id, "r1");
                 assert_eq!(pipe_id, "coord-to-worker");
                 assert_eq!(*target_pane_id, 42);
             }
@@ -2526,6 +2534,25 @@ mod tests {
             serialised.contains(r#""target_pane_id":42"#),
             "target_pane_id missing: {serialised}"
         );
+    }
+
+    /// Stint 1681: a send names the connection generation it was written
+    /// for; the name-only shape is rejected, as is an open with no request id.
+    #[test]
+    fn legacy_name_only_pipe_send_and_unrequested_open_fail_deserialise() {
+        for legacy in [
+            r#"{"type":"pipe_send","pipe_id":"x","payload":{}}"#,
+            r#"{"type":"pipe_open_directed","pipe_id":"x","target_pane_id":1}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<HostRequest>(legacy).is_err(),
+                "must be rejected: {legacy}"
+            );
+        }
+        let send: HostRequest =
+            serde_json::from_str(r#"{"type":"pipe_send","generation":3,"payload":{"n":1}}"#)
+                .expect("generation send");
+        assert!(matches!(send, HostRequest::PipeSend { generation: 3, .. }));
     }
 
     #[test]

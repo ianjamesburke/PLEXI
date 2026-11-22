@@ -41,7 +41,7 @@ def _spawn_v3_app(app_file: Path):
     return proc
 
 
-def _init_app(proc, state=None, capabilities=None, protocol="pgap/4"):
+def _init_app(proc, state=None, capabilities=None, protocol="pgap/5"):
     """Send init message and wait for ready."""
     msg = {
         "type": "init",
@@ -948,16 +948,27 @@ class TestWireFormat:
         finally:
             proc.kill()
 
-    def test_wasm_protocol_emits_indexed_component_tree(self, tmp_path):
+    @pytest.mark.parametrize("protocol", [None, "pgap/4"])
+    def test_init_from_another_protocol_version_is_refused_at_startup(self, tmp_path, protocol):
+        """Stint 1681: the host names its PGAP version in init and an SDK
+        that speaks another refuses to start, naming both versions, before
+        the plugin's init runs."""
         proc = _spawn_v3_app(self._text_app(tmp_path))
         try:
-            _init_app(proc, protocol=None)
-            events = _render(proc)
-            tree = _find_events(events, "component_tree")[0]
-            assert "tree" in tree and "root" not in tree
-            assert tree["frame_id"] == 1
+            msg = {"type": "init", "plugin_id": "old-host", "workspace_root": "/tmp",
+                   "capabilities": [], "feature_flags": [], "width": 640.0, "height": 360.0}
+            if protocol is not None:
+                msg["protocol"] = protocol
+            proc.stdin.write(json.dumps(msg) + "\n")
+            proc.stdin.flush()
+            proc.wait(timeout=10)
+            messages = [json.loads(line) for line in proc.stdout.read().splitlines()]
+            assert not any(m.get("type") == "ready" for m in messages)
+            fatal = next(m for m in messages if m.get("type") == "fatal_error")
+            assert "pgap/5" in fatal["message"] and repr(protocol) in fatal["message"]
         finally:
-            proc.kill()
+            if proc.poll() is None:
+                proc.kill()
 
 
 # =============================================================================
@@ -1162,18 +1173,41 @@ def test_core_app_responds_to_key(relative_path: str, key: str) -> None:
 
 
 def test_pipe_open_directed_and_pipe_send_effects(tmp_path):
+    """Stint 1681: an open is a request. Sends by name made before the host
+    answers stay off the wire, go out in order on the accepted connection's
+    generation, and a refused request's sends go nowhere while a saved handle
+    to a live connection still works. A late answer to an older request for
+    a name never rebinds the name."""
     app = tmp_path / "pipe_sender.py"
     app.write_text(textwrap.dedent("""
-        from plexi_sdk.effects import PipeOpenDirected, PipeSend
+        from plexi_sdk.effects import PipeOpenDirected, PipeSend, SetTitle
+        from plexi_sdk.events import PipeOpened, PipeOpenRefused
         from plexi_sdk.ui import Text
+
+        saved = []
 
         def init(size, args):
             return [
                 PipeOpenDirected("duplex.demo", 7),
-                PipeSend("duplex.demo", {"hello": "world"}),
+                PipeSend("duplex.demo", {"n": 1}),
+                PipeSend("duplex.demo", {"n": 2}),
             ]
 
         def update(event):
+            if isinstance(event, PipeOpened):
+                saved.append(event.handle)
+                if len(saved) == 1:
+                    # Reopen the name elsewhere: a new request in flight.
+                    return [
+                        PipeOpenDirected("duplex.demo", 9),
+                        PipeSend("duplex.demo", {"n": 3}),
+                    ]
+                return [PipeSend("duplex.demo", {"n": 5})]
+            if isinstance(event, PipeOpenRefused):
+                return [
+                    SetTitle(f"refused:{event.reason}"),
+                    PipeSend(saved[0], {"n": 4}),
+                ]
             return []
 
         def view():
@@ -1183,17 +1217,171 @@ def test_pipe_open_directed_and_pipe_send_effects(tmp_path):
     try:
         events = _init_and_render(proc)
         opens = _find_events(events, "pipe_open_directed")
-        sends = _find_events(events, "pipe_send")
         assert opens == [{
             "type": "pipe_open_directed",
+            "request_id": "pipe-1",
             "pipe_id": "duplex.demo",
             "target_pane_id": 7,
         }]
-        assert sends == [{
-            "type": "pipe_send",
-            "pipe_id": "duplex.demo",
-            "payload": {"hello": "world"},
-        }]
+        assert _find_events(events, "pipe_send") == [], "no send before the answer"
+
+        _send_event(proc, {"type": "directed_pipe_opened", "request_id": "pipe-1",
+                           "pipe_id": "duplex.demo", "generation": 11})
+        events = _render(proc, frame_id=2)
+        assert [(e["generation"], e["payload"]) for e in _find_events(events, "pipe_send")] == [
+            (11, {"n": 1}), (11, {"n": 2}),
+        ]
+        assert _find_events(events, "pipe_open_directed")[0]["request_id"] == "pipe-2"
+
+        _send_event(proc, {"type": "directed_pipe_open_refused", "request_id": "pipe-2",
+                           "pipe_id": "duplex.demo", "reason": "in_use"})
+        events = _render(proc, frame_id=3)
+        assert "refused:in_use" in json.dumps(events)
+        assert [(e["generation"], e["payload"]) for e in _find_events(events, "pipe_send")] == [
+            (11, {"n": 4}),
+        ], "the refused request's send is dropped; the saved handle still works"
+    finally:
+        proc.kill()
+
+
+def test_a_waiting_send_carries_its_payload_as_it_was_when_sent(tmp_path):
+    """Stint 1681 (review round 3): a send that waits for its open carries a
+    copy of the payload, so an app reusing one dict for two peers sends each
+    peer its own value."""
+    app = tmp_path / "pipe_reuse.py"
+    app.write_text(textwrap.dedent("""
+        from plexi_sdk.effects import PipeOpenDirected, PipeSend
+        from plexi_sdk.events import PipeIncoming
+        from plexi_sdk.ui import Text
+
+        message = {"recipient": "A"}
+
+        def init(size, args):
+            return [PipeOpenDirected("a", 7), PipeSend("a", message)]
+
+        def update(event):
+            if isinstance(event, PipeIncoming):
+                message["recipient"] = "B"
+                return [PipeOpenDirected("b", 8), PipeSend("b", message)]
+            return []
+
+        def view():
+            return Text("reuse")
+    """).lstrip())
+    proc = _spawn_v3_app(app)
+    try:
+        _init_and_render(proc)
+        _send_event(proc, {"type": "directed_pipe_incoming", "pipe_id": "other",
+                           "generation": 9, "peer_pane_id": 3})
+        _send_event(proc, {"type": "directed_pipe_opened", "request_id": "pipe-1",
+                           "pipe_id": "a", "generation": 1})
+        _send_event(proc, {"type": "directed_pipe_opened", "request_id": "pipe-2",
+                           "pipe_id": "b", "generation": 2})
+        events = _render(proc, frame_id=2)
+        assert [(e["generation"], e["payload"]) for e in _find_events(events, "pipe_send")] == [
+            (1, {"recipient": "A"}), (2, {"recipient": "B"}),
+        ]
+    finally:
+        proc.kill()
+
+
+def test_a_send_with_no_open_connection_is_dropped_and_the_app_told(tmp_path):
+    """Stint 1681 (review round 3): sending on a handle whose connection
+    closed, or on a name that is not open, drops that send and tells the app
+    with PipeSendDropped. The app keeps running and the update's other
+    effects apply."""
+    app = tmp_path / "pipe_after_close.py"
+    app.write_text(textwrap.dedent("""
+        from plexi_sdk.effects import PipeSend, SetTitle
+        from plexi_sdk.events import PipeClosed, PipeSendDropped
+        from plexi_sdk.ui import Text
+
+        dropped = []
+
+        def init(size, args):
+            return []
+
+        def update(event):
+            if isinstance(event, PipeClosed):
+                return [
+                    PipeSend(event.handle, {"late": True}),
+                    PipeSend("never-opened", {}),
+                    SetTitle("after-close"),
+                ]
+            if isinstance(event, PipeSendDropped):
+                dropped.append(str(event.pipe))
+                return [SetTitle("dropped:" + ",".join(dropped)), PipeSend(event.pipe, {})]
+            return []
+
+        def view():
+            return Text("closed")
+    """).lstrip())
+    proc = _spawn_v3_app(app)
+    try:
+        _init_and_render(proc)
+        _send_event(proc, {"type": "directed_pipe_incoming", "pipe_id": "p",
+                           "generation": 5, "peer_pane_id": 2})
+        _send_event(proc, {"type": "pipe_closed", "pipe_id": "p", "generation": 5,
+                           "reason": "peer_closed"})
+        events = _render(proc, frame_id=2)
+        assert _find_events(events, "pipe_send") == []
+        assert _find_events(events, "fatal_error") == []
+        assert "dropped:5,never-opened" in json.dumps(events)
+        assert proc.poll() is None, "the app keeps running"
+    finally:
+        proc.kill()
+
+
+def test_pipe_send_pipe_id_keyword_is_refused_naming_its_replacement():
+    """Stint 1681: `PipeSend(pipe_id=...)` was removed; it fails loudly and
+    names the new parameter."""
+    from plexi_sdk.effects import PipeSend
+    with pytest.raises(TypeError, match="pipe_id=.*was removed.*`pipe`"):
+        PipeSend(pipe_id="p", payload={})
+    assert PipeSend("p", {"n": 1}).pipe == "p"
+
+
+def test_a_late_answer_never_rebinds_a_newer_request_for_the_name(tmp_path):
+    """Stint 1681: two requests for one name overlap. Each answer carries
+    that request's own waiting sends; only the newest request binds the
+    name."""
+    app = tmp_path / "pipe_overlap.py"
+    app.write_text(textwrap.dedent("""
+        from plexi_sdk.effects import PipeOpenDirected, PipeSend
+        from plexi_sdk.events import PipeOpened
+        from plexi_sdk.ui import Text
+
+        def init(size, args):
+            return [
+                PipeOpenDirected("p", 7),
+                PipeSend("p", {"for": "first"}),
+                PipeOpenDirected("p", 8),
+                PipeSend("p", {"for": "second"}),
+            ]
+
+        def update(event):
+            if isinstance(event, PipeOpened) and event.handle == 21:
+                return [PipeSend("p", {"after": "first answer"})]
+            return []
+
+        def view():
+            return Text("overlap")
+    """).lstrip())
+    proc = _spawn_v3_app(app)
+    try:
+        _init_and_render(proc)
+        _send_event(proc, {"type": "directed_pipe_opened", "request_id": "pipe-1",
+                           "pipe_id": "p", "generation": 21})
+        events = _render(proc, frame_id=2)
+        assert [(e["generation"], e["payload"]) for e in _find_events(events, "pipe_send")] == [
+            (21, {"for": "first"}),
+        ], "the name still waits on the newer request"
+        _send_event(proc, {"type": "directed_pipe_opened", "request_id": "pipe-2",
+                           "pipe_id": "p", "generation": 22})
+        events = _render(proc, frame_id=3)
+        assert [(e["generation"], e["payload"]) for e in _find_events(events, "pipe_send")] == [
+            (22, {"for": "second"}), (22, {"after": "first answer"}),
+        ]
     finally:
         proc.kill()
 
@@ -1230,18 +1418,25 @@ def test_pipe_message_event_dispatched_and_replies(tmp_path):
     try:
         _init_and_render(proc, frame_id=1)
         _send_event(proc, {
+            "type": "directed_pipe_incoming",
+            "pipe_id": "duplex.demo",
+            "generation": 5,
+            "peer_pane_id": 2,
+        })
+        _send_event(proc, {
             "type": "pipe_message",
             "pipe_id": "duplex.demo",
+            "generation": 5,
             "payload": {"count": 3},
         })
         events = _render(proc, frame_id=2)
         sends = _find_events(events, "pipe_send")
         assert sends == [{
             "type": "pipe_send",
-            "pipe_id": "duplex.demo",
+            "generation": 5,
             "payload": {"ack": 3},
         }]
-        assert "duplex.demo:3:1" in json.dumps(events)
+        assert "duplex.demo:3:5" in json.dumps(events)
     finally:
         proc.kill()
 
@@ -1263,7 +1458,7 @@ class TestUnsupportedEffectsFailLoudly:
         try:
             proc.stdin.write(json.dumps({
                 "type": "init", "plugin_id": "fail-loud", "workspace_root": "/tmp",
-                "capabilities": [], "feature_flags": [], "protocol": "pgap/4",
+                "capabilities": [], "feature_flags": [], "protocol": "pgap/5",
                 "width": 640.0, "height": 360.0,
             }) + "\n")
             proc.stdin.flush()

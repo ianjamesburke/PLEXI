@@ -108,23 +108,40 @@ pub enum ViewCommand {
         cwd: String,
         sender_pane_id: u64,
     },
-    /// Deliver a JSON pipe message on a directed pipe (#286): the host routes
-    /// it to the non-sender member of the recorded `(sender, target)` pair.
-    /// A send on a pipe that was never opened directed is dropped — the legacy
-    /// non-directed peer-broadcast fan-out was removed in 0327.
+    /// Deliver a JSON message on directed pipe connection `generation`
+    /// (#286, stint 1681): the guest names the generation when it emits the
+    /// send, and the host delivers it to the sender's peer on that connection
+    /// only while it is live.
     DeliverPipeMessage {
         sender_pane_id: u64,
-        pipe_id: String,
+        generation: u64,
         payload: serde_json::Value,
+        /// The sending view instance, stamped at drain.
+        emitter: Option<ViewEmitter>,
     },
-    /// Open a *directed* JSON pipe (#286) — only the sender and the named
-    /// target pane subscribe to subsequent `PipeMessage` deliveries.
-    /// Routed by the host because the target pane lives outside the sender's
-    /// process and the sender has no other way to subscribe peers.
+    /// End directed pipe connection `generation` at one end's request: the
+    /// other end is told `PipeClosed { peer_closed }` (stint 1681).
+    CloseDirectedPipe {
+        sender_pane_id: u64,
+        generation: u64,
+        /// The closing view instance, stamped at drain.
+        emitter: Option<ViewEmitter>,
+    },
+    /// Request a *directed* JSON pipe (#286) to the view now in
+    /// `target_pane_id`. The host answers `request_id` with
+    /// `DirectedPipeOpened` or `DirectedPipeOpenRefused` (stint 1681).
     OpenDirectedPipe {
         sender_pane_id: u64,
+        request_id: String,
         pipe_id: String,
         target_pane_id: u64,
+        /// The opening view instance, stamped at drain.
+        emitter: Option<ViewEmitter>,
+        /// Room the opener holds for this request's answer and for its
+        /// connection's close, set when the opener's runtime takes the
+        /// request (stint 1681). `None` until then, and for an opener that
+        /// is not a directed-pipe endpoint, which no answer can reach.
+        admission: Option<crate::host::pane::OpenAdmission>,
     },
     /// Deliver a RunUpdate event to the pane that originally issued the run,
     /// identified by its type_id.
@@ -259,6 +276,7 @@ impl ViewCommand {
             Self::ForwardPaneRequest { .. } => "ForwardPaneRequest",
             Self::CdRequest { .. } => "CdRequest",
             Self::DeliverPipeMessage { .. } => "DeliverPipeMessage",
+            Self::CloseDirectedPipe { .. } => "CloseDirectedPipe",
             Self::OpenDirectedPipe { .. } => "OpenDirectedPipe",
             Self::DeliverRunUpdate { .. } => "DeliverRunUpdate",
             Self::ShowNotification { .. } => "ShowNotification",
@@ -383,6 +401,16 @@ pub trait View: Send {
     /// Called when the linked terminal's CWD changes.
     /// Plugins that track directories (like the file browser) should update.
     fn sync_cwd(&mut self, _new_cwd: &std::path::Path) {}
+
+    /// Whether this builtin is a directed-pipe endpoint: it takes
+    /// `DirectedPipeIncoming`, `DirectedPipeOpened`, `DirectedPipeOpenRefused`,
+    /// `PipeClosed` and `PipeMessage` through `queue_outbound_event`, each
+    /// one as it arrives. Builtins are not endpoints unless they opt in, so
+    /// an open to one is refused rather than reported to an end that drops
+    /// it (stint 1681).
+    fn accepts_directed_pipe_events(&self) -> bool {
+        false
+    }
 
     /// Queue a PlexiEvent to be sent to the plugin on the next flush.
     /// Used to deliver host-originated events (e.g. ViewOpened) back to

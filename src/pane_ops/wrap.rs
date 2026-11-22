@@ -218,6 +218,7 @@ impl PlexiApp {
         self.attention_queue.transient_hint = None;
         log::info!("wrap_panes: panes={pane_ids:?} anchor={anchor} parent={parent_context} child={context_id} portal={portal_id}");
         self.rescope_moved_panes();
+        self.retire_directed_pipes_moved();
         self.mark_workspace_dirty();
         true
     }

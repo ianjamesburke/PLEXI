@@ -15,6 +15,7 @@ pub mod cli_operation;
 mod conjoined;
 pub(crate) mod core_only;
 pub(crate) mod debounce;
+mod directed_pipes;
 mod dispatch;
 mod event_stream;
 pub mod file_handlers;
@@ -505,29 +506,14 @@ pub struct PlexiApp {
     /// `park_context_id` is the context_id the plugin was running in when its
     /// pane was closed. Used to route notifications to the correct context.
     pub(crate) background_apps: HashMap<String, (u64, Box<dyn crate::app::view_trait::View>)>,
-    /// Directed inter-agent / inter-plugin pipes (#286). Keyed by
-    /// `(context_id, pipe_id)` (stint 0724 Phase D 2/2) — `context_id` is the
-    /// opening caller's own context, resolved via `origin_for_pane`, never a
-    /// client-supplied value. Composite-keying (rather than `pipe_id` alone)
-    /// is required, not cosmetic: two different contexts choosing the same
-    /// caller-selected `pipe_id` string (e.g. both pick `"agent-chat"`) must
-    /// never collide or cross-deliver, and before this phase they shared one
-    /// flat namespace. Value is the `(sender_pane_id, target_pane_id)` pair
-    /// the host scopes `PipeMessage` deliveries to. This is the sole
-    /// JSON-pipe delivery path: `DeliverPipeMessage` routes ONLY to the
-    /// non-sender member of the pair; a send on a pipe absent from this map
-    /// is dropped. The legacy non-directed peer-broadcast fan-out was removed
-    /// in 0327 in favour of event streams. `PipeOpenDirected` is a thin alias
-    /// over this map — an exclusive duplex channel primitive; resource-scoped
-    /// fan-out belongs on the event bus.
-    ///
-    /// `OpenDirectedPipe` rejects (never inserts) a request whose target pane
-    /// lives in a different context than the caller — see `evaluate_reach` in
-    /// `dispatch.rs`'s handler — so every entry here is guaranteed to have
-    /// both pane ids live in the SAME context, making `context_id` safe to
-    /// key on regardless of which side (sender or target) later calls
-    /// `pipe_send`.
-    pub(crate) directed_pipes: HashMap<(u64, String), (u64, u64)>,
+    /// Directed inter-plugin pipes (#286): the sole JSON-pipe delivery path,
+    /// an exclusive duplex channel between two view instances; resource-scoped
+    /// fan-out belongs on the event bus. Each accepted open is a connection
+    /// with a host-issued generation (stint 1681, see `directed_pipes.rs`),
+    /// named per `(context_id, pipe_id)` with `context_id` the opener's own
+    /// host-established context (stint 0724 Phase D 2/2). The open handler
+    /// rejects a target in another context, so both ends share that context.
+    pub(crate) directed_pipes: crate::app::directed_pipes::DirectedPipes,
     /// Hot-reload watcher set (#83). Owns one notify watcher per launched
     /// plugin pane; hot reload is always on.
     /// `hot_reload_rx` is drained each frame; pending requests trigger a
@@ -2002,7 +1988,7 @@ impl PlexiApp {
                     scheduler: crate::host::scheduler::Scheduler::new(),
                     host,
                     background_apps: HashMap::new(),
-                    directed_pipes: HashMap::new(),
+                    directed_pipes: Default::default(),
                     hot_reload: hr_watcher,
                     hot_reload_rx: hr_rx,
                     state_watch: sw_watcher,
@@ -2300,7 +2286,7 @@ impl PlexiApp {
             scheduler: crate::host::scheduler::Scheduler::new(),
             host: crate::host::model::HostModel::new(),
             background_apps: HashMap::new(),
-            directed_pipes: HashMap::new(),
+            directed_pipes: Default::default(),
             hot_reload: hr_watcher,
             hot_reload_rx: hr_rx,
             state_watch: sw_watcher,
@@ -3344,7 +3330,7 @@ impl PlexiApp {
             navigating_history: false,
             host: crate::host::model::HostModel::new(),
             background_apps: HashMap::new(),
-            directed_pipes: HashMap::new(),
+            directed_pipes: Default::default(),
             hot_reload: hr_watcher,
             hot_reload_rx: hr_rx,
             state_watch: sw_watcher,
@@ -5880,29 +5866,31 @@ fn drive_native_pane_key(
     Ok(disposition)
 }
 
-/// Register the directed pipe on the target's own local pipe registry so a
-/// runtime that maintains one (`ViewRuntime::Wasm` and `ViewRuntime::Python`)
-/// reports `has_pipe_reader` true for it on the reverse-send path (stint 0742).
-///
-/// Builtin plugins (`ViewRuntime::Builtin`) have no per-pane `TypedPipeRegistry`
-/// and return `false`; `OpenDirectedPipe` still proceeds for them because the
-/// duplex data plane is host-mediated via `directed_pipes` +
-/// `queue_outbound_event`.
-fn register_directed_pipe_on_target(pane: &mut crate::host::pane::Pane, pipe_id: &str) -> bool {
-    let crate::host::pane::Pane::View(view_pane) = pane else {
-        return false;
-    };
-    let runtime_kind = view_pane.runtime.runtime_kind();
-    let registered = view_pane.runtime.register_directed_pipe(pipe_id)
-        && view_pane.runtime.has_pipe_reader(pipe_id);
+/// Register a directed pipe on one end's own local pipe registry so a runtime
+/// that keeps one (`ViewRuntime::Wasm` and `ViewRuntime::Python`) reports
+/// `has_pipe_reader` for it (stint 0742). `Ok(false)` for a builtin, which
+/// has none; `OpenDirectedPipe` still proceeds for it because delivery is
+/// host-mediated. `Err` when the registry refuses the id (stint 1681).
+fn register_directed_pipe_on(
+    view_pane: &mut crate::host::pane::ViewPane,
+    pipe_id: &str,
+    generation: u64,
+) -> Result<bool, String> {
+    // True whenever the runtime made a registration, reader or not, so a
+    // failed open can undo exactly what it made.
+    let registered = view_pane
+        .runtime
+        .register_directed_pipe(pipe_id, generation)?;
     if registered {
         log::info!(
-            "register_directed_pipe_on_target: registered directed pipe '{pipe_id}' on target pane {} (plugin_id={}, runtime={runtime_kind})",
+            "register_directed_pipe_on: registered directed pipe '{pipe_id}' on pane {} (plugin_id={}, runtime={})",
             view_pane.id,
-            view_pane.manifest_id
+            view_pane.manifest_id,
+            view_pane.runtime.runtime_kind(),
+            pipe_id = crate::host::guest_text::shown(pipe_id)
         );
     }
-    registered
+    Ok(registered)
 }
 
 /// Explicit collaborators passed to [`restore_workspace`] so workspace

@@ -2174,6 +2174,47 @@ pub(crate) enum PointerPhase {
 pub(crate) const BUILTIN_HAS_NO_NODE_REFS: &str =
     "is a builtin view and has no node refs; click by position with pane click <x> <y>";
 
+/// Room one view instance holds for one directed-pipe control event:
+/// `DirectedPipeIncoming`, `DirectedPipeOpened`, `DirectedPipeOpenRefused`
+/// or `PipeClosed` (stint 1681). Dropped unused, it is released.
+#[derive(Debug)]
+#[must_use = "held room is released when dropped; deliver into it or drop it on purpose"]
+pub(crate) enum ControlSlot {
+    /// A runtime whose input never fills: an opted-in builtin, or WASM.
+    Unbounded,
+    /// Room held in a Python guest's stdin.
+    Stdin(crate::host::wasm_python::control_room::StdinSlot),
+}
+
+/// What an open request holds from its admission at the opener on: room for
+/// its one answer, and, when the opener had it, for the `PipeClosed` of the
+/// connection it may become. A fresh open admitted without close room
+/// reserves it at dispatch; an idempotent open never needs it.
+#[derive(Debug)]
+pub(crate) struct OpenAdmission {
+    pub(crate) answer: ControlSlot,
+    pub(crate) close: Option<ControlSlot>,
+}
+
+/// One control event's room to reserve, sized for the event it will hold.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ControlRoom<'a> {
+    /// The `PipeClosed` of a connection this view opened.
+    OpenerClose { pipe_id: &'a str },
+    /// The `PipeClosed` of a connection another view opened to this one.
+    TargetClose { pipe_id: &'a str },
+}
+
+/// Why a view instance cannot take a directed-pipe control event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NotAdmitted {
+    /// It is not a directed-pipe endpoint, or no longer one: a builtin that
+    /// does not take them, a guest that has finished or failed.
+    NotAnEndpoint,
+    /// It has no room now; a reader that catches up makes room.
+    Full,
+}
+
 pub enum ViewRuntime {
     Builtin(Box<dyn View>),
     Python(Box<crate::host::wasm_python::LivePythonPane>),
@@ -2264,18 +2305,35 @@ impl ViewRuntime {
     }
 
     pub fn take_pending_commands(&mut self) -> Vec<ViewCommand> {
+        let mut commands = self.take_runtime_commands();
+        // Intake: an open is admitted where it leaves its opener (stint 1681).
+        for command in &mut commands {
+            if let ViewCommand::OpenDirectedPipe { admission, .. } = command {
+                if admission.is_none() {
+                    *admission = self.admit_open_at_intake();
+                }
+            }
+        }
+        commands
+    }
+
+    fn take_runtime_commands(&mut self) -> Vec<ViewCommand> {
         match self {
             ViewRuntime::Builtin(app) => app.take_pending_commands(),
             ViewRuntime::Python(app) => app.take_pending_commands(),
-            ViewRuntime::Wasm(app) => app
-                .take_host_effects()
-                .into_iter()
-                .map(|effect| ViewCommand::WasmHostEffect {
-                    pane_id: 0,
-                    effect,
-                    emitter: None,
-                })
-                .collect(),
+            ViewRuntime::Wasm(app) => {
+                let mut commands: Vec<_> = app
+                    .take_host_effects()
+                    .into_iter()
+                    .map(|effect| ViewCommand::WasmHostEffect {
+                        pane_id: 0,
+                        effect,
+                        emitter: None,
+                    })
+                    .collect();
+                commands.extend(app.take_pipe_commands());
+                commands
+            }
         }
     }
 
@@ -2331,6 +2389,93 @@ impl ViewRuntime {
         }
     }
 
+    /// Whether this instance is a directed-pipe endpoint now: it can take
+    /// the control events that open and close connections. A builtin is one
+    /// only if it opts in; a guest stops being one when it finishes or
+    /// fails, even while its pane stays mounted (stint 1681).
+    pub(crate) fn is_directed_pipe_endpoint(&self) -> bool {
+        match self {
+            ViewRuntime::Builtin(app) => app.accepts_directed_pipe_events(),
+            ViewRuntime::Python(app) => app.is_directed_pipe_endpoint(),
+            ViewRuntime::Wasm(app) => app.is_running(),
+        }
+    }
+
+    /// Admit an open request this instance made, at intake, for a runtime
+    /// whose input never fills. A Python guest's opens are admitted where it
+    /// takes them from the guest, since its stdin can fill.
+    fn admit_open_at_intake(&self) -> Option<OpenAdmission> {
+        match self {
+            ViewRuntime::Builtin(_) | ViewRuntime::Wasm(_) => {
+                self.is_directed_pipe_endpoint().then_some(OpenAdmission {
+                    answer: ControlSlot::Unbounded,
+                    close: Some(ControlSlot::Unbounded),
+                })
+            }
+            ViewRuntime::Python(_) => None,
+        }
+    }
+
+    /// Hold room for one control event.
+    pub(crate) fn reserve_directed_control(
+        &mut self,
+        room: ControlRoom<'_>,
+    ) -> Result<ControlSlot, NotAdmitted> {
+        if !self.is_directed_pipe_endpoint() {
+            return Err(NotAdmitted::NotAnEndpoint);
+        }
+        match self {
+            ViewRuntime::Builtin(_) | ViewRuntime::Wasm(_) => Ok(ControlSlot::Unbounded),
+            ViewRuntime::Python(app) => app.reserve_control(room).map(ControlSlot::Stdin),
+        }
+    }
+
+    /// Deliver a control event into the room `slot` holds. Fails when this
+    /// instance is no longer an endpoint, or (WASM) the event names a
+    /// connection or request it does not know.
+    pub(crate) fn deliver_directed_control(
+        &mut self,
+        slot: ControlSlot,
+        event: crate::protocol::PlexiEvent,
+    ) -> Result<(), String> {
+        if !self.is_directed_pipe_endpoint() {
+            return Err("not a directed pipe endpoint".to_string());
+        }
+        match (self, slot) {
+            (ViewRuntime::Builtin(app), ControlSlot::Unbounded) => {
+                app.queue_outbound_event(event);
+                Ok(())
+            }
+            (ViewRuntime::Wasm(app), ControlSlot::Unbounded) => app.try_queue_outbound_event(event),
+            (ViewRuntime::Python(app), ControlSlot::Stdin(slot)) => {
+                app.deliver_control(slot, event)
+            }
+            (runtime, slot) => Err(format!(
+                "room {slot:?} is not held by this {} runtime",
+                runtime.runtime_kind()
+            )),
+        }
+    }
+
+    /// Deliver `DirectedPipeIncoming` now, into free room: it is sent while
+    /// the open is being prepared, so it needs no held room.
+    pub(crate) fn deliver_directed_incoming(
+        &mut self,
+        event: crate::protocol::PlexiEvent,
+    ) -> Result<(), String> {
+        if !self.is_directed_pipe_endpoint() {
+            return Err("not a directed pipe endpoint".to_string());
+        }
+        match self {
+            ViewRuntime::Builtin(app) => {
+                app.queue_outbound_event(event);
+                Ok(())
+            }
+            ViewRuntime::Wasm(app) => app.try_queue_outbound_event(event),
+            ViewRuntime::Python(app) => app.deliver_unreserved_control(event),
+        }
+    }
+
     /// Returns None when this runtime does not support NotifyAction.
     pub(crate) fn try_queue_notify_action(
         &mut self,
@@ -2352,15 +2497,33 @@ impl ViewRuntime {
 
     /// Register a directed pipe on this runtime's local pipe registry so
     /// `has_pipe_reader` reflects the connection on the target runtime.
-    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
+    /// `Ok(false)` when the runtime keeps no local pipe registry (builtins).
+    pub fn register_directed_pipe(
+        &mut self,
+        pipe_id: &str,
+        generation: u64,
+    ) -> Result<bool, String> {
         match self {
-            ViewRuntime::Builtin(_) => false,
-            ViewRuntime::Python(app) => app.register_directed_pipe(pipe_id),
-            ViewRuntime::Wasm(app) => app.register_directed_pipe(pipe_id),
+            ViewRuntime::Builtin(_) => Ok(false),
+            ViewRuntime::Python(app) => app.register_directed_pipe(pipe_id).map(|()| true),
+            ViewRuntime::Wasm(app) => app
+                .register_directed_pipe(pipe_id, generation)
+                .map(|()| true),
+        }
+    }
+
+    /// Close a host-retired directed pipe on this runtime's local pipe
+    /// registry. Builtin plugins keep none, so there is nothing to close.
+    pub fn close_directed_pipe(&mut self, pipe_id: &str, generation: u64) {
+        match self {
+            ViewRuntime::Builtin(_) => {}
+            ViewRuntime::Python(app) => app.close_directed_pipe(pipe_id),
+            ViewRuntime::Wasm(app) => app.close_directed_pipe(pipe_id, generation),
         }
     }
 
     /// True when `pipe_id` is open on this runtime's local pipe registry.
+    #[cfg(test)]
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         match self {
             ViewRuntime::Builtin(_) => false,

@@ -1,12 +1,12 @@
 //! Generates the canonical PGAP JSON Schema artifact.
 //! Usage: cargo run -p gen_schema > sdk/protocol/pgap.schema.json
 
-use plexi::protocol::{HostRequest, PlexiEvent};
+use plexi::protocol::{HostRequest, PlexiEvent, PROTOCOL_VERSION};
 
 fn main() {
     let schema = serde_json::json!({
         "$schema": "http://json-schema.org/draft-07/schema#",
-        "protocol": "pgap/4",
+        "protocol": PROTOCOL_VERSION,
         "version": 3,
         "definitions": {
             "PlexiEvent": schemars::schema_for!(PlexiEvent),

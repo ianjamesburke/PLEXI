@@ -327,6 +327,58 @@ class PipeMessage:
 
 
 @dataclass
+class PipeOpened:
+    """This app's :class:`effects.PipeOpenDirected` for ``pipe_id`` was
+    accepted. ``handle`` names the connection; sends by name that waited for
+    the answer have gone out on it."""
+    pipe_id: str
+    handle: int
+
+
+@dataclass
+class PipeOpenRefused:
+    """This app's :class:`effects.PipeOpenDirected` for ``pipe_id`` was
+    refused and the sends that waited for it were dropped. ``reason`` is one
+    of ``denied``, ``no_target``, ``not_a_plugin``, ``out_of_reach``,
+    ``in_use``, ``name_conflict``, ``opener_unplaced``,
+    ``target_unavailable``, ``opener_full`` (this app holds as many
+    connections as its input has room to close, or its input is full) or
+    ``name_too_long`` (over ``effects.MAX_PIPE_ID_BYTES``)."""
+    pipe_id: str
+    reason: str
+
+
+@dataclass
+class PipeSendDropped:
+    """A :class:`effects.PipeSend` on ``pipe`` (a name or handle) was
+    dropped because no connection was open for it: it closed (after
+    :class:`PipeClosed`), its open was refused, or it was never opened.
+    ``reason`` says which."""
+    pipe: str | int
+    reason: str
+
+
+@dataclass
+class PipeIncoming:
+    """Pane ``peer_pane_id`` opened directed pipe ``pipe_id`` to this app.
+    Reply by name or on ``handle``."""
+    pipe_id: str
+    handle: int
+    peer_pane_id: int
+
+
+@dataclass
+class PipeClosed:
+    """Directed pipe connection ``handle`` (named ``pipe_id``) ended: the
+    other end's view closed (``reason == "peer_closed"``), its app reloaded
+    (``"peer_reloaded"``), or either end moved to another context
+    (``"moved"``). A reopen is a new connection with a new handle."""
+    pipe_id: str
+    handle: int
+    reason: str
+
+
+@dataclass
 class StateChanged:
     """A state scope's backing file changed outside this app's own persist
     flow — an external edit (CLI, agent, editor), or a persist this app lost

@@ -1243,6 +1243,10 @@ impl PlexiApp {
                 .collect();
             crate::app::attention_queue::retire_requester_approvals(&panes, Some(*context_id));
         }
+        self.retire_directed_pipes_in_slots(
+            &doomed_pane_ids,
+            crate::protocol::PipeCloseReason::PeerClosed,
+        );
         for pane_id in doomed_pane_ids {
             self.reclaim_pane_worktree(pane_id);
         }
@@ -1623,6 +1627,10 @@ impl PlexiApp {
         for pane in self.windows[index].panes.values() {
             self.record_closed_agent_pane(removed_ws_id, &self.windows[index].path, pane);
         }
+        self.retire_directed_pipes_in_slots(
+            &pane_ids,
+            crate::protocol::PipeCloseReason::PeerClosed,
+        );
         let removed_window = self.windows.remove(index);
         log::info!("delete_window: removed window_id={removed_win_id} ctx_id={removed_ws_id}");
         dispose_removed_windows(vec![removed_window], "delete_window");
@@ -2288,6 +2296,7 @@ impl PlexiApp {
 
         // The grafted and promoted panes now live in the parent context.
         self.rescope_moved_panes();
+        self.retire_directed_pipes_moved();
         self.pending_notifications.retain(|n| {
             !(matches!(n.scope, crate::protocol::NotifyScope::Context)
                 && n.source_context_id == child_ctx_id)

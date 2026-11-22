@@ -245,13 +245,15 @@ impl StateStore {
 
 // ─── Host context (store data) ─────────────────────────────────────────────
 
-/// A pipe the guest opened, keyed by the `pipe-handle` it was given. Holds the
-/// registry id and kind so sends route to the right backing (binary ring vs.
-/// JSON validation).
+/// A pipe handle the guest holds. Holds the registry id and kind so sends
+/// route to the right backing: a binary ring, or the directed connection the
+/// handle carries.
 struct PipeBinding {
     id: String,
     binary: bool,
-    host_registered: bool,
+    /// The directed pipe connection this handle carries, for its whole
+    /// lifetime (stint 1681). `None` for a pipe the guest opened itself.
+    generation: Option<u64>,
 }
 
 pub struct HostCtx {
@@ -263,6 +265,13 @@ pub struct HostCtx {
     pipes: crate::host::typed_pipes::TypedPipeRegistry,
     pipe_handles: HashMap<u32, PipeBinding>,
     next_pipe_handle: u32,
+    // Directed pipe opens awaiting the host's answer, by host request id,
+    // with the request number `open-directed` returned (stint 1681).
+    pipe_requests: HashMap<String, u32>,
+    next_pipe_request: u32,
+    // Directed pipe opens, sends and closes the guest made through the
+    // `pipes` import, for the host to drain; each names its connection.
+    pipe_commands: Vec<crate::app::view_trait::ViewCommand>,
     // Open audio streams (G12). Backs the `audio-rt-control` import; sample
     // pulls happen through the guest's `process-output` export, not here.
     audio_streams: AudioStreams,
@@ -339,49 +348,98 @@ impl HostCtx {
             .ok_or_else(|| format!("unknown pipe handle {handle}"))
     }
 
-    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
+    /// Register directed pipe connection `generation` under a fresh guest
+    /// handle. A binary pipe already open under the same name refuses it: the
+    /// two would share one id.
+    pub fn register_directed_pipe(&mut self, pipe_id: &str, generation: u64) -> Result<(), String> {
+        if self.pipes.is_binary(pipe_id) {
+            return Err(format!(
+                "'{}' is already open as a binary pipe on plugin {}",
+                guest_text::shown(pipe_id),
+                self.plugin_id
+            ));
+        }
+        // A pipe the guest opened itself under this name would share the
+        // registry entry, and undoing this registration would close it.
+        if self
+            .pipe_handles
+            .values()
+            .any(|binding| binding.generation.is_none() && binding.id == pipe_id)
+        {
+            return Err(format!(
+                "'{}' is already open as a guest pipe on plugin {}",
+                guest_text::shown(pipe_id),
+                self.plugin_id
+            ));
+        }
         match self.pipes.open_json(
             pipe_id.to_string(),
             crate::host::typed_pipes::PipeDirection::Duplex,
         ) {
             Ok(()) | Err(crate::host::typed_pipes::PipeError::AlreadyOpen(_)) => {}
             Err(e) => {
-                log::warn!(
-                    "plugin::{}: failed to register directed pipe '{pipe_id}': {e}",
-                    self.plugin_id,
-                    pipe_id = guest_text::shown(pipe_id)
-                );
-                return false;
+                return Err(format!(
+                    "registering directed pipe '{}' on plugin {}: {e}",
+                    guest_text::shown(pipe_id),
+                    self.plugin_id
+                ));
             }
         }
-        if self.json_pipe_handle(pipe_id).is_none() {
-            let handle = self.next_pipe_handle;
-            self.next_pipe_handle += 1;
-            self.pipe_handles.insert(
-                handle,
-                PipeBinding {
-                    id: pipe_id.to_string(),
-                    binary: false,
-                    host_registered: true,
-                },
-            );
-        }
+        let handle = self.next_pipe_handle;
+        self.next_pipe_handle += 1;
+        self.pipe_handles.insert(
+            handle,
+            PipeBinding {
+                id: pipe_id.to_string(),
+                binary: false,
+                generation: Some(generation),
+            },
+        );
         log::info!(
-            "plugin::{}: registered directed pipe '{pipe_id}' on WASM runtime",
+            "plugin::{}: registered directed pipe '{pipe_id}' connection {generation} as handle {handle}",
             self.plugin_id,
             pipe_id = guest_text::shown(pipe_id)
         );
-        true
+        Ok(())
     }
 
+    #[cfg(test)]
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         self.pipes.has_reader(pipe_id)
     }
 
-    pub fn json_pipe_handle(&self, pipe_id: &str) -> Option<u32> {
+    /// Drop the handle carrying retired connection `generation`, and the JSON
+    /// registry entry once no JSON handle uses the name. A binary pipe of the
+    /// same name is never touched.
+    pub fn close_directed_pipe(&mut self, pipe_id: &str, generation: u64) {
+        self.pipe_handles
+            .retain(|_, binding| binding.generation != Some(generation));
+        if !self
+            .pipe_handles
+            .values()
+            .any(|binding| !binding.binary && binding.id == pipe_id)
+        {
+            self.pipes.close_json(pipe_id);
+        }
+    }
+
+    /// The guest handle carrying directed pipe connection `generation`.
+    pub fn directed_pipe_handle(&self, generation: u64) -> Option<u32> {
         self.pipe_handles.iter().find_map(|(&handle, binding)| {
-            (!binding.binary && binding.id == pipe_id).then_some(handle)
+            (binding.generation == Some(generation)).then_some(handle)
         })
+    }
+
+    /// The request number `open-directed` returned for host request
+    /// `request_id`, now answered. `None` for a request this guest never made.
+    pub fn take_pipe_request(&mut self, request_id: &str) -> Option<u32> {
+        self.pipe_requests.remove(request_id)
+    }
+
+    /// The directed pipe opens, sends and closes the guest made since the
+    /// last call.
+    pub fn take_pipe_commands(&mut self) -> Vec<crate::app::view_trait::ViewCommand> {
+        std::mem::take(&mut self.pipe_commands)
     }
 }
 
@@ -399,21 +457,6 @@ impl pipes::Host for HostCtx {
             pipes::PipeDirection::Duplex => Dir::Duplex,
         };
         let binary = matches!(kind, pipes::PipeType::Binary);
-        if !binary {
-            if let Some((&handle, binding)) = self
-                .pipe_handles
-                .iter_mut()
-                .find(|(_, b)| !b.binary && b.id == id && b.host_registered)
-            {
-                binding.host_registered = false;
-                log::info!(
-                    "plugin::{}: claimed host-registered json pipe '{id}' -> handle {handle}",
-                    self.plugin_id,
-                    id = guest_text::shown(&id)
-                );
-                return Ok(handle);
-            }
-        }
         if binary {
             self.pipes
                 .open_binary(id.clone(), dir)
@@ -430,7 +473,7 @@ impl pipes::Host for HostCtx {
             PipeBinding {
                 id: id.clone(),
                 binary,
-                host_registered: false,
+                generation: None,
             },
         );
         log::info!(
@@ -457,17 +500,52 @@ impl pipes::Host for HostCtx {
             .map_err(|_| "pipe ring full (overrun)".to_string())
     }
 
+    fn open_directed(&mut self, id: String, target_pane: u64) -> Result<u32, String> {
+        if id.is_empty() {
+            return Err("directed pipe id is empty".to_string());
+        }
+        let request = self.next_pipe_request;
+        self.next_pipe_request += 1;
+        let request_id = format!("wasm-open-{request}");
+        log::info!(
+            "plugin::{}: open-directed '{id}' to pane {target_pane} as request {request}",
+            self.plugin_id,
+            id = guest_text::shown(&id)
+        );
+        self.pipe_requests.insert(request_id.clone(), request);
+        self.pipe_commands
+            .push(crate::app::view_trait::ViewCommand::OpenDirectedPipe {
+                sender_pane_id: 0,
+                request_id,
+                pipe_id: id,
+                target_pane_id: target_pane,
+                emitter: None,
+                admission: None,
+            });
+        Ok(request)
+    }
+
+    /// Queue the send on the connection the handle carries, fixed here at
+    /// the import call. A handle whose connection closed is unknown.
     fn send_json(&mut self, handle: u32, json: String) -> Result<(), String> {
-        let binary = self.pipe_id(handle)?.binary;
-        if binary {
+        let binding = self.pipe_id(handle)?;
+        if binding.binary {
             return Err(format!("pipe handle {handle} is a binary pipe"));
         }
-        // Validate the frame is well-formed JSON and report malformed payloads
-        // to the guest. The WASM runtime does not route JSON pipe payloads —
-        // delivery is out-of-band (see docs/wasm-runtime.md); pairing and
-        // permission are the host's concern, bytes flow separately.
-        serde_json::from_str::<serde_json::Value>(&json)
+        let Some(generation) = binding.generation else {
+            return Err(format!(
+                "pipe handle {handle} is not a directed connection; open one with open-directed"
+            ));
+        };
+        let payload = serde_json::from_str::<serde_json::Value>(&json)
             .map_err(|e| format!("invalid json: {e}"))?;
+        self.pipe_commands
+            .push(crate::app::view_trait::ViewCommand::DeliverPipeMessage {
+                sender_pane_id: 0,
+                generation,
+                payload,
+                emitter: None,
+            });
         Ok(())
     }
 
@@ -476,7 +554,28 @@ impl pipes::Host for HostCtx {
             .pipe_handles
             .remove(&handle)
             .ok_or_else(|| format!("unknown pipe handle {handle}"))?;
-        self.pipes.close(&binding.id);
+        let Some(generation) = binding.generation else {
+            self.pipes.close(&binding.id);
+            return Ok(());
+        };
+        if !self
+            .pipe_handles
+            .values()
+            .any(|other| !other.binary && other.id == binding.id)
+        {
+            self.pipes.close_json(&binding.id);
+        }
+        log::info!(
+            "plugin::{}: closed directed pipe '{id}' connection {generation} (handle {handle})",
+            self.plugin_id,
+            id = guest_text::shown(&binding.id)
+        );
+        self.pipe_commands
+            .push(crate::app::view_trait::ViewCommand::CloseDirectedPipe {
+                sender_pane_id: 0,
+                generation,
+                emitter: None,
+            });
         Ok(())
     }
 
@@ -817,6 +916,9 @@ impl WasmView {
             ),
             pipe_handles: HashMap::new(),
             next_pipe_handle: 0,
+            pipe_requests: HashMap::new(),
+            next_pipe_request: 0,
+            pipe_commands: Vec::new(),
             audio_streams: AudioStreams::default(),
             gpu: gpu_device,
             wasi: WasiCtxBuilder::new().build(),
@@ -936,21 +1038,94 @@ impl WasmView {
         self.store.data().pipes.owner()
     }
 
-    /// Register a host-directed duplex JSON pipe on this WASM instance's
-    /// typed-pipe registry and ensure a handle exists for inbound delivery.
-    pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
-        self.store.data_mut().register_directed_pipe(pipe_id)
+    /// Register directed pipe connection `generation` on this WASM instance
+    /// under a fresh guest handle.
+    pub fn register_directed_pipe(&mut self, pipe_id: &str, generation: u64) -> Result<(), String> {
+        self.store
+            .data_mut()
+            .register_directed_pipe(pipe_id, generation)
     }
 
     /// True when `pipe_id` is open on this WASM instance's typed-pipe registry.
+    #[cfg(test)]
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         self.store.data().has_pipe_reader(pipe_id)
     }
 
-    /// Look up the guest-facing handle for a JSON pipe registered on this WASM
-    /// instance.
-    pub fn json_pipe_handle(&self, pipe_id: &str) -> Option<u32> {
-        self.store.data().json_pipe_handle(pipe_id)
+    /// Close a host-retired directed pipe connection on this WASM instance.
+    pub fn close_directed_pipe(&mut self, pipe_id: &str, generation: u64) {
+        self.store
+            .data_mut()
+            .close_directed_pipe(pipe_id, generation);
+    }
+
+    /// The guest handle carrying directed pipe connection `generation`.
+    pub fn directed_pipe_handle(&self, generation: u64) -> Option<u32> {
+        self.store.data().directed_pipe_handle(generation)
+    }
+
+    /// See [`HostCtx::take_pipe_request`].
+    pub fn take_pipe_request(&mut self, request_id: &str) -> Option<u32> {
+        self.store.data_mut().take_pipe_request(request_id)
+    }
+
+    /// See [`HostCtx::take_pipe_commands`].
+    pub fn take_pipe_commands(&mut self) -> Vec<crate::app::view_trait::ViewCommand> {
+        self.store.data_mut().take_pipe_commands()
+    }
+
+    /// Open a binary pipe as the guest would, for tests. The socket lives in
+    /// a short `/tmp` directory: a temp config dir overflows `SUN_LEN`.
+    #[cfg(test)]
+    pub fn open_binary_pipe_for_test(&mut self, id: &str) -> Result<u32, String> {
+        let dir = PathBuf::from("/tmp").join(format!("plwv{}", std::process::id()));
+        self.store.data_mut().pipes = crate::host::typed_pipes::TypedPipeRegistry::new(dir);
+        pipes::Host::open(
+            self.store.data_mut(),
+            id.to_string(),
+            pipes::PipeType::Binary,
+            pipes::PipeDirection::Out,
+        )
+    }
+
+    /// Send a binary frame as the guest would, for tests.
+    #[cfg(test)]
+    pub fn send_binary_for_test(&mut self, handle: u32, frame: Vec<u8>) -> Result<(), String> {
+        pipes::Host::send_binary(self.store.data_mut(), handle, frame)
+    }
+
+    /// Open a plain JSON pipe as the guest would, for tests.
+    #[cfg(test)]
+    pub fn open_json_pipe_for_test(&mut self, id: &str) -> Result<u32, String> {
+        pipes::Host::open(
+            self.store.data_mut(),
+            id.to_string(),
+            pipes::PipeType::Json,
+            pipes::PipeDirection::Out,
+        )
+    }
+
+    /// Call `open-directed` as the guest would, for tests.
+    #[cfg(test)]
+    pub fn open_directed_for_test(&mut self, id: &str, target_pane: u64) -> Result<u32, String> {
+        pipes::Host::open_directed(self.store.data_mut(), id.to_string(), target_pane)
+    }
+
+    /// Close a pipe handle as the guest would, for tests.
+    #[cfg(test)]
+    pub fn close_pipe_for_test(&mut self, handle: u32) -> Result<(), String> {
+        pipes::Host::close(self.store.data_mut(), handle)
+    }
+
+    /// How many handles carry a directed connection, for tests.
+    #[cfg(test)]
+    pub fn directed_handle_count_for_test(&self) -> usize {
+        self.store
+            .data()
+            .pipe_handles
+            .values()
+            .filter(|binding| binding.generation.is_some())
+            .count()
     }
 
     /// True when the gpu capability was granted (the plugin declares a surface).
@@ -1307,6 +1482,9 @@ mod tests {
             pipes: crate::host::typed_pipes::TypedPipeRegistry::new(dir),
             pipe_handles: std::collections::HashMap::new(),
             next_pipe_handle: 0,
+            pipe_requests: std::collections::HashMap::new(),
+            next_pipe_request: 0,
+            pipe_commands: Vec::new(),
             audio_streams: AudioStreams::default(),
             gpu: None,
             wasi: WasiCtxBuilder::new().build(),
@@ -1363,9 +1541,11 @@ mod tests {
         let h = ctx
             .open("score".to_string(), PipeType::Json, PipeDirection::Out)
             .expect("open json");
-        ctx.send_json(h, r#"{"score":3}"#.to_string())
-            .expect("valid json");
-        assert!(ctx.send_json(h, "{not json".to_string()).is_err());
+        let error = ctx
+            .send_json(h, r#"{"score":3}"#.to_string())
+            .expect_err("a pipe the guest opened by name carries no connection");
+        assert!(error.contains("not a directed connection"), "{error}");
+        assert!(ctx.take_pipe_commands().is_empty());
         assert!(
             ctx.send_binary(h, vec![0]).is_err(),
             "binary on json pipe errors"
@@ -1373,23 +1553,21 @@ mod tests {
         ctx.close(h).expect("close");
     }
 
+    /// Stint 1681: a directed handle carries one connection for its life.
+    /// The guest cannot claim it by name; a send names its connection when
+    /// the import is called; an open is a numbered request; once the host
+    /// retires the connection the handle is unknown, and a reopen of the
+    /// name is a new handle whose close ends only its own connection.
     #[test]
-    fn register_directed_pipe_allows_guest_to_claim_handle() {
+    fn a_directed_handle_carries_one_connection_for_its_life() {
+        use crate::app::view_trait::ViewCommand;
         use pipes::{Host, PipeDirection, PipeType};
         let mut ctx = host_ctx_with_pipes();
-        assert!(ctx.register_directed_pipe("directed.pipe"));
+        assert_eq!(ctx.register_directed_pipe("directed.pipe", 4), Ok(()));
         assert!(ctx.has_pipe_reader("directed.pipe"));
-        let host_handle = ctx
-            .json_pipe_handle("directed.pipe")
-            .expect("host registered a JSON handle");
-        let claimed = ctx
-            .open(
-                "directed.pipe".to_string(),
-                PipeType::Json,
-                PipeDirection::Duplex,
-            )
-            .expect("guest open claims pre-registered directed pipe handle");
-        assert_eq!(claimed, host_handle);
+        let old = ctx
+            .directed_pipe_handle(4)
+            .expect("host registered a handle for connection 4");
         assert!(
             ctx.open(
                 "directed.pipe".to_string(),
@@ -1397,8 +1575,88 @@ mod tests {
                 PipeDirection::Duplex
             )
             .is_err(),
-            "second guest open on an already-claimed pipe must return AlreadyOpen"
+            "a guest open by name never claims a connection"
         );
+
+        ctx.send_json(old, r#"{"n":1}"#.to_string()).expect("send");
+        assert!(ctx.send_json(old, "{not json".to_string()).is_err());
+        let sent = ctx.take_pipe_commands();
+        assert!(
+            matches!(
+                &sent[..],
+                [ViewCommand::DeliverPipeMessage { generation: 4, payload, .. }]
+                    if payload == &serde_json::json!({"n": 1})
+            ),
+            "{:?}",
+            sent.iter().map(ViewCommand::verb).collect::<Vec<_>>()
+        );
+
+        assert_eq!(ctx.open_directed("other".to_string(), 9), Ok(0));
+        assert_eq!(ctx.open_directed("other".to_string(), 9), Ok(1));
+        assert!(ctx.open_directed(String::new(), 9).is_err());
+        let opens = ctx.take_pipe_commands();
+        assert!(matches!(
+            &opens[..],
+            [
+                ViewCommand::OpenDirectedPipe { request_id: first, target_pane_id: 9, .. },
+                ViewCommand::OpenDirectedPipe { request_id: second, .. },
+            ] if first == "wasm-open-0" && second == "wasm-open-1"
+        ));
+        assert_eq!(ctx.take_pipe_request("wasm-open-1"), Some(1));
+        assert_eq!(ctx.take_pipe_request("wasm-open-1"), None, "answered once");
+
+        ctx.close_directed_pipe("directed.pipe", 4);
+        let error = ctx
+            .send_json(old, r#"{"late":true}"#.to_string())
+            .expect_err("a retired connection's handle is unknown");
+        assert!(error.contains("unknown pipe handle"), "{error}");
+        assert_eq!(ctx.register_directed_pipe("directed.pipe", 5), Ok(()));
+        let new = ctx
+            .directed_pipe_handle(5)
+            .expect("handle for connection 5");
+        assert_ne!(new, old);
+        assert!(ctx.send_json(old, "{}".to_string()).is_err());
+
+        ctx.close(new).expect("guest closes its connection");
+        assert!(!ctx.has_pipe_reader("directed.pipe"));
+        assert!(matches!(
+            &ctx.take_pipe_commands()[..],
+            [ViewCommand::CloseDirectedPipe { generation: 5, .. }]
+        ));
+    }
+
+    /// Stint 1681: a directed pipe never takes a binary pipe's id, and
+    /// retiring a connection drops only its own handle: a binary pipe of the
+    /// same name keeps taking frames after the refusal and after a JSON
+    /// connection on another name is retired.
+    #[test]
+    fn directed_pipe_registration_and_retirement_leave_a_binary_pipe_alone() {
+        use pipes::{Host, PipeDirection, PipeType};
+        let mut ctx = host_ctx_with_pipes();
+        let binary = ctx
+            .open("frames".to_string(), PipeType::Binary, PipeDirection::Out)
+            .expect("open binary");
+        assert!(
+            ctx.register_directed_pipe("frames", 1).is_err(),
+            "a directed pipe may not take a binary pipe's id"
+        );
+        assert_eq!(ctx.directed_pipe_handle(1), None);
+        ctx.close_directed_pipe("frames", 1);
+        assert!(ctx.pipes.is_binary("frames"), "the binary pipe stays open");
+        ctx.send_binary(binary, vec![1, 2, 3])
+            .expect("the binary ring still takes frames after the refusal");
+
+        assert_eq!(ctx.register_directed_pipe("directed", 2), Ok(()));
+        let directed = ctx
+            .directed_pipe_handle(2)
+            .expect("handle for connection 2");
+        assert_ne!(directed, binary);
+        ctx.close_directed_pipe("directed", 2);
+        assert!(!ctx.has_pipe_reader("directed"));
+        assert_eq!(ctx.directed_pipe_handle(2), None);
+        ctx.send_binary(binary, vec![4])
+            .expect("the binary ring still takes frames after the retirement");
+        ctx.close(binary).expect("close binary");
     }
 
     // G12 (host side): a plexi-audio-plugin component links audio-rt-control and

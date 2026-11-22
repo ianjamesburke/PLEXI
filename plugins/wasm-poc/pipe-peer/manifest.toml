@@ -1,0 +1,24 @@
+schema_version = 2
+
+[launch]
+
+[plugin]
+id = "com.plexi.pipe-peer"
+name = "Pipe Peer"
+version = "0.1.0"
+description = "Directed pipe POC: a WASM end driven over its ctl pipe."
+
+[plugin.capabilities]
+capabilities = ["pipe.open"]
+
+[plugin.capabilities.wasm]
+required = ["pipe.open"]
+optional = []
+
+[runtime]
+kind = "wasm"
+entry = "../../../target/wasm32-wasip1/release/pipe_peer.wasm"
+
+[[contributes.views]]
+id = "com.plexi.pipe-peer.main"
+default = true

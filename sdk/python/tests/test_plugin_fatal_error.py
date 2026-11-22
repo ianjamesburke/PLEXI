@@ -44,7 +44,7 @@ def _run_plugin(tmp_path: Path, source: str, extra_files: dict[str, str] | None 
         "workspace_root": str(tmp_path),
         "capabilities": [],
         "feature_flags": [],
-        "protocol": "pgap/4",
+        "protocol": "pgap/5",
         "width": 320.0,
         "height": 240.0,
     }

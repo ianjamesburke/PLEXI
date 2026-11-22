@@ -345,27 +345,60 @@ class UnsubscribeEventStreams:
     subscription_id: str
 
 
+# Longest pipe name, in UTF-8 bytes, mirrored (and enforced) host-side: the
+# host holds room in the opener's input for the answer, which names the pipe.
+MAX_PIPE_ID_BYTES = 256
+
+
 @dataclass
 class PipeOpenDirected:
-    """Open a host-mediated duplex JSON pipe targeting ``target_pane_id``.
+    """Ask the host for a duplex JSON pipe named ``pipe_id`` to the view in
+    ``target_pane_id``. Needs the ``pipe.open`` capability. ``pipe_id`` is
+    at most ``MAX_PIPE_ID_BYTES`` (256) UTF-8 bytes; a longer one raises
+    ``ValueError`` here.
 
-    The host does not check the ``pipe.open`` capability for Python plugins
-    yet; declare it anyway. Once subscribed, either endpoint may
-    send JSON payloads over ``pipe_id`` via :class:`PipeSend`, delivered to the
-    peer as :class:`events.PipeMessage`.
+    The host answers with :class:`events.PipeOpened` or
+    :class:`events.PipeOpenRefused`; the target gets
+    :class:`events.PipeIncoming`. Sends by ``pipe_id`` returned after this
+    effect wait for the answer (at most 64) and go out on the new connection
+    or are dropped with the refusal.
     """
     pipe_id: str
     target_pane_id: int
 
+    def __post_init__(self) -> None:
+        size = len(str(self.pipe_id).encode("utf-8"))
+        if size > MAX_PIPE_ID_BYTES:
+            raise ValueError(
+                f"PipeOpenDirected: pipe_id {str(self.pipe_id)[:32]!r}... is {size} "
+                f"UTF-8 bytes; the limit is MAX_PIPE_ID_BYTES ({MAX_PIPE_ID_BYTES})"
+            )
 
-@dataclass
+
+@dataclass(init=False)
 class PipeSend:
-    """Send a JSON-serializable ``payload`` over an open pipe ``pipe_id``.
-
-    The host does not check the ``pipe.open`` capability for Python plugins
-    yet; declare it anyway. Delivered to the paired endpoint as
-    :class:`events.PipeMessage`.
+    """Send a JSON-serializable ``payload`` on a directed pipe: by name
+    (``str``), the pipe's current connection, or by handle (``int``, from
+    :class:`events.PipeOpened`, :class:`events.PipeIncoming` or
+    :class:`events.PipeMessage`), that connection only. Delivered to the
+    other end as :class:`events.PipeMessage`. The payload is copied when
+    the effect is applied. A send with no open connection (the connection
+    closed, or the name is not open) is dropped and the app gets
+    :class:`events.PipeSendDropped`; the other effects still apply.
     """
-    pipe_id: str
+    pipe: str | int
     payload: Any = None
+
+    def __init__(self, pipe: str | int | None = None, payload: Any = None, **removed: Any) -> None:
+        if "pipe_id" in removed:
+            raise TypeError(
+                "PipeSend(pipe_id=...) was removed; pass the pipe name or "
+                "handle as `pipe`: PipeSend(pipe, payload)"
+            )
+        if removed:
+            raise TypeError(f"PipeSend got unexpected keyword arguments {sorted(removed)}")
+        if pipe is None:
+            raise TypeError("PipeSend needs `pipe`: a pipe name or handle")
+        self.pipe = pipe
+        self.payload = payload
 

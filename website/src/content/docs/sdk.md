@@ -325,24 +325,31 @@ UnsubscribeEventStreams(request_id: str, subscription_id: str)
 PipeOpenDirected(pipe_id: str, target_pane_id: int)
 ```
 
-Open a host-mediated duplex JSON pipe targeting ``target_pane_id``.
+Ask the host for a duplex JSON pipe named ``pipe_id`` to the view in
+``target_pane_id``. Needs the ``pipe.open`` capability. ``pipe_id`` is
+at most ``MAX_PIPE_ID_BYTES`` (256) UTF-8 bytes; a longer one raises
+``ValueError`` here.
 
-The host does not check the ``pipe.open`` capability for Python plugins
-yet; declare it anyway. Once subscribed, either endpoint may
-send JSON payloads over ``pipe_id`` via :class:`PipeSend`, delivered to the
-peer as :class:`events.PipeMessage`.
+The host answers with :class:`events.PipeOpened` or
+:class:`events.PipeOpenRefused`; the target gets
+:class:`events.PipeIncoming`. Sends by ``pipe_id`` returned after this
+effect wait for the answer (at most 64) and go out on the new connection
+or are dropped with the refusal.
 
 ### `PipeSend`
 
 ```python
-PipeSend(pipe_id: str, payload: Any = None)
+PipeSend(pipe: str | int, payload: Any = None)
 ```
 
-Send a JSON-serializable ``payload`` over an open pipe ``pipe_id``.
-
-The host does not check the ``pipe.open`` capability for Python plugins
-yet; declare it anyway. Delivered to the paired endpoint as
-:class:`events.PipeMessage`.
+Send a JSON-serializable ``payload`` on a directed pipe: by name
+(``str``), the pipe's current connection, or by handle (``int``, from
+:class:`events.PipeOpened`, :class:`events.PipeIncoming` or
+:class:`events.PipeMessage`), that connection only. Delivered to the
+other end as :class:`events.PipeMessage`. The payload is copied when
+the effect is applied. A send with no open connection (the connection
+closed, or the name is not open) is dropped and the app gets
+:class:`events.PipeSendDropped`; the other effects still apply.
 
 ## Events
 
@@ -625,6 +632,61 @@ PipePayload(binary: Optional[bytes] = None, json: Optional[str] = None)
 ```python
 PipeMessage(handle: int = 0, payload: PipePayload = PipePayload(), pipe_id: str = '', data: Optional[object] = None)
 ```
+
+### `PipeOpened`
+
+```python
+PipeOpened(pipe_id: str, handle: int)
+```
+
+This app's :class:`effects.PipeOpenDirected` for ``pipe_id`` was
+accepted. ``handle`` names the connection; sends by name that waited for
+the answer have gone out on it.
+
+### `PipeOpenRefused`
+
+```python
+PipeOpenRefused(pipe_id: str, reason: str)
+```
+
+This app's :class:`effects.PipeOpenDirected` for ``pipe_id`` was
+refused and the sends that waited for it were dropped. ``reason`` is one
+of ``denied``, ``no_target``, ``not_a_plugin``, ``out_of_reach``,
+``in_use``, ``name_conflict``, ``opener_unplaced``,
+``target_unavailable``, ``opener_full`` (this app holds as many
+connections as its input has room to close, or its input is full) or
+``name_too_long`` (over ``effects.MAX_PIPE_ID_BYTES``).
+
+### `PipeSendDropped`
+
+```python
+PipeSendDropped(pipe: str | int, reason: str)
+```
+
+A :class:`effects.PipeSend` on ``pipe`` (a name or handle) was
+dropped because no connection was open for it: it closed (after
+:class:`PipeClosed`), its open was refused, or it was never opened.
+``reason`` says which.
+
+### `PipeIncoming`
+
+```python
+PipeIncoming(pipe_id: str, handle: int, peer_pane_id: int)
+```
+
+Pane ``peer_pane_id`` opened directed pipe ``pipe_id`` to this app.
+Reply by name or on ``handle``.
+
+### `PipeClosed`
+
+```python
+PipeClosed(pipe_id: str, handle: int, reason: str)
+```
+
+Directed pipe connection ``handle`` (named ``pipe_id``) ended: the
+other end's view closed (``reason == "peer_closed"``), its app reloaded
+(``"peer_reloaded"``), or either end moved to another context
+(``"moved"``). A reopen is a new connection with a new handle.
 
 ### `StateChanged`
 
