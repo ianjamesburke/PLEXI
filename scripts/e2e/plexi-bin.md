@@ -1,13 +1,13 @@
 # Channel binary for the V1 acceptance suite
 
-The acceptance target is the alpha channel binary built from this tree. `scripts/v1-acceptance.sh` copies `target/release/plexi` to a real file named `plexi-alpha` and exports that path. It does not assemble an integration branch, and it does not drive a bare `plexi` (that binary adopts `PLEXI_CHANNEL`).
+The acceptance target is the alpha channel binary built from this tree. `scripts/v1-acceptance.sh` copies `target/release/plexi` to a real file named `plexi-alpha` and exports that path. It does not assemble an integration branch, and it does not drive a bare `plexi`.
 
 The harness exports two variables before it runs an item script:
 
 - `PLEXI_BIN` — absolute path of `plexi-alpha` (or an explicit `--bin` / `--pr` override)
 - `PLEXI_E2E_SHIM` — absolute path of `scripts/e2e/plexi-bin.sh`
 
-A channel-named binary ignores `PLEXI_CHANNEL`. The profile directory is the binary's basename (`plexi-alpha` writes `~/.plexi-alpha`). Sourcing the shim is what makes that true for a script that still hardcodes `plexi-pr-<PR>`.
+A binary selects its profile from `--profile-root`, `--profile` and its own basename, never from `HOME` or `PLEXI_CHANNEL`, and refuses a private `HOME` without `--profile-root`. Sourcing the shim (through `scripts/e2e/profile-root.sh`) points `BIN` at a launcher that passes `--profile-root "$HOME"`, and sets `PROFILE` to the directory the binary itself resolves there (`plexi-alpha` → `$HOME/.plexi-alpha`). `PLEXI_BIN` and `BIN_PATH` stay the channel binary.
 
 Apply the line on the PR that owns the script. The acceptance suite does not edit those files.
 
