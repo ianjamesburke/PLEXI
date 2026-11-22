@@ -2335,6 +2335,23 @@ impl ViewRuntime {
         }
     }
 
+    /// Queue `event` for the guest, reporting a guest that could not take it
+    /// (a Python runtime whose stdin is closed or full).
+    pub fn try_queue_outbound_event(
+        &mut self,
+        event: crate::protocol::PlexiEvent,
+    ) -> Result<(), String> {
+        match self {
+            ViewRuntime::Python(app) => app
+                .try_queue_outbound_event(event)
+                .map_err(|error| format!("{error:?}")),
+            ViewRuntime::Builtin(_) | ViewRuntime::Wasm(_) => {
+                self.queue_outbound_event(event);
+                Ok(())
+            }
+        }
+    }
+
     /// Returns None when this runtime does not support NotifyAction.
     pub(crate) fn try_queue_notify_action(
         &mut self,

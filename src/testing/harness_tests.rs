@@ -17784,6 +17784,86 @@ fn an_open_one_end_cannot_register_is_refused_and_rolled_back() {
         .expect("the target's binary pipe still takes frames");
 }
 
+/// Stint 1681 (review round 3): when the target cannot be told of a new
+/// connection (its Python stdin is closed), the open is undone on both ends
+/// and refused `target_unavailable`; the opener is never told it opened.
+#[test]
+fn an_open_whose_target_cannot_be_told_is_undone_and_refused() {
+    use crate::protocol::PipeOpenRefusal;
+    let receiver_dir = tempfile::tempdir().expect("receiver dir");
+    write_directed_pipe_receiver_plugin(receiver_dir.path());
+    let mut h = HostHarness::new();
+    let receiver = h
+        .app
+        .launch_view_by_path_with_layout_no_review_modal(
+            &receiver_dir.path().to_string_lossy(),
+            None,
+            None,
+            &[],
+        )
+        .expect("launch receiver plugin")
+        .expect("receiver pane id");
+    let start = std::time::Instant::now();
+    while python_pane_title(&h, receiver).as_deref() != Some("receiver:ready") {
+        h.run_hidden_frames(1);
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "receiver did not start (error {:?})",
+            python_pane_error(&h, receiver)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let win = h.app.active_window;
+    let context_id = h.app.windows[win].context_id;
+    match &h.app.windows[win]
+        .panes
+        .get(&receiver)
+        .and_then(Pane::as_view)
+        .map(|v| &v.runtime)
+    {
+        Some(ViewRuntime::Python(python)) => python.tool_event_sender().close(),
+        _ => panic!("receiver is a Python view"),
+    }
+    let (opener, opener_inbox) = add_pipe_test_pane(&mut h, win);
+
+    let request = request_directed_pipe(&mut h, opener, receiver, "unheard");
+    h.run_hidden_frames(1);
+
+    assert_eq!(
+        open_answer(&opener_inbox, &request),
+        Some(Err(PipeOpenRefusal::TargetUnavailable))
+    );
+    assert_eq!(pipe_ends(&h, &(context_id, "unheard".to_string())), None);
+    let receiver_has_reader = h.app.windows[win]
+        .panes
+        .get(&receiver)
+        .and_then(Pane::as_view)
+        .is_some_and(|pane| pane.runtime.has_pipe_reader("unheard"));
+    assert!(!receiver_has_reader, "the target's registration is undone");
+}
+
+/// Stint 1681 (review round 3): an opener the host cannot place in a
+/// context (a view in no tile) is answered `opener_unplaced`, not ignored.
+#[test]
+fn an_open_from_an_unplaced_view_is_refused() {
+    use crate::protocol::PipeOpenRefusal;
+    let mut h = HostHarness::new();
+    let win = h.app.active_window;
+    let (target, _) = add_pipe_test_pane(&mut h, win);
+    let opener = h.app.host.alloc_pane_id();
+    let (pane, opener_inbox) = pipe_test_view(opener);
+    h.app.windows[win].panes.insert(opener, pane).unwrap();
+
+    let request = request_directed_pipe(&mut h, opener, target, "unplaced");
+    h.run_hidden_frames(1);
+
+    assert_eq!(
+        open_answer(&opener_inbox, &request),
+        Some(Err(PipeOpenRefusal::OpenerUnplaced))
+    );
+}
+
 /// A Python directed-pipe peer: it opens `py-to-wasm` to the pane in
 /// `args[0]` and sends by name before the answer, echoes every message that
 /// is not itself an echo on the handle it arrived on, and titles itself with

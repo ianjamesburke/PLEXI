@@ -1126,8 +1126,11 @@ impl PlexiApp {
                     // decided from facts the host itself observed, not a
                     // claim or ambient focus state (stint 0724 Phase D 2/2).
                     let Some(sender_origin) = self.origin_for_pane(sender_pane_id) else {
-                        log::warn!(
-                            "OpenDirectedPipe: sender pane {sender_pane_id} not found; pipe '{pipe_id}' dropped", pipe_id = crate::host::guest_text::shown(&pipe_id)
+                        self.refuse_directed_pipe_open(
+                            opener,
+                            &request_id,
+                            &pipe_id,
+                            PipeOpenRefusal::OpenerUnplaced,
                         );
                         continue;
                     };
@@ -1705,6 +1708,7 @@ impl PlexiApp {
         request_id: String,
         pipe_id: String,
     ) {
+        use crate::protocol::PipeOpenRefusal;
         let generation = self
             .directed_pipes
             .commit(context_id, &pipe_id, opener, target);
@@ -1726,20 +1730,40 @@ impl PlexiApp {
                         "OpenDirectedPipe: '{pipe_id}' refused, {end:?} cannot register it: {reason}",
                         pipe_id = crate::host::guest_text::shown(&pipe_id)
                     );
-                    self.directed_pipes.revoke(generation);
-                    for end in registered {
-                        if let Some(view) = self.view_instance_mut(end) {
-                            view.runtime.close_directed_pipe(&pipe_id, generation);
-                        }
-                    }
+                    self.undo_directed_pipe_open(generation, &pipe_id, &registered);
                     self.refuse_directed_pipe_open(
                         opener,
                         &request_id,
                         &pipe_id,
-                        crate::protocol::PipeOpenRefusal::NameConflict,
+                        PipeOpenRefusal::NameConflict,
                     );
                     return;
                 }
+            }
+        }
+        if target != opener {
+            let incoming = crate::protocol::PlexiEvent::DirectedPipeIncoming {
+                pipe_id: pipe_id.clone(),
+                generation,
+                peer_pane_id: opener.pane_id,
+            };
+            let told = self
+                .view_instance_mut(target)
+                .ok_or_else(|| "the target has ended".to_string())
+                .and_then(|view| view.runtime.try_queue_outbound_event(incoming));
+            if let Err(reason) = told {
+                log::warn!(
+                    "OpenDirectedPipe: '{pipe_id}' refused, {target:?} could not be told of connection {generation}: {reason}",
+                    pipe_id = crate::host::guest_text::shown(&pipe_id)
+                );
+                self.undo_directed_pipe_open(generation, &pipe_id, &registered);
+                self.refuse_directed_pipe_open(
+                    opener,
+                    &request_id,
+                    &pipe_id,
+                    PipeOpenRefusal::TargetUnavailable,
+                );
+                return;
             }
         }
         log::info!(
@@ -1748,18 +1772,23 @@ impl PlexiApp {
             target.pane_id,
             pipe_id = crate::host::guest_text::shown(&pipe_id)
         );
-        if target != opener {
-            if let Some(view) = self.view_instance_mut(target) {
-                view.runtime.queue_outbound_event(
-                    crate::protocol::PlexiEvent::DirectedPipeIncoming {
-                        pipe_id: pipe_id.clone(),
-                        generation,
-                        peer_pane_id: opener.pane_id,
-                    },
-                );
+        self.answer_directed_pipe_open(opener, request_id, pipe_id, generation);
+    }
+
+    /// Undo an open that failed part way: revoke `generation` and drop it
+    /// from every end that registered it.
+    fn undo_directed_pipe_open(
+        &mut self,
+        generation: u64,
+        pipe_id: &str,
+        registered: &[crate::app::view_trait::ViewEmitter],
+    ) {
+        self.directed_pipes.revoke(generation);
+        for &end in registered {
+            if let Some(view) = self.view_instance_mut(end) {
+                view.runtime.close_directed_pipe(pipe_id, generation);
             }
         }
-        self.answer_directed_pipe_open(opener, request_id, pipe_id, generation);
     }
 
     fn answer_directed_pipe_open(

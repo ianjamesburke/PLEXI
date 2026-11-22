@@ -638,6 +638,10 @@ pub enum PipeOpenRefusal {
     InUse,
     /// An end already uses the id for a pipe of another kind.
     NameConflict,
+    /// The opener sits in no pane the host can place in a context.
+    OpenerUnplaced,
+    /// The target could not be told of the connection.
+    TargetUnavailable,
 }
 
 impl PipeOpenRefusal {
@@ -649,6 +653,8 @@ impl PipeOpenRefusal {
             Self::OutOfReach => "out_of_reach",
             Self::InUse => "in_use",
             Self::NameConflict => "name_conflict",
+            Self::OpenerUnplaced => "opener_unplaced",
+            Self::TargetUnavailable => "target_unavailable",
         }
     }
 }

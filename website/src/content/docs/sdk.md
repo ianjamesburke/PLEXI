@@ -650,7 +650,8 @@ PipeOpenRefused(pipe_id: str, reason: str)
 This app's :class:`effects.PipeOpenDirected` for ``pipe_id`` was
 refused and the sends that waited for it were dropped. ``reason`` is one
 of ``denied``, ``no_target``, ``not_a_plugin``, ``out_of_reach``,
-``in_use`` or ``name_conflict``.
+``in_use``, ``name_conflict``, ``opener_unplaced`` or
+``target_unavailable``.
 
 ### `PipeSendDropped`
 
