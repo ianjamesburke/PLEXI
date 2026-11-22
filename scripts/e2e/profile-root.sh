@@ -38,7 +38,9 @@ plexi_profile_root() {
     exit 1
   fi
   mkdir -p "$root"
-  root="$(cd "$root" && pwd -P)"
+  # Logical, not physical: resolving /var to /private/var on macOS can push
+  # the endpoint past the Unix socket path limit.
+  root="$(cd "$root" && pwd -L)"
   local name launcher_dir launcher
   name="$(basename "$real")"
   launcher_dir="$root/.profile-root-bin"
