@@ -3342,6 +3342,12 @@ impl LivePythonPane {
         self.pipes.set_owner(owner);
     }
 
+    /// Test hook: whether intake is waiting on an open without room.
+    #[cfg(test)]
+    pub(crate) fn has_held_intake_for_test(&self) -> bool {
+        self.held_intake.is_some()
+    }
+
     /// Whether this guest can still take directed-pipe control events: its
     /// stdin closes when the guest thread exits, however it exits.
     pub(crate) fn is_directed_pipe_endpoint(&self) -> bool {

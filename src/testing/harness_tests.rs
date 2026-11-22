@@ -6152,6 +6152,580 @@ fn a_refused_python_open_drops_its_waiting_sends() {
     );
 }
 
+// --- Stint 1681 review round 4: directed-pipe control delivery. ---
+
+/// Write a Python app `id` with `capabilities` and `main_py` into `dir`.
+fn write_pipe_probe_app(dir: &std::path::Path, id: &str, capabilities: &[&str], main_py: &str) {
+    let capabilities = capabilities
+        .iter()
+        .map(|capability| format!("\"{capability}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    std::fs::write(
+        dir.join("manifest.toml"),
+        format!(
+            "schema_version = 2\n\n[plugin]\nid = \"{id}\"\nname = \"{id}\"\nversion = \"0.1.0\"\ndescription = \"stint 1681 control delivery probe\"\n\n[plugin.capabilities]\ncapabilities = [{capabilities}]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
+        ),
+    )
+    .expect("write probe manifest.toml");
+    std::fs::write(dir.join("main.py"), main_py).expect("write probe main.py");
+}
+
+fn launch_pipe_probe(h: &mut HostHarness, dir: &std::path::Path, args: &[String]) -> u64 {
+    h.app
+        .launch_view_by_path_with_layout_no_review_modal(&dir.to_string_lossy(), None, None, args)
+        .expect("launch probe plugin")
+        .expect("probe pane id")
+}
+
+fn python_runtime_mut(
+    h: &mut HostHarness,
+    pane: u64,
+) -> &mut crate::host::wasm_python::LivePythonPane {
+    let view = h
+        .app
+        .windows
+        .iter_mut()
+        .find_map(|w| w.panes.get_mut(&pane))
+        .and_then(Pane::as_view_mut)
+        .expect("python pane");
+    match &mut view.runtime {
+        ViewRuntime::Python(app) => app,
+        _ => panic!("pane {pane} is not a Python pane"),
+    }
+}
+
+fn python_stdin(h: &mut HostHarness, pane: u64) -> crate::host::wasm_python::AppendableStdin {
+    python_runtime_mut(h, pane).tool_event_sender()
+}
+
+/// Run hidden frames until `done`, failing after the load-aware timeout.
+fn run_until(h: &mut HostHarness, what: &str, done: &dyn Fn(&mut HostHarness) -> bool) {
+    let start = std::time::Instant::now();
+    while !done(h) {
+        h.run_hidden_frames(1);
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "timed out waiting for {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Wait, running no frame, until `done`.
+fn spin_until(what: &str, done: &mut dyn FnMut() -> bool) {
+    let start = std::time::Instant::now();
+    while !done() {
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "timed out waiting for {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// A guest timer event: the probes act on `TimerFired`, delivered here
+/// straight into stdin so no host frame runs in between.
+const PROBE_TRIGGER: &[u8] = b"{\"type\":\"timer\",\"timer_id\":\"1\"}\n";
+
+/// An opener that, on its trigger, opens `stint1681.full` to the pane in
+/// `args[0]` and sends on it in the same update, and titles itself with every
+/// answer it gets.
+const FULL_OPENER_PY: &str = "from plexi_sdk.effects import PipeOpenDirected, PipeSend, SetTitle\n\
+from plexi_sdk.events import PipeOpenRefused, PipeOpened, TimerFired\n\
+from plexi_sdk.ui import Column\n\n\
+state = {}\n\
+seen = []\n\n\
+def init(size, args):\n\
+\x20   state['target'] = int(args[0])\n\
+\x20   return [SetTitle('opener:ready')]\n\n\
+def update(event):\n\
+\x20   if isinstance(event, TimerFired):\n\
+\x20       return [PipeOpenDirected('stint1681.full', state['target']), PipeSend('stint1681.full', {'from': 'opener'})]\n\
+\x20   if isinstance(event, PipeOpened):\n\
+\x20       seen.append(f'opened:{event.handle}')\n\
+\x20   elif isinstance(event, PipeOpenRefused):\n\
+\x20       seen.append(f'refused:{event.reason}')\n\
+\x20   else:\n\
+\x20       return []\n\
+\x20   return [SetTitle('opener:' + ','.join(seen))]\n\n\
+def view():\n\
+\x20   return Column([])\n";
+
+/// Launch a `FULL_OPENER_PY` opener aimed at slot `target`, then run
+/// `install` (the launch rebuilds the layout first). Let the SDK emit its
+/// open and buffer its payload; then, with the guest reading nothing, fill
+/// its stdin with ordinary bytes and dispatch the open. Reads resume and the
+/// opener's settled title is returned.
+fn open_from_a_full_python_stdin(
+    h: &mut HostHarness,
+    target: u64,
+    capabilities: &[&str],
+    install: impl FnOnce(&mut HostHarness),
+) -> (u64, String) {
+    let dir = tempfile::tempdir().expect("opener dir");
+    write_pipe_probe_app(
+        dir.path(),
+        "full-stdin-opener",
+        capabilities,
+        FULL_OPENER_PY,
+    );
+    let opener = launch_pipe_probe(h, dir.path(), &[target.to_string()]);
+    install(h);
+    run_until(h, "the opener is ready", &|h| {
+        python_pane_title(h, opener).as_deref() == Some("opener:ready")
+    });
+    let stdin = python_stdin(h, opener);
+    stdin.set_cap_for_test(256 * 1024);
+    h.run_hidden_frames(2);
+    spin_until("the opener reads what it was sent", &mut || {
+        stdin.buffered_bytes() == 0
+    });
+    stdin.push(PROBE_TRIGGER).expect("trigger");
+    spin_until("the opener reads its trigger", &mut || {
+        stdin.buffered_bytes() == 0
+    });
+    stdin.hold_reads_for_test(true);
+    // Intake only: the open is taken from the guest; no frame dispatches it.
+    spin_until("the host takes the open", &mut || {
+        python_runtime_mut(h, opener).poll_runtime_state();
+        stdin.held_for_test().0 > 0 || stdin.buffered_bytes() > 0
+    });
+    assert!(
+        stdin.fill_for_test() > 0,
+        "ordinary bytes fill the opener's stdin"
+    );
+    h.run_hidden_frames(3);
+    stdin.hold_reads_for_test(false);
+    run_until(h, "the opener's answer", &|h| {
+        python_pane_title(h, opener).is_some_and(|title| title != "opener:ready")
+    });
+    h.run_hidden_frames(5);
+    (opener, python_pane_title(h, opener).expect("opener title"))
+}
+
+/// Install a `PipeTestView` in slot `pane_id` of `windows[win]`.
+fn install_pipe_test_view(h: &mut HostHarness, win: usize, pane_id: u64) -> PipeInbox {
+    let (pane, inbox) = pipe_test_view(pane_id);
+    h.app.windows[win].panes.insert(pane_id, pane).unwrap();
+    let _ = h.app.windows[win].tree.tiles.insert_pane(pane_id);
+    inbox
+}
+
+/// An open the SDK emitted is answered though the opener's stdin filled
+/// before the host dispatched it: the answer got room when the open was
+/// taken. The opener sees exactly one `PipeOpened`, and the payload that
+/// waited for it reaches the target once.
+#[test]
+fn a_full_python_opener_stdin_still_gets_its_one_opened() {
+    let mut h = HostHarness::new();
+    let win = h.app.active_window;
+    let target = h.app.host.alloc_pane_id();
+    let inbox = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let slot = std::sync::Arc::clone(&inbox);
+    let (_, title) = open_from_a_full_python_stdin(&mut h, target, &["pipe.open"], |h| {
+        *slot.lock().unwrap() = Some(install_pipe_test_view(h, win, target));
+    });
+    let target_inbox = inbox.lock().unwrap().take().expect("target installed");
+    let generation = pipe_incoming(&target_inbox)
+        .first()
+        .map(|(_, generation, _)| *generation)
+        .expect("the target was told");
+    assert_eq!(title, format!("opener:opened:{generation}"));
+    run_until(&mut h, "the waiting payload", &|_| {
+        !pipe_messages(&target_inbox).is_empty()
+    });
+    h.run_hidden_frames(3);
+    assert_eq!(
+        pipe_messages(&target_inbox),
+        vec![(generation, serde_json::json!({"from": "opener"}))],
+        "the payload reaches the target once"
+    );
+}
+
+/// The same with a refused open: the opener sees one `PipeOpenRefused` and
+/// its waiting payload goes nowhere.
+#[test]
+fn a_full_python_opener_stdin_still_gets_its_one_refusal() {
+    let mut h = HostHarness::new();
+    let win = h.app.active_window;
+    let context_id = h.app.windows[win].context_id;
+    let (a, a_inbox) = add_pipe_test_pane(&mut h, win);
+    let (b, b_inbox) = add_pipe_test_pane(&mut h, win);
+    open_directed_test_pipe(&mut h, a, &a_inbox, b, "stint1681.full");
+    let (_, title) = open_from_a_full_python_stdin(&mut h, b, &["pipe.open"], |_| {});
+    assert_eq!(title, "opener:refused:in_use");
+    assert_eq!(
+        pipe_ends(&h, &(context_id, "stint1681.full".to_string())),
+        Some((a, b))
+    );
+    assert!(pipe_messages(&a_inbox).is_empty());
+    assert!(
+        pipe_messages(&b_inbox).is_empty(),
+        "the waiting payload went nowhere"
+    );
+}
+
+/// The same with an opener that lacks `pipe.open`: the refusal is given in
+/// the room the open was admitted with, before any capability check.
+#[test]
+fn a_full_python_opener_stdin_still_gets_its_one_denial() {
+    let mut h = HostHarness::new();
+    let win = h.app.active_window;
+    let (target, target_inbox) = add_pipe_test_pane(&mut h, win);
+    let (_, title) = open_from_a_full_python_stdin(&mut h, target, &[], |_| {});
+    assert_eq!(title, "opener:refused:denied");
+    assert!(pipe_incoming(&target_inbox).is_empty());
+    assert!(pipe_messages(&target_inbox).is_empty());
+}
+
+/// A target whose guest has exited, its pane still mounted, is no endpoint:
+/// an open to it is refused `target_unavailable`, nothing is registered, and
+/// the name is free for a live peer at once.
+#[test]
+fn an_open_to_an_exited_python_target_is_refused_and_frees_its_name() {
+    const PIPE: &str = "stint1681.exited";
+    let dir = tempfile::tempdir().expect("target dir");
+    write_pipe_probe_app(
+        dir.path(),
+        "exiting-target",
+        &["pipe.open"],
+        "from plexi_sdk.effects import SetTitle\n\
+         from plexi_sdk.events import TimerFired\n\
+         from plexi_sdk.ui import Column\n\n\
+         def init(size, args):\n\
+         \x20   return [SetTitle('target:ready')]\n\n\
+         def update(event):\n\
+         \x20   if isinstance(event, TimerFired):\n\
+         \x20       raise SystemExit(0)\n\
+         \x20   return []\n\n\
+         def view():\n\
+         \x20   return Column([])\n",
+    );
+    let mut h = HostHarness::new();
+    let target = launch_pipe_probe(&mut h, dir.path(), &[]);
+    let win = h.app.active_window;
+    let context_id = h.app.windows[win].context_id;
+    let (opener, opener_inbox) = add_pipe_test_pane(&mut h, win);
+    let (peer, peer_inbox) = add_pipe_test_pane(&mut h, win);
+    run_until(&mut h, "the target is ready", &|h| {
+        python_pane_title(h, target).as_deref() == Some("target:ready")
+    });
+    python_stdin(&mut h, target)
+        .push(PROBE_TRIGGER)
+        .expect("trigger");
+    // The guest thread finishes; no frame tears the runtime down, and the
+    // pane stays mounted.
+    spin_until("the target's guest thread exits", &mut || {
+        h.app.windows[win]
+            .panes
+            .get(&target)
+            .and_then(Pane::as_view)
+            .is_some_and(|view| view.runtime.lifecycle().0 == "exited")
+    });
+
+    let refused = request_directed_pipe(&mut h, opener, target, PIPE);
+    h.run_hidden_frames(1);
+    assert_eq!(
+        open_answer(&opener_inbox, &refused),
+        Some(Err(crate::protocol::PipeOpenRefusal::TargetUnavailable))
+    );
+    assert_eq!(pipe_ends(&h, &(context_id, PIPE.to_string())), None);
+    let target_registered = h.app.windows[win]
+        .panes
+        .get(&target)
+        .and_then(Pane::as_view)
+        .is_some_and(|view| view.runtime.has_pipe_reader(PIPE));
+    assert!(
+        !target_registered,
+        "nothing is registered on the exited target"
+    );
+
+    let accepted = request_directed_pipe(&mut h, opener, peer, PIPE);
+    h.run_hidden_frames(1);
+    let generation = open_answer(&opener_inbox, &accepted)
+        .expect("answered")
+        .expect("the name is free for a live peer");
+    assert_eq!(
+        pipe_incoming(&peer_inbox),
+        vec![(PIPE.to_string(), generation, opener)]
+    );
+}
+
+/// A production builtin that takes no pipe events, the File Explorer, is no
+/// endpoint: an open to it is refused `target_unavailable` with no route,
+/// and its name is reusable at once. An opted-in builtin is the control.
+#[test]
+fn an_open_to_a_builtin_that_takes_no_pipe_events_is_refused() {
+    const PIPE: &str = "stint1681.builtin";
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_view_pane(
+        Box::new(crate::file_browser::FileBrowserView::new(
+            tmp.path().to_path_buf(),
+        )),
+        PluginPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let browser = h.state().open_panes[0];
+    let win = h.app.active_window;
+    let context_id = h.app.windows[win].context_id;
+    let (opener, opener_inbox) = add_pipe_test_pane(&mut h, win);
+    let (receiver, receiver_inbox) = add_pipe_test_pane(&mut h, win);
+
+    let refused = request_directed_pipe(&mut h, opener, browser, PIPE);
+    h.run_hidden_frames(1);
+    assert_eq!(
+        open_answer(&opener_inbox, &refused),
+        Some(Err(crate::protocol::PipeOpenRefusal::TargetUnavailable))
+    );
+    assert_eq!(pipe_ends(&h, &(context_id, PIPE.to_string())), None);
+
+    let generation = open_directed_test_pipe(&mut h, opener, &opener_inbox, receiver, PIPE);
+    assert_eq!(
+        pipe_ends(&h, &(context_id, PIPE.to_string())),
+        Some((opener, receiver))
+    );
+    assert_eq!(
+        pipe_incoming(&receiver_inbox),
+        vec![(PIPE.to_string(), generation, opener)]
+    );
+}
+
+/// Opens beyond the answer room a Python opener's stdin has are not taken
+/// from the guest: intake stops at the first one without room, and nothing
+/// behind it is taken, while the guest reads nothing. When it reads again,
+/// every open is answered.
+#[test]
+fn python_open_intake_waits_for_answer_room_and_resumes_when_the_guest_reads() {
+    const OPENS: usize = 60;
+    let dir = tempfile::tempdir().expect("opener dir");
+    write_pipe_probe_app(
+        dir.path(),
+        "saturating-opener",
+        &["pipe.open"],
+        &format!(
+            "from plexi_sdk.effects import PipeOpenDirected, SetTitle\n\
+             from plexi_sdk.events import PipeOpened, TimerFired\n\
+             from plexi_sdk.ui import Column\n\n\
+             state = {{'opened': 0}}\n\n\
+             def init(size, args):\n\
+             \x20   state['target'] = int(args[0])\n\
+             \x20   return [SetTitle('opener:ready')]\n\n\
+             def update(event):\n\
+             \x20   if isinstance(event, TimerFired):\n\
+             \x20       return [PipeOpenDirected(f'stint1681.sat.{{i}}', state['target']) for i in range({OPENS})]\n\
+             \x20   if isinstance(event, PipeOpened):\n\
+             \x20       state['opened'] += 1\n\
+             \x20       return [SetTitle(f\"opener:opened:{{state['opened']}}\")]\n\
+             \x20   return []\n\n\
+             def view():\n\
+             \x20   return Column([])\n"
+        ),
+    );
+    let mut h = HostHarness::new();
+    let win = h.app.active_window;
+    let target = h.app.host.alloc_pane_id();
+    let opener = launch_pipe_probe(&mut h, dir.path(), &[target.to_string()]);
+    let _target_inbox = install_pipe_test_view(&mut h, win, target);
+    run_until(&mut h, "the opener is ready", &|h| {
+        python_pane_title(h, opener).as_deref() == Some("opener:ready")
+    });
+    let stdin = python_stdin(&mut h, opener);
+    // Answer room is a sixteenth of the cap, fewer answers than opens; the
+    // close room for this opener's connections is an eighth, enough for all.
+    stdin.set_cap_for_test(64 * 1024);
+    h.run_hidden_frames(2);
+    spin_until("the opener reads what it was sent", &mut || {
+        stdin.buffered_bytes() == 0
+    });
+    stdin.push(PROBE_TRIGGER).expect("trigger");
+    spin_until("the opener reads its trigger", &mut || {
+        stdin.buffered_bytes() == 0
+    });
+    stdin.hold_reads_for_test(true);
+    spin_until("the host takes opens", &mut || {
+        python_runtime_mut(&mut h, opener).poll_runtime_state();
+        stdin.held_for_test().0 > 0
+    });
+    // Give the guest's whole output time to arrive, then take what fits.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    python_runtime_mut(&mut h, opener).poll_runtime_state();
+    assert!(
+        python_runtime_mut(&mut h, opener).has_held_intake_for_test(),
+        "intake stops at the first open without answer room"
+    );
+    // Fill what is left, so answering frees no room for more opens.
+    stdin.fill_for_test();
+    h.run_hidden_frames(5);
+    let connections = |h: &HostHarness| {
+        (0..OPENS)
+            .filter(|i| {
+                pipe_ends(
+                    h,
+                    &(h.app.windows[win].context_id, format!("stint1681.sat.{i}")),
+                )
+                .is_some()
+            })
+            .count()
+    };
+    let bounded = connections(&h);
+    assert!(
+        bounded > 0 && bounded < OPENS,
+        "intake stopped at the answer room: {bounded} of {OPENS} opens taken"
+    );
+    h.run_hidden_frames(5);
+    assert_eq!(
+        connections(&h),
+        bounded,
+        "nothing more is taken while the guest reads nothing"
+    );
+    assert!(
+        !python_runtime_mut(&mut h, opener).needs_background_tick(),
+        "waiting intake does not poll every frame"
+    );
+
+    stdin.hold_reads_for_test(false);
+    run_until(&mut h, "every open answered", &|h| {
+        python_pane_title(h, opener).as_deref() == Some(format!("opener:opened:{OPENS}").as_str())
+    });
+    assert_eq!(connections(&h), OPENS);
+}
+
+/// An opener that ends after its target was told, before its own answer,
+/// retires the connection at once: the target, its stdin full by then, reads
+/// `DirectedPipeIncoming` then exactly one `PipeClosed` for that generation,
+/// both in held room. A reopen of the name is a new connection that inherits
+/// no event of the old one.
+#[test]
+fn an_opener_ending_after_the_target_was_told_closes_it_once_through_a_full_stdin() {
+    const PIPE: &str = "stint1681.race";
+    let dir = tempfile::tempdir().expect("target dir");
+    write_pipe_probe_app(
+        dir.path(),
+        "race-target",
+        &["pipe.open"],
+        "from plexi_sdk.effects import SetTitle\n\
+         from plexi_sdk.events import PipeClosed, PipeIncoming, PipeMessage\n\
+         from plexi_sdk.ui import Column\n\n\
+         seen = []\n\n\
+         def init(size, args):\n\
+         \x20   return [SetTitle('target:ready')]\n\n\
+         def update(event):\n\
+         \x20   if isinstance(event, PipeIncoming):\n\
+         \x20       seen.append(f'in:{event.handle}')\n\
+         \x20   elif isinstance(event, PipeClosed):\n\
+         \x20       seen.append(f'closed:{event.handle}')\n\
+         \x20   elif isinstance(event, PipeMessage):\n\
+         \x20       seen.append(f'msg:{event.handle}')\n\
+         \x20   else:\n\
+         \x20       return []\n\
+         \x20   return [SetTitle('target:' + ','.join(seen))]\n\n\
+         def view():\n\
+         \x20   return Column([])\n",
+    );
+    let mut h = HostHarness::new();
+    let target = launch_pipe_probe(&mut h, dir.path(), &[]);
+    let win = h.app.active_window;
+    let context_id = h.app.windows[win].context_id;
+    let (opener, opener_inbox) = add_pipe_test_pane(&mut h, win);
+    let (replacement, replacement_inbox) = add_pipe_test_pane(&mut h, win);
+    run_until(&mut h, "the target is ready", &|h| {
+        python_pane_title(h, target).as_deref() == Some("target:ready")
+    });
+    let stdin = python_stdin(&mut h, target);
+    stdin.set_cap_for_test(256 * 1024);
+    h.run_hidden_frames(2);
+    spin_until("the target reads what it was sent", &mut || {
+        stdin.buffered_bytes() == 0
+    });
+    stdin.hold_reads_for_test(true);
+    // The moment the target is told, the opener ends as an endpoint and the
+    // target's stdin fills with ordinary bytes.
+    let opener_endpoint = pipe_test_endpoint(&mut h, opener);
+    let filled = stdin.clone();
+    stdin.on_push_for_test(
+        "directed_pipe_incoming",
+        std::sync::Arc::new(move || {
+            opener_endpoint.store(false, std::sync::atomic::Ordering::SeqCst);
+            filled.fill_for_test();
+        }),
+    );
+    let request = request_directed_pipe(&mut h, opener, target, PIPE);
+    h.run_hidden_frames(1);
+    assert_eq!(
+        open_answer(&opener_inbox, &request),
+        None,
+        "the ended opener is told nothing"
+    );
+    assert_eq!(
+        pipe_ends(&h, &(context_id, PIPE.to_string())),
+        None,
+        "the name is free"
+    );
+    assert_eq!(
+        stdin.held_for_test(),
+        (0, 0, 0),
+        "the close used its held room"
+    );
+
+    stdin.hold_reads_for_test(false);
+    run_until(
+        &mut h,
+        "the target hears of the connection and its close",
+        &|h| python_pane_title(h, target).is_some_and(|title| title.contains("closed")),
+    );
+    let title = python_pane_title(&h, target).expect("title");
+    let old: u64 = title
+        .strip_prefix("target:in:")
+        .and_then(|rest| rest.split(',').next())
+        .and_then(|generation| generation.parse().ok())
+        .expect("the target read the incoming first");
+    assert_eq!(title, format!("target:in:{old},closed:{old}"));
+
+    let generation = open_directed_test_pipe(&mut h, replacement, &replacement_inbox, target, PIPE);
+    assert_ne!(generation, old);
+    run_until(&mut h, "the target hears of the reopen", &|h| {
+        python_pane_title(h, target)
+            .is_some_and(|title| title.ends_with(&format!("in:{generation}")))
+    });
+    h.run_hidden_frames(10);
+    assert_eq!(
+        python_pane_title(&h, target).as_deref(),
+        Some(format!("target:in:{old},closed:{old},in:{generation}").as_str()),
+        "the reopen inherits no event of the old connection"
+    );
+}
+
+/// The endpoint flag of the `PipeTestView` in `pane_id`.
+fn pipe_test_endpoint(
+    h: &mut HostHarness,
+    pane_id: u64,
+) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    let view = h
+        .app
+        .windows
+        .iter_mut()
+        .find_map(|w| w.panes.get_mut(&pane_id))
+        .and_then(Pane::as_view_mut)
+        .expect("pipe test pane");
+    let ViewRuntime::Builtin(runtime) = &mut view.runtime else {
+        panic!("pipe test pane must be builtin");
+    };
+    std::sync::Arc::clone(
+        &runtime
+            .as_any_mut()
+            .downcast_mut::<PipeTestView>()
+            .expect("PipeTestView")
+            .endpoint,
+    )
+}
+
 fn write_relaunching_pipe_sender_plugin(dir: &std::path::Path) {
     std::fs::write(
         dir.join("manifest.toml"),
