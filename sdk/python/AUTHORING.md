@@ -317,6 +317,18 @@ the subscriber pane closes. The host permission broker may ask the user before
 allowing a cross-plugin subscription. Declaring and emitting streams needs no
 capability ID in the manifest.
 
+## Directed pipes
+
+A directed pipe is an exclusive duplex JSON channel to one other view and
+needs the `pipe.open` capability. `PipeOpenDirected(name, target_pane_id)` asks
+the host for a connection. The host answers with `PipeOpened` (it carries a
+`handle`) or with `PipeOpenRefused` (it carries a `reason`). The target gets
+`PipeIncoming`. `PipeSend(pipe, payload)` takes the pipe's name or a handle.
+A send by name that you return right after the open waits for the answer. Each
+connection has its own handle; a reopen gets a new one. `PipeClosed` says that
+a connection ended. A later send on that connection is dropped, and the app
+gets `PipeSendDropped`.
+
 ## Focus and Visibility
 
 The host tells each Python plugin about its own pane through four events,

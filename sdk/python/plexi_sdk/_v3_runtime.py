@@ -135,6 +135,10 @@ class PluginRuntime:
         self._pipe_requests: dict[str, tuple[str, list]] = {}
         self._pipe_live: dict[int, str] = {}
         self._next_pipe_request = 0
+        # Sends dropped while applying effects, told to the app once the
+        # effects that made them are applied.
+        self._dropped_sends: list[events.PipeSendDropped] = []
+        self._telling_dropped_sends = False
         self._running = True
 
     def run(self) -> None:
@@ -400,15 +404,18 @@ class PluginRuntime:
         payload = json.loads(json.dumps(payload))
         if isinstance(pipe, int):
             if pipe not in self._pipe_live:
-                raise ValueError(f"pipe handle {pipe} is not open")
+                self._drop_send(pipe, f"pipe handle {pipe} is not open (its connection closed or never existed)")
+                return
             _emit({"type": "pipe_send", "generation": pipe, "payload": payload})
             return
         binding = self._pipe_names.get(pipe)
         if binding is None:
-            raise ValueError(
+            self._drop_send(
+                pipe,
                 f"pipe {pipe!r} is not open: open it with PipeOpenDirected, "
-                "or send on a handle from PipeOpened, PipeIncoming or PipeMessage"
+                "or send on a handle from PipeOpened, PipeIncoming or PipeMessage",
             )
+            return
         if isinstance(binding, int):
             _emit({"type": "pipe_send", "generation": binding, "payload": payload})
             return
@@ -419,6 +426,25 @@ class PluginRuntime:
                 "to open it; wait for PipeOpened before sending more"
             )
         waiting.append(payload)
+
+    def _drop_send(self, pipe: str | int, reason: str) -> None:
+        """Drop a send that has no live connection. The app is told with
+        events.PipeSendDropped once the current effects are applied; a drop
+        made while it is being told is only logged, so a handler that sends
+        again cannot loop."""
+        print(f"plexi_sdk: PipeSend dropped: {reason}", file=sys.stderr, flush=True)
+        if not self._telling_dropped_sends:
+            self._dropped_sends.append(events.PipeSendDropped(pipe=pipe, reason=reason))
+
+    def _tell_dropped_sends(self) -> None:
+        if self._telling_dropped_sends:
+            return
+        self._telling_dropped_sends = True
+        try:
+            while self._dropped_sends:
+                self._dispatch(self._dropped_sends.pop(0), schedule_render=False)
+        finally:
+            self._telling_dropped_sends = False
 
     def _handle_pipe_message(self, ev: dict) -> None:
         pipe_id = str(ev["pipe_id"])
@@ -1128,6 +1154,7 @@ class PluginRuntime:
                 )
         if state_changed:
             self._set_state(in_view=False)
+        self._tell_dropped_sends()
 
     @staticmethod
     def _merge_state_effect(scoped: dict, updates: dict) -> None:

@@ -1285,6 +1285,53 @@ def test_a_waiting_send_carries_its_payload_as_it_was_when_sent(tmp_path):
         proc.kill()
 
 
+def test_a_send_with_no_open_connection_is_dropped_and_the_app_told(tmp_path):
+    """Stint 1681 (review round 3): sending on a handle whose connection
+    closed, or on a name that is not open, drops that send and tells the app
+    with PipeSendDropped. The app keeps running and the update's other
+    effects apply."""
+    app = tmp_path / "pipe_after_close.py"
+    app.write_text(textwrap.dedent("""
+        from plexi_sdk.effects import PipeSend, SetTitle
+        from plexi_sdk.events import PipeClosed, PipeSendDropped
+        from plexi_sdk.ui import Text
+
+        dropped = []
+
+        def init(size, args):
+            return []
+
+        def update(event):
+            if isinstance(event, PipeClosed):
+                return [
+                    PipeSend(event.handle, {"late": True}),
+                    PipeSend("never-opened", {}),
+                    SetTitle("after-close"),
+                ]
+            if isinstance(event, PipeSendDropped):
+                dropped.append(str(event.pipe))
+                return [SetTitle("dropped:" + ",".join(dropped)), PipeSend(event.pipe, {})]
+            return []
+
+        def view():
+            return Text("closed")
+    """).lstrip())
+    proc = _spawn_v3_app(app)
+    try:
+        _init_and_render(proc)
+        _send_event(proc, {"type": "directed_pipe_incoming", "pipe_id": "p",
+                           "generation": 5, "peer_pane_id": 2})
+        _send_event(proc, {"type": "pipe_closed", "pipe_id": "p", "generation": 5,
+                           "reason": "peer_closed"})
+        events = _render(proc, frame_id=2)
+        assert _find_events(events, "pipe_send") == []
+        assert _find_events(events, "fatal_error") == []
+        assert "dropped:5,never-opened" in json.dumps(events)
+        assert proc.poll() is None, "the app keeps running"
+    finally:
+        proc.kill()
+
+
 def test_a_late_answer_never_rebinds_a_newer_request_for_the_name(tmp_path):
     """Stint 1681: two requests for one name overlap. Each answer carries
     that request's own waiting sends; only the newest request binds the

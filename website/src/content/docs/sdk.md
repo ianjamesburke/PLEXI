@@ -344,8 +344,10 @@ Send a JSON-serializable ``payload`` on a directed pipe: by name
 (``str``), the pipe's current connection, or by handle (``int``, from
 :class:`events.PipeOpened`, :class:`events.PipeIncoming` or
 :class:`events.PipeMessage`), that connection only. Delivered to the
-other end as :class:`events.PipeMessage`; dropped once the connection
-has closed.
+other end as :class:`events.PipeMessage`. The payload is copied when
+the effect is applied. A send with no open connection (the connection
+closed, or the name is not open) is dropped and the app gets
+:class:`events.PipeSendDropped`; the other effects still apply.
 
 ## Events
 
@@ -649,6 +651,17 @@ This app's :class:`effects.PipeOpenDirected` for ``pipe_id`` was
 refused and the sends that waited for it were dropped. ``reason`` is one
 of ``denied``, ``no_target``, ``not_a_plugin``, ``out_of_reach``,
 ``in_use`` or ``name_conflict``.
+
+### `PipeSendDropped`
+
+```python
+PipeSendDropped(pipe: str | int, reason: str)
+```
+
+A :class:`effects.PipeSend` on ``pipe`` (a name or handle) was
+dropped because no connection was open for it: it closed (after
+:class:`PipeClosed`), its open was refused, or it was never opened.
+``reason`` says which.
 
 ### `PipeIncoming`
 

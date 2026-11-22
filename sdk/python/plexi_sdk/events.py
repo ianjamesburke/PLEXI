@@ -346,6 +346,16 @@ class PipeOpenRefused:
 
 
 @dataclass
+class PipeSendDropped:
+    """A :class:`effects.PipeSend` on ``pipe`` (a name or handle) was
+    dropped because no connection was open for it: it closed (after
+    :class:`PipeClosed`), its open was refused, or it was never opened.
+    ``reason`` says which."""
+    pipe: str | int
+    reason: str
+
+
+@dataclass
 class PipeIncoming:
     """Pane ``peer_pane_id`` opened directed pipe ``pipe_id`` to this app.
     Reply by name or on ``handle``."""

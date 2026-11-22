@@ -366,8 +366,10 @@ class PipeSend:
     (``str``), the pipe's current connection, or by handle (``int``, from
     :class:`events.PipeOpened`, :class:`events.PipeIncoming` or
     :class:`events.PipeMessage`), that connection only. Delivered to the
-    other end as :class:`events.PipeMessage`; dropped once the connection
-    has closed.
+    other end as :class:`events.PipeMessage`. The payload is copied when
+    the effect is applied. A send with no open connection (the connection
+    closed, or the name is not open) is dropped and the app gets
+    :class:`events.PipeSendDropped`; the other effects still apply.
     """
     pipe: str | int
     payload: Any = None
