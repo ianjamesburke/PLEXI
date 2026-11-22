@@ -105,8 +105,9 @@ impl RegistryViews {
                     "registry_views: context_id={context_id} not found in router — \
                      falling back to process cwd"
                 );
-                std::env::current_dir()
-                    .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+                std::env::current_dir().unwrap_or_else(|_| {
+                    crate::config::default_root_dir().unwrap_or_else(|| PathBuf::from("/"))
+                })
             });
         self.view_for_root(&root)
     }

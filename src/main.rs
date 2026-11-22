@@ -181,6 +181,7 @@ fn main() -> eframe::Result {
     if role == crate::config::profile_target::Role::HostLaunch {
         crate::config::profile_target::forget_inherited_routing();
     }
+    crate::config::profile_target::keep_tool_caches_in_scratch_root();
     // A lifecycle command addresses its validated profile host and nothing
     // else: a refused target already exited above.
     let lifecycle_socket = (role == crate::config::profile_target::Role::Lifecycle)
@@ -2230,7 +2231,11 @@ fn main() -> eframe::Result {
         log::error!("host_startup: failed to restore shared agent hook: {error}");
         eprintln!("Could not restore Plexi's agent hook: {error}");
     }
-    if let Err(error) = cli::setup::ensure_local_shim() {
+    // The launcher and completions belong to the account: a scratch host
+    // must not install a command that runs its disposable binary.
+    if config::scratch_root().is_some() {
+        log::info!("host_startup: scratch root; local CLI shim left alone");
+    } else if let Err(error) = cli::setup::ensure_local_shim() {
         log::warn!("host_startup: could not ensure local CLI shim: {error}");
     }
 

@@ -4923,7 +4923,8 @@ impl PlexiApp {
                         if p.is_absolute() {
                             p
                         } else {
-                            dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"))
+                            crate::config::default_root_dir()
+                                .unwrap_or_else(|| std::path::PathBuf::from("/"))
                         }
                     });
                     let current_ctx_id = self.router.active().context_id;

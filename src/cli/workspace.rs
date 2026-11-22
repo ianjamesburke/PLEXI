@@ -13,17 +13,13 @@ pub fn workspace_init() -> i32 {
     log::info!("workspace_init:cli: cwd={}", cwd.display());
     // Guard: refuse home dir, root dir, and inside any ~/.plexi* profile dir
     {
-        let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
+        let homes = crate::config::home_like_dirs();
         let cwd_str = cwd.to_string_lossy();
-        let is_home_or_root =
-            cwd == std::path::Path::new("/") || home.as_ref().map(|h| cwd == *h).unwrap_or(false);
-        let is_inside_profile = home
-            .as_ref()
-            .map(|h| {
-                let prefix = format!("{}/.plexi", h.to_string_lossy());
-                cwd_str.starts_with(&prefix)
-            })
-            .unwrap_or(false);
+        let is_home_or_root = cwd == std::path::Path::new("/") || homes.contains(&cwd);
+        let is_inside_profile = homes.iter().any(|h| {
+            let prefix = format!("{}/.plexi", h.to_string_lossy());
+            cwd_str.starts_with(&prefix)
+        });
         if is_home_or_root || is_inside_profile {
             log::warn!(
                 "workspace_init:cli: rejected — home/root/profile dir guard: {}",

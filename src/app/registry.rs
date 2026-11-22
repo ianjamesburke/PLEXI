@@ -1202,6 +1202,11 @@ pub(crate) fn workspace_walk_stops() -> Result<Vec<PathBuf>, String> {
             stops.push(login);
         }
     }
+    if let Some(scratch) = crate::config::scratch_root() {
+        if !stops.iter().any(|have| paths_same(have, &scratch)) {
+            stops.push(scratch);
+        }
+    }
     if stops.is_empty() {
         let error = "workspace walk refused: HOME lookup (dirs::home_dir) and login-home lookup both failed; set HOME to your home directory".to_string();
         log::info!("{error}");

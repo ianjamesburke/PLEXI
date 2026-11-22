@@ -612,3 +612,34 @@ fn the_launcher_protects_an_older_receiver() {
         }
     }
 }
+
+/// A scratch root holds profiles the way a home directory does, so it is
+/// never initialized as a workspace, whatever `HOME` says.
+#[test]
+fn a_scratch_root_is_never_a_workspace() {
+    let fixture = fixture();
+    let root = &fixture.a.path;
+    let mut command = Command::new(&fixture.binary);
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("PLEXI_") {
+            command.env_remove(key);
+        }
+    }
+    let output = command
+        .arg("--profile-root")
+        .arg(root)
+        .args(["workspace", "init"])
+        .current_dir(root)
+        .env("HOME", &fixture.home.path)
+        .env("PLEXI_KEYCHAIN_PATH", root.join("t.keychain-db"))
+        .env("PLEXI_KEYCHAIN_PASSWORD", "t1695-throwaway-keychain")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        !fixture.a.profile().join("workspace.toml").exists(),
+        "{stderr}"
+    );
+}

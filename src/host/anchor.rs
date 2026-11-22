@@ -86,21 +86,15 @@ impl Anchor {
 /// Returns true if `path` is the home directory or looks like a profile dir
 /// (`~/.plexi`, `~/.plexi-alpha`, `~/.plexi-pr-123`, etc.).
 fn is_profile_dir(path: &Path) -> bool {
-    let Some(home) = dirs::home_dir() else {
-        return false;
-    };
-    if path == home {
-        return true;
-    }
-    // Check if path is directly inside home and starts with `.plexi`
-    if path.parent() == Some(&home) {
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name == ".plexi" || name.starts_with(".plexi-") {
-                return true;
-            }
-        }
-    }
-    false
+    crate::config::home_like_dirs().iter().any(|home| {
+        path == home
+            // Directly inside it and named like a profile.
+            || (path.parent() == Some(home.as_path())
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == ".plexi" || name.starts_with(".plexi-")))
+    })
 }
 
 #[cfg(test)]

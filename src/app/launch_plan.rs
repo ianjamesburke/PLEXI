@@ -535,7 +535,7 @@ impl PlexiApp {
             self.pane_context_env_for_context(self.windows[win].context_id)
                 .root
         };
-        let home = || dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let home = || crate::config::default_root_dir().unwrap_or_else(|| PathBuf::from("/"));
         let (destination, default_cwd) =
             if let Some(ctx_name) = spec.context_name.as_deref().filter(|c| !c.is_empty()) {
                 // Named-context targeting (stint 0574): a hard target that never

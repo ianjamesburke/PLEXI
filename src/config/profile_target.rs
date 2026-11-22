@@ -115,6 +115,21 @@ pub fn forget_inherited_routing() {
     }
 }
 
+/// A scratch process points the tools it starts at a cache inside its root,
+/// unless the caller already chose one: `uv` otherwise writes under `HOME`.
+/// Call once from `main`, during single-threaded startup, after the selection
+/// is installed.
+pub fn keep_tool_caches_in_scratch_root() {
+    const UV_CACHE: &str = "UV_CACHE_DIR";
+    if let Some(root) = super::scratch_root() {
+        if std::env::var_os(UV_CACHE).is_none() {
+            let cache = root.join(".cache/uv");
+            log::info!("profile_target: scratch root uv cache {}", cache.display());
+            std::env::set_var(UV_CACHE, cache);
+        }
+    }
+}
+
 /// Choose the selection. Pure apart from the account home passed in and
 /// existence checks a caller already made on `--profile-root`.
 pub fn select(

@@ -2203,6 +2203,25 @@ pub fn shared_dir() -> PathBuf {
 
 const SHARED_DIR_NAME: &str = ".plexi";
 
+/// This process's `--profile-root` when it is not the account home. A scratch
+/// host keeps every default it would otherwise take from `HOME` inside it.
+pub fn scratch_root() -> Option<PathBuf> {
+    let target = profile_target::profile_target();
+    (!target.account_rooted()).then(|| target.root().to_path_buf())
+}
+
+/// Where a context, pane or tool with no other location starts: the scratch
+/// root for a scratch host, else the home directory.
+pub fn default_root_dir() -> Option<PathBuf> {
+    scratch_root().or_else(dirs::home_dir)
+}
+
+/// Directories that are never a workspace: the home directory and, for a
+/// scratch host, its root, which holds profiles the same way home does.
+pub fn home_like_dirs() -> Vec<PathBuf> {
+    dirs::home_dir().into_iter().chain(scratch_root()).collect()
+}
+
 #[cfg(test)]
 thread_local! {
     static TEST_SHARED_DIR_OVERRIDE: std::cell::RefCell<Vec<(u64, std::path::PathBuf)>> =

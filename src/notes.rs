@@ -477,7 +477,7 @@ pub(crate) fn notes_scopes_for_root(root: Option<&Path>) -> Vec<NotesScope> {
         active_root: root.map(Path::to_path_buf),
         known_roots: Vec::new(),
         global_notes: global_notes_dir(),
-        home: dirs::home_dir(),
+        home: crate::config::default_root_dir(),
         cached_tiers: Vec::new(),
     })
 }

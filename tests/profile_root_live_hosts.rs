@@ -306,10 +306,85 @@ fn shared_state_follows_the_root_not_home() {
         .args(["host", "stop"])
         .output();
     assert!(hook.is_file(), "the shared hook is not under the root");
-    // The default context's workspace state follows HOME until stint 1682
-    // gives panes and contexts the account home; the shared tier does not.
     assert!(
         !sentinel.join(".plexi/hooks").exists(),
         "shared state reached HOME"
     );
+}
+
+/// Stint 1695: a scratch-root host launched from, and with `HOME` set to, a
+/// directory standing in for the owner's home writes nothing there. Its
+/// default context root is the scratch root, so context state lands inside it.
+#[test]
+#[ignore = "starts real hosts; run with --ignored"]
+fn a_scratch_host_writes_nothing_under_home() {
+    let sandbox = Sandbox::new();
+    let owner = sandbox.path.join("owner-home");
+    std::fs::create_dir_all(&owner).unwrap();
+    let home = owner.to_str().unwrap();
+    let plexi = |args: &[&str]| {
+        let output = sandbox
+            .command("a", &[("HOME", home)])
+            .current_dir(&owner)
+            .args(args)
+            .output()
+            .unwrap();
+        eprintln!(
+            "{args:?} exited {}: {}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+    // A pane process, not a login shell: a user's shell writes its own
+    // history under the HOME it was given.
+    let pane = format!("cwd={},cmd=/bin/sleep 300", sandbox.root("a").display());
+    let started = plexi(&[
+        "host",
+        "start",
+        "--background",
+        "--ephemeral",
+        "--pane",
+        &pane,
+        "--timeout-secs",
+        "90",
+    ]);
+    assert!(started.status.success());
+    let context = plexi(&["context", "list", "--json"]);
+    let context = String::from_utf8_lossy(&context.stdout).to_string();
+    let hook = sandbox
+        .root("a")
+        .join(".plexi/hooks/claude-code-agent-state.sh");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !hook.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    plexi(&["host", "stop"]);
+    let written: Vec<_> = walk(&owner);
+    assert!(
+        written.is_empty(),
+        "the scratch host wrote under HOME: {written:?}"
+    );
+    // The scratch root holds profiles the way home does: never a workspace.
+    assert!(
+        !sandbox.profile("a").join("workspace.toml").exists(),
+        "workspace state was initialized over the scratch root's profile"
+    );
+    assert!(
+        context.contains(sandbox.root("a").to_str().unwrap()),
+        "the default context is not rooted in the scratch root: {context}"
+    );
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        found.push(path.clone());
+        if path.is_dir() && !path.is_symlink() {
+            found.extend(walk(&path));
+        }
+    }
+    found
 }

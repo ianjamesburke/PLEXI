@@ -2061,11 +2061,11 @@ impl PlexiApp {
 
         let path = {
             let cwd = std::env::current_dir()
-                .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+                .unwrap_or_else(|_| crate::config::default_root_dir().unwrap_or_else(|| PathBuf::from("/")));
             // macOS GUI plugins launch with CWD = /. Use home_dir instead so
             // the initial context and all derived CWDs start at ~.
             if cwd == std::path::Path::new("/") {
-                dirs::home_dir().unwrap_or(cwd)
+                crate::config::default_root_dir().unwrap_or(cwd)
             } else {
                 cwd
             }
@@ -2092,7 +2092,7 @@ impl PlexiApp {
             None => (
                 "Default".to_string(),
                 None,
-                dirs::home_dir().unwrap_or_else(|| path.clone()),
+                crate::config::default_root_dir().unwrap_or_else(|| path.clone()),
             ),
         };
 
@@ -5267,7 +5267,7 @@ impl PlexiApp {
             active_root: Some(active.clone()),
             known_roots,
             global_notes: crate::notes::global_notes_dir(),
-            home: dirs::home_dir(),
+            home: crate::config::default_root_dir(),
             cached_tiers: self.notes_index.cached_tier_dirs(&active),
         }
     }
@@ -6040,7 +6040,7 @@ pub(crate) fn restore_workspace(
             } else if saved_win.path.is_dir() {
                 Some(saved_win.path.clone())
             } else {
-                dirs::home_dir()
+                crate::config::default_root_dir()
             };
             let mut pane_entry: Option<Pane> = None;
             if matches!(saved_pane.kind, crate::workspace::SavedPaneKind::View) {
