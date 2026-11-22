@@ -21,10 +21,10 @@
 #[cfg(windows)]
 mod windows_launch;
 
+use crate::config::profile_target::ProfileTarget;
 #[cfg(windows)]
 use crate::platform::ipc;
 use crate::platform::ipc::IpcStream;
-use crate::config::profile_target::ProfileTarget;
 use plexi_distribution::host_presence::{self, endpoint_in, Presence};
 use serde::Deserialize;
 use std::io::Write;
@@ -1127,7 +1127,11 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
     if own_host && !yes {
         eprintln!(
             "error: restarting this host will close this pane. Run `{}` to confirm.",
-            command_line(&target, &crate::config::current_exe_basename(), "host restart --yes")
+            command_line(
+                &target,
+                &crate::config::current_exe_basename(),
+                "host restart --yes"
+            )
         );
         return 1;
     }
@@ -1792,7 +1796,11 @@ fn installed_identity() -> Option<(String, String)> {
 }
 
 pub(crate) fn restart_hint(target: &ProfileTarget) -> String {
-    command_line(target, &crate::config::current_exe_basename(), "host restart")
+    command_line(
+        target,
+        &crate::config::current_exe_basename(),
+        "host restart",
+    )
 }
 
 fn not_ready_host_message(pid: Option<u32>, socket_exists: bool, socket: &Path) -> String {
@@ -2479,7 +2487,11 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
     /// A selection under `root`, as `main` would choose it for a lifecycle
     /// verb run by a `plexi[-channel]` executable with an optional
     /// `--profile`.
-    pub(super) fn test_target(channel: Option<&str>, profile: Option<&str>, root: &Path) -> ProfileTarget {
+    pub(super) fn test_target(
+        channel: Option<&str>,
+        profile: Option<&str>,
+        root: &Path,
+    ) -> ProfileTarget {
         use crate::config::profile_target::{ProfileSource, RootSource};
         let source = match (profile, channel) {
             (Some(name), _) => ProfileSource::Named(name.to_string()),
@@ -3092,7 +3104,14 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(
             args,
-            ["host", "restart", "--profile-root", "/scratch/r1", "--profile", "t1655"]
+            [
+                "host",
+                "restart",
+                "--profile-root",
+                "/scratch/r1",
+                "--profile",
+                "t1655"
+            ]
         );
         assert_eq!(
             command_line(&target, "plexi-pr-1655", "host stop"),

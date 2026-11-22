@@ -1387,7 +1387,11 @@ mod tests {
                 .map(|(_, value)| value.as_str());
             assert_eq!(
                 build,
-                Some(if executable == "plexi" { "stable" } else { "pr-1695" })
+                Some(if executable == "plexi" {
+                    "stable"
+                } else {
+                    "pr-1695"
+                })
             );
             // `PLEXI_CHANNEL` names the profile a bare client routes to, not
             // the build.

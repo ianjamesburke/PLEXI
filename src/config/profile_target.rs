@@ -18,10 +18,10 @@
 //! old `HOME`-rooted profiles fails instead of reaching the real ones.
 
 use super::ProfileSelection;
+use plexi_distribution::profile_target::{account_home, refuse_private_home, HOME_VAR};
 pub use plexi_distribution::profile_target::{
     ProfileRoot, ProfileSource, ProfileTarget, RootSource,
 };
-use plexi_distribution::profile_target::{account_home, refuse_private_home, HOME_VAR};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -279,7 +279,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let explicit = ProfileRoot::parse(root.path().as_os_str()).unwrap();
         let cases = [
-            (sel(ProfileSelection::Default, None), "plexi", home.join(".plexi")),
+            (
+                sel(ProfileSelection::Default, None),
+                "plexi",
+                home.join(".plexi"),
+            ),
             (
                 sel(named("alpha"), None),
                 "plexi",
@@ -308,8 +312,7 @@ mod tests {
         ];
         for role in [Role::HostLaunch, Role::Lifecycle] {
             for (selectors, exe, dir) in &cases {
-                let target =
-                    select(role, selectors, exe, Ok(home.into()), &poisoned()).unwrap();
+                let target = select(role, selectors, exe, Ok(home.into()), &poisoned()).unwrap();
                 assert_eq!(&target.dir(), dir, "{role:?} {selectors:?} {exe}");
                 assert!(
                     !target.endpoint().to_string_lossy().contains("poison"),
@@ -337,7 +340,14 @@ mod tests {
         assert_eq!(bare.root_source(), RootSource::Pane);
         assert!(!bare.is_addressed());
 
-        let shim = select(Role::Command, &none, "plexi-pr-3279", Ok(home.into()), &pane).unwrap();
+        let shim = select(
+            Role::Command,
+            &none,
+            "plexi-pr-3279",
+            Ok(home.into()),
+            &pane,
+        )
+        .unwrap();
         assert_eq!(shim.dir(), home.join(".plexi-pr-3279"));
         assert!(shim.is_addressed());
 
@@ -345,8 +355,14 @@ mod tests {
             delegated: true,
             ..pane.clone()
         };
-        let handed =
-            select(Role::Command, &none, "plexi-pr-3279", Ok(home.into()), &delegated).unwrap();
+        let handed = select(
+            Role::Command,
+            &none,
+            "plexi-pr-3279",
+            Ok(home.into()),
+            &delegated,
+        )
+        .unwrap();
         assert_eq!(handed.dir(), Path::new("/scratch/root/.plexi-t1682"));
         assert_eq!(handed.build_channel(), Some("pr-3279"));
 
@@ -361,8 +377,14 @@ mod tests {
             channel: Some("alpha".into()),
             ..Ambient::default()
         };
-        let plugin_dev =
-            select(Role::Command, &none, "plexi", Ok(home.into()), &channel_only).unwrap();
+        let plugin_dev = select(
+            Role::Command,
+            &none,
+            "plexi",
+            Ok(home.into()),
+            &channel_only,
+        )
+        .unwrap();
         assert_eq!(plugin_dev.dir(), home.join(".plexi-alpha"));
 
         let invalid = Ambient {
@@ -384,8 +406,14 @@ mod tests {
         };
         let none = sel(ProfileSelection::Default, None);
         for role in [Role::HostLaunch, Role::Lifecycle, Role::Command] {
-            let error =
-                select(role, &none, "plexi-pr-1", Ok(account.path().into()), &ambient).unwrap_err();
+            let error = select(
+                role,
+                &none,
+                "plexi-pr-1",
+                Ok(account.path().into()),
+                &ambient,
+            )
+            .unwrap_err();
             assert!(error.contains("--profile-root"), "{role:?}: {error}");
         }
         let root = ProfileRoot::parse(private.path().as_os_str()).unwrap();

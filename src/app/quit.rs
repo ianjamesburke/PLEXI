@@ -35,7 +35,7 @@ pub(crate) fn schedule_installed_restart() -> Result<(), String> {
         std::process::id(),
         crate::config::profile_target::profile_target().explicit_root(),
     )
-        .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

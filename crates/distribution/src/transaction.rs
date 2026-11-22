@@ -1644,7 +1644,10 @@ pub const DELEGATED_VAR: &str = "PLEXI_LAUNCHER_DELEGATED";
 /// Plexi pane, or `None` to run the stable build itself. A pane names its
 /// host's build in [`BUILD_CHANNEL_VAR`]; a pane from a host before stint
 /// 1695 has only `PLEXI_CHANNEL`, which then named the build.
-fn pane_build_channel(receipt_channel: &str, env: impl Fn(&str) -> Option<String>) -> Option<String> {
+fn pane_build_channel(
+    receipt_channel: &str,
+    env: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
     if receipt_channel != "stable" || env("PLEXI_RUNNING").as_deref() != Some("1") {
         return None;
     }
@@ -2095,9 +2098,7 @@ fn windows_remove(receipt: &Receipt) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn pane_env(
-        pairs: &'static [(&'static str, &'static str)],
-    ) -> impl Fn(&str) -> Option<String> {
+    fn pane_env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
         move |name: &str| {
             pairs
                 .iter()
@@ -2130,8 +2131,14 @@ mod tests {
         );
         // An Alpha or Beta pane from before the build marker.
         for (legacy, build) in [
-            (&[("PLEXI_RUNNING", "1"), ("PLEXI_CHANNEL", "alpha")][..], "alpha"),
-            (&[("PLEXI_RUNNING", "1"), ("PLEXI_CHANNEL", "beta")][..], "beta"),
+            (
+                &[("PLEXI_RUNNING", "1"), ("PLEXI_CHANNEL", "alpha")][..],
+                "alpha",
+            ),
+            (
+                &[("PLEXI_RUNNING", "1"), ("PLEXI_CHANNEL", "beta")][..],
+                "beta",
+            ),
         ] {
             let env = |name: &str| {
                 legacy
@@ -2205,7 +2212,11 @@ mod tests {
     fn alpha_install_records_profile_installed_tag() {
         let home = tempfile::tempdir().unwrap();
         let root = ProfileRoot::parse(home.path().as_os_str()).unwrap();
-        let profile = |channel| ProfileTarget::for_channel(Some(&root), channel).unwrap().dir();
+        let profile = |channel| {
+            ProfileTarget::for_channel(Some(&root), channel)
+                .unwrap()
+                .dir()
+        };
         write_installed_tag(&profile("alpha"), "alpha", "v1.2.3-alpha.4").unwrap();
         let path = home.path().join(".plexi-alpha/installed_tag");
         assert_eq!(fs::read_to_string(&path).unwrap(), "v1.2.3-alpha.4");

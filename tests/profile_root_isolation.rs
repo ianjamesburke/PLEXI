@@ -200,7 +200,10 @@ fn two_roots_of_one_channel_are_isolated() {
     std::fs::write(&sentinel, "keep").unwrap();
     let a = root_arg(&fixture.a);
 
-    run(&fixture, &["--profile-root", &a, "host", "status", "--json"]);
+    run(
+        &fixture,
+        &["--profile-root", &a, "host", "status", "--json"],
+    );
     assert!(a_host.requests().contains(&"get_build_info".to_string()));
 
     run(&fixture, &["host", "stop", "--profile-root", &a]);
@@ -209,11 +212,15 @@ fn two_roots_of_one_channel_are_isolated() {
 
     // A second host on root A, then uninstall with root A's data kept.
     let a_again = FakeHost::bind(&fixture.a.profile());
-    let output = run(&fixture, &["--profile-root", &a, "uninstall", "--keep-data", "--yes"]);
+    let output = run(
+        &fixture,
+        &["--profile-root", &a, "uninstall", "--keep-data", "--yes"],
+    );
     assert!(output.status.success());
     assert!(a_again.requests().contains(&"shutdown".to_string()));
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains(&fixture.a.profile().display().to_string()),
+        String::from_utf8_lossy(&output.stdout)
+            .contains(&fixture.a.profile().display().to_string()),
         "uninstall must name the selected profile"
     );
 
@@ -270,7 +277,10 @@ fn an_invalid_root_or_a_bare_private_home_reaches_no_host() {
         let output = run(&fixture, verb);
         assert_eq!(output.status.code(), Some(2), "{verb:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("HOME is") && stderr.contains("--profile-root"), "{stderr}");
+        assert!(
+            stderr.contains("HOME is") && stderr.contains("--profile-root"),
+            "{stderr}"
+        );
     }
     for (name, host) in [("A", &a_host), ("B", &b_host), ("HOME", &home_host)] {
         assert!(
@@ -279,5 +289,8 @@ fn an_invalid_root_or_a_bare_private_home_reaches_no_host() {
             host.requests()
         );
     }
-    assert!(missing.symlink_metadata().is_err(), "a missing root was created");
+    assert!(
+        missing.symlink_metadata().is_err(),
+        "a missing root was created"
+    );
 }

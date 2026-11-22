@@ -152,7 +152,9 @@ fn profile_is_position_independent() {
     }
     assert_eq!(base.selection.profile, ProfileSelection::Default);
     assert_eq!(
-        run_of(&["--profile", "default", "host", "status"]).selection.profile,
+        run_of(&["--profile", "default", "host", "status"])
+            .selection
+            .profile,
         ProfileSelection::Default
     );
 }
@@ -175,7 +177,11 @@ fn profile_root_is_validated_by_the_front_end() {
             Some(root.path()),
             "{parts:?}"
         );
-        assert_eq!(run.surface, run_of(&["host", "status"]).surface, "{parts:?}");
+        assert_eq!(
+            run.surface,
+            run_of(&["host", "status"]).surface,
+            "{parts:?}"
+        );
     }
     let file = root.path().join("file");
     std::fs::write(&file, "x").unwrap();

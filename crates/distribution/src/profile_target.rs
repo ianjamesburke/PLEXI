@@ -50,7 +50,9 @@ impl ProfileRoot {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Err(format!("--profile-root {shown} does not exist"))
             }
-            Err(error) => Err(format!("--profile-root {shown} cannot be inspected: {error}")),
+            Err(error) => Err(format!(
+                "--profile-root {shown} cannot be inspected: {error}"
+            )),
         }
     }
 
@@ -197,7 +199,8 @@ impl ProfileTarget {
     /// The explicit root as a [`ProfileRoot`], for an installer step that
     /// must act on the same profile root as this process.
     pub fn profile_root(&self) -> Option<ProfileRoot> {
-        self.explicit_root().map(|root| ProfileRoot(root.to_path_buf()))
+        self.explicit_root()
+            .map(|root| ProfileRoot(root.to_path_buf()))
     }
 
     /// True when the invocation itself names this target (explicit profile,
@@ -343,7 +346,10 @@ mod tests {
         for (raw, reason) in [
             (OsString::from("relative/root"), "not an absolute path"),
             (OsString::new(), "needs an absolute directory"),
-            (dir.path().join("missing").into_os_string(), "does not exist"),
+            (
+                dir.path().join("missing").into_os_string(),
+                "does not exist",
+            ),
             (file.into_os_string(), "is not a directory"),
             (dir.path().join("..").into_os_string(), ". or .."),
         ] {
@@ -395,8 +401,8 @@ mod tests {
         assert!(refuse_private_home(None, account.path()).is_ok());
         assert!(refuse_private_home(Some(OsStr::new("")), account.path()).is_ok());
         assert!(refuse_private_home(Some(account.path().as_os_str()), account.path()).is_ok());
-        let error = refuse_private_home(Some(private.path().as_os_str()), account.path())
-            .unwrap_err();
+        let error =
+            refuse_private_home(Some(private.path().as_os_str()), account.path()).unwrap_err();
         assert!(error.contains(PROFILE_ROOT_FLAG), "{error}");
     }
 
