@@ -218,10 +218,6 @@ pub struct ResizeGesture {
     open: Option<Gesture>,
     /// The previous pass, kept only when it was a resize frame.
     prev: Option<FrameMark>,
-    /// DIAG(1224): the previous pass inside an open gesture, any kind.
-    pass: Option<FrameMark>,
-    #[cfg(test)]
-    last_breakdown: Option<String>,
 }
 
 struct Gesture {
@@ -230,10 +226,10 @@ struct Gesture {
     frames: u32,
     passes: u32,
     samples: Vec<FrameSample>,
-    /// DIAG(1224): every pass inside the gesture, resize frame or not.
-    pass_samples: Vec<FrameSample>,
-    /// DIAG(1224): surface work egui-wgpu recorded during the gesture.
-    trace: egui_wgpu::winit::resize_trace::Trace,
+    /// `App::ui` calls inside the gesture.
+    paints: u32,
+    /// Resizes that reached a PTY inside the gesture.
+    pty_commits: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -262,43 +258,20 @@ impl ResizeGesture {
         resized: bool,
         prev_eframe_cpu_s: Option<f32>,
     ) -> bool {
-        let trace = egui_wgpu::winit::resize_trace::take();
-        self.begin_pass_with_trace(now, resized, prev_eframe_cpu_s, trace)
-    }
-
-    fn begin_pass_with_trace(
-        &mut self,
-        now: Instant,
-        resized: bool,
-        prev_eframe_cpu_s: Option<f32>,
-        trace: egui_wgpu::winit::resize_trace::Trace,
-    ) -> bool {
         // The previous resize frame ended when this pass began. Record it
         // before looking at this pass, so a resize frame followed by a
         // same-size pass (a terminal's requested repaint) still counts. The
         // pass that closes the gesture comes a full hold after the last
         // resize frame, so that interval is idle time, not frame time.
         let prev = self.prev.take();
-        let pass = self.pass.take();
         let closing = !resized
             && self.open.as_ref().is_some_and(|gesture| {
                 now.saturating_duration_since(gesture.last_resize) >= RESIZE_GESTURE_HOLD
             });
-        // GPU work drained here ran since the previous pass. Its time belongs
-        // to the breakdown only when that interval is a recorded pass sample:
-        // not before the opening pass, and not across the closing idle gap.
-        let timed = pass.is_some() && !closing;
         if let (Some(prev), Some(gesture), false) = (prev, self.open.as_mut(), closing) {
             gesture.samples.push(FrameSample {
                 interval_ms: ms(now.saturating_duration_since(prev.start)),
                 app_ms: prev.app_ms,
-                eframe_cpu_ms: prev_eframe_cpu_s.map(|s| s * 1000.0),
-            });
-        }
-        if let (Some(pass), Some(gesture), false) = (pass, self.open.as_mut(), closing) {
-            gesture.pass_samples.push(FrameSample {
-                interval_ms: ms(now.saturating_duration_since(pass.start)),
-                app_ms: pass.app_ms,
                 eframe_cpu_ms: prev_eframe_cpu_s.map(|s| s * 1000.0),
             });
         }
@@ -311,8 +284,8 @@ impl ResizeGesture {
                     frames: 0,
                     passes: 0,
                     samples: Vec::new(),
-                    pass_samples: Vec::new(),
-                    trace: Default::default(),
+                    paints: 0,
+                    pty_commits: 0,
                 }
             });
             gesture.frames += 1;
@@ -324,24 +297,10 @@ impl ResizeGesture {
             });
         } else if let Some(gesture) = self.open.as_mut() {
             gesture.passes += 1;
-        }
-        if closing {
-            if let Some(mut gesture) = self.open.take() {
-                merge_trace(&mut gesture.trace, trace, false);
+            if closing {
+                let gesture = self.open.take().expect("open gesture");
                 log::info!(target: "plexi::resize", "{}", gesture.summary());
-                let breakdown = gesture.breakdown();
-                log::info!(target: "plexi::resize", "{breakdown}");
-                #[cfg(test)]
-                {
-                    self.last_breakdown = Some(breakdown);
-                }
             }
-        } else if let Some(gesture) = self.open.as_mut() {
-            merge_trace(&mut gesture.trace, trace, timed);
-            self.pass = Some(FrameMark {
-                start: now,
-                app_ms: 0.0,
-            });
         }
         self.open.is_some()
     }
@@ -351,94 +310,52 @@ impl ResizeGesture {
         if let Some(prev) = self.prev.as_mut() {
             prev.app_ms += ms(elapsed);
         }
-        if let Some(pass) = self.pass.as_mut() {
-            pass.app_ms += ms(elapsed);
+    }
+
+    /// Count one `App::ui` call inside the gesture.
+    pub fn note_paint(&mut self) {
+        if let Some(gesture) = self.open.as_mut() {
+            gesture.paints += 1;
+        }
+    }
+
+    /// Count resizes that reached a PTY inside the gesture.
+    pub fn note_pty_commits(&mut self, commits: u32) {
+        if let Some(gesture) = self.open.as_mut() {
+            gesture.pty_commits += commits;
         }
     }
 }
 
-/// DIAG(1224): fold one drain of egui-wgpu's resize trace into a gesture.
-/// Counts always carry over; durations only when `timed`, so the breakdown
-/// subtracts GPU time solely from the wall time that contains it.
-fn merge_trace(
-    into: &mut egui_wgpu::winit::resize_trace::Trace,
-    from: egui_wgpu::winit::resize_trace::Trace,
-    timed: bool,
-) {
-    for (a, b) in into.configures_by_cause.iter_mut().zip(from.configures_by_cause) {
-        *a += b;
-    }
-    if timed {
-        into.configure_ms.extend(from.configure_ms);
-        into.paint_configure_ms += from.paint_configure_ms;
-        into.acquire_ms.extend(from.acquire_ms);
-        into.submit_ms.extend(from.submit_ms);
-        into.present_ms.extend(from.present_ms);
-    }
-    let px = |(w, h): (u32, u32)| u64::from(w) * u64::from(h);
-    if px(from.max_pixels) > px(into.max_pixels) {
-        into.max_pixels = from.max_pixels;
-    }
-    for (name, count) in from.resize_end_events {
-        match into.resize_end_events.iter_mut().find(|(n, _)| *n == name) {
-            Some((_, c)) => *c += count,
-            None => into.resize_end_events.push((name, count)),
+/// The clock terminal resizes settle on: the system clock, or a fixed instant
+/// a test sets so settling never depends on how fast the machine runs.
+#[derive(Default)]
+pub struct ResizeClock {
+    #[cfg(test)]
+    fixed: Option<Instant>,
+}
+
+impl ResizeClock {
+    pub fn now(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(fixed) = self.fixed {
+            return fixed;
         }
+        Instant::now()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set(&mut self, now: Instant) {
+        self.fixed = Some(now);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn advance(&mut self, by: Duration) {
+        self.fixed = Some(self.now() + by);
     }
 }
 
 impl Gesture {
-    /// DIAG(1224): where the gesture's wall time went, across every pass.
-    fn breakdown(&self) -> String {
-        let sum = |v: &[f32]| v.iter().sum::<f32>();
-        let pct = |v: &[f32]| {
-            if v.is_empty() {
-                "n/a".to_owned()
-            } else {
-                let (p50, p95, max) = percentiles(v);
-                format!("{p50:.1}/{p95:.1}/{max:.1}")
-            }
-        };
-        let t = &self.trace;
-        let wall = sum(&self.pass_samples.iter().map(|s| s.interval_ms).collect::<Vec<_>>());
-        let app = sum(&self.pass_samples.iter().map(|s| s.app_ms).collect::<Vec<_>>());
-        let render = sum(
-            &self
-                .pass_samples
-                .iter()
-                .filter_map(|s| s.eframe_cpu_ms.map(|cpu| (cpu - s.app_ms).max(0.0)))
-                .collect::<Vec<_>>(),
-        );
-        let (acq, sub, pre, cfg) = (
-            sum(&t.acquire_ms),
-            sum(&t.submit_ms),
-            sum(&t.present_ms),
-            sum(&t.configure_ms),
-        );
-        // A recovery configure runs inside the paint, so `render` holds it.
-        let idle = wall - app - render - acq - sub - pre - (cfg - t.paint_configure_ms);
-        let [start, end, resized, recover] = t.configures_by_cause;
-        let events = t
-            .resize_end_events
-            .iter()
-            .map(|(n, c)| format!("{n}:{c}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        format!(
-            "window resize: breakdown px={}x{} passes={} paints={} wall_ms={wall:.0} app_ms={app:.0} render_ms={render:.0} acquire_ms={acq:.0} submit_ms={sub:.0} present_ms={pre:.0} configure_ms={cfg:.0} idle_ms={idle:.0} | configures={} (start={start} end={end} resized={resized} recover={recover}) configure_ms p50/p95/max={} acquire={} present={} submit={} pass_gap={} | resize_end_events={events}",
-            t.max_pixels.0,
-            t.max_pixels.1,
-            self.pass_samples.len(),
-            t.acquire_ms.len(),
-            t.configures_by_cause.iter().sum::<u32>(),
-            pct(&t.configure_ms),
-            pct(&t.acquire_ms),
-            pct(&t.present_ms),
-            pct(&t.submit_ms),
-            pct(&self.pass_samples.iter().map(|s| s.interval_ms).collect::<Vec<_>>()),
-        )
-    }
-
     fn summary(&self) -> String {
         let dur_s = self
             .last_resize
@@ -451,8 +368,8 @@ impl Gesture {
         };
         let p95 = |values: Vec<f32>| percentiles(&values).1;
         let mut line = format!(
-            "window resize: ended frames={} passes={} dur={dur_s:.2}s fps={fps:.1}",
-            self.frames, self.passes
+            "window resize: ended frames={} passes={} paints={} pty_commits={} dur={dur_s:.2}s fps={fps:.1}",
+            self.frames, self.passes, self.paints, self.pty_commits
         );
         if self.samples.is_empty() {
             // No resize frame was followed by another pass inside the
@@ -628,7 +545,7 @@ mod tests {
         assert!(g.begin_pass(at(160), false, Some(0.006)));
         assert_eq!(
             g.open.as_ref().unwrap().summary(),
-            "window resize: ended frames=3 passes=4 dur=0.04s fps=50.0 frame_ms p50=20.0 p95=20.0 max=20.0 app_ms p95=4.0 render_ms p95=2.0 wait_ms p95=14.0"
+            "window resize: ended frames=3 passes=4 paints=0 pty_commits=0 dur=0.04s fps=50.0 frame_ms p50=20.0 p95=20.0 max=20.0 app_ms p95=4.0 render_ms p95=2.0 wait_ms p95=14.0"
         );
         assert!(!g.begin_pass(at(140 + 300), false, None));
         assert!(g.open.is_none());
@@ -650,44 +567,10 @@ mod tests {
         }
         assert_eq!(
             g.open.as_ref().unwrap().summary(),
-            "window resize: ended frames=3 passes=6 dur=0.06s fps=33.3 frame_ms p50=25.0 p95=25.0 max=25.0 app_ms p95=12.0 render_ms p95=3.0 wait_ms p95=10.0"
+            "window resize: ended frames=3 passes=6 paints=0 pty_commits=0 dur=0.06s fps=33.3 frame_ms p50=25.0 p95=25.0 max=25.0 app_ms p95=12.0 render_ms p95=3.0 wait_ms p95=10.0"
         );
         // The closing pass is a hold after the last resize: idle, not a frame.
         assert!(!g.begin_pass(at(60 + 300), false, None));
-    }
-
-    /// Codex round 3 on PR 3280: GPU time drained on the opening and closing
-    /// passes lies outside every recorded pass interval, and a recovery
-    /// configure is already inside the frame's CPU time.
-    #[test]
-    fn resize_breakdown_counts_gpu_time_only_inside_recorded_passes() {
-        use egui_wgpu::winit::resize_trace::Trace;
-        let t0 = Instant::now();
-        let at = |ms: u64| t0 + Duration::from_millis(ms);
-        let outside = || Trace {
-            present_ms: vec![500.0],
-            configure_ms: vec![500.0],
-            configures_by_cause: [1, 0, 0, 0],
-            ..Default::default()
-        };
-        let mut g = ResizeGesture::default();
-        assert!(g.begin_pass_with_trace(at(0), true, None, outside()));
-        // A 20ms pass: 10ms of CPU holding a 4ms recovery configure, 5ms present.
-        let inside = Trace {
-            present_ms: vec![5.0],
-            configure_ms: vec![4.0],
-            paint_configure_ms: 4.0,
-            configures_by_cause: [0, 0, 0, 1],
-            ..Default::default()
-        };
-        assert!(g.begin_pass_with_trace(at(20), false, Some(0.010), inside));
-        assert!(!g.begin_pass_with_trace(at(320), false, None, outside()));
-        let line = g.last_breakdown.as_deref().expect("closed gesture");
-        assert!(line.contains("wall_ms=20 "), "{line}");
-        assert!(line.contains("present_ms=5 "), "{line}");
-        assert!(line.contains("configures=3 "), "{line}");
-        // 20ms wall - 10ms CPU - 5ms present; the recovery is inside the CPU.
-        assert!(line.contains("idle_ms=5 "), "{line}");
     }
 
     #[test]
@@ -698,7 +581,7 @@ mod tests {
         g.note_app_time(Duration::from_millis(9));
         assert_eq!(
             g.open.as_ref().unwrap().summary(),
-            "window resize: ended frames=1 passes=1 dur=0.00s fps=0.0 frame_ms p50=n/a p95=n/a max=n/a app_ms p95=n/a render_ms p95=n/a wait_ms p95=n/a"
+            "window resize: ended frames=1 passes=1 paints=0 pty_commits=0 dur=0.00s fps=0.0 frame_ms p50=n/a p95=n/a max=n/a app_ms p95=n/a render_ms p95=n/a wait_ms p95=n/a"
         );
         // Closing a hold later records no idle sample.
         assert!(!g.begin_pass(t0 + RESIZE_GESTURE_HOLD, false, Some(0.001)));

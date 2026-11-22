@@ -134,7 +134,7 @@ pub fn render(
     workspace_root: Option<&Path>,
     pane_title_font_size: f32,
     input: TerminalInput,
-    resize_immediately: bool,
+    resize_now: std::time::Instant,
 ) -> (bool, Option<(TileId, TabBarAction)>) {
     let pane_rect = ui.max_rect();
     let is_error = terminal.exited
@@ -343,7 +343,7 @@ pub fn render(
         .set_font(theme::terminal_font(font_size))
         .set_padding(terminal_content_padding())
         .set_size(Vec2::new(ui.available_width(), ui.available_height()))
-        .resize_immediately(resize_immediately)
+        .resize_clock(resize_now)
         .with_input(input.keyboard_events, input.modifiers);
     ui.add(view);
 

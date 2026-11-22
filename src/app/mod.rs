@@ -261,6 +261,8 @@ pub struct PlexiApp {
     pub(crate) drag_window_last_seen: Option<std::time::Instant>,
     /// Always-on window-resize gesture summary (stint 1224).
     pub(crate) resize_gesture: crate::platform::ui_profile::ResizeGesture,
+    /// The clock terminal resizes settle on.
+    pub(crate) resize_clock: crate::platform::ui_profile::ResizeClock,
     /// Screenshot requests (`plexi host screenshot`) awaiting the viewport
     /// capture that `HostRequest::Screenshot` triggered (stint 0461).
     pub(crate) pending_screenshots: Vec<crate::app::screenshot::PendingScreenshot>,
@@ -1894,6 +1896,7 @@ impl PlexiApp {
                     prev_screen_rect: None,
                     drag_window_last_seen: None,
                     resize_gesture: Default::default(),
+                    resize_clock: Default::default(),
                     pending_screenshots: Vec::new(),
                     approval_buttons: Vec::new(),
                     synthetic_input_frame: false,
@@ -2193,6 +2196,7 @@ impl PlexiApp {
             prev_screen_rect: None,
             drag_window_last_seen: None,
             resize_gesture: Default::default(),
+            resize_clock: Default::default(),
             pending_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
@@ -3236,6 +3240,7 @@ impl PlexiApp {
             prev_screen_rect: None,
             drag_window_last_seen: None,
             resize_gesture: Default::default(),
+            resize_clock: Default::default(),
             pending_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
@@ -3796,7 +3801,8 @@ impl eframe::App for PlexiApp {
             return;
         }
         self.release_unowned_terminal_holds(ctx);
-        self.commit_held_resize_while_hidden(ctx);
+        let resize_now = self.resize_clock.now();
+        self.settle_terminal_resizes(ctx, resize_now);
         self.apply_ui_scale(ctx);
         crate::platform::titlebar::update_metrics(ctx, frame);
         self.flush_ui_scale_persist();
@@ -4505,7 +4511,6 @@ impl eframe::App for PlexiApp {
         // Needs-you row, approval banner) registers its bounds this frame.
         self.approval_buttons.clear();
         self.render_panels(ui, focused_terminal_input);
-        self.observe_terminal_resize_commits();
         self.draw_attention_queue_and_decision_overlay(ctx);
         self.draw_keychain_recovery_dialog(ctx);
 
@@ -4525,6 +4530,7 @@ impl eframe::App for PlexiApp {
         }
         let ui_elapsed = ui_start.elapsed();
         self.resize_gesture.note_app_time(ui_elapsed);
+        self.resize_gesture.note_paint();
         crate::platform::ui_profile::end_frame(ui_elapsed);
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
@@ -5183,31 +5189,52 @@ impl PlexiApp {
         }
     }
 
-    /// A held terminal resize normally commits on a later `App::ui` pass,
-    /// which eframe skips while the window is hidden. Commit it from logic
-    /// instead, oldest first and one per pass, so the PTY never keeps its
-    /// pre-drag size behind a covered window (stint 1224).
-    fn commit_held_resize_while_hidden(&mut self, ctx: &egui::Context) {
-        // eframe's own predicate for skipping `App::ui`.
-        if ctx.input(|i| i.viewport().visible()).unwrap_or(true) {
-            return;
-        }
-        let mut held: Vec<_> = self
-            .windows
+    /// Every live terminal in every window, covered by an overlay or not.
+    fn live_terminals_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &mut crate::host::pane::TerminalPane> {
+        self.windows
             .iter_mut()
             .flat_map(|window| window.panes.values_mut())
-            .filter_map(|pane| pane.as_terminal_mut())
-            .filter(|terminal| terminal.backend.held_resize_frames() > 0)
-            .collect();
-        let remaining = held.len().saturating_sub(1);
-        if let Some(oldest) = held
-            .iter_mut()
-            .max_by_key(|terminal| terminal.backend.held_resize_frames())
-        {
-            oldest.backend.commit_held_resize();
+            .filter_map(crate::host::pane::Pane::terminal_incarnation_mut)
+    }
+
+    /// The one place a terminal's desired size reaches its PTY. Runs on every
+    /// logic pass, visible or not, so a terminal that stopped being painted
+    /// still converges. Commits everything settled; of those due only by max
+    /// hold, the one waiting longest, so a long drag reflows one per pass.
+    fn settle_terminal_resizes(&mut self, ctx: &egui::Context, now: std::time::Instant) {
+        use egui_term::HeldResize;
+        let mut commits = 0;
+        let mut soonest: Option<std::time::Duration> = None;
+        let mut oldest: Option<(std::time::Instant, &mut crate::host::pane::TerminalPane)> = None;
+        for terminal in self.live_terminals_mut() {
+            match terminal.backend.held_resize(now) {
+                None => {}
+                Some(HeldResize::Settled) => {
+                    commits += u32::from(terminal.backend.commit_held_resize(now));
+                }
+                Some(HeldResize::Waiting(delay)) => {
+                    soonest = Some(soonest.map_or(delay, |s| s.min(delay)));
+                }
+                Some(HeldResize::OverHeld { held_since }) => {
+                    // Whichever loses waits for the next pass.
+                    if oldest.is_some() {
+                        soonest = Some(std::time::Duration::ZERO);
+                    }
+                    if oldest.as_ref().is_none_or(|(since, _)| held_since < *since) {
+                        oldest = Some((held_since, terminal));
+                    }
+                }
+            }
         }
-        if remaining > 0 {
-            ctx.request_repaint();
+        if let Some((_, terminal)) = oldest {
+            commits += u32::from(terminal.backend.commit_held_resize(now));
+        }
+        self.resize_gesture.note_pty_commits(commits);
+        if let Some(delay) = soonest {
+            let predicted = ctx.input(|i| i.predicted_dt);
+            ctx.request_repaint_after(egui_term::resize_wake_delay(delay, predicted));
         }
     }
 

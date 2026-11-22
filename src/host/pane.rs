@@ -544,6 +544,19 @@ impl Pane {
         }
     }
 
+    /// [`Self::terminal_incarnation`], mutably: the terminal in this slot,
+    /// covered by an overlay or not.
+    pub(crate) fn terminal_incarnation_mut(&mut self) -> Option<&mut TerminalPane> {
+        match self {
+            Pane::Terminal(t) => Some(t),
+            Pane::View(view) => view
+                .overlay_replaced
+                .as_deref_mut()
+                .and_then(Pane::terminal_incarnation_mut),
+            Pane::Portal(_) => None,
+        }
+    }
+
     pub fn as_terminal_mut(&mut self) -> Option<&mut TerminalPane> {
         match self {
             Pane::Terminal(t) => Some(t),
@@ -929,13 +942,8 @@ pub struct TerminalPane {
     /// When output last changed the text on screen, host-induced or not. The
     /// settle falls back to this before the agent has activity of its own.
     pub(crate) last_screen_change_at: Option<std::time::Instant>,
-    /// End of the current host-induced quiet window (`HOST_INDUCED_QUIET`).
-    pub(crate) host_induced_until: Option<std::time::Instant>,
-    /// Whether output inside the current host-induced window was already traced.
-    host_induced_output_logged: bool,
-    /// `backend.resize_commits()` when last observed; a higher count means the
-    /// host committed a resize since.
-    seen_resize_commits: u64,
+    /// The resize commit whose quiet window already traced ignored output.
+    host_induced_output_logged_for: Option<std::time::Instant>,
     /// OSC 7501 program-status records, fed by the PTY byte tap.
     pub program_status: crate::program_status::SharedProgramStatus,
     /// Test-only copy of the environment handed to the PTY constructor.
@@ -1164,9 +1172,7 @@ impl TerminalPane {
             last_agent_activity_at: None,
             screen_fingerprint: None,
             last_screen_change_at: None,
-            host_induced_until: None,
-            host_induced_output_logged: false,
-            seen_resize_commits: 0,
+            host_induced_output_logged_for: None,
             program_status,
             #[cfg(test)]
             spawn_env,
@@ -1516,31 +1522,12 @@ impl TerminalPane {
         )
     }
 
-    /// Open a host-induced quiet window: the host just did something that
-    /// makes the program repaint (`cause`: a committed resize).
-    pub(crate) fn mark_host_induced(&mut self, now: std::time::Instant, cause: &str) {
-        self.host_induced_until = Some(now + HOST_INDUCED_QUIET);
-        self.host_induced_output_logged = false;
-        log::info!(
-            "terminal {}: host-induced quiet window {}ms ({cause})",
-            self.id,
-            HOST_INDUCED_QUIET.as_millis()
-        );
-    }
-
-    /// True while PTY output is attributed to the host, not the agent.
+    /// True while PTY output is attributed to the host, not the agent: for
+    /// `HOST_INDUCED_QUIET` after a resize reached the program.
     pub(crate) fn host_induced_quiet(&self, now: std::time::Instant) -> bool {
-        self.host_induced_until.is_some_and(|until| now < until)
-    }
-
-    /// Open a quiet window when the backend committed a resize (SIGWINCH to
-    /// the child) since the last call. Called once per rendered frame.
-    pub(crate) fn observe_resize_commits(&mut self, now: std::time::Instant) {
-        let commits = self.backend.resize_commits();
-        if commits > self.seen_resize_commits {
-            self.seen_resize_commits = commits;
-            self.mark_host_induced(now, "resize");
-        }
+        self.backend
+            .last_resize_commit_at()
+            .is_some_and(|at| now < at + HOST_INDUCED_QUIET)
     }
 
     /// Stamp one PTY event. `pane send --submit` settles on every event.
@@ -1575,8 +1562,9 @@ impl TerminalPane {
             self.last_agent_activity_at = Some(now);
             return;
         }
-        if !self.host_induced_output_logged {
-            self.host_induced_output_logged = true;
+        let commit = self.backend.last_resize_commit_at();
+        if self.host_induced_output_logged_for != commit {
+            self.host_induced_output_logged_for = commit;
             log::info!(
                 "terminal {}: PTY output inside host-induced window ignored for agent state",
                 self.id

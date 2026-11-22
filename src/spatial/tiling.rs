@@ -541,9 +541,8 @@ pub struct PlexiBehavior<'a> {
     pub pending_pane_clicks: &'a mut HashMap<PaneId, crate::host::pane::PendingPaneClick>,
     /// Panes in columns clipped off the strip (`!is_on_screen`).
     pub off_strip_panes: HashSet<PaneId>,
-    /// True on a frame the strip layout jumped: terminals commit their new grid
-    /// at once instead of debouncing it like a drag.
-    pub strip_layout_jump: bool,
+    /// The instant terminals observe this frame's layout at.
+    pub resize_now: std::time::Instant,
     /// Presentation snapshot for the active strip (`StripLayout`).
     pub strip_layout: Option<crate::strip::StripLayout>,
     pub resized: bool,
@@ -796,7 +795,7 @@ impl PlexiBehavior<'_> {
                     self.workspace_root.as_deref(),
                     self.pane_title_font_size,
                     terminal_input,
-                    self.strip_layout_jump,
+                    self.resize_now,
                 )
             });
             if close_exited {

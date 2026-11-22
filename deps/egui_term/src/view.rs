@@ -16,7 +16,6 @@ use egui::{Id, PointerButton};
 use std::time::{Duration, Instant};
 
 use crate::backend::BackendCommand;
-use crate::backend::ResizeOutcome;
 use crate::backend::TerminalBackend;
 use crate::backend::{LinkAction, MouseButton, SelectionType};
 use crate::bindings::Binding;
@@ -157,7 +156,7 @@ pub struct TerminalView<'a> {
     /// silent fallback is exactly the Cmd+A-steal bug this design removes).
     supplied_input: Option<SuppliedInput>,
     /// Commit a geometry change this frame instead of debouncing it.
-    resize_immediately: bool,
+    resize_now: Instant,
 }
 
 impl Widget for TerminalView<'_> {
@@ -188,29 +187,6 @@ impl Widget for TerminalView<'_> {
     }
 }
 
-/// How long a held-back terminal resize waits for the size to stop changing
-/// before the pass that commits it. Longer than the gap between live-resize
-/// steps at 60 Hz or faster, so it fires only once a drag pauses or ends.
-const RESIZE_SETTLE: Duration = Duration::from_millis(50);
-
-/// The one mid-drag reflow a pass allows across every terminal (stint 1224),
-/// kept in egui temp data. It goes to the oldest pending resize: a terminal
-/// may take it only once its hold reaches the longest hold any terminal
-/// deferred with on the previous pass. Holds grow by one per pass, so the
-/// terminal that was oldest last pass qualifies first and the rest wait their
-/// turn; taking it in paint order instead let the first eight terminals of a
-/// nine-terminal drag take every turn. If the oldest stops deferring, no
-/// terminal qualifies for one pass and the next pass re-ranks.
-#[derive(Clone, Copy, Default)]
-struct MidDragTurn {
-    pass: u64,
-    spent: bool,
-    /// Longest hold among terminals that deferred on `pass`.
-    longest_held: u32,
-    /// Longest hold among terminals that deferred on the pass before it.
-    longest_held_before: u32,
-}
-
 impl<'a> TerminalView<'a> {
     pub fn new(ui: &mut egui::Ui, backend: &'a mut TerminalBackend) -> Self {
         let widget_id = terminal_widget_id(backend.id);
@@ -225,7 +201,7 @@ impl<'a> TerminalView<'a> {
             theme: TerminalTheme::default(),
             bindings_layout: BindingsLayout::new(),
             supplied_input: None,
-            resize_immediately: false,
+            resize_now: Instant::now(),
         }
     }
 
@@ -270,11 +246,10 @@ impl<'a> TerminalView<'a> {
         self
     }
 
-    /// Skip the resize debounce for this frame (a discrete layout jump, not a
-    /// drag): the backend commits the new grid before `show` paints.
+    /// The instant this frame's layout is observed at.
     #[inline]
-    pub fn resize_immediately(mut self, immediately: bool) -> Self {
-        self.resize_immediately = immediately;
+    pub fn resize_clock(mut self, now: Instant) -> Self {
+        self.resize_now = now;
         self
     }
 
@@ -294,41 +269,14 @@ impl<'a> TerminalView<'a> {
     }
 
     fn resize(self, layout: &Response) -> Self {
-        // Timed as a whole (stint 0731 drag profiling): a committing frame
-        // takes self.term.lock(), so this captures lock contention with the
-        // PTY reader thread, not just the reflow math. A frame the debounce
-        // defers takes no lock at all, which is most of the win during a drag.
+        // Timed as a whole (stint 0731 drag profiling).
         let timed = crate::diag::span_hook_installed();
-        let start = timed.then(std::time::Instant::now);
-        let pass = layout.ctx.cumulative_pass_nr();
-        let turn_id = Id::new("egui_term::mid_drag_turn");
-        let mut turn = layout
-            .ctx
-            .data(|d| d.get_temp::<MidDragTurn>(turn_id))
-            .unwrap_or_default();
-        if turn.pass != pass {
-            turn = MidDragTurn {
-                pass,
-                spent: false,
-                longest_held: 0,
-                longest_held_before: turn.longest_held,
-            };
-        }
-        let outcome = self.backend.request_resize(
+        let start = timed.then(Instant::now);
+        self.backend.observe_layout(
             Size::from(grid_size(layout.rect.size(), self.padding)),
             self.font.font_measure(&layout.ctx),
-            self.resize_immediately,
-            (!turn.spent).then_some(turn.longest_held_before),
+            self.resize_now,
         );
-        match outcome {
-            ResizeOutcome::CommittedMidDrag => turn.spent = true,
-            ResizeOutcome::Deferred => {
-                turn.longest_held =
-                    turn.longest_held.max(self.backend.held_resize_frames());
-            },
-            ResizeOutcome::Unchanged | ResizeOutcome::Committed => {},
-        }
-        layout.ctx.data_mut(|d| d.insert_temp(turn_id, turn));
         if let Some(start) = start {
             crate::diag::span_note(
                 "terminal_resize",
@@ -336,15 +284,15 @@ impl<'a> TerminalView<'a> {
             );
         }
 
-        if outcome == ResizeOutcome::Deferred {
-            // The commit runs on the next frame that reports the same
-            // geometry, so a drag that ends between frames must still produce
-            // one more pass — otherwise the final size is stranded and the
-            // shell keeps wrapping to the pre-drag width (stint 0719). That
-            // pass waits until the size has held for `RESIZE_SETTLE`; an
-            // immediate request made egui run extra passes at the same size
-            // on every drag step (stint 1224).
-            layout.ctx.request_repaint_after(RESIZE_SETTLE);
+        // The host commits this size in `App::logic`, so a drag that ends
+        // between frames must still produce a pass when it comes due. An
+        // immediate request made egui run extra passes at the same size on
+        // every drag step (stint 1224).
+        if let Some(due_in) = self.backend.resize_due_in(self.resize_now) {
+            let predicted = layout.ctx.input(|i| i.predicted_dt);
+            layout
+                .ctx
+                .request_repaint_after(crate::backend::resize_wake_delay(due_in, predicted));
         }
 
         self

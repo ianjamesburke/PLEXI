@@ -15571,6 +15571,7 @@ mod sidebar_panel_width_tests {
 #[cfg(test)]
 mod terminal_resize_debounce_tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     /// Run one frame with the host window at `width`. A drag is simulated as a
     /// sequence of these: each frame a slightly different window size, exactly
@@ -15622,120 +15623,150 @@ mod terminal_resize_debounce_tests {
     const START_WIDTH: f32 = 1280.0;
     const DRAG_STEP: f32 = 40.0;
 
-    /// The core guard: a six-frame drag must produce one reflow per terminal
-    /// (at the trailing edge), not six. It also proves the trailing-edge commit
-    /// is never lost — the terminals end up narrower than they started and then
-    /// stay put.
+    /// One live-resize step apart on the resize clock.
+    const STEP: Duration = Duration::from_millis(16);
+
+    /// Let shell start-up land on the real clock, then hand the terminals to
+    /// a fixed clock so no assertion depends on how fast this machine runs.
+    fn settle_baseline(h: &mut HostHarness, width: f32) {
+        for _ in 0..4 {
+            frame_at_width(h, width);
+        }
+        std::thread::sleep(Duration::from_millis(400));
+        for _ in 0..4 {
+            frame_at_width(h, width);
+        }
+        std::thread::sleep(egui_term::RESIZE_SETTLE + Duration::from_millis(10));
+        for _ in 0..4 {
+            frame_at_width(h, width);
+        }
+        h.app.resize_clock.set(Instant::now());
+    }
+
+    fn drag_step(h: &mut HostHarness, width: f32) {
+        h.app.resize_clock.advance(STEP);
+        frame_at_width(h, width);
+    }
+
+    /// The size holds for the settle period, then one pass commits it.
+    fn hold_until_settled(h: &mut HostHarness, width: f32) {
+        h.app.resize_clock.advance(egui_term::RESIZE_SETTLE);
+        frame_at_width(h, width);
+        frame_at_width(h, width);
+    }
+
+    fn any_held(h: &mut HostHarness, terminals: &[PaneId]) -> bool {
+        let now = h.app.resize_clock.now();
+        terminals
+            .iter()
+            .any(|id| h.terminal_backend(*id).held_resize(now).is_some())
+    }
+
+    /// The core guard: a six-step drag produces one reflow per terminal at the
+    /// trailing edge, and the terminals then stay put.
     #[test]
     fn window_drag_coalesces_terminal_reflow_to_the_trailing_edge() {
         let mut h = HostHarness::new();
         let terminals = three_side_by_side_terminals(&mut h);
-
-        // Settle at the start width so the initial sizing is not counted. The
-        // shells start asynchronously and their first output can change pane
-        // chrome (and so the row count) a few frames late, so let that land
-        // before taking the baseline instead of attributing it to the drag.
-        for _ in 0..4 {
-            frame_at_width(&mut h, START_WIDTH);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        for _ in 0..12 {
-            frame_at_width(&mut h, START_WIDTH);
-        }
+        settle_baseline(&mut h, START_WIDTH);
         let before = commits(&mut h, &terminals);
         let start_grids = grids(&mut h, &terminals);
 
         const DRAG_FRAMES: u32 = 6;
         for step in 1..=DRAG_FRAMES {
-            frame_at_width(&mut h, START_WIDTH - step as f32 * DRAG_STEP);
+            drag_step(&mut h, START_WIDTH - step as f32 * DRAG_STEP);
         }
-        // The drag has ended; the pointer is up and the size now holds.
         let final_width = START_WIDTH - DRAG_FRAMES as f32 * DRAG_STEP;
-        for _ in 0..4 {
-            frame_at_width(&mut h, final_width);
-        }
+        hold_until_settled(&mut h, final_width);
 
         let after = commits(&mut h, &terminals);
         let end_grids = grids(&mut h, &terminals);
         for (i, id) in terminals.iter().enumerate() {
-            let reflows = after[i] - before[i];
             assert_eq!(
-                reflows, 1,
-                "terminal {id} must reflow once for the whole {DRAG_FRAMES}-frame drag, \
-                 not once per frame (got {reflows})"
+                after[i] - before[i],
+                1,
+                "terminal {id} must reflow once for the whole {DRAG_FRAMES}-step drag"
             );
             assert!(
                 end_grids[i].0 < start_grids[i].0,
-                "terminal {id} must end the drag actually narrower — the trailing-edge \
-                 commit was lost (start {:?}, end {:?})",
+                "terminal {id} lost the trailing-edge commit (start {:?}, end {:?})",
                 start_grids[i],
                 end_grids[i]
             );
         }
 
-        // Converged: holding the size costs nothing more.
         for _ in 0..6 {
-            frame_at_width(&mut h, final_width);
+            drag_step(&mut h, final_width);
         }
-        assert_eq!(
-            commits(&mut h, &terminals),
-            after,
-            "a terminal at a stable size must not reflow again"
-        );
-        assert_eq!(
-            grids(&mut h, &terminals),
-            end_grids,
-            "a settled terminal's committed grid must not drift"
-        );
+        assert_eq!(commits(&mut h, &terminals), after, "a stable size reflowed");
+        assert_eq!(grids(&mut h, &terminals), end_grids, "a settled grid drifted");
     }
 
-    /// A long drag must not starve: the deferral is capped, so the grid keeps
-    /// tracking a sustained drag at a bounded rate instead of freezing at the
-    /// pre-drag size for the whole gesture.
+    /// A long drag must not starve: the max hold keeps the grid tracking a
+    /// sustained drag at a bounded rate.
     #[test]
     fn sustained_drag_reflow_is_bounded_and_does_not_starve() {
         let mut h = HostHarness::new();
         let terminals = three_side_by_side_terminals(&mut h);
-
-        for _ in 0..4 {
-            frame_at_width(&mut h, START_WIDTH);
-        }
+        settle_baseline(&mut h, START_WIDTH);
         let before = commits(&mut h, &terminals);
 
-        const DRAG_FRAMES: u32 = 24;
+        const DRAG_FRAMES: u32 = 48;
         for step in 1..=DRAG_FRAMES {
-            frame_at_width(&mut h, START_WIDTH - step as f32 * 20.0);
+            drag_step(&mut h, START_WIDTH - step as f32 * 10.0);
         }
         let during = commits(&mut h, &terminals);
+        let bound = (STEP * DRAG_FRAMES).as_millis() as u64
+            / egui_term::RESIZE_MAX_HOLD.as_millis() as u64
+            + 1;
+        for (i, id) in terminals.iter().enumerate() {
+            let reflows = during[i] - before[i];
+            assert!(reflows >= 1, "terminal {id} froze at its pre-drag size");
+            assert!(
+                reflows <= bound,
+                "terminal {id} reflowed {reflows} times, max-hold bound {bound}"
+            );
+        }
+    }
 
+    /// Stint 1700: same-size passes between size steps (stand-ins for
+    /// PTY-output wakes) do not count as the size having settled.
+    #[test]
+    fn same_size_passes_between_drag_steps_do_not_commit_early() {
+        let mut h = HostHarness::new();
+        let terminals = three_side_by_side_terminals(&mut h);
+        settle_baseline(&mut h, START_WIDTH);
+        let before = commits(&mut h, &terminals);
+
+        const DRAG_FRAMES: u32 = 48;
+        for step in 1..=DRAG_FRAMES {
+            let width = START_WIDTH - step as f32 * 10.0;
+            drag_step(&mut h, width);
+            for _ in 0..3 {
+                frame_at_width(&mut h, width);
+            }
+        }
+        let bound = (STEP * DRAG_FRAMES).as_millis() as u64
+            / egui_term::RESIZE_MAX_HOLD.as_millis() as u64
+            + 1;
+        let during = commits(&mut h, &terminals);
         for (i, id) in terminals.iter().enumerate() {
             let reflows = during[i] - before[i];
             assert!(
-                reflows >= 1,
-                "terminal {id} must keep tracking a {DRAG_FRAMES}-frame drag, \
-                 not freeze at the pre-drag size (got {reflows} reflows)"
-            );
-            assert!(
-                reflows <= DRAG_FRAMES as u64 / 4,
-                "terminal {id} reflowed {reflows} times across {DRAG_FRAMES} drag frames — \
-                 the per-frame reflow is back"
+                reflows <= bound,
+                "terminal {id} reflowed {reflows} times with same-size passes, \
+                 max-hold bound {bound}"
             );
         }
     }
 
     /// Stint 1224: a held terminal resize schedules no immediate same-size
     /// repaint. After a pass at a new size the host must not ask for another
-    /// pass sooner than the next size step can arrive. A terminal holding back
-    /// its reflow used to request an immediate repaint, and egui answers an
-    /// immediate request with two passes. This proves only what the host
-    /// schedules, not how many times a real window paints. Shell output is
-    /// content and still repaints at once, so passes woken by a PTY reader
-    /// are not counted; the cursor blink is off so its timer cannot land
-    /// between steps.
+    /// pass sooner than the next size step can arrive. Shell output is content
+    /// and still repaints at once, so passes woken by a PTY reader are not
+    /// counted; the cursor blink is off so its timer cannot land between steps.
     #[test]
     fn held_resize_schedules_no_immediate_same_size_repaint() {
-        // One 60 Hz frame: the soonest AppKit delivers the next size step.
-        const STEP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
         let mut h = HostHarness::new();
         let terminals = three_side_by_side_terminals(&mut h);
         for id in terminals {
@@ -15748,13 +15779,7 @@ mod terminal_resize_debounce_tests {
                 data.insert_temp(widget_id, state);
             });
         }
-        for _ in 0..4 {
-            frame_at_width(&mut h, START_WIDTH);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        for _ in 0..12 {
-            frame_at_width(&mut h, START_WIDTH);
-        }
+        settle_baseline(&mut h, START_WIDTH);
         let start_grids = grids(&mut h, &terminals);
         let woken_by_shell_output = |h: &HostHarness| {
             h.ctx
@@ -15766,17 +15791,14 @@ mod terminal_resize_debounce_tests {
         let mut width = START_WIDTH;
         for step in 1..=24 {
             width = START_WIDTH - step as f32 * 20.0;
-            frame_at_width(&mut h, width);
-            // An event loop runs another pass at this size whenever the host
-            // asked for one before the next size step can arrive.
+            drag_step(&mut h, width);
             // egui answers every immediate request with two passes, the
             // second carrying no cause, so the pass after a shell-output wake
-            // is shell output's too. Output that arrived just before this
-            // step's pass shows on that pass and wakes the one after it.
+            // is shell output's too.
             let mut scheduled = 0;
             let mut after_shell_output = woken_by_shell_output(&h);
             for _ in 0..8 {
-                if h.last_repaint_delay >= STEP_INTERVAL {
+                if h.last_repaint_delay >= STEP {
                     break;
                 }
                 frame_at_width(&mut h, width);
@@ -15796,8 +15818,8 @@ mod terminal_resize_debounce_tests {
         // The drag ends: the passes the host scheduled commit the final grid
         // with no further input.
         let mut settle_passes = 0;
-        while h.last_repaint_delay < std::time::Duration::from_secs(1) && settle_passes < 20 {
-            std::thread::sleep(h.last_repaint_delay);
+        while h.last_repaint_delay < Duration::from_secs(1) && settle_passes < 20 {
+            h.app.resize_clock.advance(h.last_repaint_delay);
             frame_at_width(&mut h, width);
             settle_passes += 1;
         }
@@ -15813,20 +15835,19 @@ mod terminal_resize_debounce_tests {
         assert_final_grids(&mut h, &terminals, width);
     }
 
+    /// The grids an identical layout settles on when it starts at `width`.
+    fn reference_grids(width: f32) -> Vec<(u16, u16)> {
+        let mut reference = HostHarness::new();
+        let terminals = three_side_by_side_terminals(&mut reference);
+        settle_baseline(&mut reference, width);
+        grids(&mut reference, &terminals)
+    }
+
     /// Each terminal holds exactly the grid an identical layout settles on
     /// when it starts at `width`, before any further pass runs, and further
     /// passes at that size commit nothing.
     fn assert_final_grids(h: &mut HostHarness, terminals: &[PaneId], width: f32) {
-        let mut reference = HostHarness::new();
-        let reference_terminals = three_side_by_side_terminals(&mut reference);
-        for _ in 0..4 {
-            frame_at_width(&mut reference, width);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        for _ in 0..12 {
-            frame_at_width(&mut reference, width);
-        }
-        let expected = grids(&mut reference, &reference_terminals);
+        let expected = reference_grids(width);
         assert_eq!(grids(h, terminals), expected, "stale final grid");
         let commits_before = commits(h, terminals);
         for _ in 0..4 {
@@ -15836,6 +15857,58 @@ mod terminal_resize_debounce_tests {
         assert_eq!(commits(h, terminals), commits_before, "late reflow");
     }
 
+    /// Drag, stop with a size held, and run `stop_painting` before the wake.
+    fn drag_then(h: &mut HostHarness, terminals: &[PaneId]) -> f32 {
+        settle_baseline(h, START_WIDTH);
+        let mut width = START_WIDTH;
+        for step in 1..=6 {
+            width = START_WIDTH - step as f32 * DRAG_STEP;
+            drag_step(h, width);
+        }
+        assert!(
+            any_held(h, terminals),
+            "the drag must end with a held resize for this test to mean anything"
+        );
+        width
+    }
+
+    /// Only the passes the host itself scheduled run, on the resize clock.
+    fn run_scheduled_passes(h: &mut HostHarness, pass: impl Fn(&mut HostHarness)) {
+        for _ in 0..200 {
+            if h.last_repaint_delay >= Duration::from_secs(1) {
+                return;
+            }
+            h.app.resize_clock.advance(h.last_repaint_delay);
+            pass(h);
+        }
+    }
+
+    fn backend_of(h: &mut HostHarness, id: PaneId) -> &mut egui_term::TerminalBackend {
+        &mut h.app.windows[0]
+            .panes
+            .get_mut(&id)
+            .and_then(crate::host::pane::Pane::terminal_incarnation_mut)
+            .expect("live terminal")
+            .backend
+    }
+
+    /// The terminals that stopped painting end on their last observed grid,
+    /// with nothing held.
+    fn assert_unpainted_converged(
+        h: &mut HostHarness,
+        terminals: &[PaneId],
+        unpainted: &[usize],
+        width: f32,
+    ) {
+        let expected = reference_grids(width);
+        let now = h.app.resize_clock.now();
+        for &i in unpainted {
+            let backend = backend_of(h, terminals[i]);
+            assert_eq!(backend.held_resize(now), None, "terminal {i} still held");
+            assert_eq!(backend.committed_grid(), expected[i], "terminal {i} is stale");
+        }
+    }
+
     /// Codex round 3 on PR 3280: the window is covered after the last size
     /// step and before the settle wake. `App::ui` never runs again, so logic
     /// must commit every terminal's recorded size.
@@ -15843,78 +15916,117 @@ mod terminal_resize_debounce_tests {
     fn occlusion_before_the_settle_wake_still_commits_every_final_grid() {
         let mut h = HostHarness::new();
         let terminals = three_side_by_side_terminals(&mut h);
-        for _ in 0..4 {
-            frame_at_width(&mut h, START_WIDTH);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        for _ in 0..12 {
-            frame_at_width(&mut h, START_WIDTH);
-        }
-        let mut width = START_WIDTH;
-        for step in 1..=6 {
-            width = START_WIDTH - step as f32 * DRAG_STEP;
-            frame_at_width(&mut h, width);
-        }
-        assert!(
-            terminals
-                .iter()
-                .any(|id| h.terminal_backend(*id).held_resize_frames() > 0),
-            "the drag must end with a held resize for this test to mean anything"
-        );
+        let width = drag_then(&mut h, &terminals);
+        h.app.resize_clock.advance(STEP);
         h.hidden_frame();
-        h.run_scheduled_hidden_frames(40);
-        for id in terminals {
-            assert_eq!(h.terminal_backend(id).held_resize_frames(), 0);
-        }
+        run_scheduled_passes(&mut h, |h| {
+            h.hidden_frame();
+        });
+        assert_unpainted_converged(&mut h, &terminals, &[0, 1, 2], width);
         assert_final_grids(&mut h, &terminals, width);
     }
 
-    /// Stint 1224: a long window drag reflows each terminal at most once per
-    /// `MAX_DEFERRED_RESIZE_FRAMES` frames, never two terminals on one frame,
-    /// and never saves the workspace mid-gesture. Small steps keep the cell
-    /// grid unchanged across some frames while pixels still move, which used
-    /// to pass for "settled" and reflowed mid-drag.
+    /// Codex round 4: an overlay moves the live terminal into
+    /// `overlay_replaced`, where it is no longer a top-level terminal.
+    #[test]
+    fn overlay_before_the_settle_wake_still_commits_the_covered_grid() {
+        let mut h = HostHarness::new();
+        let terminals = three_side_by_side_terminals(&mut h);
+        let width = drag_then(&mut h, &terminals);
+        h.focus_pane(terminals[0]);
+        h.app
+            .launch_view_by_id_with_layout("text-editor", Some("overlay".into()), &[], None)
+            .expect("overlay launch");
+        assert!(h.app.windows[0].panes[&terminals[0]].as_terminal().is_none());
+        frame_at_width(&mut h, width);
+        run_scheduled_passes(&mut h, |h| frame_at_width(h, width));
+        assert_unpainted_converged(&mut h, &terminals, &[0], width);
+    }
+
+    #[test]
+    fn zoom_before_the_settle_wake_still_commits_the_hidden_grids() {
+        let mut h = HostHarness::new();
+        let terminals = three_side_by_side_terminals(&mut h);
+        let width = drag_then(&mut h, &terminals);
+        h.focus_pane(terminals[1]);
+        let tile = h.app.windows[0].focused_pane.expect("focused tile");
+        h.app.windows[0].zoom_to(tile);
+        frame_at_width(&mut h, width);
+        run_scheduled_passes(&mut h, |h| frame_at_width(h, width));
+        assert_unpainted_converged(&mut h, &terminals, &[0, 2], width);
+    }
+
+    #[test]
+    fn tab_switch_before_the_settle_wake_still_commits_the_hidden_grid() {
+        let mut h = HostHarness::new();
+        let terminals = three_side_by_side_terminals(&mut h);
+        let width = drag_then(&mut h, &terminals);
+        h.focus_pane(terminals[0]);
+        h.app
+            .launch_view_by_id_with_layout("text-editor", Some("tab".into()), &[], None)
+            .expect("tab launch");
+        frame_at_width(&mut h, width);
+        run_scheduled_passes(&mut h, |h| frame_at_width(h, width));
+        assert_unpainted_converged(&mut h, &terminals, &[0], width);
+    }
+
+    #[test]
+    fn context_switch_before_the_settle_wake_still_commits_every_grid() {
+        let mut h = HostHarness::new();
+        let terminals = three_side_by_side_terminals(&mut h);
+        let width = drag_then(&mut h, &terminals);
+        let context = h.app.create_context_without_pty("elsewhere", None);
+        let index = h
+            .app
+            .router
+            .position(|c| c.context_id == context)
+            .expect("new context");
+        h.app.switch_workspace(index);
+        assert_ne!(h.app.windows[h.app.active_window].context_id, h.app.windows[0].context_id);
+        frame_at_width(&mut h, width);
+        run_scheduled_passes(&mut h, |h| frame_at_width(h, width));
+        assert_unpainted_converged(&mut h, &terminals, &[0, 1, 2], width);
+    }
+
+    /// A long drag reflows at most one terminal per pass, each within the max
+    /// hold, and never saves the workspace mid-gesture.
     #[test]
     fn long_drag_reflows_one_terminal_per_frame_within_the_cap() {
         const FRAMES: u64 = 120;
         let mut h = HostHarness::new();
         let terminals = three_side_by_side_terminals(&mut h);
-        for _ in 0..4 {
-            frame_at_width(&mut h, START_WIDTH);
-        }
+        settle_baseline(&mut h, START_WIDTH);
         let before = commits(&mut h, &terminals);
         let save_before = h.app.last_workspace_save;
-        h.app.last_workspace_save = save_before - std::time::Duration::from_secs(5);
+        h.app.last_workspace_save = save_before - Duration::from_secs(5);
         let old_save = h.app.last_workspace_save;
         h.app.workspace_dirty = true;
         let mut previous = before.clone();
         for frame in 0..FRAMES {
-            frame_at_width(&mut h, START_WIDTH - (frame % 60 + 1) as f32 * 8.0);
+            drag_step(&mut h, START_WIDTH - (frame % 60 + 1) as f32 * 8.0);
             let current = commits(&mut h, &terminals);
             let on_frame: u64 = current.iter().zip(&previous).map(|(a, b)| a - b).sum();
-            assert!(
-                on_frame <= 1,
-                "frame {frame} reflowed {on_frame} terminals at once"
-            );
+            assert!(on_frame <= 1, "frame {frame} reflowed {on_frame} terminals at once");
             assert_eq!(
                 h.app.last_workspace_save, old_save,
                 "workspace saved mid-drag on frame {frame}"
             );
             previous = current;
         }
+        let bound = (STEP * FRAMES as u32).as_millis() as u64
+            / egui_term::RESIZE_MAX_HOLD.as_millis() as u64
+            + 1;
         let per_terminal: Vec<u64> = previous.iter().zip(&before).map(|(a, b)| a - b).collect();
         for (id, reflows) in terminals.iter().zip(&per_terminal) {
             assert!(
-                *reflows >= 1 && *reflows <= FRAMES.div_ceil(8) + 1,
-                "terminal {id} reflowed {reflows} times across {FRAMES} drag frames (all: {per_terminal:?})"
+                *reflows >= 1 && *reflows <= bound,
+                "terminal {id} reflowed {reflows} times, bound {bound} (all: {per_terminal:?})"
             );
         }
     }
 
-    /// Codex round 1 on PR 3280: with more continuously resizing terminals
-    /// than the defer cap has frames, the mid-drag reflow goes to the terminal
-    /// that has waited longest, so none starves until the drag ends. Height
-    /// steps larger than a cell change every grid on every frame.
+    /// With more continuously resizing terminals than the max hold has
+    /// frames, the reflow goes to the terminal held longest, so none starves.
     #[test]
     fn long_drag_gives_every_terminal_mid_drag_reflows() {
         const TERMINALS: usize = 9;
@@ -15947,20 +16059,23 @@ mod terminal_resize_debounce_tests {
         for _ in 0..4 {
             frame_at_height(&mut h, START_HEIGHT);
         }
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        for _ in 0..8 {
+        std::thread::sleep(Duration::from_millis(400));
+        for _ in 0..4 {
             frame_at_height(&mut h, START_HEIGHT);
         }
+        std::thread::sleep(egui_term::RESIZE_SETTLE + Duration::from_millis(10));
+        for _ in 0..4 {
+            frame_at_height(&mut h, START_HEIGHT);
+        }
+        h.app.resize_clock.set(Instant::now());
         let before = commits(&mut h, &terminals);
         let mut previous = before.clone();
         for frame in 0..FRAMES {
+            h.app.resize_clock.advance(STEP);
             frame_at_height(&mut h, START_HEIGHT - (frame + 1) as f32 * HEIGHT_STEP);
             let current = commits(&mut h, &terminals);
             let on_frame: u64 = current.iter().zip(&previous).map(|(a, b)| a - b).sum();
-            assert!(
-                on_frame <= 1,
-                "frame {frame} reflowed {on_frame} terminals at once"
-            );
+            assert!(on_frame <= 1, "frame {frame} reflowed {on_frame} terminals at once");
             previous = current;
         }
         let per_terminal: Vec<u64> = previous.iter().zip(&before).map(|(a, b)| a - b).collect();
@@ -15975,32 +16090,28 @@ mod terminal_resize_debounce_tests {
         }
     }
 
-    /// A single programmatic size change (no drag) must still land promptly. A
-    /// one-frame stability wait is the cost of the debounce; an indefinite
-    /// deferral would be a regression of its own.
+    /// A single size change lands once the settle period has passed, and the
+    /// wake that delivers it is one the host scheduled itself.
     #[test]
-    fn single_step_resize_commits_within_one_stable_frame() {
+    fn single_step_resize_commits_after_the_settle() {
         let mut h = HostHarness::new();
         let terminals = three_side_by_side_terminals(&mut h);
-
-        for _ in 0..4 {
-            frame_at_width(&mut h, START_WIDTH);
-        }
+        settle_baseline(&mut h, START_WIDTH);
         let before = commits(&mut h, &terminals);
         let start_grids = grids(&mut h, &terminals);
 
-        // One step, then hold: two frames is the whole budget.
-        frame_at_width(&mut h, START_WIDTH - 200.0);
-        frame_at_width(&mut h, START_WIDTH - 200.0);
+        drag_step(&mut h, START_WIDTH - 200.0);
+        assert!(
+            h.last_repaint_delay <= egui_term::RESIZE_SETTLE + Duration::from_millis(20),
+            "the held size must schedule its own commit, got {:?}",
+            h.last_repaint_delay
+        );
+        hold_until_settled(&mut h, START_WIDTH - 200.0);
 
         let after = commits(&mut h, &terminals);
         let end_grids = grids(&mut h, &terminals);
         for (i, id) in terminals.iter().enumerate() {
-            assert_eq!(
-                after[i] - before[i],
-                1,
-                "terminal {id} must commit a single-step resize within two frames"
-            );
+            assert_eq!(after[i] - before[i], 1, "terminal {id} must commit once");
             assert!(
                 end_grids[i].0 < start_grids[i].0,
                 "terminal {id} must be narrower after the step (start {:?}, end {:?})",
@@ -23888,6 +23999,34 @@ fn titlebar_drag_and_exclusions_preserve_pointer_routing() {
 /// focus change) must not read as agent activity. These drive real terminal
 /// panes and simulate the PTY burst through `TerminalPane::record_pty_event`,
 /// the stamp `drain_pty_events` applies to every PTY event.
+/// Commit a real one-column resize stamped `at`, which is what opens or ends
+/// a terminal's host-induced quiet window.
+#[cfg(test)]
+fn commit_resize_at(t: &mut crate::host::pane::TerminalPane, at: std::time::Instant) {
+    let font = egui_term::Size {
+        width: 8.0,
+        height: 16.0,
+    };
+    let (cols, lines) = t.backend.committed_grid();
+    t.backend.observe_layout(
+        egui_term::Size {
+            width: f32::from(cols + 1) * font.width,
+            height: f32::from(lines) * font.height,
+        },
+        font,
+        at,
+    );
+    assert!(t.backend.commit_held_resize(at), "a changed grid commits");
+}
+
+/// Close any quiet window a test's start-up resize left open.
+#[cfg(test)]
+fn end_host_induced_window(t: &mut crate::host::pane::TerminalPane) {
+    let long_ago =
+        std::time::Instant::now() - crate::host::pane::HOST_INDUCED_QUIET * 2;
+    commit_resize_at(t, long_ago);
+}
+
 #[cfg(test)]
 mod host_induced_terminal_output_tests {
     use super::*;
@@ -23916,7 +24055,7 @@ mod host_induced_terminal_output_tests {
         t.agent_reported_at =
             Some(now - crate::host::pane::HOOK_AGENT_FRESHNESS - Duration::from_secs(1));
         t.last_agent_activity_at = Some(now - Duration::from_secs(5));
-        t.host_induced_until = None;
+        end_host_induced_window(t);
         t.observed_agent = None;
     }
 
@@ -23961,7 +24100,7 @@ mod host_induced_terminal_output_tests {
         let start = Instant::now();
         t.last_agent_activity_at = None;
         t.last_pty_output_at = None;
-        t.mark_host_induced(start, "resize");
+        commit_resize_at(t, start);
         t.record_pty_event(start);
         assert!(
             t.last_agent_activity_at.is_none(),
@@ -23996,14 +24135,16 @@ mod host_induced_terminal_output_tests {
             .expect("the view pane the terminal split from");
         h.app.reconcile_focus_logging(Duration::ZERO);
         idle_agent_with_stale_hook(terminal(&mut h, term));
+        let commit_before = terminal(&mut h, term).backend.last_resize_commit_at();
 
         h.focus_pane(other);
         h.app.reconcile_focus_logging(Duration::ZERO);
         h.focus_pane(term);
         h.app.reconcile_focus_logging(Duration::ZERO);
         let t = terminal(&mut h, term);
-        assert!(
-            t.host_induced_until.is_none(),
+        assert_eq!(
+            t.backend.last_resize_commit_at(),
+            commit_before,
             "a focus change is not host-induced PTY output"
         );
         let state = t.observed_output_state(Instant::now());
@@ -24029,8 +24170,10 @@ mod host_induced_terminal_output_tests {
 
         // Stop on the committing frame: the window it opens is short, so the
         // assertion must not wait behind extra frames on a loaded machine.
+        h.app.resize_clock.set(Instant::now());
         let mut committed = false;
         for _ in 0..6 {
+            h.app.resize_clock.advance(egui_term::RESIZE_SETTLE);
             frame_at_width(&mut h, 900.0);
             if h.terminal_backend(term).resize_commits() > commits_before {
                 committed = true;
@@ -24043,9 +24186,9 @@ mod host_induced_terminal_output_tests {
         // between that frame and these lines (stint 1484).
         let t = terminal(&mut h, term);
         let opened = t
-            .host_induced_until
-            .expect("a committed resize opens the host-induced window")
-            - crate::host::pane::HOST_INDUCED_QUIET;
+            .backend
+            .last_resize_commit_at()
+            .expect("a committed resize opens the host-induced window");
         assert!(t.host_induced_quiet(opened));
         // The terminal runs a real shell. On a slow runner its own output (a
         // late prompt) can be drained in a commit frame before that frame
@@ -24075,7 +24218,10 @@ mod host_induced_terminal_output_tests {
 
         idle_agent_with_stale_hook(t);
         let now = Instant::now();
-        t.host_induced_until = Some(now - Duration::from_millis(1));
+        commit_resize_at(
+            t,
+            now - crate::host::pane::HOST_INDUCED_QUIET - Duration::from_millis(1),
+        );
         burst_then_observe(t, now);
         assert_eq!(
             t.effective_agent_state().0,
@@ -24105,7 +24251,7 @@ mod host_induced_terminal_output_tests {
 
         // A window still open whenever the state is read, however slow the
         // runner: the claim is about an open window (stint 1484).
-        t.host_induced_until = Some(Instant::now() + Duration::from_secs(3600));
+        commit_resize_at(t, Instant::now() + Duration::from_secs(3600));
         assert_eq!(
             t.effective_agent_state().0,
             AgentState::Working,
@@ -24124,7 +24270,7 @@ mod host_induced_terminal_output_tests {
         let t = terminal(&mut h, term);
         let start = Instant::now();
         t.agent = None;
-        t.host_induced_until = None;
+        end_host_induced_window(t);
         t.last_agent_activity_at = None;
         t.record_pty_event(start);
         assert_eq!(t.observed_output_state(start), AgentState::Working);
@@ -24134,7 +24280,7 @@ mod host_induced_terminal_output_tests {
         let mut now = start;
         for step in 1..=30 {
             now = start + Duration::from_millis(100 * step);
-            t.mark_host_induced(now, "resize");
+            commit_resize_at(t, now);
             t.record_pty_event(now + Duration::from_millis(10));
         }
         let end = now + Duration::from_millis(20);
@@ -24143,6 +24289,126 @@ mod host_induced_terminal_output_tests {
             AgentState::Working,
             "a working agent's output during a resize drag is agent activity"
         );
+    }
+
+    /// The quiet window is derived from the commit: nothing else has to run.
+    #[test]
+    fn a_commit_alone_opens_the_host_induced_window() {
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        let t = terminal(&mut h, term);
+        let at = Instant::now() + Duration::from_secs(5);
+        assert!(!t.host_induced_quiet(at));
+        commit_resize_at(t, at);
+        assert!(t.host_induced_quiet(at));
+        assert!(!t.host_induced_quiet(at + crate::host::pane::HOST_INDUCED_QUIET));
+    }
+
+    /// One held size committed by the settle pass, with the window hidden or
+    /// the terminal covered, keeps an idle agent Idle through its repaint.
+    fn hold_a_new_size_then_settle(h: &mut HostHarness, term: PaneId) -> Instant {
+        let t0 = Instant::now();
+        h.app.resize_clock.set(t0);
+        let backend = &mut h.app.windows[0]
+            .panes
+            .get_mut(&term)
+            .and_then(crate::host::pane::Pane::terminal_incarnation_mut)
+            .expect("live terminal")
+            .backend;
+        let (cols, lines) = backend.committed_grid();
+        backend.observe_layout(
+            egui_term::Size {
+                width: f32::from(cols + 2) * 8.0,
+                height: f32::from(lines) * 16.0,
+            },
+            egui_term::Size {
+                width: 8.0,
+                height: 16.0,
+            },
+            t0,
+        );
+        h.app.resize_clock.advance(egui_term::RESIZE_SETTLE);
+        h.hidden_frame();
+        t0 + egui_term::RESIZE_SETTLE
+    }
+
+    #[test]
+    fn idle_agent_stays_idle_through_a_commit_made_while_hidden() {
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        for _ in 0..4 {
+            frame_at_width(&mut h, 1280.0);
+        }
+        idle_agent_with_stale_hook(terminal(&mut h, term));
+        let commits = h.terminal_backend(term).resize_commits();
+        let committed_at = hold_a_new_size_then_settle(&mut h, term);
+        assert_eq!(h.terminal_backend(term).resize_commits(), commits + 1);
+        let t = terminal(&mut h, term);
+        t.last_agent_activity_at = Some(committed_at - Duration::from_secs(5));
+        t.last_pty_output_at = Some(committed_at - Duration::from_secs(5));
+        burst_then_observe(t, committed_at + Duration::from_millis(30));
+        assert_eq!(t.effective_agent_state().0, AgentState::Idle);
+    }
+
+    #[test]
+    fn idle_agent_stays_idle_through_a_commit_made_while_covered() {
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        for _ in 0..4 {
+            frame_at_width(&mut h, 1280.0);
+        }
+        idle_agent_with_stale_hook(terminal(&mut h, term));
+        h.focus_pane(term);
+        h.app
+            .launch_view_by_id_with_layout("text-editor", Some("overlay".into()), &[], None)
+            .expect("overlay launch");
+        let committed_at = hold_a_new_size_then_settle(&mut h, term);
+        h.app.windows[0].pop_overlay(term).expect("overlay closes");
+        let t = terminal(&mut h, term);
+        assert_eq!(t.backend.last_resize_commit_at(), Some(committed_at));
+        t.last_agent_activity_at = Some(committed_at - Duration::from_secs(5));
+        t.last_pty_output_at = Some(committed_at - Duration::from_secs(5));
+        // The first PTY output after the overlay closes.
+        burst_then_observe(t, committed_at + Duration::from_millis(30));
+        assert_eq!(t.effective_agent_state().0, AgentState::Idle);
+    }
+
+    /// The PTY drain reaches a covered terminal, so its redraw is judged when
+    /// it happens instead of landing as activity after the overlay closes.
+    #[test]
+    fn pty_output_from_a_covered_terminal_is_observed() {
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        for _ in 0..4 {
+            frame_at_width(&mut h, 1280.0);
+        }
+        h.focus_pane(term);
+        h.app
+            .launch_view_by_id_with_layout("text-editor", Some("overlay".into()), &[], None)
+            .expect("overlay launch");
+        let covered = |h: &mut HostHarness| {
+            h.app.windows[0]
+                .panes
+                .get_mut(&term)
+                .and_then(crate::host::pane::Pane::terminal_incarnation_mut)
+                .expect("covered terminal")
+                .last_pty_output_at
+        };
+        h.hidden_frame();
+        let before = covered(&mut h);
+        h.app.windows[0]
+            .panes
+            .get_mut(&term)
+            .and_then(crate::host::pane::Pane::terminal_incarnation_mut)
+            .expect("covered terminal")
+            .backend
+            .process_command(egui_term::BackendCommand::Write(b"echo covered\r".to_vec()));
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        while covered(&mut h) == before {
+            assert!(Instant::now() < deadline, "covered terminal output was not drained");
+            std::thread::sleep(Duration::from_millis(10));
+            h.hidden_frame();
+        }
     }
 
     /// The 1231 property stays: an idle agent's repaint right after a resize
@@ -24155,9 +24421,8 @@ mod host_induced_terminal_output_tests {
         let start = Instant::now();
         t.last_agent_activity_at = Some(start);
         t.last_pty_output_at = Some(start);
-        t.host_induced_until = None;
         let resize = start + Duration::from_secs(5);
-        t.mark_host_induced(resize, "resize");
+        commit_resize_at(t, resize);
         t.record_pty_event(resize + Duration::from_millis(30));
         t.record_pty_event(resize + Duration::from_millis(60));
         assert_eq!(
@@ -24274,7 +24539,7 @@ mod screen_change_activity_tests {
         t.last_agent_activity_at = None;
         t.last_pty_output_at = None;
         t.screen_fingerprint = None;
-        t.host_induced_until = None;
+        end_host_induced_window(t);
     }
 
     fn output_at(t: &mut TerminalPane, at: Instant) {
@@ -24292,7 +24557,7 @@ mod screen_change_activity_tests {
         let pane = quiet_terminal(&mut h, dir.path());
         let t0 = Instant::now();
         fresh(terminal(&mut h, pane));
-        terminal(&mut h, pane).mark_host_induced(t0, "resize");
+        commit_resize_at(terminal(&mut h, pane), t0);
         print_line(&mut h, pane, "banner");
         output_at(terminal(&mut h, pane), t0 + Duration::from_millis(100));
         assert_eq!(

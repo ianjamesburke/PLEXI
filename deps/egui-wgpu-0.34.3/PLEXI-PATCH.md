@@ -22,7 +22,3 @@ the repository toolchain; eframe reuses its existing viewport callback alias.
 upstream egui #8229 (egui-wgpu 0.35): the resizing flag is set before the
 reconfigure, which uses at least two frames of latency (three Metal drawables)
 while resizing. Drop this hunk when upgrading to egui-wgpu 0.35 or later.
-
-`resize_trace` is diagnostic timing for stint 1224 (surface configure, acquire,
-submit, present per resize gesture). It records only while a surface is in
-resize mode and an app drains it. Remove it with the diagnosis.

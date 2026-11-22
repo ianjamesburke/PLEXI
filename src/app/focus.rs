@@ -547,20 +547,6 @@ impl PlexiApp {
             .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)))
     }
 
-    /// Stint 1231: open a host-induced quiet window on every terminal whose
-    /// backend committed a resize (SIGWINCH to its program) this frame. Runs
-    /// after the render pass, which is where terminal views commit resizes.
-    pub(crate) fn observe_terminal_resize_commits(&mut self) {
-        let now = std::time::Instant::now();
-        for window in &mut self.windows {
-            for pane in window.panes.values_mut() {
-                if let Some(terminal) = pane.as_terminal_mut() {
-                    terminal.observe_resize_commits(now);
-                }
-            }
-        }
-    }
-
     pub(crate) fn reconcile_focus_logging(
         &mut self,
         heartbeat_interval: Duration,

@@ -808,7 +808,7 @@ impl PlexiApp {
                     frame_modifiers: ui.input(|i| i.modifiers),
                     pending_pane_clicks: &mut pending_pane_clicks,
                     off_strip_panes: Default::default(),
-                    strip_layout_jump: false,
+                    resize_now: self.resize_clock.now(),
                     strip_layout: None,
                     resized: false,
                     tile_dropped: false,
