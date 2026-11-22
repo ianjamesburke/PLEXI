@@ -347,11 +347,12 @@ impl PlexiApp {
                 &mut env,
                 shell::secret_env(grant.secrets.directory.as_deref(), secrets),
             );
-            // A pane always starts in a directory admission chose: the launch's,
-            // else its context root, else the account home; never the host
+            // A pane always starts in a directory admission chose: the launch's
+            // (which must be enterable, or the spawn fails), else its context
+            // root when that exists, else the account home; never the host
             // process's own cwd (stint 1682).
             let cwd = cwd
-                .or_else(|| context.root.clone())
+                .or_else(|| context.root.clone().filter(|root| root.is_dir()))
                 .unwrap_or_else(|| base.home().to_path_buf());
             (shell_path, env, Some(cwd))
         };

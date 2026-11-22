@@ -3173,7 +3173,14 @@ mod tests {
         let mut default_cwd = spec(&h, "split_h", Some(bare), None);
         default_cwd.cwd = None;
         let launched = launch_observed(&mut h, &default_cwd);
-        assert_eq!(launched.cwd, None, "backend default cwd");
+        // No launch directory: the backend still gets one the host chose
+        // (the context root, else the account home), never its own cwd
+        // (stint 1682).
+        assert!(
+            launched.cwd.as_deref().is_some_and(std::path::Path::is_dir),
+            "host-chosen default cwd: {:?}",
+            launched.cwd
+        );
         assert_eq!(launched.reads, Vec::new(), "no directory, no secret read");
 
         // A socket caller, human-owned pane or agent, gets no secret: only
