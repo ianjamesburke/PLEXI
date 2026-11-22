@@ -2366,18 +2366,31 @@ impl LiveWasmPane {
                 pipe_id,
                 generation,
             } => {
-                let (Some(request), Some(handle)) = (
-                    self.inner.take_pipe_request(&request_id),
-                    self.inner.directed_pipe_handle(generation),
-                ) else {
+                let Some(request) = self.inner.take_pipe_request(&request_id) else {
                     log::warn!(
-                        "wasm input: open of '{pipe_id}' answered as connection {generation}, but request '{request_id}' or its handle is unknown",
+                        "wasm input: open of '{pipe_id}' answered as connection {generation}, but request '{request_id}' is unknown",
                         pipe_id = guest_text::shown(&pipe_id),
                         request_id = guest_text::shown(&request_id)
                     );
                     return;
                 };
-                InputEvent::PipeOpened(PipeOpenedEvent { request, handle })
+                match self.inner.directed_pipe_handle(generation) {
+                    Some(handle) => InputEvent::PipeOpened(PipeOpenedEvent { request, handle }),
+                    // The guest closed the connection's handle before the
+                    // answer arrived (an open of a pipe it already held, then
+                    // a close, in one update). The request still gets its one
+                    // answer.
+                    None => {
+                        log::info!(
+                            "wasm input: open of '{pipe_id}' answered as connection {generation}, whose handle the guest closed; refusing request {request}",
+                            pipe_id = guest_text::shown(&pipe_id)
+                        );
+                        InputEvent::PipeOpenRefused(PipeOpenRefusedEvent {
+                            request,
+                            reason: "closed".to_string(),
+                        })
+                    }
+                }
             }
             crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
                 request_id,
@@ -3206,6 +3219,46 @@ mod tests {
         )
         .expect("load counter");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
+    }
+
+    /// Stint 1681 (review round 3): a guest that opens a connection it
+    /// already holds and closes that handle in the same update still gets
+    /// exactly one answer to the open. The answer names a connection whose
+    /// handle is gone, so it is refused `closed`.
+    #[test]
+    fn an_open_answered_after_its_handle_closed_gets_exactly_one_refusal() {
+        let mut live = LiveWasmPane::new(
+            counter_pane(),
+            "counter",
+            StateSnapshot { entries: vec![] },
+            Vec::new(),
+            PathBuf::from("/tmp/counter.wasm"),
+        );
+        live.inner.register_directed_pipe("p", 7).expect("register");
+        let handle = live.inner.directed_pipe_handle(7).expect("handle");
+        let request = live.inner.app.open_directed_for_test("p", 2).expect("open");
+        live.inner.app.close_pipe_for_test(handle).expect("close");
+        live.inner.queue.clear();
+        let opened = crate::protocol::PlexiEvent::DirectedPipeOpened {
+            request_id: format!("wasm-open-{request}"),
+            pipe_id: "p".to_string(),
+            generation: 7,
+        };
+        live.queue_outbound_event(opened.clone());
+        live.queue_outbound_event(opened);
+        let answers: Vec<_> = live
+            .inner
+            .queue
+            .iter()
+            .filter_map(|event| match event {
+                InputEvent::PipeOpened(opened) => Some((opened.request, "opened".to_string())),
+                InputEvent::PipeOpenRefused(refused) => {
+                    Some((refused.request, refused.reason.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(answers, vec![(request, "closed".to_string())]);
     }
 
     /// Stint 1600: a WASM node activation resolves on a fresh `view()` and
