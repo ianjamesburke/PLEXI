@@ -15923,6 +15923,9 @@ mod terminal_resize_debounce_tests {
             h.hidden_frame();
         });
         assert_unpainted_converged(&mut h, &terminals, &[0, 1, 2], width);
+        // Codex round 5: with the commit done, an idle hidden host stops
+        // waking. This panics if a pass keeps scheduling another.
+        h.run_scheduled_hidden_frames(60);
         assert_final_grids(&mut h, &terminals, width);
     }
 
@@ -24016,7 +24019,7 @@ fn commit_resize_at(t: &mut crate::host::pane::TerminalPane, at: std::time::Inst
         font,
         at,
     );
-    assert!(t.backend.commit_held_resize(at), "a changed grid commits");
+    assert!(t.backend.commit_held_resize(|| at), "a changed grid commits");
 }
 
 /// Close any quiet window a test's start-up resize left open.
@@ -24288,6 +24291,32 @@ mod host_induced_terminal_output_tests {
             t.observed_output_state(end),
             AgentState::Working,
             "a working agent's output during a resize drag is agent activity"
+        );
+    }
+
+    /// Codex round 5: an agent whose boot settled with no activity of its own
+    /// stays Idle through a later resize redraw.
+    #[test]
+    fn agent_settled_without_activity_stays_idle_through_a_resize_redraw() {
+        let mut h = HostHarness::new();
+        let term = h.add_focused_terminal();
+        let t = terminal(&mut h, term);
+        let boot = Instant::now();
+        t.last_agent_activity_at = None;
+        t.last_pty_output_at = None;
+        t.last_screen_change_at = None;
+        commit_resize_at(t, boot);
+        t.record_pty_event(boot);
+        let settled = boot + crate::host::pane::OBSERVED_AGENT_SETTLE + Duration::from_millis(1);
+        assert_eq!(t.observed_output_state(settled), AgentState::Idle);
+        assert_eq!(t.last_agent_activity_at, None, "precondition: no activity");
+
+        commit_resize_at(t, settled);
+        t.record_pty_event(settled + Duration::from_millis(30));
+        assert_eq!(
+            t.observed_output_state(settled + Duration::from_millis(100)),
+            AgentState::Idle,
+            "a resize redraw is not activity for an agent that already settled"
         );
     }
 

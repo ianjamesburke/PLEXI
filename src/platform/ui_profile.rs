@@ -329,7 +329,7 @@ impl ResizeGesture {
 
 /// The clock terminal resizes settle on: the system clock, or a fixed instant
 /// a test sets so settling never depends on how fast the machine runs.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub struct ResizeClock {
     #[cfg(test)]
     fixed: Option<Instant>,

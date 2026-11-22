@@ -1282,12 +1282,21 @@ impl TerminalBackend {
         self.held_resize(now).map(HeldResize::due_in)
     }
 
-    /// Commit the held size: the only path to `SIGWINCH`. Returns whether a
-    /// resize was committed.
-    pub fn commit_held_resize(&mut self, now: Instant) -> bool {
+    /// Commit the held size: the only path to `SIGWINCH`. `clock` is read
+    /// once this terminal's lock is held, so the quiet window its program's
+    /// redraw falls in starts when the resize actually reaches it, however
+    /// long earlier reflows or the lock took. Returns whether a resize was
+    /// committed.
+    pub fn commit_held_resize(
+        &mut self,
+        clock: impl FnOnce() -> Instant,
+    ) -> bool {
         let Some(pending) = self.pending_resize.take() else {
             return false;
         };
+        let term = self.term.clone();
+        let mut term = term.lock();
+        let now = clock();
         log::info!(
             "terminal {} resize commit: {}x{} cells, held {}ms",
             self.id,
@@ -1295,8 +1304,6 @@ impl TerminalBackend {
             pending.geometry.lines,
             now.saturating_duration_since(pending.held_since).as_millis(),
         );
-        let term = self.term.clone();
-        let mut term = term.lock();
         self.commit_resize(&mut term, pending.layout_size, pending.geometry, now);
         true
     }
@@ -1863,6 +1870,35 @@ mod held_resize_tests {
         };
         assert_eq!(after_egui(Duration::ZERO), Duration::from_secs_f32(frame));
         assert_eq!(after_egui(RESIZE_SETTLE), RESIZE_SETTLE);
+    }
+
+    #[test]
+    fn the_commit_stamp_is_taken_with_the_terminal_lock_held() {
+        let (tx, _rx) = mpsc::channel();
+        let settings = crate::BackendSettings {
+            shell: "/bin/sh".to_string(),
+            ..Default::default()
+        };
+        let mut backend =
+            TerminalBackend::new(1, egui::Context::default(), tx, settings)
+                .expect("spawn backend");
+        let now = Instant::now();
+        let font = Size {
+            width: 8.0,
+            height: 16.0,
+        };
+        let layout = Size {
+            width: 640.0,
+            height: 320.0,
+        };
+        backend.observe_layout(layout, font, now);
+        let term = backend.term.clone();
+        let mut lock_held = false;
+        assert!(backend.commit_held_resize(|| {
+            lock_held = term.try_lock_unfair().is_none();
+            now
+        }));
+        assert!(lock_held, "the stamp was read before the lock was acquired");
     }
 
     #[test]

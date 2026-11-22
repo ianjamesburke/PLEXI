@@ -1554,7 +1554,15 @@ impl TerminalPane {
     /// is discounted.
     pub(crate) fn record_pty_event(&mut self, now: std::time::Instant) {
         self.last_pty_output_at = Some(now);
-        self.last_screen_change_at = Some(now);
+        // An agent whose boot settled with no activity of its own is judged
+        // on the last screen change, so a resize redraw must not move it.
+        let settled_without_activity = self.last_agent_activity_at.is_none()
+            && self
+                .last_screen_change_at
+                .is_some_and(|at| now.saturating_duration_since(at) >= OBSERVED_AGENT_SETTLE);
+        if !(settled_without_activity && self.host_induced_quiet(now)) {
+            self.last_screen_change_at = Some(now);
+        }
         let already_active = self
             .last_agent_activity_at
             .is_some_and(|at| now.saturating_duration_since(at) < OBSERVED_AGENT_SETTLE);

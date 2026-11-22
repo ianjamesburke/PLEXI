@@ -5208,11 +5208,12 @@ impl PlexiApp {
         let mut commits = 0;
         let mut soonest: Option<std::time::Duration> = None;
         let mut oldest: Option<(std::time::Instant, &mut crate::host::pane::TerminalPane)> = None;
+        let clock = self.resize_clock;
         for terminal in self.live_terminals_mut() {
             match terminal.backend.held_resize(now) {
                 None => {}
                 Some(HeldResize::Settled) => {
-                    commits += u32::from(terminal.backend.commit_held_resize(now));
+                    commits += u32::from(terminal.backend.commit_held_resize(|| clock.now()));
                 }
                 Some(HeldResize::Waiting(delay)) => {
                     soonest = Some(soonest.map_or(delay, |s| s.min(delay)));
@@ -5229,7 +5230,7 @@ impl PlexiApp {
             }
         }
         if let Some((_, terminal)) = oldest {
-            commits += u32::from(terminal.backend.commit_held_resize(now));
+            commits += u32::from(terminal.backend.commit_held_resize(|| clock.now()));
         }
         self.resize_gesture.note_pty_commits(commits);
         if let Some(delay) = soonest {
