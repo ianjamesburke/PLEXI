@@ -430,6 +430,7 @@ Same-user native processes are not isolated from each other. A process running a
 | `get` | Print a stored secret's value to stdout |
 | `list` | Show stored secrets |
 | `delete` | Delete a stored secret |
+| `copy` | Copy a global or folder secret to a new name, keeping the original |
 | `rm` | Remove a folder-scoped secret |
 | `grant` | Ask for an allow on a folder secret. This command does not record one |
 | `read` | Read a folder secret as an agent or plugin. Without a grant this prints `permission_required` and writes an audit row that names the secret but not its value |
@@ -483,6 +484,19 @@ Use --global to delete a globally-stored secret (one stored with `secret set --g
 |---|---|---|---|
 | `<friendly_name>` | string | yes |  |
 | `--global` | flag | no | Delete from the global store instead of the project-scoped store |
+
+### `plexi secret copy`
+
+Copy a global or folder secret to a new name, keeping the original.
+
+Moves a secret off a name Plexi reserves for pane environments (`secret list` marks those as quarantined). The new name must be free: an existing secret is never overwritten. The copy is read back before success is reported; remove the old record yourself once satisfied. Example: plexi secret copy LC_PAPER PAPER_TOKEN --global
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<from>` | string | yes | The existing secret's name |
+| `<to>` | string | yes | The new environment variable name |
+| `--global` | flag | no | Copy a globally-stored secret |
+| `--folder` | string | no | Copy a secret bound to this directory |
 
 ### `plexi secret rm`
 
