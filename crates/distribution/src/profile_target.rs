@@ -122,10 +122,16 @@ impl ProfileTarget {
 
     /// The profile an installer acts on for `channel`: under `root` when one
     /// was given, else under the account home.
+    /// Without a root, an inherited private home is refused like the CLI
+    /// refuses it ([`refuse_private_home`]).
     pub fn for_channel(root: Option<&ProfileRoot>, channel: &str) -> Result<Self, String> {
         let (root, root_source) = match root {
             Some(root) => (root.path().to_path_buf(), RootSource::Explicit),
-            None => (account_home()?, RootSource::Account),
+            None => {
+                let home = account_home()?;
+                refuse_private_home(std::env::var_os(HOME_VAR).as_deref(), &home)?;
+                (home, RootSource::Account)
+            }
         };
         Ok(Self::new(
             root,

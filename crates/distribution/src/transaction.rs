@@ -812,6 +812,11 @@ fn install_checked(
     expected_build: Option<&str>,
 ) -> Result<Receipt> {
     package.validate()?;
+    // The profile that records the activated build, resolved before anything
+    // changes so a refused root (a private HOME without --profile-root)
+    // installs nothing.
+    let profile = ProfileTarget::for_channel(options.profile_root.as_ref(), &options.channel)
+        .map_err(Error::Invalid)?;
     if package.manifest.channel != options.channel
         || package.manifest.platform != release::platform()?
     {
@@ -867,7 +872,6 @@ fn install_checked(
             Some(r.active.clone())
         }
     });
-    let profile_root = options.profile_root;
     let mut receipt = Receipt {
         schema: 1,
         channel: options.channel,
@@ -980,14 +984,7 @@ fn install_checked(
         root.display()
     );
     let tag = installed_tag_text(&receipt.active.tag, &receipt.active.build_id);
-    match ProfileTarget::for_channel(profile_root.as_ref(), &receipt.channel) {
-        Ok(profile) => write_installed_tag(&profile.dir(), &receipt.channel, &tag)?,
-        Err(error) => log::error!(
-            "distribution: installed channel={} build={} but its profile is unresolved ({error}); installed_tag was not written",
-            receipt.channel,
-            receipt.active.build_id
-        ),
-    }
+    write_installed_tag(&profile.dir(), &receipt.channel, &tag)?;
     Ok(receipt)
 }
 
