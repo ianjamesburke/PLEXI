@@ -133,14 +133,15 @@ pub(super) fn prepare(
     // from the process hosting the terminal.
     command.env_clear();
     command.envs(&settings.env);
-    let working_directory = settings.working_directory;
+    // A directory that cannot be entered fails the spawn; the shell never
+    // starts in the hosting process's cwd instead.
+    if let Some(directory) = &settings.working_directory {
+        command.current_dir(directory);
+    }
     unsafe {
         command.pre_exec(move || {
             if libc::setsid() == -1 {
                 return Err(io::Error::other("Failed to set session id"));
-            }
-            if let Some(directory) = working_directory.as_ref() {
-                let _ = std::env::set_current_dir(directory);
             }
             if libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) < 0 {
                 return Err(io::Error::last_os_error());

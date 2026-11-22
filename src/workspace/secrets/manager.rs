@@ -76,81 +76,43 @@ pub struct SecretEntry {
     pub quarantined: Option<String>,
 }
 
-/// How to recover a record whose name the pane environment reserves, or
-/// `None` for an exportable name.
-pub fn quarantine_remedy(name: &str, target: &SecretTarget) -> Option<String> {
-    if !super::is_reserved_env_name(name) {
+/// How to recover a record a pane would export under a reserved name, or
+/// `None` when every name it exports under is free. `exported_as` are the
+/// canonical names the record is exported under: for a workspace record the
+/// names `secrets.toml` routes to it ([`super::WorkspaceSecrets::terminal_export_names`]),
+/// for a global or folder record its own name. The record is withheld from
+/// panes, never deleted.
+pub fn quarantine_remedy(
+    name: &str,
+    exported_as: &[String],
+    target: &SecretTarget,
+) -> Option<String> {
+    let reserved: Vec<&str> = exported_as
+        .iter()
+        .map(String::as_str)
+        .filter(|canonical| super::is_reserved_env_name(canonical))
+        .collect();
+    if reserved.is_empty() {
         return None;
     }
     let cli = crate::cli::setup::cli_name();
+    let names = reserved.join(", ");
+    // A create-only copy command for global and folder records is stint
+    // 1692; until it lands, the owner re-enters the value under a free name.
     Some(match target {
         SecretTarget::Workspace { .. } => format!(
-            "'{name}' is reserved for the pane environment and is not exported. Route a free name to it: add NEW = \"{name}\" under [default] in {}/secrets.toml, then turn terminal injection on for NEW and off for {name}.",
+            "exported as {names}, which is reserved for the pane environment, so panes never receive it. Route a free name to this record: add NEW = \"{name}\" under [default] in {}/secrets.toml, then turn terminal injection on for NEW and off for {names}.",
             crate::config::workspace_channel_dir()
         ),
         SecretTarget::Global => format!(
-            "'{name}' is reserved for the pane environment and is not exported. Copy it to a free name with `{cli} secret copy {name} NEW --global`, then delete the old record with `{cli} secret delete {name} --global`."
+            "'{name}' is reserved for the pane environment, so panes never receive it. Re-enter its value under a free name with `{cli} secret set NEW --global`, then delete this record with `{cli} secret delete {name} --global`."
         ),
         SecretTarget::Folder(folder) => format!(
-            "'{name}' is reserved for the pane environment and is not exported. Copy it to a free name with `{cli} secret copy {name} NEW --folder {}`, then remove the old record with `{cli} secret rm {name} --folder {}`.",
+            "'{name}' is reserved for the pane environment, so panes never receive it. Re-enter its value under a free name with `{cli} secret set NEW --folder {}`, then remove this record with `{cli} secret rm {name} --folder {}`.",
             folder.display(),
             folder.display()
         ),
     })
-}
-
-/// Copy a global or folder record to a free exportable name, leaving the
-/// original in place (stint 1682). The write is create-only, so an existing
-/// `to` is never overwritten, and the copy is verified by read-back. Any
-/// failure leaves `from` untouched; the owner removes it once satisfied.
-pub fn copy_secret(
-    store: &dyn SecretStore,
-    target: &SecretTarget,
-    from: &str,
-    to: &str,
-) -> Result<(), String> {
-    if let SecretTarget::Workspace { .. } = target {
-        return Err(format!(
-            "A workspace secret moves to a new name by route, not by copy: add {to} = \"{from}\" under [default] in {}/secrets.toml.",
-            crate::config::workspace_channel_dir()
-        ));
-    }
-    super::SecretEnvName::parse(to)?;
-    let from_account = target.account(from)?;
-    let to_account = target.account(to)?;
-    let value = store
-        .get_interactive(&from_account)
-        .map_err(|error| format!("could not read '{from}' in {}: {error}", target.label()))?
-        .ok_or_else(|| format!("no secret named '{from}' in {}", target.label()))?;
-    store.add_new(&to_account, &value).map_err(|error| {
-        log::info!(
-            "secrets_manager: copy from={from} to={to} scope={} refused: {error}",
-            target.label()
-        );
-        format!(
-            "could not create '{to}' in {} ({error}); '{from}' is unchanged",
-            target.label()
-        )
-    })?;
-    if store
-        .get_interactive(&to_account)
-        .ok()
-        .flatten()
-        .is_none_or(|copied| copied.as_str() != value.as_str())
-    {
-        log::warn!(
-            "secrets_manager: copy from={from} to={to} scope={} did not read back",
-            target.label()
-        );
-        return Err(format!(
-            "'{to}' did not read back the copied value; '{from}' is unchanged. Check '{to}' before removing anything."
-        ));
-    }
-    log::info!(
-        "secrets_manager: copied from={from} to={to} scope={}",
-        target.label()
-    );
-    Ok(())
 }
 
 pub fn workspace_target(cwd: &Path) -> Result<Option<SecretTarget>, String> {
@@ -269,7 +231,7 @@ fn inventory_for_scope(
                 )
             }
         };
-    let mut add = |name: String, target: SecretTarget| {
+    let mut add = |name: String, exported_as: Vec<String>, target: SecretTarget| {
         let resource = target.resource(&name);
         let grant = permissions
             .iter()
@@ -279,7 +241,7 @@ fn inventory_for_scope(
             })
             .map(|row| format!("{}: {} ({})", row.actor_id, row.kind, row.duration))
             .collect();
-        let quarantined = quarantine_remedy(&name, &target);
+        let quarantined = quarantine_remedy(&name, &exported_as, &target);
         entries.push(SecretEntry {
             name,
             scope: target.label(),
@@ -290,16 +252,24 @@ fn inventory_for_scope(
         });
     };
     for target in targets {
-        let prefix = match &target {
-            SecretTarget::Global => super::keychain_user_name(""),
-            SecretTarget::Workspace { id, .. } if !super::workspace_id_is_reserved(id) => {
-                super::keychain_workspace_name(id, "")
-            }
+        // A workspace record is exported under the canonical names its
+        // `secrets.toml` routes to it, so quarantine is decided by those, not
+        // by the store name (stint 1682).
+        let (prefix, router) = match &target {
+            SecretTarget::Global => (super::keychain_user_name(""), None),
+            SecretTarget::Workspace { id, root } if !super::workspace_id_is_reserved(id) => (
+                super::keychain_workspace_name(id, ""),
+                super::WorkspaceSecrets::load(root)?,
+            ),
             _ => continue,
         };
         for account in super::system_store().list_with_prefix(&prefix) {
             if let Some(name) = account.strip_prefix(&prefix) {
-                add(name.into(), target.clone());
+                let exported_as = match &router {
+                    Some(router) => router.terminal_export_names(name),
+                    None => vec![name.to_string()],
+                };
+                add(name.into(), exported_as, target.clone());
             }
         }
     }
@@ -312,7 +282,8 @@ fn inventory_for_scope(
             let folder = crate::platform::path::canonical_or_self(&meta.folder);
             if cwd.starts_with(&folder) && pane_root.is_none_or(|root| folder.starts_with(root)) {
                 if enabled {
-                    add(meta.name, SecretTarget::Folder(meta.folder));
+                    let exported_as = vec![meta.name.clone()];
+                    add(meta.name, exported_as, SecretTarget::Folder(meta.folder));
                 } else {
                     hidden += 1;
                 }
@@ -469,8 +440,14 @@ fn parse_env(text: &str) -> Result<Vec<(String, zeroize::Zeroizing<String>)>, St
         let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
         let (name, raw) = line.split_once('=').ok_or_else(invalid)?;
         let name = name.trim();
-        if !super::folder::valid_env_name(name) {
-            return Err(invalid());
+        // The whole file is checked against the export-name rule before the
+        // first write, so a reserved name late in it cannot leave earlier
+        // credentials already replaced (stint 1682).
+        if let Err(error) = super::SecretEnvName::parse(name) {
+            return Err(format!(
+                "Line {}: {error}. Nothing was imported.",
+                index + 1
+            ));
         }
         let raw = raw.trim();
         let value = if let Some(quote) = raw.chars().next().filter(|c| *c == '\'' || *c == '"') {
@@ -503,75 +480,6 @@ mod tests {
     use super::*;
     use crate::workspace::secrets::{InMemoryKeychain, NonDestructiveStore};
 
-    /// Stint 1682: a global record under a reserved name moves to a free
-    /// name by a create-only, read-back-verified copy that keeps the
-    /// original; a taken or reserved target, a failed write and a failed
-    /// read-back each leave the original untouched.
-    #[test]
-    fn copy_moves_a_quarantined_record_without_touching_the_original() {
-        let store = InMemoryKeychain::new();
-        let target = SecretTarget::Global;
-        store.set("plexi:user:LC_PAPER", "paper").unwrap();
-        // Reserved or malformed target names are refused before any read.
-        for to in ["HOME", "PLEXI_X", "bad-name"] {
-            assert!(
-                copy_secret(&store, &target, "LC_PAPER", to).is_err(),
-                "{to}"
-            );
-        }
-        copy_secret(&store, &target, "LC_PAPER", "PAPER_TOKEN").unwrap();
-        assert_eq!(
-            store.get("plexi:user:PAPER_TOKEN").unwrap().as_str(),
-            "paper"
-        );
-        assert_eq!(store.get("plexi:user:LC_PAPER").unwrap().as_str(), "paper");
-        // A taken name is never overwritten.
-        store.set("plexi:user:TAKEN_1682", "mine").unwrap();
-        assert!(copy_secret(&store, &target, "LC_PAPER", "TAKEN_1682").is_err());
-        assert_eq!(store.get("plexi:user:TAKEN_1682").unwrap().as_str(), "mine");
-        // A missing source copies nothing.
-        assert!(copy_secret(&store, &target, "LC_TIME", "TIME_TOKEN").is_err());
-        assert!(store.get("plexi:user:TIME_TOKEN").is_none());
-        // An interrupted copy (the write landed, the read-back did not)
-        // reports failure and keeps the original.
-        let flaky = InMemoryKeychain::with_unreadable_account("plexi:user:FLAKY_1682");
-        flaky.set("plexi:user:LC_PAPER", "paper").unwrap();
-        let error = copy_secret(&flaky, &target, "LC_PAPER", "FLAKY_1682").unwrap_err();
-        assert!(error.contains("did not read back"), "{error}");
-        assert_eq!(flaky.get("plexi:user:LC_PAPER").unwrap().as_str(), "paper");
-        // A workspace record moves by route instead.
-        let workspace = SecretTarget::Workspace {
-            id: "ws".into(),
-            root: std::path::PathBuf::from("/tmp"),
-        };
-        assert!(copy_secret(&store, &workspace, "LC_PAPER", "PAPER_TOKEN").is_err());
-    }
-
-    /// Stint 1682: a folder record copied to a free name is what an eligible
-    /// pane in that folder then receives; the quarantined original is not.
-    #[test]
-    fn a_copied_folder_record_is_exported_in_place_of_the_quarantined_one() {
-        let profile = tempfile::tempdir().unwrap();
-        let _profile = crate::config::set_test_profile_dir(profile.path().into());
-        let _enabled =
-            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
-        let folder = tempfile::tempdir().unwrap();
-        let canon = super::super::canonical_folder(folder.path()).unwrap();
-        let store = InMemoryKeychain::new();
-        store
-            .set(
-                &super::super::folder::account_name(&canon, "LC_PAPER"),
-                "paper",
-            )
-            .unwrap();
-        let target = SecretTarget::Folder(canon.clone());
-        copy_secret(&store, &target, "LC_PAPER", "PAPER_TOKEN").unwrap();
-        let env = super::super::env_for_cwd(&canon, &store).unwrap();
-        let names: Vec<&str> = env.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, ["PAPER_TOKEN"]);
-        assert_eq!(super::super::list_folder_secrets(&store).len(), 2);
-    }
-
     /// Stint 1682: the inventory names a quarantined record's scope and
     /// remedy from its name alone, reading no value; deletion under the
     /// original name still works and creation under it does not.
@@ -601,7 +509,8 @@ mod tests {
         };
         let remedy = entry(legacy).quarantined.clone().expect("quarantined");
         assert!(
-            remedy.contains("secret copy LC_MEASUREMENT NEW --global"),
+            remedy.contains("secret set NEW --global")
+                && remedy.contains("secret delete LC_MEASUREMENT --global"),
             "{remedy}"
         );
         assert!(entry(&ok).quarantined.is_none());
@@ -625,6 +534,65 @@ mod tests {
         store
             .delete(&super::super::keychain_user_name(&ok))
             .unwrap();
+    }
+
+    /// Stint 1682 (round 3 item 6): a workspace record is quarantined by the
+    /// canonical names `secrets.toml` exports it under, not by its store
+    /// name. A free name routed to a reserved store name is exported and not
+    /// quarantined; a reserved canonical routed to a free store name is.
+    #[test]
+    fn workspace_inventory_classifies_by_the_exported_canonical_name() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().into());
+        let root = tempfile::tempdir().unwrap();
+        let id = format!("ws-1682i-{}", uuid::Uuid::new_v4().simple());
+        let channel_dir = root.path().join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&channel_dir).unwrap();
+        std::fs::write(
+            channel_dir.join("workspace.toml"),
+            format!("id = \"{id}\"\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            channel_dir.join("secrets.toml"),
+            "fallback = false\n\n[default]\nPAPER_TOKEN = \"LC_PAPER\"\nLC_TIME = \"clock\"\n",
+        )
+        .unwrap();
+        let store = super::super::system_store();
+        let records = ["LC_PAPER", "clock", "LC_NAME", "FREE_1682"];
+        for record in records {
+            store
+                .set(&super::super::keychain_workspace_name(&id, record), "v")
+                .unwrap();
+        }
+        super::super::store::take_test_value_reads();
+        let report =
+            inventory_for_context(&crate::platform::path::canonical_or_self(root.path())).unwrap();
+        assert_eq!(super::super::store::take_test_value_reads(), 0);
+        let quarantined = |name: &str| {
+            report
+                .entries
+                .iter()
+                .find(|entry| {
+                    entry.name == name && matches!(entry.target, SecretTarget::Workspace { .. })
+                })
+                .unwrap_or_else(|| panic!("{name} listed"))
+                .quarantined
+                .clone()
+        };
+        // Exported as PAPER_TOKEN: free.
+        assert_eq!(quarantined("LC_PAPER"), None);
+        // Exported as LC_TIME: reserved, though the store name is free.
+        let remedy = quarantined("clock").expect("clock is exported as LC_TIME");
+        assert!(remedy.contains("exported as LC_TIME"), "{remedy}");
+        // No route: exported under its own reserved name.
+        assert!(quarantined("LC_NAME").is_some());
+        assert_eq!(quarantined("FREE_1682"), None);
+        for record in records {
+            store
+                .delete(&super::super::keychain_workspace_name(&id, record))
+                .unwrap();
+        }
     }
 
     #[test]
@@ -793,6 +761,26 @@ mod tests {
         )
         .is_err());
         assert!(store.list_with_prefix("plexi:").is_empty());
+    }
+
+    /// Stint 1682 (round 3 item 7): a reserved name anywhere in a `.env`
+    /// refuses the whole import before the first write, so an earlier
+    /// credential in the file is not already rotated.
+    #[test]
+    fn a_reserved_name_late_in_an_import_rotates_nothing() {
+        let profile = tempfile::tempdir().unwrap();
+        let store = InMemoryKeychain::new();
+        let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
+        store.set("plexi:user:GOOD_1682", "old").unwrap();
+        let fixture = profile.path().join("late-reserved.env");
+        std::fs::write(&fixture, "GOOD_1682=new\nLC_PAPER=paper\n").unwrap();
+        let error = import_env(&store, &monitor, &SecretTarget::Global, &fixture).unwrap_err();
+        assert!(
+            error.contains("Line 2") && error.contains("reserved"),
+            "{error}"
+        );
+        assert_eq!(store.get("plexi:user:GOOD_1682").unwrap().as_str(), "old");
+        assert!(store.get("plexi:user:LC_PAPER").is_none());
     }
 }
 

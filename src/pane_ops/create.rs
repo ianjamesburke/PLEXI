@@ -2503,7 +2503,9 @@ impl PlexiApp {
         let cwd = self
             .context_root_for(context_id)
             .filter(|root| root != &PathBuf::from("/") && root.is_dir())
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+            .unwrap_or_else(|| {
+                crate::host::account::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+            });
         log::info!(
             "file_browser: launch caller={caller:?} context={context_id} cwd={} source=fallback",
             cwd.display()
@@ -2923,7 +2925,9 @@ impl PlexiApp {
         let cwd_explicit = cwd_override.is_some();
         let cwd = cwd_override
             .or_else(|| self.context_root_for(context_id))
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+            .unwrap_or_else(|| {
+                crate::host::account::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+            });
         log::info!(
             "open_view_by_id_with_layout: id={id} cwd={cwd:?} cwd_source={} context_root={:?}",
             if cwd_explicit { "explicit" } else { "resolved" },
@@ -3324,7 +3328,9 @@ impl PlexiApp {
             let ctx = &self.windows[self.active_window];
             ctx.focused_pane
                 .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
-                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+                .unwrap_or_else(|| {
+                    crate::host::account::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+                })
         };
 
         let app = Box::new(crate::app::secrets_view::SecretsView::new(cwd.clone()));
@@ -3415,7 +3421,9 @@ impl PlexiApp {
         let workspace_root = self
             .context_root_for(caller_context_id)
             .or_else(crate::config::active_workspace_root)
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+            .unwrap_or_else(|| {
+                crate::host::account::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+            });
         log::info!(
             "assistant: opening pane for workspace {} in context {caller_context_id}",
             workspace_root.display()
@@ -3490,7 +3498,9 @@ impl PlexiApp {
         let workspace_root = self
             .context_root_for(caller_context_id)
             .or_else(crate::config::active_workspace_root)
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+            .unwrap_or_else(|| {
+                crate::host::account::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+            });
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
                 self.config.ai.clone(),
@@ -3568,7 +3578,9 @@ impl PlexiApp {
         let cwd = self.windows[active]
             .focused_pane
             .and_then(|tile_id| self.windows[active].get_focused_pane_cwd(tile_id))
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+            .unwrap_or_else(|| {
+                crate::host::account::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+            });
         let ctx = crate::app::QuickNoteCtx {
             cwd,
             workspace_root: crate::config::active_workspace_root(),
@@ -3628,7 +3640,9 @@ impl PlexiApp {
         let cwd = self.windows[active]
             .focused_pane
             .and_then(|tile_id| self.windows[active].get_focused_pane_cwd(tile_id))
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+            .unwrap_or_else(|| {
+                crate::host::account::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+            });
         let workspace_root = crate::config::active_workspace_root();
         self.quick_note_text = String::new();
         self.quick_note_attachments.clear();

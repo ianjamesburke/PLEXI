@@ -51,7 +51,7 @@ pub(super) fn ensure_context_state_ignore(root: &std::path::Path) {
 
 fn auto_init_workspace(root: &std::path::Path) {
     // Guard: never init at home dir, filesystem root, or inside a Plexi profile dir.
-    let home = dirs::home_dir();
+    let home = crate::host::account::home_dir();
     let root_str = root.to_string_lossy();
     let is_home_or_root =
         root == std::path::Path::new("/") || home.as_ref().map(|h| root == *h).unwrap_or(false);
@@ -787,7 +787,7 @@ impl PlexiApp {
     /// Create a new standalone empty context at the home directory.
     fn new_context_empty(&mut self, source: crate::broker::pane_authority::GrantSource) {
         let total_start = std::time::Instant::now();
-        let cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let cwd = crate::host::account::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         log::info!("new_context_empty: cwd={}", cwd.display());
 
         let id_start = std::time::Instant::now();
@@ -1023,7 +1023,7 @@ impl PlexiApp {
     /// root, or home in place of `/`. Decided by the caller as admission;
     /// [`Self::create_page_at`] takes the launch's directory as given.
     pub(crate) fn default_page_cwd(&self) -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let home = crate::host::account::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         self.resolve_new_pane_cwd(None)
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home)

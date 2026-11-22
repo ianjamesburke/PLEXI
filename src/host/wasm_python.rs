@@ -6872,7 +6872,7 @@ pub fn resolve_default_cpython_bundle() -> Result<PathBuf, WasmPythonError> {
 }
 
 fn shared_wasm_bundle_dir() -> PathBuf {
-    dirs::home_dir()
+    crate::host::account::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".plexi/wasm-bundles")
 }

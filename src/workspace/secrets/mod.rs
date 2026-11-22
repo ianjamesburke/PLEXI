@@ -67,14 +67,13 @@ pub use store::SecretError;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 pub use reconcile::reconcile_index_with_keychain;
 
+pub use env_name::SecretEnvName;
+pub(crate) use env_name::{is_env_syntax, is_reserved_env_name};
 pub use folder::{
     canonical_folder, deliver_folder_secret_choice, env_for_cwd, folder_secret_sheet_pending,
-    list_folder_secrets, read_folder_secret, read_through_host_gate,
-    remove_folder_secret, set_folder_secret, take_folder_secret_sheet, ReadResult, SecretActor,
-    SECRET_READ_TOOL,
+    list_folder_secrets, read_folder_secret, read_through_host_gate, remove_folder_secret,
+    set_folder_secret, take_folder_secret_sheet, ReadResult, SecretActor, SECRET_READ_TOOL,
 };
-pub(crate) use env_name::{is_env_syntax, is_reserved_env_name};
-pub use env_name::SecretEnvName;
 pub use folder_store::backend_label;
 #[cfg(test)]
 pub use pane_read::read_pane_secret;
@@ -187,13 +186,24 @@ impl NonDestructiveStore for LinuxUserStore {
         store::migrate_linux_file_store(folder_store::platform_folder_store());
         folder_store::platform_folder_store().delete_if_value(account, expected)
     }
+    // Listing and scanning name accounts without migrating the legacy file,
+    // which would load every value, quarantined ones included (stint 1682).
     fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
-        store::migrate_linux_file_store(folder_store::platform_folder_store());
-        folder_store::platform_folder_store().list_with_prefix(prefix)
+        let mut accounts = folder_store::platform_folder_store().list_with_prefix(prefix);
+        match store::legacy_linux_account_names() {
+            Ok(legacy) => accounts.extend(legacy.into_iter().filter(|a| a.starts_with(prefix))),
+            Err(error) => log::error!("workspace_secrets: legacy Linux listing failed: {error}"),
+        }
+        accounts.sort();
+        accounts.dedup();
+        accounts
     }
     fn scan_accounts(&self) -> Result<Vec<String>, store::SecretError> {
-        store::migrate_linux_file_store(folder_store::platform_folder_store());
-        folder_store::platform_folder_store().scan_accounts()
+        let mut accounts = folder_store::platform_folder_store().scan_accounts()?;
+        accounts.extend(store::legacy_linux_account_names()?);
+        accounts.sort();
+        accounts.dedup();
+        Ok(accounts)
     }
 }
 

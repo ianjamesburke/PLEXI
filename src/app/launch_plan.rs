@@ -535,7 +535,7 @@ impl PlexiApp {
             self.pane_context_env_for_context(self.windows[win].context_id)
                 .root
         };
-        let home = || dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let home = || crate::host::account::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let (destination, default_cwd) =
             if let Some(ctx_name) = spec.context_name.as_deref().filter(|c| !c.is_empty()) {
                 // Named-context targeting (stint 0574): a hard target that never
@@ -3053,7 +3053,7 @@ mod tests {
     fn launch_plan_directory_and_secrets_follow_admission_through_every_placement() {
         let _features =
             crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
-        let home = dirs::home_dir().expect("home");
+        let home = crate::host::account::home_dir().expect("home");
         let sentinel = "HOME_ONLY_SENTINEL_1632";
         crate::workspace::secrets::set_folder_secret(
             crate::workspace::secrets::folder_store(),

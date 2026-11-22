@@ -446,6 +446,36 @@ impl FileStore {
         })
     }
 
+    /// The account names in the file, its values parsed and dropped unread:
+    /// listing and scanning never hold a secret value (stint 1682). Same
+    /// error contract as [`Self::load`].
+    fn account_names() -> Result<Vec<String>, SecretError> {
+        let path = Self::path();
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(raw) => zeroize::Zeroizing::new(raw),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                log::error!(
+                    "workspace_secrets::FileStore: read {} failed: {e}",
+                    path.display()
+                );
+                return Err(SecretError::Backend(format!(
+                    "read {} failed: {e}",
+                    path.display()
+                )));
+            }
+        };
+        serde_json::from_str::<std::collections::BTreeMap<String, serde::de::IgnoredAny>>(&raw)
+            .map(|names| names.into_keys().collect())
+            .map_err(|e| {
+                log::error!(
+                    "workspace_secrets::FileStore: {} is not valid JSON ({e})",
+                    path.display()
+                );
+                SecretError::Backend(format!("{} is not valid JSON: {e}", path.display()))
+            })
+    }
+
     fn save(map: &std::collections::BTreeMap<String, String>) -> Result<(), SecretError> {
         use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -521,9 +551,9 @@ impl NonDestructiveStore for FileStore {
 
     fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
         let _guard = Self::lock();
-        Self::load()
+        Self::account_names()
             .unwrap_or_default()
-            .into_keys()
+            .into_iter()
             .filter(|a| a.starts_with(prefix))
             .collect()
     }
@@ -532,7 +562,7 @@ impl NonDestructiveStore for FileStore {
         // The file IS the backend, so there is no index/backend skew to
         // reconcile here — the scan and the listing read the same bytes.
         let _guard = Self::lock();
-        let accounts: Vec<String> = Self::load()?.into_keys().collect();
+        let accounts = Self::account_names()?;
         log::info!(
             "workspace_secrets::scan: found {} secret(s) in the file store",
             accounts.len()
@@ -559,6 +589,16 @@ impl SecretStore for FileStore {
         Self::save(&map)?;
         Ok(DeleteOutcome::Deleted)
     }
+}
+
+/// The account names still in the legacy plaintext file, read without
+/// migrating it or holding any value: a listing or scan reports them beside
+/// the protected backend's, and only a value read or write migrates
+/// (stint 1682).
+#[cfg(all(target_os = "linux", not(test)))]
+pub(super) fn legacy_linux_account_names() -> Result<Vec<String>, SecretError> {
+    let _guard = FileStore::lock();
+    FileStore::account_names()
 }
 
 /// Copy a legacy plaintext file into the selected protected backend.  Keep the

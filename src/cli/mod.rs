@@ -2185,7 +2185,7 @@ pub use run::{
 pub use run::{run_command_for_root, run_command_for_root_from_pane};
 pub use validate::validate_cli;
 pub use workspace::{
-    folder_secret_exec, folder_secret_grant, folder_secret_read, folder_secret_rm, secret_copy,
+    folder_secret_exec, folder_secret_grant, folder_secret_read, folder_secret_rm,
     folder_secret_set, workspace_clean_cli, workspace_init, workspace_secret_delete,
     workspace_secret_get, workspace_secret_list, workspace_secret_set,
 };

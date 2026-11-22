@@ -5095,7 +5095,7 @@ fn nested_host_no_secret_panes_get_no_inherited_value_at_first_exec() {
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\n/usr/bin/env > '{target}'-\"$WINDOWID\".tmp && /bin/mv '{target}'-\"$WINDOWID\".tmp '{target}'-\"$WINDOWID\"\n{then}\n",
+                "#!/bin/sh\n/usr/bin/env > '{target}'-\"$WINDOWID\".tmp && echo \"FIXTURE_CWD=$(/bin/pwd -P)\" >> '{target}'-\"$WINDOWID\".tmp && /bin/mv '{target}'-\"$WINDOWID\".tmp '{target}'-\"$WINDOWID\"\n{then}\n",
                 target = target.display()
             ),
         )
@@ -5139,7 +5139,7 @@ fn nested_host_no_secret_panes_get_no_inherited_value_at_first_exec() {
         let account = crate::host::account::Account::current().expect("account");
         crate::config::install_host_profile(crate::config::HostProfile::resolve(
             Some(B_PROFILE),
-            &crate::config::current_exe_basename(),
+            crate::config::build_channel().as_deref(),
             &account.home,
         ));
         // The harness isolates this process's profile directory; the base
@@ -5160,24 +5160,11 @@ fn nested_host_no_secret_panes_get_no_inherited_value_at_first_exec() {
         seed_secrets(&dir, "ws-1682-b", "b-ws-value-1682", "b-folder-value-1682");
         let (view, received) = add_pipe_test_pane(&mut h, 0);
         h.focus_pane(view);
+        // The view's context holds B's secrets; the restricted linked terminal
+        // opened from it must read none of them.
         h.app.set_context_root(dir.clone(), None);
         crate::host::shell::secret_reads::take();
         crate::workspace::secrets::take_test_store_calls();
-
-        let routine_shell = fixture_shell(&out, "routine", "");
-        let _shell =
-            crate::host::shell::set_test_shell_override(routine_shell.display().to_string());
-        let routine = h
-            .app
-            .fire_routine("probe-1682", "true", "", false, &dir)
-            .expect("routine pane");
-        wait_for(
-            &mut h,
-            &out.join(format!("routine-{routine}")),
-            "the routine's env",
-            30,
-        );
-        drop(_shell);
 
         let linked_shell = fixture_shell(&out, "linked", "");
         let _shell =
@@ -5212,15 +5199,6 @@ fn nested_host_no_secret_panes_get_no_inherited_value_at_first_exec() {
             "the linked terminal's env",
             30,
         );
-        for (label, pane) in [("routine", routine), ("linked", linked)] {
-            let grant = h.app.pane_authority(pane).expect("grant").grant().clone();
-            assert_eq!(
-                grant.secrets,
-                crate::broker::pane_authority::SecretEligibility::none(),
-                "{label}"
-            );
-            assert_eq!(grant.is_desktop(), label == "routine", "{label} ownership");
-        }
         let reads = crate::host::shell::secret_reads::take();
         assert!(
             reads.is_empty(),
@@ -5231,9 +5209,68 @@ fn nested_host_no_secret_panes_get_no_inherited_value_at_first_exec() {
             0,
             "B opened a secret store for a no-secret pane"
         );
+
+        // A context the host creates itself: its root, name and first pane's
+        // cwd are host-generated defaults, which must come from the account
+        // home, never the inherited or changed `HOME` (round 3 item 1). The
+        // routine below fires into it. The context's own first pane is an
+        // eligible desktop pane, so the no-read counters restart after it.
+        let context_shell = fixture_shell(&out, "context", "");
+        let _shell =
+            crate::host::shell::set_test_shell_override(context_shell.display().to_string());
+        h.app
+            .new_context(crate::broker::pane_authority::GrantSource::DesktopInput);
+        let context_pane = h
+            .app
+            .focused_pane_id()
+            .expect("the new context's first pane");
+        wait_for(
+            &mut h,
+            &out.join(format!("context-{context_pane}")),
+            "the new context's env",
+            30,
+        );
+        drop(_shell);
+        crate::host::shell::secret_reads::take();
+        crate::workspace::secrets::take_test_store_calls();
+
+        let routine_shell = fixture_shell(&out, "routine", "");
+        let _shell =
+            crate::host::shell::set_test_shell_override(routine_shell.display().to_string());
+        let routine = h
+            .app
+            .fire_routine("probe-1682", "true", "", false, &dir)
+            .expect("routine pane");
+        wait_for(
+            &mut h,
+            &out.join(format!("routine-{routine}")),
+            "the routine's env",
+            30,
+        );
+        drop(_shell);
+
+        let reads = crate::host::shell::secret_reads::take();
+        assert!(
+            reads.is_empty(),
+            "B resolved secrets for a no-secret pane: {reads:?}"
+        );
+        assert_eq!(
+            crate::workspace::secrets::take_test_store_calls(),
+            0,
+            "B opened a secret store for a no-secret pane"
+        );
+        for (label, pane) in [("routine", routine), ("linked", linked)] {
+            let grant = h.app.pane_authority(pane).expect("grant").grant().clone();
+            assert_eq!(
+                grant.secrets,
+                crate::broker::pane_authority::SecretEligibility::none(),
+                "{label}"
+            );
+            assert_eq!(grant.is_desktop(), label == "routine", "{label} ownership");
+        }
         std::fs::write(
             out.join("b-panes"),
-            format!("routine-{routine}\nlinked-{linked}"),
+            format!("context-{context_pane}\nroutine-{routine}\nlinked-{linked}"),
         )
         .expect("pane list");
         return;
@@ -5367,7 +5404,7 @@ fn nested_host_no_secret_panes_get_no_inherited_value_at_first_exec() {
             .map(|(key, _)| key.as_str())
             .collect();
         let expect = |key: &str, want: &str| env.get(key).map(String::as_str) == Some(want);
-        let wrong: Vec<&str> = [
+        let mut wrong: Vec<&str> = [
             ("HOME", account.home_str()),
             ("USER", account.user.as_str()),
             ("LOGNAME", account.user.as_str()),
@@ -5380,6 +5417,21 @@ fn nested_host_no_secret_panes_get_no_inherited_value_at_first_exec() {
         .filter(|(key, want)| !expect(key, want))
         .map(|(key, _)| key)
         .collect();
+        // The host-created context is rooted and starts in the account home.
+        if file.starts_with("context-")
+            && !(expect("PLEXI_CONTEXT_ROOT", account.home_str())
+                && env.get("FIXTURE_CWD").map(std::path::Path::new)
+                    == account.home.canonicalize().ok().as_deref())
+        {
+            wrong.push("PLEXI_CONTEXT_ROOT/cwd");
+        }
+        // The build a bare `plexi` runs is the host's, named apart from the
+        // profile it routes to (round 3 item 4).
+        if let Some(build) = crate::config::build_channel() {
+            if !expect("PLEXI_BUILD_CHANNEL", &build) {
+                wrong.push("PLEXI_BUILD_CHANNEL");
+            }
+        }
         let missing: Vec<&str> = ["PATH", "LANG", "TMPDIR", "SHELL", "PLEXI_PANE_ID"]
             .into_iter()
             .filter(|key| !env.contains_key(*key))

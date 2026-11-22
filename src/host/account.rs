@@ -52,6 +52,32 @@ impl Account {
     }
 }
 
+/// The account's home directory, the root of every default the host
+/// generates: context roots and names, pane working directories and profile
+/// locations. Never `$HOME`, which a host started from a pane inherits from
+/// that pane (stint 1682). Read once; `None` when the lookup fails, which is
+/// logged.
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        static HOME: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+        HOME.get_or_init(|| match Account::current() {
+            Ok(account) => Some(account.home),
+            Err(error) => {
+                log::error!("account: home directory lookup failed: {error}");
+                None
+            }
+        })
+        .clone()
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows reads the profile folder from the shell's known-folder
+        // API, not from the environment (stint 1688 owns Windows panes).
+        dirs::home_dir()
+    }
+}
+
 /// `pw_shell` when it names an absolute executable file, otherwise
 /// `/bin/sh`.
 pub(crate) fn resolve_shell(pw_shell: Option<&str>) -> String {

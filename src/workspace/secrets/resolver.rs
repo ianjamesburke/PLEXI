@@ -110,7 +110,32 @@ impl WorkspaceSecrets {
         }
         self.default.get(canonical_name).map(|s| s.as_str())
     }
+
+    /// The names a terminal exports workspace record `friendly` under: every
+    /// canonical name whose terminal route names it, else `friendly` itself
+    /// when no route names it and it has no route of its own (stint 1682).
+    pub fn terminal_export_names(&self, friendly: &str) -> Vec<String> {
+        let routed: std::collections::BTreeSet<&str> = self
+            .default
+            .keys()
+            .chain(
+                self.plugins
+                    .get(TERMINAL_ROUTE)
+                    .into_iter()
+                    .flat_map(HashMap::keys),
+            )
+            .map(String::as_str)
+            .filter(|canonical| self.route_for(TERMINAL_ROUTE, canonical) == Some(friendly))
+            .collect();
+        if routed.is_empty() && self.route_for(TERMINAL_ROUTE, friendly).is_none() {
+            return vec![friendly.to_string()];
+        }
+        routed.into_iter().map(str::to_string).collect()
+    }
 }
+
+/// The route table terminal environment injection resolves through.
+const TERMINAL_ROUTE: &str = "terminal";
 
 // ── Resolution result ────────────────────────────────────────────────────────
 
@@ -268,7 +293,7 @@ pub fn resolve_terminal_env(
             );
             continue;
         }
-        match resolve_with_source(&cfg.id, "terminal", canonical_name, &router, store) {
+        match resolve_with_source(&cfg.id, TERMINAL_ROUTE, canonical_name, &router, store) {
             ResolveWithSourceOutcome::Found(found) => {
                 log::info!(
                     "workspace_secrets: terminal env injecting {canonical_name} source={:?}",

@@ -1272,7 +1272,7 @@ fn resolve_scoped_file_path(
         return Err("path_scope_unavailable: this context has no file root".to_string());
     };
     let requested = if let Some(rest) = raw.strip_prefix("~/") {
-        dirs::home_dir()
+        crate::host::account::home_dir()
             .ok_or_else(|| "path_error: could not resolve home directory".to_string())?
             .join(rest)
     } else {
@@ -1320,7 +1320,7 @@ fn resolve_scoped_file_path_in(
         return Err("path_scope_unavailable: this context has no file root".to_string());
     };
     let requested = if let Some(rest) = raw.strip_prefix("~/") {
-        dirs::home_dir()
+        crate::host::account::home_dir()
             .ok_or_else(|| "path_error: could not resolve home directory".to_string())?
             .join(rest)
     } else {

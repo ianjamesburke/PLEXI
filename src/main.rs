@@ -127,9 +127,7 @@ fn main() -> eframe::Result {
             eprintln!("error: host launch cannot resolve this account: {error}");
             cli::trace::exit(1)
         });
-        crate::config::install_host_profile(crate::config::HostProfile::resolve(
-            crate::config::explicit_profile(),
-            &crate::config::current_exe_basename(),
+        crate::config::install_host_profile(crate::config::HostProfile::for_this_process(
             &account.home,
         ));
         if let Err(error) = crate::host::pane_env::install_for_host(account) {
@@ -1011,17 +1009,6 @@ fn main() -> eframe::Result {
                             friendly_name,
                             global,
                         } => cli::trace::exit(cli::workspace_secret_delete(&friendly_name, global)),
-                        SecretCmd::Copy {
-                            from,
-                            to,
-                            global,
-                            folder,
-                        } => cli::trace::exit(cli::secret_copy(
-                            &from,
-                            &to,
-                            global,
-                            folder.as_deref(),
-                        )),
                         SecretCmd::Rm { name, folder } => {
                             cli::trace::exit(cli::folder_secret_rm(&name, &folder))
                         }

@@ -86,7 +86,7 @@ impl Anchor {
 /// Returns true if `path` is the home directory or looks like a profile dir
 /// (`~/.plexi`, `~/.plexi-alpha`, `~/.plexi-pr-123`, etc.).
 fn is_profile_dir(path: &Path) -> bool {
-    let Some(home) = dirs::home_dir() else {
+    let Some(home) = crate::host::account::home_dir() else {
         return false;
     };
     if path == home {
@@ -161,14 +161,14 @@ mod tests {
 
     #[test]
     fn is_profile_dir_rejects_home() {
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = crate::host::account::home_dir() {
             assert!(is_profile_dir(&home));
         }
     }
 
     #[test]
     fn is_profile_dir_rejects_plexi_profiles() {
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = crate::host::account::home_dir() {
             assert!(is_profile_dir(&home.join(".plexi")));
             assert!(is_profile_dir(&home.join(".plexi-alpha")));
             assert!(is_profile_dir(&home.join(".plexi-pr-123")));

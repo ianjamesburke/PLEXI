@@ -516,7 +516,8 @@ pub(crate) fn windows_pane_env(
     env.insert("COLORTERM".into(), "truecolor".into());
     env.insert("PLEXI_RUNNING".into(), "1".into());
     if let Some(channel) = crate::config::build_channel() {
-        env.insert("PLEXI_CHANNEL".into(), channel);
+        env.insert("PLEXI_CHANNEL".into(), channel.clone());
+        env.insert(crate::host::pane_env::BUILD_CHANNEL_VAR.into(), channel);
     }
     for key in ["LANG", "LC_ALL"] {
         env.insert(

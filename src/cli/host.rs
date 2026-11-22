@@ -212,7 +212,8 @@ pub(crate) fn host_child_env(
 ///
 /// An explicit `--profile <name>` names `~/.plexi-<name>`; otherwise the
 /// binary's own channel names its profile (`None` → `~/.plexi`,
-/// `Some("alpha")` → `~/.plexi-alpha`). Environment never redirects it:
+/// `Some("alpha")` → `~/.plexi-alpha`), where `~` is the account home the
+/// host itself uses, not `$HOME`. Environment never redirects it:
 /// unlike `crate::config::config_dir()`, the bare `plexi` binary does not
 /// adopt an inherited `PLEXI_CHANNEL`, so a command run from inside a pane
 /// (an agent driving a nested test host) cannot silently address the calling
@@ -229,15 +230,15 @@ pub(crate) struct HostTarget {
 }
 
 impl HostTarget {
+    /// The host's own resolver ([`crate::config::HostProfile`]) names the
+    /// dir, so a lifecycle command and the host it starts agree on it.
     fn resolve(channel: Option<String>, profile: Option<String>, home: &Path) -> Self {
-        let dir_name = match profile.as_deref() {
-            Some(profile) => crate::config::named_profile_dir_name(profile),
-            None => host_presence::profile_dir_name(channel.as_deref().unwrap_or("stable")),
-        };
+        let dir =
+            crate::config::HostProfile::resolve(profile.as_deref(), channel.as_deref(), home).dir();
         Self {
             channel,
             profile,
-            dir: home.join(dir_name),
+            dir,
         }
     }
 
@@ -313,7 +314,11 @@ const SPAWN_QUEUE_DIR: &str = "spawn-queue";
 /// stop, restart, log, uninstall) and its trace use only a target returned
 /// here, so nothing connects, traces or signals through a linked profile.
 pub(crate) fn host_target() -> Result<HostTarget, String> {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    // The account home, as the host itself uses: an inherited or private
+    // `HOME` must not send start, stop or status to a profile the host
+    // never binds (stint 1682).
+    let home = crate::host::account::home_dir()
+        .ok_or("host: the account home directory could not be resolved")?;
     let target = HostTarget::resolve(
         crate::config::build_channel(),
         crate::config::explicit_profile().map(str::to_string),

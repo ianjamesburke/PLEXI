@@ -178,7 +178,7 @@ pub fn write_default_route(
     if !secrets_path.exists() {
         let dir = workspace_root.join(crate::config::workspace_channel_dir());
         std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-        let content = format!("fallback = true\n\n[default]\n{canonical} = \"{friendly}\"\n");
+        let content = upsert_default_route_line("fallback = true\n", canonical, friendly)?;
         return std::fs::write(&secrets_path, content)
             .map_err(|e| format!("write {}: {e}", secrets_path.display()));
     }
@@ -194,7 +194,8 @@ pub fn write_default_route(
     }
 
     // Insert or update the canonical→friendly mapping.
-    let updated = upsert_default_route_line(&raw, canonical, friendly);
+    let updated = upsert_default_route_line(&raw, canonical, friendly)
+        .map_err(|e| format!("{}: {e}", secrets_path.display()))?;
     std::fs::write(&secrets_path, updated)
         .map_err(|e| format!("write {}: {e}", secrets_path.display()))
 }
@@ -251,62 +252,17 @@ pub fn write_terminal_env_inject(
         .map_err(|e| format!("write {}: {e}", secrets_path.display()))
 }
 
-/// Insert or update `canonical = "friendly"` in the `[default]` section of a
-/// raw `secrets.toml` string, creating the section if absent.
-/// If an existing `canonical = "..."` line is found, it is replaced in-place.
-/// All other content and comments are preserved.
-fn upsert_default_route_line(raw: &str, canonical: &str, friendly: &str) -> String {
-    let entry_line = format!("{canonical} = \"{friendly}\"");
-    let lines: Vec<&str> = raw.lines().collect();
-    let trailing_newline = raw.ends_with('\n');
-
-    if let Some(start) = lines.iter().position(|l| {
-        let t = l.trim();
-        t == "[default]" || (t.starts_with("[default]") && t[9..].trim_start().starts_with('#'))
-    }) {
-        // End of section: next uncommented table header, or EOF.
-        let end = lines[start + 1..]
-            .iter()
-            .position(|l| {
-                let t = l.trim();
-                t.starts_with('[') && !t.starts_with('#')
-            })
-            .map(|p| start + 1 + p)
-            .unwrap_or(lines.len());
-
-        // Check for an existing entry for this canonical key and replace it if found.
-        let canonical_prefix = format!("{canonical} = ");
-        let existing = lines[start + 1..end]
-            .iter()
-            .position(|l| l.trim().starts_with(&canonical_prefix))
-            .map(|p| start + 1 + p);
-
-        let result = if let Some(idx) = existing {
-            let mut parts: Vec<&str> = Vec::with_capacity(lines.len());
-            parts.extend_from_slice(&lines[..idx]);
-            parts.push(&entry_line);
-            parts.extend_from_slice(&lines[idx + 1..]);
-            parts
-        } else {
-            // No existing entry — append inside section before next section header.
-            let mut parts: Vec<&str> = Vec::with_capacity(lines.len() + 1);
-            parts.extend_from_slice(&lines[..end]);
-            parts.push(&entry_line);
-            parts.extend_from_slice(&lines[end..]);
-            parts
-        };
-
-        let joined = result.join("\n");
-        if trailing_newline {
-            format!("{joined}\n")
-        } else {
-            joined
-        }
-    } else {
-        // No [default] section — append one.
-        let base = raw.trim_end_matches('\n');
-        format!("{base}\n\n[default]\n{entry_line}\n")
-    }
+/// Insert or update `canonical = "friendly"` in the `[default]` table of a
+/// raw `secrets.toml`, creating the table if absent. Edited through
+/// `toml_edit`, so both strings are serialized as TOML (an alias holding a
+/// quote or backslash stays one valid string) and every other key, comment
+/// and table survives (stint 1682).
+fn upsert_default_route_line(raw: &str, canonical: &str, friendly: &str) -> Result<String, String> {
+    let mut doc: toml_edit::DocumentMut = raw
+        .parse()
+        .map_err(|e| format!("parse secrets.toml: {e}"))?;
+    crate::config::edit::set_value(&mut doc, &["default", canonical], friendly.into())?;
+    Ok(doc.to_string())
 }
 
 fn upsert_terminal_env_inject_section(raw: &str, names: &[String]) -> String {
@@ -651,7 +607,7 @@ mod tests {
     #[test]
     fn upsert_default_route_line_appends_when_no_section() {
         let raw = "fallback = true\n";
-        let out = upsert_default_route_line(raw, "X", "x_alias");
+        let out = upsert_default_route_line(raw, "X", "x_alias").unwrap();
         assert!(out.contains("[default]"), "{out}");
         assert!(out.contains("X = \"x_alias\""), "{out}");
         WorkspaceSecrets::parse(&out).expect("must parse: {out}");
@@ -660,7 +616,7 @@ mod tests {
     #[test]
     fn upsert_default_route_line_inserts_before_next_section() {
         let raw = "fallback = true\n\n[default]\nA = \"a\"\n\n[apps.foo]\nB = \"b\"\n";
-        let out = upsert_default_route_line(raw, "C", "c");
+        let out = upsert_default_route_line(raw, "C", "c").unwrap();
         // C must appear inside [default], before [plugins.foo]
         let default_pos = out.find("[default]").unwrap();
         let apps_pos = out.find("[apps.foo]").unwrap();
@@ -675,7 +631,7 @@ mod tests {
     #[test]
     fn upsert_default_route_line_handles_inline_comment_on_section_header() {
         let raw = "fallback = true\n\n[default] # route table\nA = \"a\"\n";
-        let out = upsert_default_route_line(raw, "B", "b_alias");
+        let out = upsert_default_route_line(raw, "B", "b_alias").unwrap();
         assert!(out.contains("B = \"b_alias\""), "entry missing: {out}");
         assert!(
             out.contains("[default] # route table"),
@@ -684,10 +640,31 @@ mod tests {
         WorkspaceSecrets::parse(&out).expect("must parse");
     }
 
+    /// Stint 1682 (round 3 item 7): an alias holding TOML-significant
+    /// characters is written as one TOML string, so the routes stay valid
+    /// and read back exactly, on create and on update.
+    #[test]
+    fn write_default_route_serializes_any_alias_as_a_toml_string() {
+        let tmp = tempfile::tempdir().unwrap();
+        let alias = "we\"ird\\alias\n[x]";
+        write_default_route(tmp.path(), "FIRST_1682", alias).expect("create");
+        write_default_route(tmp.path(), "SECOND_1682", alias).expect("update");
+        let parsed = WorkspaceSecrets::load(tmp.path())
+            .expect("routes still parse")
+            .expect("routes exist");
+        for canonical in ["FIRST_1682", "SECOND_1682"] {
+            assert_eq!(
+                parsed.default.get(canonical).map(String::as_str),
+                Some(alias)
+            );
+        }
+        assert_eq!(parsed.default.len(), 2);
+    }
+
     #[test]
     fn upsert_default_route_line_replaces_existing_entry() {
         let raw = "fallback = true\n\n[default]\nFOO = \"old\"\nBAR = \"bar\"\n";
-        let out = upsert_default_route_line(raw, "FOO", "new");
+        let out = upsert_default_route_line(raw, "FOO", "new").unwrap();
         assert!(out.contains("FOO = \"new\""), "replacement missing: {out}");
         assert!(
             !out.contains("FOO = \"old\""),

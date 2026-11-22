@@ -1658,6 +1658,25 @@ pub fn register_path(root: &Path) -> Result<Receipt> {
     Ok(receipt)
 }
 
+/// The variable a Plexi pane names its host's installed build by. Profile
+/// routing (`PLEXI_CHANNEL`) is a separate value: a host on an explicit
+/// profile runs one build and routes to another name.
+pub const BUILD_CHANNEL_VAR: &str = "PLEXI_BUILD_CHANNEL";
+
+/// The installed build the stable launcher hands a bare command to inside a
+/// Plexi pane. Contextual routing is limited to an actual pane, and selects
+/// the pane host's build, never its profile: a host on `--profile <name>`
+/// still exports its own build here (stint 1682).
+fn pane_build_channel(
+    receipt_channel: &str,
+    env: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    if receipt_channel != "stable" || env("PLEXI_RUNNING").as_deref() != Some("1") {
+        return None;
+    }
+    env(BUILD_CHANNEL_VAR).filter(|channel| channel != "stable" && channel != "main")
+}
+
 pub fn launch(root: &Path, args: &[std::ffi::OsString]) -> Result<i32> {
     if let Ok(_lock) = lock(root) {
         recover(root)?;
@@ -1665,12 +1684,7 @@ pub fn launch(root: &Path, args: &[std::ffi::OsString]) -> Result<i32> {
     let receipt = read_receipt(root)?.ok_or_else(|| {
         Error::Invalid("installation is incomplete; run the installer again".into())
     })?;
-    // Contextual bare-command routing is limited to an actual Plexi pane.
-    if receipt.channel == "stable"
-        && std::env::var("PLEXI_RUNNING").as_deref() == Ok("1")
-        && let Ok(channel) = std::env::var("PLEXI_CHANNEL")
-        && channel != "stable"
-        && channel != "main"
+    if let Some(channel) = pane_build_channel(&receipt.channel, |name| std::env::var(name).ok())
         && let Some(other) = find_installation(&channel)?
     {
         return launch(&other.root, args);
@@ -2088,6 +2102,45 @@ fn windows_remove(receipt: &Receipt) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stint 1682 (round 3 item 4): a bare `plexi` in a pane runs the pane
+    /// host's build, named apart from the profile the host routes to, so a
+    /// PR host on an explicit profile still runs the PR build.
+    #[test]
+    fn a_pane_selects_its_hosts_build_not_its_profile() {
+        let pane = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| value.to_string())
+            }
+        };
+        let profiled = pane(&[
+            ("PLEXI_RUNNING", "1"),
+            ("PLEXI_CHANNEL", "t1682"),
+            (BUILD_CHANNEL_VAR, "pr-3279"),
+        ]);
+        assert_eq!(
+            pane_build_channel("stable", &profiled).as_deref(),
+            Some("pr-3279")
+        );
+        // Only the stable launcher redirects, and only inside a pane.
+        assert_eq!(pane_build_channel("alpha", &profiled), None);
+        let outside = pane(&[(BUILD_CHANNEL_VAR, "pr-3279")]);
+        assert_eq!(pane_build_channel("stable", outside), None);
+        // A profile name alone never selects a build.
+        let profile_only = pane(&[("PLEXI_RUNNING", "1"), ("PLEXI_CHANNEL", "alpha")]);
+        assert_eq!(pane_build_channel("stable", profile_only), None);
+        for own in ["stable", "main"] {
+            let own_build = move |name: &str| match name {
+                "PLEXI_RUNNING" => Some("1".to_string()),
+                BUILD_CHANNEL_VAR => Some(own.to_string()),
+                _ => None,
+            };
+            assert_eq!(pane_build_channel("stable", own_build), None);
+        }
+    }
 
     /// Stint 1610: a completion script past the capture limit fails the
     /// install instead of being installed cut.

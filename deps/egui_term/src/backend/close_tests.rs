@@ -943,3 +943,23 @@ fn final_bytes_readable_only_after_the_exit_reach_the_screen() {
         TerminalBackend::capture_last_content_lines(term.lock().grid(), 5);
     assert!(lines.join("\n").contains("final-marker"), "{lines:?}");
 }
+
+/// Stint 1682: a working directory that cannot be entered fails the spawn;
+/// the shell never starts in the hosting process's cwd instead.
+#[test]
+fn an_unenterable_working_directory_fails_the_spawn() {
+    let (tx, _rx) = mpsc::channel();
+    let result = TerminalBackend::new(
+        1682,
+        egui::Context::default(),
+        tx,
+        BackendSettings {
+            working_directory: Some(temp("missing-cwd")),
+            ..settings("/bin/sh", "exit 0")
+        },
+    );
+    assert!(
+        result.is_err(),
+        "spawned in a directory that does not exist"
+    );
+}

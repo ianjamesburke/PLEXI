@@ -315,7 +315,7 @@ impl PlexiApp {
             grant.secrets.directory
         );
         #[cfg(unix)]
-        let (shell_path, mut env) = {
+        let (shell_path, mut env, cwd) = {
             // The base comes from the account and the host profile, never
             // from this process's environment (stint 1682).
             let Some(base) = base else {
@@ -347,7 +347,13 @@ impl PlexiApp {
                 &mut env,
                 shell::secret_env(grant.secrets.directory.as_deref(), secrets),
             );
-            (shell_path, env)
+            // A pane always starts in a directory admission chose: the launch's,
+            // else its context root, else the account home; never the host
+            // process's own cwd (stint 1682).
+            let cwd = cwd
+                .or_else(|| context.root.clone())
+                .unwrap_or_else(|| base.home().to_path_buf());
+            (shell_path, env, Some(cwd))
         };
         #[cfg(windows)]
         let (shell_path, mut env) = {

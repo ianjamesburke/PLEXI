@@ -599,13 +599,14 @@ impl PlexiApp {
                     } else {
                         // Tilde expansion.
                         let expanded = if let Some(rest) = raw.strip_prefix("~/") {
-                            if let Some(home) = dirs::home_dir() {
+                            if let Some(home) = crate::host::account::home_dir() {
                                 home.join(rest)
                             } else {
                                 std::path::PathBuf::from(&raw)
                             }
                         } else if raw.starts_with('~') && raw.len() == 1 {
-                            dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(&raw))
+                            crate::host::account::home_dir()
+                                .unwrap_or_else(|| std::path::PathBuf::from(&raw))
                         } else {
                             std::path::PathBuf::from(&raw)
                         };

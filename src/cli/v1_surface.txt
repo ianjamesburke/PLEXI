@@ -122,7 +122,6 @@ registry
 registry watch
 run
 secret
-secret copy
 secret delete
 secret get
 secret list

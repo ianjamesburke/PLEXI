@@ -161,7 +161,7 @@ impl PlexiApp {
         receipt: Option<&plexi_distribution::transaction::Receipt>,
     ) {
         use plexi_distribution::{release, strays};
-        let Some(home) = dirs::home_dir() else {
+        let Some(home) = crate::host::account::home_dir() else {
             return;
         };
         let channel = crate::config::build_channel().unwrap_or_else(|| "stable".into());

@@ -19,6 +19,10 @@ use std::sync::{Arc, OnceLock};
 
 use crate::host::account::Account;
 
+/// The installed build a bare `plexi` in a pane runs; read by the launcher
+/// (`plexi_distribution::transaction::launch`).
+pub(crate) const BUILD_CHANNEL_VAR: &str = plexi_distribution::transaction::BUILD_CHANNEL_VAR;
+
 /// The terminal Plexi emulates.
 pub(crate) const TERM: &str = "xterm-256color";
 pub(crate) const COLORTERM: &str = "truecolor";
@@ -52,8 +56,14 @@ pub(crate) struct PaneBase {
     lang: String,
     tmpdir: String,
     /// The host profile's suffix, exported as `PLEXI_CHANNEL` so a bare
-    /// client in a pane routes to this host; `None` for `.plexi`.
+    /// client in a pane routes to this host's profile and socket; `None` for
+    /// `.plexi`.
     routing: Option<String>,
+    /// The host's build channel, exported as `PLEXI_BUILD_CHANNEL` so the
+    /// installed bare `plexi` launcher runs this host's build (a PR or Alpha
+    /// install), independent of which profile it routes to; `None` for the
+    /// stable build.
+    build: Option<String>,
     /// The host's listener endpoint, exported as `PLEXI_SOCKET`.
     socket: String,
     /// A validated signing-agent socket from a trusted source, offered only
@@ -78,6 +88,7 @@ impl PaneBase {
         Ok(Self::resolve(
             account,
             routing,
+            crate::config::build_channel(),
             crate::platform::ipc::endpoint(),
             &exe,
         ))
@@ -89,6 +100,7 @@ impl PaneBase {
     pub(crate) fn resolve(
         account: Account,
         routing: Option<String>,
+        build: Option<String>,
         socket: String,
         exe: &Path,
     ) -> Self {
@@ -99,6 +111,7 @@ impl PaneBase {
             lang: available_locale(LOCALES),
             tmpdir: account_tmpdir(),
             routing,
+            build,
             socket,
             ssh_auth_sock: trusted_ssh_agent(),
             xdg: xdg_dirs(&account.home),
@@ -108,6 +121,11 @@ impl PaneBase {
 
     pub(crate) fn shell(&self) -> &str {
         &self.account.shell
+    }
+
+    /// The account home: a pane's working directory when admission named none.
+    pub(crate) fn home(&self) -> &Path {
+        &self.account.home
     }
 
     /// The base variables of pane `pane_id` running `shell`. A desktop-owned
@@ -133,6 +151,9 @@ impl PaneBase {
         .collect();
         if let Some(routing) = &self.routing {
             env.insert("PLEXI_CHANNEL".into(), routing.clone());
+        }
+        if let Some(build) = &self.build {
+            env.insert(BUILD_CHANNEL_VAR.into(), build.clone());
         }
         if let Some(sock) = self.ssh_auth_sock.as_ref().filter(|_| desktop) {
             env.insert("SSH_AUTH_SOCK".into(), sock.clone());
@@ -166,6 +187,7 @@ impl PaneBase {
             lang: FALLBACK_LOCALE.into(),
             tmpdir: "/tmp".into(),
             routing: None,
+            build: None,
             socket: crate::platform::ipc::endpoint(),
             ssh_auth_sock: None,
             xdg: Vec::new(),
@@ -179,6 +201,7 @@ impl PaneBase {
     pub(crate) fn fixture_with_every_variable() -> Self {
         Self {
             routing: Some("t1682".into()),
+            build: Some("pr-3279".into()),
             ssh_auth_sock: Some("/tmp/agent-1682.sock".into()),
             xdg: [
                 "XDG_CONFIG_HOME",
@@ -225,13 +248,14 @@ pub(crate) fn log_installed() {
         return;
     };
     log::info!(
-        "pane_env: base from account {} (home {}, shell {}), PATH of {} dirs, LANG={}, routing={:?}, socket={}, ssh_agent={}, xdg={}; {} inherited host environment entries ignored",
+        "pane_env: base from account {} (home {}, shell {}), PATH of {} dirs, LANG={}, routing={:?}, build={:?}, socket={}, ssh_agent={}, xdg={}; {} inherited host environment entries ignored",
         base.account.user,
         base.account.home.display(),
         base.account.shell,
         base.path.split(':').count(),
         base.lang,
         base.routing,
+        base.build,
         base.socket,
         base.ssh_auth_sock.is_some(),
         base.xdg.len(),

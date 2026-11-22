@@ -1624,13 +1624,15 @@ pub fn named_profile_dir_name(profile: &str) -> String {
     format!(".plexi-{profile}")
 }
 
-/// The profile a host launch runs on (stint 1682): an explicit validated
-/// `--profile`, else the channel-named executable's, else the bare default
-/// `.plexi`, rooted in the account's passwd home. Resolved once, before the
-/// first profile lookup, and never from the environment: a host started from
-/// a pane inherits that pane's `PLEXI_CHANNEL` and `HOME`, which name the
-/// launching host, not this one. A bare host therefore selects Alpha only by
-/// `--profile alpha` or the `plexi-alpha` executable.
+/// The profile a host runs on (stint 1682): an explicit validated
+/// `--profile`, else the build channel's (`plexi-alpha` → `.plexi-alpha`),
+/// else the bare default `.plexi`, rooted in the account home. The one
+/// resolver for both the host itself and the `plexi host` lifecycle
+/// commands that start, stop and query it, so they always agree. Never from
+/// the environment: a host started from a pane inherits that pane's
+/// `PLEXI_CHANNEL` and `HOME`, which name the launching host, not this one.
+/// A bare host therefore selects Alpha only by `--profile alpha` or the
+/// `plexi-alpha` executable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostProfile {
     home: PathBuf,
@@ -1638,15 +1640,27 @@ pub struct HostProfile {
 }
 
 impl HostProfile {
-    pub fn resolve(explicit: Option<&str>, exe_basename: &str, account_home: &Path) -> Self {
+    pub fn resolve(
+        explicit: Option<&str>,
+        build_channel: Option<&str>,
+        account_home: &Path,
+    ) -> Self {
         let dir_name = match explicit {
             Some(profile) => named_profile_dir_name(profile),
-            None => channel_suffix_from_basename(exe_basename),
+            None => plexi_distribution::host_presence::profile_dir_name(
+                build_channel.unwrap_or("stable"),
+            ),
         };
         Self {
             home: account_home.to_path_buf(),
             dir_name,
         }
+    }
+
+    /// This process's profile: its validated `--profile` and its own build
+    /// channel, under `account_home`.
+    pub fn for_this_process(account_home: &Path) -> Self {
+        Self::resolve(explicit_profile(), build_channel().as_deref(), account_home)
     }
 
     /// The profile directory: config, plugins, the listener socket.
@@ -3439,10 +3453,15 @@ mod tests {
             (Some("alpha"), "plexi", ".plexi-alpha", Some("alpha")),
             (None, "plexi-pr-3279", ".plexi-pr-3279", Some("pr-3279")),
             (None, "plexi-alpha.exe", ".plexi-alpha", Some("alpha")),
-            (Some("t1682"), "plexi-pr-3279", ".plexi-t1682", Some("t1682")),
+            (
+                Some("t1682"),
+                "plexi-pr-3279",
+                ".plexi-t1682",
+                Some("t1682"),
+            ),
         ];
         for (explicit, exe, dir_name, suffix) in cases {
-            let profile = HostProfile::resolve(explicit, exe, home);
+            let profile = HostProfile::resolve(explicit, channel_from_basename(exe), home);
             assert_eq!(profile.dir_name(), dir_name, "{explicit:?} {exe}");
             assert_eq!(profile.dir(), home.join(dir_name), "{explicit:?} {exe}");
             assert_eq!(profile.routing_suffix(), suffix, "{explicit:?} {exe}");

@@ -1406,7 +1406,7 @@ impl PlexiApp {
         // `PluginRegistry` required: a root already seen is a cache hit, and a
         // never-seen root loads on this first access.
         let focused_workspace_root = self.palette_workspace_root.clone();
-        let home = dirs::home_dir();
+        let home = crate::host::account::home_dir();
         let rescan_cwd = focused_workspace_root
             .as_deref()
             .or(home.as_deref())

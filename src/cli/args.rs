@@ -1473,25 +1473,6 @@ pub enum SecretCmd {
         #[arg(long)]
         global: bool,
     },
-    /// Copy a global or folder secret to a new name, keeping the original.
-    ///
-    /// Moves a secret off a name Plexi reserves for pane environments
-    /// (`secret list` marks those as quarantined). The new name must be free:
-    /// an existing secret is never overwritten. The copy is read back before
-    /// success is reported; remove the old record yourself once satisfied.
-    /// Example: plexi secret copy LC_PAPER PAPER_TOKEN --global
-    Copy {
-        /// The existing secret's name
-        from: String,
-        /// The new environment variable name
-        to: String,
-        /// Copy a globally-stored secret
-        #[arg(long, conflicts_with = "folder")]
-        global: bool,
-        /// Copy a secret bound to this directory
-        #[arg(long, value_name = "DIR")]
-        folder: Option<std::path::PathBuf>,
-    },
     /// Remove a folder-scoped secret.
     Rm {
         /// Environment variable name

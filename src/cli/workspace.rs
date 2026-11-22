@@ -1145,58 +1145,6 @@ pub fn folder_secret_set(
 }
 
 /// `plexi secret rm NAME --folder <path>`.
-/// `plexi secret copy FROM TO (--global | --folder DIR)`: a create-only,
-/// read-back-verified copy that leaves FROM in place (stint 1682). It reads
-/// a value, so only a person runs it: a pane agent is refused before any
-/// store access.
-pub fn secret_copy(from: &str, to: &str, global: bool, folder: Option<&std::path::Path>) -> i32 {
-    use crate::workspace::secrets::manager::{copy_secret, SecretTarget};
-    log::info!("secret_copy:cli: from={from} to={to} global={global} folder={folder:?}");
-    if super::pane_caller::caller_is_pane_agent() {
-        log::info!("secret_copy:cli: refused for a pane agent");
-        eprintln!("error: an agent pane cannot copy secret values");
-        println!("permission_denied");
-        return 1;
-    }
-    if !global && folder.is_none() {
-        eprintln!("error: secret copy needs --global or --folder DIR");
-        return 1;
-    }
-    let (target, store) = match folder {
-        Some(folder) => {
-            if !folder_feature_available() {
-                return 1;
-            }
-            if let Err(err) = enforce_pane_context_scope(folder, true, "secret.copy") {
-                eprintln!("error: {err}");
-                println!("permission_denied");
-                return 1;
-            }
-            (
-                SecretTarget::Folder(folder.to_path_buf()),
-                crate::workspace::secrets::folder_store(),
-            )
-        }
-        None => (
-            SecretTarget::Global,
-            crate::workspace::secrets::system_store(),
-        ),
-    };
-    match copy_secret(store, &target, from, to) {
-        Ok(()) => {
-            println!(
-                "Copied '{from}' to '{to}' ({}). '{from}' is unchanged; remove it when you no longer need it.",
-                target.label()
-            );
-            0
-        }
-        Err(error) => {
-            eprintln!("error: {error}");
-            1
-        }
-    }
-}
-
 pub fn folder_secret_rm(name: &str, folder: &std::path::Path) -> i32 {
     if !folder_feature_available() {
         return 1;

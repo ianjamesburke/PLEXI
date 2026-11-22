@@ -128,7 +128,6 @@ impl ReleaseFeature {
                 Sub(&["secret", "read"]),
                 Sub(&["secret", "exec"]),
                 Arg(&["secret", "set"], "folder"),
-                Arg(&["secret", "copy"], "folder"),
             ],
             Self::Marketplace => &[
                 Sub(&["plugin", "publish"]),
