@@ -4917,7 +4917,7 @@ fn spawn_secrets_linked_terminal_and_routine_resolve_no_secret() {
     let mut h = HostHarness::new();
     let tmp = tempfile::tempdir().expect("secret dir");
     let dir = crate::platform::path::canonical_or_self(tmp.path());
-    let sentinel = "PLEXI_FOLDER_SENTINEL_1666";
+    let sentinel = "FOLDER_SENTINEL_1666";
     crate::workspace::secrets::set_folder_secret(
         crate::workspace::secrets::folder_store(),
         sentinel,
@@ -5034,6 +5034,365 @@ fn spawn_secrets_linked_terminal_and_routine_resolve_no_secret() {
         linked,
         Provenance::PluginInstance { pane_id: view },
     );
+}
+
+/// Stint 1682, the nested-host proof. Host A (this test) opens an eligible
+/// desktop pane holding a workspace and a folder secret. From that pane's
+/// PTY it execs host B (this test again, in role B) with the values an older
+/// launcher would also have exported under base names. B resolves its pane
+/// base through the production installer under a separate explicit profile,
+/// changes its own environment afterwards, and opens a no-secret routine and
+/// a restricted linked terminal. Each pane's first exec is a fixture script
+/// (`/bin/sh` in script mode, no startup files) that records its complete
+/// environment. Nothing a launcher supplied, and no secret value, may appear
+/// anywhere in those environments; failures name keys, never values.
+#[test]
+#[ignore = "requires-pty"]
+fn nested_host_no_secret_panes_get_no_inherited_value_at_first_exec() {
+    const ROLE_B: &str = "PLEXI_TEST_1682_ROLE_B";
+    const TEST: &str =
+        "testing::harness_tests::nested_host_no_secret_panes_get_no_inherited_value_at_first_exec";
+    const WS_SECRET: &str = "WS_SECRET_1682";
+    const FOLDER_SECRET: &str = "FOLDER_SECRET_1682";
+    const B_PROFILE: &str = "t1682b";
+    let _features =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+
+    /// A directory that injects `WS_SECRET` and binds `FOLDER_SECRET`.
+    fn seed_secrets(dir: &std::path::Path, workspace_id: &str, ws_value: &str, folder_value: &str) {
+        let workspace_dir = dir.join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&workspace_dir).expect("workspace dir");
+        std::fs::write(
+            workspace_dir.join("workspace.toml"),
+            format!("id = \"{workspace_id}\"\n"),
+        )
+        .expect("workspace.toml");
+        std::fs::write(
+            workspace_dir.join("secrets.toml"),
+            format!("fallback = false\n\n[terminal.env]\ninject = [\"{WS_SECRET}\"]\n"),
+        )
+        .expect("secrets.toml");
+        crate::workspace::secrets::system_store()
+            .set(&format!("plexi:{workspace_id}:{WS_SECRET}"), ws_value)
+            .expect("in-memory system store");
+        crate::workspace::secrets::set_folder_secret(
+            crate::workspace::secrets::folder_store(),
+            FOLDER_SECRET,
+            dir,
+            folder_value,
+        )
+        .expect("in-memory folder store");
+        assert_eq!(crate::workspace::secrets::backend_label(), "in-memory");
+    }
+
+    /// A first-exec fixture: records its whole environment under
+    /// `<out>/<label>-<WINDOWID>`, then runs `then`.
+    fn fixture_shell(out: &std::path::Path, label: &str, then: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let script = out.join(format!("{label}-shell.sh"));
+        let target = out.join(label);
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n/usr/bin/env > '{target}'-\"$WINDOWID\".tmp && /bin/mv '{target}'-\"$WINDOWID\".tmp '{target}'-\"$WINDOWID\"\n{then}\n",
+                target = target.display()
+            ),
+        )
+        .expect("fixture script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("fixture mode");
+        script
+    }
+
+    fn wait_for(h: &mut HostHarness, path: &std::path::Path, what: &str, secs: u64) {
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(secs));
+        while !path.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            h.run_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    fn read_env(path: &std::path::Path) -> std::collections::HashMap<String, String> {
+        std::fs::read_to_string(path)
+            .expect("recorded environment")
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
+    }
+
+    // ── Role B: the nested host. ─────────────────────────────────────────
+    if let Some(out) = std::env::var_os(ROLE_B) {
+        let out = std::path::PathBuf::from(out);
+        // B inherited the launcher's markers and A's pane secrets.
+        let inherited: Vec<String> = std::env::vars_os()
+            .filter_map(|(key, _)| key.into_string().ok())
+            .collect();
+        std::fs::write(out.join("b-inherited"), inherited.join("\n")).expect("inherited names");
+        // The production startup: account, explicit profile, pane base.
+        let account = crate::host::account::Account::current().expect("account");
+        crate::config::install_host_profile(crate::config::HostProfile::resolve(
+            Some(B_PROFILE),
+            &crate::config::current_exe_basename(),
+            &account.home,
+        ));
+        // The harness isolates this process's profile directory; the base
+        // is resolved against it, as a host's is against its profile.
+        let mut h = HostHarness::new();
+        crate::host::pane_env::install_for_host(account).expect("pane base");
+        h.app.pane_base = crate::host::pane_env::installed();
+        // The process environment changes after startup; panes must not care.
+        // SAFETY: B is a single-test process; no other thread reads env here.
+        unsafe {
+            std::env::set_var("HOME", "/after-startup-1682");
+            std::env::set_var("PLEXI_CHANNEL", "after-startup-1682");
+            std::env::set_var("LC_PAPER", "after-startup-1682");
+        }
+        std::fs::write(out.join("b-socket"), crate::platform::ipc::endpoint()).expect("socket");
+        let tmp = tempfile::tempdir().expect("B secret dir");
+        let dir = crate::platform::path::canonical_or_self(tmp.path());
+        seed_secrets(&dir, "ws-1682-b", "b-ws-value-1682", "b-folder-value-1682");
+        let (view, received) = add_pipe_test_pane(&mut h, 0);
+        h.focus_pane(view);
+        h.app.set_context_root(dir.clone(), None);
+        crate::host::shell::secret_reads::take();
+        crate::workspace::secrets::take_test_store_calls();
+
+        let routine_shell = fixture_shell(&out, "routine", "");
+        let _shell =
+            crate::host::shell::set_test_shell_override(routine_shell.display().to_string());
+        let routine = h
+            .app
+            .fire_routine("probe-1682", "true", "", false, &dir)
+            .expect("routine pane");
+        wait_for(
+            &mut h,
+            &out.join(format!("routine-{routine}")),
+            "the routine's env",
+            30,
+        );
+        drop(_shell);
+
+        let linked_shell = fixture_shell(&out, "linked", "");
+        let _shell =
+            crate::host::shell::set_test_shell_override(linked_shell.display().to_string());
+        queue_pipe_command(
+            &mut h,
+            view,
+            crate::app::view_trait::ViewCommand::RequestLinkedTerminal {
+                sender_pane_id: view,
+                request_id: "linked-1682".to_string(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                label: None,
+                place_below: true,
+            },
+        );
+        h.run_hidden_frames(1);
+        let linked = received
+            .lock()
+            .expect("event log")
+            .iter()
+            .find_map(|event| match event {
+                crate::protocol::PlexiEvent::LinkedTerminalReady {
+                    request_id,
+                    terminal_pane_id,
+                } if request_id == "linked-1682" => Some(*terminal_pane_id),
+                _ => None,
+            })
+            .expect("linked terminal ready");
+        wait_for(
+            &mut h,
+            &out.join(format!("linked-{linked}")),
+            "the linked terminal's env",
+            30,
+        );
+        for (label, pane) in [("routine", routine), ("linked", linked)] {
+            let grant = h.app.pane_authority(pane).expect("grant").grant().clone();
+            assert_eq!(
+                grant.secrets,
+                crate::broker::pane_authority::SecretEligibility::none(),
+                "{label}"
+            );
+            assert_eq!(grant.is_desktop(), label == "routine", "{label} ownership");
+        }
+        let reads = crate::host::shell::secret_reads::take();
+        assert!(
+            reads.is_empty(),
+            "B resolved secrets for a no-secret pane: {reads:?}"
+        );
+        assert_eq!(
+            crate::workspace::secrets::take_test_store_calls(),
+            0,
+            "B opened a secret store for a no-secret pane"
+        );
+        std::fs::write(
+            out.join("b-panes"),
+            format!("routine-{routine}\nlinked-{linked}"),
+        )
+        .expect("pane list");
+        return;
+    }
+
+    // ── Role A: the launching host. ──────────────────────────────────────
+    let out_dir = tempfile::tempdir().expect("output dir");
+    let out = out_dir.path().to_path_buf();
+    let mut h = HostHarness::new();
+    let tmp = tempfile::tempdir().expect("A secret dir");
+    let dir = crate::platform::path::canonical_or_self(tmp.path());
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let a_ws_value = format!("a-ws-value-{id}");
+    let a_folder_value = format!("a-folder-value-{id}");
+    seed_secrets(&dir, "ws-1682-a", &a_ws_value, &a_folder_value);
+    let markers: Vec<(&str, String)> = [
+        "LC_PAPER",
+        "PLEXI_ORIG_ZDOTDIR",
+        "HOME",
+        "PATH",
+        "SHELL",
+        "PLEXI_CHANNEL",
+        "PLEXI_SOCKET",
+        "SSH_AUTH_SOCK",
+    ]
+    .into_iter()
+    .map(|key| (key, format!("/marker-{id}-{}", key.to_ascii_lowercase())))
+    .collect();
+    let exe = std::env::current_exe().expect("test binary");
+    let assignments: Vec<String> = markers
+        .iter()
+        .map(|(key, value)| format!("{key}='{value}'"))
+        .chain([format!("{ROLE_B}='{}'", out.display())])
+        .collect();
+    let launch_b = format!(
+        "/usr/bin/env {} '{}' --ignored --exact {TEST} --nocapture --test-threads 1 > '{}' 2>&1; echo $? > '{}'",
+        assignments.join(" "),
+        exe.display(),
+        out.join("b.log").display(),
+        out.join("b.exit").display(),
+    );
+    let a_shell = fixture_shell(&out, "a", &launch_b);
+    let _shell = crate::host::shell::set_test_shell_override(a_shell.display().to_string());
+    let (_anchor, _received) = add_pipe_test_pane(&mut h, 0);
+    let context = h.app.pane_context_env_for_window(0);
+    let launch = h
+        .app
+        .desktop_terminal_launch(context, Some(dir.clone()), None);
+    let (win_idx, target_tile) = h
+        .app
+        .context_spawn_target(h.app.windows[0].context_id)
+        .expect("spawn target");
+    let a_pane = h
+        .app
+        .spawn_terminal_pane_at(
+            crate::pane_ops::create::SplitPlacement {
+                win_idx,
+                target_tile,
+                vertical: true,
+                new_pane_first: false,
+                keep_focus: true,
+            },
+            launch,
+        )
+        .expect("A's eligible pane");
+    wait_for(&mut h, &out.join("b.exit"), "host B to finish", 240);
+    let b_exit = std::fs::read_to_string(out.join("b.exit")).expect("B exit");
+    let b_log = std::fs::read_to_string(out.join("b.log")).unwrap_or_default();
+    let b_passed = b_log.contains("test result: ok. 1 passed");
+    // B's log can hold values; report only its outcome lines.
+    let outcome: Vec<&str> = b_log
+        .lines()
+        .filter(|line| {
+            line.contains("panicked") || line.starts_with("test ") || line.contains("assert")
+        })
+        .collect();
+    assert!(
+        b_exit.trim() == "0" && b_passed,
+        "host B failed (exit {}): {outcome:?}",
+        b_exit.trim()
+    );
+
+    // A's eligible pane received its authorized values.
+    let a_env = read_env(&out.join(format!("a-{a_pane}")));
+    assert!(
+        a_env.get(WS_SECRET) == Some(&a_ws_value),
+        "A's pane lacks its workspace secret"
+    );
+    assert!(
+        a_env.get(FOLDER_SECRET) == Some(&a_folder_value),
+        "A's pane lacks its folder secret"
+    );
+    // B inherited every marker and both of A's secret names.
+    let inherited = std::fs::read_to_string(out.join("b-inherited")).expect("B inherited");
+    for name in markers
+        .iter()
+        .map(|(key, _)| *key)
+        .chain([WS_SECRET, FOLDER_SECRET, ROLE_B])
+    {
+        assert!(
+            inherited.lines().any(|line| line == name),
+            "B did not inherit {name}"
+        );
+    }
+
+    let account = crate::host::account::Account::current().expect("account");
+    let b_socket = std::fs::read_to_string(out.join("b-socket")).expect("B socket");
+    let forbidden: Vec<String> = markers
+        .iter()
+        .map(|(_, value)| value.clone())
+        .chain([
+            a_ws_value.clone(),
+            a_folder_value.clone(),
+            "b-ws-value-1682".to_string(),
+            "b-folder-value-1682".to_string(),
+            "after-startup-1682".to_string(),
+        ])
+        .collect();
+    let panes = std::fs::read_to_string(out.join("b-panes")).expect("B panes");
+    let mut report = Vec::new();
+    for file in panes.lines() {
+        let env = read_env(&out.join(file));
+        let leaked: Vec<&str> = env
+            .iter()
+            .filter(|(key, value)| {
+                [WS_SECRET, FOLDER_SECRET, ROLE_B].contains(&key.as_str())
+                    || forbidden
+                        .iter()
+                        .any(|needle| value.contains(needle.as_str()))
+            })
+            .map(|(key, _)| key.as_str())
+            .collect();
+        let expect = |key: &str, want: &str| env.get(key).map(String::as_str) == Some(want);
+        let wrong: Vec<&str> = [
+            ("HOME", account.home_str()),
+            ("USER", account.user.as_str()),
+            ("LOGNAME", account.user.as_str()),
+            ("TERM", crate::host::pane_env::TERM),
+            ("COLORTERM", crate::host::pane_env::COLORTERM),
+            ("PLEXI_SOCKET", b_socket.as_str()),
+            ("PLEXI_CHANNEL", B_PROFILE),
+        ]
+        .into_iter()
+        .filter(|(key, want)| !expect(key, want))
+        .map(|(key, _)| key)
+        .collect();
+        let missing: Vec<&str> = ["PATH", "LANG", "TMPDIR", "SHELL", "PLEXI_PANE_ID"]
+            .into_iter()
+            .filter(|key| !env.contains_key(*key))
+            .collect();
+        report.push(format!(
+            "{file}: leaked={leaked:?} wrong={wrong:?} missing={missing:?}"
+        ));
+        assert!(
+            leaked.is_empty() && wrong.is_empty() && missing.is_empty(),
+            "{}",
+            report.join("; ")
+        );
+    }
+    eprintln!("nested host proof: PASS {}", report.join("; "));
 }
 
 /// Stint 1666: an SDK terminal lands only in its validated destination, the
