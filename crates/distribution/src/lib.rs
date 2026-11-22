@@ -5,6 +5,7 @@
 pub mod bounded;
 pub mod host_presence;
 pub mod package;
+pub mod profile_target;
 pub mod release;
 pub mod strays;
 pub mod transaction;

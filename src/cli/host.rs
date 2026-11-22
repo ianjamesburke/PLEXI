@@ -13,10 +13,10 @@
 //! so no new host-side boot protocol is introduced — `drain_spawn_queue()`
 //! picks the seeded panes up on the launched plugin's first frame.
 //!
-//! All profile-scoped paths here go through [`host_target`], not
-//! `crate::config::config_dir()` — the latter lets the bare `plexi` binary
-//! adopt an inherited `PLEXI_CHANNEL`, which would let `host start/stop/status`
-//! silently target the wrong channel's profile when invoked from inside a pane.
+//! All profile-scoped paths here go through [`host_target`]: this process's
+//! one selection (`crate::config::profile_target`), validated. A lifecycle
+//! verb selects from `--profile`, `--profile-root` and the executable only,
+//! never from an inherited `PLEXI_CHANNEL`, `PLEXI_SOCKET` or `HOME`.
 
 #[cfg(windows)]
 mod windows_launch;
@@ -24,6 +24,7 @@ mod windows_launch;
 #[cfg(windows)]
 use crate::platform::ipc;
 use crate::platform::ipc::IpcStream;
+use crate::config::profile_target::ProfileTarget;
 use plexi_distribution::host_presence::{self, endpoint_in, Presence};
 use serde::Deserialize;
 use std::io::Write;
@@ -131,11 +132,9 @@ fn placement_to_layout(spec: &PaneSpec) -> Result<&'static str, String> {
 }
 
 /// The pane/context-scoped `PLEXI_*` vars that must never leak into a
-/// `host start`-launched process — reading them to decide what to launch
-/// would reintroduce the exact channel-leak trap this command exists to
-/// eliminate (see root CLAUDE.md Traps: "`PLEXI_CHANNEL` leaks into plugin
-/// tooling"). `PLEXI_CHANNEL` itself is stripped unconditionally too, then
-/// re-added explicitly from the resolved channel — never inherited.
+/// `host start`-launched process. A host selects its profile from its argv
+/// and executable alone (stint 1695); these are stripped so nothing it
+/// starts inherits the caller's pane either.
 const STRIP_VARS: &[&str] = &[
     "PLEXI_SOCKET",
     "PLEXI_PANE_ID",
@@ -157,6 +156,8 @@ const STRIP_VARS: &[&str] = &[
     "PLEXI_HOST_MCP_PORT",
     "PLEXI_HOST_MCP_TOKEN",
     "PLEXI_CHANNEL",
+    plexi_distribution::transaction::BUILD_CHANNEL_VAR,
+    plexi_distribution::transaction::DELEGATED_VAR,
     // Never inherited: a pane inside an ephemeral host must not silently
     // launch further ephemeral hosts. Re-added only for an explicit
     // `host start --ephemeral`.
@@ -169,29 +170,21 @@ const STRIP_VARS: &[&str] = &[
 /// parent env as a plain `Vec` (rather than reading `std::env::vars()`
 /// directly) so it is deterministically testable without mutating real
 /// process env.
-pub(crate) fn filter_child_env(
-    parent_env: Vec<(String, String)>,
-    channel: Option<&str>,
-) -> Vec<(String, String)> {
-    let mut env: Vec<(String, String)> = parent_env
+pub(crate) fn filter_child_env(parent_env: Vec<(String, String)>) -> Vec<(String, String)> {
+    parent_env
         .into_iter()
         .filter(|(k, _)| !STRIP_VARS.contains(&k.as_str()))
-        .collect();
-    if let Some(c) = channel {
-        env.push(("PLEXI_CHANNEL".to_string(), c.to_string()));
-    }
-    env
+        .collect()
 }
 
 /// Constructs launch env from explicit boot flags after stripping all
 /// inherited Plexi routing and boot-mode state.
 pub(crate) fn host_child_env(
     parent_env: Vec<(String, String)>,
-    channel: Option<&str>,
     ephemeral: bool,
     background: bool,
 ) -> Vec<(String, String)> {
-    let mut env = filter_child_env(parent_env, channel);
+    let mut env = filter_child_env(parent_env);
     if ephemeral {
         env.push((
             crate::workspace::EPHEMERAL_SESSION_ENV.to_string(),
@@ -207,83 +200,30 @@ pub(crate) fn host_child_env(
     env
 }
 
-/// The host a `plexi host` command addresses: one profile dir and its socket,
-/// shared by start, stop, restart, status, log and the uninstall shutdown.
-///
-/// An explicit `--profile <name>` names `~/.plexi-<name>`; otherwise the
-/// binary's own channel names its profile (`None` → `~/.plexi`,
-/// `Some("alpha")` → `~/.plexi-alpha`). Environment never redirects it:
-/// unlike `crate::config::config_dir()`, the bare `plexi` binary does not
-/// adopt an inherited `PLEXI_CHANNEL`, so a command run from inside a pane
-/// (an agent driving a nested test host) cannot silently address the calling
-/// pane's host.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct HostTarget {
-    /// The binary's channel, stamped as a launched host's `PLEXI_CHANNEL`.
-    channel: Option<String>,
-    /// An explicit `--profile`, forwarded to every `plexi` child this command
-    /// launches so the child addresses the same host.
-    profile: Option<String>,
-    /// The profile dir (`~/.plexi<-suffix>`).
-    dir: PathBuf,
+/// The command a user runs to repeat `subcommand` against `target`, naming
+/// the invoking binary and the explicit root and profile it was given.
+fn command_line(target: &ProfileTarget, exe: &str, subcommand: &str) -> String {
+    let mut line = exe.to_string();
+    for arg in forward_args(target) {
+        line.push(' ');
+        line.push_str(&arg);
+    }
+    format!("{line} {subcommand}")
 }
 
-impl HostTarget {
-    fn resolve(channel: Option<String>, profile: Option<String>, home: &Path) -> Self {
-        let dir_name = match profile.as_deref() {
-            Some(profile) => crate::config::named_profile_dir_name(profile),
-            None => host_presence::profile_dir_name(channel.as_deref().unwrap_or("stable")),
-        };
-        Self {
-            channel,
-            profile,
-            dir: home.join(dir_name),
-        }
-    }
+/// [`ProfileTarget::forward_args`] as strings. The front end admits only
+/// UTF-8 arguments, so a root or name never loses bytes here.
+fn forward_args(target: &ProfileTarget) -> Vec<String> {
+    target
+        .forward_args()
+        .into_iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
+}
 
-    /// The single validation step: the profile dir, its `host/` dir and its
-    /// endpoint must be this profile's own, never links into another one.
-    fn validated(self) -> Result<Self, String> {
-        ensure_real_profile_dir(&self.dir)?;
-        Ok(self)
-    }
-
-    pub(crate) fn socket(&self) -> PathBuf {
-        endpoint_in(&self.dir)
-    }
-
-    pub(crate) fn dir(&self) -> &Path {
-        &self.dir
-    }
-
-    /// True when an explicit `--profile` named this target.
-    pub(crate) fn is_named(&self) -> bool {
-        self.profile.is_some()
-    }
-
-    /// The dir `host start` seeds panes into, covered by [`Self::validated`].
-    fn spawn_queue(&self) -> PathBuf {
-        self.dir.join(SPAWN_QUEUE_DIR)
-    }
-
-    /// The command a user runs to repeat `subcommand` against this host,
-    /// naming the invoking binary and any explicit profile.
-    fn command_line(&self, exe: &str, subcommand: &str) -> String {
-        let profile = self
-            .profile
-            .as_deref()
-            .map(|profile| format!(" --profile {profile}"))
-            .unwrap_or_default();
-        format!("{exe}{profile} {subcommand}")
-    }
-
-    /// `--profile <name>` for a child `plexi`, or nothing without one.
-    fn profile_args(&self) -> Vec<String> {
-        self.profile
-            .iter()
-            .flat_map(|profile| ["--profile".to_string(), profile.clone()])
-            .collect()
-    }
+/// The dir `host start` seeds panes into, covered by [`host_target`]'s check.
+fn spawn_queue(target: &ProfileTarget) -> PathBuf {
+    target.dir().join(SPAWN_QUEUE_DIR)
 }
 
 /// True for the commands that address their profile's host through
@@ -308,31 +248,23 @@ pub(crate) fn addresses_profile_host(command: &crate::cli::args::Commands) -> bo
 /// The profile's spawn-queue dir, which the host drains on its first frame.
 const SPAWN_QUEUE_DIR: &str = "spawn-queue";
 
-/// Resolve and validate the [`HostTarget`] for this invocation from
-/// `--profile` and the binary's channel. Every lifecycle path (status, start,
-/// stop, restart, log, uninstall) and its trace use only a target returned
-/// here, so nothing connects, traces or signals through a linked profile.
-pub(crate) fn host_target() -> Result<HostTarget, String> {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let target = HostTarget::resolve(
-        crate::config::build_channel(),
-        crate::config::explicit_profile().map(str::to_string),
-        &home,
-    )
-    .validated()?;
+/// This invocation's validated selection. Every lifecycle path (status,
+/// start, stop, restart, log, uninstall) and its trace use only a target
+/// returned here, so nothing connects, traces or signals through a linked
+/// profile.
+pub(crate) fn host_target() -> Result<ProfileTarget, String> {
+    let target = crate::config::profile_target::profile_target().clone();
+    ensure_real_profile_dir(&target.dir())?;
     log::info!(
-        "host: target profile={:?} channel={:?} dir={:?} socket={:?}",
-        target.profile,
-        target.channel,
-        target.dir,
-        target.socket()
+        "host: target {}",
+        crate::config::profile_target::describe(&target)
     );
     Ok(target)
 }
 
 /// [`host_target`] for a `plexi host` verb: a refused target is reported and
 /// becomes the exit code.
-fn cli_host_target() -> Result<HostTarget, i32> {
+fn cli_host_target() -> Result<ProfileTarget, i32> {
     host_target().map_err(|error| {
         log::error!("host: {error}");
         eprintln!("error: {error}");
@@ -800,7 +732,7 @@ pub fn host_start_cli(
         Err(code) => return code,
     };
     let (bundle_path, binary_path) = resolve_channel_paths();
-    let socket_path = target.socket();
+    let socket_path = target.endpoint();
     log::info!(
         "host_start: socket={socket_path:?} pane_count={}",
         specs.len()
@@ -818,7 +750,7 @@ pub fn host_start_cli(
             "error: a Plexi host for this channel is already running or busy (socket {})",
             socket_path.display()
         );
-        let running = running_build_info_in(&target.dir);
+        let running = running_build_info_in(&target.dir());
         let installed = installed_identity();
         for line in host_identity_lines(
             running.as_ref(),
@@ -847,7 +779,7 @@ pub fn host_start_cli(
         return 1;
     }
 
-    let queue_dir = target.spawn_queue();
+    let queue_dir = spawn_queue(&target);
     if let Err(e) = std::fs::create_dir_all(&queue_dir) {
         log::error!("host_start: could not create spawn-queue dir {queue_dir:?}: {e}");
         eprintln!("error: could not create spawn queue: {e}");
@@ -871,24 +803,18 @@ pub fn host_start_cli(
         }
     }
 
-    let child_env = host_child_env(
-        std::env::vars().collect(),
-        target.channel.as_deref(),
-        ephemeral,
-        background,
-    );
+    let child_env = host_child_env(std::env::vars().collect(), ephemeral, background);
+    let child_args = forward_args(&target);
     log::info!(
-        "host_start: child env constructed — {} vars retained, PLEXI_CHANNEL={:?}, profile={:?}, ephemeral={ephemeral}, background={background}",
+        "host_start: child env constructed — {} vars retained, args={child_args:?}, ephemeral={ephemeral}, background={background}",
         child_env.len(),
-        target.channel,
-        target.profile
     );
 
     if Instant::now() >= deadline {
         eprintln!("error: host start deadline expired before launch");
         return 1;
     }
-    let mut host = match spawn_detached_host(&binary_path, &target.profile_args(), &child_env) {
+    let mut host = match spawn_detached_host(&binary_path, &child_args, &child_env) {
         Ok(host) => host,
         Err(e) => {
             log::error!("host_start: spawn failed for {binary_path:?}: {e}");
@@ -898,7 +824,7 @@ pub fn host_start_cli(
     };
     log::info!("host_start: process spawned pid={} detached=true", host.pid);
     let timeout = deadline.saturating_duration_since(Instant::now());
-    match wait_for_ready(&socket_path, timeout, &target.dir, &mut host) {
+    match wait_for_ready(&socket_path, timeout, &target.dir(), &mut host) {
         Ok(count) => {
             println!(
                 "Plexi host started (pid {}), {count} pane(s) ready.",
@@ -1083,16 +1009,16 @@ fn shutdown_complete(pid: Option<u32>, socket_path: &Path) -> bool {
 
 /// Uninstall must not delete a profile while a host can still write to it.
 /// `target` is validated, so the shutdown cannot route into another profile.
-pub(crate) fn stop_for_uninstall(target: &HostTarget) -> Result<(), String> {
-    let socket = target.socket();
-    let pid = running_build_info_in(&target.dir)
+pub(crate) fn stop_for_uninstall(target: &ProfileTarget) -> Result<(), String> {
+    let socket = target.endpoint();
+    let pid = running_build_info_in(&target.dir())
         .as_ref()
         .and_then(reported_pid)
         .or_else(|| detect_pid(&socket));
     if shutdown_complete(pid, &socket) {
         return Ok(());
     }
-    let outcome = host_stop_in(&target.dir, target.channel.clone());
+    let outcome = host_stop_in(&target.dir());
     if let Some(warning) = uninstall_stop_step(&outcome)? {
         log::warn!("uninstall: {warning}");
         eprintln!("warning: {warning}");
@@ -1154,17 +1080,14 @@ fn uninstall_accepts_absent_socket_beyond_unix_path_limit() {
 /// Build the independently reparented restart coordinator with precisely the
 /// environment a normal `host start` would inherit. In particular, it cannot
 /// carry the old host's cleanup marker or a pane identity into the quit sweep.
-pub(crate) fn restart_coordinator_env(
-    parent_env: Vec<(String, String)>,
-    channel: Option<&str>,
-) -> Vec<(String, String)> {
-    filter_child_env(parent_env, channel)
+pub(crate) fn restart_coordinator_env(parent_env: Vec<(String, String)>) -> Vec<(String, String)> {
+    filter_child_env(parent_env)
 }
 
 fn restart_coordinator_command(
     exe: &Path,
     parent_env: Vec<(String, String)>,
-    target: &HostTarget,
+    target: &ProfileTarget,
 ) -> std::process::Command {
     #[expect(
         clippy::disallowed_methods,
@@ -1173,12 +1096,9 @@ fn restart_coordinator_command(
     let mut command = std::process::Command::new(exe);
     command
         .args(["host", "restart"])
-        .args(target.profile_args())
+        .args(target.forward_args())
         .env_clear()
-        .envs(restart_coordinator_env(
-            parent_env,
-            target.channel.as_deref(),
-        ))
+        .envs(restart_coordinator_env(parent_env))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -1190,7 +1110,7 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
         Ok(target) => target,
         Err(code) => return code,
     };
-    let socket = target.socket();
+    let socket = target.endpoint();
     // Settled once at startup against this target's endpoint identity.
     let own_host = match super::caller_relation() {
         Some(super::CallerRelation::Same) => true,
@@ -1207,7 +1127,7 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
     if own_host && !yes {
         eprintln!(
             "error: restarting this host will close this pane. Run `{}` to confirm.",
-            target.command_line(&crate::config::current_exe_basename(), "host restart --yes")
+            command_line(&target, &crate::config::current_exe_basename(), "host restart --yes")
         );
         return 1;
     }
@@ -1245,12 +1165,11 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
     }
     let coordinator_started = Instant::now();
     log::info!(
-        "host_restart: coordinator start pid={} channel={:?} profile={:?}",
+        "host_restart: coordinator start pid={} {}",
         std::process::id(),
-        target.channel,
-        target.profile
+        crate::config::profile_target::describe(&target)
     );
-    let pid = running_build_info_in(&target.dir)
+    let pid = running_build_info_in(&target.dir())
         .as_ref()
         .and_then(reported_pid)
         .or_else(|| detect_pid(&socket));
@@ -1294,7 +1213,7 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
     log::info!("host_restart: starting");
     match run_host_step(&exe, "start", &target, HOST_STEP_LIMIT) {
         Ok(exited) if exited.status.success() => {
-            let new_pid = running_build_info_in(&target.dir)
+            let new_pid = running_build_info_in(&target.dir())
                 .as_ref()
                 .and_then(reported_pid);
             log::info!("host_restart: started new_pid={new_pid:?}");
@@ -1327,12 +1246,12 @@ const HOST_STEP_LIMIT: Duration = Duration::from_secs(60);
 fn run_host_step(
     exe: &Path,
     step: &str,
-    target: &HostTarget,
+    target: &ProfileTarget,
     limit: Duration,
 ) -> Result<plexi_distribution::bounded::Exited, plexi_distribution::bounded::RunError> {
     plexi_distribution::bounded::Helper::new(exe)
         .args(["host", step])
-        .args(target.profile_args())
+        .args(target.forward_args())
         .run_any_exit(&format!("host {step}"), limit)
 }
 
@@ -1378,7 +1297,7 @@ fn a_hung_restart_step_is_stopped_at_its_limit() {
     std::fs::write(&exe, "#!/bin/sh\nexec sleep 30\n").unwrap();
     std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
     let started = Instant::now();
-    let target = HostTarget::resolve(None, None, dir.path());
+    let target = tests::test_target(None, None, dir.path());
     let error = run_host_step(&exe, "stop", &target, Duration::from_millis(300)).unwrap_err();
     assert!(started.elapsed() < Duration::from_secs(10), "{error}");
     assert!(
@@ -1398,11 +1317,11 @@ pub fn host_stop_cli() -> i32 {
         Ok(target) => target,
         Err(code) => return code,
     };
-    host_stop_cli_in(&target.dir, target.channel)
+    host_stop_cli_in(&target.dir())
 }
 
-fn host_stop_cli_in(profile: &Path, channel: Option<String>) -> i32 {
-    let outcome = host_stop_in(profile, channel);
+fn host_stop_cli_in(profile: &Path) -> i32 {
+    let outcome = host_stop_in(profile);
     outcome.emit();
     outcome.exit_code()
 }
@@ -1471,13 +1390,13 @@ impl StopOutcome {
     }
 }
 
-pub(crate) fn host_stop_in(profile: &Path, channel: Option<String>) -> StopOutcome {
+pub(crate) fn host_stop_in(profile: &Path) -> StopOutcome {
     let socket_path = endpoint_in(profile);
     let pid = running_build_info_in(profile)
         .as_ref()
         .and_then(reported_pid)
         .or_else(|| detect_pid(&socket_path));
-    log::info!("host_stop: channel={channel:?} socket={socket_path:?} pid={pid:?}");
+    log::info!("host_stop: profile={profile:?} socket={socket_path:?} pid={pid:?}");
 
     // The host answers on this connection just before it exits, with its
     // real outcome (stint 1430). A host from before that change closes the
@@ -1791,7 +1710,7 @@ fn reported_pid(info: &serde_json::Value) -> Option<u32> {
 /// Query the running host independently of its profile markers or installed package.
 pub(crate) fn running_build_info() -> Option<serde_json::Value> {
     match host_target() {
-        Ok(target) => running_build_info_in(&target.dir),
+        Ok(target) => running_build_info_in(&target.dir()),
         Err(error) => {
             log::warn!("host: build info not queried: {error}");
             None
@@ -1872,8 +1791,8 @@ fn installed_identity() -> Option<(String, String)> {
     Some((receipt.active.tag, receipt.active.build_id))
 }
 
-pub(crate) fn restart_hint(target: &HostTarget) -> String {
-    target.command_line(&crate::config::current_exe_basename(), "host restart")
+pub(crate) fn restart_hint(target: &ProfileTarget) -> String {
+    command_line(target, &crate::config::current_exe_basename(), "host restart")
 }
 
 fn not_ready_host_message(pid: Option<u32>, socket_exists: bool, socket: &Path) -> String {
@@ -1906,14 +1825,14 @@ pub fn host_status_cli(json: bool) -> i32 {
         Ok(target) => target,
         Err(code) => return code,
     };
-    let channel = &target.channel;
-    let socket_path = target.socket();
+    let channel = target.build_channel();
+    let socket_path = target.endpoint();
     let pane_count = query_ready_status(
         &socket_path,
-        &target.dir,
+        &target.dir(),
         Instant::now() + crate::rpc::DEFAULT_TIMEOUT,
     );
-    let running = running_build_info_in(&target.dir);
+    let running = running_build_info_in(&target.dir());
     let pid = running
         .as_ref()
         .and_then(reported_pid)
@@ -1974,8 +1893,8 @@ pub fn host_log_cli(source: &str, message: &str) -> i32 {
         Ok(target) => target,
         Err(code) => return code,
     };
-    let channel = &target.channel;
-    let profile_dir = target.dir.clone();
+    let channel = target.build_channel();
+    let profile_dir = target.dir();
     let socket_path = endpoint_in(&profile_dir);
     let response_file = crate::rpc::response_file_in(&profile_dir, "host-log-response", "json");
     log::info!(
@@ -2512,7 +2431,7 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         let profile = tempfile::tempdir().unwrap();
         let (pid, _) = spawn_silent_host(profile.path(), true);
         let started = Instant::now();
-        let outcome = host_stop_in(profile.path(), None);
+        let outcome = host_stop_in(profile.path());
         if host_pid_alive(pid) {
             unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
         }
@@ -2542,7 +2461,7 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         let profile = tempfile::tempdir().unwrap();
         let (pid, child) = spawn_silent_host(profile.path(), false);
         let mut child = child.expect("the stand-in is this test's child");
-        let outcome = host_stop_in(profile.path(), None);
+        let outcome = host_stop_in(profile.path());
         let status = child.wait().unwrap();
         assert_eq!(outcome, StopOutcome::TerminationSent(pid));
         assert_eq!(
@@ -2557,11 +2476,29 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         assert!(status.signal().is_some(), "{status:?}");
     }
 
+    /// A selection under `root`, as `main` would choose it for a lifecycle
+    /// verb run by a `plexi[-channel]` executable with an optional
+    /// `--profile`.
+    pub(super) fn test_target(channel: Option<&str>, profile: Option<&str>, root: &Path) -> ProfileTarget {
+        use crate::config::profile_target::{ProfileSource, RootSource};
+        let source = match (profile, channel) {
+            (Some(name), _) => ProfileSource::Named(name.to_string()),
+            (None, Some(channel)) => ProfileSource::Channel(channel.to_string()),
+            (None, None) => ProfileSource::Default,
+        };
+        ProfileTarget::new(
+            root.to_path_buf(),
+            RootSource::Account,
+            source,
+            channel.map(str::to_string),
+        )
+    }
+
     /// The hint printed when an older host is running must not leave the user
     /// with no host when `host stop` reports an unclean exit.
     #[test]
     fn restart_hint_is_one_command() {
-        let target = HostTarget::resolve(None, None, Path::new("/home"));
+        let target = test_target(None, None, Path::new("/home"));
         let hint = super::restart_hint(&target);
         assert!(hint.ends_with(" host restart"), "{hint}");
         assert!(!hint.contains("--profile"), "{hint}");
@@ -2571,13 +2508,9 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
     /// Stint 1655: recovery commands name the explicit profile they address.
     #[test]
     fn restart_hint_names_the_explicit_profile() {
-        let target = HostTarget::resolve(
-            Some("pr-1655".to_string()),
-            Some("t1655".to_string()),
-            Path::new("/home"),
-        );
+        let target = test_target(Some("pr-1655"), Some("t1655"), Path::new("/home"));
         assert_eq!(
-            target.command_line("plexi-pr-1655", "host restart"),
+            command_line(&target, "plexi-pr-1655", "host restart"),
             "plexi-pr-1655 --profile t1655 host restart"
         );
         assert!(super::restart_hint(&target).ends_with(" --profile t1655 host restart"));
@@ -2594,9 +2527,9 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         let listener = std::os::unix::net::UnixListener::bind(endpoint_in(&linked)).unwrap();
         listener.set_nonblocking(true).unwrap();
         std::os::unix::fs::symlink(&linked, home.path().join(".plexi-t1655")).unwrap();
-        let target = HostTarget::resolve(None, Some("t1655".to_string()), home.path());
+        let target = test_target(None, Some("t1655"), home.path());
 
-        let error = target.validated().unwrap_err();
+        let error = ensure_real_profile_dir(&target.dir()).unwrap_err();
 
         assert!(error.contains("non-directory"), "{error}");
         assert!(
@@ -2618,9 +2551,9 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         let profile = home.path().join(".plexi-t1655");
         std::fs::create_dir(&profile).unwrap();
         std::os::unix::fs::symlink(endpoint_in(&other), endpoint_in(&profile)).unwrap();
-        let target = HostTarget::resolve(None, Some("t1655".to_string()), home.path());
+        let target = test_target(None, Some("t1655"), home.path());
 
-        let error = target.validated().unwrap_err();
+        let error = ensure_real_profile_dir(&target.dir()).unwrap_err();
 
         assert!(error.contains("linked host endpoint"), "{error}");
         assert!(
@@ -2642,9 +2575,9 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         let profile = home.path().join(".plexi-t1655");
         std::fs::create_dir(&profile).unwrap();
         std::fs::hard_link(endpoint_in(&other), endpoint_in(&profile)).unwrap();
-        let target = HostTarget::resolve(None, Some("t1655".to_string()), home.path());
+        let target = test_target(None, Some("t1655"), home.path());
 
-        let error = target.validated().unwrap_err();
+        let error = ensure_real_profile_dir(&target.dir()).unwrap_err();
 
         assert!(error.contains("linked host endpoint"), "{error}");
         assert!(
@@ -2664,9 +2597,9 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         let profile = home.path().join(".plexi-t1655");
         std::fs::create_dir(&profile).unwrap();
         std::os::unix::fs::symlink(&other_queue, profile.join("spawn-queue")).unwrap();
-        let target = HostTarget::resolve(None, Some("t1655".to_string()), home.path());
+        let target = test_target(None, Some("t1655"), home.path());
 
-        let error = target.validated().unwrap_err();
+        let error = ensure_real_profile_dir(&target.dir()).unwrap_err();
 
         assert!(error.contains("spawn-queue"), "{error}");
     }
@@ -3022,7 +2955,9 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
             ("PLEXI_RESUME_COMMAND".to_string(), "resume".to_string()),
             ("PLEXI_HOST_MCP_PORT".to_string(), "9999".to_string()),
             ("PLEXI_HOST_MCP_TOKEN".to_string(), "secret".to_string()),
-            ("PLEXI_CHANNEL".to_string(), "beta".to_string()), // must be overridden, not inherited
+            ("PLEXI_CHANNEL".to_string(), "beta".to_string()), // never inherited
+            ("PLEXI_BUILD_CHANNEL".to_string(), "beta".to_string()),
+            ("PLEXI_LAUNCHER_DELEGATED".to_string(), "1".to_string()),
             (
                 crate::workspace::EPHEMERAL_SESSION_ENV.to_string(),
                 "1".to_string(), // must not cascade into later host starts
@@ -3033,7 +2968,7 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
             ),
             ("PATH".to_string(), "/usr/bin".to_string()),
         ];
-        let env = filter_child_env(parent, Some("alpha"));
+        let env = filter_child_env(parent);
         let map: std::collections::HashMap<_, _> = env.into_iter().collect();
         assert_eq!(map.get(crate::workspace::EPHEMERAL_SESSION_ENV), None);
         assert_eq!(map.get(crate::workspace::BACKGROUND_SESSION_ENV), None);
@@ -3055,18 +2990,12 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         assert_eq!(map.get("PLEXI_RESUME_COMMAND"), None);
         assert_eq!(map.get("PLEXI_HOST_MCP_PORT"), None);
         assert_eq!(map.get("PLEXI_HOST_MCP_TOKEN"), None);
-        assert_eq!(map.get("PLEXI_CHANNEL"), Some(&"alpha".to_string()));
+        // A launched host selects its profile from argv, so it is given no
+        // routing value at all (stint 1695).
+        assert_eq!(map.get("PLEXI_CHANNEL"), None);
+        assert_eq!(map.get("PLEXI_BUILD_CHANNEL"), None);
+        assert_eq!(map.get("PLEXI_LAUNCHER_DELEGATED"), None);
         assert_eq!(map.get("PATH"), Some(&"/usr/bin".to_string()));
-    }
-
-    #[test]
-    fn filter_child_env_leaves_channel_unset_for_main() {
-        let parent = vec![("PLEXI_CHANNEL".to_string(), "beta".to_string())];
-        let env = filter_child_env(parent, None);
-        assert!(
-            env.iter().all(|(k, _)| k != "PLEXI_CHANNEL"),
-            "main channel must never inherit a stale PLEXI_CHANNEL: {env:?}"
-        );
     }
 
     #[test]
@@ -3084,7 +3013,7 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
             ("PLEXI_CHANNEL".to_string(), "beta".to_string()),
             ("PATH".to_string(), "/usr/bin".to_string()),
         ];
-        let target = HostTarget::resolve(Some("alpha".to_string()), None, Path::new("/home"));
+        let target = test_target(Some("alpha"), None, Path::new("/home"));
         let command = restart_coordinator_command(Path::new("/bin/true"), parent, &target);
         let env: std::collections::HashMap<_, _> = command
             .get_envs()
@@ -3100,10 +3029,7 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         ] {
             assert!(!env.contains_key(std::ffi::OsStr::new(key)), "leaked {key}");
         }
-        assert_eq!(
-            env.get(std::ffi::OsStr::new("PLEXI_CHANNEL")),
-            Some(&std::ffi::OsStr::new("alpha"))
-        );
+        assert!(!env.contains_key(std::ffi::OsStr::new("PLEXI_CHANNEL")));
         assert_eq!(
             env.get(std::ffi::OsStr::new("PATH")),
             Some(&std::ffi::OsStr::new("/usr/bin"))
@@ -3116,12 +3042,12 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
             crate::workspace::BACKGROUND_SESSION_ENV.to_string(),
             "1".to_string(),
         )];
-        let foreground = host_child_env(inherited.clone(), Some("alpha"), false, false);
+        let foreground = host_child_env(inherited.clone(), false, false);
         assert!(foreground
             .iter()
             .all(|(key, _)| key != crate::workspace::BACKGROUND_SESSION_ENV));
 
-        let background = host_child_env(inherited, Some("alpha"), false, true);
+        let background = host_child_env(inherited, false, true);
         assert_eq!(
             background
                 .iter()
@@ -3133,58 +3059,45 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         );
     }
 
-    // ── HostTarget ──────────────────────────────────────────────────────
+    // ── Lifecycle selection ─────────────────────────────────────────────
 
-    #[test]
-    fn host_target_depends_only_on_its_arguments() {
-        // Regression for a P1 found in Codex review of stint 0342: host
-        // start/stop/status must resolve their profile dir from the binary
-        // channel (or an explicit `--profile`), never from an inherited
-        // PLEXI_CHANNEL env var. `HostTarget::resolve` reads no environment
-        // or global state, so concurrent test threads always agree.
-        let home = Path::new("/home");
-        let alpha = HostTarget::resolve(Some("alpha".to_string()), None, home);
-        assert_eq!(
-            alpha,
-            HostTarget::resolve(Some("alpha".to_string()), None, home)
-        );
-        assert_eq!(alpha.dir, home.join(".plexi-alpha"));
-        assert!(alpha.profile_args().is_empty());
-    }
-
-    #[test]
-    fn host_target_main_channel_has_no_suffix() {
-        let target = HostTarget::resolve(None, None, Path::new("/home"));
-        assert_eq!(target.dir, Path::new("/home/.plexi"));
-    }
-
-    /// Stint 1655: an explicit `--profile` names the profile dir and socket in
-    /// place of the binary channel, and every child `plexi` carries it.
+    /// Stint 1655: an explicit `--profile` names the profile dir and socket
+    /// in place of the binary channel, and every child `plexi` carries it.
     #[test]
     fn explicit_profile_outranks_the_binary_channel() {
         let home = Path::new("/home");
-        let target =
-            HostTarget::resolve(Some("pr-1655".to_string()), Some("t1655".to_string()), home);
-        assert_eq!(target.dir, home.join(".plexi-t1655"));
-        assert_eq!(target.socket(), endpoint_in(&home.join(".plexi-t1655")));
-        assert_eq!(target.channel.as_deref(), Some("pr-1655"));
-        assert_eq!(target.profile_args(), ["--profile", "t1655"]);
-        // A profile named like the main channel is still its own profile dir,
-        // matching where `config::config_dir()` puts that profile's host.
-        let main = HostTarget::resolve(None, Some("main".to_string()), home);
-        assert_eq!(main.dir, home.join(".plexi-main"));
+        let target = test_target(Some("pr-1655"), Some("t1655"), home);
+        assert_eq!(target.dir(), home.join(".plexi-t1655"));
+        assert_eq!(target.endpoint(), endpoint_in(&home.join(".plexi-t1655")));
+        assert_eq!(target.build_channel(), Some("pr-1655"));
+        assert_eq!(forward_args(&target), ["--profile", "t1655"]);
+        let main = test_target(None, Some("main"), home);
+        assert_eq!(main.dir(), home.join(".plexi-main"));
+        assert_eq!(test_target(None, None, home).dir(), home.join(".plexi"));
     }
 
+    /// Stints 1655 and 1695: restart children carry the explicit root and
+    /// profile, so the coordinator, its stop and its start address the same
+    /// host as the command that began the restart.
     #[test]
-    fn restart_children_carry_the_explicit_profile() {
-        let target = HostTarget::resolve(
-            Some("pr-1655".to_string()),
-            Some("t1655".to_string()),
-            Path::new("/home"),
+    fn restart_children_carry_the_explicit_root_and_profile() {
+        use crate::config::profile_target::{ProfileSource, RootSource};
+        let target = ProfileTarget::new(
+            PathBuf::from("/scratch/r1"),
+            RootSource::Explicit,
+            ProfileSource::Named("t1655".into()),
+            Some("pr-1655".into()),
         );
         let command = restart_coordinator_command(Path::new("/bin/true"), Vec::new(), &target);
         let args: Vec<_> = command.get_args().collect();
-        assert_eq!(args, ["host", "restart", "--profile", "t1655"]);
+        assert_eq!(
+            args,
+            ["host", "restart", "--profile-root", "/scratch/r1", "--profile", "t1655"]
+        );
+        assert_eq!(
+            command_line(&target, "plexi-pr-1655", "host stop"),
+            "plexi-pr-1655 --profile-root /scratch/r1 --profile t1655 host stop"
+        );
     }
 
     // ── collect_pane_specs ordering ───────────────────────────────────────

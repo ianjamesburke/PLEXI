@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use plexi_distribution::{
     Error, Result,
     package::Package,
+    profile_target::ProfileRoot,
     release, strays,
     transaction::{self, InstallOptions, Receipt},
 };
@@ -37,6 +38,11 @@ struct Args {
     no_modify_path: bool,
     #[arg(long)]
     dry_run: bool,
+    /// The absolute directory that holds the channel's `.plexi` profile
+    /// (default: the account home). Every host this installer starts or
+    /// restarts uses it.
+    #[arg(long, global = true, value_parser = parse_profile_root)]
+    profile_root: Option<ProfileRoot>,
     #[command(subcommand)]
     command: Option<Action>,
 }
@@ -74,6 +80,10 @@ enum Action {
     Verify {
         package: PathBuf,
     },
+}
+
+fn parse_profile_root(raw: &str) -> std::result::Result<ProfileRoot, String> {
+    ProfileRoot::parse(std::ffi::OsStr::new(raw))
 }
 
 struct Logger;
@@ -167,11 +177,11 @@ fn run(args: Args) -> Result<i32> {
         Some(Action::Restart { receipt, wait_pid }) => {
             // A deferral means another host started while this one waited;
             // that host keeps running and launch_ready has logged it.
-            transaction::restart(&receipt, wait_pid)?;
+            transaction::restart(&receipt, wait_pid, args.profile_root.as_ref())?;
             return Ok(0);
         }
         Some(Action::Rollback { receipt }) => {
-            let r = transaction::rollback(&receipt)?;
+            let r = transaction::rollback(&receipt, args.profile_root.clone())?;
             println!("Restored {}. Restart Plexi to use it.", r.active.tag);
             return Ok(0);
         }
@@ -201,6 +211,7 @@ fn run(args: Args) -> Result<i32> {
     if let Some(path) = args.applications_dir {
         options.applications_dir = path;
     }
+    options.profile_root = args.profile_root.clone();
     if args.modify_path {
         options.modify_path = true;
     } else if args.no_modify_path {
@@ -326,7 +337,7 @@ fn run(args: Args) -> Result<i32> {
         receipt.bin_dir.to_string_lossy().replace('\'', "'\\''")
     );
     if !args.install_only {
-        match transaction::launch_ready(&receipt)? {
+        match transaction::launch_ready(&receipt, args.profile_root.as_ref())? {
             transaction::Launched::Ready => println!("Plexi is ready."),
             transaction::Launched::Deferred(host) => {
                 let pid = host

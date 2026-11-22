@@ -17,13 +17,15 @@
 
 use crate::cli::args::Cli;
 use crate::cli::help::{self, Surface};
+use crate::config::profile_target::{ProfileRoot, Selectors};
 use crate::config::ProfileSelection;
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{ArgAction, Command, FromArgMatches};
 
-/// Plexi's own option. The front end owns it at every command level; clap's
-/// grammar never declares it.
+/// Plexi's own options. The front end owns them at every command level;
+/// clap's grammar never declares them.
 const PROFILE_LONG: &str = "profile";
+const PROFILE_ROOT_LONG: &str = "profile-root";
 
 /// One invocation: the invoked binary name and what argv asks for.
 pub struct Invocation {
@@ -49,13 +51,13 @@ pub struct Help {
     pub long: bool,
     /// Installed before rendering so `run --help` names the selected
     /// profile's paths. Selecting reads nothing.
-    pub selection: ProfileSelection,
+    pub selection: Selectors,
 }
 
 pub struct Run {
     pub cli: Cli,
     pub surface: Surface,
-    pub selection: ProfileSelection,
+    pub selection: Selectors,
     /// argv as given, and which argument owns each token's value: the input
     /// tracing records, captured here so tracing never reparses.
     pub tokens: Vec<String>,
@@ -65,7 +67,7 @@ pub struct Run {
 /// Bare launch, or launch with a workspace operand (`cli.workspace_path`).
 pub struct Launch {
     pub cli: Cli,
-    pub selection: ProfileSelection,
+    pub selection: Selectors,
 }
 
 pub enum UsageError {
@@ -170,7 +172,12 @@ fn outcome(bin: &str, argv: &[String]) -> Outcome {
     if let Some(Stop::Own(error)) = r.stop {
         return Outcome::UsageError(error);
     }
-    let selection = match select_profile(&r.profiles) {
+    let selection = match select_profile(&r.profiles).and_then(|profile| {
+        Ok(Selectors {
+            profile,
+            root: select_profile_root(&r.profile_roots)?,
+        })
+    }) {
         Ok(selection) => selection,
         Err(message) => return Outcome::UsageError(UsageError::Profile(message)),
     };
@@ -247,6 +254,20 @@ fn outcome(bin: &str, argv: &[String]) -> Outcome {
             owners: r.owners,
         })),
         None => Outcome::Launch(Box::new(Launch { cli, selection })),
+    }
+}
+
+/// The one `--profile-root`, validated before anything reads a profile
+/// (stint 1695).
+fn select_profile_root(occurrences: &[Option<String>]) -> Result<Option<ProfileRoot>, String> {
+    match occurrences {
+        [] => Ok(None),
+        [Some(raw)] => ProfileRoot::parse(std::ffi::OsStr::new(raw)).map(Some),
+        [None] => Err("--profile-root needs an absolute directory".to_string()),
+        many => Err(format!(
+            "--profile-root was given {} times; give it once",
+            many.len()
+        )),
     }
 }
 
@@ -428,6 +449,8 @@ fn is_option(rendered: &str, id: &str) -> bool {
 struct Recognized {
     /// One entry per `--profile` occurrence; `None` when its value is missing.
     profiles: Vec<Option<String>>,
+    /// The same for `--profile-root`.
+    profile_roots: Vec<Option<String>>,
     /// The first help flag: the path where it appeared, and its long form.
     help: Option<(Vec<String>, bool)>,
     /// `help <path>`: the resolved path (always long help).
@@ -688,6 +711,15 @@ fn possible_subcommand<'a>(node: &'a Command, token: &str, arg_given: bool) -> O
     node.find_subcommand(token)
 }
 
+/// The occurrence list for one of Plexi's own options.
+fn own_occurrences<'a>(r: &'a mut Recognized, name: &str) -> &'a mut Vec<Option<String>> {
+    if name == PROFILE_ROOT_LONG {
+        &mut r.profile_roots
+    } else {
+        &mut r.profiles
+    }
+}
+
 fn recognize(tree: &Command, argv: &[String]) -> Recognized {
     let mut r = Recognized {
         kept: argv.first().cloned().into_iter().collect(),
@@ -734,27 +766,19 @@ fn recognize(tree: &Command, argv: &[String]) -> Recognized {
                     Some((name, value)) => (name, Some(value)),
                     None => (long, None),
                 };
-                if name == PROFILE_LONG {
+                if name == PROFILE_LONG || name == PROFILE_ROOT_LONG {
                     if let Some(stop) = missing_value_stop(&r, state) {
                         r.stop = Some(stop);
                         return r;
                     }
-                    let consumed = match inline {
-                        Some(value) => {
-                            r.profiles.push(Some(value.to_string()));
-                            1
-                        }
+                    let (value, consumed) = match inline {
+                        Some(value) => (Some(value.to_string()), 1),
                         None => match argv.get(i + 1).filter(|v| !looks_like_option(v)) {
-                            Some(value) => {
-                                r.profiles.push(Some(value.clone()));
-                                2
-                            }
-                            None => {
-                                r.profiles.push(None);
-                                1
-                            }
+                            Some(value) => (Some(value.clone()), 2),
+                            None => (None, 1),
                         },
                     };
+                    own_occurrences(&mut r, name).push(value);
                     state = State::Done;
                     i += consumed;
                     continue;
@@ -975,17 +999,18 @@ fn recognize_help_subcommand(r: &mut Recognized, node: &Command, rest: &[String]
                 Some((name, value)) => (name, Some(value)),
                 None => (long, None),
             };
-            if name == PROFILE_LONG {
-                match inline {
-                    Some(value) => r.profiles.push(Some(value.to_string())),
+            if name == PROFILE_LONG || name == PROFILE_ROOT_LONG {
+                let value = match inline {
+                    Some(value) => Some(value.to_string()),
                     None => match rest.get(j + 1).filter(|v| !looks_like_option(v)) {
                         Some(value) => {
-                            r.profiles.push(Some(value.clone()));
                             j += 1;
+                            Some(value.clone())
                         }
-                        None => r.profiles.push(None),
+                        None => None,
                     },
-                }
+                };
+                own_occurrences(r, name).push(value);
                 j += 1;
                 continue;
             }

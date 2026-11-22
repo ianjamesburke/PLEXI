@@ -428,10 +428,25 @@ pub(crate) fn build_env_with_secrets(
     log::info!("shell::build_env: TERM=xterm-256color");
     env.insert("COLORTERM".into(), "truecolor".into());
     env.insert("PLEXI_RUNNING".into(), "1".into());
-    if let Some(channel) = crate::config::build_channel() {
-        log::info!("shell::build_env: PLEXI_CHANNEL={channel}");
-        env.insert("PLEXI_CHANNEL".into(), channel);
+    // Routing and build are separate pane values (stint 1695): a bare client
+    // routes by the host's profile (`PLEXI_CHANNEL`, its suffix, none for
+    // `.plexi`) and the stable launcher runs the host's build
+    // (`PLEXI_BUILD_CHANNEL`, `stable` for a bare host). Both come from the
+    // host's selection, never from the environment it inherited.
+    let target = crate::config::profile_target::profile_target();
+    if let Some(suffix) = target.routing_suffix() {
+        env.insert("PLEXI_CHANNEL".into(), suffix.to_string());
     }
+    let build = target.build_channel().unwrap_or("stable").to_string();
+    log::info!(
+        "shell::build_env: PLEXI_CHANNEL={:?} {}={build}",
+        target.routing_suffix(),
+        plexi_distribution::transaction::BUILD_CHANNEL_VAR
+    );
+    env.insert(
+        plexi_distribution::transaction::BUILD_CHANNEL_VAR.into(),
+        build,
+    );
 
     env.insert(
         "LANG".into(),

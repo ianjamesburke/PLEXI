@@ -2,6 +2,7 @@ use crate::{
     Error, IoContext, Result,
     bounded::Helper,
     package::{Package, hash_file},
+    profile_target::{ProfileRoot, ProfileTarget},
     release,
 };
 use serde::{Deserialize, Serialize};
@@ -498,6 +499,9 @@ pub struct InstallOptions {
     pub bin_dir: PathBuf,
     pub applications_dir: PathBuf,
     pub modify_path: bool,
+    /// `--profile-root`: where the channel's profile lives, for the
+    /// `installed_tag` marker. `None` is the account home.
+    pub profile_root: Option<ProfileRoot>,
 }
 impl InstallOptions {
     pub fn for_channel(channel: &str) -> Result<Self> {
@@ -510,6 +514,7 @@ impl InstallOptions {
                 bin_dir: receipt.bin_dir,
                 applications_dir: receipt.applications_dir,
                 modify_path: !receipt.path_edits.is_empty(),
+                profile_root: None,
             });
         }
         let home = dirs::home_dir()
@@ -524,6 +529,7 @@ impl InstallOptions {
             bin_dir,
             applications_dir: home.join("Applications"),
             modify_path: false,
+            profile_root: None,
         })
     }
 }
@@ -861,6 +867,7 @@ fn install_checked(
             Some(r.active.clone())
         }
     });
+    let profile_root = options.profile_root;
     let mut receipt = Receipt {
         schema: 1,
         channel: options.channel,
@@ -973,10 +980,10 @@ fn install_checked(
         root.display()
     );
     let tag = installed_tag_text(&receipt.active.tag, &receipt.active.build_id);
-    match dirs::home_dir() {
-        Some(home) => write_installed_tag(&home, &receipt.channel, &tag)?,
-        None => log::error!(
-            "distribution: installed channel={} build={} but the home directory is unavailable; installed_tag was not written",
+    match ProfileTarget::for_channel(profile_root.as_ref(), &receipt.channel) {
+        Ok(profile) => write_installed_tag(&profile.dir(), &receipt.channel, &tag)?,
+        Err(error) => log::error!(
+            "distribution: installed channel={} build={} but its profile is unresolved ({error}); installed_tag was not written",
             receipt.channel,
             receipt.active.build_id
         ),
@@ -993,10 +1000,8 @@ fn installed_tag_text(tag: &str, build_id: &str) -> String {
 }
 
 /// Record the package that just activated. This marker is not executable identity.
-fn write_installed_tag(home: &Path, channel: &str, tag: &str) -> Result<()> {
-    let path = home
-        .join(crate::host_presence::profile_dir_name(channel))
-        .join("installed_tag");
+fn write_installed_tag(profile: &Path, channel: &str, tag: &str) -> Result<()> {
+    let path = profile.join("installed_tag");
     atomic_write(&path, tag.as_bytes())?;
     log::info!(
         "distribution: wrote installed_tag {tag} for channel {channel} at {}",
@@ -1571,7 +1576,7 @@ pub fn uninstall(root: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn rollback(root: &Path) -> Result<Receipt> {
+pub fn rollback(root: &Path, profile_root: Option<ProfileRoot>) -> Result<Receipt> {
     // install takes the same lock, performs the same checks and retains the
     // displaced generation, so rolling forward again uses the same path.
     let receipt =
@@ -1588,6 +1593,7 @@ pub fn rollback(root: &Path) -> Result<Receipt> {
             bin_dir: receipt.bin_dir,
             applications_dir: receipt.applications_dir,
             modify_path: !receipt.path_edits.is_empty(),
+            profile_root,
         },
     )
 }
@@ -1625,7 +1631,36 @@ pub fn register_path(root: &Path) -> Result<Receipt> {
     Ok(receipt)
 }
 
+/// The build a Plexi pane's host runs, exported to the pane so a bare
+/// `plexi` inside it runs that build (stint 1695). Separate from the pane's
+/// profile (`PLEXI_CHANNEL`): a host on `--profile <name>` runs one build and
+/// routes to another profile. A Stable host exports `stable`.
+pub const BUILD_CHANNEL_VAR: &str = "PLEXI_BUILD_CHANNEL";
+
+/// Set by the bare launcher on the build it hands a command to: the
+/// command was typed as bare `plexi`, so the receiving executable keeps the
+/// pane's profile and endpoint instead of selecting its own channel's. The
+/// receiver removes it at startup.
+pub const DELEGATED_VAR: &str = "PLEXI_LAUNCHER_DELEGATED";
+
+/// The installed build the stable launcher hands a bare command to inside a
+/// Plexi pane, or `None` to run the stable build itself. A pane names its
+/// host's build in [`BUILD_CHANNEL_VAR`]; a pane from a host before stint
+/// 1695 has only `PLEXI_CHANNEL`, which then named the build.
+fn pane_build_channel(receipt_channel: &str, env: impl Fn(&str) -> Option<String>) -> Option<String> {
+    if receipt_channel != "stable" || env("PLEXI_RUNNING").as_deref() != Some("1") {
+        return None;
+    }
+    env(BUILD_CHANNEL_VAR)
+        .or_else(|| env("PLEXI_CHANNEL"))
+        .filter(|channel| !channel.is_empty() && channel != "stable" && channel != "main")
+}
+
 pub fn launch(root: &Path, args: &[std::ffi::OsString]) -> Result<i32> {
+    launch_delegated(root, args, false)
+}
+
+fn launch_delegated(root: &Path, args: &[std::ffi::OsString], delegated: bool) -> Result<i32> {
     if let Ok(_lock) = lock(root) {
         recover(root)?;
     }
@@ -1633,14 +1668,10 @@ pub fn launch(root: &Path, args: &[std::ffi::OsString]) -> Result<i32> {
         Error::Invalid("installation is incomplete; run the installer again".into())
     })?;
     // Contextual bare-command routing is limited to an actual Plexi pane.
-    if receipt.channel == "stable"
-        && std::env::var("PLEXI_RUNNING").as_deref() == Ok("1")
-        && let Ok(channel) = std::env::var("PLEXI_CHANNEL")
-        && channel != "stable"
-        && channel != "main"
+    if let Some(channel) = pane_build_channel(&receipt.channel, |name| std::env::var(name).ok())
         && let Some(other) = find_installation(&channel)?
     {
-        return launch(&other.root, args);
+        return launch_delegated(&other.root, args, true);
     }
     #[expect(
         clippy::disallowed_methods,
@@ -1648,6 +1679,11 @@ pub fn launch(root: &Path, args: &[std::ffi::OsString]) -> Result<i32> {
     )]
     let mut command = Command::new(receipt.active.executable());
     command.args(args);
+    if delegated {
+        command.env(DELEGATED_VAR, "1");
+    } else {
+        command.env_remove(DELEGATED_VAR);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1712,19 +1748,18 @@ const LAUNCH_LIMITS: LaunchLimits = LaunchLimits {
     status: Duration::from_secs(30),
 };
 
-/// The profile the installed channel's host uses.
-fn channel_profile_dir(channel: &str) -> Result<PathBuf> {
-    let home =
-        dirs::home_dir().ok_or_else(|| Error::Invalid("cannot resolve home directory".into()))?;
-    Ok(home.join(crate::host_presence::profile_dir_name(channel)))
+/// The profile the installed channel's host uses: under `profile_root`
+/// when given, else the account home (stint 1695).
+fn channel_profile(channel: &str, profile_root: Option<&ProfileRoot>) -> Result<ProfileTarget> {
+    ProfileTarget::for_channel(profile_root, channel).map_err(Error::Invalid)
 }
 
 /// Start the installed build as the running host, unless a host is already
 /// running on its profile (stint 1605).
-pub fn launch_ready(receipt: &Receipt) -> Result<Launched> {
+pub fn launch_ready(receipt: &Receipt, profile_root: Option<&ProfileRoot>) -> Result<Launched> {
     launch_ready_in(
         receipt,
-        &channel_profile_dir(&receipt.channel)?,
+        &channel_profile(&receipt.channel, profile_root)?,
         &LAUNCH_LIMITS,
     )
 }
@@ -1734,11 +1769,12 @@ pub fn launch_ready(receipt: &Receipt) -> Result<Launched> {
 /// nothing is started.
 pub fn launch_ready_in(
     receipt: &Receipt,
-    profile_dir: &Path,
+    profile: &ProfileTarget,
     limits: &LaunchLimits,
 ) -> Result<Launched> {
     use crate::host_presence::{Presence, probe};
     let name = display_name(&receipt.channel);
+    let profile_dir = &profile.dir();
     match probe(profile_dir, Instant::now() + limits.probe) {
         Presence::Running { pid, evidence } => {
             log::info!(
@@ -1771,6 +1807,7 @@ pub fn launch_ready_in(
             helper.current_dir(home);
         }
         helper.args(args);
+        helper.args(profile.forward_args());
         clean_environment(&mut helper);
         helper
     };
@@ -1811,24 +1848,21 @@ pub fn launch_ready_in(
 
 /// The update restart: wait for the old host `wait_pid` to exit, then launch
 /// the installed generation, which defers if another host started meanwhile.
-pub fn restart(root: &Path, wait_pid: u32) -> Result<Launched> {
-    restart_in(root, wait_pid, None, &LAUNCH_LIMITS)
+pub fn restart(root: &Path, wait_pid: u32, profile_root: Option<&ProfileRoot>) -> Result<Launched> {
+    restart_in(root, wait_pid, profile_root, &LAUNCH_LIMITS)
 }
 
 fn restart_in(
     root: &Path,
     wait_pid: u32,
-    profile_dir: Option<&Path>,
+    profile_root: Option<&ProfileRoot>,
     limits: &LaunchLimits,
 ) -> Result<Launched> {
     wait_for_parent(wait_pid)?;
     let receipt = read_receipt(root)?
         .ok_or_else(|| Error::Invalid("installation disappeared during restart".into()))?;
-    let profile_dir = match profile_dir {
-        Some(dir) => dir.to_path_buf(),
-        None => channel_profile_dir(&receipt.channel)?,
-    };
-    launch_ready_in(&receipt, &profile_dir, limits)
+    let profile = channel_profile(&receipt.channel, profile_root)?;
+    launch_ready_in(&receipt, &profile, limits)
 }
 
 pub fn wait_for_parent(pid: u32) -> Result<()> {
@@ -1870,7 +1904,9 @@ pub fn process_alive(pid: u32) -> bool {
     }
 }
 
-pub fn schedule_restart(receipt: &Receipt, pid: u32) -> Result<()> {
+/// `profile_root` is the restarting host's explicit `--profile-root`, so
+/// the relaunch probes and starts the profile that host ran on.
+pub fn schedule_restart(receipt: &Receipt, pid: u32, profile_root: Option<&Path>) -> Result<()> {
     let installer = receipt.active.path.join(if cfg!(windows) {
         "plexi-installer.exe"
     } else {
@@ -1885,7 +1921,13 @@ pub fn schedule_restart(receipt: &Receipt, pid: u32) -> Result<()> {
         .args(["restart", "--receipt"])
         .arg(&receipt.root)
         .arg("--wait-pid")
-        .arg(pid.to_string())
+        .arg(pid.to_string());
+    if let Some(root) = profile_root {
+        command
+            .arg(crate::profile_target::PROFILE_ROOT_FLAG)
+            .arg(root);
+    }
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -2056,6 +2098,68 @@ fn windows_remove(receipt: &Receipt) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn pane_env(
+        pairs: &'static [(&'static str, &'static str)],
+    ) -> impl Fn(&str) -> Option<String> {
+        move |name: &str| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.to_string())
+        }
+    }
+
+    /// Stint 1695: a bare `plexi` in a pane runs the pane host's build,
+    /// named apart from the profile it routes to; a pane from an older host
+    /// (only `PLEXI_CHANNEL`) keeps its build; a new Stable pane on a named
+    /// profile stays on Stable.
+    #[test]
+    fn a_pane_selects_its_hosts_build_not_its_profile() {
+        // A PR build on a named profile.
+        let profiled = pane_env(&[
+            ("PLEXI_RUNNING", "1"),
+            ("PLEXI_CHANNEL", "t1695"),
+            (BUILD_CHANNEL_VAR, "pr-1695"),
+        ]);
+        assert_eq!(
+            pane_build_channel("stable", &profiled).as_deref(),
+            Some("pr-1695")
+        );
+        // Only the stable launcher redirects, and only inside a pane.
+        assert_eq!(pane_build_channel("alpha", &profiled), None);
+        assert_eq!(
+            pane_build_channel("stable", pane_env(&[(BUILD_CHANNEL_VAR, "pr-1695")])),
+            None
+        );
+        // An Alpha or Beta pane from before the build marker.
+        for (legacy, build) in [
+            (&[("PLEXI_RUNNING", "1"), ("PLEXI_CHANNEL", "alpha")][..], "alpha"),
+            (&[("PLEXI_RUNNING", "1"), ("PLEXI_CHANNEL", "beta")][..], "beta"),
+        ] {
+            let env = |name: &str| {
+                legacy
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| value.to_string())
+            };
+            assert_eq!(pane_build_channel("stable", env).as_deref(), Some(build));
+        }
+        // A new Stable pane on a named profile: the marker keeps it on Stable.
+        let stable_named = pane_env(&[
+            ("PLEXI_RUNNING", "1"),
+            ("PLEXI_CHANNEL", "alpha"),
+            (BUILD_CHANNEL_VAR, "stable"),
+        ]);
+        assert_eq!(pane_build_channel("stable", stable_named), None);
+        assert_eq!(
+            pane_build_channel(
+                "stable",
+                pane_env(&[("PLEXI_RUNNING", "1"), (BUILD_CHANNEL_VAR, "main")])
+            ),
+            None
+        );
+    }
+
     /// Stint 1610: a completion script past the capture limit fails the
     /// install instead of being installed cut.
     #[cfg(unix)]
@@ -2103,10 +2207,12 @@ mod tests {
     #[test]
     fn alpha_install_records_profile_installed_tag() {
         let home = tempfile::tempdir().unwrap();
-        write_installed_tag(home.path(), "alpha", "v1.2.3-alpha.4").unwrap();
+        let root = ProfileRoot::parse(home.path().as_os_str()).unwrap();
+        let profile = |channel| ProfileTarget::for_channel(Some(&root), channel).unwrap().dir();
+        write_installed_tag(&profile("alpha"), "alpha", "v1.2.3-alpha.4").unwrap();
         let path = home.path().join(".plexi-alpha/installed_tag");
         assert_eq!(fs::read_to_string(&path).unwrap(), "v1.2.3-alpha.4");
-        write_installed_tag(home.path(), "stable", "build-no-tag").unwrap();
+        write_installed_tag(&profile("stable"), "stable", "build-no-tag").unwrap();
         assert_eq!(
             fs::read_to_string(home.path().join(".plexi/installed_tag")).unwrap(),
             "build-no-tag"
@@ -2472,7 +2578,7 @@ mod tests {
         fs::write(
             &executable,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\ncase \"$*\" in\n'host start --timeout-secs 90') {start} ;;\n'host status --json') echo '{{\"ready\":true,\"running\":{{\"build_id\":\"{name}\",\"source_commit\":\"{name}\"}}}}' ;;\n*) exit 1 ;;\nesac\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\ncase \"$*\" in\n'host start --timeout-secs 90'*) {start} ;;\n'host status --json'*) echo '{{\"ready\":true,\"running\":{{\"build_id\":\"{name}\",\"source_commit\":\"{name}\"}}}}' ;;\n*) exit 1 ;;\nesac\n",
                 calls = calls.display()
             ),
         )
@@ -2512,16 +2618,17 @@ mod tests {
     }
 
     /// A receipt with fake active `c` and previous `b` generations, and an
-    /// empty profile directory beside them.
+    /// empty profile directory beside them under an explicit profile root.
     #[cfg(unix)]
-    fn launch_fixture(start: &str) -> (tempfile::TempDir, Receipt, PathBuf) {
+    fn launch_fixture(start: &str) -> (tempfile::TempDir, Receipt, ProfileTarget) {
         let root = tempfile::tempdir().unwrap();
         let canonical = root.path().canonicalize().unwrap();
         let mut receipt = fixture_receipt(&canonical);
         receipt.active = fake_generation(&canonical, "c", start);
         receipt.previous = Some(fake_generation(&canonical, "b", "exit 0"));
-        let profile = canonical.join("profile");
-        fs::create_dir_all(&profile).unwrap();
+        let profile_root = ProfileRoot::parse(canonical.as_os_str()).unwrap();
+        let profile = ProfileTarget::for_channel(Some(&profile_root), &receipt.channel).unwrap();
+        fs::create_dir_all(profile.dir()).unwrap();
         (root, receipt, profile)
     }
 
@@ -2540,7 +2647,7 @@ mod tests {
     #[test]
     fn a_running_host_defers_without_running_any_generation() {
         let (_root, receipt, profile) = launch_fixture("exit 0");
-        let _host = hold_host_lock(&profile, 4242);
+        let _host = hold_host_lock(&profile.dir(), 4242);
         assert_eq!(
             launch_ready_in(&receipt, &profile, &test_limits(Duration::from_secs(10))).unwrap(),
             Launched::Deferred(RunningHost { pid: Some(4242) })
@@ -2555,7 +2662,7 @@ mod tests {
     fn an_unknown_presence_refuses_and_starts_nothing() {
         use std::os::unix::fs::PermissionsExt;
         let (_root, receipt, profile) = launch_fixture("exit 0");
-        let lock = profile.join(crate::host_presence::LOCK_FILE);
+        let lock = profile.dir().join(crate::host_presence::LOCK_FILE);
         fs::write(&lock, "").unwrap();
         fs::set_permissions(&lock, fs::Permissions::from_mode(0o000)).unwrap();
         let result = launch_ready_in(&receipt, &profile, &test_limits(Duration::from_secs(10)));
@@ -2573,9 +2680,14 @@ mod tests {
             launch_ready_in(&receipt, &profile, &test_limits(Duration::from_secs(10))).unwrap(),
             Launched::Ready
         );
+        // Both steps address the installer's profile root, never `HOME`.
+        let root = profile.root().display();
         assert_eq!(
             calls(&receipt.root, "c"),
-            ["host start --timeout-secs 90", "host status --json"]
+            [
+                format!("host start --timeout-secs 90 --profile-root {root}"),
+                format!("host status --json --profile-root {root}")
+            ]
         );
         assert!(calls(&receipt.root, "b").is_empty());
     }
@@ -2608,7 +2720,13 @@ mod tests {
         }
         assert!(!process_alive(child), "host start {child} survived");
         assert!(!process_alive(sleeper), "descendant {sleeper} survived");
-        assert_eq!(calls(&receipt.root, "c"), ["host start --timeout-secs 90"]);
+        assert_eq!(
+            calls(&receipt.root, "c"),
+            [format!(
+                "host start --timeout-secs 90 --profile-root {}",
+                profile.root().display()
+            )]
+        );
     }
 
     /// The update restart waits for the old host, then defers if another
@@ -2621,11 +2739,11 @@ mod tests {
         let mut old_host = Command::new("/bin/sleep").arg("0.3").spawn().unwrap();
         let old_pid = old_host.id();
         let reaper = std::thread::spawn(move || old_host.wait());
-        let _new_host = hold_host_lock(&profile, 5151);
+        let _new_host = hold_host_lock(&profile.dir(), 5151);
         let launched = restart_in(
             &receipt.root,
             old_pid,
-            Some(&profile),
+            Some(&ProfileRoot::parse(profile.root().as_os_str()).unwrap()),
             &test_limits(Duration::from_secs(10)),
         )
         .unwrap();

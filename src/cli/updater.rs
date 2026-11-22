@@ -46,7 +46,10 @@ fn run_check(cache_dir: &Path, mode: CheckMode, mailbox: &UiMailbox<UpdateEvent>
                 receipt.channel,
                 receipt.previous.as_ref().map_or("", |p| p.tag.as_str()),
             );
-            if let Err(error) = plexi_distribution::transaction::rollback(&receipt.root) {
+            if let Err(error) = plexi_distribution::transaction::rollback(
+                &receipt.root,
+                crate::config::profile_target::profile_target().profile_root(),
+            ) {
                 let reason = format!(
                     "could not discard installed {}: {error}",
                     receipt.active.tag

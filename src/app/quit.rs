@@ -29,7 +29,12 @@ pub(crate) type RestartScheduler = fn() -> Result<(), String>;
 pub(crate) fn schedule_installed_restart() -> Result<(), String> {
     let receipt = crate::distribution::installed()?
         .ok_or_else(|| "no managed installation available for restart".to_string())?;
-    plexi_distribution::transaction::schedule_restart(&receipt, std::process::id())
+    // The relaunch probes and starts the profile root this host ran on.
+    plexi_distribution::transaction::schedule_restart(
+        &receipt,
+        std::process::id(),
+        crate::config::profile_target::profile_target().explicit_root(),
+    )
         .map_err(|e| e.to_string())
 }
 

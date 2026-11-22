@@ -49,7 +49,7 @@ fn expect(parts: &[&str], want: &str) -> Outcome {
 
 fn help_of(parts: &[&str]) -> (Vec<String>, bool, ProfileSelection) {
     match expect(parts, "help") {
-        Outcome::Help(help) => (help.path, help.long, help.selection),
+        Outcome::Help(help) => (help.path, help.long, help.selection.profile),
         _ => unreachable!(),
     }
 }
@@ -147,13 +147,51 @@ fn profile_is_position_independent() {
         &["host", "status", "--profile=t1"],
     ] {
         let run = run_of(parts);
-        assert_eq!(run.selection, named("t1"), "{parts:?}");
+        assert_eq!(run.selection.profile, named("t1"), "{parts:?}");
         assert_eq!(run.surface, base.surface, "{parts:?}");
     }
-    assert_eq!(base.selection, ProfileSelection::Default);
+    assert_eq!(base.selection.profile, ProfileSelection::Default);
     assert_eq!(
-        run_of(&["--profile", "default", "host", "status"]).selection,
+        run_of(&["--profile", "default", "host", "status"]).selection.profile,
         ProfileSelection::Default
+    );
+}
+
+/// Stint 1695: `--profile-root` is position independent, given once, and an
+/// absolute existing directory; anything else is a usage error before any
+/// profile is touched.
+#[test]
+fn profile_root_is_validated_by_the_front_end() {
+    let root = tempfile::tempdir().unwrap();
+    let raw = root.path().to_str().unwrap();
+    for parts in [
+        &["--profile-root", raw, "host", "status"][..],
+        &["host", "status", "--profile-root", raw],
+        &["host", "--profile", "t1", "status", "--profile-root", raw],
+    ] {
+        let run = run_of(parts);
+        assert_eq!(
+            run.selection.root.as_ref().map(|r| r.path()),
+            Some(root.path()),
+            "{parts:?}"
+        );
+        assert_eq!(run.surface, run_of(&["host", "status"]).surface, "{parts:?}");
+    }
+    let file = root.path().join("file");
+    std::fs::write(&file, "x").unwrap();
+    let missing = root.path().join("missing");
+    for bad in [
+        "relative/root",
+        missing.to_str().unwrap(),
+        file.to_str().unwrap(),
+    ] {
+        expect(&["host", "stop", "--profile-root", bad], "profile");
+        expect(&["uninstall", "--profile-root", bad], "profile");
+    }
+    expect(&["host", "stop", "--profile-root"], "profile");
+    expect(
+        &["--profile-root", raw, "host", "stop", "--profile-root", raw],
+        "profile",
     );
 }
 
@@ -194,7 +232,7 @@ fn the_child_tail_is_forwarded_untouched() {
     let mut parts = vec!["run", "example", "--"];
     parts.extend(tail);
     let run = run_of(&parts);
-    assert_eq!(run.selection, ProfileSelection::Default);
+    assert_eq!(run.selection.profile, ProfileSelection::Default);
     let Some(Commands::Run {
         command,
         extra_args,
@@ -398,7 +436,7 @@ fn removal_never_rebinds_a_value() {
     }
     help_of(&["pane", "list", "--context", "--help"]);
     let run = run_of(&["pane", "list", "--context", "--profile", "t1", "--json"]);
-    assert_eq!(run.selection, named("t1"));
+    assert_eq!(run.selection.profile, named("t1"));
     assert_eq!(
         help_of(&["pane", "info", "--previous", "3", "--help"]).0,
         path(&["pane", "info"])

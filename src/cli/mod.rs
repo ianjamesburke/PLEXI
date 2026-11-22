@@ -1,4 +1,3 @@
-use plexi_distribution::host_presence::endpoint_in;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -797,9 +796,32 @@ mod caller_relation_tests {
 
 #[cfg(test)]
 mod socket_resolution_tests {
-    use super::{command_socket_available_from, resolve_command_socket_from, NO_COMMAND_SOCKET, endpoint_in};
+    use super::{command_socket_available_from, resolve_command_socket_from, NO_COMMAND_SOCKET};
+    use crate::config::profile_target::{select, Ambient, Role, Selectors};
+    use crate::config::ProfileSelection;
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
+
+    const HOME: &str = "/Users/test";
+
+    fn command(executable: &str, profile: Option<&str>, ambient: &Ambient) -> Option<PathBuf> {
+        let selectors = Selectors {
+            profile: profile.map_or(ProfileSelection::Default, |p| {
+                ProfileSelection::parse(p).unwrap()
+            }),
+            root: None,
+        };
+        let target = select(Role::Command, &selectors, executable, Ok(HOME.into()), ambient).unwrap();
+        resolve_command_socket_from(None, &target, ambient.socket.as_deref())
+    }
+
+    fn pane(socket: &str, channel: Option<&str>) -> Ambient {
+        Ambient {
+            socket: Some(socket.into()),
+            channel: channel.map(str::to_string),
+            ..Ambient::default()
+        }
+    }
 
     /// Stint 1124: with no routing input the error names `--socket`.
     #[test]
@@ -811,160 +833,71 @@ mod socket_resolution_tests {
         assert!(!NO_COMMAND_SOCKET.contains("run this inside a Plexi terminal pane"));
     }
 
+    /// A channel executable and an explicit `--profile` address their own
+    /// endpoint, never the pane's; a bare binary keeps the pane's endpoint.
     #[test]
-    fn binary_channel_wins_over_ambient_socket() {
-        let actual = resolve_command_socket_from(
-            None,
-            Some("pr-2765"),
-            Some(OsStr::new("/Users/test/.plexi-beta/notify.sock")),
-            Path::new("/Users/test"),
-        );
-
+    fn explicit_addressing_wins_and_a_bare_binary_keeps_its_pane() {
+        let beta = pane("/Users/test/.plexi-beta/notify.sock", Some("beta"));
         assert_eq!(
-            actual,
-            Some(endpoint_in(Path::new("/Users/test/.plexi-pr-2765")))
+            command("plexi-pr-2765", None, &beta),
+            Some(PathBuf::from("/Users/test/.plexi-pr-2765/notify.sock"))
         );
-    }
-
-    #[test]
-    fn alpha_binary_ignores_ambient_beta_socket() {
-        let actual = resolve_command_socket_from(
-            None,
-            Some("alpha"),
-            Some(OsStr::new("/tmp/beta.sock")),
-            Path::new("/Users/test"),
-        );
-
         assert_eq!(
-            actual,
-            Some(endpoint_in(Path::new("/Users/test/.plexi-alpha")))
+            command("plexi-alpha", None, &pane("/tmp/beta.sock", None)),
+            Some(PathBuf::from("/Users/test/.plexi-alpha/notify.sock"))
         );
-    }
-
-    #[test]
-    fn bare_binary_preserves_ambient_socket() {
-        let actual = resolve_command_socket_from(
-            None,
-            None,
-            Some(OsStr::new("/tmp/ambient.sock")),
-            Path::new("/Users/test"),
-        );
-
-        assert_eq!(actual, Some(PathBuf::from("/tmp/ambient.sock")));
-    }
-
-    #[test]
-    fn suffixed_binary_matching_ambient_socket_resolves_same_endpoint() {
-        let actual = resolve_command_socket_from(
-            None,
-            Some("alpha"),
-            Some(OsStr::new("/Users/test/.plexi-alpha/notify.sock")),
-            Path::new("/Users/test"),
-        );
-
         assert_eq!(
-            actual,
-            Some(endpoint_in(Path::new("/Users/test/.plexi-alpha")))
+            command("plexi", Some("t1655"), &beta),
+            Some(PathBuf::from("/Users/test/.plexi-t1655/notify.sock"))
         );
-    }
-
-    #[test]
-    fn explicit_socket_override_wins_for_suffixed_binary() {
-        let actual = resolve_command_socket_from(
-            Some(Path::new("/tmp/explicit.sock")),
-            Some("pr-2384"),
-            Some(OsStr::new("/tmp/ambient.sock")),
-            Path::new("/Users/test"),
-        );
-
-        assert_eq!(actual, Some(PathBuf::from("/tmp/explicit.sock")));
-    }
-
-    #[test]
-    fn explicit_socket_override_enables_direct_dispatch_without_ambient_socket() {
-        assert!(command_socket_available_from(true, false));
-    }
-
-    #[test]
-    fn binary_suffix_alone_does_not_enable_direct_dispatch() {
-        let resolved =
-            resolve_command_socket_from(None, Some("alpha"), None, Path::new("/Users/test"));
-
         assert_eq!(
-            (resolved, command_socket_available_from(false, false)),
-            (
-                Some(PathBuf::from("/Users/test/.plexi-alpha/notify.sock")),
-                false,
-            )
+            command("plexi", None, &pane("/tmp/ambient.sock", None)),
+            Some(PathBuf::from("/tmp/ambient.sock"))
         );
+        assert_eq!(command("plexi", None, &Ambient::default()), None);
+        assert!(!command_socket_available_from(false, false));
     }
 
+    /// Stint 1695 (round 4 finding B): the stable launcher hands a bare
+    /// command in a PR pane to the PR build, which keeps the pane's
+    /// endpoint instead of its own channel's.
     #[test]
-    fn nested_channel_matrix_routes_without_env_stripping() {
-        let home = Path::new("/Users/test");
-        let inherited_env = [
-            ("PLEXI_CHANNEL", "beta"),
-            ("PLEXI_SOCKET", "/Users/test/.plexi-beta/notify.sock"),
-            ("PLEXI_PANE_ID", "42"),
-            ("PLEXI_CONTEXT_ID", "7"),
-            ("PLEXI_CONTEXT_ROOT", "/Users/test/workspace"),
-            ("PLEXI_RUNNING", "1"),
-        ];
-        let env_get = |key: &str| -> Option<&str> {
-            inherited_env
-                .iter()
-                .find_map(|(k, v)| (*k == key).then_some(*v))
+    fn a_delegated_build_keeps_the_pane_endpoint() {
+        let socket = "/scratch/r/.plexi-t1695/notify.sock";
+        let delegated = Ambient {
+            delegated: true,
+            ..pane(socket, Some("t1695"))
         };
-
-        // Self-identity vars stay intact for default resolution (e.g. pane slot write).
-        assert_eq!(env_get("PLEXI_PANE_ID"), Some("42"));
-        assert_eq!(env_get("PLEXI_CONTEXT_ID"), Some("7"));
-        assert_eq!(env_get("PLEXI_CONTEXT_ROOT"), Some("/Users/test/workspace"));
-        assert_eq!(env_get("PLEXI_RUNNING"), Some("1"));
-
-        // (1) Channel-named shim with inherited beta routing + self-identity env
-        // resolves both profile dir and command socket to the shim's channel.
-        let shim_basename = "plexi-pr-2765";
-        let shim_channel = crate::config::channel_from_basename(shim_basename);
-        assert_eq!(shim_channel, Some("pr-2765"));
-        let shim_profile_dir =
-            crate::config::resolve_channel_dir(shim_basename, env_get("PLEXI_CHANNEL"));
-        let shim_socket = resolve_command_socket_from(
-            None,
-            shim_channel,
-            env_get("PLEXI_SOCKET").map(OsStr::new),
-            home,
-        );
-        assert_eq!(shim_profile_dir, ".plexi-pr-2765");
-        assert_eq!(shim_socket, Some(endpoint_in(&home.join(".plexi-pr-2765"))));
-
-        // (2) Explicit `--socket` overrides the shim's channel and ambient env.
-        let explicit_socket = Path::new("/tmp/custom-override.sock");
-        let overridden_socket = resolve_command_socket_from(
-            Some(explicit_socket),
-            shim_channel,
-            env_get("PLEXI_SOCKET").map(OsStr::new),
-            home,
-        );
-        assert_eq!(overridden_socket, Some(explicit_socket.to_path_buf()));
-
-        // (3) Bare `plexi` adopts inherited `PLEXI_CHANNEL` and `PLEXI_SOCKET`.
-        let bare_basename = "plexi";
-        let bare_channel = crate::config::channel_from_basename(bare_basename);
-        assert_eq!(bare_channel, None);
-        let bare_profile_dir =
-            crate::config::resolve_channel_dir(bare_basename, env_get("PLEXI_CHANNEL"));
-        let bare_socket = resolve_command_socket_from(
-            None,
-            bare_channel,
-            env_get("PLEXI_SOCKET").map(OsStr::new),
-            home,
-        );
-        assert_eq!(bare_profile_dir, ".plexi-beta");
         assert_eq!(
-            bare_socket,
-            Some(PathBuf::from("/Users/test/.plexi-beta/notify.sock"))
+            command("plexi-pr-1695", None, &delegated),
+            Some(PathBuf::from(socket))
         );
+        // The same executable typed by name is an explicit address.
+        assert_eq!(
+            command("plexi-pr-1695", None, &pane(socket, Some("t1695"))),
+            Some(PathBuf::from("/Users/test/.plexi-pr-1695/notify.sock"))
+        );
+    }
+
+    #[test]
+    fn explicit_socket_override_wins() {
+        let target = select(
+            Role::Command,
+            &Selectors::none(),
+            "plexi-pr-2384",
+            Ok(HOME.into()),
+            &Ambient::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_command_socket_from(
+                Some(Path::new("/tmp/explicit.sock")),
+                &target,
+                Some(OsStr::new("/tmp/ambient.sock")),
+            ),
+            Some(PathBuf::from("/tmp/explicit.sock"))
+        );
+        assert!(command_socket_available_from(true, false));
     }
 }
 
@@ -974,9 +907,10 @@ pub(super) const NO_COMMAND_SOCKET: &str = "error: no Plexi host to talk to: PLE
 
 /// Resolve the command socket endpoint from target-routing inputs.
 ///
-/// Precedence: explicit `--socket` > target profile (an explicit `--profile`,
-/// else the binary channel identity `plexi-<channel>`) > ambient
-/// `PLEXI_SOCKET` (bare `plexi` with no `--profile` only) > `None`.
+/// Precedence: explicit `--socket` > the selection's own endpoint when the
+/// invocation addressed it (`--profile`, `--profile-root` or a channel
+/// executable not delegated by the bare launcher) > ambient `PLEXI_SOCKET`
+/// > `None`.
 ///
 /// See `src/cli/AGENTS.md` ("Environment classification (`self-identity` vs
 /// `target-routing`)") for the canonical precedence table. Self-identity env
@@ -984,18 +918,17 @@ pub(super) const NO_COMMAND_SOCKET: &str = "error: no Plexi host to talk to: PLE
 /// `PLEXI_RUNNING`) are never consulted for socket routing.
 fn resolve_command_socket_from(
     explicit_socket: Option<&std::path::Path>,
-    target_profile: Option<&str>,
+    target: &crate::config::profile_target::ProfileTarget,
     ambient_socket: Option<&std::ffi::OsStr>,
-    home_dir: &std::path::Path,
 ) -> Option<std::path::PathBuf> {
     if let Some(socket) = explicit_socket {
         return Some(socket.to_path_buf());
     }
-    // An explicit `--profile` or the binary's own channel outranks inherited
-    // routing env: the CLI addresses that profile's endpoint and ignores an
-    // ambient PLEXI_SOCKET stamped by whichever host spawned the pane.
-    if let Some(profile) = target_profile {
-        return Some(endpoint_in(&home_dir.join(format!(".plexi-{profile}"))));
+    // An addressed target outranks inherited routing env: the CLI addresses
+    // that profile's endpoint and ignores an ambient PLEXI_SOCKET stamped by
+    // whichever host spawned the pane.
+    if target.is_addressed() {
+        return Some(target.endpoint());
     }
     ambient_socket.map(std::path::PathBuf::from)
 }
@@ -1088,12 +1021,10 @@ pub(crate) fn settle_caller_identity(
     let target = if let Some(socket) = lifecycle_socket {
         Some(socket.to_path_buf())
     } else {
-        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         resolve_command_socket_from(
             explicit_socket,
-            command_target_profile().as_deref(),
+            crate::config::profile_target::profile_target(),
             None,
-            &home,
         )
     };
     // Without a target of its own, bare `plexi` addresses the caller's own
@@ -1323,51 +1254,21 @@ pub(super) fn spawn_queued_at_ms() -> u64 {
     crate::platform::clock::now_millis() as u64
 }
 
-fn command_binary_channel() -> Option<String> {
-    let channel = crate::config::build_channel();
-    #[cfg(test)]
-    {
-        let is_cargo_test_artifact = std::env::current_exe()
-            .ok()
-            .and_then(|path| path.parent().map(|parent| parent.ends_with("deps")))
-            .unwrap_or(false);
-        if is_cargo_test_artifact {
-            return None;
-        }
-    }
-    channel
-}
-
-/// The profile a CLI invocation addresses: an explicit `--profile`, else the
-/// binary's own channel. `None` only for the bare `plexi` binary without one.
-fn command_target_profile() -> Option<String> {
-    crate::config::explicit_profile()
-        .map(str::to_string)
-        .or_else(command_binary_channel)
-}
-
 pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {
-    let profile = command_target_profile();
+    let target = crate::config::profile_target::profile_target();
     let ambient = std::env::var_os("PLEXI_SOCKET");
-    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
     let explicit = COMMAND_SOCKET_OVERRIDE.lock().ok().and_then(|g| g.clone());
-    let socket = resolve_command_socket_from(
-        explicit.as_deref(),
-        profile.as_deref(),
-        ambient.as_deref(),
-        &home,
-    );
+    let socket = resolve_command_socket_from(explicit.as_deref(), target, ambient.as_deref());
     if let Some(path) = socket.as_ref() {
         let source = if explicit.is_some() {
             "--socket"
-        } else if crate::config::explicit_profile().is_some() {
-            "--profile"
-        } else if profile.is_some() {
-            "binary-channel"
+        } else if target.is_addressed() {
+            "selection"
         } else {
             "PLEXI_SOCKET"
         };
-        if explicit.is_none() && profile.is_some() {
+        let profile = target.dir_name();
+        if explicit.is_none() && target.is_addressed() {
             if let Some(ignored) = ambient.as_ref() {
                 if ignored.as_os_str() != path.as_os_str() {
                     log::info!(

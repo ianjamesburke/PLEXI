@@ -49,9 +49,37 @@ mod ui;
 mod ui_tests;
 mod workspace;
 
+/// Choose this process's selection and install it before any profile
+/// access. A selection that cannot be made (an invalid executable channel, a
+/// private `HOME` without `--profile-root`, no account home) is a usage error:
+/// nothing is read, connected to or signalled.
+fn install_profile_target(
+    role: crate::config::profile_target::Role,
+    selectors: &crate::config::profile_target::Selectors,
+    ambient: &crate::config::profile_target::Ambient,
+) {
+    match crate::config::profile_target::select(
+        role,
+        selectors,
+        &crate::config::current_exe_basename(),
+        plexi_distribution::profile_target::account_home(),
+        ambient,
+    ) {
+        Ok(target) => crate::config::profile_target::install(target),
+        Err(error) => {
+            eprintln!("error: {error}");
+            cli::trace::exit(2);
+        }
+    }
+}
+
 fn main() -> eframe::Result {
     let process_start = std::time::Instant::now();
     let raw_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    // The inherited values a selection may consult, read once while startup
+    // is single-threaded (stint 1695). Removes the launcher's delegation
+    // marker so nothing this process starts inherits it.
+    let ambient = crate::config::profile_target::Ambient::take();
     // Installer and renderer entry points are exact argv shapes, outside
     // ordinary command dispatch.
     let entry_point = match raw_args.get(1..) {
@@ -73,6 +101,11 @@ fn main() -> eframe::Result {
     }
     match entry_point {
         Some("--render") => {
+            install_profile_target(
+                crate::config::profile_target::Role::Command,
+                &crate::config::profile_target::Selectors::none(),
+                &ambient,
+            );
             render_cli();
             cli::trace::exit(0);
         }
@@ -95,7 +128,18 @@ fn main() -> eframe::Result {
     // initialization, no tracing, no host contact.
     let startup = match outcome {
         cli::front::Outcome::Help(help) => {
-            crate::config::set_profile(help.selection.clone());
+            // Help names the selected profile's paths and reads nothing, so
+            // a selection it cannot make (a private HOME) only leaves those
+            // paths at the executable's own profile.
+            if let Ok(target) = crate::config::profile_target::select(
+                crate::config::profile_target::Role::Command,
+                &help.selection,
+                &crate::config::current_exe_basename(),
+                plexi_distribution::profile_target::account_home(),
+                &ambient,
+            ) {
+                crate::config::profile_target::install(target);
+            }
             cli::trace::exit(cli::front::emit_help(&bin, &help))
         }
         cli::front::Outcome::Version => cli::trace::exit(cli::front::emit_version(&bin)),
@@ -109,17 +153,12 @@ fn main() -> eframe::Result {
         cli::front::Outcome::Run(run) => Startup::Run(run),
         cli::front::Outcome::Launch(launch) => Startup::Launch(launch),
     };
-    // Install the validated selection, then settle the caller's identity
-    // against the endpoint this command addresses, before profile/workspace
-    // setup or any pane default reads inherited identity. This is still
-    // single-threaded process startup.
-    crate::config::set_profile(match &startup {
-        Startup::Run(run) => run.selection.clone(),
-        Startup::Launch(launch) => launch.selection.clone(),
-    });
-    // A lifecycle command addresses its validated profile host and nothing
-    // else: a refused target exits here, before any connection or trace.
-    let lifecycle_socket = match &startup {
+    // Choose and install the one host selection (stints 1695, 1657), then
+    // settle the caller's identity against the endpoint this command
+    // addresses, before profile/workspace setup or any pane default reads
+    // inherited identity. This is still single-threaded process startup.
+    let role = match &startup {
+        Startup::Launch(_) => crate::config::profile_target::Role::HostLaunch,
         Startup::Run(run)
             if run
                 .cli
@@ -127,16 +166,29 @@ fn main() -> eframe::Result {
                 .as_ref()
                 .is_some_and(cli::host::addresses_profile_host) =>
         {
-            match cli::host::host_target() {
-                Ok(target) => Some(target.socket()),
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    cli::trace::exit(1);
-                }
+            crate::config::profile_target::Role::Lifecycle
+        }
+        Startup::Run(_) => crate::config::profile_target::Role::Command,
+    };
+    install_profile_target(
+        role,
+        match &startup {
+            Startup::Run(run) => &run.selection,
+            Startup::Launch(launch) => &launch.selection,
+        },
+        &ambient,
+    );
+    // A lifecycle command addresses its validated profile host and nothing
+    // else: a refused target exits here, before any connection or trace.
+    let lifecycle_socket = (role == crate::config::profile_target::Role::Lifecycle).then(|| {
+        match cli::host::host_target() {
+            Ok(target) => target.endpoint(),
+            Err(error) => {
+                eprintln!("error: {error}");
+                cli::trace::exit(1);
             }
         }
-        _ => None,
-    };
+    });
     let dropped_identity = match &startup {
         Startup::Run(run) => {
             cli::settle_caller_identity(run.cli.socket.as_deref(), lifecycle_socket.as_deref())
@@ -196,7 +248,7 @@ fn main() -> eframe::Result {
             &cli::front::Help {
                 path: Vec::new(),
                 long: false,
-                selection: crate::config::ProfileSelection::Default,
+                selection: crate::config::profile_target::Selectors::none(),
             },
         )),
         app::host_instance::HostLaunch::Host => LaunchProfile::Host(
@@ -246,6 +298,10 @@ fn main() -> eframe::Result {
     log::info!(
         "cli_front: {} {surface_path:?}",
         if host_startup { "launch" } else { "run" }
+    );
+    log::info!(
+        "startup: profile target role={role:?} {}",
+        crate::config::profile_target::describe(crate::config::profile_target::profile_target())
     );
     // A CLI command's migration ran inside `lock_profile_initialization`,
     // before the logger.

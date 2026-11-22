@@ -61,13 +61,6 @@ impl ProfileSelection {
             migration_example(raw)
         ))
     }
-
-    pub fn into_name(self) -> Option<ProfileName> {
-        match self {
-            Self::Default => None,
-            Self::Named(name) => Some(name),
-        }
-    }
 }
 
 /// A grammar-valid stand-in name derived from `raw`, for the migration hint.
@@ -93,7 +86,7 @@ fn migration_example(raw: &str) -> String {
         .collect()
 }
 
-fn is_profile_name(raw: &str) -> bool {
+pub(crate) fn is_profile_name(raw: &str) -> bool {
     let bytes = raw.as_bytes();
     !bytes.is_empty()
         && bytes.len() <= PROFILE_NAME_MAX

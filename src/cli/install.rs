@@ -297,14 +297,13 @@ pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: b
     let result = (|| -> Result<(), String> {
         let receipt = crate::distribution::installed()?.ok_or_else(|| "No managed installation receipt found. No files were removed. Reinstall through the current installer to migrate this legacy installation.".to_string())?;
         let target = super::host::host_target()?;
-        let profile = target.dir().to_path_buf();
-        let home = dirs::home_dir().ok_or("uninstall: no home directory to resolve profiles")?;
+        let profile = target.dir();
         delete_data = match data_choice(
             keep_data,
             delete_data,
             assume_yes,
-            pr_installation_owns_profile(&receipt.channel, &profile, &home),
-            target.is_named(),
+            pr_installation_owns_profile(&receipt.channel, &target),
+            target.named_profile().is_some(),
         ) {
             DataChoice::Delete => true,
             DataChoice::Retain => false,
@@ -447,12 +446,17 @@ fn data_choice(
     }
 }
 
-/// A PR build's own profile (`~/.plexi-pr-<N>`) is disposable test state and
-/// is deleted by default. Any other profile, including a persistent one a PR
-/// build addresses through `--profile`, is deleted only by explicit choice.
-fn pr_installation_owns_profile(channel: &str, profile: &Path, home: &Path) -> bool {
+/// A PR build's own profile (`.plexi-pr-<N>`, selected by its executable) is
+/// disposable test state and is deleted by default. Any other profile,
+/// including a persistent one a PR build addresses through `--profile`, is
+/// deleted only by explicit choice.
+fn pr_installation_owns_profile(
+    channel: &str,
+    target: &crate::config::profile_target::ProfileTarget,
+) -> bool {
     channel.starts_with("pr-")
-        && profile == home.join(plexi_distribution::host_presence::profile_dir_name(channel))
+        && *target.source()
+            == crate::config::profile_target::ProfileSource::Channel(channel.to_string())
 }
 
 /// Runs the uninstall step, then deletes channel data only if it succeeded, so
@@ -726,8 +730,12 @@ pub(crate) fn run_binary_asset_install(channel: &str, tag_name: &str) -> Result<
             root: r.root,
             bin_dir: r.bin_dir,
             applications_dir: r.applications_dir,
+            profile_root: crate::config::profile_target::profile_target().profile_root(),
         },
-        None => transaction::InstallOptions::for_channel(channel).map_err(|e| e.to_string())?,
+        None => transaction::InstallOptions {
+            profile_root: crate::config::profile_target::profile_target().profile_root(),
+            ..transaction::InstallOptions::for_channel(channel).map_err(|e| e.to_string())?
+        },
     };
     let receipt = match expected_build {
         Some(expected) => transaction::update(&package, options, &expected),
@@ -748,7 +756,11 @@ pub fn self_update_cli(rollback: bool) -> i32 {
         crate::distribution::installed()
             .and_then(|r| r.ok_or_else(|| "no managed installation".to_string()))
             .and_then(|r| {
-                plexi_distribution::transaction::rollback(&r.root).map_err(|e| e.to_string())
+                plexi_distribution::transaction::rollback(
+                    &r.root,
+                    crate::config::profile_target::profile_target().profile_root(),
+                )
+                .map_err(|e| e.to_string())
             })
             .map(|r| format!("Restored {}. Restart Plexi to apply.", r.active.tag))
     } else {
@@ -838,14 +850,22 @@ mod uninstall_data_tests {
     /// `--delete-data`.
     #[test]
     fn a_pr_uninstall_owns_only_its_own_profile() {
-        let home = std::path::Path::new("/home/u");
-        let owns = |channel: &str, dir: &str| {
-            super::pr_installation_owns_profile(channel, &home.join(dir), home)
+        use crate::config::profile_target::{ProfileSource, ProfileTarget, RootSource};
+        let owns = |channel: &str, source: ProfileSource| {
+            let target = ProfileTarget::new(
+                "/home/u".into(),
+                RootSource::Account,
+                source,
+                Some(channel.to_string()),
+            );
+            super::pr_installation_owns_profile(channel, &target)
         };
-        assert!(owns("pr-3267", ".plexi-pr-3267"));
-        assert!(!owns("pr-3267", ".plexi-team"));
-        assert!(!owns("pr-3267", ".plexi-pr-3268"));
-        assert!(!owns("alpha", ".plexi-alpha"));
+        let executable = |c: &str| ProfileSource::Channel(c.to_string());
+        assert!(owns("pr-3267", executable("pr-3267")));
+        assert!(!owns("pr-3267", ProfileSource::Named("team".into())));
+        assert!(!owns("pr-3267", ProfileSource::Named("pr-3267".into())));
+        assert!(!owns("pr-3267", executable("pr-3268")));
+        assert!(!owns("alpha", executable("alpha")));
     }
 
     /// Round 7: a persistent named profile is never deleted, or offered for
