@@ -25,6 +25,7 @@ from plexi_sdk import _v3_errors, _v3_state, effects, events
 from plexi_sdk._keys import normalize_key as _normalize_key
 from plexi_sdk._v3_delta import CONTAINER_FIELDS, child_refs, node_patch as _node_patch
 from plexi_sdk._v3_state import _COMPONENT_STATE_NAMESPACE, StateSnapshot
+from plexi_sdk._protocol import PROTOCOL_VERSION
 
 
 _LOCK = threading.Lock()
@@ -462,6 +463,12 @@ class PluginRuntime:
         ))
 
     def _handle_init(self, ev: dict) -> None:
+        protocol = ev.get("protocol")
+        if protocol != PROTOCOL_VERSION:
+            raise RuntimeError(
+                f"this plexi_sdk speaks {PROTOCOL_VERSION} but the host sent "
+                f"{protocol!r}; run the plugin with the SDK bundled with this Plexi"
+            )
         self._plugin_id = ev.get("plugin_id", "")
         self._workspace_root = ev.get("workspace_root", "")
         self._capabilities = ev.get("capabilities", [])

@@ -948,16 +948,27 @@ class TestWireFormat:
         finally:
             proc.kill()
 
-    def test_wasm_protocol_emits_indexed_component_tree(self, tmp_path):
+    @pytest.mark.parametrize("protocol", [None, "pgap/4"])
+    def test_init_from_another_protocol_version_is_refused_at_startup(self, tmp_path, protocol):
+        """Stint 1681: the host names its PGAP version in init and an SDK
+        that speaks another refuses to start, naming both versions, before
+        the plugin's init runs."""
         proc = _spawn_v3_app(self._text_app(tmp_path))
         try:
-            _init_app(proc, protocol=None)
-            events = _render(proc)
-            tree = _find_events(events, "component_tree")[0]
-            assert "tree" in tree and "root" not in tree
-            assert tree["frame_id"] == 1
+            msg = {"type": "init", "plugin_id": "old-host", "workspace_root": "/tmp",
+                   "capabilities": [], "feature_flags": [], "width": 640.0, "height": 360.0}
+            if protocol is not None:
+                msg["protocol"] = protocol
+            proc.stdin.write(json.dumps(msg) + "\n")
+            proc.stdin.flush()
+            proc.wait(timeout=10)
+            messages = [json.loads(line) for line in proc.stdout.read().splitlines()]
+            assert not any(m.get("type") == "ready" for m in messages)
+            fatal = next(m for m in messages if m.get("type") == "fatal_error")
+            assert "pgap/5" in fatal["message"] and repr(protocol) in fatal["message"]
         finally:
-            proc.kill()
+            if proc.poll() is None:
+                proc.kill()
 
 
 # =============================================================================

@@ -145,6 +145,7 @@ def test_emitted_wire_line_carries_rounded_compact_json(tmp_path):
     try:
         proc.stdin.write(json.dumps({
             "type": "init",
+            "protocol": "pgap/5",
             "plugin_id": "wire-test",
             "workspace_root": "/tmp",
             "capabilities": [],

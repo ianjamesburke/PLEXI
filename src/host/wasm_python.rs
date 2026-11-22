@@ -946,6 +946,7 @@ fn python_init_payload(
     );
     Ok(json!({
         "type": "init",
+        "protocol": crate::protocol::PROTOCOL_VERSION,
         "plugin_id": config.plugin_id,
         "workspace_root": config.workspace_root,
         "capabilities": config.capabilities,
@@ -5113,7 +5114,9 @@ impl LivePythonPane {
             size.1
         );
         if let Err(error) = self.runtime.send(&json!({
-            "type": "init", "plugin_id": self.plugin_id,
+            "type": "init",
+            "protocol": crate::protocol::PROTOCOL_VERSION,
+            "plugin_id": self.plugin_id,
             "workspace_root": self.config.workspace_root,
             "capabilities": self.config.capabilities,
             "feature_flags": ["keyed_tree_delta"],
@@ -8602,6 +8605,19 @@ mod tests {
         assert!(payload["theme"]
             .as_object()
             .is_some_and(|theme| !theme.is_empty()));
+    }
+
+    /// Stint 1681 (review round 3): headless init names the PGAP version, so
+    /// an SDK that speaks another refuses at startup.
+    #[test]
+    fn python_init_payload_names_the_protocol_version() {
+        let workspace = tempdir().expect("workspace");
+        let config = state_test_config(workspace.path(), "test.protocol-init");
+
+        let payload = python_init_payload(&config, Some(json!({})), (480.0, 320.0))
+            .expect("single-scope seed");
+
+        assert_eq!(payload["protocol"], crate::protocol::PROTOCOL_VERSION);
     }
 
     #[test]
