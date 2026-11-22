@@ -4755,6 +4755,100 @@ fn launch_plan_plugin_spawn_pane_reports_the_installed_terminal_or_its_failure()
     );
 }
 
+/// Wrap a fresh pipe pane in window 0 into a subcontext through the real
+/// production wrap path, returning `(parent_context, child_context,
+/// child_window)`. Only the router learns the child's parent, as in the
+/// installed host.
+fn wrap_pipe_pane_into_subcontext(h: &mut HostHarness) -> (u64, u64, usize) {
+    let parent = h.app.windows[0].context_id;
+    let (wrapped, _) = add_pipe_test_pane(h, 0);
+    assert!(
+        h.app
+            .wrap_panes_to_subcontext(&[wrapped], wrapped, Some("child".into()))
+    );
+    let child = h
+        .app
+        .router
+        .iter()
+        .find(|c| c.parent_id == Some(parent))
+        .map(|c| c.context_id)
+        .expect("the wrap created a child context");
+    let child_win = h
+        .app
+        .windows
+        .iter()
+        .position(|w| w.context_id == child)
+        .expect("the child context has a window");
+    (parent, child, child_win)
+}
+
+/// Stint 1341: a view in a parent context spawns a pane into a subcontext the
+/// host created, and the pane lands in the child's window.
+#[test]
+fn sdk_spawn_pane_into_a_real_subcontext_lands_in_the_child() {
+    use crate::protocol::PlexiEvent;
+    let mut h = HostHarness::new();
+    let (requester, received) = add_pipe_test_pane(&mut h, 0);
+    let (_, child, child_win) = wrap_pipe_pane_into_subcontext(&mut h);
+    queue_pipe_command(
+        &mut h,
+        requester,
+        crate::app::view_trait::ViewCommand::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: "split_h".to_string(),
+            args: Vec::new(),
+            from_pane_id: None,
+            request_id: Some("into-child".to_string()),
+            target_context: Some(child),
+            emitter: None,
+        },
+    );
+    h.run_hidden_frames(1);
+    let replies = received.lock().unwrap().clone();
+    let spawned = replies
+        .iter()
+        .find_map(|event| match event {
+            PlexiEvent::PaneSpawned {
+                pane_id,
+                request_id: Some(r),
+            } if r == "into-child" => Some(*pane_id),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the spawn into the child succeeds: {replies:?}"));
+    assert!(
+        h.app.windows[child_win]
+            .panes
+            .get(&spawned)
+            .is_some_and(|p| p.as_terminal().is_some()),
+        "the terminal is installed in the child context's window"
+    );
+}
+
+/// Stint 1341: a view in a parent context may query the rolled-up state of a
+/// subcontext the host created.
+#[test]
+fn query_context_state_from_parent_answers_for_a_real_subcontext() {
+    use crate::protocol::PlexiEvent;
+    let mut h = HostHarness::new();
+    let (requester, received) = add_pipe_test_pane(&mut h, 0);
+    let (_, child, _) = wrap_pipe_pane_into_subcontext(&mut h);
+    queue_pipe_command(
+        &mut h,
+        requester,
+        crate::app::view_trait::ViewCommand::QueryContextState {
+            sender_pane_id: requester,
+            context_id: child,
+        },
+    );
+    h.run_hidden_frames(1);
+    let replies = received.lock().unwrap().clone();
+    assert!(
+        replies.iter().any(|event| matches!(event,
+            PlexiEvent::ContextStateResponse { state } if state.context_id == child)),
+        "the parent pane receives the child's state: {replies:?}"
+    );
+}
+
 /// Round 3/4 R1: an SDK `spawn_pane` is answered exactly once, with its
 /// request id, to the view that emitted it, whatever window or view has focus
 /// and wherever the pane lands. A background view in context A asks for a
@@ -4775,7 +4869,6 @@ fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
     if let Some(index) = h.app.router.position(|c| c.context_id == context_b) {
         h.app.router.get_mut(index).parent_id = Some(context_a);
     }
-    h.app.host.add_context(context_b, Some(context_a));
     let (bystander, overheard) = add_pipe_test_pane(&mut h, win_b);
     // B's window focuses the bystander, and B is the active window.
     let focus_bystander = |h: &mut HostHarness| {
@@ -4846,7 +4939,6 @@ fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
     if let Some(index) = h.app.router.position(|c| c.context_id == context_c) {
         h.app.router.get_mut(index).parent_id = Some(context_a);
     }
-    h.app.host.add_context(context_c, Some(context_a));
     queue_pipe_command(&mut h, requester, spawn("empty", Some(context_c)));
     h.run_hidden_frames(1);
     assert!(matches!(
@@ -5073,13 +5165,11 @@ fn sdk_terminal_spawn_takes_credentials_only_from_its_validated_destination() {
     if let Some(index) = h.app.router.position(|c| c.context_id == context_b) {
         h.app.router.get_mut(index).parent_id = Some(context_a);
     }
-    h.app.host.add_context(context_b, Some(context_a));
     let (inside_b, _) = add_pipe_test_pane(&mut h, win_b);
     // C is no descendant of A.
     let context_c = crate::testing::reserve_test_context_id();
     let root_c = tempfile::tempdir().expect("root c");
     let win_c = push_secondary_context(&mut h, context_c, root_c.path());
-    h.app.host.add_context(context_c, None);
     let (outside, _) = add_pipe_test_pane(&mut h, win_c);
     let spawn = |id: &str, from: Option<u64>, target: Option<u64>| {
         crate::app::view_trait::ViewCommand::SpawnPane {

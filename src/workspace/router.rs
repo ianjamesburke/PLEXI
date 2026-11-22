@@ -98,6 +98,29 @@ impl WorkspaceRouter {
         path
     }
 
+    /// Whether `ancestor` is `context_id` itself or one of its ancestors in the
+    /// context tree. Walks `parent_id` links, stopping at an orphan or a
+    /// cycle; an unknown `context_id` has no ancestors.
+    pub(crate) fn is_self_or_ancestor(&self, ancestor: u64, context_id: u64) -> bool {
+        let mut visited = Vec::new();
+        let mut current = Some(context_id);
+        while let Some(id) = current {
+            if id == ancestor {
+                return true;
+            }
+            if visited.contains(&id) {
+                return false;
+            }
+            visited.push(id);
+            current = self
+                .contexts
+                .iter()
+                .find(|c| c.context_id == id)
+                .and_then(|c| c.parent_id);
+        }
+        false
+    }
+
     /// Indices of the contexts the sidebar is allowed to enumerate, in router
     /// order. The sidebar is top-level navigation only: every slot is a
     /// numbered, keyboard-addressable destination, so a context with a live
@@ -362,6 +385,28 @@ mod tests {
             depth,
             parked: false,
         }
+    }
+
+    #[test]
+    fn is_self_or_ancestor_walks_the_parent_chain() {
+        let router = WorkspaceRouter::new(
+            vec![
+                make_ctx(1, None, 0),
+                make_ctx(2, Some(1), 1),
+                make_ctx(3, Some(2), 2),
+                make_ctx(4, None, 0),
+            ],
+            0,
+        );
+        assert!(router.is_self_or_ancestor(2, 3));
+        assert!(router.is_self_or_ancestor(1, 3));
+        assert!(router.is_self_or_ancestor(3, 3));
+        assert!(!router.is_self_or_ancestor(3, 1));
+        assert!(!router.is_self_or_ancestor(4, 3));
+        assert!(!router.is_self_or_ancestor(1, 99));
+        let cycle = WorkspaceRouter::new(vec![make_ctx(5, Some(6), 1), make_ctx(6, Some(5), 1)], 0);
+        assert!(cycle.is_self_or_ancestor(6, 5));
+        assert!(!cycle.is_self_or_ancestor(7, 5));
     }
 
     #[test]

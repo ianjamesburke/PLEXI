@@ -114,7 +114,7 @@ pub(crate) enum WindowMenuAction {
 ///
 /// This is the canonical context type used everywhere: live GUI state,
 /// persistence (workspace save/restore), and test harness. Replaces the
-/// former `SavedContext` and unifies with `HostContext`.
+/// former `SavedContext`. The router's contexts are the only context tree.
 #[derive(Serialize, Clone, Debug)]
 pub struct Context {
     pub name: ContextName,
