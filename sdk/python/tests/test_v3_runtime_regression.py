@@ -1244,6 +1244,47 @@ def test_pipe_open_directed_and_pipe_send_effects(tmp_path):
         proc.kill()
 
 
+def test_a_waiting_send_carries_its_payload_as_it_was_when_sent(tmp_path):
+    """Stint 1681 (review round 3): a send that waits for its open carries a
+    copy of the payload, so an app reusing one dict for two peers sends each
+    peer its own value."""
+    app = tmp_path / "pipe_reuse.py"
+    app.write_text(textwrap.dedent("""
+        from plexi_sdk.effects import PipeOpenDirected, PipeSend
+        from plexi_sdk.events import PipeIncoming
+        from plexi_sdk.ui import Text
+
+        message = {"recipient": "A"}
+
+        def init(size, args):
+            return [PipeOpenDirected("a", 7), PipeSend("a", message)]
+
+        def update(event):
+            if isinstance(event, PipeIncoming):
+                message["recipient"] = "B"
+                return [PipeOpenDirected("b", 8), PipeSend("b", message)]
+            return []
+
+        def view():
+            return Text("reuse")
+    """).lstrip())
+    proc = _spawn_v3_app(app)
+    try:
+        _init_and_render(proc)
+        _send_event(proc, {"type": "directed_pipe_incoming", "pipe_id": "other",
+                           "generation": 9, "peer_pane_id": 3})
+        _send_event(proc, {"type": "directed_pipe_opened", "request_id": "pipe-1",
+                           "pipe_id": "a", "generation": 1})
+        _send_event(proc, {"type": "directed_pipe_opened", "request_id": "pipe-2",
+                           "pipe_id": "b", "generation": 2})
+        events = _render(proc, frame_id=2)
+        assert [(e["generation"], e["payload"]) for e in _find_events(events, "pipe_send")] == [
+            (1, {"recipient": "A"}), (2, {"recipient": "B"}),
+        ]
+    finally:
+        proc.kill()
+
+
 def test_a_late_answer_never_rebinds_a_newer_request_for_the_name(tmp_path):
     """Stint 1681: two requests for one name overlap. Each answer carries
     that request's own waiting sends; only the newest request binds the

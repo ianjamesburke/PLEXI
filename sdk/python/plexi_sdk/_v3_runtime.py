@@ -395,6 +395,9 @@ class PluginRuntime:
     def _pipe_send(self, pipe: str | int, payload) -> None:
         if isinstance(pipe, bool) or not isinstance(pipe, (str, int)):
             raise TypeError(f"PipeSend pipe must be a pipe name or handle, not {pipe!r}")
+        # The value as it is now: the app may change the object it passed
+        # before a waiting send goes out.
+        payload = json.loads(json.dumps(payload))
         if isinstance(pipe, int):
             if pipe not in self._pipe_live:
                 raise ValueError(f"pipe handle {pipe} is not open")
