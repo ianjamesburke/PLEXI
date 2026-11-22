@@ -5722,6 +5722,32 @@ fn open_answer(
         })
 }
 
+/// Every answer to `request_id` in an inbox, in order: a request is
+/// answered exactly once.
+fn open_answers(
+    inbox: &std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>,
+    request_id: &str,
+) -> Vec<Result<u64, crate::protocol::PipeOpenRefusal>> {
+    inbox
+        .lock()
+        .expect("pipe test plugin event log")
+        .iter()
+        .filter_map(|event| match event {
+            crate::protocol::PlexiEvent::DirectedPipeOpened {
+                request_id: id,
+                generation,
+                ..
+            } if id == request_id => Some(Ok(*generation)),
+            crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
+                request_id: id,
+                reason,
+                ..
+            } if id == request_id => Some(Err(*reason)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Open `pipe_id` from `sender` (inbox `sender_inbox`) to `target` and run
 /// the frame that answers it, returning the connection's generation.
 fn open_directed_test_pipe(
@@ -6368,15 +6394,56 @@ fn a_full_python_opener_stdin_still_gets_its_one_refusal() {
     );
 }
 
-/// The same with an opener that lacks `pipe.open`: the refusal is given in
-/// the room the open was admitted with, before any capability check.
+/// The same with an opener that lacks `pipe.open`: the open is admitted,
+/// holding room for its answer, before any capability check, and the denial
+/// is given in that room. With less room free than the admission needs, no
+/// denial is given at all until the guest reads; then it gets exactly one.
 #[test]
 fn a_full_python_opener_stdin_still_gets_its_one_denial() {
     let mut h = HostHarness::new();
     let win = h.app.active_window;
     let (target, target_inbox) = add_pipe_test_pane(&mut h, win);
-    let (_, title) = open_from_a_full_python_stdin(&mut h, target, &[], |_| {});
-    assert_eq!(title, "opener:refused:denied");
+    let dir = tempfile::tempdir().expect("opener dir");
+    write_pipe_probe_app(dir.path(), "denied-opener", &[], FULL_OPENER_PY);
+    let opener = launch_pipe_probe(&mut h, dir.path(), &[target.to_string()]);
+    run_until(&mut h, "the opener is ready", &|h| {
+        python_pane_title(h, opener).as_deref() == Some("opener:ready")
+    });
+    let stdin = python_stdin(&mut h, opener);
+    stdin.set_cap_for_test(256 * 1024);
+    h.run_hidden_frames(2);
+    spin_until("the opener reads what it was sent", &mut || {
+        stdin.buffered_bytes() == 0
+    });
+    stdin.push(PROBE_TRIGGER).expect("trigger");
+    spin_until("the opener reads its trigger", &mut || {
+        stdin.buffered_bytes() == 0
+    });
+    stdin.hold_reads_for_test(true);
+    // The SDK's first open request is `pipe-1`. Free one byte less than its
+    // admission holds: room enough for the denial line itself, not for the
+    // admission.
+    let room = crate::host::wasm_python::open_room_for_test("pipe-1", "stint1681.full");
+    assert!(stdin.fill_leaving_for_test(room - 1) > 0);
+    spin_until("intake holds the open", &mut || {
+        python_runtime_mut(&mut h, opener).poll_runtime_state();
+        python_runtime_mut(&mut h, opener).has_held_intake_for_test()
+    });
+    assert!(
+        !String::from_utf8_lossy(&stdin.queued_for_test()).contains("directed_pipe_open_refused"),
+        "no denial without the admission's room"
+    );
+    stdin.hold_reads_for_test(false);
+    run_until(&mut h, "the opener's answer", &|h| {
+        python_pane_title(h, opener).is_some_and(|title| title != "opener:ready")
+    });
+    h.run_hidden_frames(5);
+    assert_eq!(
+        python_pane_title(&h, opener).as_deref(),
+        Some("opener:refused:denied"),
+        "exactly one denial"
+    );
+    assert_eq!(stdin.held_for_test(), (0, 0, 0));
     assert!(pipe_incoming(&target_inbox).is_empty());
     assert!(pipe_messages(&target_inbox).is_empty());
 }
@@ -6427,10 +6494,11 @@ fn an_open_to_an_exited_python_target_is_refused_and_frees_its_name() {
     });
 
     let refused = request_directed_pipe(&mut h, opener, target, PIPE);
-    h.run_hidden_frames(1);
+    h.run_hidden_frames(3);
     assert_eq!(
-        open_answer(&opener_inbox, &refused),
-        Some(Err(crate::protocol::PipeOpenRefusal::TargetUnavailable))
+        open_answers(&opener_inbox, &refused),
+        vec![Err(crate::protocol::PipeOpenRefusal::TargetUnavailable)],
+        "exactly one refusal"
     );
     assert_eq!(pipe_ends(&h, &(context_id, PIPE.to_string())), None);
     let target_registered = h.app.windows[win]
@@ -6444,13 +6512,118 @@ fn an_open_to_an_exited_python_target_is_refused_and_frees_its_name() {
     );
 
     let accepted = request_directed_pipe(&mut h, opener, peer, PIPE);
-    h.run_hidden_frames(1);
-    let generation = open_answer(&opener_inbox, &accepted)
-        .expect("answered")
-        .expect("the name is free for a live peer");
+    h.run_hidden_frames(3);
+    let answers = open_answers(&opener_inbox, &accepted);
+    let [Ok(generation)] = answers[..] else {
+        panic!("the name is free for a live peer, answered once: {answers:?}");
+    };
     assert_eq!(
         pipe_incoming(&peer_inbox),
         vec![(PIPE.to_string(), generation, opener)]
+    );
+}
+
+/// A Python target is no endpoint until it has been sent `init`, and stops
+/// being one when the host reports it failed though its thread lives on
+/// (review round 5): an open to a failed target is refused once,
+/// `target_unavailable`, with nothing told to the target or registered.
+#[test]
+fn a_python_target_is_an_endpoint_only_between_init_and_failure() {
+    const PIPE: &str = "stint1681.failed";
+    let dir = tempfile::tempdir().expect("target dir");
+    write_pipe_probe_app(
+        dir.path(),
+        "failing-target",
+        &["pipe.open"],
+        "from plexi_sdk.effects import SetTitle\n\
+         from plexi_sdk.events import PipeIncoming\n\
+         from plexi_sdk.ui import Column\n\n\
+         def init(size, args):\n\
+         \x20   return [SetTitle('target:ready')]\n\n\
+         def update(event):\n\
+         \x20   if isinstance(event, PipeIncoming):\n\
+         \x20       return [SetTitle('target:incoming')]\n\
+         \x20   return []\n\n\
+         def view():\n\
+         \x20   return Column([])\n",
+    );
+    let mut h = HostHarness::new();
+    let target = launch_pipe_probe(&mut h, dir.path(), &[]);
+    assert!(
+        !python_runtime_mut(&mut h, target).is_directed_pipe_endpoint(),
+        "a guest not yet sent init is no endpoint"
+    );
+    let win = h.app.active_window;
+    let context_id = h.app.windows[win].context_id;
+    let (opener, opener_inbox) = add_pipe_test_pane(&mut h, win);
+    run_until(&mut h, "the target is ready", &|h| {
+        python_pane_title(h, target).as_deref() == Some("target:ready")
+    });
+    assert!(python_runtime_mut(&mut h, target).is_directed_pipe_endpoint());
+
+    python_runtime_mut(&mut h, target).fail_for_test("stint 1681 probe failure");
+    let refused = request_directed_pipe(&mut h, opener, target, PIPE);
+    h.run_hidden_frames(3);
+    assert_eq!(
+        open_answers(&opener_inbox, &refused),
+        vec![Err(crate::protocol::PipeOpenRefusal::TargetUnavailable)],
+        "exactly one refusal"
+    );
+    assert_eq!(pipe_ends(&h, &(context_id, PIPE.to_string())), None);
+    let stdin = python_stdin(&mut h, target);
+    assert_eq!(stdin.held_for_test(), (0, 0, 0), "no room is held for it");
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    h.run_hidden_frames(3);
+    assert_eq!(
+        python_pane_title(&h, target).as_deref(),
+        Some("target:ready"),
+        "the failed target is told of no connection"
+    );
+}
+
+/// An opener that is no longer an endpoint when its open is dispatched is
+/// given nothing (review round 5): its Python guest's open was admitted, then
+/// the host reported it failed. No connection is prepared, so the target
+/// hears neither `DirectedPipeIncoming` nor `PipeClosed`, the name stays
+/// free, and the room held for the answer is released.
+#[test]
+fn an_opener_failed_before_dispatch_prepares_nothing_at_the_target() {
+    let mut h = HostHarness::new();
+    let win = h.app.active_window;
+    let context_id = h.app.windows[win].context_id;
+    let (target, target_inbox) = add_pipe_test_pane(&mut h, win);
+    let dir = tempfile::tempdir().expect("opener dir");
+    write_pipe_probe_app(dir.path(), "failing-opener", &["pipe.open"], FULL_OPENER_PY);
+    let opener = launch_pipe_probe(&mut h, dir.path(), &[target.to_string()]);
+    run_until(&mut h, "the opener is ready", &|h| {
+        python_pane_title(h, opener).as_deref() == Some("opener:ready")
+    });
+    let stdin = python_stdin(&mut h, opener);
+    h.run_hidden_frames(2);
+    spin_until("the opener reads what it was sent", &mut || {
+        stdin.buffered_bytes() == 0
+    });
+    stdin.push(PROBE_TRIGGER).expect("trigger");
+    // Intake only: the open is admitted; no frame dispatches it.
+    spin_until("the host admits the open", &mut || {
+        python_runtime_mut(&mut h, opener).poll_runtime_state();
+        stdin.held_for_test().0 > 0
+    });
+    python_runtime_mut(&mut h, opener).fail_for_test("stint 1681 probe failure");
+    h.run_hidden_frames(3);
+    assert!(
+        pipe_incoming(&target_inbox).is_empty(),
+        "the target is told nothing"
+    );
+    assert!(pipe_closed_events(&target_inbox).is_empty());
+    assert_eq!(
+        pipe_ends(&h, &(context_id, "stint1681.full".to_string())),
+        None
+    );
+    assert_eq!(
+        stdin.held_for_test(),
+        (0, 0, 0),
+        "the answer's room is released"
     );
 }
 
@@ -6479,14 +6652,20 @@ fn an_open_to_a_builtin_that_takes_no_pipe_events_is_refused() {
     let (receiver, receiver_inbox) = add_pipe_test_pane(&mut h, win);
 
     let refused = request_directed_pipe(&mut h, opener, browser, PIPE);
-    h.run_hidden_frames(1);
+    h.run_hidden_frames(3);
     assert_eq!(
-        open_answer(&opener_inbox, &refused),
-        Some(Err(crate::protocol::PipeOpenRefusal::TargetUnavailable))
+        open_answers(&opener_inbox, &refused),
+        vec![Err(crate::protocol::PipeOpenRefusal::TargetUnavailable)],
+        "exactly one refusal"
     );
     assert_eq!(pipe_ends(&h, &(context_id, PIPE.to_string())), None);
 
-    let generation = open_directed_test_pipe(&mut h, opener, &opener_inbox, receiver, PIPE);
+    let accepted = request_directed_pipe(&mut h, opener, receiver, PIPE);
+    h.run_hidden_frames(3);
+    let answers = open_answers(&opener_inbox, &accepted);
+    let [Ok(generation)] = answers[..] else {
+        panic!("the name is reusable at once, answered once: {answers:?}");
+    };
     assert_eq!(
         pipe_ends(&h, &(context_id, PIPE.to_string())),
         Some((opener, receiver))

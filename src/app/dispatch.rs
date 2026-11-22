@@ -1657,7 +1657,13 @@ impl PlexiApp {
             }
             None => return self.refuse_directed_pipe_open(request, PipeOpenRefusal::NoTarget),
         };
-        if self.view_instance_mut(opener).is_none() {
+        // An opener that has ended, or is no longer an endpoint (its guest
+        // finished or failed), cannot be told of a connection; nothing is
+        // prepared for it.
+        if !self
+            .view_instance_mut(opener)
+            .is_some_and(|view| view.runtime.is_directed_pipe_endpoint())
+        {
             log::warn!(
                 "OpenDirectedPipe: opener {opener:?} ended before its request '{request_id}' was handled; dropped",
                 request_id = crate::host::guest_text::shown(&request.request_id)

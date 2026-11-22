@@ -291,9 +291,16 @@ impl AppendableStdin {
     /// exactly the held room free. Returns the bytes pushed.
     #[cfg(test)]
     pub(crate) fn fill_for_test(&self) -> usize {
+        self.fill_leaving_for_test(0)
+    }
+
+    /// Test hook: fill stdin with one blank line the guest skips, leaving
+    /// `left` bytes free beside the held room. Returns the bytes pushed.
+    #[cfg(test)]
+    pub(crate) fn fill_leaving_for_test(&self, left: usize) -> usize {
         let free = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.cap - state.bytes.len() - state.control.total()
+            (state.cap - state.bytes.len() - state.control.total()).saturating_sub(left)
         };
         if free == 0 {
             return 0;
@@ -312,6 +319,18 @@ impl AppendableStdin {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push_hook = Some((needle.as_bytes().to_vec(), hook));
+    }
+
+    /// Test hook: a copy of the bytes queued for the guest.
+    #[cfg(test)]
+    pub(crate) fn queued_for_test(&self) -> Vec<u8> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .bytes
+            .iter()
+            .copied()
+            .collect()
     }
 
     /// Test hook: the bytes each pool holds, answers first.

@@ -3353,6 +3353,12 @@ impl LivePythonPane {
         self.held_intake.is_some()
     }
 
+    /// Test hook: report this guest failed, as a fatal error would.
+    #[cfg(test)]
+    pub(crate) fn fail_for_test(&mut self, error: &str) {
+        self.error = Some(error.to_string());
+    }
+
     /// Test hook: whether the held intake's capacity wake has fired.
     #[cfg(test)]
     pub(crate) fn intake_room_freed_for_test(&self) -> bool {
@@ -3366,10 +3372,12 @@ impl LivePythonPane {
         self.on_intake_held_for_test = Some(hook);
     }
 
-    /// Whether this guest can still take directed-pipe control events: its
-    /// stdin closes when the guest thread exits, however it exits.
+    /// Whether this guest can take directed-pipe control events now: it has
+    /// been sent `init`, so an event queued now reaches its app after init;
+    /// the host does not report it failed; and its stdin is open, which it
+    /// stops being when the guest thread exits, however it exits.
     pub(crate) fn is_directed_pipe_endpoint(&self) -> bool {
-        self.runtime.stdin.is_open()
+        self.initialized && self.error.is_none() && self.runtime.stdin.is_open()
     }
 
     /// Admit an open request the guest made: hold room for its answer, and
@@ -6232,6 +6240,12 @@ fn answer_room(request_id: &str, pipe_id: &str) -> usize {
             })
         })
         .fold(opened, usize::max)
+}
+
+/// Test hook: the room an open request holds when admitted with close room.
+#[cfg(test)]
+pub(crate) fn open_room_for_test(request_id: &str, pipe_id: &str) -> usize {
+    answer_room(request_id, pipe_id) + close_room(pipe_id)
 }
 
 /// Room for the longest `PipeClosed` of a connection named `pipe_id`.
