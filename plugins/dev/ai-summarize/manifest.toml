@@ -1,0 +1,20 @@
+schema_version = 2
+
+[launch]
+
+[plugin]
+id = "ai-summarize"
+name = "AI Summarize"
+version = "0.1.0"
+description = "Summarize text through the Plexi AI broker, fast or slow (ai.query example)."
+
+[plugin.capabilities]
+capabilities = ["ai.query"]
+
+[runtime]
+kind = "python"
+entry = "main.py"
+
+[[contributes.views]]
+id = "ai-summarize.main"
+default = true

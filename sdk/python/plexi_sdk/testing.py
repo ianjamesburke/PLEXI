@@ -554,6 +554,21 @@ class PluginHarness:
         """Inject a synthetic UI action — a button/tab/node click by handler id."""
         self._send({"type": "ui_action", "handler_id": handler_id})
 
+    def ai_queries(self) -> "list[dict]":
+        """Every ``ai_query`` the plugin has sent so far, as wire dicts
+        (``request_id``, ``mode``, ``system``, ``messages``). The harness never
+        answers them; reply with :meth:`ai_response`."""
+        return [e for e in self._events_seen if e.get("type") == "ai_query"]
+
+    def ai_response(self, request_id: str, content: "str | None" = None,
+                    error: "str | None" = None, tokens_in: int = 0,
+                    tokens_out: int = 0) -> None:
+        """Inject the host's answer to an ``AiQuery``: ``content`` on success,
+        ``error`` for a refusal or failure."""
+        self._send({"type": "ai_response", "request_id": request_id,
+                    "content": content, "error": error,
+                    "tokens_in": tokens_in, "tokens_out": tokens_out})
+
     def set_focus(self, focused: bool) -> None:
         """Inject the host's per-pane focus event (``FocusGained`` / ``FocusLost``)."""
         self._send({"type": "focus_gained" if focused else "focus_lost"})

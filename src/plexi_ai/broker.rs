@@ -44,6 +44,18 @@ impl ModelMode {
             Self::Slow => "slow",
         }
     }
+
+    /// Parse a plugin-supplied mode name. Anything but `fast` or `slow` is
+    /// refused with an error naming the accepted values.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "fast" => Ok(Self::Fast),
+            "slow" => Ok(Self::Slow),
+            other => Err(format!(
+                "ai.query: unknown mode {other:?}; accepted values: fast, slow"
+            )),
+        }
+    }
 }
 
 fn backend_tier(mode: ModelMode) -> ModelTier {
@@ -201,6 +213,11 @@ pub struct LiveAiBroker {
     /// `None` when the section is absent; `dispatch` fails fast in that case.
     ai_config: Option<AiConfig>,
     model_modes: ResolvedModelModes,
+    /// Test backend that replaces the configured provider after every gate
+    /// (config, budget, mode resolution) has run, so plugin tests exercise the
+    /// real gates and ledger without a network call.
+    #[cfg(test)]
+    test_backend: Option<Arc<dyn AiBackend>>,
 }
 
 impl LiveAiBroker {
@@ -217,6 +234,28 @@ impl LiveAiBroker {
         Self {
             ai_config,
             model_modes,
+            #[cfg(test)]
+            test_backend: None,
+        }
+    }
+
+    /// The broker every plugin pane uses: `[ai]` and `[models.*]` from the
+    /// current config.
+    pub fn from_current_config() -> Self {
+        let config = crate::config::PlexiConfig::load();
+        let modes = config.resolved_model_modes();
+        Self::with_model_modes(config.ai, modes)
+    }
+
+    #[cfg(test)]
+    pub fn with_test_backend(
+        ai_config: Option<AiConfig>,
+        model_modes: ResolvedModelModes,
+        backend: Arc<dyn AiBackend>,
+    ) -> Self {
+        Self {
+            test_backend: Some(backend),
+            ..Self::with_model_modes(ai_config, model_modes)
         }
     }
 }
@@ -255,6 +294,19 @@ impl AiBroker for LiveAiBroker {
             ModelMode::Fast => &self.model_modes.fast,
             ModelMode::Slow => &self.model_modes.slow,
         };
+        #[cfg(test)]
+        if let Some(backend) = &self.test_backend {
+            let mut request = request;
+            fill_run_tags(&mut request, ai_config.client.as_deref());
+            return run_turn_and_respond(
+                request,
+                backend.as_ref(),
+                BillingModel::Metered,
+                configured.model.clone(),
+                String::new(),
+                on_delta,
+            );
+        }
         let backend_name = request
             .concrete_model
             .as_ref()

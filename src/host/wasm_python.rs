@@ -1532,6 +1532,15 @@ pub struct LivePythonPane {
     context_root: PathBuf,
     http_tx: std::sync::mpsc::Sender<(String, crate::host::services::HttpResponse)>,
     http_rx: std::sync::mpsc::Receiver<(String, crate::host::services::HttpResponse)>,
+    /// Broker for `ai_query` (stint 1450). Live config broker in production;
+    /// tests swap in a recording broker or a live broker with a test backend.
+    ai_broker: Arc<dyn crate::plexi_ai::broker::AiBroker>,
+    /// Finished `ai_query` calls from worker threads, keyed by request id.
+    ai_tx: std::sync::mpsc::Sender<(String, crate::plexi_ai::broker::AiBrokerResponse)>,
+    ai_rx: std::sync::mpsc::Receiver<(String, crate::plexi_ai::broker::AiBrokerResponse)>,
+    /// Calls dispatched and not yet delivered; keeps the pane serviced from
+    /// `background_tick` while it is in an inactive context.
+    ai_inflight: usize,
     /// Live MCP server processes this pane opened (stint 0382), keyed by the
     /// configured server id. Dropped with the pane, which kills every child.
     mcp_connections: HashMap<String, crate::host::mcp_client::McpConnection>,
@@ -3149,6 +3158,7 @@ impl LivePythonPane {
         let persisted_states = load_python_states(&config);
         let context_root = config.context_root.clone();
         let (http_tx, http_rx) = std::sync::mpsc::channel();
+        let (ai_tx, ai_rx) = std::sync::mpsc::channel();
         let (mcp_tx, mcp_rx) = crate::host::mcp_client::inbound_channel();
         let (picker_tx, picker_rx) = std::sync::mpsc::channel();
         let runtime = WasmPythonRuntime::launch(&config)?;
@@ -3212,6 +3222,10 @@ impl LivePythonPane {
             context_root,
             http_tx,
             http_rx,
+            ai_broker: Arc::new(crate::plexi_ai::broker::LiveAiBroker::from_current_config()),
+            ai_tx,
+            ai_rx,
+            ai_inflight: 0,
             mcp_connections: HashMap::new(),
             mcp_registry: None,
             mcp_tx,
@@ -3629,6 +3643,10 @@ impl LivePythonPane {
     fn drain_runtime(&mut self) {
         self.poll_consent();
         self.poll_cli_operations();
+        while let Ok((request_id, response)) = self.ai_rx.try_recv() {
+            self.ai_inflight = self.ai_inflight.saturating_sub(1);
+            self.send_ai_response(&request_id, response);
+        }
         while let Ok((request_id, response)) = self.http_rx.try_recv() {
             self.send_to_runtime(&json!({
                 "type": "http_response", "request_id": request_id,
@@ -3921,6 +3939,7 @@ impl LivePythonPane {
             Some("open_file_picker") => self.handle_open_file_picker(&message),
             Some("read_host_log") => self.handle_read_host_log(&message),
             Some("http_request") => self.handle_http_request(&message),
+            Some("ai_query") => self.handle_ai_query(&message),
             Some("mcp_connect") => self.handle_mcp_connect(&message),
             Some("mcp_send") => self.handle_mcp_send(&message),
             Some("mcp_disconnect") => self.handle_mcp_disconnect(&message),
@@ -4086,6 +4105,10 @@ impl LivePythonPane {
                 "refused": capability,
             }),
             Some("file_write") => json!({"type": "file_write_result", "error": text}),
+            Some("ai_query") => {
+                self.answer_ai_refusal(message, text);
+                return;
+            }
             _ => json!({"type": "capability_decision", "capability": capability, "granted": false}),
         };
         self.send_to_runtime(&reply);
@@ -4096,6 +4119,7 @@ impl LivePythonPane {
         match message.get("type").and_then(Value::as_str) {
             Some("http_request") => self.run_http_request(message, admitted),
             Some("file_write") => self.run_file_write(message, admitted),
+            Some("ai_query") => self.run_ai_query(message, admitted),
             _ => {
                 let capability = message
                     .get("capability")
@@ -4695,6 +4719,106 @@ impl LivePythonPane {
                 }
             },
         );
+    }
+
+    /// `ai_query` (stint 1450). A malformed request is refused before
+    /// anyone is asked. A well-formed one takes the consent gate every
+    /// Python `ai.query` use takes (`consent.rs`): admitted, it runs now;
+    /// otherwise it waits on the in-pane ask or is refused with an
+    /// `ai_response` error. Either way no broker call happens without an
+    /// admission.
+    fn handle_ai_query(&mut self, message: &Value) {
+        if let Err(error) = python_ai_query(&self.plugin_id, message) {
+            self.answer_ai_refusal(message, error);
+            return;
+        }
+        if let Some(admitted) = self.consent_gate(
+            crate::app::permissions::Capability::AiQuery.as_str(),
+            message,
+        ) {
+            self.run_ai_query(message, &admitted);
+        }
+    }
+
+    /// Send an admitted `ai_query` to the shared broker path off the UI
+    /// thread; config, budget and ledger are applied by the broker.
+    fn run_ai_query(&mut self, message: &Value, _admitted: &consent::Admitted) {
+        let query = match python_ai_query(&self.plugin_id, message) {
+            Ok(query) => query,
+            Err(error) => {
+                self.answer_ai_refusal(message, error);
+                return;
+            }
+        };
+        let request_id = query.request_id.clone();
+        let tx = self.ai_tx.clone();
+        let repaint = Arc::clone(&self.repaint);
+        let delivered_id = request_id.clone();
+        let deliver: super::plugin_ai_query::Deliver = Box::new(move |response| {
+            if tx.send((delivered_id, response)).is_err() {
+                log::debug!("CPython WASM ai_response dropped after pane closed");
+                return;
+            }
+            if let Some((context, viewport)) =
+                repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            {
+                context.request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
+            }
+        });
+        // Streaming is out of scope for Python (stint 1450): deltas are dropped.
+        match super::plugin_ai_query::spawn(
+            Arc::clone(&self.ai_broker),
+            query,
+            Box::new(|_| {}),
+            deliver,
+        ) {
+            Ok(()) => self.ai_inflight += 1,
+            Err(error) => {
+                log::error!(
+                    "plugin::{}: ai_query {request_id}: worker thread spawn failed: {error}",
+                    self.plugin_id
+                );
+                self.answer_ai_refusal(
+                    message,
+                    format!("ai.query: worker thread spawn failed: {error}"),
+                );
+            }
+        }
+    }
+
+    /// Answer an `ai_query` that makes no broker call with an `ai_response`
+    /// error, traced like a brokered call.
+    fn answer_ai_refusal(&self, message: &Value, error: String) {
+        let field = |key: &str| message.get(key).and_then(Value::as_str).unwrap_or_default();
+        let request_id = field("request_id");
+        let response = crate::plexi_ai::broker::AiBrokerResponse::err(error);
+        super::plugin_ai_query::trace_outcome(
+            &self.plugin_id,
+            request_id,
+            field("mode"),
+            &response,
+        );
+        self.send_ai_response(request_id, response);
+    }
+
+    #[cfg(test)]
+    fn set_ai_broker(&mut self, broker: Arc<dyn crate::plexi_ai::broker::AiBroker>) {
+        self.ai_broker = broker;
+    }
+
+    fn send_ai_response(
+        &self,
+        request_id: &str,
+        response: crate::plexi_ai::broker::AiBrokerResponse,
+    ) {
+        self.send_to_runtime(&json!({
+            "type": "ai_response",
+            "request_id": request_id,
+            "content": response.content,
+            "tokens_in": response.tokens_in,
+            "tokens_out": response.tokens_out,
+            "error": response.error,
+        }));
     }
 
     /// Open a connection to a server the *user* configured. `server_id` is
@@ -5641,6 +5765,7 @@ impl LivePythonPane {
     pub fn needs_background_tick(&self) -> bool {
         self.decoder.has_queued_output()
             || self.cli_ops.has_work()
+            || self.ai_inflight > 0
             || !self.pending_commands.is_empty()
             || (self.error.is_none()
                 && !self.runtime.is_finished()
@@ -6487,6 +6612,38 @@ impl Drop for LaunchAdmissionMemo {
     fn drop(&mut self) {
         self.flush(std::time::Instant::now());
     }
+}
+
+/// An `ai_query` message parsed for the broker. `mode` is `fast` or `slow`;
+/// `messages` a list of `{role, content}` string pairs.
+fn python_ai_query(
+    plugin_id: &str,
+    message: &Value,
+) -> Result<super::plugin_ai_query::PluginAiQuery, String> {
+    let field = |key: &str| message.get(key).and_then(Value::as_str).unwrap_or_default();
+    let mode = crate::plexi_ai::broker::ModelMode::parse(field("mode"))?;
+    let Some(items) = message.get("messages").and_then(Value::as_array) else {
+        return Err("ai.query: messages must be a list of {role, content}".to_string());
+    };
+    let messages = items
+        .iter()
+        .map(|item| {
+            let text = |key: &str| item.get(key).and_then(Value::as_str).map(str::to_string);
+            match (text("role"), text("content")) {
+                (Some(role), Some(content)) => Ok(crate::protocol::AiMessage { role, content }),
+                _ => Err(format!(
+                    "ai.query: each message needs string role and content, got {item}"
+                )),
+            }
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(super::plugin_ai_query::PluginAiQuery {
+        plugin_id: plugin_id.to_string(),
+        request_id: field("request_id").to_string(),
+        mode,
+        system: field("system").to_string(),
+        messages,
+    })
 }
 
 /// Launch-set admission. Denials, sensitive capabilities and every changed
@@ -8192,6 +8349,10 @@ mod fatal_error_tests;
 #[cfg(test)]
 #[path = "wasm_python/consent_tests.rs"]
 mod consent_tests;
+
+#[cfg(test)]
+#[path = "wasm_python/ai_query_tests.rs"]
+mod ai_query_tests;
 
 #[cfg(test)]
 mod tests {
@@ -12407,6 +12568,7 @@ default = true
             Family::FsRead,
             Family::FsWrite,
             Family::Network,
+            Family::Ai,
             Family::CliExec,
             Family::Panes,
             Family::Pipes,
@@ -12437,7 +12599,11 @@ default = true
                     .iter()
                     .map(|cap| cap.as_str().to_string())
                     .collect();
-                let message = json!({"type": "http_request", "url": "https://api.test/x"});
+                let message = if family == Family::Ai {
+                    json!({"type": "ai_query", "mode": "fast", "messages": []})
+                } else {
+                    json!({"type": "http_request", "url": "https://api.test/x"})
+                };
                 let hosts = vec!["api.test".to_string()];
                 let request = consent::Request {
                     plugin_id: PLUGIN,
@@ -12514,7 +12680,7 @@ default = true
                 (Outcome::Deny, Mech::PythonLaunchSet)
             }
         });
-        assert_eq!(checked, 15 * matrix::STATES.len());
+        assert_eq!(checked, 16 * matrix::STATES.len());
     }
 
     /// Characterisation pin (stint 1238 step 1 review): `insert_path_token` and

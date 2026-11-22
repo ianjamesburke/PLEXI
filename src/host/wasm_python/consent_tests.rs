@@ -102,14 +102,14 @@ fn fetch(port: u16, path: &str) -> String {
     format!("HttpFetch(\"http://127.0.0.1:{port}{path}\")")
 }
 
-fn launch(h: &mut HostHarness, dir: &std::path::Path) -> PaneId {
+pub(super) fn launch(h: &mut HostHarness, dir: &std::path::Path) -> PaneId {
     h.app
         .launch_view_by_path_with_layout_no_review_modal(&dir.to_string_lossy(), None, None, &[])
         .expect("launch probe")
         .expect("probe pane id")
 }
 
-fn python(h: &mut HostHarness, pane: PaneId) -> &mut super::LivePythonPane {
+pub(super) fn python(h: &mut HostHarness, pane: PaneId) -> &mut super::LivePythonPane {
     let window = h
         .app
         .windows
@@ -127,7 +127,7 @@ fn python(h: &mut HostHarness, pane: PaneId) -> &mut super::LivePythonPane {
     }
 }
 
-fn title(h: &mut HostHarness, pane: PaneId) -> String {
+pub(super) fn title(h: &mut HostHarness, pane: PaneId) -> String {
     python(h, pane).display_name()
 }
 
@@ -144,20 +144,20 @@ fn wait_until(h: &mut HostHarness, what: &str, mut done: impl FnMut(&mut HostHar
 }
 
 /// The pending id and tool the pane's prompt shows.
-fn prompt(h: &mut HostHarness, pane: PaneId) -> Option<(String, String)> {
+pub(super) fn prompt(h: &mut HostHarness, pane: PaneId) -> Option<(String, String)> {
     python(h, pane)
         .pending_capability_prompt()
         .map(|(_, view)| (view.pending_request_id, view.tool))
 }
 
-fn wait_for_prompt(h: &mut HostHarness, pane: PaneId, capability: &str) -> String {
+pub(super) fn wait_for_prompt(h: &mut HostHarness, pane: PaneId, capability: &str) -> String {
     wait_until(h, &format!("the {capability} prompt"), |h| {
         prompt(h, pane).is_some_and(|(_, tool)| tool == capability)
     });
     prompt(h, pane).expect("prompt").0
 }
 
-fn wait_for_title(h: &mut HostHarness, pane: PaneId, prefix: &str) -> String {
+pub(super) fn wait_for_title(h: &mut HostHarness, pane: PaneId, prefix: &str) -> String {
     let start = std::time::Instant::now();
     while !title(h, pane).contains(prefix) {
         h.run_frames(1);
@@ -176,7 +176,7 @@ fn wait_for_title(h: &mut HostHarness, pane: PaneId, prefix: &str) -> String {
 /// prompt owns the keyboard, let it arm, then press the dialog's key on a
 /// real frame. Enter is "Grant once", Shift+Enter "Always allow", Esc "Deny
 /// once", Shift+Esc "Always deny".
-fn press_on_prompt(h: &mut HostHarness, pane: PaneId, key: egui::Key, shift: bool) {
+pub(super) fn press_on_prompt(h: &mut HostHarness, pane: PaneId, key: egui::Key, shift: bool) {
     h.focus_pane(pane);
     h.run_frames(2);
     assert!(
@@ -207,7 +207,7 @@ fn press_on_prompt(h: &mut HostHarness, pane: PaneId, key: egui::Key, shift: boo
     });
 }
 
-fn monitor() -> Arc<PermissionMonitor> {
+pub(super) fn monitor() -> Arc<PermissionMonitor> {
     PermissionMonitor::for_profile(&crate::config::config_dir()).expect("tests run as the host")
 }
 
@@ -623,8 +623,8 @@ fn fs_write_deny_once_refuses_and_stores_nothing() {
         .any(|entry| entry.actor_id == PLUGIN && entry.kind != "pending"));
 }
 
-/// `ai.query` takes the same gate through `RequestCapability` until PR #3137
-/// adds its effect: the request asks in the pane and the plugin hears the
+/// `RequestCapability("ai.query")` takes the same gate as an `AiQuery`
+/// (`ai_query_tests`): the request asks in the pane and the plugin hears the
 /// answer.
 #[test]
 fn ai_query_request_asks_in_the_pane_and_reports_the_answer() {

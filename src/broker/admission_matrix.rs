@@ -249,7 +249,8 @@ const PY_SENSITIVE: [Cell; 10] = [
     admit(ROW), deny(ROW), deny(PYSET).cut(PY_NO_ASK), deny(PYSET).cut(PY_NO_ASK), deny(PYSET).cut(PY_NO_ASK),
 ];
 
-// Python consent capability (`net.http`, `fs.write`; stint 1489). Undeclared
+// Python consent capability (`net.http`, `fs.write`, `ai.query`; stints
+// 1489, 1450). Undeclared
 // is refused by the pane's gate; every declared use is an exact broker
 // request (`admit_plugin_capability`), so a once grant is spent, a stale
 // session grant does not answer, and revoked, expired and manifest-only ask
@@ -344,7 +345,7 @@ pub(crate) const TABLE: &[Line] = &[
     line(R::Python, F::Network, &["net.http"], PY_CONSENT),
     na(R::Python, F::Secrets, "secrets.get is declarable but LivePythonPane has no secret effect; nothing reaches admission"),
     line(R::Python, F::CliExec, &["cli.operations"], PY_CLI_OPERATION),
-    na(R::Python, F::Ai, "LivePythonPane has no ai.query or llm effect handler"),
+    line(R::Python, F::Ai, &["ai.query"], PY_CONSENT),
     na(R::Python, F::Clipboard, "the Python bridge has no clipboard effect"),
     line(R::Python, F::Events, &["publisher.plugin::changed"], EVENTS),
     line(
@@ -419,10 +420,6 @@ pub(crate) const PYTHON_UNPROBED: &[(&str, &str)] = &[
         "no Python effect (Secrets line is not-applicable)",
     ),
     (
-        "ai.query",
-        "no Python effect (Ai line is not-applicable); its RequestCapability consent is pinned by consent_tests",
-    ),
-    (
         "gpu.render",
         "not consulted through LivePythonPane::has_capability",
     ),
@@ -485,6 +482,7 @@ pub(crate) const DRIVEN: &[(Runtime, Family, &str)] = &[
     (R::Python, F::FsRead, "python_runtime_admission_matrix"),
     (R::Python, F::FsWrite, "python_runtime_admission_matrix"),
     (R::Python, F::Network, "python_runtime_admission_matrix"),
+    (R::Python, F::Ai, "python_runtime_admission_matrix"),
     (R::Python, F::CliExec, "python_runtime_admission_matrix"),
     (R::Python, F::Panes, "python_runtime_admission_matrix"),
     (R::Python, F::Pipes, "python_runtime_admission_matrix"),

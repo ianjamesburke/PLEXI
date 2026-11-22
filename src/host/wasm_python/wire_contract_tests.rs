@@ -44,7 +44,7 @@ const NESTED_EFFECT_VALUES: &[&str] = &["AiMessage", "AiTool", "EventStreamDecl"
 
 /// Effects the live runtime refuses loudly because the host has no handler.
 /// A follow-up wires or deletes them; until then the SDK must raise, not drop.
-const UNSUPPORTED_EFFECTS: &[&str] = &["AiQuery"];
+const UNSUPPORTED_EFFECTS: &[&str] = &[];
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -18,7 +18,7 @@ def update(event):
     if isinstance(event, UiAction) and event.handler_id in ("prompt", "ask"):
         prompt = state.get("prompt", "").strip()
         if prompt:
-            return [AiQuery("coding-agent-query", "medium", SYSTEM_PROMPT,
+            return [AiQuery("coding-agent-query", "fast", SYSTEM_PROMPT,
                             [AiMessage("user", prompt)])]
     if isinstance(event, AiResponse) and event.request_id == "coding-agent-query":
         return [SetState({"answer": event.error or event.content or "No response."})]

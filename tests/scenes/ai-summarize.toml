@@ -1,0 +1,19 @@
+# Stint 1450: the ai.query example plugin renders its Fast / Slow toggle,
+# with Fast selected by default, and the Summarize action. No model is called.
+# suite = false — spawns a real Python process.
+size = [640.0, 480.0]
+themes = ["plexi-dusk", "plexi-dawn"]
+suite = false
+
+[[steps]]
+open = { kind = "process", path = "plugins/dev/ai-summarize", as = "plugin" }
+[[steps]]
+wait_view_frame = { target = "plugin", timeout_s = 30.0 }
+[[steps]]
+assert = { target = "plugin", lifecycle = "running", tree_contains = "(*) Fast" }
+[[steps]]
+assert = { target = "plugin", tree_contains = "( ) Slow" }
+[[steps]]
+assert = { target = "plugin", tree_contains = "Summarize" }
+[[steps]]
+shot = "ai-summarize.png"

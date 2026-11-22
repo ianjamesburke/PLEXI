@@ -183,11 +183,11 @@ fields is in `sdk.md` (Effects section). The common ones:
 `CloseSelf`, `RequestCapability`
 <!-- /drift-check:effects -->
 
-`RequestCapability` never asks the user. It reports whether the capability was
-granted at launch, as `CapabilityGranted` or `CapabilityDenied`.
+`RequestCapability` reports whether a capability is granted, as
+`CapabilityGranted` or `CapabilityDenied`. For `net.http`, `fs.write` and
+`ai.query` it asks the user in the plugin's pane when no stored answer decides
+it; for every other capability it reports the launch-time grant.
 
-`effects.py` also defines an effect the host does not act on yet: `AiQuery`
-is not available, and the runtime refuses it.
 The host accepts `SetStatus` and discards it, so the text shows nowhere.
 
 `SetState` is process-local runtime state — view/update data, caches, game
@@ -209,6 +209,48 @@ under the `fs.read` / `fs.write` capabilities. The reply to a read is
 `events.FileReadResult` with `content: bytes` — decode yourself for text. Both
 directions are capped at `effects.MAX_FILE_IO_BYTES` per call; oversize payloads
 fail with a named error, never a truncated write.
+
+## AI Calls
+
+`AiQuery(request_id, mode, system, messages)` asks the Plexi AI broker for one
+reply. `mode` is `"fast"` or `"slow"`; the host routes it to the user's
+`[models.fast]` or `[models.slow]` model, so a plugin never names a model.
+`messages` is a list of `AiMessage(role, content)`. The answer arrives as an
+`AiResponse` event with the same `request_id`: `content` on success, `error`
+otherwise. Replies are not streamed.
+
+```python
+from plexi_sdk import state
+from plexi_sdk.effects import AiMessage, AiQuery, SetState
+from plexi_sdk.events import AiResponse, UiAction
+
+def update(event):
+    if isinstance(event, UiAction) and event.handler_id == "summarize":
+        return [AiQuery("sum", "fast", "Summarize in one line.",
+                        [AiMessage("user", state.get("text", ""))])]
+    if isinstance(event, AiResponse) and event.request_id == "sum":
+        return [SetState({"summary": event.content, "error": event.error})]
+    return []
+```
+
+The plugin must declare `ai.query` under `[plugin.capabilities]`. A
+declaration alone grants nothing: each `AiQuery` is admitted from the user's
+stored answer, or asks in the plugin's pane (Grant once, Always allow, Deny
+once, Always deny) and runs after the answer. Every refusal comes back as
+`AiResponse.error`, with no model call:
+
+- `missing capability ai.query`: the manifest does not declare it.
+- `ai.query was denied ...` or `ai.query is denied for ...`: the user refused
+  this request, or has a stored denial; the text says how to allow it.
+- `ai.query: unknown mode ...`: `mode` is not `fast` or `slow`. Checked
+  before the user is asked.
+- `ai.query: unknown mode ...`: `mode` is not `fast` or `slow`.
+- `ai_config_missing: ...`: the user has no `[ai]` section in `config.toml`.
+- `budget_exceeded: ...`: the per-plugin or global daily cap is spent.
+- `ledger_unavailable: ...`: spend cannot be recorded, so no call is made.
+
+Every call that reaches a model is recorded in the AI ledger under the plugin
+id. See `plugins/dev/ai-summarize` for a complete plugin.
 
 ## Open and Save-As
 
