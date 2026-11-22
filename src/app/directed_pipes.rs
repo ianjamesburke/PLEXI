@@ -24,6 +24,10 @@ pub(crate) struct DirectedPipe {
 }
 
 impl DirectedPipe {
+    pub(crate) fn has_end(&self, end: ViewEmitter) -> bool {
+        self.ends.0 == end || self.ends.1 == end
+    }
+
     /// The other end from `end`, or `None` when `end` is not an end.
     pub(crate) fn peer_of(&self, end: ViewEmitter) -> Option<ViewEmitter> {
         let (a, b) = self.ends;
@@ -123,14 +127,16 @@ impl DirectedPipes {
         Some(pipe)
     }
 
-    /// Remove every connection `ended` is an end of. The generation is
-    /// revoked before its name is freed, so no later send or open can reach
-    /// it.
-    pub(crate) fn retire_endpoint(&mut self, ended: ViewEmitter) -> Vec<(u64, DirectedPipe)> {
+    /// Remove every connection `retire` selects, oldest first, returning
+    /// them. No later send or open can reach a removed generation.
+    pub(crate) fn retire_where(
+        &mut self,
+        retire: impl Fn(&DirectedPipe) -> bool,
+    ) -> Vec<(u64, DirectedPipe)> {
         let mut generations: Vec<u64> = self
             .connections
             .iter()
-            .filter(|(_, pipe)| pipe.peer_of(ended).is_some())
+            .filter(|(_, pipe)| retire(pipe))
             .map(|(&generation, _)| generation)
             .collect();
         generations.sort_unstable();
@@ -179,7 +185,7 @@ mod tests {
         let (a, b) = (end(1), end(2));
         let mut pipes = DirectedPipes::default();
         let first = pipes.commit(7, "p", a, b);
-        let retired = pipes.retire_endpoint(b);
+        let retired = pipes.retire_where(|p| p.has_end(b));
         assert_eq!(retired.len(), 1);
         assert_eq!(retired[0].0, first);
         assert_eq!(pipes.get(first), None, "a retired generation stays dead");
@@ -199,10 +205,10 @@ mod tests {
         assert_eq!(pipe.peer_of(a), Some(b));
         assert_eq!(pipe.peer_of(b), Some(a));
         assert_eq!(pipe.peer_of(stranger), None);
-        assert!(pipes.retire_endpoint(stranger).is_empty());
-        assert_eq!(pipes.retire_endpoint(a).len(), 1);
+        assert!(pipes.retire_where(|p| p.has_end(stranger)).is_empty());
+        assert_eq!(pipes.retire_where(|p| p.has_end(a)).len(), 1);
         assert!(
-            pipes.retire_endpoint(b).is_empty(),
+            pipes.retire_where(|p| p.has_end(b)).is_empty(),
             "the other end finds nothing left"
         );
         assert_eq!(pipes.get(generation), None);

@@ -6245,23 +6245,7 @@ fn deleting_a_page_retires_directed_pipes_of_its_panes() {
     use crate::protocol::PipeCloseReason;
     let mut h = HostHarness::new();
     let context_id = h.app.windows[0].context_id;
-    let root = h.app.windows[0].path.clone();
-    let win_id = h.app.next_window_id;
-    h.app.next_window_id += 1;
-    h.app.windows.push(crate::host::context::Window {
-        name: String::new(),
-        path: root,
-        tree: egui_tiles::Tree::empty("stint1681_second_page"),
-        panes: Default::default(),
-        focused_pane: None,
-        zoomed_pane: None,
-        grid_x: 1,
-        grid_y: 0,
-        window_id: win_id,
-        context_id,
-        tree_history: Default::default(),
-    });
-    let page = h.app.windows.len() - 1;
+    let page = push_pipe_test_page(&mut h, context_id, 1);
     let (survivor, survivor_inbox) = add_pipe_test_pane(&mut h, 0);
     let (doomed, _) = add_pipe_test_pane(&mut h, page);
     let generation = open_directed_test_pipe(&mut h, survivor, &survivor_inbox, doomed, "page-pipe");
@@ -6349,6 +6333,279 @@ fn a_covered_pipe_end_is_reached_and_retired_as_itself() {
         vec![("covered-pipe".to_string(), generation, PipeCloseReason::PeerClosed)]
     );
     assert!(pipe_closed_events(&overlay_inbox).is_empty());
+}
+
+/// Push an empty page into context `context_id` at grid column `grid_x`,
+/// returning its window index. Windows drain their commands in index order.
+fn push_pipe_test_page(h: &mut HostHarness, context_id: u64, grid_x: u32) -> usize {
+    let path = h.app.windows[0].path.clone();
+    let window_id = h.app.next_window_id;
+    h.app.next_window_id += 1;
+    h.app.windows.push(crate::host::context::Window {
+        name: String::new(),
+        path,
+        tree: egui_tiles::Tree::empty("stint1681_page"),
+        panes: Default::default(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x,
+        grid_y: 0,
+        window_id,
+        context_id,
+        tree_history: Default::default(),
+    });
+    h.app.windows.len() - 1
+}
+
+/// Stint 1681 (review round 1 finding 4): a surviving peer's send written
+/// for the old connection never reaches the view that reopens the name,
+/// whichever is dispatched first: the replacement's reopen (its page drains
+/// first) or the stale send (the peer's page drains first). Only a fresh
+/// send on the new generation reaches the replacement.
+#[test]
+fn a_stale_send_never_reaches_a_reopened_connection_in_either_dispatch_order() {
+    use crate::protocol::PipeCloseReason;
+    for reopen_first in [true, false] {
+        let mut h = HostHarness::new();
+        let context_id = h.app.windows[0].context_id;
+        let page = push_pipe_test_page(&mut h, context_id, 1);
+        let (slot_win, peer_win) = if reopen_first { (0, page) } else { (page, 0) };
+        let (slot, replacement_inbox) = add_pipe_test_pane(&mut h, slot_win);
+        let (peer, peer_inbox) = add_pipe_test_pane(&mut h, peer_win);
+        let old_inbox = push_pipe_test_overlay(&mut h, slot_win, slot);
+        let old = open_directed_test_pipe(&mut h, slot, &old_inbox, peer, "reopened");
+
+        send_on(&mut h, peer, old, serde_json::json!({"stale": true}));
+        assert!(h.app.restore_overlay_replacement(slot_win, slot));
+        assert_eq!(
+            pipe_closed_events(&peer_inbox),
+            vec![("reopened".to_string(), old, PipeCloseReason::PeerClosed)]
+        );
+        let request = request_directed_pipe(&mut h, slot, peer, "reopened");
+        h.run_hidden_frames(1);
+        let new = open_answer(&replacement_inbox, &request)
+            .expect("the reopen is answered")
+            .expect("the reopen is accepted");
+        assert_ne!(new, old, "a reopen is a new connection");
+        assert!(
+            pipe_messages(&replacement_inbox).is_empty(),
+            "reopen_first={reopen_first}: the stale send reached the replacement"
+        );
+        assert!(pipe_messages(&old_inbox).is_empty());
+
+        send_on(&mut h, peer, new, serde_json::json!({"fresh": true}));
+        h.run_hidden_frames(1);
+        assert_eq!(
+            pipe_messages(&replacement_inbox),
+            vec![(new, serde_json::json!({"fresh": true}))],
+            "reopen_first={reopen_first}"
+        );
+    }
+}
+
+/// Stint 1681 (review round 2 case a): a peer's send already carries the
+/// old generation when the peer is covered, so its queue waits. The old end
+/// is replaced, the covered peer is told as itself, then revealed, and the
+/// replacement reopens before the revealed peer's queue drains. The old send
+/// is dropped; a fresh send on the new generation arrives.
+#[test]
+fn a_covered_peers_queued_send_is_dropped_after_reveal_and_reopen() {
+    use crate::protocol::PipeCloseReason;
+    let mut h = HostHarness::new();
+    let context_id = h.app.windows[0].context_id;
+    let page = push_pipe_test_page(&mut h, context_id, 1);
+    let (slot, replacement_inbox) = add_pipe_test_pane(&mut h, 0);
+    let (peer, peer_inbox) = add_pipe_test_pane(&mut h, page);
+    let old_inbox = push_pipe_test_overlay(&mut h, 0, slot);
+    let old = open_directed_test_pipe(&mut h, slot, &old_inbox, peer, "covered-peer");
+
+    send_on(&mut h, peer, old, serde_json::json!({"stale": true}));
+    let cover_inbox = push_pipe_test_overlay(&mut h, page, peer);
+    h.run_hidden_frames(2);
+    assert!(
+        pipe_messages(&old_inbox).is_empty(),
+        "fixture: a covered view's queue waits"
+    );
+
+    assert!(h.app.restore_overlay_replacement(0, slot));
+    assert_eq!(
+        pipe_closed_events(&peer_inbox),
+        vec![("covered-peer".to_string(), old, PipeCloseReason::PeerClosed)]
+    );
+    assert!(pipe_closed_events(&cover_inbox).is_empty());
+    assert!(h.app.restore_overlay_replacement(page, peer));
+    let request = request_directed_pipe(&mut h, slot, peer, "covered-peer");
+    h.run_hidden_frames(1);
+    let new = open_answer(&replacement_inbox, &request)
+        .expect("the reopen is answered")
+        .expect("the reopen is accepted");
+    assert_ne!(new, old);
+    assert!(
+        pipe_messages(&replacement_inbox).is_empty(),
+        "the revealed peer's old send reached the replacement"
+    );
+
+    send_on(&mut h, peer, new, serde_json::json!({"fresh": true}));
+    h.run_hidden_frames(1);
+    assert_eq!(
+        pipe_messages(&replacement_inbox),
+        vec![(new, serde_json::json!({"fresh": true}))]
+    );
+}
+
+/// Stint 1681: deleting a page retires the connections of every instance in
+/// its slots, an overlay and the view it covers alike. Each end that lives on
+/// is told once, with its generation; ends deleted together, and the
+/// instances of the deleted slot, are told nothing.
+#[test]
+fn deleting_a_page_tells_each_surviving_end_once_and_no_deleted_end() {
+    use crate::protocol::PipeCloseReason;
+    let mut h = HostHarness::new();
+    let context_id = h.app.windows[0].context_id;
+    let page = push_pipe_test_page(&mut h, context_id, 1);
+    let (q1, q1_inbox) = add_pipe_test_pane(&mut h, 0);
+    let (q2, q2_inbox) = add_pipe_test_pane(&mut h, 0);
+    let (slot, covered_inbox) = add_pipe_test_pane(&mut h, page);
+    let (d1, d1_inbox) = add_pipe_test_pane(&mut h, page);
+    let (d2, d2_inbox) = add_pipe_test_pane(&mut h, page);
+    let covered = open_directed_test_pipe(&mut h, slot, &covered_inbox, q1, "covered");
+    let overlay_inbox = push_pipe_test_overlay(&mut h, page, slot);
+    let overlay = open_directed_test_pipe(&mut h, slot, &overlay_inbox, q2, "overlay");
+    let doomed = open_directed_test_pipe(&mut h, d1, &d1_inbox, d2, "doomed");
+
+    h.app.delete_window(page);
+
+    for generation in [covered, overlay, doomed] {
+        assert!(h.app.directed_pipes.get(generation).is_none());
+    }
+    assert_eq!(
+        pipe_closed_events(&q1_inbox),
+        vec![("covered".to_string(), covered, PipeCloseReason::PeerClosed)]
+    );
+    assert_eq!(
+        pipe_closed_events(&q2_inbox),
+        vec![("overlay".to_string(), overlay, PipeCloseReason::PeerClosed)]
+    );
+    for inbox in [&covered_inbox, &overlay_inbox, &d1_inbox, &d2_inbox] {
+        assert!(pipe_closed_events(inbox).is_empty(), "a deleted end has no one to tell");
+    }
+}
+
+/// Lay out `n` pipe test views side by side as `windows[win_idx]`'s whole
+/// tree, focusing the first, and return their slots and inboxes.
+fn lay_out_pipe_test_views(h: &mut HostHarness, win_idx: usize, n: usize) -> Vec<(u64, PipeInbox)> {
+    let mut tiles = egui_tiles::Tiles::default();
+    let mut views = Vec::new();
+    let mut panes = Vec::new();
+    let mut tile_ids = Vec::new();
+    for _ in 0..n {
+        let pane_id = h.app.host.alloc_pane_id();
+        let (pane, inbox) = pipe_test_view(pane_id);
+        tile_ids.push(tiles.insert_pane(pane_id));
+        panes.push((pane_id, pane));
+        views.push((pane_id, inbox));
+    }
+    let root = tiles.insert_horizontal_tile(tile_ids.clone());
+    let win = &mut h.app.windows[win_idx];
+    win.tree = egui_tiles::Tree::new("stint1681_layout", root, tiles);
+    win.panes = panes.into_iter().collect();
+    win.focused_pane = Some(tile_ids[0]);
+    views
+}
+
+/// Stint 1681: a connection lives in the context that admitted it. Wrapping
+/// an end into a subcontext ends it and tells both ends (`moved`), as it
+/// does a connection whose ends move together; a connection that stays put
+/// lives on, and an open across the new boundary is out of reach. A
+/// connection made inside the subcontext ends the same way when the
+/// subcontext dissolves into its parent.
+#[test]
+fn moving_an_end_to_another_context_ends_its_connections() {
+    use crate::protocol::{PipeCloseReason, PipeOpenRefusal};
+    let mut h = HostHarness::new();
+    let parent = h.app.windows[0].context_id;
+    let views = lay_out_pipe_test_views(&mut h, 0, 4);
+    let [(a, a_inbox), (b, b_inbox), (c, c_inbox), (d, d_inbox)] = &views[..] else {
+        unreachable!()
+    };
+    let (a, b, c, d) = (*a, *b, *c, *d);
+    h.app
+        .set_context_columns(parent, vec![vec![a], vec![b], vec![c], vec![d]]);
+    let across = open_directed_test_pipe(&mut h, a, a_inbox, b, "across");
+    let together = open_directed_test_pipe(&mut h, b, b_inbox, c, "together");
+    let staying = open_directed_test_pipe(&mut h, a, a_inbox, d, "staying");
+
+    assert!(h.app.wrap_panes_to_subcontext(&[b, c], b, None));
+
+    let moved = |name: &str, generation| (name.to_string(), generation, PipeCloseReason::Moved);
+    assert_eq!(pipe_closed_events(a_inbox), vec![moved("across", across)]);
+    assert_eq!(
+        pipe_closed_events(b_inbox),
+        vec![moved("across", across), moved("together", together)]
+    );
+    assert_eq!(pipe_closed_events(c_inbox), vec![moved("together", together)]);
+    assert!(pipe_closed_events(d_inbox).is_empty());
+    assert!(h.app.directed_pipes.get(across).is_none());
+    assert!(h.app.directed_pipes.get(together).is_none());
+    send_on(&mut h, a, staying, serde_json::json!({"still": "open"}));
+    h.run_hidden_frames(1);
+    assert_eq!(
+        pipe_messages(d_inbox),
+        vec![(staying, serde_json::json!({"still": "open"}))]
+    );
+    let request = request_directed_pipe(&mut h, a, b, "across");
+    h.run_hidden_frames(1);
+    assert_eq!(
+        open_answer(a_inbox, &request),
+        Some(Err(PipeOpenRefusal::OutOfReach))
+    );
+
+    let child = h
+        .app
+        .router
+        .iter()
+        .find(|context| context.parent_id == Some(parent))
+        .expect("wrap creates a child context")
+        .context_id;
+    let inside = open_directed_test_pipe(&mut h, b, b_inbox, c, "inside");
+    assert_eq!(pipe_ends(&h, &(child, "inside".to_string())), Some((b, c)));
+    h.app.dissolve_portal(child);
+
+    assert!(h.app.directed_pipes.get(inside).is_none());
+    assert_eq!(pipe_closed_events(b_inbox).last(), Some(&moved("inside", inside)));
+    assert_eq!(pipe_closed_events(c_inbox).last(), Some(&moved("inside", inside)));
+    assert!(h.app.directed_pipes.get(staying).is_some(), "a and d never moved");
+    assert!(pipe_closed_events(d_inbox).is_empty());
+}
+
+/// Stint 1681: moving an end to another page of the same context keeps its
+/// connections; the same instance is still the end.
+#[test]
+fn moving_an_end_to_another_page_of_its_context_keeps_its_connection() {
+    let mut h = HostHarness::new();
+    let context_id = h.app.windows[0].context_id;
+    let views = lay_out_pipe_test_views(&mut h, 0, 2);
+    let [(a, a_inbox), (b, b_inbox)] = &views[..] else {
+        unreachable!()
+    };
+    let (a, b) = (*a, *b);
+    let page = push_pipe_test_page(&mut h, context_id, 1);
+    lay_out_pipe_test_views(&mut h, page, 1);
+    h.app.active_window = 0;
+    let generation = open_directed_test_pipe(&mut h, a, a_inbox, b, "page-move");
+
+    assert!(h.app.move_focused_pane_to_adjacent_window(crate::host::keys::Direction::Right));
+    let (moved_to, _) = h.app.find_pane_in_any_window(a).expect("a still exists");
+    assert_ne!(moved_to, 0, "fixture: a left page 0");
+    assert_eq!(h.app.windows[moved_to].context_id, context_id);
+
+    assert!(pipe_closed_events(b_inbox).is_empty());
+    send_on(&mut h, b, generation, serde_json::json!({"to": "a"}));
+    h.run_hidden_frames(1);
+    assert_eq!(
+        pipe_messages(a_inbox),
+        vec![(generation, serde_json::json!({"to": "a"}))]
+    );
 }
 
 /// Stint 0414: node-targeted counterpart of stint 0398's

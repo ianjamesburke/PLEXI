@@ -600,7 +600,7 @@ pub enum PlexiEvent {
     },
 }
 
-/// Why a directed pipe connection ended, from the surviving end's view.
+/// Why a directed pipe connection ended, as told to an end that lives on.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PipeCloseReason {
@@ -608,8 +608,8 @@ pub enum PipeCloseReason {
     PeerClosed,
     /// The other end's app reloaded; its new instance holds none of the old one's pipes.
     PeerReloaded,
-    /// An end moved to another context.
-    PeerMoved,
+    /// An end of the connection moved to another context; both ends are told.
+    Moved,
 }
 
 impl PipeCloseReason {
@@ -617,7 +617,7 @@ impl PipeCloseReason {
         match self {
             Self::PeerClosed => "peer_closed",
             Self::PeerReloaded => "peer_reloaded",
-            Self::PeerMoved => "peer_moved",
+            Self::Moved => "moved",
         }
     }
 }

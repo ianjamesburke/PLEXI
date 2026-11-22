@@ -358,8 +358,8 @@ class PipeIncoming:
 class PipeClosed:
     """Directed pipe connection ``handle`` (named ``pipe_id``) ended: the
     other end's view closed (``reason == "peer_closed"``), its app reloaded
-    (``"peer_reloaded"``) or it moved context (``"peer_moved"``). A reopen
-    is a new connection with a new handle."""
+    (``"peer_reloaded"``), or either end moved to another context
+    (``"moved"``). A reopen is a new connection with a new handle."""
     pipe_id: str
     handle: int
     reason: str

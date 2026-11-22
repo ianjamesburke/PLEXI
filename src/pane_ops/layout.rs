@@ -67,11 +67,13 @@ impl PlexiApp {
             "view_closed: plugin_id={plugin_id} type_id={type_id} pane_id={pane_id} reason=overlay_restored"
         );
         self.retire_directed_pipes_for(
-            crate::app::view_trait::ViewEmitter {
-                pane_id,
-                incarnation: app.incarnation,
-            },
-            &plugin_id,
+            &[(
+                crate::app::view_trait::ViewEmitter {
+                    pane_id,
+                    incarnation: app.incarnation,
+                },
+                plugin_id.clone(),
+            )],
             crate::protocol::PipeCloseReason::PeerClosed,
         );
         // No router lookup here, so the event is global-only.
@@ -832,7 +834,10 @@ impl PlexiApp {
         self.observe_pane_spawns();
         // While the pane is still present, so its own registry and plugin id
         // are reachable.
-        self.retire_directed_pipes_in_slot(closing, crate::protocol::PipeCloseReason::PeerClosed);
+        self.retire_directed_pipes_in_slots(
+            &[closing],
+            crate::protocol::PipeCloseReason::PeerClosed,
+        );
         // Resolved up front, before Phase 3 takes a mutable borrow of
         // `self.windows[ctx_idx]` that would otherwise conflict with a
         // `&self` router lookup at the `PaneClosed` emit site below.

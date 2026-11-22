@@ -1375,8 +1375,7 @@ impl PlexiApp {
         self.retire_commands_from(retired);
         // Nor does the new guest inherit the old one's directed pipes.
         self.retire_directed_pipes_for(
-            retired,
-            &plugin_id,
+            &[(retired, plugin_id)],
             crate::protocol::PipeCloseReason::PeerReloaded,
         );
         true

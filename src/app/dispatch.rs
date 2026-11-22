@@ -1784,77 +1784,156 @@ impl PlexiApp {
         }
     }
 
-    /// Retire every directed pipe connection the view instance `ended` is an
-    /// end of, because it closed, was uncovered as an overlay, moved context,
-    /// or its guest was replaced. The generation is revoked first, so no send
-    /// or reopen reaches it; the surviving instance's registry drops it and
-    /// that instance gets `PipeClosed`. `ended`'s own registry goes with it
-    /// (or, on relaunch, is cleared by the runtime).
+    /// Retire every directed pipe connection an `ended` view instance is an
+    /// end of, because it closed, was uncovered as an overlay, was deleted
+    /// with its page or context, or its guest was replaced. Each `ended`
+    /// entry is the instance and its plugin id. Every other end is told with
+    /// `PipeClosed`; an end that is itself ending (a self-pipe, or both ends
+    /// deleted together) has no one to tell. `ended`'s own registry goes
+    /// with it (or, on relaunch, is cleared by the runtime).
     pub(crate) fn retire_directed_pipes_for(
         &mut self,
-        ended: crate::app::view_trait::ViewEmitter,
-        plugin_id: &str,
+        ended: &[(crate::app::view_trait::ViewEmitter, String)],
         reason: crate::protocol::PipeCloseReason,
     ) {
-        for (generation, pipe) in self.directed_pipes.retire_endpoint(ended) {
-            let peer = pipe
-                .peer_of(ended)
-                .expect("retire_endpoint returns only connections `ended` is an end of");
-            if peer != ended {
-                if let Some(view) = self.view_instance_mut(peer) {
-                    // Told first: a WASM guest hears of it on the handle the
-                    // registry is about to drop.
-                    view.runtime
-                        .queue_outbound_event(crate::protocol::PlexiEvent::PipeClosed {
-                            pipe_id: pipe.pipe_id.clone(),
-                            generation,
-                            reason,
-                        });
-                    view.runtime.close_directed_pipe(&pipe.pipe_id, generation);
-                }
-            }
-            log::info!(
-                "retire_directed_pipes_for: '{pipe_id}' connection {generation} retired ({}) plugin={plugin_id} pane={} peer_pane={} context={}",
-                reason.as_str(),
-                ended.pane_id,
-                peer.pane_id,
-                pipe.context_id,
-                pipe_id = crate::host::guest_text::shown(&pipe.pipe_id)
-            );
-            crate::host::event_log::emit_scoped(
-                crate::host::event_log::HostEvent::PipeClosed {
-                    from_plugin: plugin_id.to_string(),
-                    channel: pipe.pipe_id,
-                    timestamp: crate::host::event_log::now_timestamp(),
-                },
-                self.context_root_for(pipe.context_id).as_deref(),
+        let retired = self
+            .directed_pipes
+            .retire_where(|pipe| ended.iter().any(|(end, _)| pipe.has_end(*end)));
+        for (generation, pipe) in retired {
+            let (from, from_plugin) = ended
+                .iter()
+                .find(|(end, _)| pipe.has_end(*end))
+                .expect("retire_where returns only connections with an ending end");
+            let survivors: Vec<_> = [pipe.ends.0, pipe.ends.1]
+                .into_iter()
+                .filter(|end| !ended.iter().any(|(ending, _)| ending == end))
+                .collect();
+            let (from, from_plugin) = (*from, from_plugin.clone());
+            self.end_directed_pipe(generation, pipe, from, &from_plugin, &survivors, reason);
+        }
+    }
+
+    /// Retire the directed pipes of every view instance in the `pane_ids`
+    /// slots, the visible ones and any they cover, because the slots are
+    /// being deleted together.
+    pub(crate) fn retire_directed_pipes_in_slots(
+        &mut self,
+        pane_ids: &[u64],
+        reason: crate::protocol::PipeCloseReason,
+    ) {
+        let ended: Vec<_> = self
+            .view_instances()
+            .into_iter()
+            .filter(|(end, _, _)| pane_ids.contains(&end.pane_id))
+            .map(|(end, _, plugin_id)| (end, plugin_id))
+            .collect();
+        self.retire_directed_pipes_for(&ended, reason);
+    }
+
+    /// Retire every directed pipe connection an end of which no longer sits
+    /// in the context that admitted it, because a wrap or dissolve moved it.
+    /// Both ends live on and both are told (`PipeClosed { moved }`); a reopen
+    /// in the new context is a new connection. Called by every operation
+    /// that moves panes between contexts, before it returns, so no command
+    /// dispatches while a connection spans two contexts.
+    pub(crate) fn retire_directed_pipes_moved(&mut self) {
+        let instances = self.view_instances();
+        let moved = |end: crate::app::view_trait::ViewEmitter, context_id: u64| {
+            instances
+                .iter()
+                .find(|(instance, _, _)| *instance == end)
+                .filter(|(_, now, _)| *now != context_id)
+                .map(|(_, _, plugin_id)| plugin_id.clone())
+        };
+        let retired = self.directed_pipes.retire_where(|pipe| {
+            moved(pipe.ends.0, pipe.context_id).is_some()
+                || moved(pipe.ends.1, pipe.context_id).is_some()
+        });
+        for (generation, pipe) in retired {
+            let (from, from_plugin) = [pipe.ends.0, pipe.ends.1]
+                .into_iter()
+                .find_map(|end| Some((end, moved(end, pipe.context_id)?)))
+                .expect("retire_where returns only connections with a moved end");
+            let ends: Vec<_> = if pipe.ends.0 == pipe.ends.1 {
+                vec![pipe.ends.0]
+            } else {
+                vec![pipe.ends.0, pipe.ends.1]
+            };
+            self.end_directed_pipe(
+                generation,
+                pipe,
+                from,
+                &from_plugin,
+                &ends,
+                crate::protocol::PipeCloseReason::Moved,
             );
         }
     }
 
-    /// Retire the directed pipes of every view instance in `pane_id`'s slot,
-    /// the visible one and any it covers, because the slot is closing or
-    /// leaving its context.
-    pub(crate) fn retire_directed_pipes_in_slot(
+    /// Every view instance in a pane slot, visible or covered by an overlay,
+    /// with its context and plugin id.
+    fn view_instances(&self) -> Vec<(crate::app::view_trait::ViewEmitter, u64, String)> {
+        let mut instances = Vec::new();
+        for window in &self.windows {
+            for (&pane_id, pane) in window.panes.iter() {
+                let mut next = Some(pane);
+                while let Some(crate::host::pane::Pane::View(view)) = next {
+                    instances.push((
+                        crate::app::view_trait::ViewEmitter {
+                            pane_id,
+                            incarnation: view.incarnation,
+                        },
+                        window.context_id,
+                        view.manifest_id.clone(),
+                    ));
+                    next = view.overlay_replaced.as_deref();
+                }
+            }
+        }
+        instances
+    }
+
+    /// Tell each of `tell` that connection `generation` ended, then drop it
+    /// from that end's registry, and record the retirement. `from` is the
+    /// end whose change ended it, `from_plugin` its plugin id.
+    fn end_directed_pipe(
         &mut self,
-        pane_id: u64,
+        generation: u64,
+        pipe: crate::app::directed_pipes::DirectedPipe,
+        from: crate::app::view_trait::ViewEmitter,
+        from_plugin: &str,
+        tell: &[crate::app::view_trait::ViewEmitter],
         reason: crate::protocol::PipeCloseReason,
     ) {
-        let mut instances = Vec::new();
-        let mut next = self.windows.iter().find_map(|w| w.panes.get(&pane_id));
-        while let Some(crate::host::pane::Pane::View(view)) = next {
-            instances.push((
-                crate::app::view_trait::ViewEmitter {
-                    pane_id,
-                    incarnation: view.incarnation,
-                },
-                view.manifest_id.clone(),
-            ));
-            next = view.overlay_replaced.as_deref();
+        for &end in tell {
+            if let Some(view) = self.view_instance_mut(end) {
+                // Told first: a WASM guest hears of it on the handle the
+                // registry is about to drop.
+                view.runtime
+                    .queue_outbound_event(crate::protocol::PlexiEvent::PipeClosed {
+                        pipe_id: pipe.pipe_id.clone(),
+                        generation,
+                        reason,
+                    });
+                view.runtime.close_directed_pipe(&pipe.pipe_id, generation);
+            }
         }
-        for (instance, plugin_id) in instances {
-            self.retire_directed_pipes_for(instance, &plugin_id, reason);
-        }
+        log::info!(
+            "directed pipe '{pipe_id}' connection {generation} retired ({}) plugin={from_plugin} pane={} told={:?} context={}",
+            reason.as_str(),
+            from.pane_id,
+            tell.iter().map(|end| end.pane_id).collect::<Vec<_>>(),
+            pipe.context_id,
+            pipe_id = crate::host::guest_text::shown(&pipe.pipe_id)
+        );
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::PipeClosed {
+                from_plugin: from_plugin.to_string(),
+                channel: pipe.pipe_id,
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            self.context_root_for(pipe.context_id).as_deref(),
+        );
     }
 }
 

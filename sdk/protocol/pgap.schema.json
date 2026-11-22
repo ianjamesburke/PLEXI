@@ -5074,7 +5074,7 @@
           "type": "string"
         },
         "PipeCloseReason": {
-          "description": "Why a directed pipe connection ended, from the surviving end's view.",
+          "description": "Why a directed pipe connection ended, as told to an end that lives on.",
           "oneOf": [
             {
               "const": "peer_closed",
@@ -5087,8 +5087,8 @@
               "type": "string"
             },
             {
-              "const": "peer_moved",
-              "description": "An end moved to another context.",
+              "const": "moved",
+              "description": "An end of the connection moved to another context; both ends are told.",
               "type": "string"
             }
           ]
