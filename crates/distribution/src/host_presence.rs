@@ -424,10 +424,16 @@ mod tests {
             pipe_name_in(&account.join(".plexi-alpha"), Some(account)),
             r"\\.\pipe\plexi-alpha"
         );
-        assert_eq!(pipe_name_in(&account.join(".plexi"), Some(account)), r"\\.\pipe\plexi");
+        assert_eq!(
+            pipe_name_in(&account.join(".plexi"), Some(account)),
+            r"\\.\pipe\plexi"
+        );
         let scratch_a = pipe_name_in(Path::new("/scratch/a/.plexi-alpha"), Some(account));
         let scratch_b = pipe_name_in(Path::new("/scratch/b/.plexi-alpha"), Some(account));
-        assert!(scratch_a.starts_with(r"\\.\pipe\plexi-alpha-r"), "{scratch_a}");
+        assert!(
+            scratch_a.starts_with(r"\\.\pipe\plexi-alpha-r"),
+            "{scratch_a}"
+        );
         assert_ne!(scratch_a, scratch_b);
         assert_ne!(scratch_a, r"\\.\pipe\plexi-alpha");
         assert_eq!(
@@ -435,7 +441,10 @@ mod tests {
             pipe_name_in(Path::new("/scratch/a/.plexi-alpha"), Some(account))
         );
         // No account home: every root is tagged.
-        assert_ne!(pipe_name_in(&account.join(".plexi-alpha"), None), r"\\.\pipe\plexi-alpha");
+        assert_ne!(
+            pipe_name_in(&account.join(".plexi-alpha"), None),
+            r"\\.\pipe\plexi-alpha"
+        );
     }
 
     #[cfg(unix)]

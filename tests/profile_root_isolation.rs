@@ -304,13 +304,12 @@ fn launcher_child() {
     let Some(root) = std::env::var_os("PLEXI_1695_LAUNCH_ROOT") else {
         return;
     };
-    let args: Vec<std::ffi::OsString> = serde_json::from_str::<Vec<String>>(
-        &std::env::var("PLEXI_1695_LAUNCH_ARGS").unwrap(),
-    )
-    .unwrap()
-    .into_iter()
-    .map(Into::into)
-    .collect();
+    let args: Vec<std::ffi::OsString> =
+        serde_json::from_str::<Vec<String>>(&std::env::var("PLEXI_1695_LAUNCH_ARGS").unwrap())
+            .unwrap()
+            .into_iter()
+            .map(Into::into)
+            .collect();
     let code = plexi_distribution::transaction::launch(Path::new(&root), &args)
         .unwrap_or_else(|error| panic!("launch failed: {error}"));
     std::process::exit(code);
@@ -338,7 +337,11 @@ fn managed_install(distribution: &Path, channel: &str, executable: &str) -> Path
         "previous": null,
         "integrations": [],
     });
-    std::fs::write(root.join("installation.json"), serde_json::to_vec(&receipt).unwrap()).unwrap();
+    std::fs::write(
+        root.join("installation.json"),
+        serde_json::to_vec(&receipt).unwrap(),
+    )
+    .unwrap();
     let registry = distribution.join("installations");
     std::fs::create_dir_all(&registry).unwrap();
     std::fs::write(
@@ -377,7 +380,13 @@ fn a_bare_launcher_handoff_never_routes_by_the_pane() {
             }
         }
         let output = command
-            .args(["--exact", "launcher_child", "--nocapture", "--test-threads", "1"])
+            .args([
+                "--exact",
+                "launcher_child",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
             .env("PLEXI_1695_LAUNCH_ROOT", &stable)
             .env(
                 "PLEXI_1695_LAUNCH_ARGS",

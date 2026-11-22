@@ -55,6 +55,8 @@ impl Sandbox {
         let root = tempfile::tempdir().unwrap();
         let folder = root.path().join("folder");
         std::fs::create_dir_all(&folder).unwrap();
+        // `--profile-root` names an existing directory (stint 1695).
+        std::fs::create_dir_all(root.path().join("home")).unwrap();
         let sandbox = Self { root, folder };
         let (enable, _) = sandbox.run(KEYCHAIN, &["experiments", "enable", "folder_secrets"]);
         assert!(enable.status.success(), "{}", text(&enable.stderr));

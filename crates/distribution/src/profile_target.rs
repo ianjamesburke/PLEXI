@@ -172,7 +172,12 @@ impl ProfileTarget {
             Some(name) => ProfileSource::Named(name.to_string()),
             None => ProfileSource::Channel(channel.to_string()),
         };
-        Ok(Self::new(root, root_source, source, Some(channel.to_string())))
+        Ok(Self::new(
+            root,
+            root_source,
+            source,
+            Some(channel.to_string()),
+        ))
     }
 
     /// The profile directory: config, plugins, host records, the endpoint.

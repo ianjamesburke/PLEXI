@@ -482,12 +482,17 @@ mod tests {
         };
         let none = sel(ProfileSelection::Default, None);
         for role in [Role::Lifecycle, Role::HostLaunch] {
-            let error =
-                select(role, &none, "plexi-beta", Ok(home.into()), &delegated).unwrap_err();
+            let error = select(role, &none, "plexi-beta", Ok(home.into()), &delegated).unwrap_err();
             assert!(error.contains("never follow a pane"), "{role:?}: {error}");
             assert!(error.contains("plexi-beta"), "{role:?}: {error}");
         }
-        let command = select(Role::Command, &none, "plexi-beta", Ok(home.into()), &delegated);
+        let command = select(
+            Role::Command,
+            &none,
+            "plexi-beta",
+            Ok(home.into()),
+            &delegated,
+        );
         assert_eq!(command.unwrap().dir(), home.join(".plexi-beta"));
     }
 
@@ -509,10 +514,22 @@ mod tests {
         let none = sel(ProfileSelection::Default, None);
         for (exe, ambient) in [
             ("plexi", pane.clone()),
-            ("plexi-alpha", Ambient { delegated: true, ..pane.clone() }),
+            (
+                "plexi-alpha",
+                Ambient {
+                    delegated: true,
+                    ..pane.clone()
+                },
+            ),
         ] {
-            let error = select(Role::Command, &none, exe, Ok(account.path().into()), &ambient)
-                .unwrap_err();
+            let error = select(
+                Role::Command,
+                &none,
+                exe,
+                Ok(account.path().into()),
+                &ambient,
+            )
+            .unwrap_err();
             assert!(error.contains("--profile-root"), "{exe}: {error}");
         }
     }
@@ -533,9 +550,18 @@ mod tests {
         };
         for name in ["stable", "main"] {
             let socket = format!("/scratch/root/.plexi-{name}/notify.sock");
-            let target =
-                select(Role::Command, &none, "plexi", Ok(home.into()), &pane(name, &socket)).unwrap();
-            assert_eq!(target.dir(), Path::new("/scratch/root").join(format!(".plexi-{name}")));
+            let target = select(
+                Role::Command,
+                &none,
+                "plexi",
+                Ok(home.into()),
+                &pane(name, &socket),
+            )
+            .unwrap();
+            assert_eq!(
+                target.dir(),
+                Path::new("/scratch/root").join(format!(".plexi-{name}"))
+            );
             assert_eq!(target.endpoint(), Path::new(&socket));
             // A legacy Stable pane named its default profile `stable`.
             let legacy = select(

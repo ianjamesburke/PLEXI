@@ -2850,7 +2850,9 @@ mod tests {
             calls(&receipt.root, "c")[0],
             format!("host start --timeout-secs 90 --profile-root {root} --profile team")
         );
-        assert!(ProfileTarget::for_build(Some(&root_of(&profile)), Some("../x"), "stable").is_err());
+        assert!(
+            ProfileTarget::for_build(Some(&root_of(&profile)), Some("../x"), "stable").is_err()
+        );
     }
 
     #[cfg(unix)]

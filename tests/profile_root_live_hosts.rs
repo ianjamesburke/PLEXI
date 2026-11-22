@@ -115,7 +115,14 @@ impl Sandbox {
     fn start(&self, root: &str) {
         let output = self.run(
             root,
-            &["host", "start", "--background", "--ephemeral", "--timeout-secs", "90"],
+            &[
+                "host",
+                "start",
+                "--background",
+                "--ephemeral",
+                "--timeout-secs",
+                "90",
+            ],
         );
         assert!(output.status.success(), "host start in {root} failed");
     }
@@ -168,7 +175,10 @@ fn uninstall_in_one_root_leaves_the_other_roots_host_and_data() {
 
     let status = sandbox.status("b");
     assert_eq!(status["ready"], true, "{status}");
-    assert_eq!(status["pid"], b_pid, "root b's host was restarted or replaced");
+    assert_eq!(
+        status["pid"], b_pid,
+        "root b's host was restarted or replaced"
+    );
     let panes = sandbox.run("b", &["pane", "list"]);
     assert!(panes.status.success());
     assert_eq!(
@@ -229,7 +239,10 @@ fn a_hosts_inherited_channel_never_reaches_its_panes() {
                 break text;
             }
         }
-        assert!(Instant::now() < deadline, "the pane never wrote its environment");
+        assert!(
+            Instant::now() < deadline,
+            "the pane never wrote its environment"
+        );
         std::thread::sleep(Duration::from_millis(200));
     };
     let _ = sandbox
@@ -237,7 +250,10 @@ fn a_hosts_inherited_channel_never_reaches_its_panes() {
         .args(["host", "stop"])
         .output();
     let _ = child.wait();
-    assert!(!env.contains("poison1695"), "an inherited value reached the pane:\n{env}");
+    assert!(
+        !env.contains("poison1695"),
+        "an inherited value reached the pane:\n{env}"
+    );
     assert!(
         !env.lines().any(|line| line.starts_with("PLEXI_CHANNEL=")),
         "a default-profile pane carries no PLEXI_CHANNEL:\n{env}"
