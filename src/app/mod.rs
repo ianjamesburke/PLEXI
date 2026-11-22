@@ -5202,19 +5202,22 @@ impl PlexiApp {
         let hold = crate::platform::ui_profile::RESIZE_GESTURE_HOLD;
         if window_resized || pointer_dragging {
             self.drag_window_last_seen = Some(now);
+        }
+        let remaining = self
+            .drag_window_last_seen
+            .and_then(|last_seen| hold.checked_sub(now.duration_since(last_seen)))
+            .filter(|remaining| !remaining.is_zero());
+        if let Some(remaining) = remaining {
+            // Re-armed on every pass inside the hold, not only on passes that
+            // moved: an immediate repaint (a deferring terminal) supersedes
+            // the earlier request, and that pass must schedule the post-hold
+            // pass itself or an idle host never ends the gesture.
             let predicted = ctx.input(|i| i.predicted_dt);
-            ctx.request_repaint_after(hold + std::time::Duration::from_secs_f32(predicted));
-            return DragSignal {
-                window_resized,
-                active: true,
-            };
+            ctx.request_repaint_after(remaining + std::time::Duration::from_secs_f32(predicted));
         }
         DragSignal {
             window_resized,
-            active: matches!(
-                self.drag_window_last_seen,
-                Some(last_seen) if now.duration_since(last_seen) < hold
-            ),
+            active: remaining.is_some(),
         }
     }
 

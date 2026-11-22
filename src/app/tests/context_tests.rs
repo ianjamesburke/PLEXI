@@ -2,7 +2,8 @@ use super::super::*;
 use crate::host::context::Window;
 
 /// Stint 1224: a window resize dirties the workspace every frame; the save
-/// waits for the gesture to settle, then lands on a logic-only pass.
+/// waits for the gesture to settle, then lands on a logic-only pass that the
+/// gesture itself scheduled, with no other input.
 #[test]
 fn live_resize_defers_workspace_flush_until_settled() {
     let mut h = crate::testing::HostHarness::new();
@@ -30,11 +31,17 @@ fn live_resize_defers_workspace_flush_until_settled() {
     // The occluded pass at a new size is the gesture's last resize frame.
     h.hidden_frame();
     assert_eq!(h.app.last_workspace_save, old_save);
-    // Expire the hold without sleeping; the next occluded pass must flush.
-    h.app.drag_window_last_seen =
-        Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
+    // A same-size pass inside the hold, as a deferring terminal's immediate
+    // repaint produces: it supersedes the resize frame's post-hold wake.
     h.hidden_frame();
-    assert!(!h.app.workspace_dirty);
+    assert_eq!(h.app.last_workspace_save, old_save);
+    // From here the host is idle: a pass runs only when one was scheduled.
+    // The hold must still end and the deferred save land (Codex round 1).
+    h.run_scheduled_hidden_frames(10);
+    assert!(
+        !h.app.workspace_dirty,
+        "workspace still dirty after the host went idle"
+    );
     assert!(h.app.last_workspace_save > old_save);
 }
 
