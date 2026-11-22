@@ -6,9 +6,10 @@
 #
 #   source "${PLEXI_E2E_SHIM:?}"
 #
-# A channel-named binary (`plexi-alpha`, `plexi-pr-N`) ignores PLEXI_CHANNEL.
-# The profile follows that basename: plexi-alpha → ~/.plexi-alpha.
-# A bare `plexi` still follows PLEXI_CHANNEL (default alpha → ~/.plexi-alpha).
+# The binary selects its profile from `--profile-root`, `--profile` and its
+# own name, never from HOME or PLEXI_CHANNEL (stint 1695). Sourcing the shim
+# roots every invocation in the script's private HOME: call `plx`, or pass
+# "${PLX_ROOT[@]}", and read PROFILE, which the binary itself resolved.
 
 if [[ -n "${PLEXI_BIN_SHIM_LOADED:-}" ]]; then
   return 0
@@ -34,18 +35,12 @@ BIN_PATH="$BIN"
 BIN_NAME="$(basename "$BIN")"
 BIN_NAME="${BIN_NAME%.exe}"
 BIN_NAME="${BIN_NAME%.EXE}"
-if [[ "$BIN_NAME" == plexi-* ]]; then
-  unset PLEXI_CHANNEL || true
-  PROFILE="${HOME}/.${BIN_NAME}"
-elif [[ "$BIN_NAME" == "plexi" ]]; then
-  if [[ -z "${PLEXI_CHANNEL:-}" ]]; then
-    export PLEXI_CHANNEL="alpha"
-  fi
-  PROFILE="${HOME}/.plexi-${PLEXI_CHANNEL}"
-else
+if [[ "$BIN_NAME" != plexi && "$BIN_NAME" != plexi-* ]]; then
   echo "FAIL: PLEXI_BIN basename must be plexi or plexi-<channel>, got $BIN_NAME" >&2
   exit 1
 fi
-CHANNEL_DIR=".${BIN_NAME}"
+# shellcheck source=scripts/e2e/profile-root.sh
+source "$(dirname "${BASH_SOURCE[0]}")/profile-root.sh"
+plexi_profile_root "$HOME"
 export PLEXI_BIN="$BIN"
-export BIN BIN_PATH BIN_NAME PROFILE CHANNEL_DIR
+export BIN BIN_PATH BIN_NAME
