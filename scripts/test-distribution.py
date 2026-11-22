@@ -123,6 +123,10 @@ def main(args):
         env['PLEXI_INSTALL_DIR'] = str(root / 'custom install')
         env['PLEXI_BIN_DIR'] = str(root / 'command bin')
         apps = home / 'Applications'
+        # The temp home is the profile root. HOME alone no longer selects it,
+        # and the installer refuses a private one without --profile-root
+        # (stint 1695).
+        root_args = ['--profile-root', home]
         installer = args.installer.resolve()
         def remove_test_installations():
             # Windows Known Folders and user PATH are account-scoped even when
@@ -137,7 +141,7 @@ def main(args):
         alpha = package(root, installer, args.platform, 'alpha', 'new')
         def install(path, success=True, custom_env=env, extra_args=()):
             channel = json.loads((path / 'package.json').read_text())['channel']
-            return run([installer, '--package', path, '--channel', channel, '--applications-dir', apps, '--install-only', *extra_args], custom_env, success)
+            return run([installer, '--package', path, '--channel', channel, '--applications-dir', apps, '--install-only', '--profile-root', custom_env['HOME'], *extra_args], custom_env, success)
         receipt_path = root / 'custom install/stable/installation.json'
         def active(): return json.loads(receipt_path.read_text())['active']['build_id']
         if os.name != 'nt' and shutil.which('zsh'):
@@ -232,7 +236,7 @@ def main(args):
         assert active() == 'new'
         check_completions('new')
         assert json.loads(receipt_path.read_text())['previous']['build_id'] == 'old'
-        run([installer, 'rollback', '--receipt', receipt_path.parent], env)
+        run([installer, 'rollback', '--receipt', receipt_path.parent, *root_args], env)
         assert active() == 'old'
         check_completions('old')
         if os.name != 'nt':
@@ -250,7 +254,7 @@ def main(args):
         gate = root / 'check-gate'
         interrupted = env | {'DISTRIBUTION_TEST_GATE': str(gate)}
         with (root / 'interrupt.log').open('w') as log:
-            proc = subprocess.Popen([str(installer), '--package', str(new), '--install-only'], env=interrupted, cwd=home, stdout=log, stderr=log)
+            proc = subprocess.Popen([str(installer), '--package', str(new), '--install-only', '--profile-root', str(home)], env=interrupted, cwd=home, stdout=log, stderr=log)
             try:
                 deadline = time.monotonic() + 30
                 while not gate.with_suffix('.ready').exists():
@@ -327,13 +331,14 @@ time.sleep(600)
             def launch_install(path, host=None):
                 for marker in (calls, started):
                     marker.unlink(missing_ok=True)
-                result = run([installer, '--package', path, '--channel', 'beta', '--applications-dir', apps], launch_env)
+                result = run([installer, '--package', path, '--channel', 'beta', '--applications-dir', apps, '--profile-root', short_home], launch_env)
                 if host is not None:
                     assert host.poll() is None, 'the installer stopped the running host'
                 recorded = calls.read_text().splitlines() if calls.exists() else []
                 assert not any('stop' in call for call in recorded), recorded
                 return recorded, result.stdout
-            ready_build = lambda build: [f'{build} host start --timeout-secs 90', f'{build} host status --json']
+            # The installer forwards its explicit root to the build it starts.
+            ready_build = lambda build: [f'{build} host start --timeout-secs 90 --profile-root {short_home}', f'{build} host status --json --profile-root {short_home}']
             host = stand_in('lock')
             recorded, out = launch_install(beta_old, host)
             assert recorded == [], recorded
@@ -427,20 +432,20 @@ time.sleep(600)
         base = f'http://127.0.0.1:{server.server_port}'
         http_env = env | {'PLEXI_RELEASES_URL': base + '/releases', 'PLEXI_RELEASE_BASE_URL': base + '/download'}
         try:
-            bootstrap = ['powershell', '-NoProfile', '-File', REPO / 'scripts/install-windows.ps1', '-InstallOnly'] if os.name == 'nt' else ['bash', REPO / 'install.sh', '--install-only']
+            bootstrap = ['powershell', '-NoProfile', '-File', REPO / 'scripts/install-windows.ps1', '-InstallOnly', '-ProfileRoot', home] if os.name == 'nt' else ['bash', REPO / 'install.sh', '--install-only', *root_args]
             run(bootstrap, http_env)
             assert active() == 'new'
             rate_limited_env = http_env | {'PLEXI_RELEASES_URL': base + '/rate-limited-releases'}
-            run([installer, '--channel', 'stable', '--tag', 'v1.1.0', '--install-only'], rate_limited_env)
-            run([installer, '--channel', 'alpha', '--tag', 'v1.1.0', '--install-only'], rate_limited_env)
-            limited = run([installer, '--channel', 'stable', '--install-only'], rate_limited_env, False)
+            run([installer, '--channel', 'stable', '--tag', 'v1.1.0', '--install-only', *root_args], rate_limited_env)
+            run([installer, '--channel', 'alpha', '--tag', 'v1.1.0', '--install-only', *root_args], rate_limited_env)
+            limited = run([installer, '--channel', 'stable', '--install-only', *root_args], rate_limited_env, False)
             assert 'GitHub API rate limit reached' in limited.stderr, limited.stderr
             print('PASS: explicit stable and alpha tags download directly when release API is rate-limited')
             print(limited.stderr.strip())
             sidecar.write_text('0'*64 + '  ' + asset + '\n')
-            run([installer, '--install-only'], http_env, False)
+            run([installer, '--install-only', *root_args], http_env, False)
             sidecar.unlink()
-            run([installer, '--install-only'], http_env, False)
+            run([installer, '--install-only', *root_args], http_env, False)
             run(bootstrap, http_env | {'PLEXI_RELEASE_BASE_URL': base + '/missing'}, False)
             assert active() == 'new'
             print('PASS: exact bootstrap, missing assets, bad checksums and failed downloads')

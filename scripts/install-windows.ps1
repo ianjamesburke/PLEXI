@@ -6,7 +6,10 @@ param(
     [switch]$InstallOnly,
     [switch]$DryRun,
     [string]$InstallDir = $env:PLEXI_INSTALL_DIR,
-    [string]$BinDir = $env:PLEXI_BIN_DIR
+    [string]$BinDir = $env:PLEXI_BIN_DIR,
+    # The absolute directory that holds the channel's .plexi profile
+    # (default: the account profile folder).
+    [string]$ProfileRoot
 )
 $ErrorActionPreference = 'Stop'
 $base = if ($env:PLEXI_RELEASE_BASE_URL) { $env:PLEXI_RELEASE_BASE_URL } else { 'https://github.com/ianjamesburke/PLEXI/releases/download' }
@@ -100,6 +103,7 @@ try {
     if ($DryRun) { $arguments += '--dry-run' }
     if ($InstallDir) { $arguments += @('--install-dir', $InstallDir) }
     if ($BinDir) { $arguments += @('--bin-dir', $BinDir) }
+    if ($ProfileRoot) { $arguments += @('--profile-root', $ProfileRoot) }
     & $installer @arguments
     if ($LASTEXITCODE -ne 0) { throw "Plexi installer failed (exit $LASTEXITCODE)." }
 } finally {
