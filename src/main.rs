@@ -178,6 +178,9 @@ fn main() -> eframe::Result {
         },
         &ambient,
     );
+    if role == crate::config::profile_target::Role::HostLaunch {
+        crate::config::profile_target::forget_inherited_routing();
+    }
     // A lifecycle command addresses its validated profile host and nothing
     // else: a refused target exits here, before any connection or trace.
     let lifecycle_socket = (role == crate::config::profile_target::Role::Lifecycle).then(|| {

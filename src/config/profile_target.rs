@@ -88,6 +88,29 @@ impl Ambient {
     }
 }
 
+/// Routing values a host must never pass on from the environment it was
+/// launched with: its panes get its own selection's values
+/// (`shell::pane_routing_env`), and a pane that omits one (`.plexi` exports
+/// no `PLEXI_CHANNEL`) must not see the launcher's instead.
+pub const INHERITED_ROUTING_VARS: &[&str] = &[
+    "PLEXI_CHANNEL",
+    plexi_distribution::transaction::BUILD_CHANNEL_VAR,
+    plexi_distribution::transaction::DELEGATED_VAR,
+];
+
+/// Remove [`INHERITED_ROUTING_VARS`] from a host process's environment, so
+/// no pane, probe or child it starts inherits them. Call once from `main`,
+/// during single-threaded startup, after [`Ambient::take`].
+pub fn forget_inherited_routing() {
+    for var in INHERITED_ROUTING_VARS {
+        if std::env::var_os(var).is_some() {
+            log::info!("profile_target: host drops inherited {var}");
+            // Single-threaded startup: nothing else reads the environment yet.
+            std::env::remove_var(var);
+        }
+    }
+}
+
 /// Choose the selection. Pure apart from the account home passed in and
 /// existence checks a caller already made on `--profile-root`.
 pub fn select(

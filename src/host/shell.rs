@@ -234,7 +234,10 @@ pub fn install_login_shell_env() {
     };
     let mut adopted_keys: Vec<&str> = Vec::new();
     for (k, v) in &vars {
-        if SKIP.contains(&k.as_str()) {
+        // A login shell's routing values name some other host, never this one.
+        if SKIP.contains(&k.as_str())
+            || crate::config::profile_target::INHERITED_ROUTING_VARS.contains(&k.as_str())
+        {
             continue;
         }
         if std::env::var(k).is_err() {
