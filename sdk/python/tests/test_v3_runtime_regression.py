@@ -1332,6 +1332,15 @@ def test_a_send_with_no_open_connection_is_dropped_and_the_app_told(tmp_path):
         proc.kill()
 
 
+def test_pipe_send_pipe_id_keyword_is_refused_naming_its_replacement():
+    """Stint 1681: `PipeSend(pipe_id=...)` was removed; it fails loudly and
+    names the new parameter."""
+    from plexi_sdk.effects import PipeSend
+    with pytest.raises(TypeError, match="pipe_id=.*was removed.*`pipe`"):
+        PipeSend(pipe_id="p", payload={})
+    assert PipeSend("p", {"n": 1}).pipe == "p"
+
+
 def test_a_late_answer_never_rebinds_a_newer_request_for_the_name(tmp_path):
     """Stint 1681: two requests for one name overlap. Each answer carries
     that request's own waiting sends; only the newest request binds the

@@ -327,7 +327,7 @@ the host for a connection. The host answers with `PipeOpened` (it carries a
 A send by name that you return right after the open waits for the answer. Each
 connection has its own handle; a reopen gets a new one. `PipeClosed` says that
 a connection ended. A later send on that connection is dropped, and the app
-gets `PipeSendDropped`.
+gets `PipeSendDropped`. `PipeSend(pipe_id=...)` was removed; pass `pipe`.
 
 ## Focus and Visibility
 

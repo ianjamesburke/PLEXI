@@ -360,7 +360,7 @@ class PipeOpenDirected:
     target_pane_id: int
 
 
-@dataclass
+@dataclass(init=False)
 class PipeSend:
     """Send a JSON-serializable ``payload`` on a directed pipe: by name
     (``str``), the pipe's current connection, or by handle (``int``, from
@@ -373,4 +373,17 @@ class PipeSend:
     """
     pipe: str | int
     payload: Any = None
+
+    def __init__(self, pipe: str | int | None = None, payload: Any = None, **removed: Any) -> None:
+        if "pipe_id" in removed:
+            raise TypeError(
+                "PipeSend(pipe_id=...) was removed; pass the pipe name or "
+                "handle as `pipe`: PipeSend(pipe, payload)"
+            )
+        if removed:
+            raise TypeError(f"PipeSend got unexpected keyword arguments {sorted(removed)}")
+        if pipe is None:
+            raise TypeError("PipeSend needs `pipe`: a pipe name or handle")
+        self.pipe = pipe
+        self.payload = payload
 
