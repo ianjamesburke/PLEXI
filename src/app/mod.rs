@@ -3182,9 +3182,7 @@ impl PlexiApp {
         let mut app = Self {
             pty_event_rx: rx,
             pty_event_tx: tx,
-            pane_base: Some(std::sync::Arc::new(
-                crate::host::pane_env::PaneBase::fixture(),
-            )),
+            pane_base: crate::host::pane_env::PaneBase::test_base(),
             last_notify_poll: std::time::Instant::now(),
             scheduler: crate::host::scheduler::Scheduler::new(),
             theme: theme::terminal_theme(&theme_cfg, config.terminal_minimum_contrast()),

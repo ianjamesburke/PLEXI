@@ -3054,7 +3054,7 @@ mod tests {
         let _features =
             crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
         let home = dirs::home_dir().expect("home");
-        let sentinel = "PLEXI_HOME_ONLY_SENTINEL_1632";
+        let sentinel = "HOME_ONLY_SENTINEL_1632";
         crate::workspace::secrets::set_folder_secret(
             crate::workspace::secrets::folder_store(),
             sentinel,

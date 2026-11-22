@@ -381,6 +381,9 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi secret delete`: Delete a stored secret
 - `plexi secret copy`: Copy a global or folder secret to a new name, keeping the original
 <!-- experiment: folder_secrets -->
+  - `plexi secret copy --folder` (experiment option; see command help).
+<!-- /experiment -->
+<!-- experiment: folder_secrets -->
 - `plexi secret rm`: Remove a folder-scoped secret
 <!-- /experiment -->
 <!-- experiment: folder_secrets -->

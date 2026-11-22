@@ -1486,7 +1486,7 @@ pub enum SecretCmd {
         /// The new environment variable name
         to: String,
         /// Copy a globally-stored secret
-        #[arg(long, conflicts_with = "folder", required_unless_present = "folder")]
+        #[arg(long, conflicts_with = "folder")]
         global: bool,
         /// Copy a secret bound to this directory
         #[arg(long, value_name = "DIR")]

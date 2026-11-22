@@ -143,8 +143,22 @@ impl PaneBase {
         env
     }
 
-    /// A base for tests: the real account, a fixed PATH, no agent socket.
+    /// The base a test host starts with: [`Self::fixture`] on Unix; none on
+    /// Windows, whose panes do not use one yet (stint 1688).
     #[cfg(test)]
+    pub(crate) fn test_base() -> Option<Arc<Self>> {
+        #[cfg(unix)]
+        {
+            Some(Arc::new(Self::fixture()))
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+
+    /// A base for tests: the real account, a fixed PATH, no agent socket.
+    #[cfg(all(test, unix))]
     pub(crate) fn fixture() -> Self {
         Self {
             account: Account::current().expect("test account"),
@@ -159,7 +173,7 @@ impl PaneBase {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl PaneBase {
     /// [`Self::fixture`] with every optional variable present.
     pub(crate) fn fixture_with_every_variable() -> Self {
@@ -478,7 +492,7 @@ fn xdg_dirs(home: &Path) -> Vec<(&'static str, String)> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

@@ -1357,13 +1357,13 @@ mod tests {
                 mcp: crate::pane_ops::construct::McpBearer::Pane,
                 profile_dir: profile.clone(),
             };
-            let base = crate::host::pane_env::PaneBase::fixture();
+            let base = crate::host::pane_env::PaneBase::test_base();
             assert!(crate::app::PlexiApp::construct_terminal_in(
                 &egui::Context::default(),
                 &tx,
                 &colors,
                 14.0,
-                Some(&base),
+                base.as_deref(),
                 launch
             )
             .is_err());

@@ -489,13 +489,13 @@ pub(crate) mod probes {
         });
         let (tx, _rx) = std::sync::mpsc::channel();
         let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
-        let base = crate::host::pane_env::PaneBase::fixture();
+        let base = crate::host::pane_env::PaneBase::test_base();
         let started = crate::app::PlexiApp::construct_terminal_in(
             &egui::Context::default(),
             &tx,
             &colors,
             14.0,
-            Some(&base),
+            base.as_deref(),
             launch,
         );
         assert!(

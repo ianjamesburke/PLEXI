@@ -5046,6 +5046,7 @@ fn spawn_secrets_linked_terminal_and_routine_resolve_no_secret() {
 /// (`/bin/sh` in script mode, no startup files) that records its complete
 /// environment. Nothing a launcher supplied, and no secret value, may appear
 /// anywhere in those environments; failures name keys, never values.
+#[cfg(unix)]
 #[test]
 #[ignore = "requires-pty"]
 fn nested_host_no_secret_panes_get_no_inherited_value_at_first_exec() {
@@ -5588,7 +5589,7 @@ fn plugin_terminal_routes_all_admit_the_requesting_view() {
     let mut h = HostHarness::new();
     let tmp = tempfile::tempdir().expect("secret dir");
     let dir = crate::platform::path::canonical_or_self(tmp.path());
-    let sentinel = "PLEXI_FOLDER_SENTINEL_1666_ROUTES";
+    let sentinel = "FOLDER_SENTINEL_1666_ROUTES";
     crate::workspace::secrets::set_folder_secret(
         crate::workspace::secrets::folder_store(),
         sentinel,

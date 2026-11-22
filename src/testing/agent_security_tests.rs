@@ -676,7 +676,7 @@ fn restored_routine_grant_drops_its_saved_secret_eligibility() {
     let tmp = tempfile::tempdir().unwrap();
     let root = crate::platform::path::canonical_or_self(tmp.path());
     let (injected, injected_value) = ("API_KEY_1666", "workspace-1666-canary");
-    let (folder, folder_value) = ("PLEXI_FOLDER_1666_RESTORE", "folder-1666-canary");
+    let (folder, folder_value) = ("FOLDER_1666_RESTORE", "folder-1666-canary");
     let (desktop, routine) = {
         let mut h = HostHarness::from_profile_dir(profile.path());
         write_workspace(&root, "ws-1666", &[injected]);

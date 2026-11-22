@@ -1158,6 +1158,10 @@ pub fn secret_copy(from: &str, to: &str, global: bool, folder: Option<&std::path
         println!("permission_denied");
         return 1;
     }
+    if !global && folder.is_none() {
+        eprintln!("error: secret copy needs --global or --folder DIR");
+        return 1;
+    }
     let (target, store) = match folder {
         Some(folder) => {
             if !folder_feature_available() {
