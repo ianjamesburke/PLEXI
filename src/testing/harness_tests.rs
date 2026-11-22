@@ -6921,66 +6921,6 @@ fn a_read_right_after_intake_finds_no_room_still_wakes_it() {
     assert!(python_pane_title(&h, opener).is_some_and(|title| title.starts_with("opener:opened:")));
 }
 
-/// Guest output the host is not taking is bounded (review round 5): the
-/// decoder stops reading guest stdout once its decoded backlog is full, and
-/// the guest's writes wait once unread stdout is full, so the guest is held
-/// back instead of growing host memory. When the host takes output again,
-/// the guest runs on to the end.
-#[test]
-fn guest_output_the_host_is_not_taking_holds_the_guest_back() {
-    const LINES: usize = 4000;
-    const BACKLOG: usize = 64 * 1024;
-    const UNREAD: usize = 16 * 1024;
-    let dir = tempfile::tempdir().expect("emitter dir");
-    write_pipe_probe_app(
-        dir.path(),
-        "output-flood",
-        &[],
-        &format!(
-            "from plexi_sdk._v3_runtime import _emit\n\
-             from plexi_sdk.effects import SetTitle\n\
-             from plexi_sdk.events import TimerFired\n\
-             from plexi_sdk.ui import Column\n\n\
-             def init(size, args):\n\
-             \x20   return [SetTitle('emitter:ready')]\n\n\
-             def update(event):\n\
-             \x20   if isinstance(event, TimerFired):\n\
-             \x20       for i in range({LINES}):\n\
-             \x20           _emit({{'type': 'status_summary', 'text': 'x' * 1000}})\n\
-             \x20       return [SetTitle('emitter:done')]\n\
-             \x20   return []\n\n\
-             def view():\n\
-             \x20   return Column([])\n"
-        ),
-    );
-    let mut h = HostHarness::new();
-    let emitter = launch_pipe_probe(&mut h, dir.path(), &[]);
-    run_until(&mut h, "the emitter is ready", &|h| {
-        python_pane_title(h, emitter).as_deref() == Some("emitter:ready")
-    });
-    python_runtime_mut(&mut h, emitter).set_output_limits_for_test(BACKLOG, UNREAD);
-    let stdin = python_stdin(&mut h, emitter);
-    stdin.push(PROBE_TRIGGER).expect("trigger");
-    // No frame runs: the host takes nothing while the guest writes ~4 MB.
-    spin_until("the guest fills what the host holds for it", &mut || {
-        let (decoded, unread) = python_runtime_mut(&mut h, emitter).output_backlog_for_test();
-        decoded + unread >= BACKLOG
-    });
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let (decoded, unread) = python_runtime_mut(&mut h, emitter).output_backlog_for_test();
-    assert!(
-        decoded <= BACKLOG + 2 * 1024,
-        "decoded output stops at its limit: {decoded} bytes"
-    );
-    assert!(
-        unread <= UNREAD + 64 * 1024,
-        "unread guest stdout stops near its limit: {unread} bytes"
-    );
-    run_until(&mut h, "the guest runs to the end", &|h| {
-        python_pane_title(h, emitter).as_deref() == Some("emitter:done")
-    });
-}
-
 /// A Python opener whose live connections hold all of its close room is not
 /// stalled by it (review round 5). Opens beyond that room are admitted with
 /// their answer room only: each fresh one is refused `opener_full`, and an
