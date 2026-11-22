@@ -21,8 +21,12 @@ source "$ROOT/e2e/human.sh"
 
 EVID="${EVID:-/tmp/plexi-w2-evidence}"
 CHANNEL="${CHANNEL:-alpha}"
-BIN="${BIN:-$HOME/.local/bin/plexi-$CHANNEL}"
-PROFILE="${PROFILE:-$HOME/.plexi-$CHANNEL}"
+BIN="${PLEXI_BIN:-$HOME/.local/bin/plexi-$CHANNEL}"
+# Every "$BIN" call passes --profile-root "$HOME"; PROFILE is what the binary
+# resolves there (stint 1695).
+# shellcheck source=scripts/e2e/profile-root.sh
+source "$ROOT/e2e/profile-root.sh"
+plexi_profile_root "$HOME"
 WS="${WS:-/tmp/plexi-w2-ws}"
 MOCK_PORT="${MOCK_PORT:-8765}"
 DISPLAY_NUM="${DISPLAY:-:99}"

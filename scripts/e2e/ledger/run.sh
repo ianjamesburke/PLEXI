@@ -9,8 +9,9 @@
 #   scripts/e2e/ledger/run.sh
 #   PLEXI_BIN=plexi-pr-2683 scripts/e2e/ledger/run.sh
 #
-# The channel profile is derived from the binary name (`plexi-pr-2683` →
-# ~/.plexi-pr-2683). The script truncates that profile's ai-ledger.jsonl so
+# Every invocation passes --profile-root "$HOME" (scripts/e2e/profile-root.sh)
+# and the profile is the one the binary resolves there (`plexi-pr-2683` →
+# $HOME/.plexi-pr-2683). The script truncates that profile's ai-ledger.jsonl so
 # the summary counts only this run. It stops the host on exit.
 set -euo pipefail
 
@@ -21,13 +22,9 @@ if ! command -v "$BIN" >/dev/null 2>&1; then
   exit 1
 fi
 
-name="$(basename "$BIN")"
-channel="${name#plexi-}"
-if [[ "$channel" == "$name" || -z "$channel" ]]; then
-  PROFILE="${HOME}/.plexi"
-else
-  PROFILE="${HOME}/.plexi-${channel}"
-fi
+# shellcheck source=scripts/e2e/profile-root.sh
+source "${ROOT}/scripts/e2e/profile-root.sh"
+plexi_profile_root "$HOME"
 LEDGER="${PROFILE}/ai-ledger.jsonl"
 CONFIG="${PROFILE}/config.toml"
 SOCK="${PROFILE}/notify.sock"

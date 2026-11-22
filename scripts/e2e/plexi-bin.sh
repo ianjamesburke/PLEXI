@@ -8,8 +8,9 @@
 #
 # The binary selects its profile from `--profile-root`, `--profile` and its
 # own name, never from HOME or PLEXI_CHANNEL (stint 1695). Sourcing the shim
-# roots every invocation in the script's private HOME: call `plx`, or pass
-# "${PLX_ROOT[@]}", and read PROFILE, which the binary itself resolved.
+# roots every "$BIN" invocation in the script's private HOME (see
+# profile-root.sh) and sets PROFILE, which the binary itself resolved.
+# BIN_PATH and PLEXI_BIN stay the channel binary itself.
 
 if [[ -n "${PLEXI_BIN_SHIM_LOADED:-}" ]]; then
   return 0
@@ -42,5 +43,5 @@ fi
 # shellcheck source=scripts/e2e/profile-root.sh
 source "$(dirname "${BASH_SOURCE[0]}")/profile-root.sh"
 plexi_profile_root "$HOME"
-export PLEXI_BIN="$BIN"
+export PLEXI_BIN="$BIN_PATH"
 export BIN BIN_PATH BIN_NAME

@@ -24,19 +24,17 @@ mkdir -p "$HOME/.plexi"
 if [[ -d "$ORIG_HOME/.plexi/wasm-bundles" ]]; then
   ln -s "$ORIG_HOME/.plexi/wasm-bundles" "$HOME/.plexi/wasm-bundles"
 fi
-export PLEXI_CHANNEL="host-tamper-e2e"
 unset PLEXI_SOCKET PLEXI_PANE_ID PLEXI_CONTEXT_ID PLEXI_CONTEXT_ROOT PLEXI_RUNNING || true
 export VK_DRIVER_FILES="${VK_DRIVER_FILES:-/usr/share/vulkan/icd.d/lvp_icd.json}"
 export XDG_RUNTIME_DIR="$WORK/runtime"
 mkdir -p "$XDG_RUNTIME_DIR/keyring"
 chmod 700 "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/keyring"
 
-BIN_NAME="$(basename "$BIN")"
-if [[ "$BIN_NAME" == plexi-* ]]; then
-  PROFILE="$HOME/.plexi-${BIN_NAME#plexi-}"
-else
-  PROFILE="$HOME/.plexi-$PLEXI_CHANNEL"
-fi
+# Every "$BIN" call passes --profile-root "$HOME" --profile host-tamper-e2e;
+# PROFILE is what the binary resolves there (stint 1695).
+# shellcheck source=scripts/e2e/profile-root.sh
+source "$ROOT/scripts/e2e/profile-root.sh"
+plexi_profile_root "$HOME" host-tamper-e2e
 SOCKET="$PROFILE/notify.sock"
 STAMP="$PROFILE/permission-integrity.toml"
 

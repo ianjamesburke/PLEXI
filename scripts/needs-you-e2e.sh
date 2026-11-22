@@ -30,30 +30,20 @@ export XDG_RUNTIME_DIR="$WORK/runtime"
 mkdir -p "$XDG_RUNTIME_DIR/keyring"
 chmod 700 "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/keyring"
 
+# Every "$BIN" call passes --profile-root "$HOME"; PROFILE is what the binary
+# resolves there (stint 1695).
 if [[ -n "${PLEXI_E2E_SHIM:-}" ]]; then
   # shellcheck disable=SC1090
   source "$PLEXI_E2E_SHIM"
-fi
-if [[ -z "${BIN:-}" ]]; then
+else
   BIN="${PLEXI_BIN:-$ROOT/target/release/plexi}"
-fi
-if [[ ! -x "$BIN" ]]; then
-  echo "error: missing binary $BIN (run just build first)" >&2
-  exit 1
-fi
-
-# A channel-named binary (`plexi-alpha`, `plexi-pr-N`) ignores PLEXI_CHANNEL.
-# The shim already set PROFILE from that name. Otherwise derive it here.
-if [[ -z "${PROFILE:-}" ]]; then
-  BIN_NAME="$(basename "$BIN")"
-  BIN_NAME="${BIN_NAME%.exe}"
-  if [[ "$BIN_NAME" == plexi-* ]]; then
-    unset PLEXI_CHANNEL || true
-    PROFILE="$HOME/.plexi-${BIN_NAME#plexi-}"
-  else
-    export PLEXI_CHANNEL="${PLEXI_CHANNEL:-needs-you-e2e}"
-    PROFILE="$HOME/.plexi-$PLEXI_CHANNEL"
+  if [[ ! -x "$BIN" ]]; then
+    echo "error: missing binary $BIN (run just build first)" >&2
+    exit 1
   fi
+  # shellcheck source=scripts/e2e/profile-root.sh
+  source "$ROOT/scripts/e2e/profile-root.sh"
+  plexi_profile_root "$HOME" needs-you-e2e
 fi
 SOCKET="$PROFILE/notify.sock"
 INPUT='{"game_id":"game-1","expected_revision":0,"operation_id":"op-needs-you","move":"e2e4"}'

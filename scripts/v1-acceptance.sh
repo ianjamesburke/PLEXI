@@ -3,8 +3,10 @@
 #
 # The acceptance target is the alpha channel binary built from this tree.
 # `just build` produces target/release/plexi; the harness copies that file to
-# a real binary named plexi-alpha and drives that. A channel-named binary
-# ignores PLEXI_CHANNEL. The profile is ~/.plexi-alpha. This is not an
+# a real binary named plexi-alpha and drives that. Every invocation passes
+# --profile-root <temp home> (scripts/e2e/profile-root.sh), so the profile is
+# <temp home>/.plexi-alpha as the binary resolves it and no command can reach
+# the owner's profiles. This is not an
 # integration branch and not a plexi-pr-N install. --bin and --pr are
 # explicit overrides for a re-run, not the default.
 #
@@ -20,7 +22,8 @@
 #   scripts/v1-acceptance.sh --bin ~/.local/bin/plexi-alpha
 #
 # Item scripts take the channel binary from PLEXI_BIN. The harness exports
-# that and PLEXI_E2E_SHIM (scripts/e2e/plexi-bin.sh). Scripts that still
+# that and PLEXI_E2E_SHIM (scripts/e2e/plexi-bin.sh); each item roots the
+# binary in its own temp home. Scripts that still
 # require plexi-pr-<N> are run from a same-directory copy that sources the
 # shim. The owning PR applies the one-line in scripts/e2e/plexi-bin.md.
 #
@@ -577,7 +580,13 @@ if [[ -n "$BIN" ]]; then
   esac
   export PATH="$(dirname "$BIN"):$PATH"
   export PLEXI_BIN="$BIN"
-  export BIN
+  # From here BIN is the rooted launcher: every host stop, start and query,
+  # including the cleanup trap, reaches only the profile under WORK_HOME.
+  # Before this line the trap's stop runs the bare binary under a private
+  # HOME, which the binary refuses.
+  # shellcheck source=scripts/e2e/profile-root.sh
+  source "$REPO/scripts/e2e/profile-root.sh"
+  plexi_profile_root "$WORK_HOME"
 fi
 
 # [ai] backend = "openrouter" from the tree's default config. Item scripts
@@ -585,16 +594,7 @@ fi
 # snapshot after every item keeps that rewrite from reaching the ledger.
 CONFIG_BASELINE="$EVID/config-baseline.toml"
 profile_config_path() {
-  local base
-  base="$(basename "${BIN:-plexi}")"
-  base="${base%.exe}"
-  if [[ "$base" == plexi-* ]]; then
-    printf '%s/.%s/config.toml' "$HOME" "$base"
-  elif [[ -n "${PLEXI_CHANNEL:-}" ]]; then
-    printf '%s/.plexi-%s/config.toml' "$HOME" "$PLEXI_CHANNEL"
-  else
-    printf '%s/.plexi/config.toml' "$HOME"
-  fi
+  printf '%s/config.toml' "${PROFILE:?no rooted binary resolved a profile}"
 }
 seed_config_baseline() {
   local src path
@@ -899,9 +899,8 @@ PY
 invoke_script() {
   local script="$1"
   local log="$2"
-  export PLEXI_BIN="$BIN"
+  # Items get the channel binary itself and root it in their own temp home.
   export PLEXI_E2E_SHIM="$SHIM"
-  export BIN
   local run="$script"
   local shimmed=0
   if script_needs_pr "$script"; then
@@ -912,7 +911,7 @@ invoke_script() {
   fi
   local -a cmd
   if grep -q 'path-to-plexi-binary' "$script"; then
-    cmd=(timeout --foreground 1200 bash "$run" "$BIN")
+    cmd=(timeout --foreground 1200 bash "$run" "$PLEXI_BIN")
   else
     cmd=(timeout --foreground 1200 bash "$run")
   fi
