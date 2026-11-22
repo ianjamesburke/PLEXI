@@ -394,6 +394,7 @@ mod tests {
         assert!(!error.contains("not found"), "{error}");
     }
     use super::*;
+    use crate::cli::test_env::socket_env_guard;
     use tempfile::tempdir;
 
     /// Install a minimal plugin into a staged global plugins dir and return a registry
@@ -416,20 +417,6 @@ mod tests {
         let registry =
             crate::app::registry::PluginRegistry::load_with_global(bare.path(), plugins.path());
         (plugins, registry)
-    }
-
-    /// Retain a stale spawn-time environment value for negative controls.
-    fn with_stale_root<T>(root: &Path, body: impl FnOnce() -> T) -> T {
-        let previous = std::env::var_os("PLEXI_CONTEXT_ROOT");
-        // SAFETY: every reader of this variable in-process is serialized behind
-        // `env_guard`, which each test in this module holds for its duration.
-        unsafe { std::env::set_var("PLEXI_CONTEXT_ROOT", root) };
-        let out = body();
-        match previous {
-            Some(value) => unsafe { std::env::set_var("PLEXI_CONTEXT_ROOT", value) },
-            None => unsafe { std::env::remove_var("PLEXI_CONTEXT_ROOT") },
-        }
-        out
     }
 
     fn read_scope_request(stream: &std::os::unix::net::UnixStream) -> serde_json::Value {
@@ -480,7 +467,8 @@ mod tests {
         );
     }
 
-    /// Exercise the production host-query resolver using a bounded mock endpoint.
+    /// Exercise the production host-query resolver using a bounded mock endpoint,
+    /// as pane 42, under the shared env guard.
     fn with_context_root<T>(root: &Path, body: impl FnOnce() -> T) -> T {
         use std::io::Write;
         use std::os::unix::net::UnixListener;
@@ -516,19 +504,11 @@ mod tests {
                 }
             }
         });
-        let keys = ["PLEXI_PANE_ID", "PLEXI_SOCKET"];
-        let previous = keys.map(std::env::var_os);
-        unsafe {
-            std::env::set_var(keys[0], "42");
-            std::env::set_var(keys[1], socket);
-        }
+        let env = socket_env_guard();
+        env.set_pane_id("42");
+        env.set(&socket);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
-        for (key, value) in keys.into_iter().zip(previous) {
-            match value {
-                Some(v) => unsafe { std::env::set_var(key, v) },
-                None => unsafe { std::env::remove_var(key) },
-            }
-        }
+        drop(env);
         stop.store(true, Ordering::Relaxed);
         server.join().unwrap();
         match result {
@@ -547,23 +527,14 @@ mod tests {
         assert_eq!(file_context_root(root.path()).unwrap(), root.path());
     }
 
-    /// Serializes the env-mutating tests in this module against each other.
-    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
     #[test]
     fn context_targets_stale_root_never_substitutes_for_unreachable_host() {
-        let _guard = env_guard();
         let root = tempdir().unwrap();
-        let previous = std::env::var_os("PLEXI_PANE_ID");
-        unsafe { std::env::set_var("PLEXI_PANE_ID", "18446744073709551615") };
-        let result = with_stale_root(root.path(), cli_context_root);
-        match previous {
-            Some(v) => unsafe { std::env::set_var("PLEXI_PANE_ID", v) },
-            None => unsafe { std::env::remove_var("PLEXI_PANE_ID") },
-        }
+        let env = socket_env_guard();
+        env.set_pane_id("18446744073709551615");
+        env.set_context_root(root.path());
+        let result = cli_context_root();
+        drop(env);
         assert!(
             result.is_err(),
             "a pane must ask its host, never use a stale env root: {result:?}"
@@ -574,7 +545,6 @@ mod tests {
     fn context_targets_plugin_state_after_set_root_ignores_stale_environment() {
         use std::io::Write;
         use std::os::unix::net::UnixListener;
-        let _guard = env_guard();
         let mut h = crate::testing::HostHarness::new();
         let pane = h.add_test_pane();
         let stale = h.app.router.active().root.clone();
@@ -612,19 +582,12 @@ mod tests {
                 }
             }
         });
-        let keys = ["PLEXI_PANE_ID", "PLEXI_SOCKET"];
-        let previous = keys.map(std::env::var_os);
-        unsafe {
-            std::env::set_var(keys[0], pane.to_string());
-            std::env::set_var(keys[1], socket);
-        }
-        let actual = with_stale_root(&stale, cli_context_root);
-        for (key, value) in keys.into_iter().zip(previous) {
-            match value {
-                Some(v) => unsafe { std::env::set_var(key, v) },
-                None => unsafe { std::env::remove_var(key) },
-            }
-        }
+        let env = socket_env_guard();
+        env.set_pane_id(&pane.to_string());
+        env.set(&socket);
+        env.set_context_root(&stale);
+        let actual = cli_context_root();
+        drop(env);
         server.join().unwrap();
         assert_eq!(actual.unwrap(), current.path());
     }
@@ -633,7 +596,6 @@ mod tests {
 
     #[test]
     fn set_writes_the_document_to_the_apps_declared_state_file() {
-        let _guard = env_guard();
         let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
@@ -656,7 +618,6 @@ mod tests {
 
     #[test]
     fn an_plugin_without_a_state_section_is_not_addressable() {
-        let _guard = env_guard();
         let (_apps, registry) = install_plugin(None);
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
@@ -675,7 +636,6 @@ mod tests {
 
     #[test]
     fn an_undeclared_scope_is_refused_rather_than_silently_redirected() {
-        let _guard = env_guard();
         let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
@@ -694,7 +654,6 @@ mod tests {
 
     #[test]
     fn a_malformed_document_never_reaches_disk() {
-        let _guard = env_guard();
         let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
@@ -716,7 +675,6 @@ mod tests {
 
     #[test]
     fn a_traversal_or_absolute_plugin_id_cannot_address_a_file_outside_the_scope() {
-        let _guard = env_guard();
         let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
@@ -744,7 +702,6 @@ mod tests {
 
     #[test]
     fn a_missing_context_root_errors_instead_of_being_created() {
-        let _guard = env_guard();
         let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         let missing = root.path().join("no-such-context");
@@ -759,7 +716,6 @@ mod tests {
 
     #[test]
     fn markdown_state_passes_through_verbatim() {
-        let _guard = env_guard();
         let (_apps, registry) = install_plugin(Some(
             "\n[state]\nscopes = [\"context\"]\nformat = \"markdown\"\n",
         ));
@@ -781,7 +737,6 @@ mod tests {
 
     #[test]
     fn a_symlinked_plugin_states_dir_is_refused() {
-        let _guard = env_guard();
         let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         let elsewhere = tempdir().expect("escape target");
@@ -804,7 +759,6 @@ mod tests {
 
     #[test]
     fn get_on_an_plugin_with_no_state_file_yet_prints_the_empty_document() {
-        let _guard = env_guard();
         let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
