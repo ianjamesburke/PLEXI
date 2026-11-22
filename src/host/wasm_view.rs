@@ -520,6 +520,7 @@ impl pipes::Host for HostCtx {
                 pipe_id: id,
                 target_pane_id: target_pane,
                 emitter: None,
+                admission: None,
             });
         Ok(request)
     }

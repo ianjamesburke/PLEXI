@@ -53,6 +53,15 @@ struct InputState {
     bytes: VecDeque<u8>,
     lifecycle: InputLifecycle,
     low_water_owner: Option<std::num::NonZeroU64>,
+    /// The most bytes stdin holds, queued plus held: [`STDIN_BUFFER_HARD_CAP_BYTES`].
+    cap: usize,
+    /// Room held for directed-pipe control events (`control_room`).
+    control: control_room::ControlHeld,
+    capacity_wake: Option<control_room::CapacityWake>,
+    #[cfg(test)]
+    reads_held: bool,
+    #[cfg(test)]
+    push_hook: Option<(Vec<u8>, Arc<dyn Fn() + Send + Sync>)>,
 }
 
 enum InputLifecycle {
@@ -80,6 +89,13 @@ impl Default for InputState {
                 low_water: None,
             }),
             low_water_owner: None,
+            cap: STDIN_BUFFER_HARD_CAP_BYTES,
+            control: control_room::ControlHeld::default(),
+            capacity_wake: None,
+            #[cfg(test)]
+            reads_held: false,
+            #[cfg(test)]
+            push_hook: None,
         }
     }
 }
@@ -210,23 +226,42 @@ impl AppendableStdin {
         let InputState {
             bytes: queued,
             lifecycle,
+            cap,
+            control,
+            #[cfg(test)]
+            push_hook,
             ..
         } = &mut *state;
         let open = match lifecycle {
             InputLifecycle::Open(open) => open,
             InputLifecycle::Closed => return Err(WasmPythonError::StdinClosed),
         };
-        if queued.len().saturating_add(bytes.len()) > STDIN_BUFFER_HARD_CAP_BYTES {
+        // Room held for control events is never ordinary room.
+        if queued
+            .len()
+            .saturating_add(control.total())
+            .saturating_add(bytes.len())
+            > *cap
+        {
             return Err(WasmPythonError::StdinBufferFull {
                 buffered: queued.len(),
-                cap: STDIN_BUFFER_HARD_CAP_BYTES,
+                cap: *cap,
             });
         }
         queued.extend(bytes);
         let waker = open.waker.take();
+        #[cfg(test)]
+        let hook = push_hook
+            .as_ref()
+            .filter(|(needle, _)| bytes.windows(needle.len()).any(|w| w == needle.as_slice()))
+            .map(|(_, hook)| Arc::clone(hook));
         drop(state);
         if let Some(waker) = waker {
             waker.wake();
+        }
+        #[cfg(test)]
+        if let Some(hook) = hook {
+            hook();
         }
         Ok(())
     }
@@ -325,9 +360,13 @@ impl AppendableStdin {
             InputLifecycle::Open(open) => open,
             InputLifecycle::Closed => return,
         };
+        let capacity_wake = state.capacity_wake.take();
         drop(state);
         if let Some(waker) = open.waker {
             waker.wake();
+        }
+        if let Some(wake) = capacity_wake {
+            wake();
         }
         if let Some(waiter) = open.low_water {
             (waiter.wake)(waiter.token);
@@ -354,6 +393,13 @@ impl AsyncRead for AppendableStdin {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(test)]
+        if state.reads_held {
+            if let InputLifecycle::Open(open) = &mut state.lifecycle {
+                open.waker = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+        }
         if !state.bytes.is_empty() {
             let count = buf.remaining().min(state.bytes.len());
             let bytes: Vec<u8> = state.bytes.drain(..count).collect();
@@ -366,9 +412,13 @@ impl AsyncRead for AppendableStdin {
                 },
                 InputLifecycle::Closed => None,
             };
+            let capacity_wake = state.capacity_wake.take();
             drop(state);
             if let Some(waiter) = low_water {
                 (waiter.wake)(waiter.token);
+            }
+            if let Some(wake) = capacity_wake {
+                wake();
             }
             return Poll::Ready(Ok(()));
         }
@@ -782,6 +832,8 @@ pub enum WasmPythonError {
     StdinClosed,
     #[error("guest stdin buffer full ({buffered} of {cap} bytes unread) — guest is not consuming stdin; message dropped")]
     StdinBufferFull { buffered: usize, cap: usize },
+    #[error("directed pipe control room misused: {0}")]
+    ControlRoom(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1030,6 +1082,16 @@ impl WasmPythonRuntime {
         let thread = std::thread::Builder::new()
             .name(format!("plexi-python-wasm-{plugin_id}"))
             .spawn(move || {
+                // However the guest thread ends (a clean exit, a startup
+                // failure, a trap, an unwind), its stdin closes with it, so
+                // nothing is admitted to a guest that can no longer read.
+                struct CloseStdinOnExit(AppendableStdin);
+                impl Drop for CloseStdinOnExit {
+                    fn drop(&mut self) {
+                        self.0.close();
+                    }
+                }
+                let _close_on_exit = CloseStdinOnExit(thread_stdin.clone());
                 let compile_begin = std::time::Instant::now();
                 let (engine, module) = cached_cpython_module(&bundle)?;
                 let compiled_in = compile_begin.elapsed();
@@ -1564,6 +1626,14 @@ pub struct LivePythonPane {
     /// supersession. Counterpart to the connection's `McpWake`; no timer
     /// polls this boundary.
     mcp_stdin_wake: StdinWake,
+    /// A guest message taken from its output but not yet admitted: an open
+    /// whose answer has no room in the guest's stdin. Nothing behind it is
+    /// taken until it is (stint 1681).
+    held_intake: Option<Value>,
+    /// Set by the stdin's capacity wake once room may have freed for
+    /// `held_intake`.
+    intake_room_freed: Arc<std::sync::atomic::AtomicBool>,
+    intake_wake: control_room::CapacityWake,
     /// File-picker backend (stint 0508). Native rfd dialog in production, a
     /// scripted queue under `PLEXI_PICKER_SCRIPT` / harness override so agent
     /// tests can drive the full pick → grant → read/write flow headlessly.
@@ -3175,7 +3245,24 @@ impl LivePythonPane {
                 context.request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
             }
         });
+        let intake_room_freed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let intake_wake: control_room::CapacityWake = {
+            let freed = Arc::clone(&intake_room_freed);
+            let repaint = Arc::clone(&repaint);
+            Arc::new(move || {
+                freed.store(true, std::sync::atomic::Ordering::Release);
+                if let Some((context, viewport)) =
+                    repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                {
+                    context
+                        .request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
+                }
+            })
+        };
         Ok(Self {
+            held_intake: None,
+            intake_room_freed,
+            intake_wake,
             presence: PanePresence::default(),
             runtime,
             config,
@@ -3253,6 +3340,79 @@ impl LivePythonPane {
             self.pane_owner = Some((*pane_id, *context_id));
         }
         self.pipes.set_owner(owner);
+    }
+
+    /// Whether this guest can still take directed-pipe control events: its
+    /// stdin closes when the guest thread exits, however it exits.
+    pub(crate) fn is_directed_pipe_endpoint(&self) -> bool {
+        self.runtime.stdin.is_open()
+    }
+
+    /// Admit an open request the guest made: hold room for its answer and
+    /// for the close of the connection it may become.
+    fn admit_open(
+        &self,
+        request_id: &str,
+        pipe_id: &str,
+    ) -> Result<crate::host::pane::OpenAdmission, control_room::NoRoom> {
+        let stdin = &self.runtime.stdin;
+        let answer = stdin.reserve(
+            control_room::ControlPool::Answers,
+            answer_room(request_id, pipe_id),
+        )?;
+        let close = stdin.reserve(control_room::ControlPool::OpenerCloses, close_room(pipe_id))?;
+        Ok(crate::host::pane::OpenAdmission {
+            answer: crate::host::pane::ControlSlot::Stdin(answer),
+            close: crate::host::pane::ControlSlot::Stdin(close),
+        })
+    }
+
+    pub(crate) fn reserve_control(
+        &self,
+        room: crate::host::pane::ControlRoom<'_>,
+    ) -> Result<control_room::StdinSlot, crate::host::pane::NotAdmitted> {
+        let (pool, bytes) = match room {
+            crate::host::pane::ControlRoom::TargetClose { pipe_id } => {
+                (control_room::ControlPool::TargetCloses, close_room(pipe_id))
+            }
+        };
+        self.runtime.stdin.reserve(pool, bytes).map_err(|error| {
+            log::info!(
+                "plugin::{}: no room for a directed pipe {pool:?} event: {error:?}",
+                self.plugin_id
+            );
+            match error {
+                control_room::NoRoom::Closed => crate::host::pane::NotAdmitted::NotAnEndpoint,
+                control_room::NoRoom::Full | control_room::NoRoom::Oversize => {
+                    crate::host::pane::NotAdmitted::Full
+                }
+            }
+        })
+    }
+
+    /// Enqueue a control event into the room `slot` holds for it.
+    pub(crate) fn deliver_control(
+        &self,
+        slot: control_room::StdinSlot,
+        event: crate::protocol::PlexiEvent,
+    ) -> Result<(), String> {
+        let line = control_line(event)?;
+        self.runtime
+            .stdin
+            .push_reserved(slot, &line)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Enqueue a control event into free room, failing when there is none.
+    pub(crate) fn deliver_unreserved_control(
+        &self,
+        event: crate::protocol::PlexiEvent,
+    ) -> Result<(), String> {
+        let line = control_line(event)?;
+        self.runtime
+            .stdin
+            .push(&line)
+            .map_err(|error| error.to_string())
     }
 
     /// Record directed pipe `pipe_id` in this instance's registry, a cache of
@@ -3687,7 +3847,12 @@ impl LivePythonPane {
                 }
             }
         }
-        loop {
+        if let Some(held) = self.held_intake.take() {
+            self.intake_room_freed
+                .store(false, std::sync::atomic::Ordering::Release);
+            self.handle_message(held);
+        }
+        while self.held_intake.is_none() {
             match self.decoder.try_recv() {
                 Ok(DecodedOutput::Tree {
                     frame_id,
@@ -3970,6 +4135,49 @@ impl LivePythonPane {
             }
             _ => match plugin_command_from_python_message(&message) {
                 Ok(Some(mut command)) => {
+                    // An open is admitted before anything can refuse it: it
+                    // holds room for its answer, or waits, with everything
+                    // the guest sent after it, until the guest's stdin has
+                    // that room (stint 1681).
+                    if let crate::app::view_trait::ViewCommand::OpenDirectedPipe {
+                        request_id,
+                        pipe_id,
+                        admission,
+                        ..
+                    } = &mut command
+                    {
+                        match self.admit_open(request_id, pipe_id) {
+                            Ok(admitted) => *admission = Some(admitted),
+                            Err(control_room::NoRoom::Full) => {
+                                log::info!(
+                                    "plugin::{}: open request '{}' waits: no room in the guest's stdin for its answer",
+                                    self.plugin_id,
+                                    guest_text::shown(request_id)
+                                );
+                                self.held_intake = Some(message);
+                                self.runtime
+                                    .stdin
+                                    .arm_capacity_wake(Arc::clone(&self.intake_wake));
+                                return;
+                            }
+                            Err(control_room::NoRoom::Closed) => {
+                                log::info!(
+                                    "plugin::{}: open request '{}' dropped: the guest has finished",
+                                    self.plugin_id,
+                                    guest_text::shown(request_id)
+                                );
+                                return;
+                            }
+                            Err(control_room::NoRoom::Oversize) => {
+                                log::warn!(
+                                    "plugin::{}: rejected CPython WASM message: open request '{}' names ids too long for any answer to fit",
+                                    self.plugin_id,
+                                    guest_text::shown(request_id)
+                                );
+                                return;
+                            }
+                        }
+                    }
                     if let Some(capability) =
                         required_capability_for_python_plugin_command(&command)
                     {
@@ -3979,20 +4187,32 @@ impl LivePythonPane {
                                 self.plugin_id,
                                 guest_text::shown(message_type.unwrap_or("<missing>"))
                             );
-                            // An open is a request; the guest is answered.
+                            // An open is a request; the guest is answered in
+                            // the room it holds.
                             if let crate::app::view_trait::ViewCommand::OpenDirectedPipe {
                                 request_id,
                                 pipe_id,
+                                admission: Some(admission),
                                 ..
                             } = command
                             {
-                                self.queue_outbound_event(
-                                    crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
-                                        request_id,
-                                        pipe_id,
-                                        reason: crate::protocol::PipeOpenRefusal::Denied,
-                                    },
-                                );
+                                if let crate::host::pane::ControlSlot::Stdin(answer) =
+                                    admission.answer
+                                {
+                                    if let Err(error) = self.deliver_control(
+                                        answer,
+                                        crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
+                                            request_id,
+                                            pipe_id,
+                                            reason: crate::protocol::PipeOpenRefusal::Denied,
+                                        },
+                                    ) {
+                                        log::warn!(
+                                            "plugin::{}: refusal of a denied open undelivered: {error}",
+                                            self.plugin_id
+                                        );
+                                    }
+                                }
                             }
                             return;
                         }
@@ -5552,11 +5772,20 @@ impl LivePythonPane {
         match encode_python_host_event(event) {
             Ok(value) => {
                 if let Err(error) = self.runtime.send(&value) {
-                    log::error!(
-                        "plugin::{}: queue host event to Python runtime: {error}",
-                        self.plugin_id
-                    );
-                    self.error = Some(error.to_string());
+                    // A guest that has exited closed its stdin: that is its
+                    // lifecycle (`exited`), not a failure of the guest.
+                    if matches!(error, WasmPythonError::StdinClosed) {
+                        log::info!(
+                            "plugin::{}: host event dropped: the guest has exited",
+                            self.plugin_id
+                        );
+                    } else {
+                        log::error!(
+                            "plugin::{}: queue host event to Python runtime: {error}",
+                            self.plugin_id
+                        );
+                        self.error = Some(error.to_string());
+                    }
                     return Err(OutboundEventError::Send(error.to_string()));
                 }
             }
@@ -5655,7 +5884,14 @@ impl LivePythonPane {
     /// Checking only already-due timers lets an idle hidden host go to sleep
     /// before the deadline, with nothing left to wake it when the timer is due.
     pub fn needs_background_tick(&self) -> bool {
-        self.decoder.has_queued_output()
+        // Held intake waits for its capacity wake, not for every frame.
+        let intake_ready = match self.held_intake {
+            Some(_) => self
+                .intake_room_freed
+                .load(std::sync::atomic::Ordering::Acquire),
+            None => self.decoder.has_queued_output(),
+        };
+        intake_ready
             || self.cli_ops.has_work()
             || !self.pending_commands.is_empty()
             || (self.error.is_none()
@@ -5863,6 +6099,12 @@ impl LivePythonPane {
         // Commands the old guest queued but the host has not drained would be
         // stamped as the new guest's at drain time; they have no requester
         // left, so they are dropped here, where the guest is replaced.
+        if self.held_intake.take().is_some() {
+            log::info!(
+                "plugin::{}: relaunch dropped the old guest's open request waiting for room",
+                self.plugin_id
+            );
+        }
         let dropped = std::mem::take(&mut self.pending_commands);
         if !dropped.is_empty() {
             let verbs: Vec<&str> = dropped.iter().map(|c| c.verb()).collect();
@@ -5926,6 +6168,53 @@ fn encode_python_host_event(
     event: crate::protocol::PlexiEvent,
 ) -> Result<Value, serde_json::Error> {
     serde_json::to_value(event)
+}
+
+/// One control event as the stdin line the guest reads.
+fn control_line(event: crate::protocol::PlexiEvent) -> Result<Vec<u8>, String> {
+    let mut line = serde_json::to_vec(&encode_python_host_event(event).map_err(|e| e.to_string())?)
+        .map_err(|error| error.to_string())?;
+    line.push(b'\n');
+    Ok(line)
+}
+
+fn control_line_len(event: crate::protocol::PlexiEvent) -> usize {
+    control_line(event).map_or(usize::MAX, |line| line.len())
+}
+
+/// Room for the answer to open request `request_id` for `pipe_id`: the
+/// longest `DirectedPipeOpened` or `DirectedPipeOpenRefused` it can get.
+fn answer_room(request_id: &str, pipe_id: &str) -> usize {
+    let opened = control_line_len(crate::protocol::PlexiEvent::DirectedPipeOpened {
+        request_id: request_id.to_string(),
+        pipe_id: pipe_id.to_string(),
+        generation: u64::MAX,
+    });
+    crate::protocol::PipeOpenRefusal::ALL
+        .into_iter()
+        .map(|reason| {
+            control_line_len(crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
+                request_id: request_id.to_string(),
+                pipe_id: pipe_id.to_string(),
+                reason,
+            })
+        })
+        .fold(opened, usize::max)
+}
+
+/// Room for the longest `PipeClosed` of a connection named `pipe_id`.
+fn close_room(pipe_id: &str) -> usize {
+    crate::protocol::PipeCloseReason::ALL
+        .into_iter()
+        .map(|reason| {
+            control_line_len(crate::protocol::PlexiEvent::PipeClosed {
+                pipe_id: pipe_id.to_string(),
+                generation: u64::MAX,
+                reason,
+            })
+        })
+        .max()
+        .unwrap_or(usize::MAX)
 }
 
 fn python_semantic_state(
@@ -6666,6 +6955,7 @@ fn plugin_command_from_python_message(
                     pipe_id,
                     target_pane_id,
                     emitter: None,
+                    admission: None,
                 })),
                 other => Err(format!("{message_type} parsed as {other:?}")),
             };
@@ -8214,6 +8504,9 @@ mod fatal_error;
 
 #[path = "wasm_python/consent.rs"]
 mod consent;
+
+#[path = "wasm_python/control_room.rs"]
+pub(crate) mod control_room;
 
 /// Whether a Python plugin is asked for `capability` at each use, and the
 /// resource its remembered grant binds (the `net.http` host scope from the

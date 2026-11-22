@@ -137,6 +137,11 @@ pub enum ViewCommand {
         target_pane_id: u64,
         /// The opening view instance, stamped at drain.
         emitter: Option<ViewEmitter>,
+        /// Room the opener holds for this request's answer and for its
+        /// connection's close, set when the opener's runtime takes the
+        /// request (stint 1681). `None` until then, and for an opener that
+        /// is not a directed-pipe endpoint, which no answer can reach.
+        admission: Option<crate::host::pane::OpenAdmission>,
     },
     /// Deliver a RunUpdate event to the pane that originally issued the run,
     /// identified by its type_id.
@@ -396,6 +401,16 @@ pub trait View: Send {
     /// Called when the linked terminal's CWD changes.
     /// Plugins that track directories (like the file browser) should update.
     fn sync_cwd(&mut self, _new_cwd: &std::path::Path) {}
+
+    /// Whether this builtin is a directed-pipe endpoint: it takes
+    /// `DirectedPipeIncoming`, `DirectedPipeOpened`, `DirectedPipeOpenRefused`,
+    /// `PipeClosed` and `PipeMessage` through `queue_outbound_event`, each
+    /// one as it arrives. Builtins are not endpoints unless they opt in, so
+    /// an open to one is refused rather than reported to an end that drops
+    /// it (stint 1681).
+    fn accepts_directed_pipe_events(&self) -> bool {
+        false
+    }
 
     /// Queue a PlexiEvent to be sent to the plugin on the next flush.
     /// Used to deliver host-originated events (e.g. ViewOpened) back to

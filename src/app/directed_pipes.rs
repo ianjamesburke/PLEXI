@@ -13,17 +13,27 @@
 use std::collections::HashMap;
 
 use crate::app::view_trait::ViewEmitter;
+use crate::host::pane::{ControlSlot, OpenAdmission};
 
 /// One live connection.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct DirectedPipe {
     pub(crate) context_id: u64,
     pub(crate) pipe_id: String,
     /// The opener, then the target.
     pub(crate) ends: (ViewEmitter, ViewEmitter),
+    /// Room each end holds for this connection's `PipeClosed`, so an end
+    /// that survives the other is told even when its input is full.
+    closes: Vec<(ViewEmitter, ControlSlot)>,
 }
 
 impl DirectedPipe {
+    /// The room `end` holds for this connection's close.
+    pub(crate) fn take_close_room(&mut self, end: ViewEmitter) -> Option<ControlSlot> {
+        let index = self.closes.iter().position(|(holder, _)| *holder == end)?;
+        Some(self.closes.swap_remove(index).1)
+    }
+
     pub(crate) fn has_end(&self, end: ViewEmitter) -> bool {
         self.ends.0 == end || self.ends.1 == end
     }
@@ -39,6 +49,16 @@ impl DirectedPipe {
             None
         }
     }
+}
+
+/// An admitted open request on its way through dispatch: who asked, under
+/// which request id, for which name, and the room the opener holds for its
+/// answer and its connection's close.
+pub(crate) struct OpenRequest {
+    pub(crate) opener: ViewEmitter,
+    pub(crate) request_id: String,
+    pub(crate) pipe_id: String,
+    pub(crate) admission: OpenAdmission,
 }
 
 /// Whether an open may proceed.
@@ -79,32 +99,46 @@ impl DirectedPipes {
         }
     }
 
-    /// Record a connection whose name `check_open` found free, returning its
-    /// new generation.
-    pub(crate) fn commit(
+    /// A generation for an open being prepared. Nothing can reach it until
+    /// it is published.
+    pub(crate) fn allocate(&mut self) -> u64 {
+        self.last_generation += 1;
+        self.last_generation
+    }
+
+    /// Publish prepared connection `generation` under a name `check_open`
+    /// found free, with the close room each end holds.
+    pub(crate) fn publish(
         &mut self,
+        generation: u64,
         context_id: u64,
         pipe_id: &str,
-        opener: ViewEmitter,
-        target: ViewEmitter,
-    ) -> u64 {
+        ends: (ViewEmitter, ViewEmitter),
+        closes: Vec<(ViewEmitter, ControlSlot)>,
+    ) {
         let key = (context_id, pipe_id.to_string());
         assert!(
             !self.by_name.contains_key(&key),
-            "directed pipe '{pipe_id}' committed over a live connection in context {context_id}"
+            "directed pipe '{pipe_id}' published over a live connection in context {context_id}"
         );
-        self.last_generation += 1;
-        let generation = self.last_generation;
         self.by_name.insert(key, generation);
         self.connections.insert(
             generation,
             DirectedPipe {
                 context_id,
                 pipe_id: pipe_id.to_string(),
-                ends: (opener, target),
+                ends,
+                closes,
             },
         );
-        generation
+    }
+
+    /// Every end of every live connection.
+    pub(crate) fn ends(&self) -> Vec<ViewEmitter> {
+        self.connections
+            .values()
+            .flat_map(|pipe| [pipe.ends.0, pipe.ends.1])
+            .collect()
     }
 
     pub(crate) fn get(&self, generation: u64) -> Option<&DirectedPipe> {
@@ -151,6 +185,18 @@ impl DirectedPipes {
 mod tests {
     use super::*;
 
+    fn commit(
+        pipes: &mut DirectedPipes,
+        context_id: u64,
+        pipe_id: &str,
+        a: ViewEmitter,
+        b: ViewEmitter,
+    ) -> u64 {
+        let generation = pipes.allocate();
+        pipes.publish(generation, context_id, pipe_id, (a, b), Vec::new());
+        generation
+    }
+
     fn end(pane_id: u64) -> ViewEmitter {
         ViewEmitter {
             pane_id,
@@ -163,7 +209,7 @@ mod tests {
         let (a, b) = (end(1), end(2));
         let mut pipes = DirectedPipes::default();
         assert_eq!(pipes.check_open(7, "p", a, b), OpenCheck::Free);
-        let generation = pipes.commit(7, "p", a, b);
+        let generation = commit(&mut pipes, 7, "p", a, b);
         assert_eq!(
             pipes.check_open(7, "p", a, b),
             OpenCheck::AlreadyOpen(generation)
@@ -184,15 +230,18 @@ mod tests {
     fn the_same_instances_reopening_after_retirement_get_a_fresh_generation() {
         let (a, b) = (end(1), end(2));
         let mut pipes = DirectedPipes::default();
-        let first = pipes.commit(7, "p", a, b);
+        let first = commit(&mut pipes, 7, "p", a, b);
         let retired = pipes.retire_where(|p| p.has_end(b));
         assert_eq!(retired.len(), 1);
         assert_eq!(retired[0].0, first);
-        assert_eq!(pipes.get(first), None, "a retired generation stays dead");
+        assert!(
+            pipes.get(first).is_none(),
+            "a retired generation stays dead"
+        );
         assert_eq!(pipes.check_open(7, "p", a, b), OpenCheck::Free);
-        let second = pipes.commit(7, "p", a, b);
+        let second = commit(&mut pipes, 7, "p", a, b);
         assert_ne!(second, first);
-        assert_eq!(pipes.get(first), None);
+        assert!(pipes.get(first).is_none());
         assert_eq!(pipes.generation_of(7, "p"), Some(second));
     }
 
@@ -200,7 +249,7 @@ mod tests {
     fn only_an_end_has_a_peer_and_retirement_happens_once() {
         let (a, b, stranger) = (end(1), end(2), end(3));
         let mut pipes = DirectedPipes::default();
-        let generation = pipes.commit(7, "p", a, b);
+        let generation = commit(&mut pipes, 7, "p", a, b);
         let pipe = pipes.get(generation).expect("live");
         assert_eq!(pipe.peer_of(a), Some(b));
         assert_eq!(pipe.peer_of(b), Some(a));
@@ -211,7 +260,7 @@ mod tests {
             pipes.retire_where(|p| p.has_end(b)).is_empty(),
             "the other end finds nothing left"
         );
-        assert_eq!(pipes.get(generation), None);
+        assert!(pipes.get(generation).is_none());
     }
 
     #[test]
@@ -220,7 +269,7 @@ mod tests {
         let replacement = end(1);
         assert_ne!(old, replacement, "same slot, new incarnation");
         let mut pipes = DirectedPipes::default();
-        let generation = pipes.commit(7, "p", old, peer);
+        let generation = commit(&mut pipes, 7, "p", old, peer);
         assert_eq!(pipes.get(generation).unwrap().peer_of(replacement), None);
     }
 }

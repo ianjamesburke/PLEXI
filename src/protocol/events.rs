@@ -613,6 +613,9 @@ pub enum PipeCloseReason {
 }
 
 impl PipeCloseReason {
+    /// Every reason, so room held for a close fits whichever one it carries.
+    pub const ALL: [Self; 3] = [Self::PeerClosed, Self::PeerReloaded, Self::Moved];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::PeerClosed => "peer_closed",
@@ -645,6 +648,18 @@ pub enum PipeOpenRefusal {
 }
 
 impl PipeOpenRefusal {
+    /// Every reason, so room held for an answer fits whichever one it carries.
+    pub const ALL: [Self; 8] = [
+        Self::Denied,
+        Self::NoTarget,
+        Self::NotAPlugin,
+        Self::OutOfReach,
+        Self::InUse,
+        Self::NameConflict,
+        Self::OpenerUnplaced,
+        Self::TargetUnavailable,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Denied => "denied",

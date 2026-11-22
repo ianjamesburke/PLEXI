@@ -2271,6 +2271,21 @@ impl LiveWasmPane {
     }
 
     pub(crate) fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
+        let _ = self.try_queue_outbound_event(event);
+    }
+
+    /// Convert `event` to the guest's input event and queue it, failing when
+    /// the guest has stopped running or the conversion has nothing to name
+    /// (a connection with no handle, an unknown request). The failure is
+    /// logged here.
+    pub(crate) fn try_queue_outbound_event(
+        &mut self,
+        event: crate::protocol::PlexiEvent,
+    ) -> Result<(), String> {
+        if !self.is_running() {
+            log::info!("wasm input: dropping host event for a guest that is not running");
+            return Err("the guest is not running".to_string());
+        }
         let event = match event {
             crate::protocol::PlexiEvent::PluginEventsSubscribed {
                 request_id,
@@ -2339,7 +2354,7 @@ impl LiveWasmPane {
                         "wasm input: dropping PipeMessage on '{pipe_id}' connection {generation}, which has no handle",
                         pipe_id = guest_text::shown(&pipe_id)
                     );
-                    return;
+                    return Err("the event names no handle or request this guest holds".to_string());
                 };
                 InputEvent::PipeMessage(PipeMessageEvent {
                     handle,
@@ -2359,7 +2374,7 @@ impl LiveWasmPane {
                         reason.as_str(),
                         pipe_id = guest_text::shown(&pipe_id)
                     );
-                    return;
+                    return Err("the event names no handle or request this guest holds".to_string());
                 };
                 InputEvent::PipeClosed(handle)
             }
@@ -2374,7 +2389,7 @@ impl LiveWasmPane {
                         pipe_id = guest_text::shown(&pipe_id),
                         request_id = guest_text::shown(&request_id)
                     );
-                    return;
+                    return Err("the event names no handle or request this guest holds".to_string());
                 };
                 match self.inner.directed_pipe_handle(generation) {
                     Some(handle) => InputEvent::PipeOpened(PipeOpenedEvent { request, handle }),
@@ -2406,7 +2421,7 @@ impl LiveWasmPane {
                         pipe_id = guest_text::shown(&pipe_id),
                         request_id = guest_text::shown(&request_id)
                     );
-                    return;
+                    return Err("the event names no handle or request this guest holds".to_string());
                 };
                 InputEvent::PipeOpenRefused(PipeOpenRefusedEvent {
                     request,
@@ -2423,7 +2438,7 @@ impl LiveWasmPane {
                         "wasm input: incoming '{pipe_id}' connection {generation} has no handle",
                         pipe_id = guest_text::shown(&pipe_id)
                     );
-                    return;
+                    return Err("the event names no handle or request this guest holds".to_string());
                 };
                 InputEvent::PipeIncoming(PipeIncomingEvent {
                     handle,
@@ -2433,10 +2448,11 @@ impl LiveWasmPane {
             }
             other => {
                 log::warn!("wasm input: unsupported host event {other:?}");
-                return;
+                return Err("the guest has no input event for it".to_string());
             }
         };
         self.inner.push_input(event);
+        Ok(())
     }
 
     pub(crate) fn background_tick(&mut self) {

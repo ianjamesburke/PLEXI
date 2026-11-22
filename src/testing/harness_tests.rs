@@ -2078,12 +2078,7 @@ impl crate::app::view_trait::View for KeyBurstProbe {
         "Key Burst Probe".to_string()
     }
 
-    fn ui(
-        &mut self,
-        _ui: &mut egui::Ui,
-        _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-    ) {
-    }
+    fn ui(&mut self, _ui: &mut egui::Ui, _ctx: &crate::app::view_trait::ViewRenderContext<'_>) {}
 
     fn handle_key(
         &mut self,
@@ -2134,11 +2129,7 @@ impl crate::app::view_trait::View for TextInputProbe {
     // probe panes flips egui focus mid-pass so that neither TextEdit ever
     // draws while focused, and typed/injected text lands in neither.
     #[allow(clippy::disallowed_methods)]
-    fn ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-    ) {
+    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &crate::app::view_trait::ViewRenderContext<'_>) {
         if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
             self.enter_rendered = true;
         }
@@ -4474,7 +4465,14 @@ fn drag_pane_node_endpoints_fail_loudly_without_bounds() {
         .and_then(|n| n.r#ref)
         .expect("canvas root ref");
     let response_file = temp_response(tmp.path(), "drag-node-no-bounds");
-    h.inject_node_drag(pane_id, &root_ref, &root_ref, 4, "left", Some(response_file.clone()));
+    h.inject_node_drag(
+        pane_id,
+        &root_ref,
+        &root_ref,
+        4,
+        "left",
+        Some(response_file.clone()),
+    );
     h.run_frames(1);
     let response = read_json_response(&response_file);
     let error = response["error"].as_str().unwrap_or_default();
@@ -4486,7 +4484,14 @@ fn drag_pane_node_endpoints_fail_loudly_without_bounds() {
     // A ref that names nothing in the current tree.
     let response_file = temp_response(tmp.path(), "drag-node-missing");
     let missing = "9999.0123456789abcdef";
-    h.inject_node_drag(pane_id, missing, missing, 4, "left", Some(response_file.clone()));
+    h.inject_node_drag(
+        pane_id,
+        missing,
+        missing,
+        4,
+        "left",
+        Some(response_file.clone()),
+    );
     h.run_frames(1);
     let response = read_json_response(&response_file);
     let error = response["error"].as_str().unwrap_or_default();
@@ -4585,6 +4590,9 @@ fn resolve_event_bus_caller_falls_back_to_claimed_pane_id_without_ancestry() {
 struct PipeTestView {
     outgoing: Vec<crate::app::view_trait::ViewCommand>,
     received: std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>,
+    /// Whether it is a directed-pipe endpoint; a test clears it to make the
+    /// view end as one while its pane stays mounted.
+    endpoint: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl crate::app::view_trait::View for PipeTestView {
@@ -4600,12 +4608,7 @@ impl crate::app::view_trait::View for PipeTestView {
         self
     }
 
-    fn ui(
-        &mut self,
-        _ui: &mut egui::Ui,
-        _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
-    ) {
-    }
+    fn ui(&mut self, _ui: &mut egui::Ui, _ctx: &crate::app::view_trait::ViewRenderContext<'_>) {}
 
     fn take_pending_commands(&mut self) -> Vec<crate::app::view_trait::ViewCommand> {
         std::mem::take(&mut self.outgoing)
@@ -4616,6 +4619,10 @@ impl crate::app::view_trait::View for PipeTestView {
             .lock()
             .expect("pipe test plugin event log")
             .push(event);
+    }
+
+    fn accepts_directed_pipe_events(&self) -> bool {
+        self.endpoint.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -4653,6 +4660,7 @@ fn pipe_test_view(
         runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(PipeTestView {
             outgoing: Vec::new(),
             received: received.clone(),
+            endpoint: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         })),
         workspace_root: "/tmp".into(),
         permissions: crate::app::permissions::PluginPermissions::builtin(),
@@ -5650,6 +5658,15 @@ fn python_reload_drops_requests_the_old_guest_left_queued() {
 
 type PipeInbox = std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>;
 
+/// The admission a runtime whose input never fills (WASM, an opted-in
+/// builtin) gives an open at intake.
+fn unbounded_open_admission() -> crate::host::pane::OpenAdmission {
+    crate::host::pane::OpenAdmission {
+        answer: crate::host::pane::ControlSlot::Unbounded,
+        close: crate::host::pane::ControlSlot::Unbounded,
+    }
+}
+
 /// The live connection named `key`'s two ends, as pane slots, opener first.
 fn pipe_ends(h: &HostHarness, key: &(u64, String)) -> Option<(u64, u64)> {
     let generation = h.app.directed_pipes.generation_of(key.0, &key.1)?;
@@ -5674,6 +5691,7 @@ fn request_directed_pipe(h: &mut HostHarness, sender: u64, target: u64, pipe_id:
             pipe_id: pipe_id.to_string(),
             target_pane_id: target,
             emitter: None,
+            admission: None,
         },
     );
     request_id
@@ -5794,12 +5812,14 @@ fn pipe_incoming(
 /// `PipeTestView` overlay, returning the overlay's inbox.
 fn push_pipe_test_overlay(h: &mut HostHarness, win_idx: usize, pane_id: u64) -> PipeInbox {
     let (mut overlay, inbox) = pipe_test_view(pane_id);
-    assert!(h.app.windows[win_idx].push_overlay(pane_id, move |occupant| {
-        if let crate::host::pane::Pane::View(view) = &mut overlay {
-            view.overlay_replaced = Some(Box::new(occupant));
-        }
-        overlay
-    }));
+    assert!(
+        h.app.windows[win_idx].push_overlay(pane_id, move |occupant| {
+            if let crate::host::pane::Pane::View(view) = &mut overlay {
+                view.overlay_replaced = Some(Box::new(occupant));
+            }
+            overlay
+        })
+    );
     inbox
 }
 
@@ -5830,7 +5850,8 @@ fn open_directed_pipe_rejects_cross_context_target() {
 
     let (sender_a2, sender_a2_inbox) = add_pipe_test_pane(&mut h, 0);
     let (target_a2, target_a2_inbox) = add_pipe_test_pane(&mut h, 0);
-    let generation = open_directed_test_pipe(&mut h, sender_a2, &sender_a2_inbox, target_a2, "same-ctx");
+    let generation =
+        open_directed_test_pipe(&mut h, sender_a2, &sender_a2_inbox, target_a2, "same-ctx");
     assert_eq!(
         pipe_ends(&h, &(context_a, "same-ctx".to_string())),
         Some((sender_a2, target_a2))
@@ -5855,12 +5876,24 @@ fn directed_pipe_id_does_not_collide_across_contexts() {
     let (target_a, target_a_inbox) = add_pipe_test_pane(&mut h, 0);
     let (sender_b, sender_b_inbox) = add_pipe_test_pane(&mut h, win_b_idx);
     let (target_b, target_b_inbox) = add_pipe_test_pane(&mut h, win_b_idx);
-    let generation_a = open_directed_test_pipe(&mut h, sender_a, &sender_a_inbox, target_a, "my-pipe");
-    let generation_b = open_directed_test_pipe(&mut h, sender_b, &sender_b_inbox, target_b, "my-pipe");
+    let generation_a =
+        open_directed_test_pipe(&mut h, sender_a, &sender_a_inbox, target_a, "my-pipe");
+    let generation_b =
+        open_directed_test_pipe(&mut h, sender_b, &sender_b_inbox, target_b, "my-pipe");
     assert_ne!(generation_a, generation_b);
 
-    send_on(&mut h, sender_a, generation_a, serde_json::json!({"from": "a"}));
-    send_on(&mut h, sender_b, generation_b, serde_json::json!({"from": "b"}));
+    send_on(
+        &mut h,
+        sender_a,
+        generation_a,
+        serde_json::json!({"from": "a"}),
+    );
+    send_on(
+        &mut h,
+        sender_b,
+        generation_b,
+        serde_json::json!({"from": "b"}),
+    );
     h.run_hidden_frames(1);
     assert_eq!(
         pipe_messages(&target_a_inbox),
@@ -5882,11 +5915,22 @@ fn reopening_a_live_pipe_answers_its_generation_and_strangers_cannot_send() {
     let (b, b_inbox) = add_pipe_test_pane(&mut h, 0);
     let (stranger, _) = add_pipe_test_pane(&mut h, 0);
     let generation = open_directed_test_pipe(&mut h, a, &a_inbox, b, "pair");
-    assert_eq!(open_directed_test_pipe(&mut h, b, &b_inbox, a, "pair"), generation);
-    assert_eq!(open_directed_test_pipe(&mut h, a, &a_inbox, b, "pair"), generation);
+    assert_eq!(
+        open_directed_test_pipe(&mut h, b, &b_inbox, a, "pair"),
+        generation
+    );
+    assert_eq!(
+        open_directed_test_pipe(&mut h, a, &a_inbox, b, "pair"),
+        generation
+    );
     assert_eq!(pipe_incoming(&b_inbox).len(), 1, "the target is told once");
 
-    send_on(&mut h, stranger, generation, serde_json::json!({"from": "stranger"}));
+    send_on(
+        &mut h,
+        stranger,
+        generation,
+        serde_json::json!({"from": "stranger"}),
+    );
     send_on(&mut h, a, generation, serde_json::json!({"from": "a"}));
     h.run_hidden_frames(1);
     assert_eq!(
@@ -5913,19 +5957,33 @@ fn opening_a_name_in_use_is_refused_and_the_first_connection_stays() {
 
     let request = request_directed_pipe(&mut h, a, c, "shared-id");
     h.run_hidden_frames(1);
-    assert_eq!(open_answer(&a_inbox, &request), Some(Err(PipeOpenRefusal::InUse)));
-    assert_eq!(pipe_ends(&h, &key), Some((a, b)), "the first connection stays");
+    assert_eq!(
+        open_answer(&a_inbox, &request),
+        Some(Err(PipeOpenRefusal::InUse))
+    );
+    assert_eq!(
+        pipe_ends(&h, &key),
+        Some((a, b)),
+        "the first connection stays"
+    );
     assert!(c_inbox.lock().expect("event log").is_empty());
 
     send_on(&mut h, a, generation, serde_json::json!({"to": "b"}));
     h.run_hidden_frames(1);
-    assert_eq!(pipe_messages(&b_inbox), vec![(generation, serde_json::json!({"to": "b"}))]);
+    assert_eq!(
+        pipe_messages(&b_inbox),
+        vec![(generation, serde_json::json!({"to": "b"}))]
+    );
     assert!(pipe_messages(&c_inbox).is_empty());
 
     h.app.close_pane_by_id(a);
     assert_eq!(
         pipe_closed_events(&b_inbox),
-        vec![("shared-id".to_string(), generation, PipeCloseReason::PeerClosed)]
+        vec![(
+            "shared-id".to_string(),
+            generation,
+            PipeCloseReason::PeerClosed
+        )]
     );
 }
 
@@ -6073,15 +6131,25 @@ fn a_refused_python_open_drops_its_waiting_sends() {
     }
     h.run_hidden_frames(2);
 
-    assert_eq!(pipe_ends(&h, &key), Some((a, b)), "the first connection stays");
+    assert_eq!(
+        pipe_ends(&h, &key),
+        Some((a, b)),
+        "the first connection stays"
+    );
     assert!(pipe_messages(&a_inbox).is_empty());
-    assert!(pipe_messages(&b_inbox).is_empty(), "the waiting send went nowhere");
+    assert!(
+        pipe_messages(&b_inbox).is_empty(),
+        "the waiting send went nowhere"
+    );
     let opener_has_reader = h.app.windows[win]
         .panes
         .get(&opener)
         .and_then(Pane::as_view)
         .is_some_and(|pane| pane.runtime.has_pipe_reader(PIPE));
-    assert!(!opener_has_reader, "the refused opener's registry holds nothing");
+    assert!(
+        !opener_has_reader,
+        "the refused opener's registry holds nothing"
+    );
 }
 
 fn write_relaunching_pipe_sender_plugin(dir: &std::path::Path) {
@@ -6143,7 +6211,10 @@ fn python_relaunch_retires_the_old_guests_directed_pipes() {
         .expect("launch sender plugin")
         .expect("sender pane id");
     let (receiver_pane, receiver_inbox) = pipe_test_view(receiver);
-    h.app.windows[win].panes.insert(receiver, receiver_pane).unwrap();
+    h.app.windows[win]
+        .panes
+        .insert(receiver, receiver_pane)
+        .unwrap();
     let _ = h.app.windows[win].tree.tiles.insert_pane(receiver);
     let incoming = |inbox: &std::sync::Mutex<Vec<PlexiEvent>>| pipe_incoming(inbox);
     let wait = |h: &mut HostHarness, what: &str, done: &dyn Fn(&HostHarness) -> bool| {
@@ -6161,9 +6232,14 @@ fn python_relaunch_retires_the_old_guests_directed_pipes() {
         }
     };
 
-    wait(&mut h, "the old guest's ping", &|_| pipe_messages(&receiver_inbox).len() == 1);
+    wait(&mut h, "the old guest's ping", &|_| {
+        pipe_messages(&receiver_inbox).len() == 1
+    });
     let old = incoming(&receiver_inbox)[0].1;
-    assert_eq!(pipe_messages(&receiver_inbox), vec![(old, serde_json::json!({"msg": "ping"}))]);
+    assert_eq!(
+        pipe_messages(&receiver_inbox),
+        vec![(old, serde_json::json!({"msg": "ping"}))]
+    );
     send_on(&mut h, receiver, old, serde_json::json!({"echo": "before"}));
     wait(&mut h, "the old guest's ack", &|h| {
         python_pane_title(h, sender).as_deref() == Some("sender:acks:before")
@@ -6177,7 +6253,9 @@ fn python_relaunch_retires_the_old_guests_directed_pipes() {
     );
     send_on(&mut h, receiver, old, serde_json::json!({"echo": "late"}));
 
-    wait(&mut h, "the new guest's ping", &|_| pipe_messages(&receiver_inbox).len() == 2);
+    wait(&mut h, "the new guest's ping", &|_| {
+        pipe_messages(&receiver_inbox).len() == 2
+    });
     let new = incoming(&receiver_inbox)[1].1;
     assert_ne!(new, old);
     assert_eq!(
@@ -6208,14 +6286,19 @@ fn pane_close_retires_directed_pipes_and_tells_the_peer() {
     let key = (context_id, "retire-on-close".to_string());
     let (sender, sender_inbox) = add_pipe_test_pane(&mut h, 0);
     let (target, target_inbox) = add_pipe_test_pane(&mut h, 0);
-    let generation = open_directed_test_pipe(&mut h, sender, &sender_inbox, target, "retire-on-close");
+    let generation =
+        open_directed_test_pipe(&mut h, sender, &sender_inbox, target, "retire-on-close");
 
     h.app.close_pane_by_id(sender);
 
     assert_eq!(pipe_ends(&h, &key), None);
     assert_eq!(
         pipe_closed_events(&target_inbox),
-        vec![("retire-on-close".to_string(), generation, PipeCloseReason::PeerClosed)]
+        vec![(
+            "retire-on-close".to_string(),
+            generation,
+            PipeCloseReason::PeerClosed
+        )]
     );
     let logged: Vec<_> = crate::host::event_log::test_take_events()
         .into_iter()
@@ -6232,7 +6315,12 @@ fn pane_close_retires_directed_pipes_and_tells_the_peer() {
         logged,
         vec![("pipe-test-app".to_string(), "retire-on-close".to_string())]
     );
-    send_on(&mut h, target, generation, serde_json::json!({"late": true}));
+    send_on(
+        &mut h,
+        target,
+        generation,
+        serde_json::json!({"late": true}),
+    );
     h.run_hidden_frames(1);
     assert!(pipe_messages(&sender_inbox).is_empty());
 }
@@ -6248,14 +6336,19 @@ fn deleting_a_page_retires_directed_pipes_of_its_panes() {
     let page = push_pipe_test_page(&mut h, context_id, 1);
     let (survivor, survivor_inbox) = add_pipe_test_pane(&mut h, 0);
     let (doomed, _) = add_pipe_test_pane(&mut h, page);
-    let generation = open_directed_test_pipe(&mut h, survivor, &survivor_inbox, doomed, "page-pipe");
+    let generation =
+        open_directed_test_pipe(&mut h, survivor, &survivor_inbox, doomed, "page-pipe");
 
     h.app.delete_window(page);
 
     assert_eq!(pipe_ends(&h, &(context_id, "page-pipe".to_string())), None);
     assert_eq!(
         pipe_closed_events(&survivor_inbox),
-        vec![("page-pipe".to_string(), generation, PipeCloseReason::PeerClosed)]
+        vec![(
+            "page-pipe".to_string(),
+            generation,
+            PipeCloseReason::PeerClosed
+        )]
     );
 }
 
@@ -6277,7 +6370,10 @@ fn deleting_a_context_retires_directed_pipes_of_its_panes() {
         .expect("context b in router");
     h.app.delete_context(router_index);
 
-    assert_eq!(pipe_ends(&h, &(context_b, "context-pipe".to_string())), None);
+    assert_eq!(
+        pipe_ends(&h, &(context_b, "context-pipe".to_string())),
+        None
+    );
     assert!(h.app.directed_pipes.get(generation).is_none());
 }
 
@@ -6298,10 +6394,24 @@ fn overlay_dismissal_retires_the_overlays_directed_pipes() {
     assert!(h.app.directed_pipes.get(generation).is_none());
     assert_eq!(
         pipe_closed_events(&peer_inbox),
-        vec![("overlay-pipe".to_string(), generation, PipeCloseReason::PeerClosed)]
+        vec![(
+            "overlay-pipe".to_string(),
+            generation,
+            PipeCloseReason::PeerClosed
+        )]
     );
-    send_on(&mut h, peer, generation, serde_json::json!({"to": "overlay"}));
-    send_on(&mut h, slot, generation, serde_json::json!({"from": "restored"}));
+    send_on(
+        &mut h,
+        peer,
+        generation,
+        serde_json::json!({"to": "overlay"}),
+    );
+    send_on(
+        &mut h,
+        slot,
+        generation,
+        serde_json::json!({"from": "restored"}),
+    );
     h.run_hidden_frames(1);
     assert!(pipe_messages(&covered_inbox).is_empty());
     assert!(pipe_messages(&peer_inbox).is_empty());
@@ -6330,7 +6440,11 @@ fn a_covered_pipe_end_is_reached_and_retired_as_itself() {
     h.app.close_pane_by_id(opener);
     assert_eq!(
         pipe_closed_events(&covered_inbox),
-        vec![("covered-pipe".to_string(), generation, PipeCloseReason::PeerClosed)]
+        vec![(
+            "covered-pipe".to_string(),
+            generation,
+            PipeCloseReason::PeerClosed
+        )]
     );
     assert!(pipe_closed_events(&overlay_inbox).is_empty());
 }
@@ -6487,7 +6601,10 @@ fn deleting_a_page_tells_each_surviving_end_once_and_no_deleted_end() {
         vec![("overlay".to_string(), overlay, PipeCloseReason::PeerClosed)]
     );
     for inbox in [&covered_inbox, &overlay_inbox, &d1_inbox, &d2_inbox] {
-        assert!(pipe_closed_events(inbox).is_empty(), "a deleted end has no one to tell");
+        assert!(
+            pipe_closed_events(inbox).is_empty(),
+            "a deleted end has no one to tell"
+        );
     }
 }
 
@@ -6543,7 +6660,10 @@ fn moving_an_end_to_another_context_ends_its_connections() {
         pipe_closed_events(b_inbox),
         vec![moved("across", across), moved("together", together)]
     );
-    assert_eq!(pipe_closed_events(c_inbox), vec![moved("together", together)]);
+    assert_eq!(
+        pipe_closed_events(c_inbox),
+        vec![moved("together", together)]
+    );
     assert!(pipe_closed_events(d_inbox).is_empty());
     assert!(h.app.directed_pipes.get(across).is_none());
     assert!(h.app.directed_pipes.get(together).is_none());
@@ -6572,9 +6692,18 @@ fn moving_an_end_to_another_context_ends_its_connections() {
     h.app.dissolve_portal(child);
 
     assert!(h.app.directed_pipes.get(inside).is_none());
-    assert_eq!(pipe_closed_events(b_inbox).last(), Some(&moved("inside", inside)));
-    assert_eq!(pipe_closed_events(c_inbox).last(), Some(&moved("inside", inside)));
-    assert!(h.app.directed_pipes.get(staying).is_some(), "a and d never moved");
+    assert_eq!(
+        pipe_closed_events(b_inbox).last(),
+        Some(&moved("inside", inside))
+    );
+    assert_eq!(
+        pipe_closed_events(c_inbox).last(),
+        Some(&moved("inside", inside))
+    );
+    assert!(
+        h.app.directed_pipes.get(staying).is_some(),
+        "a and d never moved"
+    );
     assert!(pipe_closed_events(d_inbox).is_empty());
 }
 
@@ -6594,7 +6723,9 @@ fn moving_an_end_to_another_page_of_its_context_keeps_its_connection() {
     h.app.active_window = 0;
     let generation = open_directed_test_pipe(&mut h, a, a_inbox, b, "page-move");
 
-    assert!(h.app.move_focused_pane_to_adjacent_window(crate::host::keys::Direction::Right));
+    assert!(h
+        .app
+        .move_focused_pane_to_adjacent_window(crate::host::keys::Direction::Right));
     let (moved_to, _) = h.app.find_pane_in_any_window(a).expect("a still exists");
     assert_ne!(moved_to, 0, "fixture: a left page 0");
     assert_eq!(h.app.windows[moved_to].context_id, context_id);
@@ -6635,12 +6766,11 @@ fn node_ref_of(h: &HostHarness, pane_id: PaneId, role: &str, label: &str) -> Str
 fn activate_now(h: &mut HostHarness, pane_id: PaneId, node_ref: &str) -> serde_json::Value {
     let dir = tempfile::tempdir().expect("tempdir");
     let response_file = temp_response(dir.path(), "activate");
-    h.app
-        .handle_pane_ipc_request(HostRequest::ClickPaneNode {
-            pane_id,
-            node_ref: node_ref.to_string(),
-            response_file: Some(response_file.clone()),
-        });
+    h.app.handle_pane_ipc_request(HostRequest::ClickPaneNode {
+        pane_id,
+        node_ref: node_ref.to_string(),
+        response_file: Some(response_file.clone()),
+    });
     read_json_response(&response_file)
 }
 
@@ -6666,7 +6796,8 @@ fn tick_view_until(
             return;
         }
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "timed out waiting for {what}: {:?}",
             view.semantic_state()
                 .nodes
@@ -6679,7 +6810,10 @@ fn tick_view_until(
 }
 
 fn has_label(state: &crate::host::pane::SemanticPaneState, label: &str) -> bool {
-    state.nodes.iter().any(|n| n.label.as_deref() == Some(label))
+    state
+        .nodes
+        .iter()
+        .any(|n| n.label.as_deref() == Some(label))
 }
 
 /// Swap the probe's "Approve A" for "Delete B" through a host key event.
@@ -6693,7 +6827,8 @@ fn swap_approve_for_delete(h: &mut HostHarness, pane_id: PaneId) {
     while !has_label(&pane_semantics(h, pane_id), "Delete B") {
         h.run_frames(1);
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "the probe never swapped Approve A for Delete B"
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -6711,28 +6846,44 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
     let pane_id = h.launch_dev_view("node-click-probe");
 
     let state = pane_semantics(&h, pane_id);
-    assert_eq!(state.schema_version, crate::host::pane::SEMANTIC_PANE_STATE_SCHEMA_VERSION);
-    let count = state.nodes.iter().find(|n| n.role == "text").expect("count");
+    assert_eq!(
+        state.schema_version,
+        crate::host::pane::SEMANTIC_PANE_STATE_SCHEMA_VERSION
+    );
+    let count = state
+        .nodes
+        .iter()
+        .find(|n| n.role == "text")
+        .expect("count");
     assert_eq!(count.label.as_deref(), Some("0"), "count starts at 0");
 
     // A bare node id is not a ref.
     let bare = activate_now(&mut h, pane_id, &count.id);
     assert!(
-        bare["error"].as_str().unwrap_or_default().contains("malformed node ref"),
+        bare["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("malformed node ref"),
         "{bare:?}"
     );
     // A ref to a non-interactive node is refused by name.
     let text_ref = count.r#ref.clone().expect("text node ref");
     let text = activate_now(&mut h, pane_id, &text_ref);
     assert!(
-        text["error"].as_str().unwrap_or_default().contains("not interactive"),
+        text["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not interactive"),
         "{text:?}"
     );
 
     // The answer is written with no frame run, and the guest already holds
     // the action: servicing it through the logic path alone shows the result.
     let increment = node_ref_of(&h, pane_id, "button", "Increment");
-    assert_eq!(activate_now(&mut h, pane_id, &increment), serde_json::json!({"ok": true}));
+    assert_eq!(
+        activate_now(&mut h, pane_id, &increment),
+        serde_json::json!({"ok": true})
+    );
     tick_view_until(&mut h, pane_id, "count 1", |state| has_label(state, "1"));
 }
 
@@ -6765,7 +6916,10 @@ fn stale_node_ref_is_refused_and_delivers_nothing() {
 
     // Not vacuous: the fresh ref for the control now shown does deliver.
     let delete = node_ref_of(&h, pane_id, "button", "Delete B");
-    assert_eq!(activate_now(&mut h, pane_id, &delete), serde_json::json!({"ok": true}));
+    assert_eq!(
+        activate_now(&mut h, pane_id, &delete),
+        serde_json::json!({"ok": true})
+    );
     wait_for_text_label(&mut h, pane_id, "approved:", "approved:0 deleted:1");
 }
 
@@ -6795,7 +6949,10 @@ fn node_activation_reaches_a_pane_that_is_not_painted() {
     let pane_id = h.launch_dev_view("node-click-probe");
 
     let approve = node_ref_of(&h, pane_id, "button", "Approve A");
-    assert_eq!(activate_now(&mut h, pane_id, &approve), serde_json::json!({"ok": true}));
+    assert_eq!(
+        activate_now(&mut h, pane_id, &approve),
+        serde_json::json!({"ok": true})
+    );
     tick_view_until(&mut h, pane_id, "approved:1", |state| {
         has_label(state, "approved:1 deleted:0")
     });
@@ -6812,12 +6969,16 @@ fn node_activation_during_hot_reload_is_refused_and_old_refs_go_stale() {
 
     let before = node_ref_of(&h, pane_id, "button", "Increment");
     assert!(
-        h.app.reload_view_pane(pane_id, "test: activation during reload"),
+        h.app
+            .reload_view_pane(pane_id, "test: activation during reload"),
         "reload_view_pane must relaunch the Python pane"
     );
     let during = activate_now(&mut h, pane_id, &before);
     assert!(
-        during["error"].as_str().unwrap_or_default().contains("no committed tree"),
+        during["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no committed tree"),
         "{during:?}"
     );
 
@@ -6825,19 +6986,26 @@ fn node_activation_during_hot_reload_is_refused_and_old_refs_go_stale() {
     while !has_label(&pane_semantics(&h, pane_id), "Increment") {
         h.run_frames(1);
         assert!(
-            start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "the relaunched pane never rendered"
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let after = activate_now(&mut h, pane_id, &before);
     assert!(
-        after["error"].as_str().unwrap_or_default().contains("stale"),
+        after["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("stale"),
         "{after:?}"
     );
     let fresh = node_ref_of(&h, pane_id, "button", "Increment");
     assert_ne!(fresh, before);
-    assert_eq!(activate_now(&mut h, pane_id, &fresh), serde_json::json!({"ok": true}));
+    assert_eq!(
+        activate_now(&mut h, pane_id, &fresh),
+        serde_json::json!({"ok": true})
+    );
     wait_for_text_label(&mut h, pane_id, "1", "1");
 }
 
@@ -6871,7 +7039,10 @@ fn builtin_pane_refuses_node_refs_and_takes_position_clicks() {
         .as_deref()
     );
     assert!(
-        pane_semantics(&h, pane_id).nodes.iter().all(|n| n.r#ref.is_none()),
+        pane_semantics(&h, pane_id)
+            .nodes
+            .iter()
+            .all(|n| n.r#ref.is_none()),
         "builtin nodes carry no ref"
     );
 
@@ -6911,7 +7082,12 @@ fn builtin_pane_refuses_node_refs_and_takes_position_clicks() {
     let click_at_bounds = |h: &mut HostHarness, role: &str, label: &str| {
         let bounds = settled_bounds(h, role, label);
         let (win, tile) = h.app.find_pane_in_any_window(pane_id).expect("pane tile");
-        let origin = h.app.windows[win].tree.tiles.rect(tile).expect("pane rect").min;
+        let origin = h.app.windows[win]
+            .tree
+            .tiles
+            .rect(tile)
+            .expect("pane rect")
+            .min;
         let x = ((bounds[0] + bounds[2]) / 2.0) as f32 - origin.x;
         let y = ((bounds[1] + bounds[3]) / 2.0) as f32 - origin.y;
         let response = temp_response(tmp.path(), "position-click");
@@ -6923,7 +7099,10 @@ fn builtin_pane_refuses_node_refs_and_takes_position_clicks() {
     assert!(!read_show_hidden(&mut h), "show_hidden must start disabled");
     click_at_bounds(&mut h, "button", "View \u{2304}");
     click_at_bounds(&mut h, "checkbox", "Show hidden files");
-    assert!(read_show_hidden(&mut h), "a position click on the checkbox toggles it");
+    assert!(
+        read_show_hidden(&mut h),
+        "a position click on the checkbox toggles it"
+    );
 }
 
 /// Stint 0426: `plexi pane key` / `HostRequest::KeyPane` targeting a real
@@ -17770,6 +17949,7 @@ fn an_open_one_end_cannot_register_is_refused_and_rolled_back() {
         pipe_id: "shared".to_string(),
         target_pane_id: target,
         emitter: Some(opener_emitter),
+        admission: Some(unbounded_open_admission()),
     }];
     h.run_hidden_frames(1);
 
@@ -17893,6 +18073,7 @@ fn a_refused_open_leaves_no_directed_handle_on_an_end_with_a_guest_pipe_of_the_n
         pipe_id: "shared".to_string(),
         target_pane_id: target,
         emitter: Some(opener_emitter),
+        admission: Some(unbounded_open_admission()),
     }];
     h.run_hidden_frames(1);
 
@@ -18006,24 +18187,43 @@ fn python_and_wasm_views_open_exchange_refuse_and_close_directed_pipes() {
     };
 
     // Python opens to WASM; its first message rides the open.
-    wait(&mut h, "the python open", &logged(&format!("incoming:py-to-wasm:{python}")));
-    wait(&mut h, "the python message", &logged(r#"rx:py-to-wasm:{"msg":"from-py"}"#));
+    wait(
+        &mut h,
+        "the python open",
+        &logged(&format!("incoming:py-to-wasm:{python}")),
+    );
+    wait(
+        &mut h,
+        "the python message",
+        &logged(r#"rx:py-to-wasm:{"msg":"from-py"}"#),
+    );
     wait(&mut h, "the wasm echo at python", &|h| {
-        python_pane_title(h, python).as_deref() == Some(r#"rx:py-to-wasm:{"echo": {"msg": "from-py"}}"#)
+        python_pane_title(h, python).as_deref()
+            == Some(r#"rx:py-to-wasm:{"echo": {"msg": "from-py"}}"#)
     });
 
     // WASM opens to Python and sends on the handle the answer carries.
-    ctl_command(&mut h, serde_json::json!({"open": "wasm-to-py", "target": python}));
+    ctl_command(
+        &mut h,
+        serde_json::json!({"open": "wasm-to-py", "target": python}),
+    );
     wait(&mut h, "the wasm open", &logged("opened:wasm-to-py"));
     assert!(logs(&controller_inbox).contains(&"hello:wasm-to-py:ok".to_string()));
-    wait(&mut h, "the python echo at wasm", &logged(r#"rx:wasm-to-py:{"echo":{"msg":"from-wasm"}}"#));
+    wait(
+        &mut h,
+        "the python echo at wasm",
+        &logged(r#"rx:wasm-to-py:{"echo":{"msg":"from-wasm"}}"#),
+    );
     assert_eq!(
         python_pane_title(&h, python).as_deref(),
         Some(r#"rx:wasm-to-py:{"msg": "from-wasm"}"#)
     );
 
     // A name in use between other views is refused.
-    ctl_command(&mut h, serde_json::json!({"open": "py-to-wasm", "target": controller}));
+    ctl_command(
+        &mut h,
+        serde_json::json!({"open": "py-to-wasm", "target": controller}),
+    );
     wait(&mut h, "the refusal", &logged("refused:py-to-wasm:in_use"));
 
     // The guest observes both connections close with the Python view.
@@ -18032,7 +18232,10 @@ fn python_and_wasm_views_open_exchange_refuse_and_close_directed_pipes() {
     wait(&mut h, "the second close", &logged("closed:wasm-to-py"));
 
     // Reopening the name gives a new handle; the old one is rejected.
-    ctl_command(&mut h, serde_json::json!({"open": "wasm-to-py", "target": controller}));
+    ctl_command(
+        &mut h,
+        serde_json::json!({"open": "wasm-to-py", "target": controller}),
+    );
     wait(&mut h, "the reopen", &|_| {
         logs(&controller_inbox)
             .iter()
@@ -21262,11 +21465,17 @@ fn notes_picker_tab_filters_current_project_and_restores_all() {
     h.app.open_notes_picker();
     let mk = |title: &str, label: Option<&str>, seconds| crate::notes::NotePickerEntry {
         path: std::path::PathBuf::from(format!("/test/{title}.md")),
-        title: title.to_string(), preview: String::new(), search_text: title.to_string(),
+        title: title.to_string(),
+        preview: String::new(),
+        search_text: title.to_string(),
         tier_label: label.map(str::to_string),
         modified: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds)),
     };
-    h.app.notes_picker_entries = vec![mk("project", None, 1), mk("global", Some("global"), 2), mk("nested", Some("nested"), 3)];
+    h.app.notes_picker_entries = vec![
+        mk("project", None, 1),
+        mk("global", Some("global"), 2),
+        mk("nested", Some("nested"), 3),
+    ];
     let root = std::path::Path::new("/test/project");
     let global = std::path::Path::new("/test/global-notes");
     let chip = |entry| crate::overlays::notes_picker::notes_picker_chip_label(entry, root, global);
@@ -21279,10 +21488,16 @@ fn notes_picker_tab_filters_current_project_and_restores_all() {
     assert_eq!(h.app.notes_picker_filtered(), [0]);
     h.app.notes_picker_query = "global".into();
     assert!(h.app.notes_picker_filtered().is_empty());
-    h.frame(egui::RawInput { events: vec![egui::Event::Key {
-        key: egui::Key::Tab, physical_key: None, pressed: false,
-        repeat: false, modifiers: egui::Modifiers::NONE,
-    }], ..Default::default() });
+    h.frame(egui::RawInput {
+        events: vec![egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        ..Default::default()
+    });
     h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
     assert!(!h.app.notes_picker_current_project_only);
     assert_eq!(h.app.notes_picker_filtered(), [1]);
