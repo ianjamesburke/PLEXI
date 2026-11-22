@@ -18,10 +18,15 @@ def update(event):
     if isinstance(event, UiAction) and event.handler_id in ("prompt", "ask"):
         prompt = state.get("prompt", "").strip()
         if prompt:
-            return [AiQuery("coding-agent-query", "fast", SYSTEM_PROMPT,
-                            [AiMessage("user", prompt)])]
-    if isinstance(event, AiResponse) and event.request_id == "coding-agent-query":
-        return [SetState({"answer": event.error or event.content or "No response."})]
+            # A fresh id per ask: only the newest ask's reply is shown, so an
+            # earlier one that finishes late never overwrites it.
+            asked = state.get("asked", 0) + 1
+            request_id = f"coding-agent-query-{asked}"
+            return [SetState({"asked": asked, "pending": request_id}),
+                    AiQuery(request_id, "fast", SYSTEM_PROMPT, [AiMessage("user", prompt)])]
+    if isinstance(event, AiResponse) and event.request_id == state.get("pending"):
+        return [SetState({"pending": None,
+                          "answer": event.error or event.content or "No response."})]
     return []
 
 
@@ -31,6 +36,6 @@ def view():
         TextEdit("prompt", value=state.get("prompt", ""),
                  placeholder="Paste code or describe the problem..."),
         Button("Ask", on_click="ask", style="primary"),
-        Label(state.get("answer", "Ask for a review, debug plan, or explanation."), max_lines=20),
+        Label(state.get("answer", "Ask for a review, debug plan, or explanation.")),
         FooterKeys([("enter", "submit text"), ("ask", "send query")]),
     ], grow=True)

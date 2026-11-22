@@ -1479,9 +1479,10 @@ pub struct LivePythonPane {
     /// tree from a repaint of the same stale one (stint 0720).
     tree_seq: u64,
     pending_trees: HashMap<u64, Arc<PythonUiTree>>,
-    /// Launch epoch every node ref this pane mints is bound to
-    /// (`crate::host::node_ref`). Renewed on relaunch, which clears `tree`,
-    /// so no ref read before a hot reload resolves after it.
+    /// Launch epoch: the identity of the running guest. Every node ref this
+    /// pane mints (`crate::host::node_ref`) and every `ai_query` completion
+    /// is bound to it. Renewed on relaunch, which clears `tree`, so no ref
+    /// read and no AI reply asked for before a hot reload lands after it.
     epoch: u128,
     /// A text input a node activation asked to focus; claimed on the next
     /// paint if the ref still resolves on the tree being painted.
@@ -1535,9 +1536,9 @@ pub struct LivePythonPane {
     /// Broker for `ai_query` (stint 1450). Live config broker in production;
     /// tests swap in a recording broker or a live broker with a test backend.
     ai_broker: Arc<dyn crate::plexi_ai::broker::AiBroker>,
-    /// Finished `ai_query` calls from worker threads, keyed by request id.
-    ai_tx: std::sync::mpsc::Sender<(String, crate::plexi_ai::broker::AiBrokerResponse)>,
-    ai_rx: std::sync::mpsc::Receiver<(String, crate::plexi_ai::broker::AiBrokerResponse)>,
+    /// Finished `ai_query` calls from worker threads.
+    ai_tx: std::sync::mpsc::Sender<AiCompletion>,
+    ai_rx: std::sync::mpsc::Receiver<AiCompletion>,
     /// Calls dispatched and not yet delivered; keeps the pane serviced from
     /// `background_tick` while it is in an inactive context.
     ai_inflight: usize,
@@ -3643,9 +3644,8 @@ impl LivePythonPane {
     fn drain_runtime(&mut self) {
         self.poll_consent();
         self.poll_cli_operations();
-        while let Ok((request_id, response)) = self.ai_rx.try_recv() {
-            self.ai_inflight = self.ai_inflight.saturating_sub(1);
-            self.send_ai_response(&request_id, response);
+        while let Ok(completion) = self.ai_rx.try_recv() {
+            self.deliver_ai_completion(completion);
         }
         while let Ok((request_id, response)) = self.http_rx.try_recv() {
             self.send_to_runtime(&json!({
@@ -4106,7 +4106,7 @@ impl LivePythonPane {
             }),
             Some("file_write") => json!({"type": "file_write_result", "error": text}),
             Some("ai_query") => {
-                self.answer_ai_refusal(message, text);
+                self.answer_ai_refusal(message, super::plugin_ai_query::Refusal::Consent, text);
                 return;
             }
             _ => json!({"type": "capability_decision", "capability": capability, "granted": false}),
@@ -4729,7 +4729,11 @@ impl LivePythonPane {
     /// admission.
     fn handle_ai_query(&mut self, message: &Value) {
         if let Err(error) = python_ai_query(&self.plugin_id, message) {
-            self.answer_ai_refusal(message, error);
+            self.answer_ai_refusal(
+                message,
+                super::plugin_ai_query::Refusal::InvalidRequest,
+                error,
+            );
             return;
         }
         if let Some(admitted) = self.consent_gate(
@@ -4746,16 +4750,29 @@ impl LivePythonPane {
         let query = match python_ai_query(&self.plugin_id, message) {
             Ok(query) => query,
             Err(error) => {
-                self.answer_ai_refusal(message, error);
+                self.answer_ai_refusal(
+                    message,
+                    super::plugin_ai_query::Refusal::InvalidRequest,
+                    error,
+                );
                 return;
             }
         };
-        let request_id = query.request_id.clone();
+        let call = super::plugin_ai_query::CallId::next();
         let tx = self.ai_tx.clone();
         let repaint = Arc::clone(&self.repaint);
-        let delivered_id = request_id.clone();
+        // Bound to the guest that asked: a relaunch renews `epoch`, and the
+        // drain drops a completion whose guest is gone.
+        let epoch = self.epoch;
+        let request_id = query.request_id.clone();
         let deliver: super::plugin_ai_query::Deliver = Box::new(move |response| {
-            if tx.send((delivered_id, response)).is_err() {
+            let completion = AiCompletion {
+                epoch,
+                call,
+                request_id,
+                response,
+            };
+            if tx.send(completion).is_err() {
                 log::debug!("CPython WASM ai_response dropped after pane closed");
                 return;
             }
@@ -4768,6 +4785,7 @@ impl LivePythonPane {
         // Streaming is out of scope for Python (stint 1450): deltas are dropped.
         match super::plugin_ai_query::spawn(
             Arc::clone(&self.ai_broker),
+            call,
             query,
             Box::new(|_| {}),
             deliver,
@@ -4775,30 +4793,53 @@ impl LivePythonPane {
             Ok(()) => self.ai_inflight += 1,
             Err(error) => {
                 log::error!(
-                    "plugin::{}: ai_query {request_id}: worker thread spawn failed: {error}",
+                    "plugin::{}: ai_query call {call}: worker thread spawn failed: {error}",
                     self.plugin_id
                 );
                 self.answer_ai_refusal(
                     message,
+                    super::plugin_ai_query::Refusal::WorkerSpawn,
                     format!("ai.query: worker thread spawn failed: {error}"),
                 );
             }
         }
     }
 
+    /// Deliver a finished call to the guest that asked for it. A call that
+    /// outlived its guest (relaunch renewed `epoch`) is dropped: the new
+    /// guest never asked, and its request ids may collide.
+    fn deliver_ai_completion(&mut self, completion: AiCompletion) {
+        self.ai_inflight = self.ai_inflight.saturating_sub(1);
+        if completion.epoch != self.epoch {
+            log::info!(
+                "plugin::{}: ai_query call {} dropped: its guest was replaced by a relaunch",
+                self.plugin_id,
+                completion.call
+            );
+            return;
+        }
+        self.send_ai_response(&completion.request_id, completion.response);
+    }
+
     /// Answer an `ai_query` that makes no broker call with an `ai_response`
-    /// error, traced like a brokered call.
-    fn answer_ai_refusal(&self, message: &Value, error: String) {
+    /// error, traced as a bounded refusal category under a fresh call id.
+    fn answer_ai_refusal(
+        &self,
+        message: &Value,
+        refusal: super::plugin_ai_query::Refusal,
+        error: String,
+    ) {
         let field = |key: &str| message.get(key).and_then(Value::as_str).unwrap_or_default();
-        let request_id = field("request_id");
-        let response = crate::plexi_ai::broker::AiBrokerResponse::err(error);
-        super::plugin_ai_query::trace_outcome(
+        super::plugin_ai_query::trace_refusal(
             &self.plugin_id,
-            request_id,
-            field("mode"),
-            &response,
+            super::plugin_ai_query::CallId::next(),
+            crate::plexi_ai::broker::ModelMode::parse(field("mode")).ok(),
+            refusal,
         );
-        self.send_ai_response(request_id, response);
+        self.send_ai_response(
+            field("request_id"),
+            crate::plexi_ai::broker::AiBrokerResponse::err(error),
+        );
     }
 
     #[cfg(test)]
@@ -6614,6 +6655,16 @@ impl Drop for LaunchAdmissionMemo {
     }
 }
 
+/// A finished `ai_query` worker call, bound to the guest that asked.
+struct AiCompletion {
+    /// `LivePythonPane::epoch` when the call was dispatched.
+    epoch: u128,
+    call: super::plugin_ai_query::CallId,
+    /// The guest's own id for the call; reply data only.
+    request_id: String,
+    response: crate::plexi_ai::broker::AiBrokerResponse,
+}
+
 /// An `ai_query` message parsed for the broker. `mode` is `fast` or `slow`;
 /// `messages` a list of `{role, content}` string pairs.
 fn python_ai_query(
@@ -6627,12 +6678,13 @@ fn python_ai_query(
     };
     let messages = items
         .iter()
-        .map(|item| {
+        .enumerate()
+        .map(|(index, item)| {
             let text = |key: &str| item.get(key).and_then(Value::as_str).map(str::to_string);
             match (text("role"), text("content")) {
                 (Some(role), Some(content)) => Ok(crate::protocol::AiMessage { role, content }),
                 _ => Err(format!(
-                    "ai.query: each message needs string role and content, got {item}"
+                    "ai.query: messages[{index}] needs string role and content"
                 )),
             }
         })

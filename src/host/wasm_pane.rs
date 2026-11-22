@@ -1595,11 +1595,16 @@ impl WasmPane {
                 error: response.error,
             }));
         });
-        if let Err(error) =
-            super::plugin_ai_query::spawn(Arc::clone(&self.ai_broker), query, on_delta, deliver)
-        {
+        let call = super::plugin_ai_query::CallId::next();
+        if let Err(error) = super::plugin_ai_query::spawn(
+            Arc::clone(&self.ai_broker),
+            call,
+            query,
+            on_delta,
+            deliver,
+        ) {
             log::error!(
-                "wasm ai: plugin {} request {request_id}: worker thread spawn failed: {error}",
+                "wasm ai: plugin {} call {call}: worker thread spawn failed: {error}",
                 self.app.plugin_id()
             );
             self.queue_ai_denied(

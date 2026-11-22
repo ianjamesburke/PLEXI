@@ -335,3 +335,117 @@ fn python_ai_query_reply_reaches_the_plugin_and_the_ledger_names_it_per_mode() {
         "a stored grant answers without asking"
     );
 }
+
+/// Answers its first call only once the test releases it (`"stale"`), and
+/// every later call at once (`"fresh"`).
+struct GatedBroker {
+    gate: Mutex<Option<mpsc::Receiver<()>>>,
+    entered: Mutex<mpsc::Sender<()>>,
+}
+
+impl AiBroker for GatedBroker {
+    fn dispatch(
+        &self,
+        _request: AiBrokerRequest,
+        _on_delta: &mut dyn FnMut(crate::plexi_ai::turn_loop::TurnDelta<'_>),
+    ) -> AiBrokerResponse {
+        let gate = self.gate.lock().unwrap().take();
+        let Some(release) = gate else {
+            return AiBrokerResponse::ok("fresh".to_string(), 1, 1);
+        };
+        self.entered.lock().unwrap().send(()).expect("test listens");
+        release.recv().expect("test releases the call");
+        AiBrokerResponse::ok("stale".to_string(), 1, 1)
+    }
+}
+
+/// A call the old guest made and the provider answers after a hot reload is
+/// dropped: the replacement guest, which reuses the same request id, never
+/// sees it. Its own next call is answered.
+#[test]
+fn python_ai_query_reply_for_a_relaunched_guest_is_dropped() {
+    let (release, gate) = mpsc::channel();
+    let (entered_tx, entered) = mpsc::channel();
+    let broker = Arc::new(GatedBroker {
+        gate: Mutex::new(Some(gate)),
+        entered: Mutex::new(entered_tx),
+    });
+    let mut probe = Probe::launch(true, broker);
+    probe.grant_always();
+    probe.ask("fast");
+    let start = std::time::Instant::now();
+    while entered.try_recv().is_err() {
+        probe.h.run_frames(1);
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "the old guest's call reached the broker"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    python(&mut probe.h, probe.pane).title = Some("reloading".to_string());
+    python(&mut probe.h, probe.pane)
+        .relaunch()
+        .expect("relaunch the guest");
+    wait_for_title(&mut probe.h, probe.pane, "ready");
+
+    release.send(()).expect("release the old call");
+    let start = std::time::Instant::now();
+    while python(&mut probe.h, probe.pane).ai_inflight > 0 {
+        probe.h.run_frames(1);
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "the old call finished"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    probe.h.run_frames(10);
+    assert_eq!(
+        title(&mut probe.h, probe.pane),
+        "ready",
+        "the old guest's reply never reaches the new guest"
+    );
+
+    assert_eq!(
+        probe.ask_and_reply("fast"),
+        ("fresh".to_string(), "None".to_string()),
+        "the new guest's own call is answered"
+    );
+}
+
+/// A malformed request is refused with a bounded category and a host call
+/// id in the trace; nothing the plugin wrote reaches the log.
+#[test]
+fn python_ai_query_malformed_request_traces_no_plugin_content() {
+    let broker = Arc::new(RecordingBroker::default());
+    let mut probe = Probe::launch(true, broker.clone());
+    let logs = crate::testing::test_log::capture();
+    python(&mut probe.h, probe.pane).handle_ai_query(&json!({
+        "type": "ai_query",
+        "request_id": "q1",
+        "mode": "fast",
+        "system": "SECRET-SYSTEM",
+        "messages": [{"role": "user", "content": 7, "note": "SECRET-PROMPT"}],
+    }));
+    let lines = logs.lines();
+    assert!(
+        lines.iter().all(|line| !line.contains("SECRET")),
+        "plugin content reached the log: {lines:#?}"
+    );
+    let trace: Vec<&String> = lines
+        .iter()
+        .filter(|line| line.starts_with("ai.query: "))
+        .collect();
+    assert_eq!(trace.len(), 1, "{lines:#?}");
+    assert!(
+        trace[0].starts_with(&format!("ai.query: plugin={PLUGIN} call="))
+            && trace[0].ends_with(" mode=fast outcome=refused category=invalid_request"),
+        "{}",
+        trace[0]
+    );
+    let (_, error) = probe.reply();
+    assert_eq!(error, "ai.query: messages[0] needs string role and content");
+    assert!(broker.seen.lock().unwrap().is_empty(), "no broker call");
+}
