@@ -110,22 +110,40 @@ pub fn select(
         ProfileSelection::Named(name) => Some(name.as_str().to_string()),
         ProfileSelection::Default => None,
     };
+    // A bare launcher that handed a host launch, lifecycle verb or uninstall
+    // to the pane's build would act on that build's installation and
+    // profile, not the ones the typed `plexi` names. Those never follow a
+    // pane (stint 1695).
+    if ambient.delegated && role != Role::Command {
+        let build = build_channel.as_deref().unwrap_or("stable");
+        return Err(format!(
+            "bare `plexi` inside a pane of the {build} build was handed to that build; host lifecycle commands and uninstall never follow a pane. Run plexi-{build} for that build's host, or run plexi outside a Plexi pane for Stable"
+        ));
+    }
     let implicit = role == Role::Command
         && named.is_none()
         && selectors.root.is_none()
         && (build_channel.is_none() || ambient.delegated);
-    let account_root = |account: Result<PathBuf, String>| -> Result<PathBuf, String> {
-        let home = account.map_err(|error| {
-            format!("cannot resolve the account home ({error}); pass --profile-root <absolute dir>")
-        })?;
-        refuse_private_home(ambient.home.as_deref(), &home)?;
-        Ok(home)
+    // Without an explicit root, a private HOME is refused before anything,
+    // the pane's own endpoint included, can choose a profile: a script that
+    // only changed HOME must never reach the account's live profiles.
+    let (root, root_source) = match &selectors.root {
+        Some(root) => (root.path().to_path_buf(), RootSource::Explicit),
+        None => {
+            let home = account.map_err(|error| {
+                format!(
+                    "cannot resolve the account home ({error}); pass --profile-root <absolute dir>"
+                )
+            })?;
+            refuse_private_home(ambient.home.as_deref(), &home)?;
+            (home, RootSource::Account)
+        }
     };
     if implicit {
         if let Some((dir_name, pane_root)) = pane_profile(ambient)? {
             let (root, root_source) = match pane_root {
-                Some(root) => (root, RootSource::Pane),
-                None => (account_root(account)?, RootSource::Account),
+                Some(pane_root) => (pane_root, RootSource::Pane),
+                None => (root, root_source),
             };
             return Ok(ProfileTarget::new(
                 root,
@@ -140,41 +158,61 @@ pub fn select(
         (None, Some(channel)) if !implicit => ProfileSource::Channel(channel.clone()),
         _ => ProfileSource::Default,
     };
-    let (root, root_source) = match &selectors.root {
-        Some(root) => (root.path().to_path_buf(), RootSource::Explicit),
-        None => (account_root(account)?, RootSource::Account),
-    };
     Ok(ProfileTarget::new(root, root_source, source, build_channel))
 }
 
-/// The surrounding pane's profile for a bare command: `PLEXI_CHANNEL` names
-/// the directory when set, else the pane endpoint's own directory does. The
-/// root is the endpoint's parent when the endpoint lives in that directory
-/// (Unix), else `None` for the account home.
+/// The surrounding pane's profile for a bare command. `PLEXI_CHANNEL` is
+/// the pane host's profile suffix (`.plexi-<suffix>`; a legacy `stable` or
+/// `main` may also mean `.plexi`), and the pane endpoint names its own
+/// directory. When both are present they must agree: one bare command never
+/// reads files from one profile and talks to another profile's host. The
+/// root is the endpoint's parent (Unix), else `None` for the account home.
 fn pane_profile(ambient: &Ambient) -> Result<Option<(String, Option<PathBuf>)>, String> {
-    let from_channel = match ambient.channel.as_deref() {
+    let from_channel: Vec<String> = match ambient.channel.as_deref() {
         Some(channel) if super::profile_name::is_profile_name(channel) => {
-            Some(plexi_distribution::host_presence::profile_dir_name(channel))
+            let mut dirs = vec![format!(".plexi-{channel}")];
+            if matches!(channel, "stable" | "main") {
+                dirs.push(".plexi".to_string());
+            }
+            dirs
         }
         Some(channel) => {
             return Err(format!(
                 "PLEXI_CHANNEL={channel:?} is not a valid profile name; unset it or pass --profile <name>"
             ))
         }
+        None => Vec::new(),
+    };
+    let from_socket = match ambient.socket.as_deref() {
+        Some(endpoint) => endpoint_profile(endpoint)?,
         None => None,
     };
-    let from_socket = ambient.socket.as_deref().and_then(endpoint_profile);
-    Ok(match (from_channel, from_socket) {
-        (Some(dir), Some((socket_dir, root))) if dir == socket_dir => Some((dir, root)),
-        (Some(dir), _) => Some((dir, None)),
-        (None, Some((dir, root))) => Some((dir, root)),
-        (None, None) => None,
-    })
+    match (from_channel.first(), from_socket) {
+        (Some(_), Some((socket_dir, root))) => {
+            if from_channel.contains(&socket_dir) {
+                Ok(Some((socket_dir, root)))
+            } else {
+                Err(format!(
+                    "this pane's PLEXI_CHANNEL={} and PLEXI_SOCKET name different profiles ({} and {socket_dir}); pass --profile or --socket to choose one",
+                    ambient.channel.as_deref().unwrap_or_default(),
+                    from_channel.join(" or ")
+                ))
+            }
+        }
+        (Some(dir), None) => Ok(Some((dir.clone(), None))),
+        (None, Some(found)) => Ok(Some(found)),
+        (None, None) => Ok(None),
+    }
 }
 
 /// The profile directory an endpoint belongs to: `<root>/.plexi[-name]/notify.sock`
-/// on Unix, `\\.\pipe\plexi[-name]` on Windows (whose root is the account home).
-fn endpoint_profile(endpoint: &std::ffi::OsStr) -> Option<(String, Option<PathBuf>)> {
+/// on Unix, `\\.\pipe\plexi[-name]` on Windows (whose root is the account
+/// home). A Windows pipe of a host under another root carries a root digest
+/// that names no directory, so it is refused rather than mapped onto the
+/// account home.
+fn endpoint_profile(
+    endpoint: &std::ffi::OsStr,
+) -> Result<Option<(String, Option<PathBuf>)>, String> {
     let valid_dir = |name: &str| {
         name == ".plexi"
             || name
@@ -184,19 +222,33 @@ fn endpoint_profile(endpoint: &std::ffi::OsStr) -> Option<(String, Option<PathBu
     #[cfg(unix)]
     {
         let path = std::path::Path::new(endpoint);
-        if path.file_name()? != "notify.sock" {
-            return None;
-        }
-        let dir = path.parent()?;
-        let name = dir.file_name()?.to_str()?;
-        let root = dir.parent()?;
-        (valid_dir(name) && root.is_absolute()).then(|| (name.to_string(), Some(root.into())))
+        let found = (|| {
+            if path.file_name()? != "notify.sock" {
+                return None;
+            }
+            let dir = path.parent()?;
+            let name = dir.file_name()?.to_str()?;
+            let root = dir.parent()?;
+            (valid_dir(name) && root.is_absolute()).then(|| (name.to_string(), Some(root.into())))
+        })();
+        Ok(found)
     }
     #[cfg(windows)]
     {
-        let name = endpoint.to_str()?.strip_prefix(r"\\.\pipe\plexi")?;
-        let dir = format!(".plexi{name}");
-        valid_dir(&dir).then_some((dir, None))
+        use plexi_distribution::host_presence::{PIPE_PREFIX, ROOT_TAG};
+        let Some(rest) = endpoint.to_str().and_then(|e| e.strip_prefix(PIPE_PREFIX)) else {
+            return Ok(None);
+        };
+        if let Some((_, digest)) = rest.rsplit_once(ROOT_TAG) {
+            if digest.len() == 16 && digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(format!(
+                    "this pane's host endpoint {} belongs to a profile under another root; pass --profile-root <dir> to reach it",
+                    endpoint.to_string_lossy()
+                ));
+            }
+        }
+        let dir = format!(".plexi{rest}");
+        Ok(valid_dir(&dir).then_some((dir, None)))
     }
 }
 
@@ -366,9 +418,8 @@ mod tests {
         assert_eq!(handed.dir(), Path::new("/scratch/root/.plexi-t1682"));
         assert_eq!(handed.build_channel(), Some("pr-3279"));
 
-        // Lifecycle verbs never follow the pane, delegated or not.
-        let lifecycle =
-            select(Role::Lifecycle, &none, "plexi", Ok(home.into()), &delegated).unwrap();
+        // Lifecycle verbs never follow the pane.
+        let lifecycle = select(Role::Lifecycle, &none, "plexi", Ok(home.into()), &pane).unwrap();
         assert_eq!(lifecycle.dir(), home.join(".plexi"));
 
         // `PLEXI_CHANNEL` alone (outside a pane) still names the profile of a
@@ -392,6 +443,97 @@ mod tests {
             ..Ambient::default()
         };
         assert!(select(Role::Command, &none, "plexi", Ok(home.into()), &invalid).is_err());
+    }
+
+    /// Codex 3288 R1: a bare Stable `plexi uninstall` (or any lifecycle verb
+    /// or host launch) that the launcher handed to a pane's build is
+    /// refused: it would act on that build's installation and profile.
+    #[test]
+    fn a_delegated_lifecycle_verb_or_launch_is_refused() {
+        let home = Path::new("/account/home");
+        let delegated = Ambient {
+            home: None,
+            socket: Some("/account/home/.plexi-beta/notify.sock".into()),
+            channel: Some("beta".into()),
+            delegated: true,
+        };
+        let none = sel(ProfileSelection::Default, None);
+        for role in [Role::Lifecycle, Role::HostLaunch] {
+            let error =
+                select(role, &none, "plexi-beta", Ok(home.into()), &delegated).unwrap_err();
+            assert!(error.contains("never follow a pane"), "{role:?}: {error}");
+            assert!(error.contains("plexi-beta"), "{role:?}: {error}");
+        }
+        let command = select(Role::Command, &none, "plexi-beta", Ok(home.into()), &delegated);
+        assert_eq!(command.unwrap().dir(), home.join(".plexi-beta"));
+    }
+
+    /// Codex 3288 R1: a private `HOME` is refused before a pane endpoint can
+    /// root the selection, for a bare command and for one a launcher handed
+    /// to a pane's build alike, so a script launched from an Alpha pane that
+    /// only changed `HOME` never reaches the owner's live Alpha profile.
+    #[test]
+    fn a_private_home_is_refused_before_the_pane_endpoint_roots_a_command() {
+        let account = tempfile::tempdir().unwrap();
+        let private = tempfile::tempdir().unwrap();
+        let owner_socket = account.path().join(".plexi-alpha/notify.sock");
+        let pane = Ambient {
+            home: Some(private.path().into()),
+            socket: Some(owner_socket.into()),
+            channel: Some("alpha".into()),
+            delegated: false,
+        };
+        let none = sel(ProfileSelection::Default, None);
+        for (exe, ambient) in [
+            ("plexi", pane.clone()),
+            ("plexi-alpha", Ambient { delegated: true, ..pane.clone() }),
+        ] {
+            let error = select(Role::Command, &none, exe, Ok(account.path().into()), &ambient)
+                .unwrap_err();
+            assert!(error.contains("--profile-root"), "{exe}: {error}");
+        }
+    }
+
+    /// Codex 3288 R1: a host on a profile named `stable` or `main` exports
+    /// that suffix; a bare client in its pane reads files from and talks to
+    /// that same `.plexi-stable` profile. A pane whose channel and endpoint
+    /// name different profiles is refused instead of split.
+    #[test]
+    fn pane_files_and_endpoint_always_name_one_profile() {
+        let home = Path::new("/account/home");
+        let none = sel(ProfileSelection::Default, None);
+        let pane = |channel: &str, socket: &str| Ambient {
+            home: None,
+            socket: Some(socket.into()),
+            channel: Some(channel.into()),
+            delegated: false,
+        };
+        for name in ["stable", "main"] {
+            let socket = format!("/scratch/root/.plexi-{name}/notify.sock");
+            let target =
+                select(Role::Command, &none, "plexi", Ok(home.into()), &pane(name, &socket)).unwrap();
+            assert_eq!(target.dir(), Path::new("/scratch/root").join(format!(".plexi-{name}")));
+            assert_eq!(target.endpoint(), Path::new(&socket));
+            // A legacy Stable pane named its default profile `stable`.
+            let legacy = select(
+                Role::Command,
+                &none,
+                "plexi",
+                Ok(home.into()),
+                &pane(name, "/scratch/root/.plexi/notify.sock"),
+            )
+            .unwrap();
+            assert_eq!(legacy.dir(), Path::new("/scratch/root/.plexi"));
+        }
+        let split = select(
+            Role::Command,
+            &none,
+            "plexi",
+            Ok(home.into()),
+            &pane("alpha", "/scratch/root/.plexi-beta/notify.sock"),
+        )
+        .unwrap_err();
+        assert!(split.contains("different profiles"), "{split}");
     }
 
     /// A private `HOME` no longer moves profiles. Without `--profile-root`

@@ -294,3 +294,129 @@ fn an_invalid_root_or_a_bare_private_home_reaches_no_host() {
         "a missing root was created"
     );
 }
+
+/// The child half of [`a_bare_launcher_handoff_never_routes_by_the_pane`]:
+/// run the installed Stable launcher (`transaction::launch`) exactly as the
+/// `plexi` shim does. It hands the command to the pane's build by `exec`, so
+/// this process becomes that real `plexi-beta`. Inert in an ordinary run.
+#[test]
+fn launcher_child() {
+    let Some(root) = std::env::var_os("PLEXI_1695_LAUNCH_ROOT") else {
+        return;
+    };
+    let args: Vec<std::ffi::OsString> = serde_json::from_str::<Vec<String>>(
+        &std::env::var("PLEXI_1695_LAUNCH_ARGS").unwrap(),
+    )
+    .unwrap()
+    .into_iter()
+    .map(Into::into)
+    .collect();
+    let code = plexi_distribution::transaction::launch(Path::new(&root), &args)
+        .unwrap_or_else(|error| panic!("launch failed: {error}"));
+    std::process::exit(code);
+}
+
+/// A managed installation of `channel` whose active build is a copy of this
+/// plexi binary named `executable`.
+fn managed_install(distribution: &Path, channel: &str, executable: &str) -> PathBuf {
+    let root = distribution.join(channel);
+    let generation = root.join("generations/test");
+    std::fs::create_dir_all(&generation).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_plexi"), generation.join(executable)).unwrap();
+    let receipt = serde_json::json!({
+        "schema": 1,
+        "channel": channel,
+        "root": root,
+        "bin_dir": distribution.join("bin"),
+        "applications_dir": distribution.join("Applications"),
+        "active": {
+            "path": generation,
+            "build_id": "test",
+            "tag": "test",
+            "executable": executable,
+        },
+        "previous": null,
+        "integrations": [],
+    });
+    std::fs::write(root.join("installation.json"), serde_json::to_vec(&receipt).unwrap()).unwrap();
+    let registry = distribution.join("installations");
+    std::fs::create_dir_all(&registry).unwrap();
+    std::fs::write(
+        registry.join(format!("{channel}.json")),
+        serde_json::to_vec(&root).unwrap(),
+    )
+    .unwrap();
+    root
+}
+
+/// Codex 3288 R1: bare `plexi` typed in an installed Beta pane is handed by
+/// the Stable launcher to the real `plexi-beta`. A lifecycle verb or
+/// uninstall that arrives that way is refused (it would act on Beta's
+/// installation and profile), and a bare command under a private `HOME` is
+/// refused before the pane endpoint can root it. The pane's live host is
+/// never contacted and its data survives.
+#[test]
+fn a_bare_launcher_handoff_never_routes_by_the_pane() {
+    let scratch = Root::new();
+    let distribution = scratch.path.join("distribution");
+    let stable = managed_install(&distribution, "stable", "plexi");
+    managed_install(&distribution, "beta", "plexi-beta");
+    // The pane's host: Beta's profile under the account-like root.
+    let owner = Root::new();
+    let beta_profile = owner.path.join(".plexi-beta");
+    let beta_host = FakeHost::bind(&beta_profile);
+    let sentinel = beta_profile.join("sentinel");
+    std::fs::write(&sentinel, "keep").unwrap();
+    let private_home = Root::new();
+
+    let launch = |args: &[&str], home: &Path| {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("PLEXI_") {
+                command.env_remove(key);
+            }
+        }
+        let output = command
+            .args(["--exact", "launcher_child", "--nocapture", "--test-threads", "1"])
+            .env("PLEXI_1695_LAUNCH_ROOT", &stable)
+            .env(
+                "PLEXI_1695_LAUNCH_ARGS",
+                serde_json::to_string(&args).unwrap(),
+            )
+            .env("PLEXI_DISTRIBUTION_HOME", &distribution)
+            .env("PLEXI_RUNNING", "1")
+            .env("PLEXI_CHANNEL", "beta")
+            .env("PLEXI_SOCKET", &beta_host.socket)
+            .env("HOME", home)
+            .current_dir(&scratch.path)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        eprintln!("{args:?} exited {}: {stderr}", output.status);
+        (output.status.code(), stderr)
+    };
+
+    for verb in [
+        &["uninstall", "--delete-data", "--yes"][..],
+        &["host", "stop"],
+        &["host", "status"],
+    ] {
+        let (code, stderr) = launch(verb, &owner.path);
+        assert_eq!(code, Some(2), "{verb:?}: {stderr}");
+        assert!(stderr.contains("never follow a pane"), "{verb:?}: {stderr}");
+        assert!(stderr.contains("plexi-beta"), "{verb:?}: {stderr}");
+    }
+    // A bare command handed over under a private HOME.
+    let (code, stderr) = launch(&["pane", "list"], &private_home.path);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("--profile-root"), "{stderr}");
+
+    assert!(
+        beta_host.requests().is_empty(),
+        "the pane's host was contacted: {:?}",
+        beta_host.requests()
+    );
+    assert!(beta_host.reachable());
+    assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "keep");
+}
