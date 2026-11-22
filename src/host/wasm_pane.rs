@@ -603,6 +603,7 @@ impl WasmPane {
         self.app.register_directed_pipe(pipe_id, generation)
     }
 
+    #[cfg(test)]
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         self.app.has_pipe_reader(pipe_id)
     }
@@ -2211,6 +2212,7 @@ impl LiveWasmPane {
         self.inner.register_directed_pipe(pipe_id, generation)
     }
 
+    #[cfg(test)]
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         self.inner.has_pipe_reader(pipe_id)
     }

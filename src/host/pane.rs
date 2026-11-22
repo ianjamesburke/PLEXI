@@ -2399,6 +2399,7 @@ impl ViewRuntime {
     }
 
     /// True when `pipe_id` is open on this runtime's local pipe registry.
+    #[cfg(test)]
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         match self {
             ViewRuntime::Builtin(_) => false,

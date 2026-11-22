@@ -403,6 +403,7 @@ impl HostCtx {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         self.pipes.has_reader(pipe_id)
     }
@@ -1045,6 +1046,7 @@ impl WasmView {
     }
 
     /// True when `pipe_id` is open on this WASM instance's typed-pipe registry.
+    #[cfg(test)]
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         self.store.data().has_pipe_reader(pipe_id)
     }

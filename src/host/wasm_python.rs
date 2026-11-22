@@ -3280,6 +3280,7 @@ impl LivePythonPane {
     }
 
     /// True when `pipe_id` is open on this Python instance's typed-pipe registry.
+    #[cfg(test)]
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         self.pipes.has_reader(pipe_id)
     }
