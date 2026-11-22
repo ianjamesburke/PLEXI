@@ -585,6 +585,7 @@ test-infra-scripts: test-build-inputs
     bash scripts/merge-pr.sh test-resolve-issue
     bash scripts/merge-pr.sh test-resolve-stints
     bash scripts/merge-pr.sh test-resolve-both
+    bash scripts/merge-pr.sh test-resolve-partial
     python3 scripts/test_landing_safety.py
     bash scripts/pr-install-verify-sdk.sh self-test
     bash scripts/pr-install-seed-profile.sh self-test
@@ -596,6 +597,7 @@ test-infra-scripts: test-build-inputs
 #   just merge-cleanup 2155 feature/2155-foo <SHA>
 #   just merge-close 2144 2155
 #   just merge-close-stints 2186 0015 0016
+#   just merge-close-stints 2186 0015 --partial 0016   — 0016 released, not closed
 merge-rebase BRANCH:
     bash scripts/merge-pr.sh rebase {{BRANCH}}
 

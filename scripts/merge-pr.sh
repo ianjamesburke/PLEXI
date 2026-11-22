@@ -9,7 +9,7 @@
 #   scripts/merge-pr.sh sync                   fast-forward alpha without discarding local work
 #   scripts/merge-pr.sh cleanup <PR> <BRANCH>  remove all local and remote branch artifacts
 #   scripts/merge-pr.sh close <ISSUE> <PR>     strip pipeline labels + close issue + append ship log
-#   scripts/merge-pr.sh close-stints <PR> <ID...>
+#   scripts/merge-pr.sh close-stints <PR> [--partial <ID>]... [ID...]   done ID; release (unclaim) --partial ID
 #
 # Call sub-steps directly to resume after a failure (e.g. rebase conflict).
 set -euo pipefail
@@ -306,21 +306,73 @@ stint_ids_from_body() {
     }
 }
 
+# A `Stint-partial: 0560, 0561` line (same tolerance as `Stint:`) names stints
+# this PR delivers only a slice of: merge releases their claim, never closes them.
+partial_ids_from_body() {
+    local PR_BODY="$1"
+    printf '%s\n' "$PR_BODY" \
+        | grep -Ei '^[[:space:]>*_-]*stint-partial[[:space:]*_]*:' \
+        | sed -E 's/^[^:]*://' \
+        | grep -Eo '[0-9]{4}' | sort -u || true
+}
+
+require_task_file() {
+    local STINT="$1"
+    local TASK_FILE
+    TASK_FILE=$(task_file_for_stint "$STINT") || return 1
+    if [ -z "$TASK_FILE" ]; then
+        echo "ERROR: PR references stint task $STINT, but no .stint/tasks/${STINT}-*.md exists" >&2
+        return 1
+    fi
+}
+
+# Stints to close: branch ids and `Stint:` ids, minus any id named partial.
 resolve_stints() {
     local BRANCH="$1"
     local PR_BODY="${2:-}"
-    local STINT
+    local PARTIAL STINT
+    PARTIAL=$(partial_ids_from_body "$PR_BODY")
     {
         printf '%s\n' "$BRANCH" | grep -Eo 'stint-[0-9-]+' | grep -Eo '[0-9]{4}' || true
         stint_ids_from_body "$PR_BODY"
     } | sort -u | while IFS= read -r STINT; do
         [ -n "$STINT" ] || continue
-        local TASK_FILE
-        TASK_FILE=$(task_file_for_stint "$STINT") || return 1
-        if [ -z "$TASK_FILE" ]; then
-            echo "ERROR: PR references stint task $STINT, but no .stint/tasks/${STINT}-*.md exists" >&2
-            return 1
+        if grep -qx "$STINT" <<< "$PARTIAL"; then
+            continue
         fi
+        require_task_file "$STINT" || return 1
+        printf '%s\n' "$STINT"
+    done
+}
+
+# assert_partial_releasable <id>: the task exists and its `## Remaining` section
+# says what is left. Runs before the remote squash so a refusal leaves nothing merged.
+assert_partial_releasable() {
+    local STINT="$1"
+    local BODY
+    require_task_file "$STINT" || return 1
+    BODY=$(stint show "$STINT" --json | jq -r '.body // ""') || {
+        echo "ERROR: stint show $STINT --json failed while checking partial stint $STINT" >&2
+        return 1
+    }
+    if ! printf '%s\n' "$BODY" | awk '
+        /^##[[:space:]]+Remaining[[:space:]]*$/ { inside = 1; next }
+        /^##[[:space:]]/ { inside = 0 }
+        inside && /[^[:space:]]/ { found = 1 }
+        END { exit found ? 0 : 1 }'; then
+        echo "ERROR: PR marks stint $STINT partial, but its task has no non-empty '## Remaining' section." >&2
+        echo "Add '## Remaining' to stint $STINT (stint edit $STINT) listing the scope still open, or close it with a 'Stint: $STINT' line." >&2
+        return 1
+    fi
+}
+
+# Partial ids that pass assert_partial_releasable, one per line.
+resolve_partial_stints() {
+    local PR_BODY="${1:-}"
+    local STINT
+    partial_ids_from_body "$PR_BODY" | while IFS= read -r STINT; do
+        [ -n "$STINT" ] || continue
+        assert_partial_releasable "$STINT" || return 1
         printf '%s\n' "$STINT"
     done
 }
@@ -347,22 +399,52 @@ describe_closures() {
     printf '%s\n' "$PARTS"
 }
 
+# do_close_stints <PR> [--partial <ID>]... [ID...]
+# Plain ids are marked done; --partial ids are released (unclaimed), never done.
 do_close_stints() {
     local PR="$1"
     shift
-    local VERSION
-    local STINTS
-    local STINT
+    local VERSION STINT STATUS
+    local CLOSE=() PARTIAL=()
 
-    VERSION=$(grep '^version' Cargo.toml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-    STINTS=$(join_by ", " "$@")
-
-    echo "==> Closing stint task(s): $STINTS"
-    for STINT in "$@"; do
-        stint done "$STINT"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --partial) PARTIAL+=("${2:?--partial requires a stint id}"); shift 2 ;;
+            *) CLOSE+=("$1"); shift ;;
+        esac
+    done
+    if [ "${#CLOSE[@]}" -eq 0 ] && [ "${#PARTIAL[@]}" -eq 0 ]; then
+        echo "ERROR: at least one stint task id is required" >&2
+        return 1
+    fi
+    for STINT in "${PARTIAL[@]+"${PARTIAL[@]}"}"; do
+        if [[ " ${CLOSE[*]+"${CLOSE[*]}"} " == *" $STINT "* ]]; then
+            echo "ERROR: stint $STINT is named both closed and partial for PR #$PR" >&2
+            return 1
+        fi
+        assert_partial_releasable "$STINT" || return 1
     done
 
-    echo "==> Closed stint task(s) $STINTS (current alpha v$VERSION)"
+    VERSION=$(grep '^version' Cargo.toml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+
+    for STINT in "${CLOSE[@]+"${CLOSE[@]}"}"; do
+        stint done "$STINT"
+        echo "==> Stint $STINT: closed (PR #$PR)"
+    done
+    for STINT in "${PARTIAL[@]+"${PARTIAL[@]}"}"; do
+        STATUS=$(stint show "$STINT" --json | jq -r '.status') || {
+            echo "ERROR: stint show $STINT --json failed while releasing partial stint $STINT" >&2
+            return 1
+        }
+        if [ "$STATUS" = todo ]; then
+            echo "==> Stint $STINT: already todo, nothing to release (partial, PR #$PR)"
+            continue
+        fi
+        stint unclaim "$STINT"
+        echo "==> Stint $STINT: released (partial, PR #$PR)"
+    done
+
+    echo "==> Stint closeout done for PR #$PR (current alpha v$VERSION)"
 }
 
 resolve_issue() {
@@ -575,12 +657,113 @@ The three-pane squad was stint-0568-shaped."
     echo "resolve_both tests passed"
 }
 
+# Stint 1690: `Stint-partial:` releases a claim instead of closing the stint, and
+# refuses (before any squash) unless the stint has a non-empty `## Remaining`.
+test_resolve_partial() {
+    local TMP
+    TMP=$(mktemp -d)
+    mkdir -p "$TMP/.stint/tasks" "$TMP/fixtures"
+    printf 'version = "0.0.0"\n' > "$TMP/Cargo.toml"
+    fixture() { # <id> <status> <body>
+        : > "$TMP/.stint/tasks/$1-fixture.md"
+        jq -n --arg s "$2" --arg b "$3" '{status: $s, body: $b}' > "$TMP/fixtures/$1.json"
+    }
+    fixture 1238 in-progress $'## Why\n\nx\n\n## Remaining\n\n- slice 2 of 4\n'
+    fixture 1239 in-progress $'## Why\n\nx\n'
+    fixture 1240 in-progress $'## Why\n\nx\n'
+    fixture 1241 in-progress $'## Remaining\n\n\n## References\n\n- y\n'
+    fixture 1242 todo $'## Remaining\n\n- the rest\n'
+
+    (
+        cd "$TMP"
+        CALLS="$TMP/stint-calls.log"
+        stint() {
+            echo "$*" >> "$CALLS"
+            case "$1" in
+                show) cat "$TMP/fixtures/$2.json" ;;
+                done|unclaim) ;;
+                *) echo "unexpected stint call: $*" >&2; return 1 ;;
+            esac
+        }
+        fail() { echo "test_resolve_partial: $*" >&2; exit 1; }
+        local actual
+
+        actual=$(partial_ids_from_body "Stint-partial: 1238")
+        [ "$actual" = 1238 ] || fail "expected partial id 1238, got '$actual'"
+        actual=$(resolve_stints "feature/partial" "Stint-partial: 1238")
+        [ -z "$actual" ] || fail "partial id must not close, got '$actual'"
+
+        actual=$(resolve_stints "feature/stint-1238-slice" "Stint: 1238
+Stint-partial: 1238")
+        [ -z "$actual" ] || fail "branch and Stint: line must not override partial, got '$actual'"
+
+        BODY="Stint: 1239
+- **Stint-partial:** 1238"
+        actual=$(resolve_stints "feature/partial" "$BODY")
+        [ "$actual" = 1239 ] || fail "expected close set 1239, got '$actual'"
+        actual=$(resolve_partial_stints "$BODY")
+        [ "$actual" = 1238 ] || fail "expected partial set 1238, got '$actual'"
+
+        : > "$CALLS"
+        actual=$(do_close_stints 3300 1239 --partial 1238) || fail "close+partial failed: $actual"
+        grep -qx "done 1239" "$CALLS" || fail "expected 'done 1239', calls: $(cat "$CALLS")"
+        grep -qx "unclaim 1238" "$CALLS" || fail "expected 'unclaim 1238', calls: $(cat "$CALLS")"
+        ! grep -qx "done 1238" "$CALLS" || fail "partial 1238 must never be done"
+        [[ "$actual" == *"Stint 1239: closed"* && "$actual" == *"Stint 1238: released (partial"* ]] ||
+            fail "expected closed/released lines, got '$actual'"
+
+        # Refusals: no Remaining, empty Remaining, missing task. Nothing is done or unclaimed.
+        for BAD in 1240 1241 9999; do
+            : > "$CALLS"
+            if resolve_partial_stints "Stint-partial: $BAD" >/dev/null 2>&1; then
+                fail "expected preflight refusal for partial $BAD"
+            fi
+            if do_close_stints 3300 1239 --partial "$BAD" >/dev/null 2>&1; then
+                fail "expected close-stints refusal for partial $BAD"
+            fi
+            ! grep -Eq '^(done|unclaim) ' "$CALLS" || fail "refused partial $BAD still ran: $(cat "$CALLS")"
+        done
+
+        : > "$CALLS"
+        actual=$(do_close_stints 3300 --partial 1242) || fail "already-todo partial must not error: $actual"
+        [[ "$actual" == *"Stint 1242: already todo"* ]] || fail "expected already-todo report, got '$actual'"
+        ! grep -q '^unclaim' "$CALLS" || fail "already-todo partial must not unclaim"
+
+        # Full flow: a partial with no Remaining refuses before the remote squash.
+        actual=$(
+            exec 2>&1
+            gh() {
+                case "$1 $2" in
+                    'pr view')
+                        if [[ "$*" == *closingIssuesReferences* ]]; then
+                            printf '\n'
+                        else
+                            printf '%s\n' '{"branch":"feature/x","base":"alpha","state":"OPEN","body":"Stint-partial: 1240"}'
+                        fi
+                        ;;
+                    *) echo "mock gh $*" ;;
+                esac
+            }
+            git() { echo "mock git $*"; }
+            do_sync() { echo "mock sync"; }
+            set -- 3300 --reviewed-head "$(printf '%040d' 1)"
+            eval "$(sed -n '/^# --- Dispatch ---/,$p' "$SCRIPT_DIR/merge-pr.sh")"
+        ) && fail "full flow must refuse a partial without Remaining, got '$actual'"
+        [[ "$actual" != *"mock gh pr merge"* && "$actual" != *"mock sync"* ]] ||
+            fail "refusal must precede sync and squash, got '$actual'"
+        [[ "$actual" == *"'## Remaining'"* ]] || fail "expected Remaining refusal, got '$actual'"
+    ) || return 1
+
+    echo "resolve_partial tests passed"
+}
+
 # --- Dispatch ---
 CMD="${1:-}"
 case "$CMD" in
     test-resolve-issue) test_resolve_issue ;;
     test-resolve-stints) test_resolve_stints ;;
     test-resolve-both) test_resolve_both ;;
+    test-resolve-partial) test_resolve_partial ;;
     rebase)   do_rebase "${2:?BRANCH required}" ;;
     squash)   do_squash "${2:?PR required}" "${3:?reviewed head SHA required}" ;;
     sync)     do_sync ;;
@@ -589,10 +772,6 @@ case "$CMD" in
     close-stints)
         PR="${2:?PR required}"
         shift 2
-        [ "$#" -gt 0 ] || {
-            echo "ERROR: at least one stint task id is required" >&2
-            exit 1
-        }
         do_close_stints "$PR" "$@"
         ;;
     *)
@@ -619,15 +798,19 @@ case "$CMD" in
         PR_BODY=$(echo "$INFO" | jq -r '.body // ""')
         ISSUE=""
         STINTS=""
+        PARTIALS=""
         STINT_ARGS=()
+        PARTIAL_ARGS=()
         if [ "$NO_ISSUE" -eq 0 ]; then
             ISSUE=$(resolve_issue "$PR" "$BRANCH" "$PR_BODY" || true)
             # Resolved independently of the issue: a PR routinely has both. A named
             # stint with no task file is a hard error (set -e), issue found or not.
             STINTS=$(resolve_stints "$BRANCH" "$PR_BODY")
-            if [ -z "$ISSUE" ] && [ -z "$STINTS" ]; then
+            # Preflight: a partial stint without '## Remaining' refuses before the squash.
+            PARTIALS=$(resolve_partial_stints "$PR_BODY") || exit 1
+            if [ -z "$ISSUE" ] && [ -z "$STINTS" ] && [ -z "$PARTIALS" ]; then
                 echo "ERROR: could not resolve GitHub issue or stint tasks for PR #$PR ($BRANCH)" >&2
-                echo "Link a GitHub issue through closingIssuesReferences or a closing keyword like 'Closes #1234'; for stints, use a stint-<id> branch or a 'Stint: 0123, 0124' line in the PR body." >&2
+                echo "Link a GitHub issue through closingIssuesReferences or a closing keyword like 'Closes #1234'; for stints, use a stint-<id> branch or a 'Stint: 0123, 0124' line in the PR body ('Stint-partial: 0123' for a slice that leaves the stint open)." >&2
                 echo "For a standalone follow-up PR with nothing to close, re-run: just merge-pr $PR --reviewed-head <SHA> no-issue" >&2
                 exit 1
             fi
@@ -636,12 +819,18 @@ case "$CMD" in
                     STINT_ARGS+=("$STINT")
                 fi
             done <<< "$STINTS"
+            while IFS= read -r STINT; do
+                if [ -n "$STINT" ]; then
+                    PARTIAL_ARGS+=(--partial "$STINT")
+                fi
+            done <<< "$PARTIALS"
         fi
 
         if [ "$NO_ISSUE" -eq 1 ]; then
             echo "==> PR #$PR: $BRANCH (standalone — no issue/stint to close, state: $STATE)"
         else
             echo "==> PR #$PR: $BRANCH ($(describe_closures "$ISSUE" "${STINT_ARGS[@]+"${STINT_ARGS[@]}"}"), state: $STATE)"
+            [ -z "$PARTIALS" ] || echo "==> Partial stint(s), released not closed: $(join_by ", " $PARTIALS)"
         fi
 
         if ! [[ "$REVIEWED_HEAD" =~ ^[0-9a-f]{40}$ ]]; then
@@ -680,8 +869,8 @@ case "$CMD" in
             if [ -n "$ISSUE" ]; then
                 do_close "$ISSUE" "$PR"
             fi
-            if [ "${#STINT_ARGS[@]}" -gt 0 ]; then
-                do_close_stints "$PR" "${STINT_ARGS[@]}"
+            if [ "${#STINT_ARGS[@]}" -gt 0 ] || [ "${#PARTIAL_ARGS[@]}" -gt 0 ]; then
+                do_close_stints "$PR" "${STINT_ARGS[@]+"${STINT_ARGS[@]}"}" "${PARTIAL_ARGS[@]+"${PARTIAL_ARGS[@]}"}"
             fi
         fi
 
