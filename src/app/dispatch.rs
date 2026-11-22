@@ -1618,6 +1618,9 @@ impl PlexiApp {
     ) {
         use crate::protocol::PipeOpenRefusal;
         let opener = request.opener;
+        if request.pipe_id.len() > crate::protocol::MAX_PIPE_ID_BYTES {
+            return self.refuse_directed_pipe_open(request, PipeOpenRefusal::NameTooLong);
+        }
         // Resolve host-established origins for BOTH ends — never
         // `router.active()`/`active_window` — so reachability is decided from
         // facts the host itself observed, not a claim or ambient focus state

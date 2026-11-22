@@ -1129,6 +1129,10 @@ class PluginRuntime:
                 })
             elif isinstance(effect, effects.PipeOpenDirected):
                 pipe_id = str(effect.pipe_id)
+                # Checked again here: the effect may have been changed after
+                # it was made. A request is never recorded for a name the
+                # host would refuse.
+                effects.PipeOpenDirected(pipe_id, effect.target_pane_id)
                 self._next_pipe_request += 1
                 request_id = f"pipe-{self._next_pipe_request}"
                 # Sends by this name from here on belong to this request.

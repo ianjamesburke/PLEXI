@@ -648,11 +648,19 @@ pub enum PipeOpenRefusal {
     /// The opener has no room now for another connection's close: it holds
     /// too many connections, or its input is full.
     OpenerFull,
+    /// The id is longer than [`MAX_PIPE_ID_BYTES`].
+    NameTooLong,
 }
+
+/// Longest directed pipe id, in UTF-8 bytes, mirrored (and enforced first)
+/// in the Python SDK's `effects.MAX_PIPE_ID_BYTES`. The host holds room in a
+/// Python opener's stdin for an open's answer, which names the pipe, so an
+/// SDK request is never recorded for a name the host would refuse.
+pub const MAX_PIPE_ID_BYTES: usize = 256;
 
 impl PipeOpenRefusal {
     /// Every reason, so room held for an answer fits whichever one it carries.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Denied,
         Self::NoTarget,
         Self::NotAPlugin,
@@ -662,6 +670,7 @@ impl PipeOpenRefusal {
         Self::OpenerUnplaced,
         Self::TargetUnavailable,
         Self::OpenerFull,
+        Self::NameTooLong,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -675,6 +684,7 @@ impl PipeOpenRefusal {
             Self::OpenerUnplaced => "opener_unplaced",
             Self::TargetUnavailable => "target_unavailable",
             Self::OpenerFull => "opener_full",
+            Self::NameTooLong => "name_too_long",
         }
     }
 }

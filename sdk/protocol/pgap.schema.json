@@ -5140,6 +5140,11 @@
               "const": "opener_full",
               "description": "The opener has no room now for another connection's close: it holds\ntoo many connections, or its input is full.",
               "type": "string"
+            },
+            {
+              "const": "name_too_long",
+              "description": "The id is longer than [`MAX_PIPE_ID_BYTES`].",
+              "type": "string"
             }
           ]
         },

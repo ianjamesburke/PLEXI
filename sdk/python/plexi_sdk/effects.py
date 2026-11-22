@@ -345,10 +345,17 @@ class UnsubscribeEventStreams:
     subscription_id: str
 
 
+# Longest pipe name, in UTF-8 bytes, mirrored (and enforced) host-side: the
+# host holds room in the opener's input for the answer, which names the pipe.
+MAX_PIPE_ID_BYTES = 256
+
+
 @dataclass
 class PipeOpenDirected:
     """Ask the host for a duplex JSON pipe named ``pipe_id`` to the view in
-    ``target_pane_id``. Needs the ``pipe.open`` capability.
+    ``target_pane_id``. Needs the ``pipe.open`` capability. ``pipe_id`` is
+    at most ``MAX_PIPE_ID_BYTES`` (256) UTF-8 bytes; a longer one raises
+    ``ValueError`` here.
 
     The host answers with :class:`events.PipeOpened` or
     :class:`events.PipeOpenRefused`; the target gets
@@ -358,6 +365,14 @@ class PipeOpenDirected:
     """
     pipe_id: str
     target_pane_id: int
+
+    def __post_init__(self) -> None:
+        size = len(str(self.pipe_id).encode("utf-8"))
+        if size > MAX_PIPE_ID_BYTES:
+            raise ValueError(
+                f"PipeOpenDirected: pipe_id {str(self.pipe_id)[:32]!r}... is {size} "
+                f"UTF-8 bytes; the limit is MAX_PIPE_ID_BYTES ({MAX_PIPE_ID_BYTES})"
+            )
 
 
 @dataclass(init=False)

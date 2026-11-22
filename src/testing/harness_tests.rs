@@ -6627,6 +6627,95 @@ fn an_opener_failed_before_dispatch_prepares_nothing_at_the_target() {
     );
 }
 
+/// A pipe id over `MAX_PIPE_ID_BYTES` is refused `name_too_long`, exactly
+/// once, and the target is told nothing; one at the limit opens (review
+/// round 5).
+#[test]
+fn an_open_naming_a_pipe_over_the_limit_is_refused_name_too_long() {
+    let mut h = HostHarness::new();
+    let win = h.app.active_window;
+    let (opener, opener_inbox) = add_pipe_test_pane(&mut h, win);
+    let (target, target_inbox) = add_pipe_test_pane(&mut h, win);
+    let long = "x".repeat(crate::protocol::MAX_PIPE_ID_BYTES + 1);
+    let refused = request_directed_pipe(&mut h, opener, target, &long);
+    h.run_hidden_frames(3);
+    assert_eq!(
+        open_answers(&opener_inbox, &refused),
+        vec![Err(crate::protocol::PipeOpenRefusal::NameTooLong)]
+    );
+    assert!(pipe_incoming(&target_inbox).is_empty());
+
+    let longest = "x".repeat(crate::protocol::MAX_PIPE_ID_BYTES);
+    let accepted = request_directed_pipe(&mut h, opener, target, &longest);
+    h.run_hidden_frames(3);
+    let answers = open_answers(&opener_inbox, &accepted);
+    assert!(
+        matches!(answers[..], [Ok(_)]),
+        "a name at the limit opens once: {answers:?}"
+    );
+}
+
+/// The Python SDK and the host share the pipe id limit (review round 5):
+/// the SDK raises a clear error before it records a request for a longer
+/// name, so no request is left waiting; a guest that bypasses the SDK gets a
+/// correlated `name_too_long` refusal in its held answer room.
+#[test]
+fn the_python_sdk_and_host_share_the_pipe_id_limit() {
+    let dir = tempfile::tempdir().expect("opener dir");
+    write_pipe_probe_app(
+        dir.path(),
+        "long-name-opener",
+        &["pipe.open"],
+        "from plexi_sdk import effects\n\
+         from plexi_sdk._v3_runtime import _emit\n\
+         from plexi_sdk.effects import PipeOpenDirected, SetTitle\n\
+         from plexi_sdk.events import PipeOpenRefused, TimerFired\n\
+         from plexi_sdk.ui import Column\n\n\
+         state = {}\n\n\
+         def init(size, args):\n\
+         \x20   state['target'] = int(args[0])\n\
+         \x20   return [SetTitle('opener:ready')]\n\n\
+         def update(event):\n\
+         \x20   if isinstance(event, TimerFired):\n\
+         \x20       try:\n\
+         \x20           PipeOpenDirected('x' * (effects.MAX_PIPE_ID_BYTES + 1), state['target'])\n\
+         \x20           state['sdk'] = 'accepted'\n\
+         \x20       except ValueError as error:\n\
+         \x20           state['sdk'] = str(effects.MAX_PIPE_ID_BYTES) + ':' + str('MAX_PIPE_ID_BYTES (256)' in str(error))\n\
+         \x20       _emit({'type': 'pipe_open_directed', 'request_id': 'raw-1', 'pipe_id': 'y' * 300, 'target_pane_id': state['target']})\n\
+         \x20       return [SetTitle('opener:sdk=' + state['sdk'])]\n\
+         \x20   if isinstance(event, PipeOpenRefused):\n\
+         \x20       return [SetTitle('opener:sdk=' + state['sdk'] + ',raw=' + event.reason + ':' + str(len(event.pipe_id)))]\n\
+         \x20   return []\n\n\
+         def view():\n\
+         \x20   return Column([])\n",
+    );
+    let mut h = HostHarness::new();
+    let win = h.app.active_window;
+    let (target, target_inbox) = add_pipe_test_pane(&mut h, win);
+    let opener = launch_pipe_probe(&mut h, dir.path(), &[target.to_string()]);
+    run_until(&mut h, "the opener is ready", &|h| {
+        python_pane_title(h, opener).as_deref() == Some("opener:ready")
+    });
+    python_stdin(&mut h, opener)
+        .push(PROBE_TRIGGER)
+        .expect("trigger");
+    run_until(&mut h, "the bypassing open is refused", &|h| {
+        python_pane_title(h, opener).is_some_and(|title| title.contains("raw="))
+    });
+    h.run_hidden_frames(5);
+    assert_eq!(
+        python_pane_title(&h, opener),
+        Some(format!(
+            "opener:sdk={}:True,raw=name_too_long:300",
+            crate::protocol::MAX_PIPE_ID_BYTES
+        )),
+        "the SDK's limit is the host's, and the refusal names the request"
+    );
+    assert!(pipe_incoming(&target_inbox).is_empty());
+    assert_eq!(python_stdin(&mut h, opener).held_for_test(), (0, 0, 0));
+}
+
 /// A production builtin that takes no pipe events, the File Explorer, is no
 /// endpoint: an open to it is refused `target_unavailable` with no route,
 /// and its name is reusable at once. An opted-in builtin is the control.

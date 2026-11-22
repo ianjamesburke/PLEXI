@@ -326,7 +326,9 @@ PipeOpenDirected(pipe_id: str, target_pane_id: int)
 ```
 
 Ask the host for a duplex JSON pipe named ``pipe_id`` to the view in
-``target_pane_id``. Needs the ``pipe.open`` capability.
+``target_pane_id``. Needs the ``pipe.open`` capability. ``pipe_id`` is
+at most ``MAX_PIPE_ID_BYTES`` (256) UTF-8 bytes; a longer one raises
+``ValueError`` here.
 
 The host answers with :class:`events.PipeOpened` or
 :class:`events.PipeOpenRefused`; the target gets
@@ -651,8 +653,9 @@ This app's :class:`effects.PipeOpenDirected` for ``pipe_id`` was
 refused and the sends that waited for it were dropped. ``reason`` is one
 of ``denied``, ``no_target``, ``not_a_plugin``, ``out_of_reach``,
 ``in_use``, ``name_conflict``, ``opener_unplaced``,
-``target_unavailable`` or ``opener_full`` (this app holds as many
-connections as its input has room to close, or its input is full).
+``target_unavailable``, ``opener_full`` (this app holds as many
+connections as its input has room to close, or its input is full) or
+``name_too_long`` (over ``effects.MAX_PIPE_ID_BYTES``).
 
 ### `PipeSendDropped`
 
