@@ -24,6 +24,11 @@ pub struct Manifest {
     pub executable: String,
     pub resources: String,
     pub files: BTreeMap<String, String>,
+    /// This build honors the bare launcher's pane handoff
+    /// ([`crate::transaction::DELEGATED_VAR`]). Absent in older packages,
+    /// whose receivers ignore the marker.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub launcher_handoff: bool,
 }
 
 #[derive(Debug)]

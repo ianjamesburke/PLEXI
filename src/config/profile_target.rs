@@ -138,9 +138,8 @@ pub fn select(
     // profile, not the ones the typed `plexi` names. Those never follow a
     // pane (stint 1695).
     if ambient.delegated && role != Role::Command {
-        let build = build_channel.as_deref().unwrap_or("stable");
-        return Err(format!(
-            "bare `plexi` inside a pane of the {build} build was handed to that build; host lifecycle commands and uninstall never follow a pane. Run plexi-{build} for that build's host, or run plexi outside a Plexi pane for Stable"
+        return Err(plexi_distribution::transaction::pane_lifecycle_refusal(
+            build_channel.as_deref().unwrap_or("stable"),
         ));
     }
     let implicit = role == Role::Command

@@ -477,3 +477,138 @@ fn a_host_launch_on_a_linked_profile_writes_nothing_through_the_link() {
     assert!(written.is_empty(), "wrote through the link: {written:?}");
     assert_eq!(status.and_then(|s| s.code()), Some(2));
 }
+
+/// A managed installation whose build is a script that records each run, as
+/// an older receiver with a frozen grammar would be observed from outside.
+fn recording_install(
+    distribution: &Path,
+    channel: &str,
+    executable: &str,
+    record: &Path,
+    declares_handoff: bool,
+) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let root = distribution.join(channel);
+    let generation = root.join("generations/test");
+    std::fs::create_dir_all(&generation).unwrap();
+    let script = generation.join(executable);
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s marker=%s %s\\n' {channel} \"${{PLEXI_LAUNCHER_DELEGATED:-}}\" \"$*\" >> '{}'\n",
+            record.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut manifest = serde_json::json!({
+        "schema": 1, "version": "1.0.0", "tag": "v1.0.0", "build_id": "old",
+        "source_commit": "old", "channel": channel, "platform": "test",
+        "executable": executable, "resources": "resources", "files": {},
+    });
+    if declares_handoff {
+        manifest["launcher_handoff"] = true.into();
+    }
+    std::fs::write(generation.join("package.json"), manifest.to_string()).unwrap();
+    let receipt = serde_json::json!({
+        "schema": 1,
+        "channel": channel,
+        "root": root,
+        "bin_dir": distribution.join("bin"),
+        "applications_dir": distribution.join("Applications"),
+        "active": {"path": generation, "build_id": "old", "tag": "v1.0.0", "executable": executable},
+        "previous": null,
+        "integrations": [],
+    });
+    std::fs::write(root.join("installation.json"), receipt.to_string()).unwrap();
+    let registry = distribution.join("installations");
+    std::fs::create_dir_all(&registry).unwrap();
+    std::fs::write(
+        registry.join(format!("{channel}.json")),
+        serde_json::to_vec(&root).unwrap(),
+    )
+    .unwrap();
+    root
+}
+
+/// Design 1695 (test 5), through the real `transaction::launch`: a receiver
+/// without the handoff never runs for a lifecycle verb or for a pane that is
+/// not its own default profile, and does run for its default pane. A
+/// receiver that declares the handoff gets ordinary commands with the marker.
+#[test]
+fn the_launcher_protects_an_older_receiver() {
+    for declares_handoff in [false, true] {
+        let scratch = Root::new();
+        let distribution = scratch.path.join("distribution");
+        let record = scratch.path.join("record");
+        let stable = recording_install(&distribution, "stable", "plexi", &record, true);
+        recording_install(
+            &distribution,
+            "beta",
+            "plexi-beta",
+            &record,
+            declares_handoff,
+        );
+        let default_pane = scratch.path.join(".plexi-beta/notify.sock");
+        let other_pane = scratch.path.join("other/.plexi-beta/notify.sock");
+        let launch = |args: &[&str], pane: &Path| {
+            let _ = std::fs::remove_file(&record);
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            for (key, _) in std::env::vars_os() {
+                if key.to_string_lossy().starts_with("PLEXI_") {
+                    command.env_remove(key);
+                }
+            }
+            let output = command
+                .args([
+                    "--exact",
+                    "launcher_child",
+                    "--nocapture",
+                    "--test-threads",
+                    "1",
+                ])
+                .env("PLEXI_1695_LAUNCH_ROOT", &stable)
+                .env(
+                    "PLEXI_1695_LAUNCH_ARGS",
+                    serde_json::to_string(&args).unwrap(),
+                )
+                .env("PLEXI_DISTRIBUTION_HOME", &distribution)
+                .env("PLEXI_RUNNING", "1")
+                .env("PLEXI_CHANNEL", "beta")
+                .env("PLEXI_SOCKET", pane)
+                .env("HOME", &scratch.path)
+                .current_dir(&scratch.path)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            (
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).to_string(),
+                std::fs::read_to_string(&record).unwrap_or_default(),
+            )
+        };
+        for args in [
+            &["host", "stop"][..],
+            &["host", "status"],
+            &["uninstall", "--yes"],
+            &["update"],
+            &[],
+        ] {
+            for pane in [&default_pane, &other_pane] {
+                let (code, stderr, ran) = launch(args, pane);
+                assert_eq!(code, Some(2), "{args:?}: {stderr}");
+                assert!(stderr.contains("never follow a pane"), "{stderr}");
+                assert_eq!(ran, "", "{args:?} ran a build");
+            }
+        }
+        let (_, _, ran) = launch(&["pane", "list"], &default_pane);
+        let expected = if declares_handoff { "1" } else { "" };
+        assert_eq!(ran, format!("beta marker={expected} pane list\n"));
+        let (_, _, ran) = launch(&["pane", "list"], &other_pane);
+        if declares_handoff {
+            assert_eq!(ran, "beta marker=1 pane list\n");
+        } else {
+            assert_eq!(ran, "stable marker= pane list\n", "ran the older receiver");
+        }
+    }
+}

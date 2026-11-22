@@ -207,7 +207,7 @@ def assemble(args):
                 "package: macOS signer "
                 f"authority={signing['authorities'][0]!r} certificate_sha1={signing['certificate_sha1']}"
             )
-    manifest = dict(identity, schema=1, channel=channel, platform=args.platform,
+    manifest = dict(identity, schema=1, channel=channel, platform=args.platform, launcher_handoff=True,
                     executable=executable.relative_to(root).as_posix(), resources=resources.relative_to(root).as_posix(),
                     files={path.relative_to(root).as_posix(): digest(path) for path in sorted(root.rglob("*")) if path.is_file()})
     if signing:

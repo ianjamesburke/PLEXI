@@ -1661,30 +1661,159 @@ fn pane_build_channel(
         .filter(|channel| !channel.is_empty() && channel != "stable" && channel != "main")
 }
 
-pub fn launch(root: &Path, args: &[std::ffi::OsString]) -> Result<i32> {
-    launch_delegated(root, args, false)
+/// The refusal for a host launch, lifecycle verb, update or uninstall typed
+/// as bare `plexi` in a pane of another build. The one statement of that
+/// ruling: the launcher prints it, and a receiver handed one anyway returns it.
+pub fn pane_lifecycle_refusal(build: &str) -> String {
+    format!(
+        "bare `plexi` inside a pane of the {build} build was handed to that build; host lifecycle commands, update and uninstall never follow a pane. Run plexi-{build} for that build's host, or run plexi outside a Plexi pane for Stable"
+    )
 }
 
-fn launch_delegated(root: &Path, args: &[std::ffi::OsString], delegated: bool) -> Result<i32> {
+/// What the launcher knows about the pane build it might hand a command to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Receiver {
+    channel: String,
+    /// Its package manifest declares `launcher_handoff`.
+    declares_handoff: bool,
+    /// The endpoint a build without the handoff addresses: its channel
+    /// profile under `$HOME`, whatever the pane says.
+    default_endpoint: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Handoff {
+    /// Run the launcher's own build.
+    OwnBuild,
+    /// Print the refusal; run nothing.
+    Refuse(String),
+    /// Exec the receiver, with the marker when it declares the handoff.
+    Delegate { marker: bool },
+}
+
+/// Whether `args` address a profile rather than the pane's host: a bare
+/// launch, `uninstall`, `update`, or a `host` lifecycle verb. Guards older
+/// receivers, whose grammar is frozen, so this list cannot drift from them.
+fn is_profile_addressed(args: &[std::ffi::OsString]) -> bool {
+    const VALUE_OPTIONS: [&str; 3] = ["--socket", "--profile", "--profile-root"];
+    let mut words = Vec::new();
+    let mut tokens = args.iter().map(|arg| arg.to_str().unwrap_or("<non-utf8>"));
+    while let Some(token) = tokens.next() {
+        match token {
+            "--" => break,
+            "-h" | "--help" | "-V" | "--version" => return false,
+            token if VALUE_OPTIONS.contains(&token) => {
+                tokens.next();
+            }
+            token if token.starts_with('-') => {}
+            word => words.push(word),
+        }
+    }
+    match words.as_slice() {
+        [] | ["uninstall", ..] | ["update", ..] => true,
+        ["host", verb, ..] => matches!(*verb, "start" | "stop" | "restart" | "status" | "log"),
+        _ => false,
+    }
+}
+
+/// The launcher's one decision, before any exec (stint 1695). A receiver is
+/// never sent something it cannot understand: a lifecycle verb goes to no
+/// build, and a build without the handoff, which addresses its own default
+/// profile, gets a command only when that is the pane's host.
+fn handoff(
+    args: &[std::ffi::OsString],
+    receiver: Option<&Receiver>,
+    pane_endpoint: Option<&Path>,
+) -> Handoff {
+    let Some(receiver) = receiver else {
+        return Handoff::OwnBuild;
+    };
+    if is_profile_addressed(args) {
+        return Handoff::Refuse(pane_lifecycle_refusal(&receiver.channel));
+    }
+    if receiver.declares_handoff {
+        return Handoff::Delegate { marker: true };
+    }
+    match pane_endpoint {
+        Some(endpoint) if same_endpoint(endpoint, &receiver.default_endpoint) => {
+            Handoff::Delegate { marker: false }
+        }
+        _ => Handoff::OwnBuild,
+    }
+}
+
+fn same_endpoint(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (a.canonicalize(), b.canonicalize()),
+            (Ok(a), Ok(b)) if a == b
+        )
+}
+
+/// The facts [`handoff`] needs about an installed build. An unreadable
+/// manifest reads as a build without the handoff.
+fn receiver_facts(receipt: &Receipt) -> Receiver {
+    let declares_handoff = fs::read(receipt.active.path.join(crate::package::MANIFEST))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<crate::package::Manifest>(&bytes).ok())
+        .is_some_and(|manifest| manifest.launcher_handoff);
+    let dir = dirs::home_dir()
+        .unwrap_or_default()
+        .join(crate::host_presence::profile_dir_name(&receipt.channel));
+    let default_endpoint = if cfg!(windows) {
+        PathBuf::from(crate::host_presence::pipe_name_in(&dir, true))
+    } else {
+        dir.join("notify.sock")
+    };
+    Receiver {
+        channel: receipt.channel.clone(),
+        declares_handoff,
+        default_endpoint,
+    }
+}
+
+fn recovered_receipt(root: &Path) -> Result<Receipt> {
     if let Ok(_lock) = lock(root) {
         recover(root)?;
     }
-    let receipt = read_receipt(root)?.ok_or_else(|| {
-        Error::Invalid("installation is incomplete; run the installer again".into())
-    })?;
+    read_receipt(root)?
+        .ok_or_else(|| Error::Invalid("installation is incomplete; run the installer again".into()))
+}
+
+pub fn launch(root: &Path, args: &[std::ffi::OsString]) -> Result<i32> {
+    let receipt = recovered_receipt(root)?;
     // Contextual bare-command routing is limited to an actual Plexi pane.
-    if let Some(channel) = pane_build_channel(&receipt.channel, |name| std::env::var(name).ok())
-        && let Some(other) = find_installation(&channel)?
-    {
-        return launch_delegated(&other.root, args, true);
+    let other = match pane_build_channel(&receipt.channel, |name| std::env::var(name).ok()) {
+        Some(channel) => find_installation(&channel)?,
+        None => None,
+    };
+    let receiver = other.as_ref().map(receiver_facts);
+    let pane_endpoint = std::env::var_os("PLEXI_SOCKET").map(PathBuf::from);
+    let decision = handoff(args, receiver.as_ref(), pane_endpoint.as_deref());
+    log::info!(
+        "distribution: launcher handoff={decision:?} receiver={:?}",
+        receiver.as_ref().map(|r| &r.channel)
+    );
+    match (decision, other) {
+        (Handoff::Refuse(message), _) => {
+            eprintln!("error: {message}");
+            Ok(2)
+        }
+        (Handoff::Delegate { marker }, Some(other)) => {
+            exec_build(&recovered_receipt(&other.root)?, args, marker)
+        }
+        _ => exec_build(&receipt, args, false),
     }
+}
+
+fn exec_build(receipt: &Receipt, args: &[std::ffi::OsString], marker: bool) -> Result<i32> {
     #[expect(
         clippy::disallowed_methods,
         reason = "foreground: the installed Plexi takes over this process and terminal"
     )]
     let mut command = Command::new(receipt.active.executable());
     command.args(args);
-    if delegated {
+    if marker {
         command.env(DELEGATED_VAR, "1");
     } else {
         command.env_remove(DELEGATED_VAR);
@@ -2173,6 +2302,102 @@ mod tests {
         );
     }
 
+    /// Design 1695 (test 4): the launcher's whole decision table.
+    #[test]
+    fn the_launcher_never_sends_a_receiver_what_it_cannot_understand() {
+        use std::ffi::OsString;
+        let default = PathBuf::from("/home/u/.plexi-beta/notify.sock");
+        let panes = [
+            ("default", default.clone()),
+            ("named", PathBuf::from("/home/u/.plexi-team/notify.sock")),
+            (
+                "scratch",
+                PathBuf::from("/scratch/r/.plexi-beta/notify.sock"),
+            ),
+        ];
+        let lifecycle: [&[&str]; 9] = [
+            &[],
+            &["--json"],
+            &["host", "stop"],
+            &["host", "--json", "status"],
+            &["--profile-root", "/x", "host", "stop"],
+            &["--socket", "/s", "host", "restart"],
+            &["uninstall"],
+            &["update"],
+            &["--profile", "team", "host", "start"],
+        ];
+        let ordinary: [&[&str]; 5] = [
+            &["pane", "list"],
+            &["host", "screenshot"],
+            &["--profile", "host", "pane", "list"],
+            &["--version"],
+            &["host", "stop", "--help"],
+        ];
+        let argv = |words: &[&str]| words.iter().map(OsString::from).collect::<Vec<_>>();
+        for declares_handoff in [false, true] {
+            let receiver = Receiver {
+                channel: "beta".into(),
+                declares_handoff,
+                default_endpoint: default.clone(),
+            };
+            for (pane, endpoint) in &panes {
+                for words in lifecycle {
+                    let decision = handoff(&argv(words), Some(&receiver), Some(endpoint));
+                    assert!(
+                        matches!(&decision, Handoff::Refuse(m) if m.contains("plexi-beta")),
+                        "{pane} {words:?}: {decision:?}"
+                    );
+                }
+                for words in ordinary {
+                    let expected = if declares_handoff {
+                        Handoff::Delegate { marker: true }
+                    } else if *pane == "default" {
+                        Handoff::Delegate { marker: false }
+                    } else {
+                        Handoff::OwnBuild
+                    };
+                    assert_eq!(
+                        handoff(&argv(words), Some(&receiver), Some(endpoint)),
+                        expected,
+                        "{pane} declares={declares_handoff} {words:?}"
+                    );
+                }
+            }
+            assert_eq!(
+                handoff(&argv(&["host", "stop"]), None, Some(&default)),
+                Handoff::OwnBuild,
+                "outside a pane build the launcher runs its own"
+            );
+        }
+    }
+
+    /// An older package has no `launcher_handoff`; a newer manifest still
+    /// parses for an older reader of the same shape.
+    #[test]
+    fn the_handoff_declaration_is_optional() {
+        let old = serde_json::json!({
+            "schema": 1, "version": "1", "tag": "v1", "build_id": "b",
+            "source_commit": "c", "channel": "beta", "platform": "p",
+            "executable": "e", "resources": "r", "files": {},
+        });
+        let manifest: crate::package::Manifest = serde_json::from_value(old).unwrap();
+        assert!(!manifest.launcher_handoff);
+        assert!(
+            serde_json::to_value(&manifest)
+                .unwrap()
+                .get("launcher_handoff")
+                .is_none()
+        );
+        let declared = crate::package::Manifest {
+            launcher_handoff: true,
+            ..manifest
+        };
+        assert_eq!(
+            serde_json::to_value(&declared).unwrap()["launcher_handoff"],
+            true
+        );
+    }
+
     /// Stint 1610: a completion script past the capture limit fails the
     /// install instead of being installed cut.
     #[cfg(unix)]
@@ -2529,6 +2754,7 @@ mod tests {
             executable: "Plexi Beta.app/Contents/MacOS/plexi-beta".into(),
             resources: "Plexi Beta.app/Contents/Resources".into(),
             files: Default::default(),
+            launcher_handoff: false,
         };
         write_json(&generation.join("package.json"), &manifest).unwrap();
         let owned = activate_bundle(
