@@ -2267,15 +2267,19 @@ impl ViewRuntime {
         match self {
             ViewRuntime::Builtin(app) => app.take_pending_commands(),
             ViewRuntime::Python(app) => app.take_pending_commands(),
-            ViewRuntime::Wasm(app) => app
-                .take_host_effects()
-                .into_iter()
-                .map(|effect| ViewCommand::WasmHostEffect {
-                    pane_id: 0,
-                    effect,
-                    emitter: None,
-                })
-                .collect(),
+            ViewRuntime::Wasm(app) => {
+                let mut commands: Vec<_> = app
+                    .take_host_effects()
+                    .into_iter()
+                    .map(|effect| ViewCommand::WasmHostEffect {
+                        pane_id: 0,
+                        effect,
+                        emitter: None,
+                    })
+                    .collect();
+                commands.extend(app.take_pipe_commands());
+                commands
+            }
         }
     }
 

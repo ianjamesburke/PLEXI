@@ -8,7 +8,7 @@ use std::path::PathBuf;
 pub enum PlexiEvent {
     /// Sent exactly once on startup. App must reply with DrawCommand::Ready.
     Init {
-        /// Protocol version string, e.g. "pgap/4". App must refuse unknown versions.
+        /// Protocol version string, e.g. "pgap/5". App must refuse unknown versions.
         protocol: String,
         /// Stable identifier for this plugin instance, e.g. "audio-recorder".
         plugin_id: String,
@@ -670,7 +670,7 @@ mod tests {
     #[test]
     fn init_event_serializes_pane_dimensions() {
         let event = PlexiEvent::Init {
-            protocol: "pgap/4".to_string(),
+            protocol: "pgap/5".to_string(),
             plugin_id: "test".to_string(),
             workspace_root: std::path::PathBuf::from("/tmp"),
             capabilities: vec![],
@@ -691,7 +691,7 @@ mod tests {
 
     #[test]
     fn init_event_deserializes_without_dimensions() {
-        let json = r#"{"type":"init","protocol":"pgap/4","plugin_id":"test","workspace_root":"/tmp","capabilities":[],"feature_flags":[]}"#;
+        let json = r#"{"type":"init","protocol":"pgap/5","plugin_id":"test","workspace_root":"/tmp","capabilities":[],"feature_flags":[]}"#;
         let event: PlexiEvent = serde_json::from_str(json).unwrap();
         match event {
             PlexiEvent::Init { width, height, .. } => {

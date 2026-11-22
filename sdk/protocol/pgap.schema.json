@@ -5243,7 +5243,7 @@
               "type": "string"
             },
             "protocol": {
-              "description": "Protocol version string, e.g. \"pgap/4\". App must refuse unknown versions.",
+              "description": "Protocol version string, e.g. \"pgap/5\". App must refuse unknown versions.",
               "type": "string"
             },
             "regular_threshold": {
@@ -7147,6 +7147,6 @@
       "title": "PlexiEvent"
     }
   },
-  "protocol": "pgap/4",
+  "protocol": "pgap/5",
   "version": 3
 }

@@ -6634,36 +6634,39 @@ fn plugin_command_from_python_message(
     }
     // Typed parse: a send names the connection generation and an open carries
     // its request id; the older name-only shapes are rejected (stint 1681).
-    if matches!(message_type, "pipe_send" | "pipe_open_directed") {
-        let request = serde_json::from_value::<crate::protocol::HostRequest>(message.clone())
-            .map_err(|error| {
-                format!(
-                    "{message_type} needs a connection generation (pipe_send) or a request id (pipe_open_directed): {error}"
-                )
-            })?;
-        return match request {
-            crate::protocol::HostRequest::PipeSend {
-                generation,
-                payload,
-            } => Ok(Some(ViewCommand::DeliverPipeMessage {
-                sender_pane_id: 0,
-                generation,
-                payload,
-                emitter: None,
-            })),
-            crate::protocol::HostRequest::PipeOpenDirected {
-                request_id,
-                pipe_id,
-                target_pane_id,
-            } => Ok(Some(ViewCommand::OpenDirectedPipe {
-                sender_pane_id: 0,
-                request_id,
-                pipe_id,
-                target_pane_id,
-                emitter: None,
-            })),
-            other => Err(format!("{message_type} parsed as {other:?}")),
-        };
+    match message_type {
+        "pipe_send" | "pipe_open_directed" => {
+            let request = serde_json::from_value::<crate::protocol::HostRequest>(message.clone())
+                .map_err(|error| {
+                    format!(
+                        "{message_type} needs a connection generation (pipe_send) or a request id (pipe_open_directed): {error}"
+                    )
+                })?;
+            return match request {
+                crate::protocol::HostRequest::PipeSend {
+                    generation,
+                    payload,
+                } => Ok(Some(ViewCommand::DeliverPipeMessage {
+                    sender_pane_id: 0,
+                    generation,
+                    payload,
+                    emitter: None,
+                })),
+                crate::protocol::HostRequest::PipeOpenDirected {
+                    request_id,
+                    pipe_id,
+                    target_pane_id,
+                } => Ok(Some(ViewCommand::OpenDirectedPipe {
+                    sender_pane_id: 0,
+                    request_id,
+                    pipe_id,
+                    target_pane_id,
+                    emitter: None,
+                })),
+                other => Err(format!("{message_type} parsed as {other:?}")),
+            };
+        }
+        _ => {}
     }
     let command = (|| match message_type {
         "expose_tools" => serde_json::from_value(message.get("tools")?.clone())
@@ -8521,12 +8524,12 @@ mod tests {
         // Stint 1453: pipes reach other panes, so both pipe effects
         // need the documented `pipe.open` grant.
         assert_eq!(
-            required(serde_json::json!({"type": "pipe_send", "pipe_id": "p"})),
+            required(serde_json::json!({"type": "pipe_send", "generation": 1, "payload": {}})),
             Some("pipe.open")
         );
         assert_eq!(
             required(
-                serde_json::json!({"type": "pipe_open_directed", "pipe_id": "p", "target_pane_id": 7})
+                serde_json::json!({"type": "pipe_open_directed", "request_id": "r", "pipe_id": "p", "target_pane_id": 7})
             ),
             Some("pipe.open")
         );

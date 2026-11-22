@@ -40,9 +40,9 @@ use super::wasm_view::bindings::plexi::platform::types::{
     DeclareToolsEffect, EmitEventEffect, EventSubscriptionResultEvent,
     EventUnsubscriptionResultEvent, FilePickedEvent, FilePickerMode as WitFilePickerMode,
     FileReadEffect, FileWriteEffect, HttpFetchEffect, HttpResponse as WitHttpResponse,
-    OpenFilePickerEffect, PipeMessageEvent, PipePayload, PluginEventEvent,
-    SubscribeEventStreamsEffect, ToolCallEvent, ToolResultEffect, UiActionEvent,
-    UiValueChangeEvent, UnsubscribeEventStreamsEffect,
+    OpenFilePickerEffect, PipeIncomingEvent, PipeMessageEvent, PipeOpenRefusedEvent,
+    PipeOpenedEvent, PipePayload, PluginEventEvent, SubscribeEventStreamsEffect, ToolCallEvent,
+    ToolResultEffect, UiActionEvent, UiValueChangeEvent, UnsubscribeEventStreamsEffect,
 };
 use super::wasm_view::{
     Effect, InputEvent, KeyEvent, Modifiers, MouseButton, MouseEvent, Point, StateSnapshot,
@@ -613,6 +613,14 @@ impl WasmPane {
 
     pub fn directed_pipe_handle(&self, generation: u64) -> Option<u32> {
         self.app.directed_pipe_handle(generation)
+    }
+
+    pub fn take_pipe_request(&mut self, request_id: &str) -> Option<u32> {
+        self.app.take_pipe_request(request_id)
+    }
+
+    pub fn take_pipe_commands(&mut self) -> Vec<crate::app::view_trait::ViewCommand> {
+        self.app.take_pipe_commands()
     }
 
     #[cfg(test)]
@@ -2230,6 +2238,22 @@ impl LiveWasmPane {
         self.inner.take_host_effects()
     }
 
+    /// Run the guest's deferred `init` now, as its first render would.
+    #[cfg(test)]
+    pub fn init_now_for_test(&mut self) {
+        if let Some(snapshot) = self.pending_init.take() {
+            self.inner
+                .init(&snapshot, (400.0, 300.0), 0, &self.launch_args)
+                .expect("wasm guest init");
+        }
+    }
+
+    /// The directed pipe opens, sends and closes the guest made through the
+    /// `pipes` import since the last call (stint 1681).
+    pub fn take_pipe_commands(&mut self) -> Vec<crate::app::view_trait::ViewCommand> {
+        self.inner.take_pipe_commands()
+    }
+
     pub(crate) fn input_sender(&self, repaint: egui::Context) -> WasmInputSender {
         self.inner.input_sender(repaint)
     }
@@ -2326,6 +2350,61 @@ impl LiveWasmPane {
                     return;
                 };
                 InputEvent::PipeClosed(handle)
+            }
+            crate::protocol::PlexiEvent::DirectedPipeOpened {
+                request_id,
+                pipe_id,
+                generation,
+            } => {
+                let (Some(request), Some(handle)) = (
+                    self.inner.take_pipe_request(&request_id),
+                    self.inner.directed_pipe_handle(generation),
+                ) else {
+                    log::warn!(
+                        "wasm input: open of '{pipe_id}' answered as connection {generation}, but request '{request_id}' or its handle is unknown",
+                        pipe_id = guest_text::shown(&pipe_id),
+                        request_id = guest_text::shown(&request_id)
+                    );
+                    return;
+                };
+                InputEvent::PipeOpened(PipeOpenedEvent { request, handle })
+            }
+            crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
+                request_id,
+                pipe_id,
+                reason,
+            } => {
+                let Some(request) = self.inner.take_pipe_request(&request_id) else {
+                    log::warn!(
+                        "wasm input: refusal of '{pipe_id}' ({}) answers unknown request '{request_id}'",
+                        reason.as_str(),
+                        pipe_id = guest_text::shown(&pipe_id),
+                        request_id = guest_text::shown(&request_id)
+                    );
+                    return;
+                };
+                InputEvent::PipeOpenRefused(PipeOpenRefusedEvent {
+                    request,
+                    reason: reason.as_str().to_string(),
+                })
+            }
+            crate::protocol::PlexiEvent::DirectedPipeIncoming {
+                pipe_id,
+                generation,
+                peer_pane_id,
+            } => {
+                let Some(handle) = self.inner.directed_pipe_handle(generation) else {
+                    log::warn!(
+                        "wasm input: incoming '{pipe_id}' connection {generation} has no handle",
+                        pipe_id = guest_text::shown(&pipe_id)
+                    );
+                    return;
+                };
+                InputEvent::PipeIncoming(PipeIncomingEvent {
+                    handle,
+                    id: pipe_id,
+                    peer_pane: peer_pane_id,
+                })
             }
             other => {
                 log::warn!("wasm input: unsupported host event {other:?}");

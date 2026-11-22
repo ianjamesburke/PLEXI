@@ -6,7 +6,7 @@ use plexi::protocol::{HostRequest, PlexiEvent};
 fn main() {
     let schema = serde_json::json!({
         "$schema": "http://json-schema.org/draft-07/schema#",
-        "protocol": "pgap/4",
+        "protocol": "pgap/5",
         "version": 3,
         "definitions": {
             "PlexiEvent": schemars::schema_for!(PlexiEvent),

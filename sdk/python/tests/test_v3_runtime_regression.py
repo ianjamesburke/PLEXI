@@ -41,7 +41,7 @@ def _spawn_v3_app(app_file: Path):
     return proc
 
 
-def _init_app(proc, state=None, capabilities=None, protocol="pgap/4"):
+def _init_app(proc, state=None, capabilities=None, protocol="pgap/5"):
     """Send init message and wait for ready."""
     msg = {
         "type": "init",
@@ -1350,7 +1350,7 @@ class TestUnsupportedEffectsFailLoudly:
         try:
             proc.stdin.write(json.dumps({
                 "type": "init", "plugin_id": "fail-loud", "workspace_root": "/tmp",
-                "capabilities": [], "feature_flags": [], "protocol": "pgap/4",
+                "capabilities": [], "feature_flags": [], "protocol": "pgap/5",
                 "width": 640.0, "height": 360.0,
             }) + "\n")
             proc.stdin.flush()

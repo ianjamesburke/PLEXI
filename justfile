@@ -103,6 +103,8 @@ wasm-fixtures:
     cp target/wasm32-wasip1/release/daw_engine_poc.wasm tests/wasm-fixtures/daw-engine.wasm
     cd plugins/wasm-poc/jukebox && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/jukebox.wasm tests/wasm-fixtures/jukebox.wasm
+    cd plugins/wasm-poc/pipe-peer && bash ../../../scripts/cargo-with-lease.sh cargo component build --release --target wasm32-wasip2
+    cp target/wasm32-wasip1/release/pipe_peer.wasm tests/wasm-fixtures/pipe-peer.wasm
     bash scripts/build-wasm-python-shim.sh
 
 # Generate an HTML line-coverage report and open it in the browser.

@@ -1093,6 +1093,19 @@ impl PlexiApp {
                         ),
                     }
                 }
+                ViewCommand::CloseDirectedPipe {
+                    sender_pane_id,
+                    generation,
+                    emitter,
+                } => {
+                    let Some(closer) = emitter else {
+                        log::warn!(
+                            "CloseDirectedPipe: close of connection {generation} from pane {sender_pane_id} was never drained; dropping"
+                        );
+                        continue;
+                    };
+                    self.close_directed_pipe(closer, generation);
+                }
                 ViewCommand::OpenDirectedPipe {
                     sender_pane_id,
                     request_id,
@@ -1606,6 +1619,13 @@ impl PlexiApp {
                             emitter: Some(emitter),
                         });
                     }
+                    ViewCommand::CloseDirectedPipe { generation, .. } => {
+                        deferred.push(ViewCommand::CloseDirectedPipe {
+                            sender_pane_id: pane_id,
+                            generation,
+                            emitter: Some(emitter),
+                        });
+                    }
                     ViewCommand::OpenDirectedPipe {
                         request_id,
                         pipe_id,
@@ -1868,6 +1888,50 @@ impl PlexiApp {
                 crate::protocol::PipeCloseReason::Moved,
             );
         }
+    }
+
+    /// End connection `generation` because its end `closer` closed it. A
+    /// view that is not an end, or a connection already retired, changes
+    /// nothing. The other end is told; the closer already dropped its own
+    /// handle.
+    fn close_directed_pipe(
+        &mut self,
+        closer: crate::app::view_trait::ViewEmitter,
+        generation: u64,
+    ) {
+        let Some(plugin_id) = self
+            .view_instance_mut(closer)
+            .map(|view| view.manifest_id.clone())
+        else {
+            log::warn!("CloseDirectedPipe: {closer:?} has ended; connection {generation} left to its retirement");
+            return;
+        };
+        let is_end = self
+            .directed_pipes
+            .get(generation)
+            .is_some_and(|pipe| pipe.has_end(closer));
+        let Some(pipe) = is_end
+            .then(|| self.directed_pipes.revoke(generation))
+            .flatten()
+        else {
+            log::warn!(
+                "CloseDirectedPipe: {closer:?} is not an end of live connection {generation}; nothing to close"
+            );
+            return;
+        };
+        let tell: Vec<_> = pipe
+            .peer_of(closer)
+            .filter(|peer| *peer != closer)
+            .into_iter()
+            .collect();
+        self.end_directed_pipe(
+            generation,
+            pipe,
+            closer,
+            &plugin_id,
+            &tell,
+            crate::protocol::PipeCloseReason::PeerClosed,
+        );
     }
 
     /// Every view instance in a pane slot, visible or covered by an overlay,

@@ -17656,12 +17656,20 @@ fn real_python_apps_open_and_exchange_directed_pipe_end_to_end() {
 /// A real `ViewRuntime::Wasm` view built from the sysmon fixture, placed in
 /// `windows[win_idx]`.
 fn add_wasm_pipe_pane(h: &mut HostHarness, win_idx: usize) -> u64 {
+    let pane_id = h.app.host.alloc_pane_id();
+    insert_wasm_fixture_pane(h, win_idx, pane_id, "sysmon");
+    pane_id
+}
+
+/// Install fixture `tests/wasm-fixtures/<fixture>.wasm`, with the state and
+/// pipes imports linked, as a view in slot `pane_id` of `windows[win_idx]`.
+fn insert_wasm_fixture_pane(h: &mut HostHarness, win_idx: usize, pane_id: u64, fixture: &str) {
     use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
     use crate::host::wasm_view::{Grants, StateStore, WasmView};
     let wasm_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/wasm-fixtures/sysmon.wasm");
+        .join(format!("tests/wasm-fixtures/{fixture}.wasm"));
     let app = WasmView::load_with_grants(
-        "sysmon",
+        fixture,
         &wasm_path,
         StateStore::ephemeral(),
         Grants {
@@ -17670,16 +17678,15 @@ fn add_wasm_pipe_pane(h: &mut HostHarness, win_idx: usize) -> u64 {
             ..Grants::default()
         },
     )
-    .expect("load sysmon wasm fixture");
+    .unwrap_or_else(|error| panic!("load {fixture} wasm fixture: {error}"));
     let pane = WasmPane::new(app, Box::new(SysinfoStats::new()));
     let mut live = LiveWasmPane::new(
         pane,
-        "sysmon",
+        fixture,
         StateStore::ephemeral().snapshot(),
         Vec::new(),
         wasm_path,
     );
-    let pane_id = h.app.host.alloc_pane_id();
     live.set_pane_id(pane_id);
     live.set_context_id(h.app.windows[win_idx].context_id);
     h.app.windows[win_idx]
@@ -17693,8 +17700,8 @@ fn add_wasm_pipe_pane(h: &mut HostHarness, win_idx: usize) -> u64 {
                 runtime: crate::host::pane::ViewRuntime::Wasm(Box::new(live)),
                 workspace_root: std::env::temp_dir(),
                 permissions: crate::app::permissions::PluginPermissions::default(),
-                manifest_id: "sysmon".to_string(),
-                name: "sysmon".to_string(),
+                manifest_id: fixture.to_string(),
+                name: fixture.to_string(),
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
@@ -17705,7 +17712,6 @@ fn add_wasm_pipe_pane(h: &mut HostHarness, win_idx: usize) -> u64 {
         )
         .unwrap();
     let _ = h.app.windows[win_idx].tree.tiles.insert_pane(pane_id);
-    pane_id
 }
 
 fn wasm_runtime(h: &mut HostHarness, pane_id: u64) -> &mut crate::host::wasm_pane::LiveWasmPane {
@@ -17756,7 +17762,7 @@ fn an_open_one_end_cannot_register_is_refused_and_rolled_back() {
             .expect("view")
             .incarnation,
     };
-    // A WASM guest cannot emit an open yet; hand the drained command to the
+    // The guests are not run here; hand the drained command to the
     // dispatcher the way the drain would.
     h.app.overlay_held_cmds = vec![crate::app::view_trait::ViewCommand::OpenDirectedPipe {
         sender_pane_id: opener,
@@ -17776,6 +17782,159 @@ fn an_open_one_end_cannot_register_is_refused_and_rolled_back() {
     target_runtime
         .send_binary_for_test(binary, vec![9])
         .expect("the target's binary pipe still takes frames");
+}
+
+/// A Python directed-pipe peer: it opens `py-to-wasm` to the pane in
+/// `args[0]` and sends by name before the answer, echoes every message that
+/// is not itself an echo on the handle it arrived on, and titles itself with
+/// the last message it received.
+fn write_python_pipe_peer_plugin(dir: &std::path::Path) {
+    std::fs::write(
+        dir.join("manifest.toml"),
+        "schema_version = 2\n\n[plugin]\nid = \"py-pipe-peer\"\nname = \"Python Pipe Peer\"\nversion = \"0.1.0\"\ndescription = \"stint 1681 Python end of a Python-WASM directed pipe\"\n\n[plugin.capabilities]\ncapabilities = [\"pipe.open\"]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"py-pipe-peer.main\"\ndefault = true\n",
+    )
+    .expect("write python peer manifest.toml");
+    std::fs::write(
+        dir.join("main.py"),
+        "import json\n\
+         from plexi_sdk.effects import PipeOpenDirected, PipeSend, SetTitle\n\
+         from plexi_sdk.events import PipeMessage\n\
+         from plexi_sdk.ui import Column\n\n\
+         def init(size, args):\n\
+         \x20   return [\n\
+         \x20       SetTitle(\"py:ready\"),\n\
+         \x20       PipeOpenDirected(\"py-to-wasm\", int(args[0])),\n\
+         \x20       PipeSend(\"py-to-wasm\", {\"msg\": \"from-py\"}),\n\
+         \x20   ]\n\n\
+         def update(event):\n\
+         \x20   if not isinstance(event, PipeMessage):\n\
+         \x20       return []\n\
+         \x20   effects = [SetTitle(f\"rx:{event.pipe_id}:{json.dumps(event.data, sort_keys=True)}\")]\n\
+         \x20   if not (isinstance(event.data, dict) and \"echo\" in event.data):\n\
+         \x20       effects.append(PipeSend(event.handle, {\"echo\": event.data}))\n\
+         \x20   return effects\n\n\
+         def view():\n\
+         \x20   return Column([])\n",
+    )
+    .expect("write python peer main.py");
+}
+
+/// Stint 1681 slice 4: a real Python view and a real WASM view
+/// (`plugins/wasm-poc/pipe-peer`, driven over its `ctl` pipe) each open a
+/// directed pipe to the other and exchange messages both ways, the first
+/// Python message riding its open. The WASM guest is refused a name in use,
+/// observes both connections close when the Python view closes, and after
+/// reopening a name has a new handle while the old one is rejected.
+#[test]
+fn python_and_wasm_views_open_exchange_refuse_and_close_directed_pipes() {
+    let python_dir = tempfile::tempdir().expect("python peer dir");
+    write_python_pipe_peer_plugin(python_dir.path());
+    let mut h = HostHarness::new();
+    let win = h.app.active_window;
+    let wasm = h.app.host.alloc_pane_id();
+    let python = h
+        .app
+        .launch_view_by_path_with_layout_no_review_modal(
+            &python_dir.path().to_string_lossy(),
+            None,
+            None,
+            &[wasm.to_string()],
+        )
+        .expect("launch python peer")
+        .expect("python pane id");
+    // Installed after the launch rebuilt the layout; hidden frames only, so
+    // no render pass prunes these tiles.
+    insert_wasm_fixture_pane(&mut h, win, wasm, "pipe-peer");
+    wasm_runtime(&mut h, wasm).init_now_for_test();
+    let (controller, controller_inbox) = add_pipe_test_pane(&mut h, win);
+    let ctl = open_directed_test_pipe(&mut h, controller, &controller_inbox, wasm, "ctl");
+    let logs = |inbox: &std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>| -> Vec<String> {
+        pipe_messages(inbox)
+            .into_iter()
+            .filter(|(generation, _)| *generation == ctl)
+            .filter_map(|(_, payload)| payload.get("log")?.as_str().map(str::to_string))
+            .collect()
+    };
+    let wait = |h: &mut HostHarness, what: &str, done: &dyn Fn(&HostHarness) -> bool| {
+        let start = std::time::Instant::now();
+        while !done(h) {
+            h.run_hidden_frames(1);
+            assert!(
+                start.elapsed()
+                    < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+                "timed out waiting for {what}: wasm logs {:?}, python title {:?}, error {:?}",
+                logs(&controller_inbox),
+                python_pane_title(h, python),
+                python_pane_error(h, python)
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    };
+    let logged = |line: &str| {
+        let line = line.to_string();
+        let inbox = controller_inbox.clone();
+        move |_: &HostHarness| logs(&inbox).contains(&line)
+    };
+    let ctl_command = |h: &mut HostHarness, command: serde_json::Value| {
+        send_on(h, controller, ctl, command);
+    };
+
+    // Python opens to WASM; its first message rides the open.
+    wait(&mut h, "the python open", &logged(&format!("incoming:py-to-wasm:{python}")));
+    wait(&mut h, "the python message", &logged(r#"rx:py-to-wasm:{"msg":"from-py"}"#));
+    wait(&mut h, "the wasm echo at python", &|h| {
+        python_pane_title(h, python).as_deref() == Some(r#"rx:py-to-wasm:{"echo": {"msg": "from-py"}}"#)
+    });
+
+    // WASM opens to Python and sends on the handle the answer carries.
+    ctl_command(&mut h, serde_json::json!({"open": "wasm-to-py", "target": python}));
+    wait(&mut h, "the wasm open", &logged("opened:wasm-to-py"));
+    assert!(logs(&controller_inbox).contains(&"hello:wasm-to-py:ok".to_string()));
+    wait(&mut h, "the python echo at wasm", &logged(r#"rx:wasm-to-py:{"echo":{"msg":"from-wasm"}}"#));
+    assert_eq!(
+        python_pane_title(&h, python).as_deref(),
+        Some(r#"rx:wasm-to-py:{"msg": "from-wasm"}"#)
+    );
+
+    // A name in use between other views is refused.
+    ctl_command(&mut h, serde_json::json!({"open": "py-to-wasm", "target": controller}));
+    wait(&mut h, "the refusal", &logged("refused:py-to-wasm:in_use"));
+
+    // The guest observes both connections close with the Python view.
+    h.app.close_pane_by_id(python);
+    wait(&mut h, "the first close", &logged("closed:py-to-wasm"));
+    wait(&mut h, "the second close", &logged("closed:wasm-to-py"));
+
+    // Reopening the name gives a new handle; the old one is rejected.
+    ctl_command(&mut h, serde_json::json!({"open": "wasm-to-py", "target": controller}));
+    wait(&mut h, "the reopen", &|_| {
+        logs(&controller_inbox)
+            .iter()
+            .filter(|line| *line == "opened:wasm-to-py")
+            .count()
+            == 2
+    });
+    let reopened = pipe_incoming(&controller_inbox)
+        .into_iter()
+        .find(|(name, _, _)| name == "wasm-to-py")
+        .expect("the controller is told of the reopen")
+        .1;
+    wait(&mut h, "the hello on the reopened connection", &|_| {
+        pipe_messages(&controller_inbox)
+            .contains(&(reopened, serde_json::json!({"msg": "from-wasm"})))
+    });
+    ctl_command(&mut h, serde_json::json!({"send_old": "wasm-to-py"}));
+    wait(&mut h, "the stale send's rejection", &|_| {
+        logs(&controller_inbox)
+            .iter()
+            .any(|line| line.starts_with("send_old:wasm-to-py:err:unknown pipe handle"))
+    });
+    assert!(
+        !pipe_messages(&controller_inbox)
+            .iter()
+            .any(|(_, payload)| payload == &serde_json::json!({"msg": "stale"})),
+        "the old handle reached nobody"
+    );
 }
 
 #[test]

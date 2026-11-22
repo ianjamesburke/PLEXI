@@ -119,6 +119,14 @@ pub enum ViewCommand {
         /// The sending view instance, stamped at drain.
         emitter: Option<ViewEmitter>,
     },
+    /// End directed pipe connection `generation` at one end's request: the
+    /// other end is told `PipeClosed { peer_closed }` (stint 1681).
+    CloseDirectedPipe {
+        sender_pane_id: u64,
+        generation: u64,
+        /// The closing view instance, stamped at drain.
+        emitter: Option<ViewEmitter>,
+    },
     /// Request a *directed* JSON pipe (#286) to the view now in
     /// `target_pane_id`. The host answers `request_id` with
     /// `DirectedPipeOpened` or `DirectedPipeOpenRefused` (stint 1681).
@@ -263,6 +271,7 @@ impl ViewCommand {
             Self::ForwardPaneRequest { .. } => "ForwardPaneRequest",
             Self::CdRequest { .. } => "CdRequest",
             Self::DeliverPipeMessage { .. } => "DeliverPipeMessage",
+            Self::CloseDirectedPipe { .. } => "CloseDirectedPipe",
             Self::OpenDirectedPipe { .. } => "OpenDirectedPipe",
             Self::DeliverRunUpdate { .. } => "DeliverRunUpdate",
             Self::ShowNotification { .. } => "ShowNotification",

@@ -16,7 +16,7 @@
 // u32 ID, breaking recursive type constraints while enabling O(n) structural
 // diffing in the host.
 
-package plexi:platform@0.4.0;
+package plexi:platform@0.5.0;
 
 
 // ─── Shared Types ─────────────────────────────────────────────────────────────
@@ -146,6 +146,29 @@ interface types {
         json(string),
     }
 
+    // Answers to pipes.open-directed: `request` is the number it returned.
+    // An accepted open's `handle` carries that one connection until
+    // pipe-closed(handle).
+    record pipe-opened-event {
+        request: u32,
+        handle: u32,
+    }
+
+    // `reason`: denied, no_target, not_a_plugin, out_of_reach, in_use or
+    // name_conflict. Nothing was opened.
+    record pipe-open-refused-event {
+        request: u32,
+        reason: string,
+    }
+
+    // The view in pane `peer-pane` opened directed pipe `id` to this plugin
+    // as connection `handle`. Arrives before the connection's first message.
+    record pipe-incoming-event {
+        handle: u32,
+        id: string,
+        peer-pane: u64,
+    }
+
     variant input-event {
         // User input
         key(key-event),
@@ -187,6 +210,9 @@ interface types {
         pipe-peer-connected(u32),
         pipe-closed(u32),
         pipe-error(tuple<u32, string>),
+        pipe-opened(pipe-opened-event),
+        pipe-open-refused(pipe-open-refused-event),
+        pipe-incoming(pipe-incoming-event),
 
         // Capability
         capability-granted(string),
@@ -774,8 +800,10 @@ interface audio-rt-process {
 //
 // WASM interface to the existing TypedPipeRegistry in src/host/typed_pipes.rs.
 // Binary pipes: Unix socket + u32-BE length-prefixed frames + ArrayQueue ring.
-// JSON pipes: metadata only, routed through the WIT event stream.
-// Pipe messages arrive as input-event::pipe-message in the normal update() loop.
+// JSON pipes: directed connections between two views, opened with
+// open-directed. Each connection has its own handle for its whole lifetime;
+// a reopen of the same id is a new connection with a new handle. Messages
+// arrive as input-event::pipe-message in the normal update() loop.
 // Capability: "pipes:open" (required to import this interface).
 
 interface pipes {
@@ -798,10 +826,19 @@ interface pipes {
     // Returns an error if the ring is full (overrun) — app should drop the frame.
     send-binary: func(handle: pipe-handle, payload: list<u8>) -> result<_, string>;
 
-    // Send a JSON message on a JSON pipe (routed through WIT event stream).
+    // Ask the host for a directed duplex JSON pipe named `id` to the view in
+    // pane `target-pane`. Returns a request number the host answers with
+    // input-event::pipe-opened or input-event::pipe-open-refused; the target
+    // gets input-event::pipe-incoming.
+    open-directed: func(id: string, target-pane: u64) -> result<u32, string>;
+
+    // Send a JSON message to the other end of the directed connection
+    // `handle` carries. A handle whose connection closed is rejected.
     send-json: func(handle: pipe-handle, json: string) -> result<_, string>;
 
-    // Close the pipe and free host resources.
+    // Close the pipe and free host resources. Closing a directed
+    // connection's handle ends the connection; the other end gets
+    // input-event::pipe-closed.
     close: func(handle: pipe-handle) -> result<_, string>;
 
     // Returns true if the pipe has a connected peer (binary) or a registered
