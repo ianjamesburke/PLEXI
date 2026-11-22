@@ -347,13 +347,7 @@ impl PlexiApp {
                 &mut env,
                 shell::secret_env(grant.secrets.directory.as_deref(), secrets),
             );
-            // A pane always starts in a directory admission chose: the launch's
-            // (which must be enterable, or the spawn fails), else its context
-            // root when that exists, else the account home; never the host
-            // process's own cwd (stint 1682).
-            let cwd = cwd
-                .or_else(|| context.root.clone().filter(|root| root.is_dir()))
-                .unwrap_or_else(|| base.home().to_path_buf());
+            let cwd = pane_start_dir(pane_id, cwd.or_else(|| context.root.clone()), base.home());
             (shell_path, env, Some(cwd))
         };
         #[cfg(windows)]
@@ -411,6 +405,34 @@ impl PlexiApp {
         )?;
         pane.ephemeral |= ephemeral;
         Ok(pane)
+    }
+}
+
+/// Where a Unix pane starts (stint 1682): the admitted directory (the
+/// launch's, else its context root), else the account home; never the host
+/// process's own cwd. An admitted directory that no longer exists (a deleted
+/// context root) still gets the user a terminal, in the account home, with a
+/// warning naming the missing directory. One that exists but cannot be
+/// entered is passed on, and the spawn fails with that error.
+#[cfg(unix)]
+fn pane_start_dir(
+    pane_id: u64,
+    admitted: Option<std::path::PathBuf>,
+    home: &std::path::Path,
+) -> std::path::PathBuf {
+    match admitted {
+        Some(dir) => match std::fs::symlink_metadata(&dir) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                log::warn!(
+                    "construct_terminal: pane {pane_id} admitted directory {} does not exist; starting in the account home {}",
+                    dir.display(),
+                    home.display()
+                );
+                home.to_path_buf()
+            }
+            _ => dir,
+        },
+        None => home.to_path_buf(),
     }
 }
 
@@ -635,5 +657,31 @@ mod tests {
                 "{name} missing: {seen:?}"
             );
         }
+    }
+    /// Stint 1682: a pane whose admitted directory (a launch cwd or a context
+    /// root) was deleted still opens, in the account home, with a warning
+    /// naming the missing directory; one that exists is used as admitted,
+    /// even if it cannot be entered (the spawn then fails with that error);
+    /// none at all means the account home, never the host's own cwd.
+    #[test]
+    fn a_deleted_admitted_directory_starts_the_pane_in_the_account_home() {
+        let logs = crate::testing::test_log::capture();
+        let home = std::path::Path::new("/account/home-1682");
+        let gone = tempfile::tempdir().unwrap().path().join("deleted-root");
+        assert_eq!(pane_start_dir(1, Some(gone.clone()), home), home);
+        assert!(
+            logs.records()
+                .iter()
+                .any(|(level, line)| *level == log::Level::Warn
+                    && line.contains(&gone.display().to_string())
+                    && line.contains("does not exist")),
+            "the missing directory is named in a warning"
+        );
+        let present = tempfile::tempdir().unwrap();
+        assert_eq!(
+            pane_start_dir(2, Some(present.path().to_path_buf()), home),
+            present.path()
+        );
+        assert_eq!(pane_start_dir(3, None, home), home);
     }
 }

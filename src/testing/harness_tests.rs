@@ -11501,14 +11501,11 @@ mod routine_firing {
         });
         let win_idx = h.app.windows.len() - 1;
         add_focused_view_pane(h, win_idx, root);
-        // Anchored beside (not at) the routines root: tick_scheduler scans
-        // every context root, and this context must not load them. It exists:
-        // a pane starts in its context root or fails to spawn (stint 1682).
-        let anchor = root.join("no-routines-anchor");
-        std::fs::create_dir_all(&anchor).expect("context root");
         h.app.router.push(Context {
             name: name.to_string().into(),
-            root: anchor,
+            // Anchored beside (not at) the routines root: tick_scheduler
+            // scans every context root, and this context must not load them.
+            root: root.join("no-routines-anchor"),
             description: None,
             context_id: ctx_id,
             parent_id: None,
