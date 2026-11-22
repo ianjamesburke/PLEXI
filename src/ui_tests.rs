@@ -7882,6 +7882,115 @@ open(out + ".done", "w").close()
             .expect("render keyboard fixture");
     }
 
+    /// Window drag-resize workload (stint 1224): four real PTYs with 10,000
+    /// coloured scrollback lines each, 120 frames of a changing window size.
+    /// Run alone with PLEXI_UI_PROFILE=1 and --nocapture; prints ranked spans.
+    #[test]
+    #[ignore = "requires-pty: resize profiling workload"]
+    fn profile_four_terminal_window_resize() {
+        assert!(
+            crate::platform::ui_profile::enabled(),
+            "run with PLEXI_UI_PROFILE=1"
+        );
+        egui_term::set_span_hook(crate::platform::ui_profile::note_nanos);
+        let mut h = PlexiUiHarness::new_sized(1600.0, 1000.0);
+        h.step();
+        let ids: Vec<PaneId> = h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let root = app.router.active().root.clone();
+            let ids: Vec<PaneId> = (0..4)
+                .map(|_| {
+                    let id = app.host.alloc_pane_id();
+                    let terminal = crate::host::pane::TerminalPane::fixture(
+                        id,
+                        app.ctx.clone(),
+                        app.pty_event_tx.clone(),
+                        egui_term::BackendSettings {
+                            shell: "/bin/sh".into(),
+                            args: vec![
+                                "-c".into(),
+                                r#"i=0; while [ $i -lt 10000 ]; do printf '\033[38;2;70;75;90mresize-profile-%05d The quick brown fox jumps over the lazy dog.\r\n' "$i"; i=$((i+1)); done; printf '\033[0mRESIZE_SEED_DONE\r\n'; exec /bin/cat"#.into(),
+                            ],
+                            working_directory: Some(root.clone()),
+                            ..Default::default()
+                        },
+                        14.0,
+                    )
+                    .expect("spawn resize fixture terminal");
+                    app.windows[app.active_window]
+                        .panes
+                        .insert(id, Pane::Terminal(Box::new(terminal)))
+                        .expect("insert resize fixture pane");
+                    id
+                })
+                .collect();
+            let context = app.router.active().context_id;
+            app.set_context_columns(context, vec![vec![ids[0], ids[1]], vec![ids[2], ids[3]]]);
+            ids
+        });
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(60));
+        loop {
+            h.step();
+            let seeded = h.with_app_mut(|app| {
+                ids.iter().all(|id| {
+                    app.windows[app.active_window]
+                        .panes
+                        .get_mut(id)
+                        .and_then(|p| p.as_terminal_mut())
+                        .is_some_and(|t| {
+                            t.backend
+                                .capture_lines(4)
+                                .iter()
+                                .any(|line| line.contains("RESIZE_SEED_DONE"))
+                        })
+                })
+            });
+            if seeded {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "PTY fixture did not finish seeding"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        h.run_steps(10);
+        let commits = |h: &PlexiUiHarness| -> Vec<u64> {
+            h.with_app(|app| {
+                ids.iter()
+                    .map(|id| {
+                        app.windows[app.active_window].panes[id]
+                            .as_terminal()
+                            .unwrap()
+                            .backend
+                            .resize_commits()
+                    })
+                    .collect()
+            })
+        };
+        let before = commits(&h);
+        let mut saves = 0usize;
+        crate::platform::ui_profile::reset_measurement();
+        for frame in 0..120u32 {
+            h.harness().set_size(egui::vec2(
+                1600.0 - (frame % 60) as f32 * 8.0,
+                1000.0 - (frame % 60) as f32 * 3.0,
+            ));
+            let save_before = h.with_app(|app| app.last_workspace_save);
+            h.step();
+            saves += usize::from(h.with_app(|app| app.last_workspace_save != save_before));
+        }
+        let per_pane: Vec<u64> = commits(&h)
+            .iter()
+            .zip(&before)
+            .map(|(a, b)| a - b)
+            .collect();
+        println!(
+            "RESIZE_MEASUREMENT frames=120 panes=4 resize_commits={per_pane:?} workspace_saves={saves}"
+        );
+        crate::platform::ui_profile::print_measurement();
+    }
+
     /// Visual review for the terminal reflow debounce (stint 0719). The
     /// debounce holds a resize while the layout is still moving and commits
     /// once the drag settles, so the pixel risk is a *stranded* commit: a
@@ -7923,12 +8032,16 @@ open(out + ".done", "w").close()
         seed_wrapping_text(&mut h, &terminals);
 
         // Drag the window edge in: one frame per intermediate width, exactly
-        // as winit reports a live resize.
+        // as winit reports a live resize. Terminals settle on elapsed time, so
+        // the drag runs on the resize clock, not this machine's frame rate.
+        h.with_app_mut(|app| app.resize_clock.set(Instant::now()));
         for step in 1..=6 {
+            h.with_app_mut(|app| app.resize_clock.advance(Duration::from_millis(16)));
             h.harness()
                 .set_size(egui::vec2(START_W - step as f32 * 60.0, HEIGHT));
             h.step();
         }
+        h.with_app_mut(|app| app.resize_clock.advance(egui_term::RESIZE_SETTLE));
         h.run_steps(4);
 
         let widest_after = h.with_app_mut(|app| max_terminal_cols(app, &visible_terminals));

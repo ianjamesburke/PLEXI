@@ -44,6 +44,7 @@ use std::ops::{Index, RangeInclusive};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub type TerminalMode = TermMode;
 pub type SelectionType = AlacrittySelectionType;
@@ -167,26 +168,45 @@ pub enum LinkAction {
     Open,
 }
 
-/// What [`TerminalBackend::request_resize`] did with a frame's layout geometry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResizeOutcome {
-    /// The cell grid is already what the shell has; nothing was sent.
-    Unchanged,
-    /// The geometry changed this frame and is being held for the trailing edge
-    /// of the drag. The caller must schedule another frame so the commit
-    /// cannot be stranded by a gesture that ends between frames.
-    Deferred,
-    /// `SIGWINCH` and the grid reflow ran for this geometry.
-    Committed,
+/// How long a desired size must hold still before it is committed. Longer
+/// than the gap between live-resize steps at 60 Hz or faster, so it elapses
+/// only once a drag pauses or ends.
+pub const RESIZE_SETTLE: Duration = Duration::from_millis(50);
+
+/// Longest a desired size may wait for a commit while it keeps changing, so
+/// the grid tracks a long drag instead of freezing at its pre-drag size.
+pub const RESIZE_MAX_HOLD: Duration = Duration::from_millis(130);
+
+/// The delay to hand `request_repaint_after` for a size due in `due_in`.
+/// egui subtracts the predicted frame time from every delay, so a size due now
+/// must still ask for a pass one frame out, or it becomes an immediate repaint
+/// at the same size.
+pub fn resize_wake_delay(due_in: Duration, predicted_dt: f32) -> Duration {
+    let frame = Duration::from_secs_f32(predicted_dt);
+    due_in.max(frame) + frame
 }
 
-/// Longest run of consecutive frames a pending resize may be held back. A drag
-/// that reports a new size on literally every frame never produces the stable
-/// frame the debounce waits for, so without a cap the grid would stay frozen
-/// at its pre-drag size for the entire gesture. The cap turns that into a
-/// bounded one-reflow-per-`MAX_DEFERRED_RESIZE_FRAMES` and keeps the visible
-/// grid tracking a long drag.
-const MAX_DEFERRED_RESIZE_FRAMES: u32 = 8;
+/// Where a held size stands at a given instant. See
+/// [`TerminalBackend::held_resize`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldResize {
+    /// Not due yet; due after this long unless the size changes.
+    Waiting(Duration),
+    /// The size stopped changing, or this is the terminal's first layout.
+    Settled,
+    /// Still changing and held for [`RESIZE_MAX_HOLD`]. The host commits one
+    /// such terminal per pass, the one with the oldest `held_since`.
+    OverHeld { held_since: Instant },
+}
+
+impl HeldResize {
+    fn due_in(self) -> Duration {
+        match self {
+            Self::Waiting(delay) => delay,
+            Self::Settled | Self::OverHeld { .. } => Duration::ZERO,
+        }
+    }
+}
 
 /// The cell grid a layout implies. Cell dimensions are part of it because a
 /// font-size change reflows the shell exactly like a pane-size change does.
@@ -225,14 +245,40 @@ impl ResizeGeometry {
     }
 }
 
-/// Geometry seen on a frame but not yet committed. See
-/// [`TerminalBackend::request_resize`].
+/// The size the layout wants and the terminal does not have yet.
 #[derive(Debug, Clone, Copy)]
 struct PendingResize {
     geometry: ResizeGeometry,
-    /// Consecutive frames the reflow has been held back, including the frame
-    /// that produced this record.
-    deferred_frames: u32,
+    /// The pixel layout, which must hold still too: a slow drag keeps the
+    /// same cell grid for several frames while the pane is still moving, and
+    /// committing on that grid match reflows mid-drag (stint 1224).
+    layout_size: Size,
+    /// When the desired size last changed. A repeat observation of the same
+    /// size does not move it, so extra passes cannot make a size look settled.
+    changed_at: Instant,
+    /// When this size first differed from the committed one.
+    held_since: Instant,
+}
+
+impl PendingResize {
+    fn status(&self, first_layout: bool, now: Instant) -> HeldResize {
+        if first_layout {
+            return HeldResize::Settled;
+        }
+        let settle = RESIZE_SETTLE
+            .saturating_sub(now.saturating_duration_since(self.changed_at));
+        if settle.is_zero() {
+            return HeldResize::Settled;
+        }
+        let hold = RESIZE_MAX_HOLD
+            .saturating_sub(now.saturating_duration_since(self.held_since));
+        if hold.is_zero() {
+            return HeldResize::OverHeld {
+                held_since: self.held_since,
+            };
+        }
+        HeldResize::Waiting(settle.min(hold))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -326,9 +372,10 @@ pub struct TerminalBackend {
     /// the host can end them when the pane loses the keyboard whether or not
     /// it is rendered (`release_held_keys`).
     pub(crate) keyboard: crate::keyboard::KeyboardEncoder,
-    /// Layout geometry seen but not yet committed, held by the frame-stability
-    /// debounce in [`Self::request_resize`].
+    /// The size the layout wants, until the host commits it.
     pending_resize: Option<PendingResize>,
+    /// When a resize last reached the PTY.
+    last_resize_commit_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -537,6 +584,7 @@ impl TerminalBackend {
             resize_commits: 0,
             keyboard: crate::keyboard::KeyboardEncoder::default(),
             pending_resize: None,
+            last_resize_commit_at: None,
         })
     }
 
@@ -1177,38 +1225,20 @@ impl TerminalBackend {
         }
     }
 
-    /// Ask the terminal to adopt this frame's layout geometry.
-    ///
-    /// The render pass calls this once per frame per visible terminal, so it is
-    /// the frequency gate for the whole reflow path: committing means a PTY
-    /// `SIGWINCH` plus an alacritty grid reflow whose cost scales with
-    /// scrollback, all synchronous inside the host's `ui` pass. During a
-    /// pane-divider or window-edge drag the geometry changes on every
-    /// intermediate frame, so committing each one stutters the drag for every
-    /// visible pane at once (stint 0719).
-    ///
-    /// Geometry is therefore held until it stops moving: a change is recorded
-    /// as pending and only committed once a later frame reports the *same*
-    /// geometry — the trailing edge of the drag. A `Deferred` outcome obliges
-    /// the caller to schedule another frame, otherwise a drag that ends between
-    /// frames would strand the last size.
-    ///
-    /// `immediate` opts a frame out of the debounce for a *discrete* layout
-    /// jump (a column scrolling into view, a tile swapped in): the new
-    /// geometry is already final, so deferring it only paints one frame of the
-    /// stale grid inside the new rect.
-    pub fn request_resize(
+    /// Record the size this frame's layout wants. Paint only reports: the
+    /// commit happens in the host's logic pass, on [`Self::held_resize`].
+    pub fn observe_layout(
         &mut self,
         layout_size: Size,
         font_size: Size,
-        immediate: bool,
-    ) -> ResizeOutcome {
+        now: Instant,
+    ) {
         let Some(geometry) = ResizeGeometry::derive(layout_size, font_size)
         else {
             // Degenerate layout (zero rows or columns): there is no grid to
             // give the shell, and a pending one would be equally meaningless.
             self.pending_resize = None;
-            return ResizeOutcome::Unchanged;
+            return;
         };
 
         if geometry == ResizeGeometry::of(&self.size) {
@@ -1216,41 +1246,71 @@ impl TerminalBackend {
             // but the shell's view of the world has not changed.
             self.pending_resize = None;
             self.size.layout_size = layout_size;
-            return ResizeOutcome::Unchanged;
+            return;
         }
 
-        let held = self.pending_resize.take();
-        let settled = held.is_some_and(|pending| pending.geometry == geometry);
-        let deferred_frames =
-            held.map_or(0, |pending| pending.deferred_frames) + 1;
-
-        if !immediate && !settled && deferred_frames < MAX_DEFERRED_RESIZE_FRAMES {
-            self.pending_resize = Some(PendingResize {
-                geometry,
-                deferred_frames,
-            });
-            return ResizeOutcome::Deferred;
-        }
-
-        log::info!(
-            "terminal {} resize commit: {}x{} cells, {} frame(s) coalesced ({})",
-            self.id,
-            geometry.cols,
-            geometry.lines,
-            deferred_frames - 1,
-            if immediate {
-                "immediate"
-            } else if settled {
-                "layout settled"
-            } else {
-                "defer cap reached"
+        self.pending_resize = Some(match self.pending_resize {
+            Some(pending)
+                if pending.geometry == geometry
+                    && pending.layout_size == layout_size =>
+            {
+                pending
             },
-        );
+            Some(pending) => PendingResize {
+                geometry,
+                layout_size,
+                changed_at: now,
+                held_since: pending.held_since,
+            },
+            None => PendingResize {
+                geometry,
+                layout_size,
+                changed_at: now,
+                held_since: now,
+            },
+        });
+    }
 
+    /// Where the held size stands at `now`; `None` when nothing is held.
+    pub fn held_resize(&self, now: Instant) -> Option<HeldResize> {
+        self.pending_resize
+            .map(|pending| pending.status(self.resize_commits == 0, now))
+    }
+
+    /// How long until the held size is due; `None` when nothing is held.
+    pub fn resize_due_in(&self, now: Instant) -> Option<Duration> {
+        self.held_resize(now).map(HeldResize::due_in)
+    }
+
+    /// Commit the held size: the only path to `SIGWINCH`. `clock` is read
+    /// once this terminal's lock is held, so the quiet window its program's
+    /// redraw falls in starts when the resize actually reaches it, however
+    /// long earlier reflows or the lock took. Returns whether a resize was
+    /// committed.
+    pub fn commit_held_resize(
+        &mut self,
+        clock: impl FnOnce() -> Instant,
+    ) -> bool {
+        let Some(pending) = self.pending_resize.take() else {
+            return false;
+        };
         let term = self.term.clone();
         let mut term = term.lock();
-        self.commit_resize(&mut term, layout_size, geometry);
-        ResizeOutcome::Committed
+        let now = clock();
+        log::info!(
+            "terminal {} resize commit: {}x{} cells, held {}ms",
+            self.id,
+            pending.geometry.cols,
+            pending.geometry.lines,
+            now.saturating_duration_since(pending.held_since).as_millis(),
+        );
+        self.commit_resize(&mut term, pending.layout_size, pending.geometry, now);
+        true
+    }
+
+    /// When a resize last reached the PTY.
+    pub fn last_resize_commit_at(&self) -> Option<Instant> {
+        self.last_resize_commit_at
     }
 
     fn commit_resize(
@@ -1258,6 +1318,7 @@ impl TerminalBackend {
         terminal: &mut Term<EventProxy>,
         layout_size: Size,
         geometry: ResizeGeometry,
+        now: Instant,
     ) {
         self.size = TerminalSize {
             layout_size,
@@ -1268,6 +1329,7 @@ impl TerminalBackend {
         };
         *self.shared_size.lock().unwrap() = self.size;
         self.resize_commits += 1;
+        self.last_resize_commit_at = Some(now);
 
         self.notifier.on_resize(self.size.into());
         terminal.resize(TermSize::new(
@@ -1736,6 +1798,113 @@ pub struct EventProxy(mpsc::Sender<Event>);
 impl EventListener for EventProxy {
     fn send_event(&self, event: Event) {
         let _ = self.0.send(event.clone());
+    }
+}
+
+#[cfg(test)]
+mod held_resize_tests {
+    use super::*;
+
+    fn pending(at: Instant) -> PendingResize {
+        PendingResize {
+            geometry: ResizeGeometry {
+                lines: 24,
+                cols: 80,
+                cell_height: 16,
+                cell_width: 8,
+            },
+            layout_size: Size::default(),
+            changed_at: at,
+            held_since: at,
+        }
+    }
+
+    #[test]
+    fn repeated_observations_inside_the_settle_are_never_due() {
+        let t0 = Instant::now();
+        let held = pending(t0);
+        for ms in [0, 1, 16, 33, 49] {
+            let now = t0 + Duration::from_millis(ms);
+            assert_eq!(
+                held.status(false, now),
+                HeldResize::Waiting(RESIZE_SETTLE - Duration::from_millis(ms))
+            );
+        }
+        assert_eq!(held.status(false, t0 + RESIZE_SETTLE), HeldResize::Settled);
+    }
+
+    #[test]
+    fn a_changed_size_resets_the_settle_but_not_the_hold() {
+        let t0 = Instant::now();
+        let changed = t0 + Duration::from_millis(40);
+        let held = PendingResize {
+            changed_at: changed,
+            ..pending(t0)
+        };
+        assert_eq!(
+            held.status(false, t0 + RESIZE_SETTLE),
+            HeldResize::Waiting(Duration::from_millis(40))
+        );
+    }
+
+    #[test]
+    fn continuous_change_is_due_at_the_max_hold() {
+        let t0 = Instant::now();
+        let now = t0 + RESIZE_MAX_HOLD;
+        let held = PendingResize {
+            changed_at: now - Duration::from_millis(1),
+            ..pending(t0)
+        };
+        assert_eq!(
+            held.status(false, now),
+            HeldResize::OverHeld { held_since: t0 }
+        );
+    }
+
+    #[test]
+    fn a_size_due_now_still_wakes_one_frame_out() {
+        let frame = 1.0 / 60.0;
+        let after_egui = |due| {
+            resize_wake_delay(due, frame)
+                .saturating_sub(Duration::from_secs_f32(frame))
+        };
+        assert_eq!(after_egui(Duration::ZERO), Duration::from_secs_f32(frame));
+        assert_eq!(after_egui(RESIZE_SETTLE), RESIZE_SETTLE);
+    }
+
+    #[test]
+    fn the_commit_stamp_is_taken_with_the_terminal_lock_held() {
+        let (tx, _rx) = mpsc::channel();
+        let settings = crate::BackendSettings {
+            shell: "/bin/sh".to_string(),
+            ..Default::default()
+        };
+        let mut backend =
+            TerminalBackend::new(1, egui::Context::default(), tx, settings)
+                .expect("spawn backend");
+        let now = Instant::now();
+        let font = Size {
+            width: 8.0,
+            height: 16.0,
+        };
+        let layout = Size {
+            width: 640.0,
+            height: 320.0,
+        };
+        backend.observe_layout(layout, font, now);
+        let term = backend.term.clone();
+        let mut lock_held = false;
+        assert!(backend.commit_held_resize(|| {
+            lock_held = term.try_lock_unfair().is_none();
+            now
+        }));
+        assert!(lock_held, "the stamp was read before the lock was acquired");
+    }
+
+    #[test]
+    fn a_first_layout_is_due_at_once() {
+        let t0 = Instant::now();
+        assert_eq!(pending(t0).status(true, t0), HeldResize::Settled);
     }
 }
 

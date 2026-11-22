@@ -16,7 +16,6 @@ use egui::{Id, PointerButton};
 use std::time::{Duration, Instant};
 
 use crate::backend::BackendCommand;
-use crate::backend::ResizeOutcome;
 use crate::backend::TerminalBackend;
 use crate::backend::{LinkAction, MouseButton, SelectionType};
 use crate::bindings::Binding;
@@ -157,7 +156,7 @@ pub struct TerminalView<'a> {
     /// silent fallback is exactly the Cmd+A-steal bug this design removes).
     supplied_input: Option<SuppliedInput>,
     /// Commit a geometry change this frame instead of debouncing it.
-    resize_immediately: bool,
+    resize_now: Instant,
 }
 
 impl Widget for TerminalView<'_> {
@@ -202,7 +201,7 @@ impl<'a> TerminalView<'a> {
             theme: TerminalTheme::default(),
             bindings_layout: BindingsLayout::new(),
             supplied_input: None,
-            resize_immediately: false,
+            resize_now: Instant::now(),
         }
     }
 
@@ -247,11 +246,10 @@ impl<'a> TerminalView<'a> {
         self
     }
 
-    /// Skip the resize debounce for this frame (a discrete layout jump, not a
-    /// drag): the backend commits the new grid before `show` paints.
+    /// The instant this frame's layout is observed at.
     #[inline]
-    pub fn resize_immediately(mut self, immediately: bool) -> Self {
-        self.resize_immediately = immediately;
+    pub fn resize_clock(mut self, now: Instant) -> Self {
+        self.resize_now = now;
         self
     }
 
@@ -271,16 +269,13 @@ impl<'a> TerminalView<'a> {
     }
 
     fn resize(self, layout: &Response) -> Self {
-        // Timed as a whole (stint 0731 drag profiling): a committing frame
-        // takes self.term.lock(), so this captures lock contention with the
-        // PTY reader thread, not just the reflow math. A frame the debounce
-        // defers takes no lock at all, which is most of the win during a drag.
+        // Timed as a whole (stint 0731 drag profiling).
         let timed = crate::diag::span_hook_installed();
-        let start = timed.then(std::time::Instant::now);
-        let outcome = self.backend.request_resize(
+        let start = timed.then(Instant::now);
+        self.backend.observe_layout(
             Size::from(grid_size(layout.rect.size(), self.padding)),
             self.font.font_measure(&layout.ctx),
-            self.resize_immediately,
+            self.resize_now,
         );
         if let Some(start) = start {
             crate::diag::span_note(
@@ -289,12 +284,15 @@ impl<'a> TerminalView<'a> {
             );
         }
 
-        if outcome == ResizeOutcome::Deferred {
-            // The commit runs on the next frame that reports the same
-            // geometry, so a drag that ends between frames must still produce
-            // one more pass — otherwise the final size is stranded and the
-            // shell keeps wrapping to the pre-drag width (stint 0719).
-            layout.ctx.request_repaint();
+        // The host commits this size in `App::logic`, so a drag that ends
+        // between frames must still produce a pass when it comes due. An
+        // immediate request made egui run extra passes at the same size on
+        // every drag step (stint 1224).
+        if let Some(due_in) = self.backend.resize_due_in(self.resize_now) {
+            let predicted = layout.ctx.input(|i| i.predicted_dt);
+            layout
+                .ctx
+                .request_repaint_after(crate::backend::resize_wake_delay(due_in, predicted));
         }
 
         self

@@ -180,6 +180,9 @@ pub struct HostHarness {
     pub last_platform_output: egui::PlatformOutput,
     /// Full output from the most recently completed frame, retained for offscreen render.
     pub last_full_output: Option<egui::FullOutput>,
+    /// When the most recent pass, visible or hidden, asked egui for the next
+    /// one: `Duration::MAX` means an idle host runs no further pass.
+    pub last_repaint_delay: std::time::Duration,
     /// Offscreen renderer for headless screenshots.
     renderer: egui_kittest::LazyRenderer,
     /// Keeps the per-test tempdir alive for the harness lifetime when owned; auto-deletes on drop.
@@ -236,6 +239,7 @@ impl HostHarness {
             ipc_tx,
             last_platform_output: egui::PlatformOutput::default(),
             last_full_output: None,
+            last_repaint_delay: std::time::Duration::MAX,
             renderer: egui_kittest::LazyRenderer::default(),
             _profile_dir: Some(profile_dir),
             profile_path,
@@ -302,6 +306,7 @@ impl HostHarness {
             ipc_tx,
             last_platform_output: egui::PlatformOutput::default(),
             last_full_output: None,
+            last_repaint_delay: std::time::Duration::MAX,
             renderer: egui_kittest::LazyRenderer::default(),
             _profile_dir: None,
             profile_path,
@@ -521,6 +526,7 @@ impl HostHarness {
         use egui_kittest::TestRenderer;
         self.renderer.handle_delta(&full_output.textures_delta);
         self.last_platform_output = full_output.platform_output.clone();
+        self.last_repaint_delay = root_repaint_delay(&full_output);
         self.last_full_output = Some(full_output);
         self
     }
@@ -547,8 +553,27 @@ impl HostHarness {
         let full_output = self.ctx.run_ui(input, |ui| {
             app.logic(ui.ctx(), &mut eframe::Frame::_new_kittest());
         });
+        self.last_repaint_delay = root_repaint_delay(&full_output);
         self.last_platform_output = full_output.platform_output;
         self
+    }
+
+    /// Run hidden passes only when the previous pass scheduled one, sleeping
+    /// its requested delay first: an idle, occluded host with no input. Stops
+    /// when a pass schedules nothing and returns how many passes ran; panics
+    /// past `max_passes`, which means the host never goes idle.
+    pub fn run_scheduled_hidden_frames(&mut self, max_passes: u32) -> u32 {
+        for passes in 0..=max_passes {
+            if self.last_repaint_delay == std::time::Duration::MAX {
+                return passes;
+            }
+            std::thread::sleep(self.last_repaint_delay);
+            self.hidden_frame();
+        }
+        panic!(
+            "host still scheduling passes after {max_passes} (last delay {:?})",
+            self.last_repaint_delay
+        );
     }
 
     /// Run `n` hidden-window passes. See [`Self::hidden_frame`].
@@ -1038,4 +1063,11 @@ mod profile_isolation_tests {
             dir.display()
         );
     }
+}
+
+fn root_repaint_delay(output: &egui::FullOutput) -> std::time::Duration {
+    output
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .map_or(std::time::Duration::MAX, |viewport| viewport.repaint_delay)
 }

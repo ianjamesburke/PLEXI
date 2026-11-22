@@ -140,7 +140,19 @@ impl Painter {
                 .expect("The surface isn't supported by this adapter")
         };
 
-        if let Some(desired_maximum_frame_latency) = config.desired_maximum_frame_latency {
+        // Backport of upstream egui #8229 (eframe 0.35): transaction presentation can hold a
+        // drawable during AppKit live resize. Keep the configured latency normally, but use at
+        // least three Metal drawables while resizing.
+        #[cfg(all(target_os = "macos", feature = "macos-window-resize-jitter-fix"))]
+        let desired_maximum_frame_latency = if surface_state.resizing {
+            Some(config.desired_maximum_frame_latency.unwrap_or(2).max(2))
+        } else {
+            config.desired_maximum_frame_latency
+        };
+        #[cfg(not(all(target_os = "macos", feature = "macos-window-resize-jitter-fix")))]
+        let desired_maximum_frame_latency = config.desired_maximum_frame_latency;
+
+        if let Some(desired_maximum_frame_latency) = desired_maximum_frame_latency {
             surf_config.desired_maximum_frame_latency = desired_maximum_frame_latency;
         }
 
@@ -442,6 +454,10 @@ impl Painter {
             return;
         }
 
+        // Backport of upstream egui #8229: set before reconfiguring so macOS live resize uses
+        // the temporary latency bump in `configure_surface`.
+        state.resizing = resizing;
+
         // Resizing is a bit tricky on macOS.
         // It requires enabling ["present_with_transaction"](https://developer.apple.com/documentation/quartzcore/cametallayer/presentswithtransaction)
         // flag to avoid jittering during the resize. Even though resize jittering on macOS
@@ -467,8 +483,6 @@ impl Painter {
                 }
             }
         }
-
-        state.resizing = resizing;
     }
 
     pub fn on_window_resized(

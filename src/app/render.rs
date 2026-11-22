@@ -42,7 +42,7 @@ impl PlexiApp {
     /// Handles adopted context paths, finder service drains, notification polling,
     /// pane command draining, update channel checks, PTY event draining, and
     /// focus-stack reconciliation.
-    pub(super) fn update_preamble(&mut self, ctx: &egui::Context) {
+    pub(super) fn update_preamble(&mut self, ctx: &egui::Context, drag_active: bool) {
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::PreambleAdoptedContext,
@@ -153,8 +153,11 @@ impl PlexiApp {
             return;
         }
         let now = std::time::Instant::now();
+        // A drag or window resize dirties the workspace every frame; its
+        // synchronous save waits until the gesture has settled.
         if !self.quit_coordinator.is_active()
             && self.workspace_dirty
+            && !drag_active
             && workspace_save_due(self.last_workspace_save, now)
             && self
                 .workspace_save_retry_at
@@ -805,7 +808,7 @@ impl PlexiApp {
                     frame_modifiers: ui.input(|i| i.modifiers),
                     pending_pane_clicks: &mut pending_pane_clicks,
                     off_strip_panes: Default::default(),
-                    strip_layout_jump: false,
+                    resize_now: self.resize_clock.now(),
                     strip_layout: None,
                     resized: false,
                     tile_dropped: false,
@@ -1027,7 +1030,7 @@ impl PlexiApp {
                 }
                 if resized {
                     self.mark_workspace_dirty();
-                    log::info!("pane layout: divider resized window={}", self.windows[self.active_window].window_id);
+                    log::debug!("pane layout: divider resized window={}", self.windows[self.active_window].window_id);
                 }
 
                 let context_id = self.router.active().context_id;

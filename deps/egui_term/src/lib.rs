@@ -21,9 +21,10 @@ mod view;
 pub use backend::settings::BackendSettings;
 pub use backend::tap::{ByteTapHandle, PtyByteTap, TapReader};
 pub use backend::{
-    BackendCommand, PtyEvent, PtyExitStatus, ResizeOutcome, TerminalBackend,
-    TerminalMode,
+    BackendCommand, HeldResize, PtyEvent, PtyExitStatus, TerminalBackend,
+    resize_wake_delay, TerminalMode, RESIZE_MAX_HOLD, RESIZE_SETTLE,
 };
+pub use types::Size;
 #[cfg(unix)]
 pub use backend::{shutdown_panes, ShutdownOutcome, PANE_LIFECYCLE_LOG_TARGET};
 #[cfg(all(unix, any(test, feature = "testing")))]

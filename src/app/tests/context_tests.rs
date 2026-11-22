@@ -1,6 +1,50 @@
 use super::super::*;
 use crate::host::context::Window;
 
+/// Stint 1224: a window resize dirties the workspace every frame; the save
+/// waits for the gesture to settle, then lands on a logic-only pass that the
+/// gesture itself scheduled, with no other input.
+#[test]
+fn live_resize_defers_workspace_flush_until_settled() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![pane]]);
+    h.hidden_frame();
+    let old_save = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    h.app.last_workspace_save = old_save;
+    h.app.workspace_dirty = true;
+    for frame in 0..60 {
+        h.frame(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1276.0 - frame as f32 * 4.0, 800.0),
+            )),
+            ..Default::default()
+        });
+        assert_eq!(
+            h.app.last_workspace_save, old_save,
+            "workspace flush during live resize frame {frame}"
+        );
+        assert!(h.app.workspace_dirty);
+    }
+    // The occluded pass at a new size is the gesture's last resize frame.
+    h.hidden_frame();
+    assert_eq!(h.app.last_workspace_save, old_save);
+    // A same-size pass inside the hold, as a deferring terminal's settle
+    // repaint produces: it supersedes the resize frame's post-hold wake.
+    h.hidden_frame();
+    assert_eq!(h.app.last_workspace_save, old_save);
+    // From here the host is idle: a pass runs only when one was scheduled.
+    // The hold must still end and the deferred save land (Codex round 1).
+    h.run_scheduled_hidden_frames(10);
+    assert!(
+        !h.app.workspace_dirty,
+        "workspace still dirty after the host went idle"
+    );
+    assert!(h.app.last_workspace_save > old_save);
+}
+
 #[test]
 fn failed_workspace_save_remains_dirty_for_retry() {
     let mut h = crate::testing::HostHarness::new();

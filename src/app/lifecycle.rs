@@ -6545,7 +6545,7 @@ impl PlexiApp {
                 .windows
                 .iter_mut()
                 .find_map(|win| win.panes.get_mut(&id))
-                .and_then(crate::host::pane::Pane::as_terminal_mut)
+                .and_then(crate::host::pane::Pane::terminal_incarnation_mut)
             {
                 // Every event stamps send --submit settling; whether it is agent
                 // activity is decided once the batch is drained, from the screen.
@@ -6680,7 +6680,7 @@ impl PlexiApp {
                 .windows
                 .iter_mut()
                 .find_map(|win| win.panes.get_mut(&pane_id))
-                .and_then(crate::host::pane::Pane::as_terminal_mut)
+                .and_then(crate::host::pane::Pane::terminal_incarnation_mut)
             {
                 term.observe_screen_change(now);
             }
