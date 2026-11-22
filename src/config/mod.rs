@@ -2173,8 +2173,8 @@ pub fn config_dir() -> PathBuf {
     }
 }
 
-/// Channel-neutral state directory, always `~/.plexi` regardless of which
-/// channel's binary is running. For state that is global to the machine rather
+/// Channel-neutral state directory, always `<profile root>/.plexi` (`~/.plexi`
+/// for an account profile) regardless of which channel's binary is running. For state that is global to the machine rather
 /// than scoped to a release channel — anything a third party reads by absolute
 /// path, where the last channel to write must not own it. Everything else
 /// belongs in `config_dir()`.
@@ -2197,9 +2197,7 @@ pub fn shared_dir() -> PathBuf {
     }
     #[cfg(not(test))]
     {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(SHARED_DIR_NAME)
+        profile_target::profile_target().root().join(SHARED_DIR_NAME)
     }
 }
 

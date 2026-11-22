@@ -1020,6 +1020,21 @@ fn pr_isolation_active() -> bool {
     // Do not let an outer subprocess-safety override change this fixture.
     let explicit = explicit && compiled.is_none();
     should_use_pr_profile_seal_store(compiled.as_deref(), runtime.as_deref(), explicit)
+        || scratch_root_seal(
+            crate::config::profile_target::profile_target().account_rooted(),
+            explicit,
+        )
+}
+
+/// A scratch `--profile-root` never opens the OS credential store, so its
+/// seal lives in the profile's file store. Only macOS has an explicit seal
+/// keychain file; elsewhere `PLEXI_KEYCHAIN_PATH` selects nothing.
+fn scratch_root_seal(account_rooted: bool, explicit_keychain: bool) -> bool {
+    use crate::workspace::secrets::{credential_domain, CredentialDomain};
+    credential_domain(
+        account_rooted,
+        cfg!(target_os = "macos") && explicit_keychain,
+    ) == CredentialDomain::ScratchProfile
 }
 
 fn backend() -> &'static dyn HostKeyBackend {
@@ -2409,5 +2424,15 @@ mod keychain_override_tests {
             Some("pr-7"),
             true
         ));
+    }
+
+    /// Design 1695 (test 3): only a scratch root without an explicit
+    /// keychain moves the seal into the profile file store.
+    #[test]
+    fn a_scratch_root_seal_never_uses_the_os_store() {
+        assert!(scratch_root_seal(false, false));
+        assert!(!scratch_root_seal(true, false));
+        assert!(!scratch_root_seal(true, true));
+        assert_eq!(scratch_root_seal(false, true), !cfg!(target_os = "macos"));
     }
 }

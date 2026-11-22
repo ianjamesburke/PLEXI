@@ -36,6 +36,7 @@
 
 mod file;
 mod folder;
+mod domain;
 mod folder_store;
 #[cfg(any(test, target_os = "macos"))]
 mod mac_keychain;
@@ -53,6 +54,7 @@ pub(crate) use store::keychain_call_lock;
 pub use store::{DeleteOutcome, NonDestructiveStore, SecretStore};
 #[cfg(all(target_os = "macos", not(test)))]
 pub(crate) use store::keychain_path_override;
+pub(crate) use domain::{credential_domain, CredentialDomain};
 pub(crate) use store::parse_keychain_path;
 
 // Only test code outside this module names these. `SecretError` is named from
@@ -145,17 +147,17 @@ pub fn system_store() -> &'static dyn SecretStore {
     #[cfg(all(target_os = "macos", not(test)))]
     {
         static STORE: store::MacKeychain = store::MacKeychain;
-        &STORE
+        domain::gate(&STORE)
     }
     #[cfg(all(target_os = "linux", not(test)))]
     {
         static STORE: LinuxUserStore = LinuxUserStore;
-        &STORE
+        domain::gate(&STORE)
     }
     #[cfg(all(windows, not(test)))]
     {
         static STORE: store::CredentialManager = store::CredentialManager;
-        &STORE
+        domain::gate(&STORE)
     }
     #[cfg(test)]
     {
@@ -219,7 +221,7 @@ pub fn folder_store() -> &'static dyn SecretStore {
     }
     #[cfg(all(not(test), target_os = "linux"))]
     {
-        folder_store::platform_folder_store()
+        domain::gate(folder_store::platform_folder_store())
     }
     #[cfg(all(not(test), any(target_os = "macos", windows)))]
     {

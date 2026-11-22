@@ -267,3 +267,49 @@ fn a_hosts_inherited_channel_never_reaches_its_panes() {
         "{env}"
     );
 }
+
+/// Design 1695 (test 7): a scratch-root host whose `HOME` is an account-like
+/// sentinel writes its channel-neutral state under the root, never `$HOME`.
+#[test]
+#[ignore = "starts real hosts; run with --ignored"]
+fn shared_state_follows_the_root_not_home() {
+    let sandbox = Sandbox::new();
+    let sentinel = sandbox.path.join("sentinel-home");
+    std::fs::create_dir_all(&sentinel).unwrap();
+    let home = sentinel.to_str().unwrap();
+    let output = sandbox
+        .command("a", &[("HOME", home)])
+        .args([
+            "host",
+            "start",
+            "--background",
+            "--ephemeral",
+            "--timeout-secs",
+            "90",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let hook = sandbox
+        .root("a")
+        .join(".plexi/hooks/claude-code-agent-state.sh");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !hook.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = sandbox
+        .command("a", &[("HOME", home)])
+        .args(["host", "stop"])
+        .output();
+    assert!(hook.is_file(), "the shared hook is not under the root");
+    // The default context's workspace state follows HOME until stint 1682
+    // gives panes and contexts the account home; the shared tier does not.
+    assert!(
+        !sentinel.join(".plexi/hooks").exists(),
+        "shared state reached HOME"
+    );
+}
