@@ -1244,7 +1244,10 @@ impl PlexiApp {
             crate::app::attention_queue::retire_requester_approvals(&panes, Some(*context_id));
         }
         for pane_id in doomed_pane_ids {
-            self.retire_directed_pipes_in_slot(pane_id, crate::protocol::PipeCloseReason::PeerClosed);
+            self.retire_directed_pipes_in_slot(
+                pane_id,
+                crate::protocol::PipeCloseReason::PeerClosed,
+            );
             self.reclaim_pane_worktree(pane_id);
         }
         let doomed: Vec<Window> = {
@@ -1625,7 +1628,10 @@ impl PlexiApp {
             self.record_closed_agent_pane(removed_ws_id, &self.windows[index].path, pane);
         }
         for &pane_id in &pane_ids {
-            self.retire_directed_pipes_in_slot(pane_id, crate::protocol::PipeCloseReason::PeerClosed);
+            self.retire_directed_pipes_in_slot(
+                pane_id,
+                crate::protocol::PipeCloseReason::PeerClosed,
+            );
         }
         let removed_window = self.windows.remove(index);
         log::info!("delete_window: removed window_id={removed_win_id} ctx_id={removed_ws_id}");

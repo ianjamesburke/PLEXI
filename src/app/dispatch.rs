@@ -1119,7 +1119,12 @@ impl PlexiApp {
                         continue;
                     };
                     let Some(target_origin) = self.origin_for_pane(target_pane_id) else {
-                        self.refuse_directed_pipe_open(opener, &request_id, &pipe_id, PipeOpenRefusal::NoTarget);
+                        self.refuse_directed_pipe_open(
+                            opener,
+                            &request_id,
+                            &pipe_id,
+                            PipeOpenRefusal::NoTarget,
+                        );
                         continue;
                     };
                     // A directed pipe is an exclusive channel to ONE named
@@ -1134,7 +1139,12 @@ impl PlexiApp {
                     if crate::host::scope::evaluate_reach(&owner, sender_origin.context_id, None)
                         == crate::host::scope::Reach::Rejected
                     {
-                        self.refuse_directed_pipe_open(opener, &request_id, &pipe_id, PipeOpenRefusal::OutOfReach);
+                        self.refuse_directed_pipe_open(
+                            opener,
+                            &request_id,
+                            &pipe_id,
+                            PipeOpenRefusal::OutOfReach,
+                        );
                         continue;
                     }
                     // The pipe joins the view instance now in the target
@@ -1151,11 +1161,21 @@ impl PlexiApp {
                             }
                         }
                         Some(_) => {
-                            self.refuse_directed_pipe_open(opener, &request_id, &pipe_id, PipeOpenRefusal::NotAPlugin);
+                            self.refuse_directed_pipe_open(
+                                opener,
+                                &request_id,
+                                &pipe_id,
+                                PipeOpenRefusal::NotAPlugin,
+                            );
                             continue;
                         }
                         None => {
-                            self.refuse_directed_pipe_open(opener, &request_id, &pipe_id, PipeOpenRefusal::NoTarget);
+                            self.refuse_directed_pipe_open(
+                                opener,
+                                &request_id,
+                                &pipe_id,
+                                PipeOpenRefusal::NoTarget,
+                            );
                             continue;
                         }
                     };
@@ -1179,10 +1199,17 @@ impl PlexiApp {
                             self.answer_directed_pipe_open(opener, request_id, pipe_id, generation);
                         }
                         crate::app::directed_pipes::OpenCheck::InUse => {
-                            self.refuse_directed_pipe_open(opener, &request_id, &pipe_id, PipeOpenRefusal::InUse);
+                            self.refuse_directed_pipe_open(
+                                opener,
+                                &request_id,
+                                &pipe_id,
+                                PipeOpenRefusal::InUse,
+                            );
                         }
                         crate::app::directed_pipes::OpenCheck::Free => {
-                            self.open_directed_pipe(context_id, opener, target, request_id, pipe_id);
+                            self.open_directed_pipe(
+                                context_id, opener, target, request_id, pipe_id,
+                            );
                         }
                     }
                 }
@@ -1703,12 +1730,13 @@ impl PlexiApp {
         );
         if target != opener {
             if let Some(view) = self.view_instance_mut(target) {
-                view.runtime
-                    .queue_outbound_event(crate::protocol::PlexiEvent::DirectedPipeIncoming {
+                view.runtime.queue_outbound_event(
+                    crate::protocol::PlexiEvent::DirectedPipeIncoming {
                         pipe_id: pipe_id.clone(),
                         generation,
                         peer_pane_id: opener.pane_id,
-                    });
+                    },
+                );
             }
         }
         self.answer_directed_pipe_open(opener, request_id, pipe_id, generation);
@@ -1746,12 +1774,13 @@ impl PlexiApp {
             pipe_id = crate::host::guest_text::shown(pipe_id)
         );
         if let Some(view) = self.view_instance_mut(opener) {
-            view.runtime
-                .queue_outbound_event(crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
+            view.runtime.queue_outbound_event(
+                crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
                     request_id: request_id.to_string(),
                     pipe_id: pipe_id.to_string(),
                     reason,
-                });
+                },
+            );
         }
     }
 

@@ -158,10 +158,20 @@ mod tests {
         let mut pipes = DirectedPipes::default();
         assert_eq!(pipes.check_open(7, "p", a, b), OpenCheck::Free);
         let generation = pipes.commit(7, "p", a, b);
-        assert_eq!(pipes.check_open(7, "p", a, b), OpenCheck::AlreadyOpen(generation));
-        assert_eq!(pipes.check_open(7, "p", b, a), OpenCheck::AlreadyOpen(generation));
+        assert_eq!(
+            pipes.check_open(7, "p", a, b),
+            OpenCheck::AlreadyOpen(generation)
+        );
+        assert_eq!(
+            pipes.check_open(7, "p", b, a),
+            OpenCheck::AlreadyOpen(generation)
+        );
         assert_eq!(pipes.check_open(7, "p", a, end(3)), OpenCheck::InUse);
-        assert_eq!(pipes.check_open(8, "p", a, end(3)), OpenCheck::Free, "names are per context");
+        assert_eq!(
+            pipes.check_open(8, "p", a, end(3)),
+            OpenCheck::Free,
+            "names are per context"
+        );
     }
 
     #[test]
@@ -191,7 +201,10 @@ mod tests {
         assert_eq!(pipe.peer_of(stranger), None);
         assert!(pipes.retire_endpoint(stranger).is_empty());
         assert_eq!(pipes.retire_endpoint(a).len(), 1);
-        assert!(pipes.retire_endpoint(b).is_empty(), "the other end finds nothing left");
+        assert!(
+            pipes.retire_endpoint(b).is_empty(),
+            "the other end finds nothing left"
+        );
         assert_eq!(pipes.get(generation), None);
     }
 

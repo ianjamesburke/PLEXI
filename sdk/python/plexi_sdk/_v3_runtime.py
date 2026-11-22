@@ -33,6 +33,8 @@ _EMIT_BATCH: list[str] | None = None
 #: Protocol output carries no human reader, so the default `", "` / `": "`
 #: separators are pure wire weight on every key of every frame.
 _JSON_SEPARATORS = (",", ":")
+# Sends by name held for one open request before the host answers it.
+_PIPE_WAITING_LIMIT = 64
 
 #: How many delta-eligible frames ride a previously measured full-vs-delta
 #: verdict before it is re-measured. Measuring means serialising the frame
@@ -123,7 +125,15 @@ class PluginRuntime:
         self._workspace_root = ""
         self._capabilities: list[str] = []
         self._http_tags: dict[str, str] = {}
-        self._pipe_handles: dict[str, int] = {}
+        # Directed pipes (stint 1681). The host issues each connection a
+        # generation, which is the handle an app sends on. A name is bound to
+        # the open request in flight (str request id) or to a live
+        # generation (int); sends by name while a request is in flight wait
+        # for its answer.
+        self._pipe_names: dict[str, str | int] = {}
+        self._pipe_requests: dict[str, tuple[str, list]] = {}
+        self._pipe_live: dict[int, str] = {}
+        self._next_pipe_request = 0
         self._running = True
 
     def run(self) -> None:
@@ -325,16 +335,91 @@ class PluginRuntime:
             self._handle_state_changed(ev)
         elif t == "pipe_message":
             self._handle_pipe_message(ev)
+        elif t == "directed_pipe_opened":
+            self._handle_pipe_opened(ev)
+        elif t == "directed_pipe_open_refused":
+            self._handle_pipe_open_refused(ev)
+        elif t == "directed_pipe_incoming":
+            self._handle_pipe_incoming(ev)
         elif t == "pipe_closed":
-            self._dispatch(events.PipeClosed(
-                pipe_id=str(ev.get("pipe_id", "")),
-                reason=str(ev.get("reason", "")),
-            ))
+            self._handle_pipe_closed(ev)
+
+    def _handle_pipe_opened(self, ev: dict) -> None:
+        request_id = str(ev["request_id"])
+        pipe_id = str(ev["pipe_id"])
+        generation = int(ev["generation"])
+        _, waiting = self._pipe_requests.pop(request_id, (pipe_id, []))
+        self._pipe_live[generation] = pipe_id
+        # A newer request for the name keeps the name; this one's sends were
+        # written for this connection all the same.
+        if self._pipe_names.get(pipe_id) == request_id:
+            self._pipe_names[pipe_id] = generation
+        for payload in waiting:
+            _emit({"type": "pipe_send", "generation": generation, "payload": payload})
+        self._dispatch(events.PipeOpened(pipe_id=pipe_id, handle=generation))
+
+    def _handle_pipe_open_refused(self, ev: dict) -> None:
+        request_id = str(ev["request_id"])
+        pipe_id = str(ev["pipe_id"])
+        # The sends waiting on a refused request had no connection; they
+        # go nowhere.
+        self._pipe_requests.pop(request_id, None)
+        if self._pipe_names.get(pipe_id) == request_id:
+            del self._pipe_names[pipe_id]
+        self._dispatch(events.PipeOpenRefused(pipe_id=pipe_id, reason=str(ev["reason"])))
+
+    def _handle_pipe_incoming(self, ev: dict) -> None:
+        pipe_id = str(ev["pipe_id"])
+        generation = int(ev["generation"])
+        self._pipe_live[generation] = pipe_id
+        if not isinstance(self._pipe_names.get(pipe_id), str):
+            self._pipe_names[pipe_id] = generation
+        self._dispatch(events.PipeIncoming(
+            pipe_id=pipe_id,
+            handle=generation,
+            peer_pane_id=int(ev["peer_pane_id"]),
+        ))
+
+    def _handle_pipe_closed(self, ev: dict) -> None:
+        pipe_id = str(ev["pipe_id"])
+        generation = int(ev["generation"])
+        self._pipe_live.pop(generation, None)
+        # A late close never unbinds a newer connection of the same name.
+        if self._pipe_names.get(pipe_id) == generation:
+            del self._pipe_names[pipe_id]
+        self._dispatch(events.PipeClosed(
+            pipe_id=pipe_id, handle=generation, reason=str(ev["reason"]),
+        ))
+
+    def _pipe_send(self, pipe: str | int, payload) -> None:
+        if isinstance(pipe, bool) or not isinstance(pipe, (str, int)):
+            raise TypeError(f"PipeSend pipe must be a pipe name or handle, not {pipe!r}")
+        if isinstance(pipe, int):
+            if pipe not in self._pipe_live:
+                raise ValueError(f"pipe handle {pipe} is not open")
+            _emit({"type": "pipe_send", "generation": pipe, "payload": payload})
+            return
+        binding = self._pipe_names.get(pipe)
+        if binding is None:
+            raise ValueError(
+                f"pipe {pipe!r} is not open: open it with PipeOpenDirected, "
+                "or send on a handle from PipeOpened, PipeIncoming or PipeMessage"
+            )
+        if isinstance(binding, int):
+            _emit({"type": "pipe_send", "generation": binding, "payload": payload})
+            return
+        waiting = self._pipe_requests[binding][1]
+        if len(waiting) >= _PIPE_WAITING_LIMIT:
+            raise RuntimeError(
+                f"pipe {pipe!r}: {len(waiting)} sends are already waiting for the host "
+                "to open it; wait for PipeOpened before sending more"
+            )
+        waiting.append(payload)
 
     def _handle_pipe_message(self, ev: dict) -> None:
-        pipe_id = str(ev.get("pipe_id", ""))
+        pipe_id = str(ev["pipe_id"])
         payload = ev.get("payload")
-        handle = self._pipe_handles.setdefault(pipe_id, len(self._pipe_handles) + 1)
+        handle = int(ev["generation"])
         payload_json = (
             json.dumps(payload, separators=_JSON_SEPARATORS)
             if payload is not None
@@ -1008,18 +1093,19 @@ class PluginRuntime:
                 })
             elif isinstance(effect, effects.PipeOpenDirected):
                 pipe_id = str(effect.pipe_id)
-                self._pipe_handles.setdefault(pipe_id, len(self._pipe_handles) + 1)
+                self._next_pipe_request += 1
+                request_id = f"pipe-{self._next_pipe_request}"
+                # Sends by this name from here on belong to this request.
+                self._pipe_requests[request_id] = (pipe_id, [])
+                self._pipe_names[pipe_id] = request_id
                 _emit({
                     "type": "pipe_open_directed",
+                    "request_id": request_id,
                     "pipe_id": pipe_id,
                     "target_pane_id": int(effect.target_pane_id),
                 })
             elif isinstance(effect, effects.PipeSend):
-                _emit({
-                    "type": "pipe_send",
-                    "pipe_id": str(effect.pipe_id),
-                    "payload": effect.payload,
-                })
+                self._pipe_send(effect.pipe, effect.payload)
             elif isinstance(effect, effects.AiQuery):
                 raise TypeError(
                     f"plugin {self._plugin_id!r}: effect {type(effect).__name__} is not "

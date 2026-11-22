@@ -406,9 +406,9 @@ impl HostCtx {
 
     /// The guest handle carrying directed pipe connection `generation`.
     pub fn directed_pipe_handle(&self, generation: u64) -> Option<u32> {
-        self.pipe_handles
-            .iter()
-            .find_map(|(&handle, binding)| (binding.generation == Some(generation)).then_some(handle))
+        self.pipe_handles.iter().find_map(|(&handle, binding)| {
+            (binding.generation == Some(generation)).then_some(handle)
+        })
     }
 }
 
@@ -967,7 +967,9 @@ impl WasmView {
     /// Register directed pipe connection `generation` on this WASM instance
     /// under a fresh guest handle.
     pub fn register_directed_pipe(&mut self, pipe_id: &str, generation: u64) -> Result<(), String> {
-        self.store.data_mut().register_directed_pipe(pipe_id, generation)
+        self.store
+            .data_mut()
+            .register_directed_pipe(pipe_id, generation)
     }
 
     /// True when `pipe_id` is open on this WASM instance's typed-pipe registry.
@@ -977,7 +979,9 @@ impl WasmView {
 
     /// Close a host-retired directed pipe connection on this WASM instance.
     pub fn close_directed_pipe(&mut self, pipe_id: &str, generation: u64) {
-        self.store.data_mut().close_directed_pipe(pipe_id, generation);
+        self.store
+            .data_mut()
+            .close_directed_pipe(pipe_id, generation);
     }
 
     /// The guest handle carrying directed pipe connection `generation`.
@@ -1466,7 +1470,9 @@ mod tests {
             .expect("the binary ring still takes frames after the refusal");
 
         assert_eq!(ctx.register_directed_pipe("directed", 2), Ok(()));
-        let directed = ctx.directed_pipe_handle(2).expect("handle for connection 2");
+        let directed = ctx
+            .directed_pipe_handle(2)
+            .expect("handle for connection 2");
         assert_ne!(directed, binary);
         ctx.close_directed_pipe("directed", 2);
         assert!(!ctx.has_pipe_reader("directed"));

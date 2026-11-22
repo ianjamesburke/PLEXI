@@ -5929,6 +5929,273 @@ fn opening_a_name_in_use_is_refused_and_the_first_connection_stays() {
     );
 }
 
+/// Stint 1681: a Python peer learns its directed pipe closed through the SDK
+/// (`events.PipeClosed`), and its own registry no longer holds the pipe.
+#[test]
+fn python_peer_receives_pipe_closed_when_the_other_end_closes() {
+    const PIPE: &str = "stint1681.peer";
+    let receiver_dir = tempfile::tempdir().expect("receiver dir");
+    std::fs::write(
+        receiver_dir.path().join("manifest.toml"),
+        "schema_version = 2\n\n[plugin]\nid = \"pipe-closed-probe\"\nname = \"Pipe Closed Probe\"\nversion = \"0.1.0\"\ndescription = \"stint 1681 directed pipe peer\"\n\n[plugin.capabilities]\ncapabilities = [\"pipe.open\"]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"pipe-closed-probe.main\"\ndefault = true\n",
+    )
+    .expect("write receiver manifest.toml");
+    std::fs::write(
+        receiver_dir.path().join("main.py"),
+        "from plexi_sdk.effects import SetTitle\n\
+         from plexi_sdk.events import PipeClosed, PipeMessage\n\
+         from plexi_sdk.ui import Column\n\n\
+         def init(size, args):\n\
+         \x20   return [SetTitle(\"receiver:ready\")]\n\n\
+         def update(event):\n\
+         \x20   if isinstance(event, PipeMessage):\n\
+         \x20       return [SetTitle(f\"receiver:rx:{event.pipe_id}\")]\n\
+         \x20   if isinstance(event, PipeClosed):\n\
+         \x20       return [SetTitle(f\"receiver:closed:{event.pipe_id}:{event.reason}\")]\n\
+         \x20   return []\n\n\
+         def view():\n\
+         \x20   return Column([])\n",
+    )
+    .expect("write receiver main.py");
+    let mut h = HostHarness::new();
+    let receiver = h
+        .app
+        .launch_view_by_path_with_layout_no_review_modal(
+            &receiver_dir.path().to_string_lossy(),
+            None,
+            None,
+            &[],
+        )
+        .expect("launch receiver plugin")
+        .expect("receiver pane id");
+    // Installed after the launch rebuilt the layout; hidden frames only, so
+    // no render pass prunes the stub's tile.
+    let win = h.app.active_window;
+    let (sender, sender_inbox) = add_pipe_test_pane(&mut h, win);
+    let wait_for_title = |h: &mut HostHarness, title: &str| {
+        let start = std::time::Instant::now();
+        while python_pane_title(h, receiver).as_deref() != Some(title) {
+            h.run_hidden_frames(1);
+            assert!(
+                start.elapsed()
+                    < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+                "receiver did not reach {title:?} (last: {:?}, error: {:?})",
+                python_pane_title(h, receiver),
+                python_pane_error(h, receiver)
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    };
+    let receiver_has_reader = |h: &HostHarness| {
+        h.app.windows[h.app.active_window]
+            .panes
+            .get(&receiver)
+            .and_then(Pane::as_view)
+            .is_some_and(|pane| pane.runtime.has_pipe_reader(PIPE))
+    };
+    wait_for_title(&mut h, "receiver:ready");
+    let generation = open_directed_test_pipe(&mut h, sender, &sender_inbox, receiver, PIPE);
+    send_on(&mut h, sender, generation, serde_json::json!({}));
+    wait_for_title(&mut h, &format!("receiver:rx:{PIPE}"));
+    assert!(receiver_has_reader(&h));
+
+    h.app.close_pane_by_id(sender);
+
+    assert!(
+        !receiver_has_reader(&h),
+        "the surviving end's registry must close the retired pipe"
+    );
+    wait_for_title(&mut h, &format!("receiver:closed:{PIPE}:peer_closed"));
+}
+
+/// Stint 1681 (review round 2 case b; moves stint 1686 forward): a Python
+/// app opens a name already open between two other views and sends by that
+/// name in the same update. The open is refused `in_use` through the SDK,
+/// the waiting send is dropped so neither view receives it, the first
+/// connection stays, and the opener's registry holds no entry for it.
+#[test]
+fn a_refused_python_open_drops_its_waiting_sends() {
+    const PIPE: &str = "stint1681.shared";
+    let opener_dir = tempfile::tempdir().expect("opener dir");
+    std::fs::write(
+        opener_dir.path().join("manifest.toml"),
+        "schema_version = 2\n\n[plugin]\nid = \"pipe-refused-probe\"\nname = \"Pipe Refused Probe\"\nversion = \"0.1.0\"\ndescription = \"stint 1681 refused directed pipe opener\"\n\n[plugin.capabilities]\ncapabilities = [\"pipe.open\"]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"pipe-refused-probe.main\"\ndefault = true\n",
+    )
+    .expect("write opener manifest.toml");
+    std::fs::write(
+        opener_dir.path().join("main.py"),
+        "from plexi_sdk.effects import PipeOpenDirected, PipeSend, SetTitle\n\
+         from plexi_sdk.events import PipeOpenRefused\n\
+         from plexi_sdk.ui import Column\n\n\
+         def init(size, args):\n\
+         \x20   return [\n\
+         \x20       PipeOpenDirected(\"stint1681.shared\", int(args[0])),\n\
+         \x20       PipeSend(\"stint1681.shared\", {\"from\": \"refused opener\"}),\n\
+         \x20   ]\n\n\
+         def update(event):\n\
+         \x20   if isinstance(event, PipeOpenRefused):\n\
+         \x20       return [SetTitle(f\"opener:refused:{event.pipe_id}:{event.reason}\")]\n\
+         \x20   return []\n\n\
+         def view():\n\
+         \x20   return Column([])\n",
+    )
+    .expect("write opener main.py");
+    let mut h = HostHarness::new();
+    let win = h.app.active_window;
+    let context_id = h.app.windows[win].context_id;
+    let key = (context_id, PIPE.to_string());
+    let (a, a_inbox) = add_pipe_test_pane(&mut h, win);
+    let (b, b_inbox) = add_pipe_test_pane(&mut h, win);
+    open_directed_test_pipe(&mut h, a, &a_inbox, b, PIPE);
+
+    let opener = h
+        .app
+        .launch_view_by_path_with_layout_no_review_modal(
+            &opener_dir.path().to_string_lossy(),
+            None,
+            None,
+            &[b.to_string()],
+        )
+        .expect("launch opener plugin")
+        .expect("opener pane id");
+    let refused = format!("opener:refused:{PIPE}:in_use");
+    let start = std::time::Instant::now();
+    while python_pane_title(&h, opener).as_deref() != Some(refused.as_str()) {
+        h.run_hidden_frames(1);
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "opener was not refused (title {:?}, error {:?})",
+            python_pane_title(&h, opener),
+            python_pane_error(&h, opener)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    h.run_hidden_frames(2);
+
+    assert_eq!(pipe_ends(&h, &key), Some((a, b)), "the first connection stays");
+    assert!(pipe_messages(&a_inbox).is_empty());
+    assert!(pipe_messages(&b_inbox).is_empty(), "the waiting send went nowhere");
+    let opener_has_reader = h.app.windows[win]
+        .panes
+        .get(&opener)
+        .and_then(Pane::as_view)
+        .is_some_and(|pane| pane.runtime.has_pipe_reader(PIPE));
+    assert!(!opener_has_reader, "the refused opener's registry holds nothing");
+}
+
+fn write_relaunching_pipe_sender_plugin(dir: &std::path::Path) {
+    std::fs::write(
+        dir.join("manifest.toml"),
+        "schema_version = 2\n\n[plugin]\nid = \"pipe-relaunch-probe\"\nname = \"Pipe Relaunch Probe\"\nversion = \"0.1.0\"\ndescription = \"stint 1681 directed pipe sender that relaunches\"\n\n[plugin.capabilities]\ncapabilities = [\"pipe.open\"]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"pipe-relaunch-probe.main\"\ndefault = true\n",
+    )
+    .expect("write relaunch sender manifest.toml");
+    std::fs::write(
+        dir.join("main.py"),
+        "from plexi_sdk.effects import PipeOpenDirected, PipeSend, SetTitle\n\
+         from plexi_sdk.events import PipeMessage\n\
+         from plexi_sdk.ui import Column\n\n\
+         PIPE_ID = \"stint1681.duplex\"\n\
+         acks = []\n\n\
+         def init(size, args):\n\
+         \x20   return [\n\
+         \x20       SetTitle(\"sender:opened\"),\n\
+         \x20       PipeOpenDirected(PIPE_ID, int(args[0])),\n\
+         \x20       PipeSend(PIPE_ID, {\"msg\": \"ping\"}),\n\
+         \x20   ]\n\n\
+         def update(event):\n\
+         \x20   if isinstance(event, PipeMessage):\n\
+         \x20       acks.append(str(event.data.get(\"echo\", \"\")))\n\
+         \x20       return [SetTitle(\"sender:acks:\" + \",\".join(acks))]\n\
+         \x20   return []\n\n\
+         def view():\n\
+         \x20   return Column([])\n",
+    )
+    .expect("write relaunch sender main.py");
+}
+
+/// Stint 1681: a Python guest's hot reload retires the old guest's
+/// connection. The peer is told with the old generation, and a send it makes
+/// on that generation (here, after the reload and whether or not the new
+/// guest has reopened yet) never reaches the new guest. The new guest's own
+/// open is a new connection, carries its first message, and receives only
+/// what is sent on it.
+#[test]
+fn python_relaunch_retires_the_old_guests_directed_pipes() {
+    use crate::protocol::{PipeCloseReason, PlexiEvent};
+    const PIPE: &str = "stint1681.duplex";
+    let sender_dir = tempfile::tempdir().expect("sender dir");
+    write_relaunching_pipe_sender_plugin(sender_dir.path());
+    let mut h = HostHarness::new();
+    let win = h.app.active_window;
+    // Installed after the launch rebuilt the layout; the guest boots
+    // asynchronously so its open still finds the receiver. Hidden frames
+    // only, so no render pass prunes the stub's tile.
+    let receiver = h.app.host.alloc_pane_id();
+    let sender = h
+        .app
+        .launch_view_by_path_with_layout_no_review_modal(
+            &sender_dir.path().to_string_lossy(),
+            None,
+            None,
+            &[receiver.to_string()],
+        )
+        .expect("launch sender plugin")
+        .expect("sender pane id");
+    let (receiver_pane, receiver_inbox) = pipe_test_view(receiver);
+    h.app.windows[win].panes.insert(receiver, receiver_pane).unwrap();
+    let _ = h.app.windows[win].tree.tiles.insert_pane(receiver);
+    let incoming = |inbox: &std::sync::Mutex<Vec<PlexiEvent>>| pipe_incoming(inbox);
+    let wait = |h: &mut HostHarness, what: &str, done: &dyn Fn(&HostHarness) -> bool| {
+        let start = std::time::Instant::now();
+        while !done(h) {
+            h.run_hidden_frames(1);
+            assert!(
+                start.elapsed()
+                    < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+                "timed out waiting for {what} (sender title {:?}, error {:?})",
+                python_pane_title(h, sender),
+                python_pane_error(h, sender)
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    };
+
+    wait(&mut h, "the old guest's ping", &|_| pipe_messages(&receiver_inbox).len() == 1);
+    let old = incoming(&receiver_inbox)[0].1;
+    assert_eq!(pipe_messages(&receiver_inbox), vec![(old, serde_json::json!({"msg": "ping"}))]);
+    send_on(&mut h, receiver, old, serde_json::json!({"echo": "before"}));
+    wait(&mut h, "the old guest's ack", &|h| {
+        python_pane_title(h, sender).as_deref() == Some("sender:acks:before")
+    });
+
+    assert!(h.app.reload_view_pane(sender, "stint 1681 test"));
+    assert!(h.app.directed_pipes.get(old).is_none());
+    assert_eq!(
+        pipe_closed_events(&receiver_inbox),
+        vec![(PIPE.to_string(), old, PipeCloseReason::PeerReloaded)]
+    );
+    send_on(&mut h, receiver, old, serde_json::json!({"echo": "late"}));
+
+    wait(&mut h, "the new guest's ping", &|_| pipe_messages(&receiver_inbox).len() == 2);
+    let new = incoming(&receiver_inbox)[1].1;
+    assert_ne!(new, old);
+    assert_eq!(
+        pipe_messages(&receiver_inbox)[1],
+        (new, serde_json::json!({"msg": "ping"})),
+        "the new guest's first message rides its own connection"
+    );
+    send_on(&mut h, receiver, new, serde_json::json!({"echo": "fresh"}));
+    wait(&mut h, "the new guest's ack", &|h| {
+        python_pane_title(h, sender).is_some_and(|title| title.contains("fresh"))
+    });
+    assert_eq!(
+        python_pane_title(&h, sender).as_deref(),
+        Some("sender:acks:fresh"),
+        "the new guest receives only what was sent on its own connection"
+    );
+}
+
 /// Stint 1681: closing one end retires the connection. It is gone from the
 /// host, the surviving end is told once with its generation, the event log
 /// records it, and a send the survivor makes on it afterwards goes nowhere.
@@ -16913,7 +17180,7 @@ fn write_directed_pipe_receiver_plugin(dir: &std::path::Path) {
          \x20       msg = event.data.get(\"msg\", \"\") if isinstance(event.data, dict) else \"\"\n\
          \x20       return [\n\
          \x20           SetTitle(f\"receiver:rx:{event.pipe_id}:{msg}\"),\n\
-         \x20           PipeSend(event.pipe_id, {\"echo\": msg, \"from\": \"receiver\"}),\n\
+         \x20           PipeSend(event.handle, {\"echo\": msg, \"from\": \"receiver\"}),\n\
          \x20       ]\n\
          \x20   return []\n\n\
          def view():\n\
@@ -16937,7 +17204,7 @@ fn write_directed_pipe_sender_plugin_with(dir: &std::path::Path, capabilities: &
     std::fs::write(
         dir.join("main.py"),
         "from plexi_sdk.effects import PipeOpenDirected, PipeSend, SetTitle\n\
-         from plexi_sdk.events import PipeMessage\n\
+         from plexi_sdk.events import PipeMessage, PipeOpenRefused\n\
          from plexi_sdk.ui import Column\n\n\
          PIPE_ID = \"stint0742.duplex\"\n\n\
          def init(size, args):\n\
@@ -16952,6 +17219,8 @@ fn write_directed_pipe_sender_plugin_with(dir: &std::path::Path, capabilities: &
          \x20       echo = event.data.get(\"echo\", \"\") if isinstance(event.data, dict) else \"\"\n\
          \x20       who = event.data.get(\"from\", \"\") if isinstance(event.data, dict) else \"\"\n\
          \x20       return [SetTitle(f\"sender:ack:{echo}:{who}\")]\n\
+         \x20   if isinstance(event, PipeOpenRefused):\n\
+         \x20       return [SetTitle(f\"sender:refused:{event.reason}\")]\n\
          \x20   return []\n\n\
          def view():\n\
          \x20   return Column([])\n",
@@ -17007,9 +17276,9 @@ fn python_plugin_without_pipe_open_cannot_open_or_send_a_directed_pipe() {
         )
         .expect("launch sender plugin")
         .expect("sender pane id");
-    // `init` returns SetTitle, PipeOpenDirected and PipeSend in one batch, so
-    // once the title shows, the two pipe effects have been handled too.
-    wait_for_title(&mut h, sender_pane_id, "sender:opened");
+    // The open is a request, answered: refused for want of the capability,
+    // and the send that waited on it is dropped (stint 1681).
+    wait_for_title(&mut h, sender_pane_id, "sender:refused:denied");
     h.run_frames(5);
 
     let ctx_id = h.app.windows[h.app.active_window].context_id;

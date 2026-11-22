@@ -3254,8 +3254,6 @@ impl LivePythonPane {
         self.pipes.set_owner(owner);
     }
 
-    /// Register a host-directed duplex JSON pipe on this Python instance's
-    /// typed-pipe registry so `has_pipe_reader` reflects the connection.
     /// Record directed pipe `pipe_id` in this instance's registry, a cache of
     /// the host's decision: called only once the host accepted the open
     /// (stint 1681). One connection per name per context, so the name keys it.
@@ -5689,7 +5687,10 @@ impl LivePythonPane {
     fn committed_tree(&mut self) -> Result<Arc<PythonUiTree>, String> {
         self.drain_runtime();
         if let Some(error) = &self.error {
-            return Err(format!("plugin {} is in an error state: {error}", self.plugin_id));
+            return Err(format!(
+                "plugin {} is in an error state: {error}",
+                self.plugin_id
+            ));
         }
         self.tree.clone().ok_or_else(|| {
             format!(
@@ -5709,8 +5710,7 @@ impl LivePythonPane {
         use crate::host::node_ref::Activation;
         let tree = self.committed_tree()?;
         let id = crate::host::node_ref::resolve(&tree.tree, self.epoch, reference)?;
-        let activation =
-            crate::host::node_ref::activation(tree.tree.root, &tree.tree.nodes, id)?;
+        let activation = crate::host::node_ref::activation(tree.tree.root, &tree.tree.nodes, id)?;
         match &activation {
             Activation::Action(action) => {
                 // A failed send wrote nothing to the guest: a refusal.

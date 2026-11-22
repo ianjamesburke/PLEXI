@@ -1243,9 +1243,12 @@
         },
         {
           "additionalProperties": false,
-          "description": "Open a *directed* JSON pipe to a specific target pane (#286).\n\nMirrors `PipeOpen` but the host scopes `PipeMessage` delivery so only\nthe caller pane and the pane identified by `target_pane_id` can\nreceive messages on this pipe — peer plugins are NOT subscribed even\nif they call `pipe_open` with the same `pipe_id`.\n\nCreated bidirectionally: both panes receive the other's `PipeSend`\npayloads as `PlexiEvent::PipeMessage`. Either side can close.\n\nCapability gate: caller needs `pipe.open` (the same as `PipeOpen`).\nThe target does NOT need `agents.list` — it just needs to be\naddressable. The target also doesn't need to opt in; the host\nsubscribes it on this pipe id.\n\nDirection is always `duplex` on directed pipes — there's no use case\nfor a one-way agent-to-agent channel today, so the field is omitted.\nMode is always `json`; binary directed pipes are out of scope until\na real use case arrives.",
+          "description": "Open a *directed* JSON pipe to a specific target pane (#286).\n\nMirrors `PipeOpen` but the host scopes `PipeMessage` delivery so only\nthe caller pane and the pane identified by `target_pane_id` can\nreceive messages on this pipe — peer plugins are NOT subscribed even\nif they call `pipe_open` with the same `pipe_id`.\n\nCreated bidirectionally: both panes receive the other's `PipeSend`\npayloads as `PlexiEvent::PipeMessage`. Either side can close.\n\nCapability gate: caller needs `pipe.open` (the same as `PipeOpen`).\nThe target does NOT need `agents.list` — it just needs to be\naddressable. The target also doesn't need to opt in; the host\nsubscribes it on this pipe id.\n\nDirection is always `duplex` on directed pipes — there's no use case\nfor a one-way agent-to-agent channel today, so the field is omitted.\nMode is always `json`; binary directed pipes are out of scope until\na real use case arrives.\n\nThe open is a request: the host answers `request_id` with\n`DirectedPipeOpened` (carrying the connection's generation) or\n`DirectedPipeOpenRefused`, and tells the target with\n`DirectedPipeIncoming` (stint 1681).",
           "properties": {
             "pipe_id": {
+              "type": "string"
+            },
+            "request_id": {
               "type": "string"
             },
             "target_pane_id": {
@@ -1260,6 +1263,7 @@
           },
           "required": [
             "type",
+            "request_id",
             "pipe_id",
             "target_pane_id"
           ],
@@ -1267,12 +1271,14 @@
         },
         {
           "additionalProperties": false,
-          "description": "Send a JSON-mode pipe message (not for binary pipes).",
+          "description": "Send a JSON message on directed pipe connection `generation`. A send\nnaming a pipe instead of a generation is rejected (stint 1681).",
           "properties": {
-            "payload": true,
-            "pipe_id": {
-              "type": "string"
+            "generation": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
             },
+            "payload": true,
             "type": {
               "const": "pipe_send",
               "type": "string"
@@ -1280,7 +1286,7 @@
           },
           "required": [
             "type",
-            "pipe_id",
+            "generation",
             "payload"
           ],
           "type": "object"
@@ -5068,11 +5074,11 @@
           "type": "string"
         },
         "PipeCloseReason": {
-          "description": "Why the host closed a directed pipe, from the receiving end's view.",
+          "description": "Why a directed pipe connection ended, from the surviving end's view.",
           "oneOf": [
             {
               "const": "peer_closed",
-              "description": "The other end's pane closed.",
+              "description": "The other end's view closed.",
               "type": "string"
             },
             {
@@ -5081,8 +5087,43 @@
               "type": "string"
             },
             {
+              "const": "peer_moved",
+              "description": "An end moved to another context.",
+              "type": "string"
+            }
+          ]
+        },
+        "PipeOpenRefusal": {
+          "description": "Why the host refused a `PipeOpenDirected`.",
+          "oneOf": [
+            {
+              "const": "denied",
+              "description": "The app lacks the `pipe.open` capability.",
+              "type": "string"
+            },
+            {
+              "const": "no_target",
+              "description": "No pane has the target id.",
+              "type": "string"
+            },
+            {
+              "const": "not_a_plugin",
+              "description": "The target pane is not a plugin view.",
+              "type": "string"
+            },
+            {
+              "const": "out_of_reach",
+              "description": "The target is in another context.",
+              "type": "string"
+            },
+            {
               "const": "in_use",
-              "description": "This app's open was refused: the id is already open between other\nviews in this context, or names a binary pipe on one end.",
+              "description": "The id is already open between other views in this context.",
+              "type": "string"
+            },
+            {
+              "const": "name_conflict",
+              "description": "An end already uses the id for a pipe of another kind.",
               "type": "string"
             }
           ]
@@ -5633,8 +5674,13 @@
           "type": "object"
         },
         {
-          "description": "Typed pipe message (JSON mode only; binary mode travels on the side channel).",
+          "description": "A message on directed pipe connection `generation` (JSON mode only;\nbinary mode travels on the side channel).",
           "properties": {
+            "generation": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
             "payload": true,
             "pipe_id": {
               "type": "string"
@@ -5647,6 +5693,7 @@
           "required": [
             "type",
             "pipe_id",
+            "generation",
             "payload"
           ],
           "type": "object"
@@ -5839,8 +5886,94 @@
           "type": "object"
         },
         {
-          "description": "A directed pipe this app was an end of has been retired because the\nother end closed or reloaded, or this app's open of `pipe_id` was\nrefused because the id is in use. Sends on `pipe_id` are dropped until\na new `PipeOpenDirected` opens it.",
+          "description": "This app's `PipeOpenDirected` `request_id` was accepted: sends name\nconnection `generation`.",
           "properties": {
+            "generation": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pipe_id": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "directed_pipe_opened",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "pipe_id",
+            "generation"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "This app's `PipeOpenDirected` `request_id` was refused; nothing opened.",
+          "properties": {
+            "pipe_id": {
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/PipeOpenRefusal"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "directed_pipe_open_refused",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "pipe_id",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Another view opened directed pipe `pipe_id` to this app as\nconnection `generation`. Sent before the connection's first message.",
+          "properties": {
+            "generation": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "peer_pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pipe_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "directed_pipe_incoming",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pipe_id",
+            "generation",
+            "peer_pane_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Directed pipe connection `generation` ended. Sends naming it are\ndropped; a reopen is a new connection with a new generation.",
+          "properties": {
+            "generation": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
             "pipe_id": {
               "type": "string"
             },
@@ -5855,6 +5988,7 @@
           "required": [
             "type",
             "pipe_id",
+            "generation",
             "reason"
           ],
           "type": "object"

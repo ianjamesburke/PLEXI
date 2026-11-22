@@ -327,13 +327,41 @@ class PipeMessage:
 
 
 @dataclass
-class PipeClosed:
-    """Directed pipe ``pipe_id`` is closed: the other end's pane closed
-    (``reason == "peer_closed"``) or its app reloaded (``"peer_reloaded"``),
-    or this app's open was refused because the id is in use
-    (``"in_use"``). Sends on ``pipe_id`` are dropped until a new
-    :class:`effects.PipeOpenDirected` opens it."""
+class PipeOpened:
+    """This app's :class:`effects.PipeOpenDirected` for ``pipe_id`` was
+    accepted. ``handle`` names the connection; sends by name that waited for
+    the answer have gone out on it."""
     pipe_id: str
+    handle: int
+
+
+@dataclass
+class PipeOpenRefused:
+    """This app's :class:`effects.PipeOpenDirected` for ``pipe_id`` was
+    refused and the sends that waited for it were dropped. ``reason`` is one
+    of ``denied``, ``no_target``, ``not_a_plugin``, ``out_of_reach``,
+    ``in_use`` or ``name_conflict``."""
+    pipe_id: str
+    reason: str
+
+
+@dataclass
+class PipeIncoming:
+    """Pane ``peer_pane_id`` opened directed pipe ``pipe_id`` to this app.
+    Reply by name or on ``handle``."""
+    pipe_id: str
+    handle: int
+    peer_pane_id: int
+
+
+@dataclass
+class PipeClosed:
+    """Directed pipe connection ``handle`` (named ``pipe_id``) ended: the
+    other end's view closed (``reason == "peer_closed"``), its app reloaded
+    (``"peer_reloaded"``) or it moved context (``"peer_moved"``). A reopen
+    is a new connection with a new handle."""
+    pipe_id: str
+    handle: int
     reason: str
 
 

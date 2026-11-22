@@ -347,12 +347,14 @@ class UnsubscribeEventStreams:
 
 @dataclass
 class PipeOpenDirected:
-    """Open a host-mediated duplex JSON pipe targeting ``target_pane_id``.
+    """Ask the host for a duplex JSON pipe named ``pipe_id`` to the view in
+    ``target_pane_id``. Needs the ``pipe.open`` capability.
 
-    The host does not check the ``pipe.open`` capability for Python plugins
-    yet; declare it anyway. Once subscribed, either endpoint may
-    send JSON payloads over ``pipe_id`` via :class:`PipeSend`, delivered to the
-    peer as :class:`events.PipeMessage`.
+    The host answers with :class:`events.PipeOpened` or
+    :class:`events.PipeOpenRefused`; the target gets
+    :class:`events.PipeIncoming`. Sends by ``pipe_id`` returned after this
+    effect wait for the answer (at most 64) and go out on the new connection
+    or are dropped with the refusal.
     """
     pipe_id: str
     target_pane_id: int
@@ -360,12 +362,13 @@ class PipeOpenDirected:
 
 @dataclass
 class PipeSend:
-    """Send a JSON-serializable ``payload`` over an open pipe ``pipe_id``.
-
-    The host does not check the ``pipe.open`` capability for Python plugins
-    yet; declare it anyway. Delivered to the paired endpoint as
-    :class:`events.PipeMessage`.
+    """Send a JSON-serializable ``payload`` on a directed pipe: by name
+    (``str``), the pipe's current connection, or by handle (``int``, from
+    :class:`events.PipeOpened`, :class:`events.PipeIncoming` or
+    :class:`events.PipeMessage`), that connection only. Delivered to the
+    other end as :class:`events.PipeMessage`; dropped once the connection
+    has closed.
     """
-    pipe_id: str
+    pipe: str | int
     payload: Any = None
 
