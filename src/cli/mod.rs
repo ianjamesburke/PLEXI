@@ -810,6 +810,7 @@ mod socket_resolution_tests {
                 ProfileSelection::parse(p).unwrap()
             }),
             root: None,
+            socket_given: false,
         };
         let target = select(Role::Command, &selectors, executable, Ok(HOME.into()), ambient).unwrap();
         resolve_command_socket_from(None, &target, ambient.socket.as_deref())
@@ -916,7 +917,7 @@ pub(super) const NO_COMMAND_SOCKET: &str = "error: no Plexi host to talk to: PLE
 /// `target-routing`)") for the canonical precedence table. Self-identity env
 /// vars (`PLEXI_PANE_ID`, `PLEXI_CONTEXT_ID`, `PLEXI_CONTEXT_ROOT`,
 /// `PLEXI_RUNNING`) are never consulted for socket routing.
-fn resolve_command_socket_from(
+pub(crate) fn resolve_command_socket_from(
     explicit_socket: Option<&std::path::Path>,
     target: &crate::config::profile_target::ProfileTarget,
     ambient_socket: Option<&std::ffi::OsStr>,

@@ -1366,6 +1366,7 @@ mod tests {
             let selectors = Selectors {
                 profile,
                 root: Some(ProfileRoot::parse(root.path().as_os_str()).unwrap()),
+                socket_given: false,
             };
             let target = select(
                 Role::HostLaunch,

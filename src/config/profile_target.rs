@@ -42,6 +42,9 @@ pub enum Role {
 pub struct Selectors {
     pub profile: ProfileSelection,
     pub root: Option<ProfileRoot>,
+    /// `--socket` was given: it names the host, so a pane whose own values
+    /// disagree can no longer stop the command.
+    pub socket_given: bool,
 }
 
 impl Selectors {
@@ -49,6 +52,7 @@ impl Selectors {
         Self {
             profile: ProfileSelection::Default,
             root: None,
+            socket_given: false,
         }
     }
 }
@@ -142,7 +146,7 @@ pub fn select(
             build_channel.as_deref().unwrap_or("stable"),
         ));
     }
-    let implicit = role == Role::Command
+    let mut implicit = role == Role::Command
         && named.is_none()
         && selectors.root.is_none()
         && (build_channel.is_none() || ambient.delegated);
@@ -162,7 +166,16 @@ pub fn select(
         }
     };
     if implicit {
-        if let Some((dir_name, pane_root)) = pane_profile(ambient)? {
+        let pane = match pane_profile(ambient) {
+            Ok(pane) => pane,
+            Err(error) if selectors.socket_given => {
+                log::warn!("profile_target: --socket outranks this pane: {error}");
+                implicit = false;
+                None
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some((dir_name, pane_root)) = pane {
             let (root, root_source) = match pane_root {
                 Some(pane_root) => (pane_root, RootSource::Pane),
                 None => (root, root_source),
@@ -215,7 +228,7 @@ fn pane_profile(ambient: &Ambient) -> Result<Option<(String, Option<PathBuf>)>, 
                 Ok(Some((socket_dir, root)))
             } else {
                 Err(format!(
-                    "this pane's PLEXI_CHANNEL={} and PLEXI_SOCKET name different profiles ({} and {socket_dir}); pass --profile or --socket to choose one",
+                    "this pane's PLEXI_CHANNEL={} and PLEXI_SOCKET name different profiles ({} and {socket_dir}); run a channel shim such as plexi-alpha, or pass --profile <name> or --socket <path>",
                     ambient.channel.as_deref().unwrap_or_default(),
                     from_channel.join(" or ")
                 ))
@@ -327,7 +340,11 @@ mod tests {
     }
 
     fn sel(profile: ProfileSelection, root: Option<ProfileRoot>) -> Selectors {
-        Selectors { profile, root }
+        Selectors {
+            profile,
+            root,
+            socket_given: false,
+        }
     }
 
     fn poisoned() -> Ambient {
@@ -576,6 +593,50 @@ mod tests {
         )
         .unwrap_err();
         assert!(split.contains("different profiles"), "{split}");
+    }
+
+    /// Design 1695 (test 6): `--socket` outranks a pane whose channel and
+    /// endpoint disagree. The command runs on the executable's profile and
+    /// addresses that socket; without `--socket` the same pane is refused.
+    #[test]
+    fn an_explicit_socket_outranks_a_disagreeing_pane() {
+        let home = Path::new("/account/home");
+        let pane = Ambient {
+            home: None,
+            socket: Some("/scratch/.plexi-beta/notify.sock".into()),
+            channel: Some("alpha".into()),
+            delegated: false,
+        };
+        let bare = sel(ProfileSelection::Default, None);
+        assert!(select(Role::Command, &bare, "plexi", Ok(home.into()), &pane).is_err());
+        let socket = Selectors {
+            socket_given: true,
+            ..bare
+        };
+        for (exe, ambient, dir) in [
+            ("plexi", pane.clone(), ".plexi"),
+            (
+                "plexi-pr-7",
+                Ambient {
+                    delegated: true,
+                    ..pane.clone()
+                },
+                ".plexi-pr-7",
+            ),
+        ] {
+            let target = select(Role::Command, &socket, exe, Ok(home.into()), &ambient).unwrap();
+            assert_eq!(target.dir(), home.join(dir), "{exe}");
+        }
+        let explicit = Path::new("/tmp/explicit.sock");
+        let target = select(Role::Command, &socket, "plexi", Ok(home.into()), &pane).unwrap();
+        assert_eq!(
+            crate::cli::resolve_command_socket_from(
+                Some(explicit),
+                &target,
+                pane.socket.as_deref()
+            ),
+            Some(explicit.to_path_buf())
+        );
     }
 
     /// A private `HOME` no longer moves profiles. Without `--profile-root`

@@ -176,6 +176,7 @@ fn outcome(bin: &str, argv: &[String]) -> Outcome {
         Ok(Selectors {
             profile,
             root: select_profile_root(&r.profile_roots)?,
+            socket_given: false,
         })
     }) {
         Ok(selection) => selection,
@@ -243,6 +244,10 @@ fn outcome(bin: &str, argv: &[String]) -> Outcome {
     let cli = match Cli::from_arg_matches_mut(&mut matches) {
         Ok(cli) => cli,
         Err(error) => return grammar_error(bin, &r.path, error),
+    };
+    let selection = Selectors {
+        socket_given: cli.socket.is_some(),
+        ..selection
     };
     match cli.command {
         Some(crate::cli::args::Commands::Completions { shell }) => Outcome::Completions { shell },
