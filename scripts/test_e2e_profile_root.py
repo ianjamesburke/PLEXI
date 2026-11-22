@@ -21,6 +21,7 @@ SCRIPTS = (
     "scripts/skill-check.sh",
     "scripts/e2e/ledger/run.sh",
 )
+MARKER = ".disposable-plexi-root"
 MARK = 'plexi_profile_root "$SCRIPT_ROOT"\n'
 STUB = (
     "#!/bin/bash\n"
@@ -29,14 +30,18 @@ STUB = (
     'echo "$2" >> "$FIXTURE_ROOTS"\n'
     'root="$2"; shift 2\n'
     'case "$*" in\n'
-    '  "host status --json") echo "{\\"socket\\": \\"$root/.plexi-alpha/notify.sock\\"}" ;;\n'
+    '  "host status --json") echo "{\\"socket\\": \\"$root/.plexi-alpha/notify.sock\\", \\"account_rooted\\": ${FIXTURE_ACCOUNT_ROOTED:-false}}" ;;\n'
     '  *) echo "unexpected command: $*" >&2; exit 90 ;;\n'
     "esac\n"
 )
 
 
+def out_root(env):
+    return env.get("PLEXI_E2E_PROFILE_ROOT") or env["TMPDIR"]
+
+
 class StandaloneRoots(unittest.TestCase):
-    def run_init(self, relative, harness_root=None):
+    def run_init(self, relative, harness_root=None, marked=True, account_rooted=False):
         with tempfile.TemporaryDirectory(prefix="plexi-1695-") as temp:
             sandbox = Path(temp)
             source = (ROOT / relative).read_text()
@@ -77,9 +82,24 @@ class StandaloneRoots(unittest.TestCase):
             if harness_root is not None:
                 env["PLEXI_E2E_PROFILE_ROOT"] = str(sandbox / harness_root)
                 (sandbox / harness_root).mkdir()
+                if marked:
+                    (sandbox / harness_root / MARKER).touch()
+            if account_rooted:
+                env["FIXTURE_ACCOUNT_ROOTED"] = "true"
             result = subprocess.run(
                 ["bash", str(script)], env=env, capture_output=True, text=True, timeout=60
             )
+            if not marked or account_rooted:
+                self.assertNotEqual(result.returncode, 0, relative + result.stdout)
+                calls = sandbox / "roots.txt"
+                if not marked:
+                    self.assertFalse(calls.exists(), "the binary ran on an unmarked root")
+                    self.assertIn("was not created by plexi_script_root", result.stderr)
+                else:
+                    self.assertIn("account's home", result.stderr)
+                written = [p for p in Path(out_root(env)).iterdir() if p.name == ".profile-root-bin"]
+                self.assertEqual(written, [], "the helper wrote into a refused root")
+                return None
             self.assertEqual(result.returncode, 0, relative + result.stdout + result.stderr)
             out = dict(
                 line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
@@ -103,6 +123,16 @@ class StandaloneRoots(unittest.TestCase):
             with self.subTest(script=relative):
                 sandbox, home, tmp, out = self.run_init(relative, harness_root="harness")
                 self.assertEqual(out["ROOT"], str(sandbox / "harness"))
+
+    def test_an_inherited_root_without_the_marker_is_refused(self):
+        for relative in SCRIPTS:
+            with self.subTest(script=relative):
+                self.run_init(relative, harness_root="stray", marked=False)
+
+    def test_an_account_rooted_root_is_refused(self):
+        for relative in SCRIPTS:
+            with self.subTest(script=relative):
+                self.run_init(relative, harness_root="owner", account_rooted=True)
 
 
 if __name__ == "__main__":

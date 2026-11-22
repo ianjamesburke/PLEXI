@@ -31,7 +31,7 @@ class SkillCheckPaths(unittest.TestCase):
                 'root="$2"; shift 2\n'
                 'echo "$root" >> "$FIXTURE_ROOTS"\n'
                 'case "$*" in\n'
-                '  "host status --json") echo "{\\"socket\\": \\"$root/.plexi-fixture/notify.sock\\"}" ;;\n'
+                '  "host status --json") echo "{\\"socket\\": \\"$root/.plexi-fixture/notify.sock\\", \\"account_rooted\\": false}" ;;\n'
                 '  --version) echo "plexi 1.0.0" ;;\n'
                 '  "host stop") ;;\n'
                 '  "skill install --agent all")\n'

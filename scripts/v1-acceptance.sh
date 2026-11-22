@@ -118,8 +118,14 @@ unset PLEXI_SOCKET PLEXI_PANE_ID PLEXI_CONTEXT_ID PLEXI_CONTEXT_ROOT \
   PLEXI_CONTEXT_NAME PLEXI_RUNNING PLEXI_CALL_CREDENTIAL || true
 
 REAL_HOME="${HOME}"
-WORK_HOME="$(mktemp -d "${TMPDIR:-/tmp}/plexi-v1-home.XXXXXX")"
-export HOME="$WORK_HOME"
+# The one disposable root: created and marked by the shared helper, which
+# also moves HOME there. Items accept it only because of that marker.
+unset PLEXI_E2E_PROFILE_ROOT || true
+# shellcheck source=scripts/e2e/profile-root.sh
+source "$HARNESS_DIR/e2e/profile-root.sh"
+plexi_script_root
+WORK_HOME="$SCRIPT_ROOT"
+export PLEXI_E2E_PROFILE_ROOT="$WORK_HOME"
 mkdir -p "$HOME/.plexi"
 # Python apps (chess, packaged samples) load the WASI bundle from the
 # profile home. Item scripts symlink $ORIG_HOME/.plexi/wasm-bundles into
@@ -167,7 +173,7 @@ cleanup() {
   if [[ -n "$XVFB_PID" ]]; then
     kill "$XVFB_PID" >/dev/null 2>&1 || true
   fi
-  if [[ -n "${WORK_HOME:-}" && "$WORK_HOME" == *plexi-v1-home* ]]; then
+  if [[ -n "${WORK_HOME:-}" && "$WORK_HOME" == *plexi-e2e-root* ]]; then
     rm -rf "$WORK_HOME"
   fi
 }
@@ -584,11 +590,7 @@ if [[ -n "$BIN" ]]; then
   # including the cleanup trap, reaches only the profile under WORK_HOME.
   # Before this line the trap's stop runs the bare binary under a private
   # HOME, which the binary refuses.
-  # shellcheck source=scripts/e2e/profile-root.sh
-  source "$REPO/scripts/e2e/profile-root.sh"
   plexi_profile_root "$WORK_HOME"
-  # Items root in this same temp home instead of making their own.
-  export PLEXI_E2E_PROFILE_ROOT="$WORK_HOME"
 fi
 
 # [ai] backend = "openrouter" from the tree's default config. Item scripts

@@ -1780,6 +1780,7 @@ pub fn host_status_cli(json: bool) -> i32 {
             "pane_count": pane_count,
             "pid": pid,
             "socket": socket_path.to_string_lossy(),
+            "account_rooted": target.account_rooted(),
         });
         println!("{payload}");
     } else if ready {
