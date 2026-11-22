@@ -806,6 +806,41 @@ struct PendingSubscribe {
     reply: SyncSender<ToolCallResult>,
 }
 
+/// The refusal for a `*` event on the Assistant's event tools, naming the
+/// streams to ask for instead. These tools take exact stream names only.
+fn wildcard_stream_refusal(
+    timeline: &Mutex<PluginTimeline>,
+    context_id: u64,
+    tool: &str,
+    input_json: &str,
+) -> Option<String> {
+    if !matches!(tool, HOST_TOOL_SUBSCRIBE | HOST_TOOL_UNSUBSCRIBE) {
+        return None;
+    }
+    let input = serde_json::from_str::<serde_json::Value>(input_json).ok()?;
+    if input.get("event")?.as_str()?.trim() != "*" {
+        return None;
+    }
+    let app = input
+        .get("plugin")
+        .and_then(|plugin| plugin.as_str())
+        .unwrap_or("")
+        .trim();
+    let declared = timeline
+        .lock()
+        .unwrap()
+        .declared_stream_names(context_id, app);
+    let streams = if declared.is_empty() {
+        "none".to_string()
+    } else {
+        declared.join(", ")
+    };
+    log::info!("assistant: refused '*' on {tool} for '{app}'");
+    Some(format!(
+        "invalid_input: '*' is not a stream name. Call {tool} once per stream with its exact name. Streams declared by '{app}': {streams}"
+    ))
+}
+
 impl AssistantView {
     fn service_settings_watches(
         &mut self,
@@ -1054,6 +1089,10 @@ impl AssistantView {
                 continue;
             };
             let (app, event) = (app.to_string(), event.to_string());
+            if event.trim() == "*" {
+                log::info!("assistant: legacy grant '{target}' names no stream; not restored");
+                continue;
+            }
             if self.event_stream_decision(&app, &event) != Decision::Allow {
                 log::info!(
                     "assistant: persisted subscription '{target}' withheld by permission posture"
@@ -1068,24 +1107,15 @@ impl AssistantView {
         );
     }
 
-    /// Add a live timeline subscription for `<plugin>::<event>` (`*` = all
-    /// streams the plugin declares). Caller must have established the grant.
+    /// Add a live timeline subscription for one exact `<plugin>::<event>`.
+    /// Caller must have established the grant.
     fn subscribe_stream(&mut self, app: &str, event: &str) {
         let target = format!("{app}::{event}");
         if self.live_subs.iter().any(|(t, _)| *t == target) {
             log::info!("assistant: already subscribed to '{target}'");
             return;
         }
-        // "All streams" is the streams declared now, each decided as
-        // itself; a stream declared later is never delivered (stint 1632).
-        let event_names = if event == "*" {
-            self.timeline
-                .lock()
-                .unwrap()
-                .declared_stream_names(self.context_id, app)
-        } else {
-            vec![event.to_string()]
-        };
+        let event_names = vec![event.to_string()];
         let subscription_id = crate::host::event_subscriptions::record_subscription(
             &self.timeline,
             app,
@@ -1313,16 +1343,7 @@ impl AssistantView {
     }
 
     fn event_stream_decision(&self, app: &str, event: &str) -> Decision {
-        // "All streams" is the streams declared now, each decided as
-        // itself; a stream declared later is never delivered (stint 1632).
-        let event_names = if event == "*" {
-            self.timeline
-                .lock()
-                .unwrap()
-                .declared_stream_names(self.context_id, app)
-        } else {
-            vec![event.to_string()]
-        };
+        let event_names = vec![event.to_string()];
         let posture = self.active_posture();
         crate::host::event_subscriptions::evaluate_subscription(
             &self.grants(),
@@ -1481,6 +1502,11 @@ impl AssistantView {
             visible_host_tools.push(tool);
         }
         dispatcher.add_host_tools(visible_host_tools, handler);
+        let timeline = Arc::clone(&self.timeline);
+        let context_id = self.context_id;
+        dispatcher.set_host_input_check(Arc::new(move |name, input_json| {
+            wildcard_stream_refusal(&timeline, context_id, name, input_json)
+        }));
         dispatcher
     }
 
@@ -1492,7 +1518,7 @@ impl AssistantView {
                 "plugin": {"type": "string", "description": "Plugin id, e.g. 'calc'"},
                 "event": {
                     "type": "string",
-                    "description": "Declared event stream name, or '*' for all"
+                    "description": "Exact declared event stream name"
                 },
             },
             "required": ["plugin", "event"],
@@ -1500,8 +1526,9 @@ impl AssistantView {
         vec![
             AiTool {
                 name: HOST_TOOL_SUBSCRIBE.to_string(),
-                description: "Subscribe to a plugin's event stream so its events \
-                    appear in this conversation. May pause for the user's permission."
+                description: "Subscribe to one exact plugin event stream so its events \
+                    appear in this conversation. Call once per stream. May pause for the \
+                    user's permission."
                     .to_string(),
                 input_schema: schema.clone(),
                 output_schema: serde_json::json!({"type": "object"}),
@@ -1510,7 +1537,7 @@ impl AssistantView {
             },
             AiTool {
                 name: HOST_TOOL_UNSUBSCRIBE.to_string(),
-                description: "Stop receiving a plugin's event stream.".to_string(),
+                description: "Stop receiving one exact plugin event stream.".to_string(),
                 input_schema: schema,
                 output_schema: serde_json::json!({"type": "object"}),
                 timeout_ms: Some(30_000),
@@ -1932,6 +1959,12 @@ impl AssistantView {
                 origin_context_id: 0,
                 reply,
             });
+            return;
+        }
+        if let Some(message) =
+            wildcard_stream_refusal(&self.timeline, self.context_id, tool, input_json)
+        {
+            let _ = reply.send(ToolCallResult::err(message));
             return;
         }
         let err = ToolCallResult::err;
@@ -6815,13 +6848,13 @@ enabled = ["allowed.tool"]
         // pane closes without unsubscribing (the leak this guards against).
         {
             let mut first = test_plugin_with_timeline(ws.path(), timeline.clone());
-            first.subscribe_stream("chess", "*");
+            first.subscribe_stream("chess", "move.played");
             let workspace = first.workspace_root.clone();
             first.grants().record(GrantRecord::event_stream_allow(
                 ActorType::Agent,
                 ASSISTANT_ACTOR_ID,
                 ActorScope::User,
-                "chess::*",
+                "chess::move.played",
                 &workspace,
                 GrantDuration::Always,
                 GrantSource::User,
@@ -6873,18 +6906,104 @@ enabled = ["allowed.tool"]
             record.subscriber_context_id, TEST_CTX,
             "the assistant's subscription must carry its own host-established context"
         );
+    }
 
-        // `*` subscribes to all declared streams → empty event_names.
-        drop(guard);
+    #[test]
+    fn wildcard_is_refused_before_any_sheet_attention_item_grant_or_subscription() {
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        let mut app = test_plugin_with_timeline(ws.path(), timeline.clone());
+        for tool in [HOST_TOOL_SUBSCRIBE, HOST_TOOL_UNSUBSCRIBE] {
+            for event in ["*", " * ", "\t*\n"] {
+                let input = serde_json::json!({"plugin": "chess", "event": event}).to_string();
+                let rx =
+                    dispatch_on_worker_with_input(Arc::new(app.gated_dispatcher()), tool, &input);
+                let result = rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .expect("'*' must be refused without waiting on a prompt");
+                let error = result.error.expect("'*' must be an error");
+                assert!(error.contains("exact name"), "{error}");
+                assert!(error.contains("move.played"), "{error}");
+                app.pump_turn_io();
+                assert!(app.model.pending_permission.is_none(), "no sheet");
+                assert!(app.monitor.list_pending().is_empty(), "no attention item");
+                assert!(app.grants().records().is_empty(), "no grant");
+                assert!(app.live_subs.is_empty(), "no live subscription");
+                assert!(timeline.lock().unwrap().subscriptions().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn host_call_handler_refuses_wildcard_even_with_a_legacy_grant() {
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        let mut app = test_plugin_with_timeline(ws.path(), timeline.clone());
+        record_stream_allow(&app, "chess::*");
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        app.handle_host_call(
+            HOST_TOOL_SUBSCRIBE,
+            r#"{"plugin": "chess", "event": " * "}"#,
+            tx,
+        );
+        let result = rx.try_recv().expect("refusal replies synchronously");
+        assert!(result.error.unwrap_or_default().contains("exact name"));
+        assert!(app.live_subs.is_empty());
+        assert!(app.model.pending_permission.is_none());
+    }
+
+    fn record_stream_allow(app: &AssistantView, target: &str) {
+        let workspace = app.workspace_root.clone();
+        app.grants().record(GrantRecord::event_stream_allow(
+            ActorType::Agent,
+            ASSISTANT_ACTOR_ID,
+            ActorScope::User,
+            target,
+            &workspace,
+            GrantDuration::Always,
+            GrantSource::User,
+            None,
+        ));
+        app.grants().save();
+    }
+
+    #[test]
+    fn legacy_wildcard_grant_is_never_restored() {
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        {
+            let first = test_plugin_with_timeline(ws.path(), timeline.clone());
+            record_stream_allow(&first, "chess::*");
+            record_stream_allow(&first, "chess:: * ");
+            record_stream_allow(&first, "chess::move.played");
+        }
+        let reopened = test_plugin_with_timeline(ws.path(), timeline);
+        let live: Vec<&str> = reopened.live_subs.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(live, ["chess::move.played"]);
+    }
+
+    /// `*` is no longer expanded anywhere: a member's grant does not decide
+    /// it, and a literal `*` subscription matches no declared stream.
+    #[test]
+    fn star_is_not_expanded_to_declared_streams() {
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        let mut app = test_plugin_with_timeline(ws.path(), timeline.clone());
+        record_stream_allow(&app, "chess::move.played");
+        assert_eq!(app.event_stream_decision("chess", "*"), Decision::Ask);
         app.subscribe_stream("chess", "*");
-        let guard = timeline.lock().unwrap();
-        let star = guard
-            .subscriptions()
-            .iter()
-            .find(|r| r.event_names.is_empty())
-            .expect("`*` subscribe must record an all-streams subscription");
-        assert_eq!(star.plugin_id, "chess");
-        assert_eq!(star.subscriber_id, ASSISTANT_ACTOR_ID);
+        assert_eq!(emit_move(&timeline, PluginEventActor::User, None, None), 0);
+    }
+
+    #[test]
+    fn event_tools_tell_the_model_to_use_exact_streams() {
+        for tool in AssistantView::host_event_tools() {
+            let text = format!("{} {}", tool.description, tool.input_schema);
+            assert!(text.contains("exact"), "{text}");
+            assert!(!text.contains('*'), "{text}");
+        }
+        assert!(!ASSISTANT_AGENT_PROMPT.contains("event name or *"));
+        assert!(ASSISTANT_AGENT_PROMPT.contains("<exact event name>"));
     }
 
     #[test]

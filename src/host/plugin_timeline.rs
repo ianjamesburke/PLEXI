@@ -397,6 +397,9 @@ impl PluginTimeline {
             if decl.name.trim().is_empty() {
                 return Err("declare_event_streams: stream name must be non-empty".to_string());
             }
+            if decl.name.trim() == "*" {
+                return Err("declare_event_streams: '*' is not a valid stream name".to_string());
+            }
             if !decl.schema.is_object() {
                 return Err(format!(
                     "declare_event_streams: schema for '{}' must be a JSON object",
@@ -1729,6 +1732,24 @@ mod tests {
     /// Direct unit coverage of `SubscriptionRecord::matches`'s new
     /// `evaluate_reach` gate, independent of the higher-level `record_event`
     /// flow above — mirrors Phase C's `tool_dispatch.rs` test style.
+    #[test]
+    fn wildcard_is_not_a_declarable_stream_name() {
+        let mut timeline = PluginTimeline::default();
+        for name in ["*", " * "] {
+            let refused = timeline.declare_streams(
+                CTX,
+                "chess",
+                vec![EventStreamDecl {
+                    name: name.to_string(),
+                    schema: serde_json::json!({"type": "object"}),
+                    description: None,
+                }],
+            );
+            assert!(refused.is_err(), "'{name}' must be refused");
+        }
+        assert!(timeline.declared_stream_names(CTX, "chess").is_empty());
+    }
+
     #[test]
     fn matches_rejects_cross_context_even_with_identical_plugin_and_event_name() {
         let mut same_context = subscription(PayloadMode::Full, TriggerMode::Conversation);
