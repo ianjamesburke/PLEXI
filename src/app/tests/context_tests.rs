@@ -31,7 +31,7 @@ fn live_resize_defers_workspace_flush_until_settled() {
     // The occluded pass at a new size is the gesture's last resize frame.
     h.hidden_frame();
     assert_eq!(h.app.last_workspace_save, old_save);
-    // A same-size pass inside the hold, as a deferring terminal's immediate
+    // A same-size pass inside the hold, as a deferring terminal's settle
     // repaint produces: it supersedes the resize frame's post-hold wake.
     h.hidden_frame();
     assert_eq!(h.app.last_workspace_save, old_save);

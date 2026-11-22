@@ -15,3 +15,13 @@ texture. Live host validation remains a separate requirement.
 
 The vendored copy also updates renamed lints and obsolete lint expectations for
 the repository toolchain; eframe reuses its existing viewport callback alias.
+
+# Live-resize backport (stint 1224)
+
+`Painter::configure_surface` and `Painter::on_window_resize_state_change` carry
+upstream egui #8229 (egui-wgpu 0.35): the resizing flag is set before the
+reconfigure, which uses at least two frames of latency (three Metal drawables)
+while resizing. Drop this hunk when upgrading to egui-wgpu 0.35 or later.
+
+`resize_trace` is diagnostic timing for stint 1224 (surface configure, acquire,
+submit, present per resize gesture). Remove it with the diagnosis.

@@ -5209,8 +5209,8 @@ impl PlexiApp {
             .filter(|remaining| !remaining.is_zero());
         if let Some(remaining) = remaining {
             // Re-armed on every pass inside the hold, not only on passes that
-            // moved: an immediate repaint (a deferring terminal) supersedes
-            // the earlier request, and that pass must schedule the post-hold
+            // moved: a sooner repaint (a deferring terminal's settle pass)
+            // supersedes the earlier request, and that pass must schedule the post-hold
             // pass itself or an idle host never ends the gesture.
             let predicted = ctx.input(|i| i.predicted_dt);
             ctx.request_repaint_after(remaining + std::time::Duration::from_secs_f32(predicted));

@@ -15723,6 +15723,95 @@ mod terminal_resize_debounce_tests {
         }
     }
 
+    /// Stint 1224: a held terminal resize schedules no immediate same-size
+    /// repaint. After a pass at a new size the host must not ask for another
+    /// pass sooner than the next size step can arrive. A terminal holding back
+    /// its reflow used to request an immediate repaint, and egui answers an
+    /// immediate request with two passes. This proves only what the host
+    /// schedules, not how many times a real window paints. Shell output is
+    /// content and still repaints at once, so passes woken by a PTY reader
+    /// are not counted; the cursor blink is off so its timer cannot land
+    /// between steps.
+    #[test]
+    fn held_resize_schedules_no_immediate_same_size_repaint() {
+        // One 60 Hz frame: the soonest AppKit delivers the next size step.
+        const STEP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+        let mut h = HostHarness::new();
+        let terminals = three_side_by_side_terminals(&mut h);
+        for id in terminals {
+            let widget_id = egui_term::terminal_widget_id(id);
+            h.ctx.data_mut(|data| {
+                let mut state = data
+                    .get_temp::<egui_term::TerminalViewState>(widget_id)
+                    .unwrap_or_default();
+                state.set_cursor_blink_enabled(false);
+                data.insert_temp(widget_id, state);
+            });
+        }
+        for _ in 0..4 {
+            frame_at_width(&mut h, START_WIDTH);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        for _ in 0..12 {
+            frame_at_width(&mut h, START_WIDTH);
+        }
+        let start_grids = grids(&mut h, &terminals);
+        let woken_by_shell_output = |h: &HostHarness| {
+            h.ctx
+                .repaint_causes()
+                .iter()
+                .any(|cause| cause.file.ends_with("egui_term/src/backend/mod.rs"))
+        };
+        let mut scheduled_repaints_per_step = Vec::new();
+        let mut width = START_WIDTH;
+        for step in 1..=24 {
+            width = START_WIDTH - step as f32 * 20.0;
+            frame_at_width(&mut h, width);
+            // An event loop runs another pass at this size whenever the host
+            // asked for one before the next size step can arrive.
+            // egui answers every immediate request with two passes, the
+            // second carrying no cause, so the pass after a shell-output wake
+            // is shell output's too. Output that arrived just before this
+            // step's pass shows on that pass and wakes the one after it.
+            let mut scheduled = 0;
+            let mut after_shell_output = woken_by_shell_output(&h);
+            for _ in 0..8 {
+                if h.last_repaint_delay >= STEP_INTERVAL {
+                    break;
+                }
+                frame_at_width(&mut h, width);
+                let shell = woken_by_shell_output(&h);
+                if !shell && !after_shell_output {
+                    scheduled += 1;
+                }
+                after_shell_output = shell;
+            }
+            scheduled_repaints_per_step.push(scheduled);
+        }
+        assert!(
+            scheduled_repaints_per_step.iter().all(|&extra| extra == 0),
+            "same-size repaints the host scheduled after each drag step: \
+             {scheduled_repaints_per_step:?}"
+        );
+        // The drag ends: the passes the host scheduled commit the final grid
+        // with no further input.
+        let mut settle_passes = 0;
+        while h.last_repaint_delay < std::time::Duration::from_secs(1) && settle_passes < 20 {
+            std::thread::sleep(h.last_repaint_delay);
+            frame_at_width(&mut h, width);
+            settle_passes += 1;
+        }
+        let end_grids = grids(&mut h, &terminals);
+        for (i, id) in terminals.iter().enumerate() {
+            assert!(
+                end_grids[i].0 < start_grids[i].0,
+                "terminal {id} kept {:?} after the drag ended (started {:?})",
+                end_grids[i],
+                start_grids[i]
+            );
+        }
+    }
+
     /// Stint 1224: a long window drag reflows each terminal at most once per
     /// `MAX_DEFERRED_RESIZE_FRAMES` frames, never two terminals on one frame,
     /// and never saves the workspace mid-gesture. Small steps keep the cell

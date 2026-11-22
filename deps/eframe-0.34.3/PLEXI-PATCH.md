@@ -15,3 +15,11 @@ Run from the workspace with `cargo test -p eframe --no-default-features
 
 The vendored copy also updates renamed lints and obsolete lint expectations for
 the repository toolchain; eframe reuses its existing viewport callback alias.
+
+# Live-resize backport (stint 1224)
+
+`WgpuWinitRunning::on_window_event` carries upstream egui #8229 (shipped in
+eframe 0.35): `Resized` and, on macOS, `Moved` keep the resize state active.
+Before it, every `Resized` ended and restarted the state, so each size step
+reconfigured the surface three times and toggled `presentsWithTransaction`.
+Drop this hunk when upgrading to eframe 0.35 or later.

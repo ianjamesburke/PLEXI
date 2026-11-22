@@ -188,6 +188,11 @@ impl Widget for TerminalView<'_> {
     }
 }
 
+/// How long a held-back terminal resize waits for the size to stop changing
+/// before the pass that commits it. Longer than the gap between live-resize
+/// steps at 60 Hz or faster, so it fires only once a drag pauses or ends.
+const RESIZE_SETTLE: Duration = Duration::from_millis(50);
+
 /// The one mid-drag reflow a pass allows across every terminal (stint 1224),
 /// kept in egui temp data. It goes to the oldest pending resize: a terminal
 /// may take it only once its hold reaches the longest hold any terminal
@@ -335,8 +340,11 @@ impl<'a> TerminalView<'a> {
             // The commit runs on the next frame that reports the same
             // geometry, so a drag that ends between frames must still produce
             // one more pass — otherwise the final size is stranded and the
-            // shell keeps wrapping to the pre-drag width (stint 0719).
-            layout.ctx.request_repaint();
+            // shell keeps wrapping to the pre-drag width (stint 0719). That
+            // pass waits until the size has held for `RESIZE_SETTLE`; an
+            // immediate request made egui run extra passes at the same size
+            // on every drag step (stint 1224).
+            layout.ctx.request_repaint_after(RESIZE_SETTLE);
         }
 
         self

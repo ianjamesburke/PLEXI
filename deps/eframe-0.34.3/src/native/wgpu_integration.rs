@@ -847,13 +847,21 @@ impl WgpuWinitRunning<'_> {
         //
         // Thus, Painter, responsible for wgpu surfaces and their resize, has to be notified of the
         // resize lifecycle, yet winit does not provide any events for that. To work around,
-        // the last resized viewport is tracked until any next non-resize event is received.
+        // the last resized viewport is tracked until a later event outside the live resize stream
+        // is received.
         //
-        // Accidental state change during the resize process due to an unexpected event fire
-        // is ok, state will switch back upon next resize event.
+        // AppKit can emit `Moved` events during top/left live resize because the window origin
+        // changes along with the content size. Treat those as part of live resize on macOS.
+        //
+        // Backport of upstream egui #8229 (eframe 0.35). Without it every `Resized` event ended
+        // and restarted the resize state, reconfiguring the surface three times per size step.
         //
         // See: https://github.com/emilk/egui/issues/903
-        if let Some(id) = viewport_id
+        let event_keeps_resize_active = matches!(event, winit::event::WindowEvent::Resized(_))
+            || (cfg!(target_os = "macos") && matches!(event, winit::event::WindowEvent::Moved(_)));
+
+        if !event_keeps_resize_active
+            && let Some(id) = viewport_id
             && shared.resized_viewport == viewport_id
         {
             egui_wgpu::winit::resize_trace::note_resize_end_event(
