@@ -230,9 +230,8 @@ fn pane_profile(ambient: &Ambient) -> Result<Option<(String, Option<PathBuf>)>, 
 
 /// The profile directory an endpoint belongs to: `<root>/.plexi[-name]/notify.sock`
 /// on Unix, `\\.\pipe\plexi[-name]` on Windows (whose root is the account
-/// home). A Windows pipe of a host under another root carries a root digest
-/// that names no directory, so it is refused rather than mapped onto the
-/// account home.
+/// home). A Windows scratch-root pipe names no directory, so it is refused
+/// rather than mapped onto the account home.
 fn endpoint_profile(
     endpoint: &std::ffi::OsStr,
 ) -> Result<Option<(String, Option<PathBuf>)>, String> {
@@ -258,17 +257,15 @@ fn endpoint_profile(
     }
     #[cfg(windows)]
     {
-        use plexi_distribution::host_presence::{PIPE_PREFIX, ROOT_TAG};
+        use plexi_distribution::host_presence::{PIPE_PREFIX, SCRATCH_PIPE_SEPARATOR};
         let Some(rest) = endpoint.to_str().and_then(|e| e.strip_prefix(PIPE_PREFIX)) else {
             return Ok(None);
         };
-        if let Some((_, digest)) = rest.rsplit_once(ROOT_TAG) {
-            if digest.len() == 16 && digest.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err(format!(
-                    "this pane's host endpoint {} belongs to a profile under another root; pass --profile-root <dir> to reach it",
-                    endpoint.to_string_lossy()
-                ));
-            }
+        if rest.starts_with(SCRATCH_PIPE_SEPARATOR) {
+            return Err(format!(
+                "this pane's host endpoint {} belongs to a profile under another root; pass --profile-root <dir> to reach it",
+                endpoint.to_string_lossy()
+            ));
         }
         let dir = format!(".plexi{rest}");
         Ok(valid_dir(&dir).then_some((dir, None)))

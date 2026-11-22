@@ -40,42 +40,38 @@ pub fn endpoint_in(profile_dir: &Path) -> PathBuf {
     }
     #[cfg(windows)]
     {
-        let account = crate::profile_target::account_home().ok();
-        PathBuf::from(pipe_name_in(profile_dir, account.as_deref()))
+        let (canonical, account_rooted) = crate::profile_target::profile_identity(profile_dir);
+        PathBuf::from(pipe_name_in(&canonical, account_rooted))
     }
 }
 
 /// The Windows pipe prefix: `\\.\pipe\plexi`.
 pub const PIPE_PREFIX: &str = r"\\.\pipe\plexi";
 
-/// Separates a Windows pipe's profile name from its root digest.
-pub const ROOT_TAG: &str = "-r";
+/// Separates a scratch-root pipe from the account namespace. A profile name
+/// cannot contain it, so the two namespaces are disjoint by grammar.
+pub const SCRATCH_PIPE_SEPARATOR: char = '.';
 
-/// The Windows pipe for a profile dir (stint 1695): `\\.\pipe\plexi[-<suffix>]`
-/// for a profile under the account home, and
-/// `\\.\pipe\plexi[-<suffix>]-r<root digest>` under any other root, so one
-/// profile name in two roots never shares an endpoint. Pure, so every
-/// platform tests it.
-pub fn pipe_name_in(profile_dir: &Path, account_home: Option<&Path>) -> String {
-    let suffix = profile_dir
+/// The Windows pipe for a profile (stint 1695). An account-rooted profile
+/// keeps `\\.\pipe\plexi[-<name>]`, so old hosts and clients still meet. Any
+/// other root is `\\.\pipe\plexi.<32 hex of sha256(canonical dir)>`: no name
+/// is embedded and nothing parses it back. Pure, so every platform tests it.
+pub fn pipe_name_in(canonical_dir: &Path, account_rooted: bool) -> String {
+    if !account_rooted {
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(canonical_dir.to_string_lossy().as_bytes());
+        let hex: String = digest.iter().take(16).map(|b| format!("{b:02x}")).collect();
+        return format!("{PIPE_PREFIX}{SCRATCH_PIPE_SEPARATOR}{hex}");
+    }
+    match canonical_dir
         .file_name()
         .and_then(|name| name.to_str())
         .and_then(|name| name.strip_prefix(".plexi-"))
-        .filter(|suffix| !suffix.is_empty());
-    let mut name = match suffix {
+        .filter(|suffix| !suffix.is_empty())
+    {
         Some(suffix) => format!("{PIPE_PREFIX}-{suffix}"),
         None => PIPE_PREFIX.to_string(),
-    };
-    let root = profile_dir.parent();
-    if root.is_none() || root != account_home {
-        use sha2::Digest;
-        let root = root.unwrap_or(Path::new(""));
-        let digest = sha2::Sha256::digest(root.to_string_lossy().as_bytes());
-        let hex: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
-        name.push_str(ROOT_TAG);
-        name.push_str(&hex);
     }
-    name
 }
 
 /// The profile's spawn-queue dir, which its host drains on its first frame.
@@ -415,36 +411,30 @@ mod tests {
         );
     }
 
-    /// Stint 1695: the same profile name in two roots gets two pipes; under
-    /// the account home the pipe keeps its plain name.
+    /// Design 1695 (test 2): the account and scratch pipe namespaces are
+    /// disjoint for every valid name, the adversarial digest-shaped ones
+    /// included, and one name in two roots gets two pipes.
     #[test]
-    fn a_pipe_name_carries_its_profile_root() {
-        let account = Path::new("/home/ian");
-        assert_eq!(
-            pipe_name_in(&account.join(".plexi-alpha"), Some(account)),
-            r"\\.\pipe\plexi-alpha"
-        );
-        assert_eq!(
-            pipe_name_in(&account.join(".plexi"), Some(account)),
-            r"\\.\pipe\plexi"
-        );
-        let scratch_a = pipe_name_in(Path::new("/scratch/a/.plexi-alpha"), Some(account));
-        let scratch_b = pipe_name_in(Path::new("/scratch/b/.plexi-alpha"), Some(account));
-        assert!(
-            scratch_a.starts_with(r"\\.\pipe\plexi-alpha-r"),
-            "{scratch_a}"
-        );
-        assert_ne!(scratch_a, scratch_b);
-        assert_ne!(scratch_a, r"\\.\pipe\plexi-alpha");
-        assert_eq!(
-            scratch_a,
-            pipe_name_in(Path::new("/scratch/a/.plexi-alpha"), Some(account))
-        );
-        // No account home: every root is tagged.
-        assert_ne!(
-            pipe_name_in(&account.join(".plexi-alpha"), None),
-            r"\\.\pipe\plexi-alpha"
-        );
+    fn account_and_scratch_pipes_never_share_a_name() {
+        let names = ["", "-alpha", "-x-r0123456789abcdef", "-r0123456789abcdef"];
+        for name in names {
+            let dir = format!(".plexi{name}");
+            let account = pipe_name_in(&Path::new("/home/ian").join(&dir), true);
+            let rest = account.strip_prefix(PIPE_PREFIX).unwrap();
+            assert!(!rest.contains(SCRATCH_PIPE_SEPARATOR), "{account}");
+            assert_eq!(rest, name);
+            let a = pipe_name_in(&Path::new("/scratch/a").join(&dir), false);
+            let b = pipe_name_in(&Path::new("/scratch/b").join(&dir), false);
+            assert_ne!(a, b);
+            assert_ne!(a, account);
+            let digest = a
+                .strip_prefix(PIPE_PREFIX)
+                .and_then(|rest| rest.strip_prefix(SCRATCH_PIPE_SEPARATOR))
+                .unwrap();
+            assert_eq!(digest.len(), 32, "{a}");
+            assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()), "{a}");
+            assert_eq!(a, pipe_name_in(&Path::new("/scratch/a").join(&dir), false));
+        }
     }
 
     #[cfg(unix)]

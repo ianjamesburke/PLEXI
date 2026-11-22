@@ -142,12 +142,10 @@ impl ProfileTarget {
             ProfileSource::Default => ".plexi".to_string(),
         };
         ensure_real_profile_dir(&root.join(&dir_name))?;
-        let canonical_root = canonical_or_given(&root);
-        let account_rooted = root_source == RootSource::Account
-            || account_home().is_ok_and(|home| canonical_or_given(&home) == canonical_root);
+        let (canonical_dir, under_account) = profile_identity(&root.join(&dir_name));
         Ok(Self {
-            canonical_dir: canonical_root.join(&dir_name),
-            account_rooted,
+            canonical_dir,
+            account_rooted: root_source == RootSource::Account || under_account,
             root,
             root_source,
             dir_name,
@@ -290,6 +288,20 @@ impl ProfileTarget {
         }
         args
     }
+}
+
+/// A profile directory's identity: its canonical path, and whether its root
+/// is the account home (compared canonically; a failed home lookup is "no").
+pub fn profile_identity(profile_dir: &Path) -> (PathBuf, bool) {
+    let root = profile_dir.parent().unwrap_or(profile_dir);
+    let canonical_root = canonical_or_given(root);
+    let account_rooted =
+        account_home().is_ok_and(|home| canonical_or_given(&home) == canonical_root);
+    let canonical = match profile_dir.file_name() {
+        Some(name) => canonical_root.join(name),
+        None => canonical_root,
+    };
+    (canonical, account_rooted)
 }
 
 /// `path` with its links resolved; as given when it does not exist yet.
