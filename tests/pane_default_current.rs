@@ -18,7 +18,10 @@ fn plexi(home: &std::path::Path, args: &[&str], pane_env: Option<&str>) -> Comma
     }
     // A pane's endpoint lives in its host's profile directory, which is
     // where a bare command in that pane finds its profile (stint 1695).
+    // A private HOME needs its explicit root; the pane socket is that root's.
     command
+        .arg("--profile-root")
+        .arg(home)
         .args(args)
         .env("HOME", home)
         .env("PLEXI_SOCKET", pane_socket(home))
@@ -81,6 +84,10 @@ fn first_request(args: &[&str], pane_env: Option<&str>) -> serde_json::Value {
 
 fn run_failing(args: &[&str], pane_env: Option<&str>) -> Output {
     let home = tempfile::tempdir().unwrap();
+    // The caller's identity survives only when its endpoint is the target.
+    let socket = pane_socket(home.path());
+    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let _listener = UnixListener::bind(&socket).unwrap();
     plexi(home.path(), args, pane_env)
         .output()
         .expect("run plexi")

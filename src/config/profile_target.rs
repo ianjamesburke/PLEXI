@@ -168,12 +168,12 @@ pub fn select(
                 Some(pane_root) => (pane_root, RootSource::Pane),
                 None => (root, root_source),
             };
-            return Ok(ProfileTarget::new(
+            return ProfileTarget::resolve(
                 root,
                 root_source,
                 ProfileSource::Pane(dir_name),
                 build_channel,
-            ));
+            );
         }
     }
     let source = match (named, &build_channel) {
@@ -181,7 +181,7 @@ pub fn select(
         (None, Some(channel)) if !implicit => ProfileSource::Channel(channel.clone()),
         _ => ProfileSource::Default,
     };
-    Ok(ProfileTarget::new(root, root_source, source, build_channel))
+    ProfileTarget::resolve(root, root_source, source, build_channel)
 }
 
 /// The surrounding pane's profile for a bare command. `PLEXI_CHANNEL` is
@@ -301,13 +301,10 @@ pub fn profile_target() -> &'static ProfileTarget {
             &Ambient::default(),
         )
         .unwrap_or_else(|error| {
+            // No target exists for this layout, and none may be invented.
             log::error!("profile_target: fallback selection failed: {error}");
-            ProfileTarget::new(
-                PathBuf::from("/"),
-                RootSource::Account,
-                ProfileSource::Default,
-                None,
-            )
+            eprintln!("error: {error}");
+            std::process::exit(2);
         })
     })
 }

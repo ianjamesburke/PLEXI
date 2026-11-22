@@ -245,35 +245,17 @@ pub(crate) fn addresses_profile_host(command: &crate::cli::args::Commands) -> bo
     }
 }
 
-
 /// This invocation's validated selection. Every lifecycle path (status,
 /// start, stop, restart, log, uninstall) and its trace use only a target
 /// returned here, so nothing connects, traces or signals through a linked
 /// profile.
-pub(crate) fn host_target() -> Result<ProfileTarget, String> {
+pub(crate) fn host_target() -> ProfileTarget {
     let target = crate::config::profile_target::profile_target().clone();
-    ensure_real_profile_dir(&target.dir())?;
     log::info!(
         "host: target {}",
         crate::config::profile_target::describe(&target)
     );
-    Ok(target)
-}
-
-/// [`host_target`] for a `plexi host` verb: a refused target is reported and
-/// becomes the exit code.
-fn cli_host_target() -> Result<ProfileTarget, i32> {
-    host_target().map_err(|error| {
-        log::error!("host: {error}");
-        eprintln!("error: {error}");
-        1
-    })
-}
-
-/// The lifecycle form of [`host_presence::ensure_real_profile_dir`], shared
-/// with the installer.
-pub(crate) fn ensure_real_profile_dir(profile: &Path) -> Result<(), String> {
-    host_presence::ensure_real_profile_dir(profile)
+    target
 }
 
 /// Resolve the canonical installed target, falling back only to this executable
@@ -683,10 +665,7 @@ pub fn host_start_cli(
         }
     }
 
-    let target = match cli_host_target() {
-        Ok(target) => target,
-        Err(code) => return code,
-    };
+    let target = host_target();
     let (bundle_path, binary_path) = resolve_channel_paths();
     let socket_path = target.endpoint();
     log::info!(
@@ -1062,10 +1041,7 @@ fn restart_coordinator_command(
 }
 
 pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
-    let target = match cli_host_target() {
-        Ok(target) => target,
-        Err(code) => return code,
-    };
+    let target = host_target();
     let socket = target.endpoint();
     // Settled once at startup against this target's endpoint identity.
     let own_host = match super::caller_relation() {
@@ -1273,10 +1249,7 @@ fn a_hung_restart_step_is_stopped_at_its_limit() {
 /// (`HostRequest::Shutdown`), falling back to `kill -TERM <pid>` (pid via
 /// host lock) if the socket does not confirm exit within a short timeout.
 pub fn host_stop_cli() -> i32 {
-    let target = match cli_host_target() {
-        Ok(target) => target,
-        Err(code) => return code,
-    };
+    let target = host_target();
     host_stop_cli_in(&target.dir())
 }
 
@@ -1669,13 +1642,7 @@ fn reported_pid(info: &serde_json::Value) -> Option<u32> {
 
 /// Query the running host independently of its profile markers or installed package.
 pub(crate) fn running_build_info() -> Option<serde_json::Value> {
-    match host_target() {
-        Ok(target) => running_build_info_in(&target.dir()),
-        Err(error) => {
-            log::warn!("host: build info not queried: {error}");
-            None
-        }
-    }
+    running_build_info_in(&host_target().dir())
 }
 
 /// [`running_build_info`] for the host of `profile`.
@@ -1785,10 +1752,7 @@ pub(crate) fn plugin_mode_core_only() -> bool {
 
 /// `plexi host status [--json]` — ready/not-ready, pane count, pid, socket path.
 pub fn host_status_cli(json: bool) -> i32 {
-    let target = match cli_host_target() {
-        Ok(target) => target,
-        Err(code) => return code,
-    };
+    let target = host_target();
     let channel = target.build_channel();
     let socket_path = target.endpoint();
     let pane_count = query_ready_status(
@@ -1853,10 +1817,7 @@ pub fn host_status_cli(json: bool) -> i32 {
 /// runs from a plain terminal. Waits for the host's `{"ok":true}` ack so a
 /// nonzero exit reliably means the marker did not land.
 pub fn host_log_cli(source: &str, message: &str) -> i32 {
-    let target = match cli_host_target() {
-        Ok(target) => target,
-        Err(code) => return code,
-    };
+    let target = host_target();
     let channel = target.build_channel();
     let profile_dir = target.dir();
     let socket_path = endpoint_in(&profile_dir);
@@ -2448,15 +2409,29 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         profile: Option<&str>,
         root: &Path,
     ) -> ProfileTarget {
-        use crate::config::profile_target::{ProfileSource, RootSource};
-        let source = match (profile, channel) {
+        resolve_target(profile_source(profile, channel), channel, root).unwrap()
+    }
+
+    fn profile_source(
+        profile: Option<&str>,
+        channel: Option<&str>,
+    ) -> crate::config::profile_target::ProfileSource {
+        use crate::config::profile_target::ProfileSource;
+        match (profile, channel) {
             (Some(name), _) => ProfileSource::Named(name.to_string()),
             (None, Some(channel)) => ProfileSource::Channel(channel.to_string()),
             (None, None) => ProfileSource::Default,
-        };
-        ProfileTarget::new(
+        }
+    }
+
+    fn resolve_target(
+        source: crate::config::profile_target::ProfileSource,
+        channel: Option<&str>,
+        root: &Path,
+    ) -> Result<ProfileTarget, String> {
+        ProfileTarget::resolve(
             root.to_path_buf(),
-            RootSource::Account,
+            crate::config::profile_target::RootSource::Account,
             source,
             channel.map(str::to_string),
         )
@@ -2495,9 +2470,13 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         let listener = std::os::unix::net::UnixListener::bind(endpoint_in(&linked)).unwrap();
         listener.set_nonblocking(true).unwrap();
         std::os::unix::fs::symlink(&linked, home.path().join(".plexi-t1655")).unwrap();
-        let target = test_target(None, Some("t1655"), home.path());
 
-        let error = ensure_real_profile_dir(&target.dir()).unwrap_err();
+        let error = resolve_target(
+            profile_source(None, Some("t1655")),
+            Some("t1655"),
+            home.path(),
+        )
+        .unwrap_err();
 
         assert!(error.contains("non-directory"), "{error}");
         assert!(
@@ -2519,9 +2498,13 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         let profile = home.path().join(".plexi-t1655");
         std::fs::create_dir(&profile).unwrap();
         std::os::unix::fs::symlink(endpoint_in(&other), endpoint_in(&profile)).unwrap();
-        let target = test_target(None, Some("t1655"), home.path());
 
-        let error = ensure_real_profile_dir(&target.dir()).unwrap_err();
+        let error = resolve_target(
+            profile_source(None, Some("t1655")),
+            Some("t1655"),
+            home.path(),
+        )
+        .unwrap_err();
 
         assert!(error.contains("linked host endpoint"), "{error}");
         assert!(
@@ -2543,9 +2526,13 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         let profile = home.path().join(".plexi-t1655");
         std::fs::create_dir(&profile).unwrap();
         std::fs::hard_link(endpoint_in(&other), endpoint_in(&profile)).unwrap();
-        let target = test_target(None, Some("t1655"), home.path());
 
-        let error = ensure_real_profile_dir(&target.dir()).unwrap_err();
+        let error = resolve_target(
+            profile_source(None, Some("t1655")),
+            Some("t1655"),
+            home.path(),
+        )
+        .unwrap_err();
 
         assert!(error.contains("linked host endpoint"), "{error}");
         assert!(
@@ -2565,9 +2552,13 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         let profile = home.path().join(".plexi-t1655");
         std::fs::create_dir(&profile).unwrap();
         std::os::unix::fs::symlink(&other_queue, profile.join("spawn-queue")).unwrap();
-        let target = test_target(None, Some("t1655"), home.path());
 
-        let error = ensure_real_profile_dir(&target.dir()).unwrap_err();
+        let error = resolve_target(
+            profile_source(None, Some("t1655")),
+            Some("t1655"),
+            home.path(),
+        )
+        .unwrap_err();
 
         assert!(error.contains("spawn-queue"), "{error}");
     }
@@ -3050,12 +3041,13 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
     #[test]
     fn restart_children_carry_the_explicit_root_and_profile() {
         use crate::config::profile_target::{ProfileSource, RootSource};
-        let target = ProfileTarget::new(
+        let target = ProfileTarget::resolve(
             PathBuf::from("/scratch/r1"),
             RootSource::Explicit,
             ProfileSource::Named("t1655".into()),
             Some("pr-1655".into()),
-        );
+        )
+        .unwrap();
         let command = restart_coordinator_command(Path::new("/bin/true"), Vec::new(), &target);
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(

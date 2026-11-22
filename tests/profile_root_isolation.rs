@@ -429,3 +429,51 @@ fn a_bare_launcher_handoff_never_routes_by_the_pane() {
     assert!(beta_host.reachable());
     assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "keep");
 }
+
+/// Design 1695 (test 1): a direct host launch on a root whose profile links
+/// to another directory exits before it locks or writes anything there.
+#[test]
+fn a_host_launch_on_a_linked_profile_writes_nothing_through_the_link() {
+    let root = Root::new();
+    let sentinel = Root::new();
+    std::os::unix::fs::symlink(&sentinel.path, root.path.join(".plexi-x")).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_plexi"));
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("PLEXI_") {
+            command.env_remove(key);
+        }
+    }
+    let mut child = command
+        .arg("--profile-root")
+        .arg(&root.path)
+        .args(["--profile", "x"])
+        .current_dir(&root.path)
+        .env("HOME", &root.path)
+        .env("PLEXI_BACKGROUND_HOST", "1")
+        .env("PLEXI_EPHEMERAL_SESSION", "1")
+        .env("PLEXI_KEYCHAIN_PATH", root.path.join("t.keychain-db"))
+        .env("PLEXI_KEYCHAIN_PASSWORD", "t1695-throwaway-keychain")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let written: Vec<_> = std::fs::read_dir(&sentinel.path)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert!(written.is_empty(), "wrote through the link: {written:?}");
+    assert_eq!(status.and_then(|s| s.code()), Some(2));
+}

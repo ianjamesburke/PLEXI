@@ -182,16 +182,9 @@ fn main() -> eframe::Result {
         crate::config::profile_target::forget_inherited_routing();
     }
     // A lifecycle command addresses its validated profile host and nothing
-    // else: a refused target exits here, before any connection or trace.
-    let lifecycle_socket = (role == crate::config::profile_target::Role::Lifecycle).then(|| {
-        match cli::host::host_target() {
-            Ok(target) => target.endpoint(),
-            Err(error) => {
-                eprintln!("error: {error}");
-                cli::trace::exit(1);
-            }
-        }
-    });
+    // else: a refused target already exited above.
+    let lifecycle_socket = (role == crate::config::profile_target::Role::Lifecycle)
+        .then(|| cli::host::host_target().endpoint());
     let dropped_identity = match &startup {
         Startup::Run(run) => {
             cli::settle_caller_identity(run.cli.socket.as_deref(), lifecycle_socket.as_deref())
@@ -522,10 +515,8 @@ fn main() -> eframe::Result {
                         "profile: refused a command that needs the migrated profile; {host}"
                     );
                     // The hint addresses this command's profile host (stint 1655).
-                    let refusal = match cli::host::host_target() {
-                        Ok(target) => host.command_refusal(&cli::host::restart_hint(&target)),
-                        Err(error) => error,
-                    };
+                    let refusal =
+                        host.command_refusal(&cli::host::restart_hint(&cli::host::host_target()));
                     eprintln!("error: {refusal}");
                     cli::trace::exit(1);
                 }

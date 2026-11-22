@@ -811,10 +811,8 @@ pub fn update(package: &Package, options: InstallOptions, expected_build: &str) 
 /// or a linked profile dir, which would carry the installed marker and the
 /// host this install launches into another profile, installs nothing.
 fn install_profile(options: &InstallOptions) -> Result<ProfileTarget> {
-    let profile = ProfileTarget::for_channel(options.profile_root.as_ref(), &options.channel)
-        .map_err(Error::Invalid)?;
-    crate::host_presence::ensure_real_profile_dir(&profile.dir()).map_err(Error::Invalid)?;
-    Ok(profile)
+    ProfileTarget::for_channel(options.profile_root.as_ref(), &options.channel)
+        .map_err(Error::Invalid)
 }
 
 fn install_checked(
@@ -1782,7 +1780,6 @@ pub fn launch_ready_in(
     use crate::host_presence::{Presence, probe};
     let name = display_name(&receipt.channel);
     let profile_dir = &profile.dir();
-    crate::host_presence::ensure_real_profile_dir(profile_dir).map_err(Error::Invalid)?;
     match probe(profile_dir, Instant::now() + limits.probe) {
         Presence::Running { pid, evidence } => {
             log::info!(
@@ -2675,10 +2672,15 @@ mod tests {
         fs::remove_dir(profile.dir()).unwrap();
         std::os::unix::fs::symlink(&owner_profile, profile.dir()).unwrap();
 
-        let error = launch_ready_in(&receipt, &profile, &test_limits(Duration::from_secs(10)))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("non-directory profile path"), "{error}");
+        let root = root_of(&profile);
+        let error = restart_in(
+            &receipt.root,
+            std::process::id() + 1_000_000,
+            Some(&root),
+            None,
+            &test_limits(Duration::from_secs(10)),
+        );
+        assert!(error.is_err(), "a restart resolved a linked profile");
         assert!(calls(&receipt.root, "c").is_empty());
 
         let options = InstallOptions {

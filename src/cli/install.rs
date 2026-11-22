@@ -296,7 +296,7 @@ pub fn install_workspace_pack_cli() -> i32 {
 pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: bool) -> i32 {
     let result = (|| -> Result<(), String> {
         let receipt = crate::distribution::installed()?.ok_or_else(|| "No managed installation receipt found. No files were removed. Reinstall through the current installer to migrate this legacy installation.".to_string())?;
-        let target = super::host::host_target()?;
+        let target = super::host::host_target();
         let profile = target.dir();
         delete_data = match data_choice(
             keep_data,
@@ -478,7 +478,9 @@ fn remove_then_delete_data(
 }
 
 fn remove_channel_data(profile: &Path) -> Result<(), String> {
-    super::host::ensure_real_profile_dir(profile)?;
+    // Rechecked at the moment of deletion: the layout may have changed since
+    // this process resolved its target.
+    plexi_distribution::host_presence::ensure_real_profile_dir(profile)?;
     crate::broker::seal::remove_profile_credentials(profile)?;
     match std::fs::remove_dir_all(profile) {
         Ok(()) => {}
@@ -852,12 +854,13 @@ mod uninstall_data_tests {
     fn a_pr_uninstall_owns_only_its_own_profile() {
         use crate::config::profile_target::{ProfileSource, ProfileTarget, RootSource};
         let owns = |channel: &str, source: ProfileSource| {
-            let target = ProfileTarget::new(
+            let target = ProfileTarget::resolve(
                 "/home/u".into(),
                 RootSource::Account,
                 source,
                 Some(channel.to_string()),
-            );
+            )
+            .unwrap();
             super::pr_installation_owns_profile(channel, &target)
         };
         let executable = |c: &str| ProfileSource::Channel(c.to_string());

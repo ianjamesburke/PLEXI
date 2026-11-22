@@ -331,7 +331,8 @@ fn a_linked_named_profile_reaches_no_host() {
             let args = [&["--profile", profile, "host"][..], verb].concat();
             let output = run_raw(&fixture, &args);
             let stderr = String::from_utf8_lossy(&output.stderr);
-            assert_eq!(output.status.code(), Some(1), "{args:?}: {stderr}");
+            // Refused while choosing the selection, like an invalid root.
+            assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
             assert!(
                 stderr.contains("refusing to address a host"),
                 "{args:?}: {stderr}"
