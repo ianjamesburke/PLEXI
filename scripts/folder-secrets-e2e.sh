@@ -4,7 +4,8 @@
 #
 #   bash scripts/folder-secrets-e2e.sh [path-to-plexi-binary]
 #
-# Uses a private HOME so the check never touches a real profile. The secret
+# Uses a private HOME, passed as --profile-root, so the check never touches a
+# real profile. The secret
 # value is generated at runtime and is not written into this script.
 set -uo pipefail
 
@@ -22,23 +23,6 @@ HOME_DIR="$WORK/home"
 DIR_A="$WORK/A"
 DIR_B="$WORK/B"
 DIR_SIB="$WORK/A-extra"
-# Same rule as channel_suffix_from_basename in src/config/mod.rs. A PR
-# install is `plexi-pr-<N>` and writes `~/.plexi-pr-<N>`, not `~/.plexi`.
-profile_dirname() {
-  local base suffix
-  base="$(basename "$1")"
-  base="${base%.exe}"
-  base="${base%.EXE}"
-  if [[ "$base" == plexi-* ]]; then
-    suffix="${base#plexi-}"
-    if [[ -n "$suffix" ]]; then
-      printf '.plexi-%s' "$suffix"
-      return
-    fi
-  fi
-  printf '.plexi'
-}
-PROFILE="$HOME_DIR/$(profile_dirname "$PLEXI")"
 KEY_DIR="$HOME_DIR/.local/share/plexi"
 SECRET=""
 SECRET_B=""
@@ -143,6 +127,13 @@ isolate_macos_keychain
 isolate_linux_backend
 export HOME="$HOME_DIR"
 export XDG_DATA_HOME="$HOME_DIR/.local/share"
+# Every "$PLEXI" call passes --profile-root "$HOME_DIR"; PROFILE is what the
+# binary resolves there (stint 1695).
+BIN="$PLEXI"
+# shellcheck source=scripts/e2e/profile-root.sh
+source "$REPO_ROOT/scripts/e2e/profile-root.sh"
+plexi_profile_root "$HOME_DIR"
+PLEXI="$BIN"
 if [[ "$(uname -s)" == "Linux" ]] && command -v gnome-keyring-daemon >/dev/null 2>&1; then
   # Unlocked empty collection on the private bus. CreateItem must not prompt.
   keyring_env="$(printf '\n' | gnome-keyring-daemon --unlock --components=secrets || true)"

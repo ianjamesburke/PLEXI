@@ -2,8 +2,8 @@
 # Installed-binary checks for cloud basics.
 # Usage: scripts/cloud-basics-e2e.sh <PR>
 #
-# Uses a temp HOME. The channel profile is ${HOME}/.<binary-name>, derived
-# from the installed plexi-pr-<PR> binary. Never touches the OS keychain and
+# Uses a temp HOME, passed as --profile-root; the channel profile is the one
+# the installed plexi-pr-<PR> binary resolves there. Never touches the OS keychain and
 # never opens a secret dialog: it does not call secret commands, and the host
 # is started with --background so it does not activate a window.
 
@@ -17,6 +17,28 @@ if [[ -z "${PLEXI_CLOUD_E2E_XVFB:-}" ]] && command -v xvfb-run >/dev/null 2>&1; 
   exec xvfb-run -a "$0" "$@"
 fi
 
+REAL_HOME="${HOME}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP_HOME="$(mktemp -d "${TMPDIR:-/tmp}/plexi-cloud-e2e-home.XXXXXX")"
+export HOME="${TMP_HOME}"
+unset PLEXI_SOCKET
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/plexi-cloud-e2e-work.XXXXXX")"
+HOST_STARTED=0
+RETENTION="FAIL"
+ACCOUNT="FAIL"
+
+cleanup() {
+  local status=$?
+  if [[ "$HOST_STARTED" == 1 ]]; then
+    "$BIN" host stop >/dev/null 2>&1 || true
+  fi
+  rm -rf "$TMP_HOME" "$WORKDIR"
+  exit "$status"
+}
+trap cleanup EXIT
+
+# Every "$BIN" call passes --profile-root "$TMP_HOME"; PROFILE is what the
+# binary resolves there, never a path computed here (stint 1695).
 if [[ -n "${PLEXI_E2E_SHIM:-}" ]]; then
   # shellcheck disable=SC1090
   source "${PLEXI_E2E_SHIM:?}"
@@ -28,38 +50,14 @@ else
     echo "FAIL no-account: skipped"
     exit 1
   fi
-  unset PLEXI_CHANNEL
-fi
-
-if [[ -z "${BIN_PATH:-}" ]]; then
   BIN_PATH="$(command -v "$BIN")"
+  # shellcheck source=scripts/e2e/profile-root.sh
+  source "$ROOT/scripts/e2e/profile-root.sh"
+  plexi_profile_root "$TMP_HOME"
 fi
-BIN_NAME="$(basename "$BIN_PATH")"
-REAL_HOME="${HOME}"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TMP_HOME="$(mktemp -d "${TMPDIR:-/tmp}/plexi-cloud-e2e-home.XXXXXX")"
-export HOME="${TMP_HOME}"
-unset PLEXI_SOCKET
 
-PROFILE="${HOME}/.${BIN_NAME}"
-CHANNEL_DIR=".${BIN_NAME}"
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/plexi-cloud-e2e-work.XXXXXX")"
-HOST_STARTED=0
-RETENTION="FAIL"
-ACCOUNT="FAIL"
-
-cleanup() {
-  local status=$?
-  if [[ "$HOST_STARTED" == 1 ]]; then
-    "$BIN_PATH" host stop >/dev/null 2>&1 || true
-  fi
-  rm -rf "$TMP_HOME" "$WORKDIR"
-  exit "$status"
-}
-trap cleanup EXIT
-
-if [[ "$PROFILE" == "$REAL_HOME"/* || "$PROFILE" == "$REAL_HOME" ]]; then
-  echo "FAIL retention: profile resolved inside the real home ($PROFILE)"
+if [[ "$PROFILE_ROOT" == "$REAL_HOME" || "$PROFILE" == "$REAL_HOME"/.plexi* ]]; then
+  echo "FAIL retention: the binary resolved a profile in the real home ($PROFILE)"
   echo "FAIL no-account: skipped"
   exit 1
 fi
@@ -90,7 +88,7 @@ retain_local_history = true
 EOF
 
 cd "$WORKDIR"
-"$BIN_PATH" workspace init >/tmp/cloud-e2e-init.out
+"$BIN" workspace init >/tmp/cloud-e2e-init.out
 echo "workspace init:"
 cat /tmp/cloud-e2e-init.out
 
@@ -121,16 +119,16 @@ active_conversation = "old-conv"
 EOF
 
 echo "=== host retention and no-account ==="
-if "$BIN_PATH" host start --background --ephemeral --timeout-secs 90; then
+if "$BIN" host start --background --ephemeral --timeout-secs 90; then
   HOST_STARTED=1
 else
   echo "host start failed"
 fi
 
 if [[ "$HOST_STARTED" == 1 ]]; then
-  STATUS="$("$BIN_PATH" host status --json)"
+  STATUS="$("$BIN" host status --json)"
   echo "host status: $STATUS"
-  ACCOUNT_OUT="$("$BIN_PATH" account status)"
+  ACCOUNT_OUT="$("$BIN" account status)"
   echo "account status: $ACCOUNT_OUT"
   python3 - "$STATUS" <<'PY' && READY=1 || READY=0
 import json, sys

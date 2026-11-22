@@ -29,7 +29,8 @@ def executable(package):
 def install(package, root, env):
     run([package / "plexi-installer", "--package", package, "--channel", "alpha",
          "--install-dir", root / "install", "--bin-dir", root / "bin",
-         "--applications-dir", root / "applications", "--install-only"], env)
+         "--applications-dir", root / "applications", "--install-only",
+         "--profile-root", env["HOME"]], env)
     receipt = json.loads((root / "install/alpha/installation.json").read_text())
     return Path(receipt["active"]["path"]) / receipt["active"]["executable"]
 
@@ -46,7 +47,7 @@ def create_private_keychain(path, password):
 def wait_ready(binary, env):
     deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
-        status = run([binary, "host", "status", "--json"], env, expected=0).stdout
+        status = run([binary, "--profile-root", env["HOME"], "host", "status", "--json"], env, expected=0).stdout
         parsed = json.loads(status)
         if parsed.get("ready"):
             return parsed
@@ -55,22 +56,22 @@ def wait_ready(binary, env):
 
 
 def start_and_stop(binary, env, seed=False):
-    run([binary, "host", "start", "--ephemeral", "--pane", f"cwd={env['HOME']}", "--timeout-secs", "90"], env, timeout=120)
+    run([binary, "--profile-root", env["HOME"], "host", "start", "--ephemeral", "--pane", f"cwd={env['HOME']}", "--timeout-secs", "90"], env, timeout=120)
     try:
         status = wait_ready(binary, env)
         if seed:
-            panes = json.loads(run([binary, "pane", "list"], env).stdout)
+            panes = json.loads(run([binary, "--profile-root", env["HOME"], "pane", "list"], env).stdout)
             caller = dict(env, PLEXI_SOCKET=status["socket"], PLEXI_PANE_ID=str(panes[0]["id"]))
-            run([binary, "agent", "report", "--state", "blocked", "--agent", "signing-continuity", "--event", "AskQuestion", "--detail", "Signing continuity acceptance question"], caller)
+            run([binary, "--profile-root", env["HOME"], "agent", "report", "--state", "blocked", "--agent", "signing-continuity", "--event", "AskQuestion", "--detail", "Signing continuity acceptance question"], caller)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            items = json.loads(run([binary, "needs-you", "list", "--json"], env).stdout)["items"]
+            items = json.loads(run([binary, "--profile-root", env["HOME"], "needs-you", "list", "--json"], env).stdout)["items"]
             if any(item.get("summary") == "Signing continuity acceptance question" for item in items):
                 return items
             time.sleep(0.2)
         raise AssertionError(f"sealed question was not retained: {items}")
     finally:
-        run([binary, "host", "stop"], env, timeout=120)
+        run([binary, "--profile-root", env["HOME"], "host", "stop"], env, timeout=120)
 
 
 def main(args):
@@ -107,8 +108,14 @@ def main(args):
         )
         Path(env["HOME"]).mkdir()
         installed_a = install(args.package_a.resolve(), root, env)
+        # HOME no longer selects the profile; every call passes the temp home as
+        # --profile-root and the profile is the one the binary resolves there
+        # (stint 1695).
+        status = json.loads(run([installed_a, "--profile-root", env["HOME"], "host", "status", "--json"], env).stdout)
+        profile = Path(status["socket"]).parent
+        if profile != Path(env["HOME"]) / ".plexi-alpha":
+            raise AssertionError(f"package A resolved {profile}, not the temp home's Alpha profile")
         original = start_and_stop(installed_a, env, seed=True)
-        profile = Path(env["HOME"]) / ".plexi-alpha"
         first_log = profile / "plexi.log"
         if not first_log.is_file() or "created host permission mac key" not in first_log.read_text(errors="replace"):
             raise AssertionError("package A did not create its host seal in the isolated private Keychain")

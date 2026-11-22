@@ -22,22 +22,11 @@ if [[ ! -x "$BIN" ]]; then
   echo "error: missing binary $BIN (run just build first)" >&2
   exit 1
 fi
-export BIN
 # shellcheck disable=SC1091
 source "$ROOT/scripts/e2e/human.sh"
 
-# A channel-named binary (`plexi-pr-2718`, `plexi-alpha`) ignores PLEXI_CHANNEL.
-# A bare `plexi` adopts it. The profile dir has to match whichever one is running.
-bin_base="$(basename "$BIN")"
-bin_base="${bin_base%.exe}"
-if [[ "$bin_base" == plexi-* ]]; then
-  export PLEXI_CHANNEL="${bin_base#plexi-}"
-else
-  export PLEXI_CHANNEL="${PLEXI_CHANNEL:-seal-e2e}"
-fi
-
 WORK="$(mktemp -d)"
-trap 'if [[ -n "${HOST_PID:-}" ]]; then kill -- "-$HOST_PID" 2>/dev/null || kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; if [[ -n "${MOCK_PID:-}" ]]; then kill "$MOCK_PID" 2>/dev/null || true; fi; if [[ -n "${XVFB_PID:-}" ]]; then kill "$XVFB_PID" 2>/dev/null || true; fi; "$BIN" host stop >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
+trap 'if [[ -n "${HOST_PID:-}" ]]; then kill -- "-$HOST_PID" 2>/dev/null || kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; if [[ -n "${MOCK_PID:-}" ]]; then kill "$MOCK_PID" 2>/dev/null || true; fi; if [[ -n "${XVFB_PID:-}" ]]; then kill "$XVFB_PID" 2>/dev/null || true; fi; if [[ -n "${PROFILE_ROOT:-}" ]]; then "$BIN" host stop >/dev/null 2>&1 || true; fi; rm -rf "$WORK"' EXIT
 
 ORIG_HOME="${HOME}"
 export HOME="$WORK/home"
@@ -51,7 +40,13 @@ export XDG_RUNTIME_DIR="$WORK/runtime"
 mkdir -p "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/keyring"
 chmod 700 "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/keyring"
 
-PROFILE="$HOME/.plexi-$PLEXI_CHANNEL"
+# Every "$BIN" call passes --profile-root "$HOME" --profile seal-e2e;
+# PROFILE is what the binary resolves there (stint 1695). The cleanup trap
+# stops a host only once BIN is rooted.
+# shellcheck source=scripts/e2e/profile-root.sh
+source "$ROOT/scripts/e2e/profile-root.sh"
+plexi_profile_root "$HOME" seal-e2e
+export BIN
 SOCKET="$PROFILE/notify.sock"
 mkdir -p "$PROFILE"
 
@@ -115,8 +110,8 @@ assert_secret_file_hides_key() {
 
 assert_secret_get_refuses() {
   local ws="$WORK/ws-host"
-  mkdir -p "$ws/.plexi-$PLEXI_CHANNEL"
-  printf 'id = "host"\n' >"$ws/.plexi-$PLEXI_CHANNEL/workspace.toml"
+  mkdir -p "$ws/$CHANNEL_DIR"
+  printf 'id = "host"\n' >"$ws/$CHANNEL_DIR/workspace.toml"
   local out="$WORK/secret-get.txt"
   if (cd "$ws" && "$BIN" secret get permission-mac >"$out" 2>&1); then
     echo "error: secret get printed a value from workspace id=host" >&2

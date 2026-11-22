@@ -18,8 +18,7 @@
 # profile. It then asks the binary which profile it resolved and refuses to
 # continue unless that profile is inside the root.
 #
-# Sets PROFILE_ROOT, PLEXI_REAL_BIN (the channel binary itself), BIN (the
-# rooted launcher), PROFILE (the binary's own resolved profile directory,
+# Sets PROFILE_ROOT, BIN (the rooted launcher), PROFILE (the binary's own resolved profile directory,
 # from `host status --json`, never computed in shell) and CHANNEL_DIR (its
 # directory name).
 
@@ -53,7 +52,6 @@ plexi_profile_root() {
   printf '#!/bin/sh\nexec %q %s "$@"\n' "$real" "$selectors" >"$launcher"
   chmod 755 "$launcher"
   PROFILE_ROOT="$root"
-  PLEXI_REAL_BIN="$real"
   BIN="$launcher"
   # Profile routing comes from the flag, not the environment.
   unset PLEXI_CHANNEL PLEXI_SOCKET || true

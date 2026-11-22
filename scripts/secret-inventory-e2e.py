@@ -23,7 +23,8 @@ with tempfile.TemporaryDirectory(prefix='plexi-secrets-', dir='/tmp') as scratch
     env.update(HOME=scratch, PLEXI_KEYCHAIN_PATH=str(root/'test.keychain-db'), PLEXI_KEYCHAIN_PASSWORD=uuid.uuid4().hex, DEMO_TOKEN=uuid.uuid4().hex)
     folder = root/'workspace'; folder.mkdir(); child=folder/'child'; child.mkdir()
     def run(*args, ok=True, cwd=folder):
-        proc=subprocess.run([binary,*args],cwd=cwd,env=env,capture_output=True,text=True,timeout=40)
+        # The scratch HOME is the profile root; HOME alone no longer selects it (stint 1695).
+        proc=subprocess.run([binary,'--profile-root',scratch,*args],cwd=cwd,env=env,capture_output=True,text=True,timeout=40)
         assert env['DEMO_TOKEN'] not in proc.stdout+proc.stderr, 'secret appeared in command output'
         assert (proc.returncode==0)==ok, f'Unexpected exit for {args}: {proc.returncode}'
         return proc.stdout if '--json' in args else proc.stdout+proc.stderr

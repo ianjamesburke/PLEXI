@@ -48,7 +48,10 @@ def main(args):
         home.mkdir()
         env = {k: v for k, v in os.environ.items() if not k.startswith('PLEXI_')}
         env.pop('ZDOTDIR', None)
-        env.update(HOME=str(home), USERPROFILE=str(home), XDG_DATA_HOME=str(home / 'data'), XDG_CONFIG_HOME=str(home / '.config'), LOCALAPPDATA=str(home / 'local'), APPDATA=str(home / 'roaming'), PLEXI_DISTRIBUTION_HOME=str(home / 'distribution'))
+        # USERPROFILE stays the account's on Windows: Known Folders ignore it,
+        # and Plexi refuses a private home it cannot root (stint 1695).
+        if os.name != 'nt': env['USERPROFILE'] = str(home)
+        env.update(HOME=str(home), XDG_DATA_HOME=str(home / 'data'), XDG_CONFIG_HOME=str(home / '.config'), LOCALAPPDATA=str(home / 'local'), APPDATA=str(home / 'roaming'), PLEXI_DISTRIBUTION_HOME=str(home / 'distribution'))
         def run(command, timeout=120):
             result = subprocess.run(list(map(str, command)), cwd=home, env=env, capture_output=True, text=True, timeout=timeout)
             with (args.output / 'commands.log').open('a') as log:
@@ -60,6 +63,9 @@ def main(args):
         # Windows runs use the disposable runner account's real profile.
         profile_home = Path(run(['powershell', '-NoProfile', '-Command', "[Environment]::GetFolderPath('UserProfile')"]).strip()) if os.name == 'nt' else home
         installer = package / ('plexi-installer.exe' if os.name == 'nt' else 'plexi-installer')
+        # Every Plexi and installer call names the profile root explicitly; HOME
+        # no longer selects it (stint 1695).
+        root_args = ['--profile-root', profile_home]
         auto_started = False
         tag, channel = manifest['tag'], manifest['channel']
         accepted = channel == 'alpha' or (channel == 'beta' and '-alpha.' not in tag) or (channel == 'stable' and '-' not in tag)
@@ -90,7 +96,7 @@ def main(args):
             worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
             env.update(PLEXI_BOOTSTRAP_TAG=tag, PLEXI_RELEASES_URL=f'http://127.0.0.1:{server.server_port}/releases', PLEXI_RELEASE_BASE_URL=f'http://127.0.0.1:{server.server_port}/download', PLEXI_INSTALL_DIR=str(root / 'install'), PLEXI_BIN_DIR=str(root / 'bin'))
             try:
-                bootstrap = ['powershell', '-NoProfile', '-File', REPO / 'scripts/install-windows.ps1', '-Channel', channel] if os.name == 'nt' else ['bash', REPO / 'install.sh', '--channel', channel]
+                bootstrap = ['powershell', '-NoProfile', '-File', REPO / 'scripts/install-windows.ps1', '-Channel', channel] if os.name == 'nt' else ['bash', REPO / 'install.sh', '--channel', channel, *root_args]
                 if not args.gui: bootstrap.append('-InstallOnly' if os.name == 'nt' else '--install-only')
                 run(bootstrap, timeout=300)
                 auto_started = args.gui
@@ -99,10 +105,11 @@ def main(args):
                 for key in ['PLEXI_BOOTSTRAP_TAG', 'PLEXI_RELEASES_URL', 'PLEXI_RELEASE_BASE_URL']:
                     env.pop(key)
         else:
-            run([installer, '--package', package, '--channel', channel, '--install-dir', root / 'install', '--bin-dir', root / 'bin', '--applications-dir', home / 'Applications', '--install-only'])
+            run([installer, '--package', package, '--channel', channel, '--install-dir', root / 'install', '--bin-dir', root / 'bin', '--applications-dir', home / 'Applications', '--install-only', *root_args])
         receipt_path = root / 'install' / manifest['channel'] / 'installation.json'
         receipt = json.loads(receipt_path.read_text())
         executable = Path(receipt['active']['path']) / receipt['active']['executable']
+        plexi = lambda *a: [executable, *root_args, *a]
         check = [executable, '--distribution-check']
         if sys.platform == 'darwin':
             profile = '(version 1) (allow default) (deny network*) (deny file-read* (subpath ' + json.dumps(str(REPO)) + '))'
@@ -124,8 +131,8 @@ def main(args):
             try:
                 started = True
                 if not auto_started:
-                    run([executable, 'host', 'start', '--ephemeral', '--pane', f'cwd={home}', '--timeout-secs', '90'])
-                status = json.loads(run([executable, 'host', 'status', '--json']))
+                    run(plexi('host', 'start', '--ephemeral', '--pane', f'cwd={home}', '--timeout-secs', '90'))
+                status = json.loads(run(plexi('host', 'status', '--json')))
                 assert status['ready'] and status['running']['build_id'] == manifest['build_id'], status
                 if os.name != 'nt':
                     hook = profile_home / '.plexi/hooks/claude-code-agent-state.sh'
@@ -136,50 +143,50 @@ def main(args):
                     assert seeded.is_file(), f'host startup did not seed packaged maintained plugins: {seeded}'
                 env['PLEXI_SOCKET'] = status['socket']
                 if manifest['channel'] != 'stable': env['PLEXI_CHANNEL'] = manifest['channel']
-                panes = json.loads(run([executable, 'pane', 'list']))
+                panes = json.loads(run(plexi('pane', 'list')))
                 terminal = panes[0]['id']
-                run([executable, 'pane', 'name', str(terminal), 'Distribution terminal'])
-                run([executable, 'pane', 'send', str(terminal), 'echo PLEXI_DISTRIBUTION_OK', '--submit'])
+                run(plexi('pane', 'name', str(terminal), 'Distribution terminal'))
+                run(plexi('pane', 'send', str(terminal), 'echo PLEXI_DISTRIBUTION_OK', '--submit'))
                 deadline = time.monotonic() + 15
                 while True:
-                    capture = run([executable, 'pane', 'capture', str(terminal), '--plain'])
+                    capture = run(plexi('pane', 'capture', str(terminal), '--plain'))
                     if re.search(r'^\s*PLEXI_DISTRIBUTION_OK\s*$', capture, re.M): break
                     if time.monotonic() > deadline: raise AssertionError('terminal never produced the expected output')
                     time.sleep(.2)
                 if os.name != 'nt' and not channel.startswith('pr-'):
-                    run([executable, 'pane', 'send', str(terminal), name + ' hos'])
-                    run([executable, 'pane', 'key', str(terminal), 'tab'])
+                    run(plexi('pane', 'send', str(terminal), name + ' hos'))
+                    run(plexi('pane', 'key', str(terminal), 'tab'))
                     deadline = time.monotonic() + 15
                     while True:
-                        capture = run([executable, 'pane', 'capture', str(terminal), '--plain'])
+                        capture = run(plexi('pane', 'capture', str(terminal), '--plain'))
                         if name + ' host' in capture: break
                         if time.monotonic() > deadline: raise AssertionError('Tab did not complete the host subcommand')
                         time.sleep(.2)
-                    run([executable, 'pane', 'key', str(terminal), 'ctrl+u'])
-                run([executable, 'view', 'open', 'calc'])
+                    run(plexi('pane', 'key', str(terminal), 'ctrl+u'))
+                run(plexi('view', 'open', 'calc'))
                 deadline = time.monotonic() + 60
                 while True:
-                    panes = json.loads(run([executable, 'pane', 'list']))
+                    panes = json.loads(run(plexi('pane', 'list')))
                     candidates = [p for p in panes if p['type'] == 'view']
                     if candidates:
                         app = candidates[-1]['id']
-                        state = run([executable, 'pane', 'state', str(app)])
+                        state = run(plexi('pane', 'state', str(app)))
                         if 'Calculator' in state or 'button' in state.lower(): break
                     if time.monotonic() > deadline: raise AssertionError('Calculator never produced a semantic frame')
                     time.sleep(.2)
-                run([executable, 'pane', 'name', str(app), 'Packaged Calculator'])
-                run([executable, 'host', 'screenshot', '--output', args.output / 'installed-host.png'])
+                run(plexi('pane', 'name', str(app), 'Packaged Calculator'))
+                run(plexi('host', 'screenshot', '--output', args.output / 'installed-host.png'))
                 # Exercise the same helper used by the restart badge: schedule
                 # before shutdown, wait for that exact process, then launch the receipt.
                 with (args.output / 'restart.log').open('w') as restart_log:
-                    helper = subprocess.Popen([str(installer), 'restart', '--receipt', str(receipt_path.parent), '--wait-pid', str(status['running']['pid'])], cwd=home, env=env, stdout=restart_log, stderr=restart_log)
+                    helper = subprocess.Popen([str(installer), 'restart', '--receipt', str(receipt_path.parent), '--wait-pid', str(status['running']['pid']), *root_args], cwd=home, env=env, stdout=restart_log, stderr=restart_log)
                     try:
-                        run([executable, 'host', 'stop'])
+                        run(plexi('host', 'stop'))
                         env.pop('PLEXI_SOCKET', None)
                         assert helper.wait(timeout=120) == 0, 'restart helper failed'
                     finally:
                         if helper.poll() is None: helper.kill(); helper.wait()
-                restarted = json.loads(run([executable, 'host', 'status', '--json']))
+                restarted = json.loads(run(plexi('host', 'status', '--json')))
                 assert restarted['ready'] and restarted['running']['pid'] != status['running']['pid']
                 assert restarted['running']['build_id'] == manifest['build_id']
             finally:
@@ -187,19 +194,19 @@ def main(args):
                 for log in profile.glob('*.log'):
                     shutil.copy2(log, args.output / log.name)
                 if started:
-                    run([executable, 'host', 'stop'])
-                    assert not json.loads(run([executable, 'host', 'status', '--json']))['ready']
+                    run(plexi('host', 'stop'))
+                    assert not json.loads(run(plexi('host', 'status', '--json')))['ready']
         # Removal runs from the unpacked installer, so it can also delete the
         # Windows application executable and stable launcher without a file lock.
         env.pop('PLEXI_SOCKET', None)
         if os.name != 'nt' and not channel.startswith('pr-'):
-            run([executable, 'cli', 'setup', '--modify-path'])
+            run(plexi('cli', 'setup', '--modify-path'))
             if shutil.which('zsh'):
                 # After explicit opt-in setup, a fresh interactive shell must define
                 # the actual generated function, not merely cache its missing autoload name.
                 run(['zsh', '-ic', f'[[ ${{_comps[{name}]}} == _{name} ]] && [[ $functions[_{name}] != *"autoload -X"* ]]'])
             run(['bash', '--noprofile', '--rcfile', home / '.bashrc', '-ic', f'complete -p {name}'])
-        run([installer, 'remove', '--receipt', receipt_path.parent])
+        run([installer, 'remove', '--receipt', receipt_path.parent, *root_args])
         assert not receipt_path.exists()
         (args.output / 'result.json').write_text(json.dumps({'channel': manifest['channel'], 'build_id': manifest['build_id'], 'runtime': 'pass', 'gui': 'pass' if args.gui else 'not-run', 'removal': 'pass'}, indent=2))
 

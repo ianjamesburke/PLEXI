@@ -16,21 +16,11 @@ if [[ ! -x "$BIN" ]]; then
   echo "error: missing binary $BIN (run just build first)" >&2
   exit 1
 fi
-export BIN
 # shellcheck disable=SC1091
 source "$ROOT/scripts/e2e/human.sh"
 
-# A channel-named binary ignores PLEXI_CHANNEL. Match its profile dir.
-bin_base="$(basename "$BIN")"
-bin_base="${bin_base%.exe}"
-if [[ "$bin_base" == plexi-* ]]; then
-  export PLEXI_CHANNEL="${bin_base#plexi-}"
-else
-  export PLEXI_CHANNEL="${PLEXI_CHANNEL:-app-share-e2e}"
-fi
-
 WORK="$(mktemp -d)"
-trap 'if [[ -n "${HOST_PID:-}" ]]; then kill -- "-$HOST_PID" 2>/dev/null || kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; if [[ -n "${MOCK_PID:-}" ]]; then kill "$MOCK_PID" 2>/dev/null || true; fi; if [[ -n "${XVFB_PID:-}" ]]; then kill "$XVFB_PID" 2>/dev/null || true; fi; "$BIN" host stop >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
+trap 'if [[ -n "${HOST_PID:-}" ]]; then kill -- "-$HOST_PID" 2>/dev/null || kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; if [[ -n "${MOCK_PID:-}" ]]; then kill "$MOCK_PID" 2>/dev/null || true; fi; if [[ -n "${XVFB_PID:-}" ]]; then kill "$XVFB_PID" 2>/dev/null || true; fi; if [[ -n "${PROFILE_ROOT:-}" ]]; then "$BIN" host stop >/dev/null 2>&1 || true; fi; rm -rf "$WORK"' EXIT
 
 ORIG_HOME="${HOME}"
 export HOME="$WORK/home"
@@ -44,7 +34,13 @@ export XDG_RUNTIME_DIR="$WORK/runtime"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR" || true
 
-PROFILE="$HOME/.plexi-$PLEXI_CHANNEL"
+# Every "$BIN" call passes --profile-root "$HOME" --profile app-share-e2e;
+# PROFILE is what the binary resolves there (stint 1695). The cleanup trap
+# stops a host only once BIN is rooted.
+# shellcheck source=scripts/e2e/profile-root.sh
+source "$ROOT/scripts/e2e/profile-root.sh"
+plexi_profile_root "$HOME" app-share-e2e
+export BIN
 SOCKET="$PROFILE/notify.sock"
 APP_ID="sample-share"
 

@@ -4,7 +4,7 @@
 Uses SecKeychainCreate directly so the private Keychain is not added to the
 user search list. Fixture secrets contain no real credentials.
 """
-import argparse, ctypes, hashlib, os, subprocess, sys, tempfile
+import argparse, ctypes, hashlib, json, os, subprocess, sys, tempfile
 from pathlib import Path
 
 if sys.platform != "darwin":
@@ -49,21 +49,27 @@ with tempfile.TemporaryDirectory(prefix='plexi-uninstall-native-', dir='/tmp') a
         assert r.returncode in (0,44), r.stderr
         return r.returncode==0
     def install():
-        run([installer,'--channel','alpha','--package',package,'--install-only','--install-dir',home/'install','--bin-dir',home/'bin','--applications-dir',home/'Applications'],env)
+        run([installer,'--channel','alpha','--package',package,'--install-only','--install-dir',home/'install','--bin-dir',home/'bin','--applications-dir',home/'Applications','--profile-root',home],env)
     install()
     print('Installed isolated Alpha package', flush=True)
+    # Every binary call names the temp root (stint 1695): HOME no longer
+    # selects the profile, and uninstall deletes the profile the binary
+    # resolves. Check that resolution before anything can be deleted.
+    plexi=lambda *a: [home/'bin/plexi-alpha','--profile-root',home,*a]
     binary=home/'bin/plexi-alpha'
+    resolved=Path(json.loads(run(plexi('host','status','--json'),env).stdout)['socket']).parent
+    assert resolved==profile, f'binary resolved {resolved}, expected {profile}'
     # Omitted choice keeps data, even with --yes.
-    run([binary,'uninstall','--yes'],env)
+    run(plexi('uninstall','--yes'),env)
     assert (profile/'sentinel').exists() and all(exists(a) for a in alpha)
     assert not binary.exists()
     print('PASS: default uninstall keeps profile and credentials', flush=True)
     install()
     # Cancelling an explicit deletion leaves everything intact.
-    run([binary,'uninstall','--delete-data'],env,expected=1,data='n\n')
+    run(plexi('uninstall','--delete-data'),env,expected=1,data='n\n')
     assert binary.exists() and (profile/'sentinel').exists()
     # Interactive deletion removes profile and exactly its credential anchors.
-    run([binary,'uninstall'],env,data='y\ny\n')
+    run(plexi('uninstall'),env,data='y\ny\n')
     assert not profile.exists() and not binary.exists()
     assert all(not exists(a) for a in alpha)
     assert all(exists(a) for a in beta+['permission-mac'])
@@ -72,7 +78,7 @@ with tempfile.TemporaryDirectory(prefix='plexi-uninstall-native-', dir='/tmp') a
     print('PASS: interactive deletion removes only selected profile and credentials', flush=True)
     install()
     # The explicit flag also succeeds when there are no old credential anchors.
-    run([binary,'uninstall','--delete-data','--yes'],env)
+    run(plexi('uninstall','--delete-data','--yes'),env)
     assert not profile.exists() and not binary.exists()
     assert all(exists(a) for a in beta+['permission-mac'])
     assert snapshot()==before, 'User Keychain defaults/search list changed'

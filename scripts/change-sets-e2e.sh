@@ -69,6 +69,10 @@ fi
 export HOME="$WORK/home"
 mkdir -p "$HOME"
 unset PLEXI_PANE_ID PLEXI_CONTEXT_ID PLEXI_CONTEXT_ROOT PLEXI_RUNNING PLEXI_CHANNEL PLEXI_SOCKET || true
+# Every "$BIN" call passes --profile-root "$HOME" (stint 1695).
+# shellcheck source=scripts/e2e/profile-root.sh
+source "$ROOT/scripts/e2e/profile-root.sh"
+plexi_profile_root "$HOME"
 export PLEXI_KEYCHAIN_PATH="$WORK/keychain"
 mkdir -p "$PLEXI_KEYCHAIN_PATH"
 # Always a private X server. An ambient DISPLAY can answer xdpyinfo and still
