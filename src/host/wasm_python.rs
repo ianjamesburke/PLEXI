@@ -1798,6 +1798,11 @@ struct DecodedBacklog {
 }
 
 struct DecodedBacklogState {
+    /// Outputs sent and not yet taken. `std::sync::mpsc::Receiver` has no
+    /// length, and `needs_background_tick` must answer "is there work here"
+    /// without consuming anything: an off-screen pane is asked every frame,
+    /// and a peek that took a message would drop it on the floor.
+    outputs: usize,
     bytes: usize,
     limit: usize,
     closed: bool,
@@ -1807,6 +1812,7 @@ impl DecodedBacklog {
     fn new(limit: usize) -> Self {
         Self {
             state: Mutex::new(DecodedBacklogState {
+                outputs: 0,
                 bytes: 0,
                 limit,
                 closed: false,
@@ -1824,7 +1830,8 @@ impl DecodedBacklog {
         Self::fits(&self.state.lock().unwrap_or_else(|e| e.into_inner()), bytes)
     }
 
-    /// Wait until `bytes` more fit, then count them. False once closed.
+    /// Wait until an output of `bytes` fits, then count it, before it is
+    /// sent: the host may take it the moment it lands. False once closed.
     fn admit(&self, bytes: usize) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         while !state.closed && !Self::fits(&state, bytes) {
@@ -1833,17 +1840,24 @@ impl DecodedBacklog {
         if state.closed {
             return false;
         }
+        state.outputs += 1;
         state.bytes += bytes;
         true
     }
 
-    /// The host took an output of `bytes`.
+    /// The host took an output of `bytes`, or it was never sent.
     fn release(&self, bytes: usize) {
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.outputs = state.outputs.saturating_sub(1);
             state.bytes = state.bytes.saturating_sub(bytes);
         }
         self.room.notify_all();
+    }
+
+    /// Whether an output is sent and not yet taken.
+    fn has_outputs(&self) -> bool {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).outputs > 0
     }
 
     fn close(&self) {
@@ -1923,11 +1937,7 @@ struct PythonOutputDecoder {
     rx: std::sync::mpsc::Receiver<DecodedOutput>,
     thread: Option<JoinHandle<()>>,
     stdout: DrainableOutput,
-    /// Decoded outputs sent but not yet taken. `std::sync::mpsc::Receiver` has
-    /// no length, and `needs_background_tick` must answer "is there work here"
-    /// without consuming anything — an off-screen pane is asked every frame and
-    /// a peek that took a message would drop it on the floor.
-    queued: Arc<std::sync::atomic::AtomicUsize>,
+    /// Decoded outputs sent and not yet taken, and their bytes.
     backlog: Arc<DecodedBacklog>,
 }
 
@@ -1943,8 +1953,6 @@ impl PythonOutputDecoder {
         stdout.limit_unread(STDOUT_UNREAD_LIMIT_BYTES);
         let stdin = runtime.stdin.clone();
         let thread_stdout = stdout.clone();
-        let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let thread_queued = queued.clone();
         let backlog = Arc::new(DecodedBacklog::new(DECODED_BACKLOG_LIMIT_BYTES));
         let thread_backlog = Arc::clone(&backlog);
         let thread = std::thread::Builder::new()
@@ -1956,7 +1964,6 @@ impl PythonOutputDecoder {
                     plugin_id,
                     tx,
                     repaint,
-                    thread_queued,
                     thread_backlog,
                     wake_schedule,
                 );
@@ -1966,18 +1973,15 @@ impl PythonOutputDecoder {
             rx,
             thread,
             stdout,
-            queued,
             backlog,
         }
     }
 
-    /// Take one decoded output, keeping [`Self::queued`] in step with the
+    /// Take one decoded output, keeping [`Self::backlog`] in step with the
     /// channel. Every read of `rx` must go through here.
     fn try_recv(&self) -> Result<DecodedOutput, std::sync::mpsc::TryRecvError> {
         let output = self.rx.try_recv();
         if let Ok(output) = &output {
-            self.queued
-                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             self.backlog.release(output.backlog_bytes());
         }
         output
@@ -1998,7 +2002,7 @@ impl PythonOutputDecoder {
 
     /// True when the guest has produced output the host has not read yet.
     fn has_queued_output(&self) -> bool {
-        self.queued.load(std::sync::atomic::Ordering::Acquire) > 0
+        self.backlog.has_outputs()
     }
 }
 
@@ -2022,7 +2026,6 @@ fn decode_loop(
     plugin_id: String,
     tx: std::sync::mpsc::Sender<DecodedOutput>,
     repaint: RepaintHook,
-    queued: Arc<std::sync::atomic::AtomicUsize>,
     backlog: Arc<DecodedBacklog>,
     wake_schedule: WakeSchedule,
 ) {
@@ -2045,12 +2048,7 @@ fn decode_loop(
         if !backlog.admit(bytes) {
             return false;
         }
-        // Count before sending, never after: the paint side may take the
-        // message the instant it lands, and a decrement that beat its
-        // increment would underflow the unsigned counter into "always busy".
-        queued.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         if tx.send(output).is_err() {
-            queued.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             backlog.release(bytes);
             return false;
         }
@@ -14333,8 +14331,8 @@ default = true
         let (tx, rx) = std::sync::mpsc::channel();
         let repaint: RepaintHook = Arc::new(Mutex::new(None));
         let reader = stdout.clone();
-        let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let thread_queued = queued.clone();
+        let backlog = Arc::new(DecodedBacklog::new(DECODED_BACKLOG_LIMIT_BYTES));
+        let thread_backlog = Arc::clone(&backlog);
         let handle = std::thread::spawn(move || {
             decode_loop(
                 reader,
@@ -14342,8 +14340,7 @@ default = true
                 "test".to_string(),
                 tx,
                 repaint,
-                thread_queued,
-                Arc::new(DecodedBacklog::new(DECODED_BACKLOG_LIMIT_BYTES)),
+                thread_backlog,
                 Arc::new(Mutex::new(WakeScheduleState::default())),
             );
         });
@@ -14389,7 +14386,8 @@ default = true
         // pane can be asked "do you have work?" without consuming anything. Both
         // frames are counted here — this test reads the raw channel, and only
         // `PythonOutputDecoder::try_recv` decrements.
-        assert_eq!(queued.load(std::sync::atomic::Ordering::Acquire), 2);
+        assert!(backlog.has_outputs());
+        assert_eq!(backlog.state.lock().unwrap().outputs, 2);
 
         stdout.close();
         handle.join().expect("decoder thread");
@@ -14410,7 +14408,6 @@ default = true
                 "test".to_string(),
                 tx,
                 repaint,
-                Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 Arc::new(DecodedBacklog::new(DECODED_BACKLOG_LIMIT_BYTES)),
                 Arc::new(Mutex::new(WakeScheduleState::default())),
             );
@@ -14453,7 +14450,6 @@ default = true
                 "test".to_string(),
                 tx,
                 repaint,
-                Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 Arc::new(DecodedBacklog::new(DECODED_BACKLOG_LIMIT_BYTES)),
                 Arc::new(Mutex::new(WakeScheduleState::default())),
             );
