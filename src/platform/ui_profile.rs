@@ -197,8 +197,6 @@ pub fn window_summary_line(
     line
 }
 
-/// Test-only: drop any open window and open a fresh one so a measurement
-/// starts from zero spans and frames.
 /// How long the window must hold its size before a resize gesture counts as
 /// ended. Matches the drag-window hold above.
 pub const RESIZE_GESTURE_HOLD: Duration = Duration::from_millis(300);
@@ -208,8 +206,9 @@ pub const RESIZE_GESTURE_HOLD: Duration = Duration::from_millis(300);
 /// for [`RESIZE_GESTURE_HOLD`], so a slow resize leaves evidence in the
 /// default log without `PLEXI_UI_PROFILE`.
 ///
-/// A frame is a pass whose content rect changed. Each interval between two
-/// consecutive resize frames is split three ways:
+/// A frame is a pass whose content rect changed. Its time runs from its start
+/// to the start of the next pass, whatever that pass is, and splits three
+/// ways:
 /// - `app`: Plexi's own `App::logic` + `App::ui` time;
 /// - `render`: the rest of eframe's frame CPU (tessellation, paint encoding);
 /// - `wait`: everything outside eframe's CPU figure — drawable acquire,
@@ -255,7 +254,23 @@ impl ResizeGesture {
         resized: bool,
         prev_eframe_cpu_s: Option<f32>,
     ) -> bool {
+        // The previous resize frame ended when this pass began. Record it
+        // before looking at this pass, so a resize frame followed by a
+        // same-size pass (a terminal's requested repaint) still counts. The
+        // pass that closes the gesture comes a full hold after the last
+        // resize frame, so that interval is idle time, not frame time.
         let prev = self.prev.take();
+        let closing = !resized
+            && self.open.as_ref().is_some_and(|gesture| {
+                now.saturating_duration_since(gesture.last_resize) >= RESIZE_GESTURE_HOLD
+            });
+        if let (Some(prev), Some(gesture), false) = (prev, self.open.as_mut(), closing) {
+            gesture.samples.push(FrameSample {
+                interval_ms: ms(now.saturating_duration_since(prev.start)),
+                app_ms: prev.app_ms,
+                eframe_cpu_ms: prev_eframe_cpu_s.map(|s| s * 1000.0),
+            });
+        }
         if resized {
             let gesture = self.open.get_or_insert_with(|| {
                 log::info!(target: "plexi::resize", "window resize: started");
@@ -267,13 +282,6 @@ impl ResizeGesture {
                     samples: Vec::new(),
                 }
             });
-            if let Some(prev) = prev {
-                gesture.samples.push(FrameSample {
-                    interval_ms: ms(now.saturating_duration_since(prev.start)),
-                    app_ms: prev.app_ms,
-                    eframe_cpu_ms: prev_eframe_cpu_s.map(|s| s * 1000.0),
-                });
-            }
             gesture.frames += 1;
             gesture.passes += 1;
             gesture.last_resize = now;
@@ -283,7 +291,7 @@ impl ResizeGesture {
             });
         } else if let Some(gesture) = self.open.as_mut() {
             gesture.passes += 1;
-            if now.saturating_duration_since(gesture.last_resize) >= RESIZE_GESTURE_HOLD {
+            if closing {
                 let gesture = self.open.take().expect("open gesture");
                 log::info!(target: "plexi::resize", "{}", gesture.summary());
             }
@@ -311,18 +319,28 @@ impl Gesture {
             0.0
         };
         let p95 = |values: Vec<f32>| percentiles(&values).1;
-        let (p50, frame_p95, max) = percentiles(
-            &self
-                .samples
-                .iter()
-                .map(|s| s.interval_ms)
-                .collect::<Vec<_>>(),
-        );
-        let app_p95 = p95(self.samples.iter().map(|s| s.app_ms).collect());
         let mut line = format!(
-            "window resize: ended frames={} passes={} dur={dur_s:.2}s fps={fps:.1} frame_ms p50={p50:.1} p95={frame_p95:.1} max={max:.1} app_ms p95={app_p95:.1}",
+            "window resize: ended frames={} passes={} dur={dur_s:.2}s fps={fps:.1}",
             self.frames, self.passes
         );
+        if self.samples.is_empty() {
+            // No resize frame was followed by another pass inside the
+            // gesture: there is no measured frame, so print none rather
+            // than zeros that read as a fast drag.
+            line.push_str(" frame_ms p50=n/a p95=n/a max=n/a app_ms p95=n/a");
+        } else {
+            let (p50, frame_p95, max) = percentiles(
+                &self
+                    .samples
+                    .iter()
+                    .map(|s| s.interval_ms)
+                    .collect::<Vec<_>>(),
+            );
+            let app_p95 = p95(self.samples.iter().map(|s| s.app_ms).collect());
+            line.push_str(&format!(
+                " frame_ms p50={p50:.1} p95={frame_p95:.1} max={max:.1} app_ms p95={app_p95:.1}"
+            ));
+        }
         let cpu: Option<Vec<(f32, f32, f32)>> = self
             .samples
             .iter()
@@ -350,23 +368,29 @@ fn ms(d: Duration) -> f32 {
     d.as_secs_f32() * 1000.0
 }
 
+/// Test-only: drop any open window and open a fresh one so a measurement
+/// starts from zero spans and frames.
 #[cfg(test)]
 pub(crate) fn reset_measurement() {
+    #[cfg(unix)]
     CPU_FRAMES.lock().unwrap().clear();
     set_drag_active(false);
     set_drag_active(true);
 }
 
-/// Test-only: print the open window's summary plus render-thread CPU
-/// percentiles (CPU excludes scheduler delay on a loaded builder).
+/// Test-only: print the open window's summary plus, on Unix, render-thread
+/// CPU percentiles (CPU excludes scheduler delay on a loaded builder).
 #[cfg(test)]
 pub(crate) fn print_measurement() {
-    let cpu = CPU_FRAMES.lock().unwrap();
-    let (p50, p95, max) = percentiles(&cpu);
-    println!(
-        "UI_THREAD_CPU frames={} p50_ms={p50:.2} p95_ms={p95:.2} max_ms={max:.2}",
-        cpu.len()
-    );
+    #[cfg(unix)]
+    {
+        let cpu = CPU_FRAMES.lock().unwrap();
+        let (p50, p95, max) = percentiles(&cpu);
+        println!(
+            "UI_THREAD_CPU frames={} p50_ms={p50:.2} p95_ms={p95:.2} max_ms={max:.2}",
+            cpu.len()
+        );
+    }
     let window = WINDOW.lock().unwrap();
     let w = window.as_ref().expect("an open measurement window");
     let (p50, p95, max) = percentiles(&w.frame_ms);
@@ -383,11 +407,12 @@ pub(crate) fn print_measurement() {
     );
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 static CPU_FRAMES: Mutex<Vec<f32>> = Mutex::new(Vec::new());
 
-/// Test-only render-thread CPU clock.
-#[cfg(test)]
+/// Test-only render-thread CPU clock. Unix only: the pinned `libc` has no
+/// `clock_gettime` or `CLOCK_THREAD_CPUTIME_ID` on Windows.
+#[cfg(all(test, unix))]
 pub(crate) fn thread_cpu_time() -> Duration {
     let mut value = libc::timespec {
         tv_sec: 0,
@@ -404,7 +429,7 @@ pub(crate) fn thread_cpu_time() -> Duration {
     Duration::new(value.tv_sec as u64, value.tv_nsec as u32)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn note_cpu_frame(total: Duration) {
     CPU_FRAMES
         .lock()
@@ -467,14 +492,51 @@ mod tests {
             g.note_app_time(Duration::from_millis(1));
             g.note_app_time(Duration::from_millis(3));
         }
-        // A pass with no size change inside the hold keeps it open.
-        assert!(g.begin_pass(at(200), false, Some(0.006)));
+        // A pass with no size change inside the hold keeps it open and ends
+        // the third frame.
+        assert!(g.begin_pass(at(160), false, Some(0.006)));
         assert_eq!(
             g.open.as_ref().unwrap().summary(),
             "window resize: ended frames=3 passes=4 dur=0.04s fps=50.0 frame_ms p50=20.0 p95=20.0 max=20.0 app_ms p95=4.0 render_ms p95=2.0 wait_ms p95=14.0"
         );
         assert!(!g.begin_pass(at(140 + 300), false, None));
         assert!(g.open.is_none());
+    }
+
+    /// Codex round 1 on PR 3280: a resize frame followed by a same-size pass
+    /// (the terminal's requested repaint) is still a measured frame.
+    #[test]
+    fn resize_gesture_measures_frames_interleaved_with_repaint_passes() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut g = ResizeGesture::default();
+        for start in [0u64, 30, 60] {
+            assert!(g.begin_pass(at(start), true, Some(0.010)));
+            g.note_app_time(Duration::from_millis(12));
+            // The repaint pass 25ms later: same size, no app time charged.
+            assert!(g.begin_pass(at(start + 25), false, Some(0.015)));
+            g.note_app_time(Duration::from_millis(50));
+        }
+        assert_eq!(
+            g.open.as_ref().unwrap().summary(),
+            "window resize: ended frames=3 passes=6 dur=0.06s fps=33.3 frame_ms p50=25.0 p95=25.0 max=25.0 app_ms p95=12.0 render_ms p95=3.0 wait_ms p95=10.0"
+        );
+        // The closing pass is a hold after the last resize: idle, not a frame.
+        assert!(!g.begin_pass(at(60 + 300), false, None));
+    }
+
+    #[test]
+    fn resize_gesture_without_samples_reports_unavailable() {
+        let t0 = Instant::now();
+        let mut g = ResizeGesture::default();
+        g.begin_pass(t0, true, None);
+        g.note_app_time(Duration::from_millis(9));
+        assert_eq!(
+            g.open.as_ref().unwrap().summary(),
+            "window resize: ended frames=1 passes=1 dur=0.00s fps=0.0 frame_ms p50=n/a p95=n/a max=n/a app_ms p95=n/a render_ms p95=n/a wait_ms p95=n/a"
+        );
+        // Closing a hold later records no idle sample.
+        assert!(!g.begin_pass(t0 + RESIZE_GESTURE_HOLD, false, Some(0.001)));
     }
 
     #[test]

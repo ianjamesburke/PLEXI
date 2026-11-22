@@ -4077,7 +4077,7 @@ impl eframe::App for PlexiApp {
         // Before any overlay owner takes the frame's input buffer.
         input_owner::note_tab_key(ctx);
         let ui_start = std::time::Instant::now();
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         let ui_cpu_start = crate::platform::ui_profile::enabled()
             .then(crate::platform::ui_profile::thread_cpu_time);
         crate::platform::logging::mark_ui_phase(
@@ -4516,7 +4516,7 @@ impl eframe::App for PlexiApp {
         // widget focus (stint 0429). Everything above may change host focus
         // state; nothing after this may touch egui focus.
         self.reconcile_egui_focus(ctx);
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         if let Some(cpu_start) = ui_cpu_start {
             crate::platform::ui_profile::note_cpu_frame(
                 crate::platform::ui_profile::thread_cpu_time() - cpu_start,
