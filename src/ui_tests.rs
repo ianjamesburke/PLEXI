@@ -8032,12 +8032,16 @@ open(out + ".done", "w").close()
         seed_wrapping_text(&mut h, &terminals);
 
         // Drag the window edge in: one frame per intermediate width, exactly
-        // as winit reports a live resize.
+        // as winit reports a live resize. Terminals settle on elapsed time, so
+        // the drag runs on the resize clock, not this machine's frame rate.
+        h.with_app_mut(|app| app.resize_clock.set(Instant::now()));
         for step in 1..=6 {
+            h.with_app_mut(|app| app.resize_clock.advance(Duration::from_millis(16)));
             h.harness()
                 .set_size(egui::vec2(START_W - step as f32 * 60.0, HEIGHT));
             h.step();
         }
+        h.with_app_mut(|app| app.resize_clock.advance(egui_term::RESIZE_SETTLE));
         h.run_steps(4);
 
         let widest_after = h.with_app_mut(|app| max_terminal_cols(app, &visible_terminals));
