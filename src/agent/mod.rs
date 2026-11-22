@@ -1556,6 +1556,7 @@ impl AgentHost {
             messages,
             tools: Vec::new(),
             workspace_root: Some(self.workspace_root.clone()),
+            config_workspace: Some(self.workspace_root.clone()),
             open_panes: crate::plexi_ai::broker::get_pane_snapshot(),
             tool_dispatcher: Some(dispatcher),
             cancel: crate::plexi_ai::CancelToken::new(),
@@ -1606,10 +1607,7 @@ impl AgentHost {
     /// here — `apply_context_transition_effects` runs at the end of every
     /// `PlexiApp` constructor and on every context change, and its
     /// `reload_workspace` call is the single owner of agent loading.
-    pub fn production(
-        ai_config: Option<crate::config::AiConfig>,
-        model_modes: crate::config::ResolvedModelModes,
-    ) -> Self {
+    pub fn production() -> Self {
         let config_dir = crate::config::config_dir();
         // Host only (stint 1291). Outside the host this agent host starts with
         // no grants and a diskless monitor, so every call asks or is refused.
@@ -1622,10 +1620,7 @@ impl AgentHost {
         let mut host = Self::new(
             grant_store,
             crate::host::plugin_timeline::global(),
-            Arc::new(crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
-                ai_config,
-                model_modes,
-            )),
+            Arc::new(crate::plexi_ai::broker::LiveAiBroker::from_profile()),
             config_dir.clone(),
         );
         match crate::broker::gate::PermissionMonitor::for_profile(&config_dir) {

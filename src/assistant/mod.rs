@@ -2231,6 +2231,7 @@ impl AssistantView {
             messages: messages.unwrap_or_else(|| self.history_messages()),
             tools: Vec::new(),
             workspace_root: Some(self.workspace_root.clone()),
+            config_workspace: Some(self.workspace_root.clone()),
             open_panes: crate::plexi_ai::broker::get_pane_snapshot(),
             tool_dispatcher: Some(Arc::new(dispatcher)),
             cancel,

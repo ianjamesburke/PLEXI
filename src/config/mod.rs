@@ -1273,6 +1273,81 @@ impl AiConfig {
     }
 }
 
+/// The settings one brokered AI call runs under: `[ai]` caps and `[models]`
+/// targets from the channel profile, with the requesting workspace's channel
+/// config overlaid the same way [`PlexiConfig::load_with_workspace`] does.
+/// Read per call, so a cap edit or a workspace limit applies to the next call.
+#[derive(Clone, Default)]
+pub struct AiCallSettings {
+    /// `None` when the profile has no `[ai]` table and the workspace adds none.
+    pub ai: Option<AiConfig>,
+    pub models: ModelModesConfig,
+}
+
+impl AiCallSettings {
+    pub fn from_config(config: &PlexiConfig) -> Self {
+        Self {
+            ai: config.ai.clone(),
+            models: config.models.clone().unwrap_or_default(),
+        }
+    }
+
+    /// Read the channel profile and overlay `workspace`'s channel config.
+    /// Fails when either file exists but cannot be read or parsed: an unread
+    /// layer could hold a lower cap. A missing profile uses the built-in
+    /// `[ai]` defaults, which the host seeds on first start.
+    pub fn load(workspace: Option<&Path>) -> Result<Self, String> {
+        let settings = read_ai_layer(&config_path())?.unwrap_or_else(|| Self {
+            ai: Some(AiConfig::default()),
+            models: ModelModesConfig::default(),
+        });
+        match workspace {
+            Some(root) => settings.with_workspace(root),
+            None => Ok(settings),
+        }
+    }
+
+    /// Overlay `root`'s channel workspace config, if it has one.
+    pub fn with_workspace(mut self, root: &Path) -> Result<Self, String> {
+        if let Some(layer) = read_ai_layer(&workspace_config_path(root))? {
+            self.overlay(layer);
+        }
+        Ok(self)
+    }
+
+    fn overlay(&mut self, other: Self) {
+        match (self.ai.as_mut(), other.ai) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.ai = Some(incoming),
+            _ => {}
+        }
+        self.models.overlay(other.models);
+    }
+
+    pub fn model_modes(&self) -> ResolvedModelModes {
+        self.models.resolved()
+    }
+}
+
+/// One config file's `[ai]` and `[models]`, or `None` when the file does not
+/// exist. Key-level problems keep the lenient loader's per-key fallback; a
+/// read or TOML syntax error is returned because it hides every key.
+fn read_ai_layer(path: &Path) -> Result<Option<AiCallSettings>, String> {
+    let data = match std::fs::read_to_string(path) {
+        Ok(data) => data,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    let (cfg, diags) = parse_config_lenient(&data, path);
+    if let Some(ConfigDiagnostic::ParseError { error, .. }) = diags
+        .iter()
+        .find(|diag| matches!(diag, ConfigDiagnostic::ParseError { .. }))
+    {
+        return Err(format!("cannot parse {}: {error}", path.display()));
+    }
+    Ok(Some(AiCallSettings::from_config(&cfg)))
+}
+
 /// Startup restoration policy for saved agent sessions (`[agents] restore_mode`).
 #[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]

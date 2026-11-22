@@ -1,8 +1,8 @@
 //! Cost ledger — one JSONL row per AI call, written to
 //! `~/.plexi-alpha/ai-ledger.jsonl` (or the build-appropriate config dir).
 //!
-//! Budget enforcement is active: `check_budget` gates every `ai.query` call
-//! against per-plugin and global daily spend caps from `[ai]` config.
+//! Budget enforcement lives in `plexi_ai::spend`, which reads `today_spend`
+//! under its admission lock before every brokered call.
 //!
 //! Row format (cost_usd is null for subscription billing; client is null when
 //! the run and `[ai] client` both leave it unset; wall_ms is omitted until a
@@ -149,7 +149,7 @@ impl LedgerSummary {
 ///
 /// `plugin_id` and `model` are populated for `ai.query` broker calls (#284) so
 /// the cost ledger can attribute spend per-plugin and per-model.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 pub struct LedgerRow {
     pub ts: String,
     pub backend: String,
@@ -288,22 +288,13 @@ impl LedgerRow {
     }
 }
 
-/// Append `row` to the ledger file. Creates the file if it doesn't exist.
-/// Silently logs and returns on I/O failure — billing ledger errors must
-/// never crash the UI or interrupt the conversation.
 fn ledger_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-pub fn append(row: &LedgerRow) {
-    if let Err(error) = append_result(row) {
-        log::warn!("plexi_ai ledger: {error}");
-    }
-}
-
-/// Append `row` and return the I/O or encode error. Agent runs use this so a
-/// missing ledger line is a failed spawn, not a silent zero.
+/// Append `row` to the ledger file, creating it if needed, and return the I/O
+/// or encode error. A missing ledger line is a failure, never a silent zero.
 pub fn append_result(row: &LedgerRow) -> Result<(), String> {
     let _guard = ledger_lock();
     // Checked before the file is created: a new ledger beside an old-name one
@@ -679,32 +670,23 @@ pub struct DailySpend {
     pub per_plugin: HashMap<String, f64>,
 }
 
-/// Read today's ledger and compute total spend. O(n) scan — called before each
-/// `ai.query`. Fails open: any I/O or parse error is logged and returns zero
-/// spend so a bad ledger never blocks queries.
-pub fn today_spend() -> DailySpend {
+/// Read today's ledger and compute total spend. O(n) scan, run at every
+/// spend admission. A missing ledger is zero spend; any other read error is
+/// returned so the caller refuses rather than spend against an unknown total.
+/// A malformed line is skipped and logged.
+pub fn today_spend() -> Result<DailySpend, String> {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let path = ledger_path();
 
     let data = match std::fs::read_to_string(&path) {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // No ledger yet — zero spend.
-            return DailySpend {
+            return Ok(DailySpend {
                 global_usd: 0.0,
                 per_plugin: HashMap::new(),
-            };
+            });
         }
-        Err(e) => {
-            log::warn!(
-                "plexi_ai ledger: failed to read {} for budget check: {e}",
-                path.display()
-            );
-            return DailySpend {
-                global_usd: 0.0,
-                per_plugin: HashMap::new(),
-            };
-        }
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
     };
 
     let mut global_usd = 0.0f64;
@@ -734,76 +716,10 @@ pub fn today_spend() -> DailySpend {
         }
     }
 
-    DailySpend {
+    Ok(DailySpend {
         global_usd,
         per_plugin,
-    }
-}
-
-/// Why the budget gate refused an AI request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BudgetDenial {
-    /// Spend cannot be read or recorded, so no cap can be enforced.
-    LedgerUnavailable(String),
-    /// A daily cap is reached.
-    Exceeded(String),
-}
-
-impl BudgetDenial {
-    /// The machine-readable code the broker reports to its caller.
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::LedgerUnavailable(_) => "ledger_unavailable",
-            Self::Exceeded(_) => "budget_exceeded",
-        }
-    }
-}
-
-impl std::fmt::Display for BudgetDenial {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::LedgerUnavailable(message) | Self::Exceeded(message) => f.write_str(message),
-        }
-    }
-}
-
-/// Check if an `ai.query` from `plugin_id` would exceed budget limits.
-/// Fails open on a read error (`today_spend` returns zero), but fails closed
-/// while an old-name ledger makes spend unrecordable.
-pub fn check_budget(plugin_id: &str, config: &crate::config::AiConfig) -> Result<(), BudgetDenial> {
-    // Spend cannot be read or recorded while the old-name ledger is in place,
-    // so the caps cannot be enforced: refuse rather than spend unmetered.
-    if let Some(error) = retired_ledger_error() {
-        log::error!("ai_broker[{plugin_id}]: refused, budget unenforceable: {error}");
-        return Err(BudgetDenial::LedgerUnavailable(error));
-    }
-    let spend = today_spend();
-    let global_cap = config.effective_global_daily_usd();
-    if spend.global_usd >= global_cap {
-        log::warn!(
-            "ai_broker[{plugin_id}]: global daily budget exceeded (${:.4} / ${:.2})",
-            spend.global_usd,
-            global_cap,
-        );
-        return Err(BudgetDenial::Exceeded(format!(
-            "global daily AI budget exceeded (${:.2} / ${:.2})",
-            spend.global_usd, global_cap
-        )));
-    }
-    let plugin_cap = config.effective_per_plugin_daily_usd();
-    let plugin_spend = spend.per_plugin.get(plugin_id).copied().unwrap_or(0.0);
-    if plugin_spend >= plugin_cap {
-        log::warn!(
-            "ai_broker[{plugin_id}]: per-plugin daily budget exceeded (${:.4} / ${:.2})",
-            plugin_spend,
-            plugin_cap,
-        );
-        return Err(BudgetDenial::Exceeded(format!(
-            "per-plugin daily AI budget exceeded for '{plugin_id}' (${:.2} / ${:.2})",
-            plugin_spend, plugin_cap
-        )));
-    }
-    Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -893,93 +809,6 @@ mod ledger_tests {
         );
     }
 
-    // ── Budget enforcement tests ──────────────────────────────────────────────
-
-    fn budget_config(per_plugin: f64, global: f64) -> crate::config::AiConfig {
-        crate::config::AiConfig {
-            per_plugin_daily_usd: Some(per_plugin),
-            global_daily_usd: Some(global),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn check_budget_passes_under_limit() {
-        let config = budget_config(1.0, 10.0);
-        // Build a mock DailySpend inline by calling check_budget with a config
-        // where limits are well above any actual ledger spend. Since we are in
-        // a test environment with no real ledger, today_spend() returns zero —
-        // this call must succeed.
-        let result = check_budget("app1", &config);
-        assert!(
-            result.is_ok(),
-            "should pass when spend is under limit: {result:?}"
-        );
-    }
-
-    #[test]
-    fn check_budget_blocks_global_over_limit() {
-        // Set global cap very low so even zero today_spend() doesn't trigger...
-        // We need to actually write a ledger row for today to test blocking.
-        // Use a temp dir to isolate. Since ledger_path() uses config_dir() which
-        // is process-global, we test the logic directly using a known spend
-        // by setting a cap below the mock spend value.
-        //
-        // Instead, test the error message shape by using a cap of 0.0 (any spend
-        // would exceed it — but spend is 0 from an empty ledger).
-        // To truly trigger the global block without mocking, set global cap to 0.0
-        // which means 0.0 >= 0.0 is true.
-        let config = crate::config::AiConfig {
-            global_daily_usd: Some(0.0),
-            per_plugin_daily_usd: Some(1.0),
-            ..Default::default()
-        };
-        let result = check_budget("app1", &config);
-        assert!(result.is_err(), "should block when global spend >= cap");
-        let denial = result.unwrap_err();
-        assert_eq!(denial.code(), "budget_exceeded");
-        let msg = denial.to_string();
-        assert!(
-            msg.contains("global daily"),
-            "error must mention 'global daily': {msg}"
-        );
-    }
-
-    #[test]
-    fn check_budget_blocks_per_plugin_over_limit() {
-        // Set per-plugin cap to 0.0 so any spend (including 0 >= 0) triggers.
-        // But global cap is high so that path doesn't fire first.
-        let config = crate::config::AiConfig {
-            global_daily_usd: Some(100.0),
-            per_plugin_daily_usd: Some(0.0),
-            ..Default::default()
-        };
-        // With empty ledger, plugin_spend = 0.0 which is NOT >= 0.0... actually 0.0 >= 0.0 is true.
-        let result = check_budget("app1", &config);
-        assert!(result.is_err(), "should block when per-plugin spend >= cap");
-        let denial = result.unwrap_err();
-        assert_eq!(denial.code(), "budget_exceeded");
-        let msg = denial.to_string();
-        assert!(
-            msg.contains("app1"),
-            "error must mention the plugin_id: {msg}"
-        );
-        assert!(
-            msg.contains("per-plugin daily"),
-            "error must mention 'per-plugin daily': {msg}"
-        );
-    }
-
-    #[test]
-    fn today_spend_returns_zero_on_missing_ledger() {
-        // today_spend() must not panic when ledger doesn't exist.
-        // We can't control the ledger path in tests (it's process-global),
-        // but we can verify it returns a DailySpend without panicking.
-        let spend = today_spend();
-        // global_usd is >= 0 (sanity check — no panics, no negative values)
-        assert!(spend.global_usd >= 0.0, "global_usd must be non-negative");
-    }
-
     fn isolated_ledger() -> (tempfile::TempDir, crate::config::TestProfileDirGuard) {
         let dir = tempfile::TempDir::new().expect("temp profile dir");
         let guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
@@ -1009,7 +838,7 @@ mod ledger_tests {
             },
             Some(1500),
         );
-        append(&row);
+        append_result(&row).unwrap();
         let text = std::fs::read_to_string(ledger_file()).expect("ledger");
         let value: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
         assert_eq!(value["client"], "narrative");
@@ -1149,8 +978,9 @@ mod ledger_tests {
             Ok(report) => panic!("an old-name ledger must stop the summary: {report:?}"),
             Err(error) => error,
         };
-        let budget = check_budget("app1", &crate::config::AiConfig::default())
-            .expect_err("an unmetered ledger must refuse AI calls");
+        let budget = crate::plexi_ai::spend::reserve("app1", &crate::config::AiConfig::default())
+            .err()
+            .expect("an unmetered ledger must refuse AI calls");
         assert_eq!(budget.code(), "ledger_unavailable");
         for message in [appended, summarized, budget.to_string()] {
             assert!(message.contains(&old.display().to_string()), "{message}");
@@ -1228,8 +1058,8 @@ mod ledger_tests {
             Some(4),
             Some(0.5),
         );
-        append(&missing);
-        append(&priced);
+        append_result(&missing).unwrap();
+        append_result(&priced).unwrap();
         let before = std::fs::read_to_string(ledger_file()).unwrap();
         let priced_line = before.lines().nth(1).unwrap().to_string();
         assert!(fill_cost(&ledger_file(), &missing.ts, 0.021));

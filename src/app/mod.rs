@@ -1712,7 +1712,6 @@ impl PlexiApp {
         // project fields preserve the global value.
         let active_workspace = config::active_workspace_root();
         let config = config::PlexiConfig::load_with_workspace(active_workspace.as_deref());
-        let model_modes = config.resolved_model_modes();
         let key_bindings = crate::host::keys::build_key_bindings_with_user_keys(
             config.keybindings.as_ref(),
             config.keys.as_ref(),
@@ -2049,7 +2048,7 @@ impl PlexiApp {
                     focus_journal_path: profile_dir.join("focus-journal.jsonl"),
                     overlay_held_cmds: Vec::new(),
             context_scope_revisions: HashMap::new(),
-                    agent_host: crate::agent::AgentHost::production(config.ai, model_modes),
+                    agent_host: crate::agent::AgentHost::production(),
                     pending_pane_clicks: HashMap::new(),
                     pending_pane_inputs: HashMap::new(),
                     pending_pane_drags: HashMap::new(),
@@ -2116,8 +2115,7 @@ impl PlexiApp {
         default_registries.view_for_root(&default_cwd);
         let default_registry_watchers = start_registry_watchers_for(&default_registries, &ui_wake);
 
-        let agent_host =
-            crate::agent::AgentHost::production(config.ai.clone(), config.resolved_model_modes());
+        let agent_host = crate::agent::AgentHost::production();
         // Standing ruling: a context root must gitignore its plugin_states dir
         // (personal local data, never committed). Guarded so constructing a
         // Context never creates directories as a side effect.
@@ -6134,10 +6132,7 @@ pub(crate) fn restore_workspace(
                     {
                         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
                             std::sync::Arc::new(
-                                crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
-                                    config.ai.clone(),
-                                    config.resolved_model_modes(),
-                                ),
+                                crate::plexi_ai::broker::LiveAiBroker::from_profile(),
                             );
                         pane_entry = Some(crate::pane_ops::restore_assistant_pane(
                             saved_pane.id,

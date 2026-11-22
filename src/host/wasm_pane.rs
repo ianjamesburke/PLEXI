@@ -508,7 +508,7 @@ impl WasmPane {
             permission_workspace_root: PathBuf::new(),
             deferred_ai_queries: VecDeque::new(),
             net: Arc::new(UreqNetService::new()),
-            ai_broker: Arc::new(default_live_broker()),
+            ai_broker: Arc::new(LiveAiBroker::from_profile()),
             plugin_timeline: crate::host::plugin_timeline::global(),
             pane_id: 0,
             context_id: 0,
@@ -1537,6 +1537,9 @@ impl WasmPane {
         let broker = Arc::clone(&self.ai_broker);
         let tx = self.http_tx.clone();
         let plugin_id = self.app.plugin_id().to_string();
+        // The plugin's own workspace governs its caps and model targets.
+        let config_workspace = (!self.permission_workspace_root.as_os_str().is_empty())
+            .then(|| self.permission_workspace_root.clone());
         let request_id = req.request_id.clone();
         let messages = req
             .messages
@@ -1588,6 +1591,7 @@ impl WasmPane {
                         messages,
                         tools: Vec::new(),
                         workspace_root: None,
+                        config_workspace,
                         open_panes: crate::plexi_ai::broker::get_pane_snapshot(),
                         tool_dispatcher: None,
                         cancel: crate::plexi_ai::CancelToken::new(),
@@ -1917,12 +1921,6 @@ fn host_http_to_wit(response: HostHttpResponse) -> WitHttpResponse {
         headers,
         body,
     }
-}
-
-fn default_live_broker() -> LiveAiBroker {
-    let config = crate::config::PlexiConfig::load();
-    let modes = config.resolved_model_modes();
-    LiveAiBroker::with_model_modes(config.ai, modes)
 }
 
 // ─── Live adapter ───────────────────────────────────────────────────────────

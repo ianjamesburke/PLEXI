@@ -17,13 +17,14 @@
 
 use std::sync::{Arc, OnceLock, RwLock};
 
-use crate::config::{AiConfig, ResolvedModelModes};
+use crate::config::{AiCallSettings, AiConfig, ResolvedModelModes};
 use crate::host::event_log::{self, HostEvent};
 use crate::platform::text;
 use crate::plexi_ai::backend::openrouter::OpenRouterBackend;
 use crate::plexi_ai::backend::{AiBackend, AiBackendRequest, BillingModel};
 pub use crate::plexi_ai::backend::{ConcreteModelRoute, ReasoningEffort};
 use crate::plexi_ai::ledger::{self, LedgerRow, RunKind, RunTags};
+use crate::plexi_ai::spend::{self, SpendReservation};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
 use crate::plexi_ai::turn_loop::{self, TurnError};
 use crate::plexi_ai::CancelToken;
@@ -116,6 +117,11 @@ pub struct AiBrokerRequest {
     /// Workspace root for host-context injection. When `Some`, the broker
     /// prepends a compact workspace context block to the system prompt.
     pub workspace_root: Option<std::path::PathBuf>,
+    /// Workspace whose channel config overlays `[ai]` caps and `[models]`
+    /// targets for this call. Set by the caller from the requesting pane's
+    /// workspace; the broker never looks it up. `None` uses the channel
+    /// profile only.
+    pub config_workspace: Option<std::path::PathBuf>,
     /// Currently open panes — listed in the host context block.
     /// `Arc`-wrapped so callers share the snapshot pointer rather than copying
     /// the full vector on every dispatch.
@@ -189,34 +195,119 @@ pub trait AiBroker: Send + Sync {
     ) -> AiBrokerResponse;
 }
 
-/// Production broker: reads config from `AiConfig`, routes to the configured
-/// backend (OpenRouter, Ollama, or a local OpenAI-compatible server), fetches
-/// real per-call cost (OpenRouter only), writes the ledger, and emits
+/// Production broker: resolves `[ai]` caps and `[models]` targets for the
+/// requesting workspace, reserves spend before dispatch (`plexi_ai::spend`),
+/// routes to the configured backend, records the ledger row, and emits
 /// `HostEvent::AgentTurn`.
-///
-/// `AiConfig` is cloned at construction from `PlexiConfig::load().ai`.
-/// If the config section is absent, `dispatch` fails fast with a clear error.
 pub struct LiveAiBroker {
-    /// AI broker configuration loaded from `config.toml [ai]`.
-    /// `None` when the section is absent; `dispatch` fails fast in that case.
-    ai_config: Option<AiConfig>,
-    model_modes: ResolvedModelModes,
+    settings: SettingsSource,
+}
+
+enum SettingsSource {
+    /// Read the channel profile and the request's workspace config per call.
+    Profile,
+    /// Fixed channel-level settings; the request's workspace still overlays.
+    #[cfg(test)]
+    Fixed(AiCallSettings),
 }
 
 impl LiveAiBroker {
-    /// Test-only constructor with built-in model defaults.
-    #[cfg(test)]
-    pub fn new(ai_config: Option<AiConfig>) -> Self {
-        Self::with_model_modes(
-            ai_config,
-            crate::config::PlexiConfig::default().resolved_model_modes(),
-        )
+    pub fn from_profile() -> Self {
+        Self {
+            settings: SettingsSource::Profile,
+        }
     }
 
-    pub fn with_model_modes(ai_config: Option<AiConfig>, model_modes: ResolvedModelModes) -> Self {
+    /// Test-only constructor with fixed `[ai]` and built-in model targets.
+    /// `None` fails every dispatch with `ai_config_missing`.
+    #[cfg(test)]
+    pub fn new(ai_config: Option<AiConfig>) -> Self {
         Self {
-            ai_config,
-            model_modes,
+            settings: SettingsSource::Fixed(AiCallSettings {
+                ai: ai_config,
+                models: Default::default(),
+            }),
+        }
+    }
+
+    /// The settings `request` runs under: channel settings with its
+    /// `config_workspace` overlaid.
+    fn call_settings(&self, request: &AiBrokerRequest) -> Result<AiCallSettings, String> {
+        let workspace = request.config_workspace.as_deref();
+        match &self.settings {
+            SettingsSource::Profile => AiCallSettings::load(workspace),
+            #[cfg(test)]
+            SettingsSource::Fixed(base) => match workspace {
+                Some(root) => base.clone().with_workspace(root),
+                None => Ok(base.clone()),
+            },
+        }
+    }
+
+    /// Resolve settings and reserve spend for `request`, or the refusal to
+    /// return. Every refusal is traced at info with plugin, workspace and
+    /// reason code; prompt content is never logged.
+    fn admit(&self, request: &AiBrokerRequest) -> Result<Admission, AiBrokerResponse> {
+        let refuse = |code: &str, detail: String| {
+            log::info!(
+                "ai_broker[{}]: refused workspace={} reason={code}",
+                request.plugin_id,
+                request
+                    .config_workspace
+                    .as_deref()
+                    .map(|root| root.display().to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+            );
+            AiBrokerResponse::err(format!("{code}: {detail}"))
+        };
+        let settings = self
+            .call_settings(request)
+            .map_err(|error| refuse("config_unavailable", error))?;
+        let Some(ai) = settings.ai.clone() else {
+            return Err(refuse(
+                "ai_config_missing",
+                "add [ai] and [models.fast] / [models.slow] settings to config.toml".to_string(),
+            ));
+        };
+        let reservation = spend::reserve(&request.plugin_id, &ai)
+            .map_err(|denial| refuse(denial.code(), denial.to_string()))?;
+        Ok(Admission {
+            ai,
+            model_modes: settings.model_modes(),
+            reservation,
+        })
+    }
+}
+
+#[cfg(test)]
+impl LiveAiBroker {
+    /// [`AiBroker::dispatch`] with `backend` in place of the provider and its
+    /// key lookup: admission, settings, run and recording are the production
+    /// path.
+    fn dispatch_with_backend(
+        &self,
+        request: AiBrokerRequest,
+        backend: &dyn AiBackend,
+    ) -> AiBrokerResponse {
+        match self.admit(&request) {
+            Ok(admission) => run_admitted(request, admission, backend, String::new(), &mut |_| {}),
+            Err(refusal) => refusal,
+        }
+    }
+}
+
+/// An admitted call: its resolved settings and the budget it holds.
+struct Admission {
+    ai: AiConfig,
+    model_modes: ResolvedModelModes,
+    reservation: SpendReservation,
+}
+
+impl Admission {
+    fn configured(&self, mode: ModelMode) -> &crate::config::ResolvedModelMode {
+        match mode {
+            ModelMode::Fast => &self.model_modes.fast,
+            ModelMode::Slow => &self.model_modes.slow,
         }
     }
 }
@@ -227,42 +318,18 @@ impl AiBroker for LiveAiBroker {
         request: AiBrokerRequest,
         on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
     ) -> AiBrokerResponse {
-        let ai_config = match &self.ai_config {
-            Some(c) => c,
-            None => {
-                let msg = "ai_config_missing: add [ai] and [models.fast] / [models.slow] settings to config.toml";
-                log::warn!(
-                    "ai_broker[{}]: dispatch failed — {}",
-                    request.plugin_id,
-                    msg
-                );
-                return AiBrokerResponse::err(msg);
-            }
-        };
-
-        // Budget gate: fails open on a ledger read error (today_spend returns
-        // 0), closed while an old-name ledger makes spend unrecordable.
-        if let Err(denial) = ledger::check_budget(&request.plugin_id, ai_config) {
-            log::warn!(
-                "ai_broker[{}]: request denied by budget gate ({}) — {denial}",
-                request.plugin_id,
-                denial.code()
-            );
-            return AiBrokerResponse::err(format!("{}: {denial}", denial.code()));
-        }
-
-        let configured = match request.model_mode {
-            ModelMode::Fast => &self.model_modes.fast,
-            ModelMode::Slow => &self.model_modes.slow,
+        let admission = match self.admit(&request) {
+            Ok(admission) => admission,
+            Err(refusal) => return refusal,
         };
         let backend_name = request
             .concrete_model
             .as_ref()
             .map(|route| route.provider.clone())
-            .unwrap_or_else(|| configured.provider.clone());
+            .unwrap_or_else(|| admission.configured(request.model_mode).provider.clone());
 
         match backend_name.as_str() {
-            "openrouter" => dispatch_openrouter(request, ai_config, configured, on_delta),
+            "openrouter" => dispatch_openrouter(request, admission, on_delta),
             other => AiBrokerResponse::err(format!("unsupported_model_provider: {other}")),
         }
     }
@@ -276,34 +343,51 @@ fn fill_run_tags(request: &mut AiBrokerRequest, config_client: Option<&str>) {
 
 /// Dispatch through the OpenRouter backend.
 fn dispatch_openrouter(
-    mut request: AiBrokerRequest,
-    ai_config: &AiConfig,
-    configured: &crate::config::ResolvedModelMode,
+    request: AiBrokerRequest,
+    admission: Admission,
     on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
 ) -> AiBrokerResponse {
-    let model_id = request
-        .concrete_model
-        .as_ref()
-        .map(|route| route.model.clone())
-        .unwrap_or_else(|| configured.model.clone());
-    if request.reasoning_effort.is_none() {
-        request.reasoning_effort = ReasoningEffort::parse(&configured.thinking).ok();
-    }
     let api_key = match resolve_openrouter_api_key(request.workspace_root.as_deref()) {
         Ok(key) => key,
         Err(msg) => return AiBrokerResponse::err(msg),
     };
-    fill_run_tags(&mut request, ai_config.client.as_deref());
     let backend = OpenRouterBackend {
         api_key: api_key.clone(),
-        model: model_id.clone(),
+        model: admitted_model_id(&request, &admission),
     };
+    run_admitted(request, admission, &backend, api_key, on_delta)
+}
+
+fn admitted_model_id(request: &AiBrokerRequest, admission: &Admission) -> String {
+    request
+        .concrete_model
+        .as_ref()
+        .map(|route| route.model.clone())
+        .unwrap_or_else(|| admission.configured(request.model_mode).model.clone())
+}
+
+/// Run an admitted call through `backend` with its resolved model, thinking
+/// level and run tags.
+fn run_admitted(
+    mut request: AiBrokerRequest,
+    admission: Admission,
+    backend: &dyn AiBackend,
+    api_key: String,
+    on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
+) -> AiBrokerResponse {
+    let model_id = admitted_model_id(&request, &admission);
+    if request.reasoning_effort.is_none() {
+        request.reasoning_effort =
+            ReasoningEffort::parse(&admission.configured(request.model_mode).thinking).ok();
+    }
+    fill_run_tags(&mut request, admission.ai.client.as_deref());
     run_turn_and_respond(
         request,
-        &backend,
+        backend,
         BillingModel::Metered,
         model_id,
         api_key,
+        admission.reservation,
         on_delta,
     )
 }
@@ -553,6 +637,7 @@ fn run_turn_and_respond(
     billing: BillingModel,
     model_id: String,
     api_key: String,
+    reservation: SpendReservation,
     on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
 ) -> AiBrokerResponse {
     let started = std::time::Instant::now();
@@ -608,6 +693,8 @@ fn run_turn_and_respond(
     let mut turn_cost = TurnCost::default();
     let mut last_generation_id: Option<String> = None;
     let mut final_text = String::new();
+    // A round that fails after earlier paid rounds still records their spend.
+    let mut failure: Option<String> = None;
 
     for iteration in 0..=max_tool_iterations {
         // Cancelled between rounds (ESC / event preempt): stop before starting
@@ -680,12 +767,12 @@ fn run_turn_and_respond(
                     request.plugin_id,
                     e.to_string().chars().count()
                 );
-                let message = match e {
+                failure = Some(match e {
                     TurnError::BackendError(be) => format!("backend error: {be}"),
                     TurnError::StreamError(s) => format!("stream error: {s}"),
                     TurnError::ChannelClosed => "stream closed before completion".to_string(),
-                };
-                return AiBrokerResponse::err(message);
+                });
+                break;
             }
             Ok(result) => {
                 add_reported_tokens(&mut total_tokens_in, result.input_tokens);
@@ -785,6 +872,13 @@ fn run_turn_and_respond(
         }
     }
 
+    if let Some(message) = &failure {
+        if turn_cost.rounds == 0 {
+            // Nothing reached a paid round; dropping the reservation frees it.
+            return AiBrokerResponse::err(message.clone());
+        }
+    }
+
     // Write the ledger row before returning. The generation record appears
     // several seconds after the stream ends; waiting for it (or writing the
     // row on that background thread) drops the row when the host stops in
@@ -815,7 +909,20 @@ fn run_turn_and_respond(
     )
     .tagged(tags, wall_ms);
     let row_ts = row.ts.clone();
-    ledger::append(&row);
+    if let Err(error) = reservation.record(&row) {
+        log::info!(
+            "ai_broker[{}]: refused workspace={} reason=accounting_failed (paid call not recorded; further spend blocked until the ledger accepts it)",
+            request.plugin_id,
+            request
+                .config_workspace
+                .as_deref()
+                .map(|root| root.display().to_string())
+                .unwrap_or_else(|| "-".to_string()),
+        );
+        return AiBrokerResponse::err(format!(
+            "accounting_failed: this call's spend could not be recorded ({error}); AI calls are refused until the ledger accepts it"
+        ));
+    }
     let cost_cents = cost_cents(cost_usd);
     // Free function with no `PlexiApp`/router access and `pane_id: None`
     // already — no origin is resolvable here without a new ambient lookup.
@@ -839,9 +946,12 @@ fn run_turn_and_respond(
         log::info!(
             "ai_broker[{plugin_id}]: usage had no cost; generation lookup will fill row ts={row_ts} gen_id={gen_id}"
         );
+        // The lookup keeps the call's spend held until the cost is filled
+        // or given up on, so an unpriced row never frees budget early.
         let spawn_result = std::thread::Builder::new()
             .name("plexi-ai-metrics".to_string())
             .spawn(move || {
+                let _held = reservation;
                 match fetch_generation_metrics(&gen_id, &api_key) {
                     Some(metrics) => match metrics.cost_usd {
                         Some(cost) => {
@@ -876,6 +986,9 @@ fn run_turn_and_respond(
                 request.plugin_id,
             );
         }
+    }
+    if let Some(message) = failure {
+        return AiBrokerResponse::err(message);
     }
     AiBrokerResponse::ok(
         final_text,
@@ -1172,7 +1285,6 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AiConfig, ResolvedModelMode, ResolvedModelModes};
     use std::sync::{Arc, Mutex};
 
     /// Test broker: records every request and returns a canned response.
@@ -1201,25 +1313,316 @@ mod tests {
         }
     }
 
+    // ── Spend integrity (stint 1691) ─────────────────────────────────────────
+
+    use crate::plexi_ai::backend::{AiBackendError, StreamEvent};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn spend_request(
+        plugin_id: &str,
+        config_workspace: Option<std::path::PathBuf>,
+    ) -> AiBrokerRequest {
+        AiBrokerRequest {
+            plugin_id: plugin_id.to_string(),
+            model_mode: ModelMode::Fast,
+            concrete_model: None,
+            reasoning_effort: None,
+            system: String::new(),
+            messages: vec![AiMessage {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+            }],
+            tools: vec![],
+            workspace_root: None,
+            config_workspace,
+            open_panes: Arc::new(Vec::new()),
+            tool_dispatcher: None,
+            cancel: CancelToken::new(),
+            max_tool_iterations: None,
+            client: None,
+            kind: None,
+        }
+    }
+
+    /// Plexi's own backend seam: counts calls, optionally waits for a release
+    /// signal, runs a hook, then reports `cost_usd`.
+    struct PricedBackend {
+        calls: AtomicUsize,
+        cost_usd: f64,
+        gate: Option<Arc<(Mutex<bool>, std::sync::Condvar)>>,
+        on_call: Box<dyn Fn(usize) + Send + Sync>,
+    }
+
+    impl PricedBackend {
+        fn new(cost_usd: f64) -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                cost_usd,
+                gate: None,
+                on_call: Box::new(|_| {}),
+            }
+        }
+    }
+
+    impl AiBackend for PricedBackend {
+        fn name(&self) -> &str {
+            "openrouter"
+        }
+        fn stream_to_channel(
+            &self,
+            _req: AiBackendRequest,
+            tx: std::sync::mpsc::Sender<StreamEvent>,
+        ) -> Result<(), AiBackendError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if let Some(gate) = &self.gate {
+                let (open, cvar) = &**gate;
+                let mut open = open.lock().unwrap();
+                while !*open {
+                    open = cvar.wait(open).unwrap();
+                }
+            }
+            (self.on_call)(call);
+            let _ = tx.send(StreamEvent::Text("paid".to_string()));
+            let _ = tx.send(StreamEvent::Done {
+                input_tokens: Some(10),
+                output_tokens: Some(5),
+                cost_usd: Some(self.cost_usd),
+                generation_id: None,
+            });
+            Ok(())
+        }
+    }
+
+    fn write_profile_caps(profile: &std::path::Path, per_plugin: f64, global: f64) {
+        std::fs::write(
+            profile.join("config.toml"),
+            format!("[ai]\nper_app_daily_usd = {per_plugin:?}\nglobal_daily_usd = {global:?}\n"),
+        )
+        .unwrap();
+    }
+
+    fn write_workspace_config(root: &std::path::Path, body: &str) {
+        let dir = root.join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), body).unwrap();
+    }
+
+    /// (a) Concurrent calls each pass a completed-spend check against the same
+    /// remaining budget unless admission reserves before dispatch.
     #[test]
-    fn broker_resolves_fast_and_slow_from_config() {
-        let broker = LiveAiBroker::with_model_modes(
-            Some(AiConfig::default()),
-            ResolvedModelModes {
-                fast: ResolvedModelMode {
-                    provider: "openrouter".into(),
-                    model: "test/fast".into(),
-                    thinking: "low".into(),
-                },
-                slow: ResolvedModelMode {
-                    provider: "openrouter".into(),
-                    model: "test/slow".into(),
-                    thinking: "high".into(),
-                },
-            },
+    fn concurrent_calls_are_refused_before_dispatch_once_the_cap_is_held() {
+        const CALLS: usize = 4;
+        let profile = tempfile::tempdir().unwrap();
+        let plugin_cap = spend::PER_CALL_RESERVE_USD * 2.5;
+        write_profile_caps(profile.path(), plugin_cap, 100.0);
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let backend = Arc::new(PricedBackend {
+            gate: Some(Arc::clone(&gate)),
+            ..PricedBackend::new(spend::PER_CALL_RESERVE_USD)
+        });
+        let broker = Arc::new(LiveAiBroker::from_profile());
+        let finished = Arc::new(AtomicUsize::new(0));
+
+        let workers: Vec<_> = (0..CALLS)
+            .map(|_| {
+                let (profile, backend, broker, finished) = (
+                    profile.path().to_path_buf(),
+                    Arc::clone(&backend),
+                    Arc::clone(&broker),
+                    Arc::clone(&finished),
+                );
+                std::thread::spawn(move || {
+                    let _guard = crate::config::set_test_profile_dir(profile);
+                    let resp =
+                        broker.dispatch_with_backend(spend_request("racer", None), &*backend);
+                    finished.fetch_add(1, Ordering::SeqCst);
+                    resp
+                })
+            })
+            .collect();
+
+        // Hold every admitted call inside the provider until each worker has
+        // either been admitted or returned, so all of them race admission.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while backend.calls.load(Ordering::SeqCst) + finished.load(Ordering::SeqCst) < CALLS {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "workers never settled"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        let responses: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+
+        let refused: Vec<_> = responses
+            .iter()
+            .filter_map(|r| r.error.as_deref())
+            .collect();
+        assert_eq!(
+            backend.calls.load(Ordering::SeqCst),
+            2,
+            "only the calls that fit reach the provider: {refused:?}"
         );
-        assert_eq!(broker.model_modes.fast.model, "test/fast");
-        assert_eq!(broker.model_modes.slow.model, "test/slow");
+        assert_eq!(refused.len(), CALLS - 2, "{refused:?}");
+        assert!(
+            refused.iter().all(|e| e.starts_with("budget_exceeded: ")),
+            "{refused:?}"
+        );
+
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let settled = ledger::today_spend().expect("ledger readable").global_usd;
+        assert!(
+            settled <= plugin_cap + 1e-9,
+            "settled ${settled} exceeds cap ${plugin_cap}"
+        );
+    }
+
+    /// (b) The requesting workspace's `[ai]` overlay governs the cap.
+    #[test]
+    fn a_workspace_cap_of_zero_refuses_a_call_the_profile_allows() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        write_profile_caps(profile.path(), 1.0, 10.0);
+        let workspace = tempfile::tempdir().unwrap();
+        write_workspace_config(workspace.path(), "[ai]\nper_app_daily_usd = 0.0\n");
+        let broker = LiveAiBroker::from_profile();
+        let backend = PricedBackend::new(0.01);
+
+        let allowed = broker.dispatch_with_backend(spend_request("plugin", None), &backend);
+        assert_eq!(
+            allowed.content.as_deref(),
+            Some("paid"),
+            "{:?}",
+            allowed.error
+        );
+
+        let refused = broker.dispatch_with_backend(
+            spend_request("plugin", Some(workspace.path().to_path_buf())),
+            &backend,
+        );
+        let error = refused.error.expect("the workspace cap must refuse");
+        assert!(error.starts_with("budget_exceeded: "), "{error}");
+        assert_eq!(
+            backend.calls.load(Ordering::SeqCst),
+            1,
+            "refused before dispatch"
+        );
+    }
+
+    /// (b) The requesting workspace's `[models]` overlay picks the model.
+    #[test]
+    fn a_workspace_model_target_is_the_model_the_call_uses() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        write_profile_caps(profile.path(), 1.0, 10.0);
+        let workspace = tempfile::tempdir().unwrap();
+        write_workspace_config(
+            workspace.path(),
+            "[models.fast]\nmodel = \"workspace/fast-model\"\n",
+        );
+        let broker = LiveAiBroker::from_profile();
+
+        let resp = broker.dispatch_with_backend(
+            spend_request("plugin", Some(workspace.path().to_path_buf())),
+            &PricedBackend::new(0.01),
+        );
+        assert!(resp.error.is_none(), "{:?}", resp.error);
+        let body = std::fs::read_to_string(ledger::ledger_path()).unwrap();
+        assert!(body.contains(r#""model":"workspace/fast-model""#), "{body}");
+    }
+
+    /// (b) An unreadable workspace config could hold a lower cap: refuse.
+    #[test]
+    fn an_unparseable_workspace_config_refuses() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let workspace = tempfile::tempdir().unwrap();
+        write_workspace_config(workspace.path(), "[ai\n");
+        let backend = PricedBackend::new(0.01);
+        let resp = LiveAiBroker::from_profile().dispatch_with_backend(
+            spend_request("plugin", Some(workspace.path().to_path_buf())),
+            &backend,
+        );
+        let error = resp.error.expect("refused");
+        assert!(error.starts_with("config_unavailable: "), "{error}");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// (c) A ledger that exists but cannot be read is not zero spend.
+    #[test]
+    fn an_unreadable_ledger_refuses_with_ledger_unavailable() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::create_dir(ledger::ledger_path()).unwrap();
+        let backend = PricedBackend::new(0.01);
+        let resp = LiveAiBroker::from_profile()
+            .dispatch_with_backend(spend_request("plugin", None), &backend);
+        let error = resp.error.expect("refused");
+        assert!(error.starts_with("ledger_unavailable: "), "{error}");
+        assert_eq!(
+            backend.calls.load(Ordering::SeqCst),
+            0,
+            "refused before dispatch"
+        );
+    }
+
+    /// (c) A paid call whose row cannot be written is an error, and spend
+    /// stays blocked until the ledger accepts that row.
+    #[test]
+    fn a_failed_append_is_an_error_and_blocks_spend_until_recorded() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let ledger_file = ledger::ledger_path();
+        let break_on_first = ledger_file.clone();
+        let backend = PricedBackend {
+            on_call: Box::new(move |call| {
+                if call == 1 {
+                    // The ledger becomes unwritable while the call is in flight.
+                    std::fs::create_dir(&break_on_first).unwrap();
+                }
+            }),
+            ..PricedBackend::new(0.02)
+        };
+        let broker = LiveAiBroker::from_profile();
+
+        let first = broker.dispatch_with_backend(spend_request("plugin", None), &backend);
+        let error = first.error.expect("an unrecorded paid call is an error");
+        assert!(error.starts_with("accounting_failed: "), "{error}");
+        assert!(first.content.is_none());
+
+        let blocked = broker.dispatch_with_backend(spend_request("plugin", None), &backend);
+        let error = blocked.error.expect("spend stays blocked");
+        assert!(error.starts_with("accounting_failed: "), "{error}");
+        assert_eq!(
+            backend.calls.load(Ordering::SeqCst),
+            1,
+            "blocked before dispatch"
+        );
+
+        std::fs::remove_dir(&ledger_file).unwrap();
+        let recovered = broker.dispatch_with_backend(spend_request("plugin", None), &backend);
+        assert!(recovered.error.is_none(), "{:?}", recovered.error);
+        let rows = std::fs::read_to_string(&ledger_file).unwrap();
+        assert_eq!(
+            rows.lines().count(),
+            2,
+            "the unrecorded row lands first: {rows}"
+        );
+    }
+
+    /// A reservation held under its own profile so concurrent tests never
+    /// share admission state. Keep the directory alive with the hold.
+    fn test_reservation() -> (tempfile::TempDir, SpendReservation) {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let caps = AiConfig {
+            per_plugin_daily_usd: Some(1000.0),
+            global_daily_usd: Some(1000.0),
+            ..Default::default()
+        };
+        let held = spend::reserve("test", &caps).expect("test reservation");
+        (profile, held)
     }
 
     #[test]
@@ -1262,6 +1665,7 @@ mod tests {
                 messages: messages.clone(),
                 tools: vec![],
                 workspace_root: None,
+                config_workspace: None,
                 open_panes: Arc::new(Vec::new()),
                 tool_dispatcher: None,
                 cancel: CancelToken::new(),
@@ -1630,6 +2034,7 @@ mod tests {
                 }],
                 tools: vec![],
                 workspace_root: None,
+                config_workspace: None,
                 open_panes: Arc::new(Vec::new()),
                 tool_dispatcher: None,
                 cancel: CancelToken::new(),
@@ -1673,6 +2078,7 @@ mod tests {
                 }],
                 tools: vec![],
                 workspace_root: None,
+                config_workspace: None,
                 open_panes: Arc::new(Vec::new()),
                 tool_dispatcher: None,
                 cancel: CancelToken::new(),
@@ -1794,6 +2200,7 @@ mod tests {
             }],
             tools: vec![tool],
             workspace_root: None,
+            config_workspace: None,
             open_panes: Arc::new(Vec::new()),
             tool_dispatcher: None,
             cancel: CancelToken::new(),
@@ -1809,6 +2216,7 @@ mod tests {
             billing,
             "test-model".to_string(),
             String::new(),
+            test_reservation().1,
             &mut |_| {},
         );
         assert!(
@@ -1911,6 +2319,7 @@ mod tests {
             }],
             tools: vec![tool],
             workspace_root: None,
+            config_workspace: None,
             open_panes: Arc::new(Vec::new()),
             tool_dispatcher: None,
             cancel: CancelToken::new(),
@@ -1925,6 +2334,7 @@ mod tests {
             BillingModel::Subscription,
             "test-model".to_string(),
             String::new(),
+            test_reservation().1,
             &mut |_| {},
         );
 
@@ -2000,6 +2410,7 @@ mod tests {
             }],
             tools: vec![],
             workspace_root: None,
+            config_workspace: None,
             open_panes: Arc::new(Vec::new()),
             tool_dispatcher: None,
             cancel,
@@ -2013,6 +2424,7 @@ mod tests {
             BillingModel::Subscription,
             "m".to_string(),
             String::new(),
+            test_reservation().1,
             &mut |_| {},
         );
         assert_eq!(
@@ -2085,6 +2497,7 @@ mod tests {
             }],
             tools: vec![],
             workspace_root: None,
+            config_workspace: None,
             open_panes: Arc::new(Vec::new()),
             tool_dispatcher: None,
             cancel,
@@ -2098,6 +2511,7 @@ mod tests {
             BillingModel::Subscription,
             "m".to_string(),
             String::new(),
+            test_reservation().1,
             &mut |_| {},
         );
         assert_eq!(
@@ -2225,6 +2639,7 @@ mod tests {
             }],
             tools: vec![],
             workspace_root: None,
+            config_workspace: None,
             open_panes: Arc::new(Vec::new()),
             tool_dispatcher: None,
             cancel: CancelToken::new(),
@@ -2239,6 +2654,7 @@ mod tests {
             BillingModel::Metered,
             "xiaomi/mimo-v2.5".to_string(),
             "sk-test".to_string(),
+            test_reservation().1,
             &mut |_| {},
         );
         assert!(
