@@ -27,6 +27,7 @@ use crate::app::PlexiApp;
 use crate::broker::gate::PermissionMonitor;
 use crate::broker::pane_authority::LivePaneAuthority;
 use crate::host::pane::{TerminalPane, TerminalSpawnError};
+use crate::host::pane_env::PaneBase;
 use crate::host::shell;
 
 use super::create::PaneContextEnv;
@@ -59,10 +60,59 @@ pub(crate) struct TerminalLaunch {
     pub(crate) command: Option<LaunchCommand>,
     /// The pane closes when its shell exits, with or without a command.
     pub(crate) ephemeral: bool,
-    /// Worker metadata (`PLEXI_AGENT_*`, `PLEXI_PARENT_PANE`, ...).
-    pub(crate) env: Vec<(String, String)>,
+    /// Worker metadata the pane's environment carries.
+    pub(crate) metadata: PaneMetadata,
     pub(crate) mcp: McpBearer,
     pub(crate) profile_dir: PathBuf,
+}
+
+/// The agent-worker metadata a launch states, exported under its fixed
+/// `PLEXI_` names. Typed so no caller can place an arbitrary variable in a
+/// pane's environment (stint 1682).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PaneMetadata {
+    pub(crate) parent_pane: Option<u64>,
+    pub(crate) spawned_by: Option<String>,
+    pub(crate) ephemeral: bool,
+    pub(crate) harness: Option<String>,
+    pub(crate) role: Option<String>,
+    pub(crate) agent_id: Option<String>,
+    pub(crate) task: Option<String>,
+    pub(crate) resume_command: Option<String>,
+}
+
+impl PaneMetadata {
+    /// Every name this writes, for the reservation test.
+    #[cfg(test)]
+    pub(crate) const NAMES: &'static [&'static str] = &[
+        "PLEXI_PARENT_PANE",
+        "PLEXI_SPAWNED_BY",
+        "PLEXI_EPHEMERAL",
+        "PLEXI_AGENT_HARNESS",
+        "PLEXI_AGENT_ROLE",
+        "PLEXI_AGENT_ID",
+        "PLEXI_AGENT_TASK",
+        "PLEXI_RESUME_COMMAND",
+    ];
+
+    fn write(&self, env: &mut HashMap<String, String>) {
+        let mut put = |key: &str, value: Option<String>| {
+            if let Some(value) = value {
+                env.insert(key.to_string(), value);
+            }
+        };
+        put(
+            "PLEXI_PARENT_PANE",
+            self.parent_pane.map(|id| id.to_string()),
+        );
+        put("PLEXI_SPAWNED_BY", self.spawned_by.clone());
+        put("PLEXI_EPHEMERAL", self.ephemeral.then(|| "1".to_string()));
+        put("PLEXI_AGENT_HARNESS", self.harness.clone());
+        put("PLEXI_AGENT_ROLE", self.role.clone());
+        put("PLEXI_AGENT_ID", self.agent_id.clone());
+        put("PLEXI_AGENT_TASK", self.task.clone());
+        put("PLEXI_RESUME_COMMAND", self.resume_command.clone());
+    }
 }
 
 impl TerminalLaunch {
@@ -224,17 +274,20 @@ impl PlexiApp {
             &self.pty_event_tx,
             &self.colors,
             self.default_font_size,
+            self.pane_base.as_deref(),
             launch,
         )
     }
 
     /// [`Self::construct_terminal`] for a caller that has no `PlexiApp` yet
-    /// (workspace restore).
+    /// (workspace restore). `base` is the host's pane base; without one
+    /// (Unix) no terminal can be built.
     pub(crate) fn construct_terminal_in(
         ctx: &egui::Context,
         pty_event_tx: &std::sync::mpsc::Sender<(u64, egui_term::PtyEvent)>,
         colors: &crate::ui::theme::Colors,
         default_font_size: f32,
+        base: Option<&PaneBase>,
         launch: TerminalLaunch,
     ) -> Result<TerminalPane, TerminalSpawnError> {
         let TerminalLaunch {
@@ -243,7 +296,7 @@ impl PlexiApp {
             cwd,
             command,
             ephemeral,
-            env: worker_env,
+            metadata,
             mcp,
             profile_dir,
         } = launch;
@@ -261,18 +314,52 @@ impl PlexiApp {
             context.context_id,
             grant.secrets.directory
         );
-        let mut env = shell::build_env_with_secrets(grant.secrets.directory.as_deref(), secrets);
-        for name in [
-            "PLEXI_PARENT_PANE",
-            "PLEXI_EPHEMERAL",
-            "PLEXI_AGENT_HARNESS",
-            "PLEXI_AGENT_ROLE",
-            "PLEXI_AGENT_ID",
-            "PLEXI_AGENT_SPAWNED",
-        ] {
-            env.remove(name);
-        }
+        #[cfg(unix)]
+        let (shell_path, mut env) = {
+            // The base comes from the account and the host profile, never
+            // from this process's environment (stint 1682).
+            let Some(base) = base else {
+                log::error!("construct_terminal: pane {pane_id} has no pane base");
+                return Err(TerminalSpawnError {
+                    pane_id,
+                    program: "<shell>".into(),
+                    working_directory: cwd,
+                    cause:
+                        "the host has no pane environment base (account lookup failed at launch)"
+                            .into(),
+                });
+            };
+            #[cfg(test)]
+            let shell_path =
+                shell::test_shell_override().unwrap_or_else(|| base.shell().to_string());
+            #[cfg(not(test))]
+            let shell_path = base.shell().to_string();
+            let mut env = base.env(pane_id, grant.is_desktop(), &shell_path);
+            if shell_path.ends_with("/zsh") || shell_path.ends_with("/zsh-5") {
+                match shell::ensure_shell_integration() {
+                    Ok(zdotdir) => {
+                        env.insert("ZDOTDIR".into(), zdotdir.to_string_lossy().into_owned());
+                    }
+                    Err(error) => log::warn!("Failed to set up shell integration: {error}"),
+                }
+            }
+            insert_secrets(
+                &mut env,
+                shell::secret_env(grant.secrets.directory.as_deref(), secrets),
+            );
+            (shell_path, env)
+        };
+        #[cfg(windows)]
+        let (shell_path, mut env) = {
+            let _ = base;
+            (
+                shell::detect_shell(),
+                shell::windows_pane_env(grant.secrets.directory.as_deref(), secrets),
+            )
+        };
+        env.insert("PLEXI_RUNNING".into(), "1".into());
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
+        #[cfg(windows)]
         env.insert("PLEXI_SOCKET".into(), crate::platform::ipc::endpoint());
         env.insert("PLEXI_CONTEXT_ID".into(), context.context_id.to_string());
         env.insert("PLEXI_CONTEXT_NAME".into(), context.name.clone());
@@ -290,9 +377,8 @@ impl PlexiApp {
         if agent_pane {
             env.insert("PLEXI_AGENT_SPAWNED".into(), "1".into());
         }
+        metadata.write(&mut env);
         crate::broker::seal::scrub_pane_env(&mut env, agent_pane);
-        env.extend(worker_env);
-        let shell_path = shell::detect_shell();
         let args = shell::default_shell_args(&shell_path, agent_pane);
         let mut settings = egui_term::BackendSettings {
             shell: shell_path,
@@ -318,6 +404,20 @@ impl PlexiApp {
         )?;
         pane.ephemeral |= ephemeral;
         Ok(pane)
+    }
+}
+
+/// Add the secret writer's output. Every name it emits is an exportable
+/// secret name or its own `PLEXI_TERMINAL_ENV_*` restoration pair, so it
+/// can never replace a base or metadata variable.
+#[cfg(unix)]
+fn insert_secrets(env: &mut HashMap<String, String>, secrets: HashMap<String, String>) {
+    for (key, value) in secrets {
+        if env.contains_key(&key) {
+            log::error!("construct_terminal: secret writer emitted base name {key}; dropped");
+            continue;
+        }
+        env.insert(key, value);
     }
 }
 
@@ -389,11 +489,13 @@ pub(crate) mod probes {
         });
         let (tx, _rx) = std::sync::mpsc::channel();
         let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
+        let base = crate::host::pane_env::PaneBase::fixture();
         let started = crate::app::PlexiApp::construct_terminal_in(
             &egui::Context::default(),
             &tx,
             &colors,
             14.0,
+            Some(&base),
             launch,
         );
         assert!(
@@ -409,5 +511,122 @@ pub(crate) mod probes {
             Some(probe) => probe(settings),
             None => Ok(()),
         })
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// Stint 1682: every variable a base or metadata writer emits, and the
+    /// credentials and session marker added after them, is a name no secret
+    /// may take. So no stored secret can ever travel as base environment.
+    #[test]
+    fn every_name_a_base_or_metadata_writer_emits_is_reserved() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let profile = tmp.path().join("profile");
+        let shared = tmp.path().join("shared");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.clone());
+        let _shared = crate::config::set_test_shared_dir(shared);
+        let _shell = shell::set_test_shell_override("/bin/zsh");
+        let cwd = tmp.path().to_path_buf();
+        let context = super::super::create::PaneContextEnv {
+            context_id: 1,
+            name: "main".into(),
+            description: "d".into(),
+            root: Some(cwd.clone()),
+            depth: 1,
+        };
+        let mut seen: Vec<String> = Vec::new();
+        for (pane_id, desktop) in [(9_316_820, true), (9_316_821, false)] {
+            let mut grant = crate::broker::pane_authority::PaneAuthority::for_test(
+                pane_id,
+                crate::broker::pane_authority::Ceiling::Baseline,
+                context.context_id,
+                cwd.clone(),
+            );
+            if desktop {
+                grant.ownership = crate::broker::pane_authority::Ownership::Desktop;
+            }
+            let launch = TerminalLaunch {
+                authority: LivePaneAuthority::admitted(grant),
+                context: context.clone(),
+                cwd: Some(cwd.clone()),
+                command: Some(LaunchCommand {
+                    command: "true".into(),
+                    close_on_exit: true,
+                }),
+                ephemeral: true,
+                metadata: PaneMetadata {
+                    parent_pane: Some(1),
+                    spawned_by: Some("human".into()),
+                    ephemeral: true,
+                    harness: Some("claude".into()),
+                    role: Some("worker".into()),
+                    agent_id: Some("a".into()),
+                    task: Some("t".into()),
+                    resume_command: Some("r".into()),
+                },
+                mcp: McpBearer::Pane,
+                profile_dir: profile.clone(),
+            };
+            let record = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let sink = record.clone();
+            let _entry = probes::on_backend_entry(move |settings| {
+                *sink.borrow_mut() = Some(settings.env.clone());
+                Err("stopped at backend entry".into())
+            });
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let colors =
+                crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
+            let base = PaneBase::fixture_with_every_variable();
+            assert!(PlexiApp::construct_terminal_in(
+                &egui::Context::default(),
+                &tx,
+                &colors,
+                14.0,
+                Some(&base),
+                launch,
+            )
+            .is_err());
+            let env = record.borrow_mut().take().expect("backend entry reached");
+            if desktop {
+                assert!(env.contains_key("SSH_AUTH_SOCK"), "{env:?}");
+                assert!(env.contains_key("ZDOTDIR"), "{env:?}");
+            } else {
+                assert!(
+                    !env.contains_key("SSH_AUTH_SOCK"),
+                    "restricted pane got the agent"
+                );
+            }
+            seen.extend(env.into_keys());
+        }
+        seen.extend(PaneMetadata::NAMES.iter().map(|name| name.to_string()));
+        seen.sort();
+        seen.dedup();
+        let unreserved: Vec<&String> = seen
+            .iter()
+            .filter(|name| !crate::workspace::secrets::is_reserved_env_name(name))
+            .collect();
+        assert!(
+            unreserved.is_empty(),
+            "unreserved pane names: {unreserved:?}"
+        );
+        for name in [
+            "HOME",
+            "PATH",
+            "LANG",
+            "TMPDIR",
+            "WINDOWID",
+            "PLEXI_SOCKET",
+            "PLEXI_AGENT_TASK",
+        ] {
+            assert!(
+                seen.iter().any(|seen| seen == name),
+                "{name} missing: {seen:?}"
+            );
+        }
     }
 }

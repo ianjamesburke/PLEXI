@@ -9713,6 +9713,7 @@ open(out + ".done", "w").close()
                     hot_reload: &mut app.hot_reload,
                     state_watch: &mut app.state_watch,
                     terminal_spawner: Some((&ctx, &pty_event_tx)),
+                    pane_base: app.pane_base.as_deref(),
                 },
             )
             .expect("restore workspace");
@@ -13509,7 +13510,7 @@ open(out + ".done", "w").close()
                     cwd: Some(root.clone()),
                     command: None,
                     ephemeral: false,
-                    env: Vec::new(),
+                    metadata: Default::default(),
                     mcp: crate::pane_ops::construct::McpBearer::Pane,
                     profile_dir: crate::config::config_dir(),
                 })
@@ -16806,6 +16807,7 @@ open(out + ".done", "w").close()
                     hot_reload: &mut app.hot_reload,
                     state_watch: &mut app.state_watch,
                     terminal_spawner: Some((&context, &sender)),
+                    pane_base: app.pane_base.as_deref(),
                 },
             )
             .expect("restore workspace");

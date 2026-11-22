@@ -1802,7 +1802,7 @@ fn credentialed_terminal(
             cwd: None,
             command: None,
             ephemeral: false,
-            env: Vec::new(),
+            metadata: Default::default(),
             mcp: crate::pane_ops::construct::McpBearer::Pane,
             profile_dir: crate::config::config_dir(),
         })

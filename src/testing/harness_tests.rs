@@ -1710,6 +1710,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
             hot_reload: &mut hr_watcher,
             state_watch: &mut sw_watcher,
             terminal_spawner: None,
+            pane_base: None,
         },
     )
     .expect("restore_workspace succeeds");

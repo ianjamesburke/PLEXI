@@ -117,6 +117,26 @@ fn main() -> eframe::Result {
         Startup::Run(run) => run.selection.clone(),
         Startup::Launch(launch) => launch.selection.clone(),
     });
+    // A host's profile and its panes' base environment come from the account
+    // and the launch, never from the environment it inherited, which may be
+    // another pane's (stint 1682). Resolved before logging, profile access or
+    // the login-shell probes, and immutable afterwards.
+    #[cfg(unix)]
+    if let Startup::Launch(_) = &startup {
+        let account = crate::host::account::Account::current().unwrap_or_else(|error| {
+            eprintln!("error: host launch cannot resolve this account: {error}");
+            cli::trace::exit(1)
+        });
+        crate::config::install_host_profile(crate::config::HostProfile::resolve(
+            crate::config::explicit_profile(),
+            &crate::config::current_exe_basename(),
+            &account.home,
+        ));
+        if let Err(error) = crate::host::pane_env::install_for_host(account) {
+            eprintln!("error: host launch: {error}");
+            cli::trace::exit(1);
+        }
+    }
     // A lifecycle command addresses its validated profile host and nothing
     // else: a refused target exits here, before any connection or trace.
     let lifecycle_socket = match &startup {
@@ -243,6 +263,16 @@ fn main() -> eframe::Result {
         "startup: logger ready {}ms after main entry",
         process_start.elapsed().as_millis()
     );
+    if host_startup {
+        if let Some(profile) = crate::config::host_profile() {
+            log::info!(
+                "startup: host profile {} at {}",
+                profile.dir_name(),
+                profile.dir().display()
+            );
+        }
+        crate::host::pane_env::log_installed();
+    }
     log::info!(
         "cli_front: {} {surface_path:?}",
         if host_startup { "launch" } else { "run" }
@@ -981,6 +1011,17 @@ fn main() -> eframe::Result {
                             friendly_name,
                             global,
                         } => cli::trace::exit(cli::workspace_secret_delete(&friendly_name, global)),
+                        SecretCmd::Copy {
+                            from,
+                            to,
+                            global,
+                            folder,
+                        } => cli::trace::exit(cli::secret_copy(
+                            &from,
+                            &to,
+                            global,
+                            folder.as_deref(),
+                        )),
                         SecretCmd::Rm { name, folder } => {
                             cli::trace::exit(cli::folder_secret_rm(&name, &folder))
                         }

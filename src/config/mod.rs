@@ -1624,6 +1624,70 @@ pub fn named_profile_dir_name(profile: &str) -> String {
     format!(".plexi-{profile}")
 }
 
+/// The profile a host launch runs on (stint 1682): an explicit validated
+/// `--profile`, else the channel-named executable's, else the bare default
+/// `.plexi`, rooted in the account's passwd home. Resolved once, before the
+/// first profile lookup, and never from the environment: a host started from
+/// a pane inherits that pane's `PLEXI_CHANNEL` and `HOME`, which name the
+/// launching host, not this one. A bare host therefore selects Alpha only by
+/// `--profile alpha` or the `plexi-alpha` executable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostProfile {
+    home: PathBuf,
+    dir_name: String,
+}
+
+impl HostProfile {
+    pub fn resolve(explicit: Option<&str>, exe_basename: &str, account_home: &Path) -> Self {
+        let dir_name = match explicit {
+            Some(profile) => named_profile_dir_name(profile),
+            None => channel_suffix_from_basename(exe_basename),
+        };
+        Self {
+            home: account_home.to_path_buf(),
+            dir_name,
+        }
+    }
+
+    /// The profile directory: config, plugins, the listener socket.
+    pub fn dir(&self) -> PathBuf {
+        self.home.join(&self.dir_name)
+    }
+
+    pub fn dir_name(&self) -> &str {
+        &self.dir_name
+    }
+
+    /// What a bare client inside one of this host's panes routes by
+    /// (`PLEXI_CHANNEL`): the profile suffix, none for `.plexi`.
+    pub fn routing_suffix(&self) -> Option<&str> {
+        self.dir_name
+            .strip_prefix(".plexi-")
+            .filter(|suffix| !suffix.is_empty())
+    }
+}
+
+static HOST_PROFILE: OnceLock<HostProfile> = OnceLock::new();
+
+/// Install the host launch's profile. Called once from `main`, before any
+/// profile access; `config_dir()` and `workspace_channel_dir()` follow it
+/// for the life of the process.
+pub fn install_host_profile(profile: HostProfile) {
+    log::info!(
+        "config: host profile {} at {}",
+        profile.dir_name,
+        profile.dir().display()
+    );
+    if HOST_PROFILE.set(profile).is_err() {
+        log::error!("config: host profile was already installed; keeping the first");
+    }
+}
+
+/// The installed host profile; `None` in a CLI process.
+pub fn host_profile() -> Option<&'static HostProfile> {
+    HOST_PROFILE.get()
+}
+
 /// The profile belongs to another build: its plugin tree or SDK is missing,
 /// or the SDK stamp names a different build. Changing that is a migration,
 /// which never runs under a live host of another build (stint 1609).
@@ -2182,6 +2246,9 @@ pub fn workspace_channel_dir() -> String {
     if let Some(channel) = test_channel_override() {
         return format!(".plexi-{channel}");
     }
+    if let Some(profile) = host_profile() {
+        return profile.dir_name.clone();
+    }
     if let Some(dir) = explicit_profile_dir_name() {
         return dir;
     }
@@ -2277,6 +2344,9 @@ pub fn config_dir() -> PathBuf {
     }
     #[cfg(not(test))]
     {
+        if let Some(profile) = host_profile() {
+            return profile.dir();
+        }
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(config_dir_name())
@@ -3356,6 +3426,28 @@ pub fn active_workspace_root() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stint 1682: a host's profile is its explicit `--profile`, else its
+    /// executable's channel, else `.plexi`, rooted in the account home. The
+    /// environment has no input, so a bare host started from an Alpha pane
+    /// (`PLEXI_CHANNEL=alpha`) is still the default host.
+    #[test]
+    fn host_profile_resolves_from_flag_then_executable_never_env() {
+        let home = Path::new("/account/home");
+        let cases = [
+            (None, "plexi", ".plexi", None),
+            (Some("alpha"), "plexi", ".plexi-alpha", Some("alpha")),
+            (None, "plexi-pr-3279", ".plexi-pr-3279", Some("pr-3279")),
+            (None, "plexi-alpha.exe", ".plexi-alpha", Some("alpha")),
+            (Some("t1682"), "plexi-pr-3279", ".plexi-t1682", Some("t1682")),
+        ];
+        for (explicit, exe, dir_name, suffix) in cases {
+            let profile = HostProfile::resolve(explicit, exe, home);
+            assert_eq!(profile.dir_name(), dir_name, "{explicit:?} {exe}");
+            assert_eq!(profile.dir(), home.join(dir_name), "{explicit:?} {exe}");
+            assert_eq!(profile.routing_suffix(), suffix, "{explicit:?} {exe}");
+        }
+    }
     use std::fs;
 
     /// Fix round 1 defect 3: a workspace overlay setting `[notifications]

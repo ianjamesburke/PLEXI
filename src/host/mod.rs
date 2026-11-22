@@ -9,6 +9,7 @@
 /// larger media transfers need a streaming seam, not a bigger cap.
 pub const MAX_FILE_IO_BYTES: usize = 64 * 1024 * 1024;
 
+pub(crate) mod account;
 pub mod anchor;
 pub mod changes;
 pub mod cli_ops;
@@ -28,6 +29,7 @@ pub mod mcp_client;
 pub mod model;
 pub(crate) mod node_ref;
 pub mod pane;
+pub(crate) mod pane_env;
 pub(crate) mod pane_lifecycle;
 pub mod pane_liveness;
 pub mod pane_result;

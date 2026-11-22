@@ -63,14 +63,7 @@ fn prefixed(id: &str, prefix: &str) -> String {
 }
 
 pub fn valid_env_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !(first == '_' || first.is_ascii_alphabetic()) {
-        return false;
-    }
-    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+    super::is_env_syntax(name)
 }
 
 pub fn canonical_folder(path: &Path) -> Result<PathBuf, String> {
@@ -96,11 +89,7 @@ pub fn set_folder_secret(
     folder: &Path,
     value: &str,
 ) -> Result<PathBuf, String> {
-    if !valid_env_name(name) {
-        return Err(format!(
-            "secret name '{name}' is not an environment variable name"
-        ));
-    }
+    super::SecretEnvName::parse(name)?;
     if value.is_empty() {
         return Err("empty value, nothing stored".to_string());
     }
@@ -166,6 +155,16 @@ pub fn env_for_cwd(
     let mut best: HashMap<String, (usize, PathBuf)> = HashMap::new();
     for meta in list_folder_secrets(store) {
         if !cwd.starts_with(&meta.folder) {
+            continue;
+        }
+        // A record under a reserved name is quarantined: never read for a
+        // pane, and it does not shadow an ancestor's record (stint 1682).
+        if super::is_reserved_env_name(&meta.name) {
+            log::info!(
+                "folder_secrets: quarantined reserved name={} folder={}",
+                meta.name,
+                meta.folder.display()
+            );
             continue;
         }
         let depth = meta.folder.components().count();
@@ -1015,6 +1014,46 @@ mod tests {
         assert_eq!(parent_env[0].1.as_str(), "parent-value");
     }
 
+    /// Stint 1682: a new folder secret cannot take a reserved name; one
+    /// stored under such a name before the rule is listed but never read
+    /// for a pane, and nearest-folder precedence still holds for the rest.
+    #[test]
+    fn reserved_folder_records_are_quarantined_and_precedence_holds() {
+        let root = scratch();
+        let parent = root.path().join("proj");
+        let child = parent.join("sub");
+        std::fs::create_dir_all(&child).unwrap();
+        let store = store();
+        for name in ["LC_PAPER", "SSH_AUTH_SOCK", "PATH", "PLEXI_ORIG_ZDOTDIR"] {
+            assert!(
+                set_folder_secret(&store, name, &child, "x").is_err(),
+                "{name}"
+            );
+        }
+        set_folder_secret(&store, "TOKEN", &parent, "parent-value").unwrap();
+        set_folder_secret(&store, "TOKEN", &child, "child-value").unwrap();
+        // Legacy records, stored before the rule.
+        let child_canon = canonical_folder(&child).unwrap();
+        let parent_canon = canonical_folder(&parent).unwrap();
+        store
+            .set(&account_name(&child_canon, "LC_PAPER"), "legacy-child")
+            .unwrap();
+        store
+            .set(&account_name(&parent_canon, "HOME"), "legacy-parent")
+            .unwrap();
+        assert_eq!(list_folder_secrets(&store).len(), 4);
+        super::super::store::take_test_value_reads();
+        let env = env_for_cwd(&child, &store).unwrap();
+        assert_eq!(
+            super::super::store::take_test_value_reads(),
+            1,
+            "only the exportable record is read"
+        );
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].0, "TOKEN");
+        assert_eq!(env[0].1.as_str(), "child-value");
+    }
+
     #[test]
     fn list_returns_names_and_folders_without_values() {
         let root = scratch();
@@ -1214,7 +1253,7 @@ mod tests {
         let folder_b = root.path().join("B");
         std::fs::create_dir(&folder_a).unwrap();
         std::fs::create_dir(&folder_b).unwrap();
-        let name = "PLEXI_FOLDER_SECRET_BUILD_ENV";
+        let name = "FOLDER_SECRET_BUILD_ENV";
         let value = "folder-secret-unit-value-9f3c2a";
         set_folder_secret(super::super::folder_store(), name, &folder_a, value).unwrap();
         let inside = crate::host::shell::build_env(Some(&folder_a));
@@ -1233,7 +1272,7 @@ mod tests {
             "this test must use the in-memory folder store"
         );
 
-        let withheld = crate::host::shell::build_env_with_secrets(
+        let withheld = crate::host::shell::secret_env(
             Some(&folder_a),
             crate::host::shell::SecretPolicy {
                 terminal: true,
@@ -1487,7 +1526,7 @@ mod lazy_startup_tests {
             } else {
                 crate::host::shell::SecretPolicy::ALL
             };
-            let env = crate::host::shell::build_env_with_secrets(Some(&folder), policy);
+            let env = crate::host::shell::secret_env(Some(&folder), policy);
             assert!(!env.contains_key("DEMO_TOKEN_0957"));
             assert_eq!(
                 super::super::store::take_test_value_reads(),

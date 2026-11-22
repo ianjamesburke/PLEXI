@@ -285,6 +285,7 @@ impl HostHarness {
                     hot_reload: &mut app.hot_reload,
                     state_watch: &mut app.state_watch,
                     terminal_spawner: Some((&ctx, &pty_event_tx)),
+                    pane_base: app.pane_base.as_deref(),
                 },
             )
         });

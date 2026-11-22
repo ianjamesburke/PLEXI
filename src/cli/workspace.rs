@@ -332,6 +332,18 @@ pub fn workspace_secret_set(
     // `friendly` is the canonical name (env var name used in plugin code).
     // `alias` overrides the Keychain entry name when the user wants a different friendly name.
     let effective_friendly = alias.unwrap_or(friendly);
+    // The canonical name is what a pane exports; the alias only names the
+    // store entry, so each gets its own rule (stint 1682).
+    if let Err(error) = crate::workspace::secrets::SecretEnvName::parse(friendly) {
+        log::info!("secret_set:cli: refused canonical name {friendly}: {error}");
+        eprintln!("error: {error}");
+        return 1;
+    }
+    if let Err(error) = alias.map_or(Ok(()), valid_store_alias) {
+        log::info!("secret_set:cli: refused alias {effective_friendly}: {error}");
+        eprintln!("error: {error}");
+        return 1;
+    }
     log::info!(
         "secret_set:cli: canonical={friendly} effective_friendly={effective_friendly} from_env={from_env} global={global}"
     );
@@ -452,6 +464,22 @@ pub fn workspace_secret_set(
         eprintln!("error: keychain not available on this platform");
         1
     }
+}
+
+/// A `--alias` store entry name: non-empty, printable, no whitespace and no
+/// `:`, which separates the fields of a store account.
+fn valid_store_alias(alias: &str) -> Result<(), String> {
+    if alias.is_empty()
+        || alias.contains(':')
+        || alias
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        return Err(format!(
+            "alias '{alias}' is not a store entry name (no spaces, control characters or ':')"
+        ));
+    }
+    Ok(())
 }
 
 /// Store a workspace secret and its default route. Terminal injection is not
@@ -582,6 +610,13 @@ fn write_secret_inventory(
 ) -> Result<(), String> {
     use crate::workspace::secrets::manager::{SecretTarget, SkippedSecrets};
     let entries = &inventory.entries;
+    let quarantine = |entry: &crate::workspace::secrets::manager::SecretEntry| {
+        entry
+            .quarantined
+            .as_deref()
+            .map(|remedy| format!("\n    quarantined: {remedy}"))
+            .unwrap_or_default()
+    };
     if json {
         let rendered = serde_json::to_string_pretty(inventory).map_err(|e| e.to_string())?;
         return writeln!(output, "{rendered}").map_err(|e| e.to_string());
@@ -603,7 +638,8 @@ fn write_secret_inventory(
                 } else {
                     ""
                 };
-                writeln!(output, "  {}{annotation}", entry.name).map_err(|e| e.to_string())?;
+                writeln!(output, "  {}{annotation}{}", entry.name, quarantine(entry))
+                    .map_err(|e| e.to_string())?;
             }
         }
         writeln!(output).map_err(|e| e.to_string())?;
@@ -615,14 +651,15 @@ fn write_secret_inventory(
         writeln!(output, "User scope:").map_err(|e| e.to_string())?;
         for entry in entries {
             if entry.target == SecretTarget::Global {
-                writeln!(output, "  {}", entry.name).map_err(|e| e.to_string())?;
+                writeln!(output, "  {}{}", entry.name, quarantine(entry))
+                    .map_err(|e| e.to_string())?;
             }
         }
     }
     let mut folders = entries
         .iter()
         .filter_map(|entry| match &entry.target {
-            SecretTarget::Folder(folder) => Some((&entry.name, folder)),
+            SecretTarget::Folder(folder) => Some((entry, folder)),
             _ => None,
         })
         .peekable();
@@ -630,8 +667,15 @@ fn write_secret_inventory(
         let backend = crate::workspace::secrets::backend_label();
         eprintln!("folder secrets backend: {backend}");
         writeln!(output, "Folder scope:").map_err(|e| e.to_string())?;
-        for (name, folder) in folders {
-            writeln!(output, "  {name}  {}", folder.display()).map_err(|e| e.to_string())?;
+        for (entry, folder) in folders {
+            writeln!(
+                output,
+                "  {}  {}{}",
+                entry.name,
+                folder.display(),
+                quarantine(entry)
+            )
+            .map_err(|e| e.to_string())?;
         }
         log::info!("folder_secrets: listed inventory backend={backend}");
     }
@@ -1101,6 +1145,54 @@ pub fn folder_secret_set(
 }
 
 /// `plexi secret rm NAME --folder <path>`.
+/// `plexi secret copy FROM TO (--global | --folder DIR)`: a create-only,
+/// read-back-verified copy that leaves FROM in place (stint 1682). It reads
+/// a value, so only a person runs it: a pane agent is refused before any
+/// store access.
+pub fn secret_copy(from: &str, to: &str, global: bool, folder: Option<&std::path::Path>) -> i32 {
+    use crate::workspace::secrets::manager::{copy_secret, SecretTarget};
+    log::info!("secret_copy:cli: from={from} to={to} global={global} folder={folder:?}");
+    if super::pane_caller::caller_is_pane_agent() {
+        log::info!("secret_copy:cli: refused for a pane agent");
+        eprintln!("error: an agent pane cannot copy secret values");
+        println!("permission_denied");
+        return 1;
+    }
+    let (target, store) = match folder {
+        Some(folder) => {
+            if !folder_feature_available() {
+                return 1;
+            }
+            if let Err(err) = enforce_pane_context_scope(folder, true, "secret.copy") {
+                eprintln!("error: {err}");
+                println!("permission_denied");
+                return 1;
+            }
+            (
+                SecretTarget::Folder(folder.to_path_buf()),
+                crate::workspace::secrets::folder_store(),
+            )
+        }
+        None => (
+            SecretTarget::Global,
+            crate::workspace::secrets::system_store(),
+        ),
+    };
+    match copy_secret(store, &target, from, to) {
+        Ok(()) => {
+            println!(
+                "Copied '{from}' to '{to}' ({}). '{from}' is unchanged; remove it when you no longer need it.",
+                target.label()
+            );
+            0
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            1
+        }
+    }
+}
+
 pub fn folder_secret_rm(name: &str, folder: &std::path::Path) -> i32 {
     if !folder_feature_available() {
         return 1;
@@ -1311,6 +1403,53 @@ mod secret_set_tests {
     use crate::workspace::secrets::InMemoryKeychain;
     use std::fs;
     use tempfile::TempDir;
+
+    /// Stint 1682: `--alias` names a store entry, not an exported variable,
+    /// so a kebab-case alias such as `openrouter-api-key` still sets and
+    /// rotates the canonical `OPENROUTER_API_KEY`; the canonical name alone
+    /// takes the export rule.
+    #[test]
+    fn alias_is_a_store_name_and_set_then_rotate_works() {
+        use crate::workspace::secrets::{NonDestructiveStore, SecretEnvName};
+        assert!(super::valid_store_alias("openrouter-api-key").is_ok());
+        assert!(super::valid_store_alias("openai_personal").is_ok());
+        for bad in ["", "a:b", "has space", "tab\there"] {
+            assert!(super::valid_store_alias(bad).is_err(), "{bad:?}");
+        }
+        assert!(SecretEnvName::parse("OPENROUTER_API_KEY").is_ok());
+        assert!(SecretEnvName::parse("openrouter-api-key").is_err());
+        assert!(SecretEnvName::parse("LC_PAPER").is_err());
+        let root = TempDir::new().unwrap();
+        let store = InMemoryKeychain::new();
+        for value in ["sk-first", "sk-rotated"] {
+            super::store_workspace_secret(
+                &store,
+                root.path(),
+                "ws-1682a",
+                "OPENROUTER_API_KEY",
+                "openrouter-api-key",
+                value,
+            )
+            .unwrap();
+            assert_eq!(
+                store
+                    .get("plexi:ws-1682a:openrouter-api-key")
+                    .unwrap()
+                    .as_str(),
+                value
+            );
+        }
+        let routes = fs::read_to_string(
+            root.path()
+                .join(crate::config::workspace_channel_dir())
+                .join("secrets.toml"),
+        )
+        .unwrap();
+        assert!(
+            routes.contains("OPENROUTER_API_KEY = \"openrouter-api-key\""),
+            "{routes}"
+        );
+    }
 
     #[test]
     fn secret_delete_missing_key_reports_no_match() {

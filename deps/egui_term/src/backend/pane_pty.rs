@@ -129,14 +129,10 @@ pub(super) fn prepare(
     command.stdin(slave.try_clone()?);
     command.stderr(slave.try_clone()?);
     command.stdout(slave);
-    let pane_id = pane.to_string();
-    command.env("ALACRITTY_WINDOW_ID", &pane_id);
-    command.env("USER", env_or_passwd("USER", |pw| pw.0)?);
-    command.env("HOME", env_or_passwd("HOME", |pw| pw.1)?);
-    command.env("WINDOWID", &pane_id);
+    // The shell's environment is exactly the caller's: nothing is inherited
+    // from the process hosting the terminal.
+    command.env_clear();
     command.envs(&settings.env);
-    command.env_remove("XDG_ACTIVATION_TOKEN");
-    command.env_remove("DESKTOP_STARTUP_ID");
     let working_directory = settings.working_directory;
     unsafe {
         command.pre_exec(move || {
@@ -245,40 +241,6 @@ impl Launch {
         drop(slot);
         Ok((launch, pid))
     }
-}
-
-/// `USER` / `HOME` from the environment, else from the passwd entry, as
-/// alacritty's `ShellUser::from_env`.
-fn env_or_passwd(
-    key: &str,
-    field: fn((String, String)) -> String,
-) -> io::Result<String> {
-    if let Ok(value) = std::env::var(key) {
-        return Ok(value);
-    }
-    let mut buf = [0 as libc::c_char; 1024];
-    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
-    let mut found = std::ptr::null_mut();
-    let status = unsafe {
-        libc::getpwuid_r(
-            libc::getuid(),
-            &mut entry,
-            buf.as_mut_ptr(),
-            buf.len(),
-            &mut found,
-        )
-    };
-    if status != 0 || found.is_null() {
-        return Err(io::Error::other(format!(
-            "{key} unset and no passwd entry"
-        )));
-    }
-    let text = |ptr| {
-        unsafe { std::ffi::CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned()
-    };
-    Ok(field((text(entry.pw_name), text(entry.pw_dir))))
 }
 
 /// Closes both masters, which hangs up the tty, then tells the worker, which

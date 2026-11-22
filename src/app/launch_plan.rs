@@ -870,7 +870,7 @@ impl PlexiApp {
                 }
             }),
             ephemeral: plan.ephemeral,
-            env: Vec::new(),
+            metadata: Default::default(),
             mcp: crate::pane_ops::construct::McpBearer::Pane,
             profile_dir: crate::config::config_dir(),
         };

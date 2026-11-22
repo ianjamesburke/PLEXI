@@ -160,7 +160,7 @@ impl PlexiApp {
             cwd,
             ephemeral: command.as_ref().is_some_and(|c| c.close_on_exit),
             command,
-            env: Vec::new(),
+            metadata: Default::default(),
             mcp: McpBearer::Pane,
             profile_dir: crate::config::config_dir(),
         }

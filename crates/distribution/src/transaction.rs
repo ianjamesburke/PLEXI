@@ -143,11 +143,22 @@ pub fn xdg_data_dir() -> Option<PathBuf> {
         })
 }
 
+/// The default installation root under an explicit account home, read
+/// from no environment variable: `<home>/.local/share/plexi`. A host builds
+/// its panes' PATH from this so an inherited `HOME`, `XDG_DATA_HOME` or
+/// `PLEXI_DISTRIBUTION_HOME` cannot redirect it.
+#[cfg(not(windows))]
+pub fn account_root(home: &Path) -> PathBuf {
+    home.join(".local/share/plexi")
+}
+
 pub fn registry_path(channel: &str) -> Result<PathBuf> {
+    registry_path_in(&default_root()?, channel)
+}
+
+fn registry_path_in(root: &Path, channel: &str) -> Result<PathBuf> {
     release::validate_channel(channel)?;
-    Ok(default_root()?
-        .join("installations")
-        .join(format!("{channel}.json")))
+    Ok(root.join("installations").join(format!("{channel}.json")))
 }
 
 pub fn read_receipt(root: &Path) -> Result<Option<Receipt>> {
@@ -182,15 +193,20 @@ pub fn read_receipt(root: &Path) -> Result<Option<Receipt>> {
 }
 
 pub fn find_installation(channel: &str) -> Result<Option<Receipt>> {
+    find_installation_in(&default_root()?, channel)
+}
+
+/// [`find_installation`] under an explicit installation root.
+pub fn find_installation_in(root: &Path, channel: &str) -> Result<Option<Receipt>> {
     let channel = release::normalized_channel(channel);
-    let index = registry_path(channel)?;
+    let index = registry_path_in(root, channel)?;
     match fs::read(index) {
         Ok(data) => {
             let root: PathBuf = serde_json::from_slice(&data)?;
             read_receipt(&root)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            read_receipt(&default_root()?.join(channel))
+            read_receipt(&root.join(channel))
         }
         Err(source) => Err(Error::Io {
             action: "read installation registry".into(),
@@ -224,6 +240,19 @@ pub fn installed_for_executable(exe: &Path) -> Result<Option<Receipt>> {
     let Some(package) = Package::at_executable(exe)? else {
         return managed_bundle_receipt(exe);
     };
+    package_receipt(package)
+}
+
+/// [`installed_for_executable`] with bundle receipts looked up under an
+/// explicit installation root.
+pub fn installed_for_executable_in(exe: &Path, root: &Path) -> Result<Option<Receipt>> {
+    let Some(package) = Package::at_executable(exe)? else {
+        return managed_bundle_receipt_in(exe, root);
+    };
+    package_receipt(package)
+}
+
+fn package_receipt(package: Package) -> Result<Option<Receipt>> {
     let Some(generations) = package
         .root
         .parent()
@@ -240,6 +269,10 @@ pub fn installed_for_executable(exe: &Path) -> Result<Option<Receipt>> {
 /// The receipt whose copied Applications bundle contains `exe`. The copy has
 /// no `package.json`; the executable name selects the channel to consult.
 fn managed_bundle_receipt(exe: &Path) -> Result<Option<Receipt>> {
+    managed_bundle_receipt_in(exe, &default_root()?)
+}
+
+fn managed_bundle_receipt_in(exe: &Path, root: &Path) -> Result<Option<Receipt>> {
     let Some(name) = exe.file_stem().and_then(|n| n.to_str()) else {
         return Ok(None);
     };
@@ -251,7 +284,7 @@ fn managed_bundle_receipt(exe: &Path) -> Result<Option<Receipt>> {
     if release::validate_channel(channel).is_err() {
         return Ok(None);
     }
-    let Some(receipt) = find_installation(channel)? else {
+    let Some(receipt) = find_installation_in(root, channel)? else {
         return Ok(None);
     };
     let Ok(exe) = exe.canonicalize() else {

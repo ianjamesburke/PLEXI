@@ -34,6 +34,7 @@
 //! This file is the module's public surface: the keychain account naming
 //! helpers, [`system_store`], and the re-exports every caller reaches through.
 
+mod env_name;
 mod file;
 mod folder;
 mod folder_store;
@@ -72,6 +73,8 @@ pub use folder::{
     remove_folder_secret, set_folder_secret, take_folder_secret_sheet, ReadResult, SecretActor,
     SECRET_READ_TOOL,
 };
+pub(crate) use env_name::{is_env_syntax, is_reserved_env_name};
+pub use env_name::SecretEnvName;
 pub use folder_store::backend_label;
 #[cfg(test)]
 pub use pane_read::read_pane_secret;

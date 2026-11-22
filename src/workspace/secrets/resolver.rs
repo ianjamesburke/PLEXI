@@ -259,6 +259,15 @@ pub fn resolve_terminal_env(
 
     let mut env = HashMap::new();
     for canonical_name in &router.terminal.env.inject {
+        // Filtered before any store access: a reserved name in a hand-edited
+        // or legacy allowlist is never read, workspace or global (stint 1682).
+        if let Err(error) = super::SecretEnvName::parse(canonical_name) {
+            log::info!(
+                "workspace_secrets: terminal env quarantined {canonical_name} in {}: {error}",
+                workspace_root.display()
+            );
+            continue;
+        }
         match resolve_with_source(&cfg.id, "terminal", canonical_name, &router, store) {
             ResolveWithSourceOutcome::Found(found) => {
                 log::info!(
@@ -486,6 +495,71 @@ mod tests {
             !env.contains_key("OPENAI_API_KEY"),
             "non-allowlisted secret must not be injected"
         );
+    }
+
+    fn write_inject_workspace(root: &Path, workspace_id: &str, secrets_toml: &str) {
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(root.join(&channel_dir)).unwrap();
+        std::fs::write(
+            root.join(&channel_dir).join("workspace.toml"),
+            format!("id = \"{workspace_id}\"\n"),
+        )
+        .unwrap();
+        std::fs::write(root.join(&channel_dir).join("secrets.toml"), secrets_toml).unwrap();
+    }
+
+    /// Stint 1682: a reserved name in a hand-edited `inject` list is never
+    /// read, from the workspace or the global fallback, and never exported;
+    /// the rest of the list is unaffected. Reads are compared against the
+    /// same workspace without the reserved entry.
+    #[test]
+    fn reserved_inject_names_are_quarantined_before_any_read() {
+        let store = InMemoryKeychain::new();
+        store.set("plexi:ws-1682:LC_PAPER", "ws-paper").unwrap();
+        store.set("plexi:user:LC_PAPER", "global-paper").unwrap();
+        store
+            .set("plexi:user:PLEXI_ORIG_ZDOTDIR", "global-zdot")
+            .unwrap();
+        store.set("plexi:ws-1682:OK_TOKEN_1682", "ok").unwrap();
+        let mut reads = Vec::new();
+        for inject in [
+            r#"["OK_TOKEN_1682"]"#,
+            r#"["LC_PAPER", "PLEXI_ORIG_ZDOTDIR", "OK_TOKEN_1682"]"#,
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            write_inject_workspace(
+                tmp.path(),
+                "ws-1682",
+                &format!("fallback = true\n\n[terminal.env]\ninject = {inject}\n"),
+            );
+            crate::workspace::secrets::store::take_test_value_reads();
+            let env = resolve_terminal_env(tmp.path(), &store).expect("terminal env");
+            reads.push(crate::workspace::secrets::store::take_test_value_reads());
+            let mut names: Vec<&str> = env.keys().map(String::as_str).collect();
+            names.sort();
+            assert_eq!(names, ["OK_TOKEN_1682"], "{inject}");
+        }
+        assert_eq!(reads[0], reads[1], "a quarantined name cost a store read");
+    }
+
+    /// Stint 1682 recovery: the owner routes a free name to the existing
+    /// store entry and injects that name instead.
+    #[test]
+    fn a_free_name_routed_to_a_quarantined_entry_exports_its_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_inject_workspace(
+            tmp.path(),
+            "ws-1682r",
+            "fallback = false\n\n[default]\nPAPER_TOKEN = \"LC_PAPER\"\n\n[terminal.env]\ninject = [\"PAPER_TOKEN\"]\n",
+        );
+        let store = InMemoryKeychain::new();
+        store.set("plexi:ws-1682r:LC_PAPER", "paper-value").unwrap();
+        let env = resolve_terminal_env(tmp.path(), &store).expect("terminal env");
+        assert_eq!(
+            env.get("PAPER_TOKEN").map(|v| v.as_str()),
+            Some("paper-value")
+        );
+        assert!(!env.contains_key("LC_PAPER"));
     }
 
     #[test]

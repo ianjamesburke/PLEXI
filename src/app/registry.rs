@@ -1313,42 +1313,21 @@ fn paths_same(left: &Path, right: &Path) -> bool {
 /// `dirs::home_dir` returns `$HOME` when that variable is set. The e2e and
 /// any other private-HOME run therefore need this second stop so the real
 /// login home is not walked as a workspace.
-#[cfg(unix)]
 fn login_home_dir() -> Option<PathBuf> {
-    use std::ffi::CStr;
-    use std::os::unix::ffi::OsStringExt;
-
-    // SAFETY: getpwuid_r writes into `pwd` and `buf`, which outlive the
-    // pointer read. The directory bytes are copied before either is dropped.
-    unsafe {
-        let mut pwd = std::mem::MaybeUninit::<libc::passwd>::zeroed();
-        let mut buf = vec![0u8; 16 * 1024];
-        let mut result = std::ptr::null_mut();
-        let rc = libc::getpwuid_r(
-            libc::getuid(),
-            pwd.as_mut_ptr(),
-            buf.as_mut_ptr().cast(),
-            buf.len(),
-            &mut result,
-        );
-        if rc != 0 || result.is_null() {
-            return None;
+    #[cfg(unix)]
+    {
+        match crate::host::account::Account::current() {
+            Ok(account) => Some(account.home),
+            Err(error) => {
+                log::warn!("registry: login home unavailable: {error}");
+                None
+            }
         }
-        let pwd = pwd.assume_init();
-        if pwd.pw_dir.is_null() {
-            return None;
-        }
-        let bytes = CStr::from_ptr(pwd.pw_dir).to_bytes();
-        if bytes.is_empty() {
-            return None;
-        }
-        Some(PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec())))
     }
-}
-
-#[cfg(not(unix))]
-fn login_home_dir() -> Option<PathBuf> {
-    None
+    #[cfg(not(unix))]
+    {
+        None
+    }
 }
 
 fn resolve_workspace_root_stopping_at(

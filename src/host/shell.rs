@@ -51,25 +51,20 @@ pub fn detect_shell() -> String {
         return shell;
     }
 
-    if let Ok(shell) = std::env::var("SHELL") {
-        if Path::new(&shell).exists() {
-            return shell;
+    // The account's shell, never an inherited `$SHELL` (stint 1682).
+    match crate::host::account::Account::current() {
+        Ok(account) => account.shell,
+        Err(error) => {
+            log::warn!("detect_shell: {error}; using /bin/sh");
+            "/bin/sh".to_string()
         }
     }
+}
 
-    for shell in [
-        "/bin/zsh",
-        "/usr/bin/zsh",
-        "/bin/bash",
-        "/usr/bin/bash",
-        "/bin/sh",
-    ] {
-        if Path::new(shell).exists() {
-            return shell.to_string();
-        }
-    }
-
-    "/bin/sh".to_string()
+/// The shell [`set_test_shell_override`] forces on this thread, if any.
+#[cfg(test)]
+pub(crate) fn test_shell_override() -> Option<String> {
+    TEST_SHELL_OVERRIDE.with(|override_slot| override_slot.borrow().clone())
 }
 
 /// Windows has no `$SHELL` convention, so the order is: an explicit `$SHELL`
@@ -362,8 +357,11 @@ fn fallback_path_with_homebrew() -> Option<String> {
     }
 }
 
+/// The secrets `plexi secret exec` adds to a command's environment. A
+/// non-PTY path (stint 1689 owns it); PTY panes use [`secret_env`] through
+/// `pane_ops::construct`.
 pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
-    build_env_with_secrets(working_directory, SecretPolicy::ALL)
+    secret_env(working_directory, SecretPolicy::ALL)
 }
 
 /// Which secret classes a terminal environment may resolve (stint 1632).
@@ -388,66 +386,18 @@ impl SecretPolicy {
     };
 }
 
-/// Resolve the user's startup-file directory without accepting Plexi's own
-/// shell integration directory as a source. A nested host can inherit another
-/// channel's `ZDOTDIR`; sourcing that directory would recurse into its managed
-/// `.zprofile` and `.zshrc`.
-pub(crate) fn resolve_orig_zdotdir(
-    plexi_orig: Option<&str>,
-    zdotdir: Option<&str>,
-    home: &str,
-) -> String {
-    plexi_orig
-        .into_iter()
-        .chain(zdotdir)
-        .find(|candidate| !is_plexi_zsh_integration_dir(candidate))
-        .unwrap_or(home)
-        .to_string()
-}
-
-fn is_plexi_zsh_integration_dir(candidate: &str) -> bool {
-    let trimmed = candidate.trim_end_matches('/');
-    if trimmed.ends_with("shell-integration/zsh") {
-        return true;
-    }
-    let components: Vec<_> = trimmed.split('/').collect();
-    components.windows(3).any(|parts| {
-        parts[0].starts_with(".plexi") && parts[1] == "shell-integration" && parts[2] == "zsh"
-    })
-}
-
-/// Decide injection before resolving any values: a withheld class is never
-/// read only to be removed afterwards.
-pub(crate) fn build_env_with_secrets(
+/// The secret writer: the only code that puts a secret value into a
+/// terminal environment. Decides injection before resolving any values, so
+/// a withheld class is never read only to be removed afterwards. Every name
+/// it emits is an exportable [`crate::workspace::secrets::SecretEnvName`]
+/// (reserved names are filtered before any store access), plus the zsh
+/// restoration pair `PLEXI_TERMINAL_ENV_NAMES` /
+/// `PLEXI_TERMINAL_ENV_VALUE_<NAME>` for workspace values.
+pub(crate) fn secret_env(
     working_directory: Option<&Path>,
     secrets: SecretPolicy,
 ) -> HashMap<String, String> {
     let mut env = HashMap::new();
-
-    env.insert("TERM".into(), "xterm-256color".into());
-    log::info!("shell::build_env: TERM=xterm-256color");
-    env.insert("COLORTERM".into(), "truecolor".into());
-    env.insert("PLEXI_RUNNING".into(), "1".into());
-    if let Some(channel) = crate::config::build_channel() {
-        log::info!("shell::build_env: PLEXI_CHANNEL={channel}");
-        env.insert("PLEXI_CHANNEL".into(), channel);
-    }
-
-    env.insert(
-        "LANG".into(),
-        std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".into()),
-    );
-    env.insert(
-        "LC_ALL".into(),
-        std::env::var("LC_ALL").unwrap_or_else(|_| "en_US.UTF-8".into()),
-    );
-
-    // PATH: inherit the resolved login-shell PATH and ensure the Plexi CLI bin
-    // directory (~/.local/bin or managed receipt bin_dir) is prepended inside
-    // every Plexi pane, even when user dotfiles (.zshrc/.bashrc) were not edited.
-    if let Some(pane_path) = augmented_pane_path() {
-        env.insert("PATH".into(), pane_path);
-    }
 
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     if let Some(dir) = working_directory.filter(|_| secrets.terminal) {
@@ -474,12 +424,15 @@ pub(crate) fn build_env_with_secrets(
                     );
                     let mut names = Vec::new();
                     for (key, value) in resolved {
-                        if !is_shell_env_name(&key) {
-                            log::warn!(
-                                "shell::build_env: skipped invalid terminal env secret name {key}"
-                            );
-                            continue;
-                        }
+                        let key = match crate::workspace::secrets::SecretEnvName::parse(&key) {
+                            Ok(name) => name.into_string(),
+                            Err(error) => {
+                                log::warn!(
+                                    "shell::build_env: skipped terminal env secret: {error}"
+                                );
+                                continue;
+                            }
+                        };
                         names.push(key.clone());
                         env.insert(preserved_terminal_env_name(&key), value.to_string());
                         env.insert(key, value.to_string());
@@ -548,26 +501,32 @@ pub(crate) fn build_env_with_secrets(
         }
     }
 
-    // ZDOTDIR injection for zsh shell integration
-    let shell = detect_shell();
-    if shell.ends_with("/zsh") || shell.ends_with("/zsh-5") {
-        match ensure_shell_integration() {
-            Ok(zdotdir) => {
-                let home = std::env::var("HOME").unwrap_or_default();
-                let orig = resolve_orig_zdotdir(
-                    std::env::var("PLEXI_ORIG_ZDOTDIR").ok().as_deref(),
-                    std::env::var("ZDOTDIR").ok().as_deref(),
-                    &home,
-                );
-                env.insert("PLEXI_ORIG_ZDOTDIR".into(), orig);
-                env.insert("ZDOTDIR".into(), zdotdir.to_string_lossy().into());
-            }
-            Err(e) => {
-                log::warn!("Failed to set up shell integration: {e}");
-            }
-        }
-    }
+    env
+}
 
+/// A Windows pane's environment: ConPTY adds the host's own on top
+/// (stint 1688 owns that boundary).
+#[cfg(windows)]
+pub(crate) fn windows_pane_env(
+    working_directory: Option<&Path>,
+    secrets: SecretPolicy,
+) -> HashMap<String, String> {
+    let mut env = secret_env(working_directory, secrets);
+    env.insert("TERM".into(), "xterm-256color".into());
+    env.insert("COLORTERM".into(), "truecolor".into());
+    env.insert("PLEXI_RUNNING".into(), "1".into());
+    if let Some(channel) = crate::config::build_channel() {
+        env.insert("PLEXI_CHANNEL".into(), channel);
+    }
+    for key in ["LANG", "LC_ALL"] {
+        env.insert(
+            key.into(),
+            std::env::var(key).unwrap_or_else(|_| "en_US.UTF-8".into()),
+        );
+    }
+    if let Some(pane_path) = windows_pane_path() {
+        env.insert("PATH".into(), pane_path);
+    }
     env
 }
 
@@ -594,17 +553,6 @@ pub(crate) mod secret_reads {
 
 fn preserved_terminal_env_name(name: &str) -> String {
     format!("{TERMINAL_ENV_VALUE_PREFIX}{name}")
-}
-
-fn is_shell_env_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !(first == '_' || first.is_ascii_alphabetic()) {
-        return false;
-    }
-    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
 static CWD_CACHE: LazyLock<Mutex<HashMap<u32, (PathBuf, Instant)>>> =
@@ -1051,7 +999,10 @@ fn pid_cwd_backend_name() -> &'static str {
     "libproc"
 }
 
-pub(crate) fn augmented_pane_path() -> Option<String> {
+/// The process PATH with the Plexi CLI directories prepended, for a Windows
+/// pane (stint 1688 replaces this with independent sources).
+#[cfg(windows)]
+fn windows_pane_path() -> Option<String> {
     let current = std::env::var_os("PATH").unwrap_or_default();
     let existing: Vec<PathBuf> = std::env::split_paths(&current).collect();
     let mut prepend: Vec<PathBuf> = Vec::new();
@@ -1065,14 +1016,6 @@ pub(crate) fn augmented_pane_path() -> Option<String> {
     };
     if let Ok(Some(receipt)) = crate::distribution::installed() {
         push_unique(receipt.bin_dir);
-    }
-    #[cfg(not(windows))]
-    if let Some(home) = std::env::var_os("HOME")
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .or_else(dirs::home_dir)
-    {
-        push_unique(home.join(".local/bin"));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
@@ -1117,7 +1060,7 @@ pub(crate) fn ensure_shell_integration() -> io::Result<PathBuf> {
 
     let zprofile = r#"# Plexi shell integration — automatically managed, do not edit
 fpath=("${ZDOTDIR}/completions" $fpath)
-__plexi_orig="${PLEXI_ORIG_ZDOTDIR:-$HOME}"
+__plexi_orig="$HOME"
 __plexi_orig_trimmed="${__plexi_orig%/}"
 if [[ "$__plexi_orig_trimmed" != "${ZDOTDIR%/}" && "$__plexi_orig_trimmed" != */shell-integration/zsh ]]; then
     [[ -f "$__plexi_orig_trimmed/.zprofile" ]] && source "$__plexi_orig_trimmed/.zprofile"
@@ -1128,7 +1071,7 @@ unset __plexi_orig __plexi_orig_trimmed
     let zshrc = format!(
         r#"# Plexi shell integration — automatically managed, do not edit
 fpath=("${{ZDOTDIR}}/completions" $fpath)
-__plexi_orig="${{PLEXI_ORIG_ZDOTDIR:-$HOME}}"
+__plexi_orig="$HOME"
 __plexi_orig_trimmed="${{__plexi_orig%/}}"
 if [[ "$__plexi_orig_trimmed" != "${{ZDOTDIR%/}}" && "$__plexi_orig_trimmed" != */shell-integration/zsh ]]; then
     [[ -f "$__plexi_orig_trimmed/.zshrc" ]] && source "$__plexi_orig_trimmed/.zshrc"
@@ -1379,14 +1322,6 @@ mod tests {
         assert!(std::env::var_os("NO_COLOR").is_none());
         assert!(std::env::var_os("FORCE_COLOR").is_none());
 
-        let built = build_env(Some(&cwd));
-        assert!(!built.contains_key("NO_COLOR"));
-        assert!(!built.contains_key("FORCE_COLOR"));
-        assert_eq!(
-            built.get("COLORTERM").map(String::as_str),
-            Some("truecolor")
-        );
-
         let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
         let context = crate::pane_ops::create::PaneContextEnv {
             context_id: 1,
@@ -1418,15 +1353,17 @@ mod tests {
                 cwd: Some(cwd.clone()),
                 command: None,
                 ephemeral: false,
-                env: Vec::new(),
+                metadata: Default::default(),
                 mcp: crate::pane_ops::construct::McpBearer::Pane,
                 profile_dir: profile.clone(),
             };
+            let base = crate::host::pane_env::PaneBase::fixture();
             assert!(crate::app::PlexiApp::construct_terminal_in(
                 &egui::Context::default(),
                 &tx,
                 &colors,
                 14.0,
+                Some(&base),
                 launch
             )
             .is_err());
@@ -1603,22 +1540,6 @@ mod tests {
     }
 
     #[test]
-    fn shell_env_name_validation_accepts_posix_names() {
-        assert!(is_shell_env_name("OPENROUTER_API_KEY"));
-        assert!(is_shell_env_name("_PLEXI_TEST"));
-        assert!(is_shell_env_name("A1"));
-    }
-
-    #[test]
-    fn shell_env_name_validation_rejects_unsafe_names() {
-        assert!(!is_shell_env_name(""));
-        assert!(!is_shell_env_name("1PASSWORD"));
-        assert!(!is_shell_env_name("BAD-NAME"));
-        assert!(!is_shell_env_name("BAD:NAME"));
-        assert!(!is_shell_env_name("BAD NAME"));
-    }
-
-    #[test]
     fn known_agent_process_maps_canonical_names() {
         assert_eq!(known_agent_process("codex"), Some("codex"));
         assert_eq!(known_agent_process("claude"), Some("claude-code"));
@@ -1728,40 +1649,6 @@ mod tests {
             .expect("spawn sleep");
         let _ = child.wait();
         assert_eq!(get_pid_name(child.id()), None);
-    }
-
-    #[test]
-    fn resolve_orig_zdotdir_rejects_plexi_integration_directories() {
-        let home = "/Users/tester";
-        assert_eq!(resolve_orig_zdotdir(None, None, home), home);
-        assert_eq!(
-            resolve_orig_zdotdir(Some("/Users/tester/.config/zsh"), None, home),
-            "/Users/tester/.config/zsh"
-        );
-        assert_eq!(
-            resolve_orig_zdotdir(
-                Some("/Users/tester/.plexi-alpha/shell-integration/zsh"),
-                None,
-                home
-            ),
-            home
-        );
-        assert_eq!(
-            resolve_orig_zdotdir(
-                None,
-                Some("/Users/tester/.plexi-beta/shell-integration/zsh/"),
-                home
-            ),
-            home
-        );
-        assert_eq!(
-            resolve_orig_zdotdir(
-                Some("/Users/tester/.plexi-pr-42/shell-integration/zsh"),
-                Some("/Users/tester/.config/zsh"),
-                home,
-            ),
-            "/Users/tester/.config/zsh"
-        );
     }
 
     #[test]

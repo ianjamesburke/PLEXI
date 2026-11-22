@@ -2277,20 +2277,16 @@ impl PlexiApp {
         let parent_pane_id = placement.parent_pane_id;
         let spawned_by =
             spawned_by.unwrap_or_else(|| self.derive_spawned_by_for_parent(parent_pane_id));
-        let mut env = Vec::new();
-        if let Some(pid) = parent_pane_id {
-            env.push(("PLEXI_PARENT_PANE".to_string(), pid.to_string()));
-        }
-        env.push(("PLEXI_SPAWNED_BY".to_string(), spawned_by.clone()));
-        if ephemeral {
-            env.push(("PLEXI_EPHEMERAL".to_string(), "1".to_string()));
-        }
-        env.push(("PLEXI_AGENT_HARNESS".to_string(), harness.to_string()));
-        env.push(("PLEXI_AGENT_ROLE".to_string(), role.to_string()));
-        if let Some(id) = self.agent_tree_id(parent_pane_id, role) {
-            env.push(("PLEXI_AGENT_ID".to_string(), id));
-        }
-        env.push(("PLEXI_AGENT_TASK".to_string(), task.to_string()));
+        let metadata = super::construct::PaneMetadata {
+            parent_pane: parent_pane_id,
+            spawned_by: Some(spawned_by.clone()),
+            ephemeral,
+            harness: Some(harness.to_string()),
+            role: Some(role.to_string()),
+            agent_id: self.agent_tree_id(parent_pane_id, role),
+            task: Some(task.to_string()),
+            resume_command: None,
+        };
         let worker_command = if harness == "team" {
             command.to_string()
         } else {
@@ -2339,7 +2335,7 @@ impl PlexiApp {
                 close_on_exit: false,
             }),
             ephemeral: false,
-            env,
+            metadata,
             mcp: match run_token {
                 Some(token) => McpBearer::RunToken(token.to_string()),
                 None => McpBearer::Pane,

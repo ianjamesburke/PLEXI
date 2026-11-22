@@ -14,6 +14,8 @@ pub struct BackendSettings {
     pub shell: String,
     pub args: Vec<String>,
     pub working_directory: Option<PathBuf>,
+    /// The child's complete environment on Unix: the spawn clears the
+    /// hosting process's environment first and adds nothing else.
     pub env: HashMap<String, String>,
     pub dynamic_colors: HashMap<usize, [u8; 3]>,
     /// Optional observe-only tap on PTY output (see `PtyByteTap`).

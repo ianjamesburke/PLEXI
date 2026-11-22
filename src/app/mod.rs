@@ -209,6 +209,10 @@ pub struct PlexiApp {
     pub(crate) resource_leases: Option<crate::host::resource_leases::LeaseService>,
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
+    /// What every terminal's environment is built from (stint 1682): the
+    /// account and host profile resolved at launch. `None` only when the
+    /// launch could not resolve them, and then no terminal starts.
+    pub(crate) pane_base: Option<std::sync::Arc<crate::host::pane_env::PaneBase>>,
     pub(crate) last_notify_poll: std::time::Instant,
     pub(crate) scheduler: crate::host::scheduler::Scheduler,
     pub(crate) theme: TerminalTheme,
@@ -1842,6 +1846,7 @@ impl PlexiApp {
             .filter(|error| error.save_block().is_some())
             .cloned();
         if let Ok(ws) = loaded {
+            let pane_base = crate::host::pane_env::installed();
             if let Some(restored) = restore_workspace(
                 ws,
                 &config,
@@ -1851,6 +1856,7 @@ impl PlexiApp {
                     hot_reload: &mut hr_watcher,
                     state_watch: &mut sw_watcher,
                     terminal_spawner: Some((&cc.egui_ctx, &tx)),
+                    pane_base: pane_base.as_deref(),
                 },
             ) {
                 let mut host = crate::host::model::HostModel::new();
@@ -1859,6 +1865,7 @@ impl PlexiApp {
                 let mut app = Self {
                     pty_event_rx: rx,
                     pty_event_tx: tx,
+                    pane_base,
                     theme: theme::terminal_theme(&theme_cfg, config.terminal_minimum_contrast()),
                     colors,
                     default_font_size,
@@ -2134,6 +2141,7 @@ impl PlexiApp {
         let mut app = Self {
             pty_event_rx: rx,
             pty_event_tx: tx,
+            pane_base: crate::host::pane_env::installed(),
             theme: theme::terminal_theme(&theme_cfg, config.terminal_minimum_contrast()),
             colors,
             default_font_size,
@@ -3174,6 +3182,9 @@ impl PlexiApp {
         let mut app = Self {
             pty_event_rx: rx,
             pty_event_tx: tx,
+            pane_base: Some(std::sync::Arc::new(
+                crate::host::pane_env::PaneBase::fixture(),
+            )),
             last_notify_poll: std::time::Instant::now(),
             scheduler: crate::host::scheduler::Scheduler::new(),
             theme: theme::terminal_theme(&theme_cfg, config.terminal_minimum_contrast()),
@@ -5914,6 +5925,7 @@ pub(crate) struct WorkspaceRestoreCollaborators<'a> {
     pub hot_reload: &'a mut crate::host::hot_reload::HotReloadWatcher,
     pub state_watch: &'a mut crate::host::state_watch::StateWatcher,
     pub terminal_spawner: Option<(&'a egui::Context, &'a mpsc::Sender<(u64, PtyEvent)>)>,
+    pub pane_base: Option<&'a crate::host::pane_env::PaneBase>,
 }
 
 /// Reconstructed workspace state returned by [`restore_workspace`].
@@ -6226,19 +6238,13 @@ pub(crate) fn restore_workspace(
                         depth: ctx_depth,
                     };
                     let mut auto_resume_launched = false;
-                    let mut worker_env: Vec<(String, String)> = Vec::new();
+                    let mut metadata = crate::pane_ops::construct::PaneMetadata::default();
                     let mut launch_command = None;
                     let mut effective_session = effective_session;
                     if let Some(ref mut session) = effective_session {
-                        worker_env
-                            .push(("PLEXI_AGENT_HARNESS".to_string(), session.harness.clone()));
-                        if let Some(ref role) = session.config_name {
-                            worker_env.push(("PLEXI_AGENT_ROLE".to_string(), role.clone()));
-                        }
-                        if let Some(parent_id) = session.parent_pane_id {
-                            worker_env
-                                .push(("PLEXI_PARENT_PANE".to_string(), parent_id.to_string()));
-                        }
+                        metadata.harness = Some(session.harness.clone());
+                        metadata.role = session.config_name.clone();
+                        metadata.parent_pane = session.parent_pane_id;
                         let resolved_spawned_by = session
                             .spawned_by
                             .clone()
@@ -6261,10 +6267,8 @@ pub(crate) fn restore_workspace(
                             })
                             .unwrap_or_else(|| "human".to_string());
                         session.spawned_by = Some(resolved_spawned_by.clone());
-                        worker_env.push(("PLEXI_SPAWNED_BY".to_string(), resolved_spawned_by));
-                        if session.ephemeral {
-                            worker_env.push(("PLEXI_EPHEMERAL".to_string(), "1".to_string()));
-                        }
+                        metadata.spawned_by = Some(resolved_spawned_by);
+                        metadata.ephemeral = session.ephemeral;
                         if should_auto_resume {
                             if let Some(harness) = crate::cli::AgentHarness::parse(&session.harness)
                             {
@@ -6292,8 +6296,7 @@ pub(crate) fn restore_workspace(
                                     session.session_id,
                                     session.last_state.as_str()
                                 );
-                                worker_env
-                                    .push(("PLEXI_RESUME_COMMAND".to_string(), resume_cmd.clone()));
+                                metadata.resume_command = Some(resume_cmd.clone());
                                 launch_command = Some(crate::pane_ops::construct::LaunchCommand {
                                     command: resume_cmd.clone(),
                                     close_on_exit: session.ephemeral,
@@ -6364,7 +6367,7 @@ pub(crate) fn restore_workspace(
                         cwd: cwd.clone(),
                         command: launch_command,
                         ephemeral: false,
-                        env: worker_env,
+                        metadata,
                         mcp: crate::pane_ops::construct::McpBearer::Pane,
                         profile_dir: collaborators.profile_dir.to_path_buf(),
                     };
@@ -6373,6 +6376,7 @@ pub(crate) fn restore_workspace(
                         pty_event_tx,
                         collaborators.colors,
                         default_font_size,
+                        collaborators.pane_base,
                         launch,
                     ) {
                         Ok(mut pane) => {

@@ -209,6 +209,11 @@ pub fn write_terminal_env_inject(
     canonical: &str,
     enabled: bool,
 ) -> Result<(), String> {
+    // Enabling takes an exportable name; disabling a legacy reserved entry
+    // still works (stint 1682).
+    if enabled {
+        super::SecretEnvName::parse(canonical)?;
+    }
     let secrets_path = workspace_root
         .join(crate::config::workspace_channel_dir())
         .join("secrets.toml");
