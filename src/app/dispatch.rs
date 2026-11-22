@@ -1296,16 +1296,10 @@ impl PlexiApp {
                         .map(|w| w.context_id)
                         .unwrap_or(0);
 
-                    let is_self = requester_context_id == context_id;
-                    let is_ancestor = if !is_self {
-                        self.host
-                            .ancestors_of(context_id)
-                            .contains(&requester_context_id)
-                    } else {
-                        false
-                    };
-
-                    if !is_self && !is_ancestor {
+                    if !self
+                        .router
+                        .is_self_or_ancestor(requester_context_id, context_id)
+                    {
                         log::warn!(
                             "QueryContextState: pane {sender_pane_id} in context {requester_context_id} \
                              cannot query context {context_id} — not an ancestor"

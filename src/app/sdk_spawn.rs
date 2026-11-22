@@ -185,11 +185,11 @@ impl PlexiApp {
             return Ok(requester_win);
         };
         let target_exists = self.router.iter().any(|c| c.context_id == target_ctx_id);
-        let is_descendant = self
-            .host
-            .ancestors_of(target_ctx_id)
-            .contains(&requester_context_id);
-        if !target_exists || (!is_descendant && requester_context_id != target_ctx_id) {
+        if !target_exists
+            || !self
+                .router
+                .is_self_or_ancestor(requester_context_id, target_ctx_id)
+        {
             return Err(format!(
                 "target_context {target_ctx_id} is not a descendant of context {requester_context_id}"
             ));
