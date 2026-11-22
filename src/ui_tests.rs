@@ -1266,6 +1266,133 @@ mod tests {
         });
     }
 
+    /// Stint 1405: text on an accent or danger fill is light whenever white
+    /// clears the 4.5:1 small-text floor, dark otherwise, and always clears
+    /// it, on every Plexi preset and on user-chosen accents. Renders
+    /// the SDK tab bar (the active tab is a Primary button), a Primary and a
+    /// Danger button and accent/danger badges through the real tree renderer,
+    /// then reads the colour each label was painted with.
+    #[test]
+    fn on_accent_text_prefers_white_and_clears_small_text_floor() {
+        use crate::ui::theme::{contrast, luminance, preset_colors, Colors};
+        fn texts(shape: &egui::Shape, out: &mut Vec<(String, egui::Color32)>) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    let color = text.override_text_color.unwrap_or_else(|| {
+                        text.galley
+                            .job
+                            .sections
+                            .first()
+                            .map_or(text.fallback_color, |s| s.format.color)
+                    });
+                    out.push((text.galley.text().to_owned(), color));
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| texts(s, out)),
+                _ => {}
+            }
+        }
+        let button = |id: u32, label: &str, style: &str| {
+            serde_json::json!({"id": id, "key": format!("0/{id}"), "data": {
+                "type": "Button", "label": label, "on_click": label, "style": style}})
+        };
+        let badge = |id: u32, text: &str, color: &str| {
+            serde_json::json!({"id": id, "key": format!("0/{id}"), "data": {
+                "type": "Badge", "text": text, "color": color}})
+        };
+        let tree = serde_json::json!({"root": 0, "nodes": [
+            {"id": 0, "key": "0", "data": {"type": "Row", "children": [1, 2, 3, 4, 5, 6, 7], "gap": 4.0}},
+            button(1, "Overview", "primary"),
+            button(2, "Details", "secondary"),
+            button(3, "Logs", "secondary"),
+            button(4, "Save", "primary"),
+            button(5, "Delete", "danger"),
+            badge(6, "3 new", "accent"),
+            badge(7, "2 failed", "danger"),
+        ]});
+        let tree =
+            crate::host::wasm_python::decode_ui_tree(&tree.to_string()).expect("tree decodes");
+        // Every Plexi preset's own accent, then user-chosen accents on the
+        // default preset: mid (the old dusk accent, white fails), light, dark.
+        let mut cases: Vec<(String, crate::config::ThemeConfig)> =
+            ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"]
+                .into_iter()
+                .map(|theme| (theme.to_string(), preset_colors(theme).unwrap()))
+                .collect();
+        for accent in ["#9568f6", "#00ff41", "#1e40af"] {
+            let mut cfg = preset_colors(crate::ui::theme::DEFAULT_PRESET).unwrap();
+            cfg.accent = Some(accent.to_string());
+            cases.push((format!("custom-{}", &accent[1..]), cfg));
+        }
+        for (theme, cfg) in cases {
+            let colors = Colors::from_config(&cfg);
+            let render_tree = tree.clone();
+            let mut fonts_ready = false;
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(560.0, 64.0))
+                .with_pixels_per_point(2.0)
+                .build_ui(move |ui| {
+                    if !fonts_ready {
+                        crate::ui::theme::setup_fonts(ui.ctx());
+                        crate::ui::theme::setup_style(ui.ctx(), &colors);
+                        fonts_ready = true;
+                        ui.ctx().request_repaint();
+                        return;
+                    }
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE.fill(colors.terminal_bg).inner_margin(12))
+                        .show_inside(ui, |ui| {
+                            crate::host::wasm_render::render_ui_tree_with_surface(
+                                ui,
+                                &render_tree,
+                                &colors,
+                                None,
+                                None,
+                                0,
+                            );
+                        });
+                });
+            harness.run();
+            harness
+                .render()
+                .expect("render on-accent tree")
+                .save(evidence_png!(format!("_{theme}")))
+                .expect("write evidence");
+            let mut painted = Vec::new();
+            for shape in &harness.output().shapes {
+                texts(&shape.shape, &mut painted);
+            }
+            for (label, fill) in [
+                ("Overview", colors.accent),
+                ("Save", colors.accent),
+                ("3 new", colors.accent),
+                ("Delete", colors.danger),
+                ("2 failed", colors.danger),
+            ] {
+                let (_, fg) = painted
+                    .iter()
+                    .find(|(text, _)| text == label)
+                    .unwrap_or_else(|| panic!("{theme}: {label:?} not painted: {painted:?}"));
+                let ratio = contrast(luminance(*fg), luminance(fill));
+                assert!(
+                    ratio >= 4.5,
+                    "{theme}: {label:?} {fg:?} on {fill:?} is {ratio:.2}:1"
+                );
+                // One rule: white whenever white clears the floor, dark otherwise.
+                let white_ok = contrast(1.0, luminance(fill)) >= 4.5;
+                if theme == crate::ui::theme::DEFAULT_PRESET && fill == colors.accent {
+                    assert!(
+                        white_ok,
+                        "default accent {fill:?} must take white text at 4.5:1"
+                    );
+                }
+                assert_eq!(
+                    luminance(*fg) > luminance(fill),
+                    white_ok,
+                    "{theme}: {label:?} painted {fg:?} on {fill:?}; light expected: {white_ok}"
+                );
+            }
+        }
+    }
     #[test]
     fn screenshot_foreground_buttons_and_badges() {
         for theme in ["plexi-dusk", "plexi-dawn"] {
@@ -1275,7 +1402,7 @@ mod tests {
                 add_focused_pane(&mut h);
                 h.with_app_mut(|app| app.show_ui_gallery = true);
                 h.run_steps(4);
-                for section in ["Buttons and chips", "Sidebar rows"] {
+                for section in ["Buttons and chips", "Rows", "Sidebar rows"] {
                     h.harness().get_by_label(section).scroll_to_me();
                     h.run_steps(4);
                     h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_{section}")))

@@ -111,29 +111,24 @@ impl Colors {
         luminance(self.terminal_bg) < 0.179
     }
 
-    /// Readable foreground for text drawn on `fill` (accent buttons, danger
-    /// buttons, swatches). Picks whichever of `text_primary` / `bg_darkest`
-    /// has the higher WCAG contrast ratio against the fill; if neither
-    /// palette color reaches 3:1 (e.g. a mid-luminance accent), falls back to
-    /// pure black/white so text is never illegible on any theme — including
-    /// user-customized accents. Never hard-code WHITE or `bg_darkest` on a
-    /// colored fill.
+    /// The one rule for text drawn on a filled control (accent and danger
+    /// buttons, badges, chips, swatches): white whenever white clears the
+    /// `Role::SmallText` floor on `fill`, otherwise the palette's darker text
+    /// colour, otherwise black (black clears 4.5:1 wherever white does not).
+    /// Light text is preferred so the brand accent always carries white,
+    /// including on user-chosen accents. Never hard-code a colour on a fill.
     pub fn text_on(&self, fill: Color32) -> Color32 {
         let fill_lum = luminance(fill);
-        let primary_contrast = contrast(luminance(self.text_primary), fill_lum);
-        let darkest_contrast = contrast(luminance(self.bg_darkest), fill_lum);
-        let (best, best_contrast) = if primary_contrast >= darkest_contrast {
-            (self.text_primary, primary_contrast)
+        let floor = super::foreground::Role::SmallText.minimum();
+        let dark = if luminance(self.text_primary) < luminance(self.bg_darkest) {
+            self.text_primary
         } else {
-            (self.bg_darkest, darkest_contrast)
+            self.bg_darkest
         };
-        if best_contrast >= 3.0 {
-            best
-        } else if contrast(0.0, fill_lum) > contrast(1.0, fill_lum) {
-            Color32::BLACK
-        } else {
-            Color32::WHITE
-        }
+        [Color32::WHITE, dark]
+            .into_iter()
+            .find(|c| contrast(luminance(*c), fill_lum) >= floor)
+            .unwrap_or(Color32::BLACK)
     }
 
     /// Foreground for *primary* labels that used to render in `text_dim`
@@ -987,7 +982,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             text_primary: s("#e8e8f0"),
             text_dim: s("#afafff"),
             text_section: s("#8a8aef"),
-            accent: s("#9568f6"),
+            accent: s("#8755f5"),
             border: s("#44446c"),
             foreground: s("#e8e8f0"),
             background: s("#292a44"),
@@ -1484,8 +1479,8 @@ mod tests {
     }
 
     /// Every preset's accent button must render legible text: text_on must
-    /// return a color with at least 3:1 WCAG contrast against the accent and
-    /// danger fills. Guards the whole preset table, including future entries.
+    /// clear the 4.5:1 small-text floor against the accent and danger fills.
+    /// Guards the whole preset table, including future entries.
     #[test]
     fn text_on_is_legible_on_every_preset_accent_and_danger() {
         // Ratio between two colors, over the module's own WCAG helpers.
@@ -1496,8 +1491,8 @@ mod tests {
             for fill in [colors.accent, colors.danger] {
                 let text = colors.text_on(fill);
                 assert!(
-                    ratio(text, fill) >= 3.0,
-                    "{name}: text_on({fill:?}) = {text:?} is below 3:1 contrast"
+                    ratio(text, fill) >= 4.5,
+                    "{name}: text_on({fill:?}) = {text:?} is below 4.5:1 contrast"
                 );
             }
         }
@@ -1589,11 +1584,11 @@ mod tests {
                 ratio(colors.text_dim, colors.bg_sidebar) >= 3.0,
                 "{name}: text_dim below 3:1 on bg_sidebar (inactive row text illegible)"
             );
-            // bg_active is the chip background — text_on must achieve 3:1 there.
+            // bg_active is the chip background — text_on must achieve 4.5:1 there.
             let chip_text = colors.text_on(colors.bg_active);
             assert!(
-                ratio(chip_text, colors.bg_active) >= 3.0,
-                "{name}: chip text_on(bg_active) below 3:1 (chip text illegible)"
+                ratio(chip_text, colors.bg_active) >= 4.5,
+                "{name}: chip text_on(bg_active) below 4.5:1 (chip text illegible)"
             );
         }
     }
