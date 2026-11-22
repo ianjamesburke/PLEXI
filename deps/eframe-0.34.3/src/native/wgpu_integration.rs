@@ -76,6 +76,50 @@ pub struct SharedState {
     viewport_from_window: HashMap<WindowId, ViewportId>,
     focused_viewport: Option<ViewportId>,
     resized_viewport: Option<ViewportId>,
+    /// When `resized_viewport` last received a real size step.
+    last_live_resize: Option<Instant>,
+}
+
+/// winit reports no end of a live resize. With no size step for this long the
+/// drag has ended or paused, and the surface leaves resize mode; a resumed drag
+/// re-enters it on its next step. Longer than any gap between macOS size steps.
+const LIVE_RESIZE_QUIET: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// What a paint of `painted` does about the current live resize.
+#[derive(Debug, PartialEq, Eq)]
+enum LiveResizeCheck {
+    NotResizing,
+    End,
+    WakeAt(Instant),
+}
+
+fn check_live_resize(
+    resized: Option<ViewportId>,
+    last_resize: Option<Instant>,
+    painted: ViewportId,
+    now: Instant,
+) -> LiveResizeCheck {
+    match last_resize {
+        Some(last) if resized == Some(painted) => {
+            let deadline = last + LIVE_RESIZE_QUIET;
+            if now >= deadline {
+                LiveResizeCheck::End
+            } else {
+                LiveResizeCheck::WakeAt(deadline)
+            }
+        }
+        _ => LiveResizeCheck::NotResizing,
+    }
+}
+
+/// Whether `event` belongs to a live resize. A zero size is winit's minimize
+/// signal on Windows, not a size step.
+fn event_keeps_live_resize(event: &winit::event::WindowEvent) -> bool {
+    match event {
+        winit::event::WindowEvent::Resized(size) => size.width != 0 && size.height != 0,
+        winit::event::WindowEvent::Moved(_) => cfg!(target_os = "macos"),
+        _ => false,
+    }
 }
 
 pub type Viewports = egui::OrderedViewportIdMap<Viewport>;
@@ -330,6 +374,7 @@ impl<'app> WgpuWinitApp<'app> {
             painter,
             focused_viewport: Some(ViewportId::ROOT),
             resized_viewport: None,
+            last_live_resize: None,
         }));
 
         {
@@ -585,10 +630,30 @@ impl WgpuWinitRunning<'_> {
 
         let mut frame_timer = crate::stopwatch::Stopwatch::new();
         frame_timer.start();
+        let mut live_resize_wake = None;
 
         let (viewport_ui_cb, raw_input, is_visible, paint_requested) = {
             profiling::scope!("Prepare");
             let mut shared_lock = shared.borrow_mut();
+
+            // A drag can end with only redraws after its last size step, so
+            // the end of resize mode is checked on the paint path.
+            match check_live_resize(
+                shared_lock.resized_viewport,
+                shared_lock.last_live_resize,
+                viewport_id,
+                Instant::now(),
+            ) {
+                LiveResizeCheck::NotResizing => {}
+                LiveResizeCheck::WakeAt(deadline) => live_resize_wake = Some(deadline),
+                LiveResizeCheck::End => {
+                    shared_lock
+                        .painter
+                        .on_window_resize_state_change(viewport_id, false);
+                    shared_lock.resized_viewport = None;
+                    shared_lock.last_live_resize = None;
+                }
+            }
 
             let SharedState {
                 viewports, painter, ..
@@ -812,6 +877,8 @@ impl WgpuWinitRunning<'_> {
 
         if integration.should_close() {
             Ok(EventResult::CloseRequested)
+        } else if let Some(deadline) = live_resize_wake {
+            Ok(EventResult::RepaintAt(window_id, deadline))
         } else {
             Ok(EventResult::Wait)
         }
@@ -857,10 +924,7 @@ impl WgpuWinitRunning<'_> {
         // and restarted the resize state, reconfiguring the surface three times per size step.
         //
         // See: https://github.com/emilk/egui/issues/903
-        let event_keeps_resize_active = matches!(event, winit::event::WindowEvent::Resized(_))
-            || (cfg!(target_os = "macos") && matches!(event, winit::event::WindowEvent::Moved(_)));
-
-        if !event_keeps_resize_active
+        if !event_keeps_live_resize(event)
             && let Some(id) = viewport_id
             && shared.resized_viewport == viewport_id
         {
@@ -869,6 +933,7 @@ impl WgpuWinitRunning<'_> {
             );
             shared.painter.on_window_resize_state_change(id, false);
             shared.resized_viewport = None;
+            shared.last_live_resize = None;
         }
 
         match event {
@@ -903,6 +968,7 @@ impl WgpuWinitRunning<'_> {
                         shared.resized_viewport = viewport_id;
                         shared.painter.on_window_resize_state_change(id, true);
                     }
+                    shared.last_live_resize = Some(Instant::now());
                     shared.painter.on_window_resized(id, width, height);
                     repaint_asap = true;
                 }
@@ -1300,6 +1366,54 @@ fn screenshot_needs_paint(visible: bool, actions: &[ActionRequested]) -> bool {
         || actions
             .iter()
             .any(|action| matches!(action, ActionRequested::Screenshot(_)))
+}
+
+#[cfg(test)]
+mod live_resize_tests {
+    use super::*;
+    use winit::dpi::{PhysicalPosition, PhysicalSize};
+    use winit::event::WindowEvent;
+
+    #[test]
+    fn a_zero_size_ends_the_live_resize_and_a_real_step_keeps_it() {
+        assert!(event_keeps_live_resize(&WindowEvent::Resized(
+            PhysicalSize::new(800, 600)
+        )));
+        assert!(!event_keeps_live_resize(&WindowEvent::Resized(
+            PhysicalSize::new(0, 0)
+        )));
+        assert!(!event_keeps_live_resize(&WindowEvent::RedrawRequested));
+        assert_eq!(
+            event_keeps_live_resize(&WindowEvent::Moved(PhysicalPosition::new(1, 1))),
+            cfg!(target_os = "macos")
+        );
+    }
+
+    #[test]
+    fn a_paint_ends_the_live_resize_a_quiet_period_after_its_last_step() {
+        let root = ViewportId::ROOT;
+        let other = ViewportId::from_hash_of("other");
+        let step = Instant::now();
+        let deadline = step + LIVE_RESIZE_QUIET;
+        // Redraws inside the quiet period keep it and schedule the wake that
+        // ends it, even if nothing else ever repaints.
+        assert_eq!(
+            check_live_resize(Some(root), Some(step), root, step),
+            LiveResizeCheck::WakeAt(deadline)
+        );
+        assert_eq!(
+            check_live_resize(Some(root), Some(step), root, deadline),
+            LiveResizeCheck::End
+        );
+        assert_eq!(
+            check_live_resize(Some(root), Some(step), other, deadline),
+            LiveResizeCheck::NotResizing
+        );
+        assert_eq!(
+            check_live_resize(None, None, root, deadline),
+            LiveResizeCheck::NotResizing
+        );
+    }
 }
 
 #[cfg(test)]

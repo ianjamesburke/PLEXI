@@ -3796,6 +3796,7 @@ impl eframe::App for PlexiApp {
             return;
         }
         self.release_unowned_terminal_holds(ctx);
+        self.commit_held_resize_while_hidden(ctx);
         self.apply_ui_scale(ctx);
         crate::platform::titlebar::update_metrics(ctx, frame);
         self.flush_ui_scale_persist();
@@ -5179,6 +5180,34 @@ impl PlexiApp {
                     }
                 }
             }
+        }
+    }
+
+    /// A held terminal resize normally commits on a later `App::ui` pass,
+    /// which eframe skips while the window is hidden. Commit it from logic
+    /// instead, oldest first and one per pass, so the PTY never keeps its
+    /// pre-drag size behind a covered window (stint 1224).
+    fn commit_held_resize_while_hidden(&mut self, ctx: &egui::Context) {
+        // eframe's own predicate for skipping `App::ui`.
+        if ctx.input(|i| i.viewport().visible()).unwrap_or(true) {
+            return;
+        }
+        let mut held: Vec<_> = self
+            .windows
+            .iter_mut()
+            .flat_map(|window| window.panes.values_mut())
+            .filter_map(|pane| pane.as_terminal_mut())
+            .filter(|terminal| terminal.backend.held_resize_frames() > 0)
+            .collect();
+        let remaining = held.len().saturating_sub(1);
+        if let Some(oldest) = held
+            .iter_mut()
+            .max_by_key(|terminal| terminal.backend.held_resize_frames())
+        {
+            oldest.backend.commit_held_resize();
+        }
+        if remaining > 0 {
+            ctx.request_repaint();
         }
     }
 

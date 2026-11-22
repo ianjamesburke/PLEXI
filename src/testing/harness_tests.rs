@@ -15810,6 +15810,63 @@ mod terminal_resize_debounce_tests {
                 start_grids[i]
             );
         }
+        assert_final_grids(&mut h, &terminals, width);
+    }
+
+    /// Each terminal holds exactly the grid an identical layout settles on
+    /// when it starts at `width`, before any further pass runs, and further
+    /// passes at that size commit nothing.
+    fn assert_final_grids(h: &mut HostHarness, terminals: &[PaneId], width: f32) {
+        let mut reference = HostHarness::new();
+        let reference_terminals = three_side_by_side_terminals(&mut reference);
+        for _ in 0..4 {
+            frame_at_width(&mut reference, width);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        for _ in 0..12 {
+            frame_at_width(&mut reference, width);
+        }
+        let expected = grids(&mut reference, &reference_terminals);
+        assert_eq!(grids(h, terminals), expected, "stale final grid");
+        let commits_before = commits(h, terminals);
+        for _ in 0..4 {
+            frame_at_width(h, width);
+        }
+        assert_eq!(grids(h, terminals), expected, "final grid drifted");
+        assert_eq!(commits(h, terminals), commits_before, "late reflow");
+    }
+
+    /// Codex round 3 on PR 3280: the window is covered after the last size
+    /// step and before the settle wake. `App::ui` never runs again, so logic
+    /// must commit every terminal's recorded size.
+    #[test]
+    fn occlusion_before_the_settle_wake_still_commits_every_final_grid() {
+        let mut h = HostHarness::new();
+        let terminals = three_side_by_side_terminals(&mut h);
+        for _ in 0..4 {
+            frame_at_width(&mut h, START_WIDTH);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        for _ in 0..12 {
+            frame_at_width(&mut h, START_WIDTH);
+        }
+        let mut width = START_WIDTH;
+        for step in 1..=6 {
+            width = START_WIDTH - step as f32 * DRAG_STEP;
+            frame_at_width(&mut h, width);
+        }
+        assert!(
+            terminals
+                .iter()
+                .any(|id| h.terminal_backend(*id).held_resize_frames() > 0),
+            "the drag must end with a held resize for this test to mean anything"
+        );
+        h.hidden_frame();
+        h.run_scheduled_hidden_frames(40);
+        for id in terminals {
+            assert_eq!(h.terminal_backend(id).held_resize_frames(), 0);
+        }
+        assert_final_grids(&mut h, &terminals, width);
     }
 
     /// Stint 1224: a long window drag reflows each terminal at most once per

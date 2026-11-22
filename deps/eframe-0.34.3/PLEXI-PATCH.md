@@ -23,3 +23,10 @@ eframe 0.35): `Resized` and, on macOS, `Moved` keep the resize state active.
 Before it, every `Resized` ended and restarted the state, so each size step
 reconfigured the surface three times and toggled `presentsWithTransaction`.
 Drop this hunk when upgrading to eframe 0.35 or later.
+
+Plexi diverges from #8229 in two ways, because upstream can leave the surface
+in resize mode after the drag. A zero-size `Resized` (the Windows minimize
+signal) ends the state. `run_ui_and_paint` ends it once `LIVE_RESIZE_QUIET`
+passes with no real size step, and schedules its own wake, which covers a final
+resize followed only by redraws and a same-scale display move. Re-check both
+paths against upstream before dropping this patch.

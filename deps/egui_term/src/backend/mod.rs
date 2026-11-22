@@ -1284,6 +1284,26 @@ impl TerminalBackend {
         }
     }
 
+    /// Commit the held resize without a layout pass. A hidden window paints
+    /// no terminal, so the size it last recorded is final until it is shown
+    /// again. Returns whether a resize was committed.
+    pub fn commit_held_resize(&mut self) -> bool {
+        let Some(pending) = self.pending_resize.take() else {
+            return false;
+        };
+        log::info!(
+            "terminal {} resize commit: {}x{} cells, {} frame(s) coalesced (window hidden)",
+            self.id,
+            pending.geometry.cols,
+            pending.geometry.lines,
+            pending.deferred_frames.saturating_sub(1),
+        );
+        let term = self.term.clone();
+        let mut term = term.lock();
+        self.commit_resize(&mut term, pending.layout_size, pending.geometry);
+        true
+    }
+
     /// Consecutive frames the pending resize has been held back; zero when
     /// none is pending.
     pub fn held_resize_frames(&self) -> u32 {

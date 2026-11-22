@@ -24,4 +24,5 @@ reconfigure, which uses at least two frames of latency (three Metal drawables)
 while resizing. Drop this hunk when upgrading to egui-wgpu 0.35 or later.
 
 `resize_trace` is diagnostic timing for stint 1224 (surface configure, acquire,
-submit, present per resize gesture). Remove it with the diagnosis.
+submit, present per resize gesture). It records only while a surface is in
+resize mode and an app drains it. Remove it with the diagnosis.

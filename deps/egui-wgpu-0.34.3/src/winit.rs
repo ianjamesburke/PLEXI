@@ -465,6 +465,9 @@ impl Painter {
         // Backport of upstream egui #8229: set before reconfiguring so macOS live resize uses
         // the temporary latency bump in `configure_surface`.
         state.resizing = resizing;
+        if resizing {
+            resize_trace::set_resizing(true);
+        }
 
         // Resizing is a bit tricky on macOS.
         // It requires enabling ["present_with_transaction"](https://developer.apple.com/documentation/quartzcore/cametallayer/presentswithtransaction)
@@ -495,6 +498,9 @@ impl Painter {
                     );
                 }
             }
+        }
+        if !resizing {
+            resize_trace::set_resizing(false);
         }
     }
 
@@ -907,11 +913,14 @@ impl Painter {
     }
 }
 
-/// Diagnostic timing of the surface work a window resize triggers (Plexi
-/// stint 1224 diagnosis). Always on; the host drains it once per resize
-/// gesture with [`resize_trace::take`].
+/// Diagnostic timing of the surface work a window resize triggers.
+///
+/// Plexi stint 1224 diagnosis. Records only while a surface is in resize mode
+/// and an app has called [`resize_trace::take`]; every other call is one
+/// relaxed atomic load, with no lock or allocation.
 pub mod resize_trace {
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     /// Why the surface was reconfigured.
@@ -931,6 +940,9 @@ pub mod resize_trace {
     #[derive(Default, Clone)]
     pub struct Trace {
         pub configure_ms: Vec<f32>,
+        /// The part of `configure_ms` spent inside a paint (surface recovery),
+        /// which eframe's frame CPU time already includes.
+        pub paint_configure_ms: f32,
         pub configures_by_cause: [u32; 4],
         pub acquire_ms: Vec<f32>,
         pub submit_ms: Vec<f32>,
@@ -941,10 +953,22 @@ pub mod resize_trace {
     }
 
     static TRACE: Mutex<Option<Trace>> = Mutex::new(None);
+    /// An app drains the trace, so what is recorded cannot accumulate.
+    static HAS_CONSUMER: AtomicBool = AtomicBool::new(false);
+    static RESIZING: AtomicBool = AtomicBool::new(false);
+    static HAS_DATA: AtomicBool = AtomicBool::new(false);
+
+    pub(crate) fn set_resizing(resizing: bool) {
+        RESIZING.store(resizing, Ordering::Relaxed);
+    }
 
     fn with(f: impl FnOnce(&mut Trace)) {
+        if !RESIZING.load(Ordering::Relaxed) || !HAS_CONSUMER.load(Ordering::Relaxed) {
+            return;
+        }
         let mut guard = TRACE.lock().unwrap_or_else(|e| e.into_inner());
         f(guard.get_or_insert_with(Trace::default));
+        HAS_DATA.store(true, Ordering::Release);
     }
 
     fn ms(d: Duration) -> f32 {
@@ -954,6 +978,9 @@ pub mod resize_trace {
     pub(crate) fn note_configure(cause: Cause, d: Duration) {
         with(|t| {
             t.configure_ms.push(ms(d));
+            if matches!(cause, Cause::Recover) {
+                t.paint_configure_ms += ms(d);
+            }
             t.configures_by_cause[cause as usize] += 1;
         });
     }
@@ -987,12 +1014,49 @@ pub mod resize_trace {
         );
     }
 
-    /// Return and clear everything recorded since the previous call.
+    /// Return and clear everything recorded since the previous call. The
+    /// first call registers the caller as the trace's consumer. Takes no lock
+    /// when nothing was recorded.
     pub fn take() -> Trace {
+        HAS_CONSUMER.store(true, Ordering::Relaxed);
+        if !HAS_DATA.swap(false, Ordering::Acquire) {
+            return Trace::default();
+        }
         TRACE
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
             .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// The only test touching this module's process-wide state.
+        #[test]
+        fn records_only_for_a_consumer_inside_a_resize() {
+            let sample = Duration::from_millis(2);
+            set_resizing(true);
+            note_present(sample);
+            assert!(
+                TRACE.lock().unwrap().is_none(),
+                "no consumer: a paint must not accumulate samples"
+            );
+
+            assert!(take().present_ms.is_empty());
+            set_resizing(false);
+            note_present(sample);
+            assert!(
+                TRACE.lock().unwrap().is_none(),
+                "outside a resize: a paint must not allocate a trace"
+            );
+
+            set_resizing(true);
+            note_present(sample);
+            set_resizing(false);
+            assert_eq!(take().present_ms.len(), 1);
+            assert!(TRACE.lock().unwrap().is_none());
+        }
     }
 }
