@@ -48,10 +48,7 @@ def main(args):
         home.mkdir()
         env = {k: v for k, v in os.environ.items() if not k.startswith('PLEXI_')}
         env.pop('ZDOTDIR', None)
-        # USERPROFILE stays the account's on Windows: Known Folders ignore it,
-        # and Plexi refuses a private home it cannot root (stint 1695).
-        if os.name != 'nt': env['USERPROFILE'] = str(home)
-        env.update(HOME=str(home), XDG_DATA_HOME=str(home / 'data'), XDG_CONFIG_HOME=str(home / '.config'), LOCALAPPDATA=str(home / 'local'), APPDATA=str(home / 'roaming'), PLEXI_DISTRIBUTION_HOME=str(home / 'distribution'))
+        env.update(HOME=str(home), USERPROFILE=str(home), XDG_DATA_HOME=str(home / 'data'), XDG_CONFIG_HOME=str(home / '.config'), LOCALAPPDATA=str(home / 'local'), APPDATA=str(home / 'roaming'), PLEXI_DISTRIBUTION_HOME=str(home / 'distribution'))
         def run(command, timeout=120):
             result = subprocess.run(list(map(str, command)), cwd=home, env=env, capture_output=True, text=True, timeout=timeout)
             with (args.output / 'commands.log').open('a') as log:
@@ -59,9 +56,10 @@ def main(args):
             if result.returncode:
                 raise RuntimeError(f'{command}: {result.stderr[-4000:]}')
             return result.stdout
-        # Windows Known Folders do not follow HOME/USERPROFILE overrides; native
-        # Windows runs use the disposable runner account's real profile.
-        profile_home = Path(run(['powershell', '-NoProfile', '-Command', "[Environment]::GetFolderPath('UserProfile')"]).strip()) if os.name == 'nt' else home
+        # Profiles live under the disposable home on every platform: every Plexi
+        # and installer call names it with --profile-root (stint 1695), so even a
+        # native Windows run never reaches the runner account's own profiles.
+        profile_home = home
         installer = package / ('plexi-installer.exe' if os.name == 'nt' else 'plexi-installer')
         # Every Plexi and installer call names the profile root explicitly; HOME
         # no longer selects it (stint 1695).
@@ -96,7 +94,7 @@ def main(args):
             worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
             env.update(PLEXI_BOOTSTRAP_TAG=tag, PLEXI_RELEASES_URL=f'http://127.0.0.1:{server.server_port}/releases', PLEXI_RELEASE_BASE_URL=f'http://127.0.0.1:{server.server_port}/download', PLEXI_INSTALL_DIR=str(root / 'install'), PLEXI_BIN_DIR=str(root / 'bin'))
             try:
-                bootstrap = ['powershell', '-NoProfile', '-File', REPO / 'scripts/install-windows.ps1', '-Channel', channel] if os.name == 'nt' else ['bash', REPO / 'install.sh', '--channel', channel, *root_args]
+                bootstrap = ['powershell', '-NoProfile', '-File', REPO / 'scripts/install-windows.ps1', '-Channel', channel, '-ProfileRoot', profile_home] if os.name == 'nt' else ['bash', REPO / 'install.sh', '--channel', channel, *root_args]
                 if not args.gui: bootstrap.append('-InstallOnly' if os.name == 'nt' else '--install-only')
                 run(bootstrap, timeout=300)
                 auto_started = args.gui
