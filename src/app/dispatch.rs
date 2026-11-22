@@ -1738,8 +1738,32 @@ impl PlexiApp {
     ) {
         use crate::protocol::PipeOpenRefusal;
         let opener = request.opener;
-        let generation = self.directed_pipes.allocate();
         let pipe_id = request.pipe_id.clone();
+        // An open admitted while the opener's close pool was held by its live
+        // connections takes its close room now, or is refused in its answer
+        // room.
+        let mut request = request;
+        if request.admission.close.is_none() {
+            let reserved = self
+                .view_instance_mut(opener)
+                .ok_or(crate::host::pane::NotAdmitted::NotAnEndpoint)
+                .and_then(|view| {
+                    view.runtime.reserve_directed_control(
+                        crate::host::pane::ControlRoom::OpenerClose { pipe_id: &pipe_id },
+                    )
+                });
+            match reserved {
+                Ok(slot) => request.admission.close = Some(slot),
+                Err(why) => {
+                    log::info!(
+                        "OpenDirectedPipe: '{pipe_id}' refused, {opener:?} has no room for its close: {why:?}",
+                        pipe_id = crate::host::guest_text::shown(&pipe_id)
+                    );
+                    return self.refuse_directed_pipe_open(request, PipeOpenRefusal::OpenerFull);
+                }
+            }
+        }
+        let generation = self.directed_pipes.allocate();
         let target_close = if target == opener {
             None
         } else {
@@ -1810,7 +1834,11 @@ impl PlexiApp {
             admission,
             ..
         } = request;
-        let mut closes = vec![(opener, admission.close)];
+        let mut closes: Vec<_> = admission
+            .close
+            .map(|slot| (opener, slot))
+            .into_iter()
+            .collect();
         closes.extend(target_close.map(|slot| (target, slot)));
         self.directed_pipes
             .publish(generation, context_id, &pipe_id, (opener, target), closes);

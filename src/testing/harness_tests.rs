@@ -5663,7 +5663,7 @@ type PipeInbox = std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent
 fn unbounded_open_admission() -> crate::host::pane::OpenAdmission {
     crate::host::pane::OpenAdmission {
         answer: crate::host::pane::ControlSlot::Unbounded,
-        close: crate::host::pane::ControlSlot::Unbounded,
+        close: Some(crate::host::pane::ControlSlot::Unbounded),
     }
 }
 
@@ -6595,6 +6595,172 @@ fn python_open_intake_waits_for_answer_room_and_resumes_when_the_guest_reads() {
         python_pane_title(h, opener).as_deref() == Some(format!("opener:opened:{OPENS}").as_str())
     });
     assert_eq!(connections(&h), OPENS);
+}
+
+/// A guest read that lands just after intake finds no answer room still
+/// wakes the held intake (review round 5): the wake is armed under the lock
+/// that found stdin full, so no read can fall between the two.
+#[test]
+fn a_read_right_after_intake_finds_no_room_still_wakes_it() {
+    let mut h = HostHarness::new();
+    let win = h.app.active_window;
+    let (target, _target_inbox) = add_pipe_test_pane(&mut h, win);
+    let dir = tempfile::tempdir().expect("opener dir");
+    write_pipe_probe_app(dir.path(), "racing-opener", &["pipe.open"], FULL_OPENER_PY);
+    let opener = launch_pipe_probe(&mut h, dir.path(), &[target.to_string()]);
+    run_until(&mut h, "the opener is ready", &|h| {
+        python_pane_title(h, opener).as_deref() == Some("opener:ready")
+    });
+    let stdin = python_stdin(&mut h, opener);
+    stdin.set_cap_for_test(256 * 1024);
+    h.run_hidden_frames(2);
+    spin_until("the opener reads what it was sent", &mut || {
+        stdin.buffered_bytes() == 0
+    });
+    stdin.push(PROBE_TRIGGER).expect("trigger");
+    spin_until("the opener reads its trigger", &mut || {
+        stdin.buffered_bytes() == 0
+    });
+    stdin.hold_reads_for_test(true);
+    assert!(stdin.fill_for_test() > 0, "no room for the answer");
+    // The guest reads everything the moment intake holds the open.
+    let reader = stdin.clone();
+    python_runtime_mut(&mut h, opener).on_intake_held_for_test(std::sync::Arc::new(move || {
+        reader.hold_reads_for_test(false);
+        let start = std::time::Instant::now();
+        while reader.buffered_bytes() > 0 {
+            assert!(
+                start.elapsed()
+                    < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+                "timed out waiting for the guest to read"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        reader.hold_reads_for_test(true);
+    }));
+    spin_until("intake holds the open", &mut || {
+        python_runtime_mut(&mut h, opener).poll_runtime_state();
+        python_runtime_mut(&mut h, opener).has_held_intake_for_test()
+    });
+    assert!(
+        python_runtime_mut(&mut h, opener).intake_room_freed_for_test(),
+        "the read that made room woke the held intake"
+    );
+    stdin.hold_reads_for_test(false);
+    run_until(&mut h, "the opener's answer", &|h| {
+        python_pane_title(h, opener).is_some_and(|title| title != "opener:ready")
+    });
+    assert!(python_pane_title(&h, opener).is_some_and(|title| title.starts_with("opener:opened:")));
+}
+
+/// A Python opener whose live connections hold all of its close room is not
+/// stalled by it (review round 5). Opens beyond that room are admitted with
+/// their answer room only: each fresh one is refused `opener_full`, and an
+/// open of a name it already holds is answered with its connection, though
+/// no close room is free. Every open gets exactly one answer.
+#[test]
+fn a_python_opener_with_its_close_room_held_is_refused_fresh_opens_and_answered_reopens() {
+    const OPENS: usize = 120;
+    let dir = tempfile::tempdir().expect("opener dir");
+    write_pipe_probe_app(
+        dir.path(),
+        "close-pool-opener",
+        &["pipe.open"],
+        &format!(
+            "from plexi_sdk.effects import PipeOpenDirected, SetTitle\n\
+             from plexi_sdk.events import PipeOpenRefused, PipeOpened, TimerFired\n\
+             from plexi_sdk.ui import Column\n\n\
+             state = {{'triggers': 0, 'opened': {{}}, 'refused': [], 'reopened': []}}\n\n\
+             def init(size, args):\n\
+             \x20   state['target'] = int(args[0])\n\
+             \x20   return [SetTitle('opener:ready')]\n\n\
+             def update(event):\n\
+             \x20   if isinstance(event, TimerFired):\n\
+             \x20       state['triggers'] += 1\n\
+             \x20       if state['triggers'] == 1:\n\
+             \x20           return [PipeOpenDirected(f'stint1681.pool.{{i}}', state['target']) for i in range({OPENS})]\n\
+             \x20       return [PipeOpenDirected('stint1681.pool.0', state['target'])]\n\
+             \x20   if isinstance(event, PipeOpened):\n\
+             \x20       if event.pipe_id in state['opened']:\n\
+             \x20           state['reopened'].append(event.handle == state['opened'][event.pipe_id])\n\
+             \x20       else:\n\
+             \x20           state['opened'][event.pipe_id] = event.handle\n\
+             \x20   elif isinstance(event, PipeOpenRefused):\n\
+             \x20       state['refused'].append(event.reason)\n\
+             \x20   else:\n\
+             \x20       return []\n\
+             \x20   reasons = ','.join(sorted(set(state['refused'])))\n\
+             \x20   return [SetTitle(f\"opener:{{len(state['opened'])}}:{{len(state['refused'])}}:{{reasons}}:{{state['reopened']}}\")]\n\n\
+             def view():\n\
+             \x20   return Column([])\n"
+        ),
+    );
+    let mut h = HostHarness::new();
+    let win = h.app.active_window;
+    let context_id = h.app.windows[win].context_id;
+    let target = h.app.host.alloc_pane_id();
+    let opener = launch_pipe_probe(&mut h, dir.path(), &[target.to_string()]);
+    let _target_inbox = install_pipe_test_view(&mut h, win, target);
+    run_until(&mut h, "the opener is ready", &|h| {
+        python_pane_title(h, opener).as_deref() == Some("opener:ready")
+    });
+    let stdin = python_stdin(&mut h, opener);
+    // The opener close pool, an eighth of the cap, holds fewer connections
+    // than the guest opens.
+    stdin.set_cap_for_test(64 * 1024);
+    h.run_hidden_frames(2);
+    spin_until("the opener reads what it was sent", &mut || {
+        stdin.buffered_bytes() == 0
+    });
+    stdin.push(PROBE_TRIGGER).expect("trigger");
+    let connections = |h: &HostHarness| {
+        (0..OPENS)
+            .filter(|i| pipe_ends(h, &(context_id, format!("stint1681.pool.{i}"))).is_some())
+            .count()
+    };
+    run_until(&mut h, "every open answered", &|h| {
+        python_pane_title(h, opener).is_some_and(|title| {
+            let mut fields = title.split(':').skip(1);
+            let opened: usize = fields.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+            let refused: usize = fields.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+            opened + refused == OPENS
+        })
+    });
+    let held = connections(&h);
+    assert!(
+        held > 0 && held < OPENS,
+        "the close pool bounds the connections: {held} of {OPENS}"
+    );
+    assert!(
+        stdin.held_for_test().1 > 0,
+        "live connections hold close room"
+    );
+    assert_eq!(
+        python_pane_title(&h, opener).as_deref(),
+        Some(format!("opener:{held}:{}:opener_full:[]", OPENS - held).as_str()),
+        "each open beyond the close room is refused once, opener_full"
+    );
+    assert!(
+        stdin
+            .reserve(
+                crate::host::wasm_python::control_room::ControlPool::OpenerCloses,
+                512
+            )
+            .is_err(),
+        "the close pool is exhausted"
+    );
+
+    stdin.push(PROBE_TRIGGER).expect("second trigger");
+    run_until(&mut h, "the reopen answered", &|h| {
+        python_pane_title(h, opener).is_some_and(|title| title.ends_with("[True]"))
+    });
+    h.run_hidden_frames(5);
+    assert_eq!(
+        python_pane_title(&h, opener).as_deref(),
+        Some(format!("opener:{held}:{}:opener_full:[True]", OPENS - held).as_str()),
+        "the reopen is answered once with its connection"
+    );
+    assert_eq!(connections(&h), held);
 }
 
 /// An opener that ends after its target was told, before its own answer,

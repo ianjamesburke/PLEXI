@@ -645,11 +645,14 @@ pub enum PipeOpenRefusal {
     OpenerUnplaced,
     /// The target could not be told of the connection.
     TargetUnavailable,
+    /// The opener has no room now for another connection's close: it holds
+    /// too many connections, or its input is full.
+    OpenerFull,
 }
 
 impl PipeOpenRefusal {
     /// Every reason, so room held for an answer fits whichever one it carries.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Denied,
         Self::NoTarget,
         Self::NotAPlugin,
@@ -658,6 +661,7 @@ impl PipeOpenRefusal {
         Self::NameConflict,
         Self::OpenerUnplaced,
         Self::TargetUnavailable,
+        Self::OpenerFull,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -670,6 +674,7 @@ impl PipeOpenRefusal {
             Self::NameConflict => "name_conflict",
             Self::OpenerUnplaced => "opener_unplaced",
             Self::TargetUnavailable => "target_unavailable",
+            Self::OpenerFull => "opener_full",
         }
     }
 }

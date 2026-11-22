@@ -2187,16 +2187,20 @@ pub(crate) enum ControlSlot {
 }
 
 /// What an open request holds from its admission at the opener on: room for
-/// its one answer, and for the `PipeClosed` of the connection it may become.
+/// its one answer, and, when the opener had it, for the `PipeClosed` of the
+/// connection it may become. A fresh open admitted without close room
+/// reserves it at dispatch; an idempotent open never needs it.
 #[derive(Debug)]
 pub(crate) struct OpenAdmission {
     pub(crate) answer: ControlSlot,
-    pub(crate) close: ControlSlot,
+    pub(crate) close: Option<ControlSlot>,
 }
 
 /// One control event's room to reserve, sized for the event it will hold.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ControlRoom<'a> {
+    /// The `PipeClosed` of a connection this view opened.
+    OpenerClose { pipe_id: &'a str },
     /// The `PipeClosed` of a connection another view opened to this one.
     TargetClose { pipe_id: &'a str },
 }
@@ -2405,7 +2409,7 @@ impl ViewRuntime {
             ViewRuntime::Builtin(_) | ViewRuntime::Wasm(_) => {
                 self.is_directed_pipe_endpoint().then_some(OpenAdmission {
                     answer: ControlSlot::Unbounded,
-                    close: ControlSlot::Unbounded,
+                    close: Some(ControlSlot::Unbounded),
                 })
             }
             ViewRuntime::Python(_) => None,

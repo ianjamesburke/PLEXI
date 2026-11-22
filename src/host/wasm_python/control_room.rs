@@ -15,7 +15,10 @@
 //! for a connection's whole life, split between connections this guest opened
 //! and connections opened to it, so neither long-lived kind can starve the
 //! answers this guest needs to make progress, and a peer opening many
-//! connections to it cannot exhaust the room for its own opens.
+//! connections to it cannot exhaust the room for its own opens. An open is
+//! admitted on its answer room alone when its opener's live connections
+//! hold all the opener close room: a reopen of one of them needs none, and a
+//! fresh open takes its close room at dispatch or is refused.
 
 use std::sync::{Arc, Mutex, Weak};
 
@@ -69,9 +72,10 @@ impl ControlHeld {
 pub(crate) enum NoRoom {
     /// Stdin is closed: the guest has finished. Nothing will ever fit.
     Closed,
-    /// Not now: the pool or stdin is full until the guest reads or held
-    /// room is released.
+    /// Not now: stdin is full until the guest reads.
     Full,
+    /// Not now: the pool's room is all held until held room is released.
+    PoolFull,
     /// The event is larger than its pool could ever hold.
     Oversize,
 }
@@ -129,6 +133,56 @@ impl AppendableStdin {
     /// Hold `bytes` of room in `pool` for one control event.
     pub(crate) fn reserve(&self, pool: ControlPool, bytes: usize) -> Result<StdinSlot, NoRoom> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        self.hold(&mut state, pool, bytes)
+    }
+
+    /// Admit an open request this guest made: hold room for its answer, and
+    /// for the `PipeClosed` of the connection it may become when the opener
+    /// close pool has room. An open admitted without close room is refused
+    /// at dispatch unless it names a connection it already holds, which
+    /// needs no new close room. When stdin or the answer pool has no room,
+    /// `wake` is armed under the same lock that found it full, so a read or
+    /// release that makes room always fires it.
+    pub(crate) fn reserve_open(
+        &self,
+        answer_bytes: usize,
+        close_bytes: usize,
+        wake: &CapacityWake,
+    ) -> Result<(StdinSlot, Option<StdinSlot>), NoRoom> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let answer = match self.hold(&mut state, ControlPool::Answers, answer_bytes) {
+            Ok(answer) => answer,
+            Err(error @ (NoRoom::Full | NoRoom::PoolFull)) => {
+                state.capacity_wake = Some(Arc::clone(wake));
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        let close = match self.hold(&mut state, ControlPool::OpenerCloses, close_bytes) {
+            Ok(close) => Some(close),
+            Err(NoRoom::PoolFull | NoRoom::Oversize) => None,
+            Err(error) => {
+                // Release the answer's room under this lock: dropping the
+                // slot would take the wake this is about to arm.
+                let held = state.control.pool_mut(ControlPool::Answers);
+                *held = held.saturating_sub(answer.bytes);
+                let mut answer = answer;
+                answer.bytes = 0;
+                if error == NoRoom::Full {
+                    state.capacity_wake = Some(Arc::clone(wake));
+                }
+                return Err(error);
+            }
+        };
+        Ok((answer, close))
+    }
+
+    fn hold(
+        &self,
+        state: &mut InputState,
+        pool: ControlPool,
+        bytes: usize,
+    ) -> Result<StdinSlot, NoRoom> {
         if matches!(state.lifecycle, InputLifecycle::Closed) {
             return Err(NoRoom::Closed);
         }
@@ -136,9 +190,10 @@ impl AppendableStdin {
         if bytes > budget {
             return Err(NoRoom::Oversize);
         }
-        let in_pool = *state.control.pool_mut(pool);
-        let used = state.bytes.len() + state.control.total();
-        if in_pool + bytes > budget || used + bytes > state.cap {
+        if *state.control.pool_mut(pool) + bytes > budget {
+            return Err(NoRoom::PoolFull);
+        }
+        if state.bytes.len() + state.control.total() + bytes > state.cap {
             return Err(NoRoom::Full);
         }
         *state.control.pool_mut(pool) += bytes;
@@ -197,23 +252,6 @@ impl AppendableStdin {
             wake();
         }
         Ok(())
-    }
-
-    /// Fire `wake` once, the next time room may have freed.
-    pub(crate) fn arm_capacity_wake(&self, wake: CapacityWake) {
-        let fire_now = {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            match state.lifecycle {
-                InputLifecycle::Closed => true,
-                InputLifecycle::Open(_) => {
-                    state.capacity_wake = Some(Arc::clone(&wake));
-                    false
-                }
-            }
-        };
-        if fire_now {
-            wake();
-        }
     }
 
     /// Whether the guest can still read: stdin closes when its thread exits.
@@ -325,21 +363,21 @@ mod tests {
             .collect();
         assert_eq!(
             stdin.reserve(ControlPool::OpenerCloses, 1).err(),
-            Some(NoRoom::Full)
+            Some(NoRoom::PoolFull)
         );
         let target_closes: Vec<_> = (0..2)
             .map(|_| stdin.reserve(ControlPool::TargetCloses, 100).expect("room"))
             .collect();
         assert_eq!(
             stdin.reserve(ControlPool::TargetCloses, 1).err(),
-            Some(NoRoom::Full)
+            Some(NoRoom::PoolFull)
         );
         let answer = stdin
             .reserve(ControlPool::Answers, 100)
             .expect("answers keep their own room");
         assert_eq!(
             stdin.reserve(ControlPool::Answers, 1).err(),
-            Some(NoRoom::Full)
+            Some(NoRoom::PoolFull)
         );
         assert_eq!(
             stdin.reserve(ControlPool::Answers, 101).err(),
@@ -362,9 +400,14 @@ mod tests {
         );
         let freed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = Arc::clone(&freed);
-        stdin.arm_capacity_wake(Arc::new(move || {
-            flag.store(true, std::sync::atomic::Ordering::SeqCst)
-        }));
+        let wake: CapacityWake =
+            Arc::new(move || flag.store(true, std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            stdin.reserve_open(10, 10, &wake).err(),
+            Some(NoRoom::Full),
+            "an open finding stdin full arms the wake as it fails"
+        );
+        assert!(!freed.load(std::sync::atomic::Ordering::SeqCst));
         let mut storage = vec![0u8; 64];
         let mut reader = std::pin::pin!(stdin.clone());
         let waker = std::task::Waker::noop();
@@ -408,6 +451,63 @@ mod tests {
             old.held_for_test(),
             (0, 0, 0),
             "the refused slot was released"
+        );
+    }
+
+    fn wake_flag() -> (CapacityWake, Arc<std::sync::atomic::AtomicBool>) {
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&fired);
+        let wake: CapacityWake =
+            Arc::new(move || flag.store(true, std::sync::atomic::Ordering::SeqCst));
+        (wake, fired)
+    }
+
+    #[test]
+    fn an_open_is_admitted_without_close_room_when_live_connections_hold_it_all() {
+        let stdin = stdin(1600);
+        let live: Vec<_> = (0..2)
+            .map(|_| stdin.reserve(ControlPool::OpenerCloses, 100).expect("room"))
+            .collect();
+        let (wake, fired) = wake_flag();
+        let (answer, close) = stdin
+            .reserve_open(50, 100, &wake)
+            .expect("the answer has room; the close pool being held does not stall the open");
+        assert!(close.is_none(), "no close room is held for it");
+        assert_eq!(stdin.held_for_test(), (50, 200, 0));
+        drop(answer);
+        assert!(
+            !fired.load(std::sync::atomic::Ordering::SeqCst),
+            "an admitted open arms nothing"
+        );
+        drop(live);
+        let (_answer, close) = stdin.reserve_open(50, 100, &wake).expect("room");
+        assert!(close.is_some(), "close room is held once the pool has it");
+    }
+
+    #[test]
+    fn an_open_without_room_for_its_close_in_stdin_holds_nothing_and_arms_the_wake() {
+        let stdin = stdin(1600);
+        // Leave room for the answer, not for the close as well.
+        stdin.push(&[b'x'; 1500]).expect("ordinary");
+        let (wake, fired) = wake_flag();
+        assert_eq!(stdin.reserve_open(50, 100, &wake).err(), Some(NoRoom::Full));
+        assert_eq!(
+            stdin.held_for_test(),
+            (0, 0, 0),
+            "the answer's room was released"
+        );
+        assert!(
+            !fired.load(std::sync::atomic::Ordering::SeqCst),
+            "releasing the answer's own room does not fire the wake it armed"
+        );
+        let mut storage = vec![0u8; 64];
+        let mut reader = std::pin::pin!(stdin.clone());
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let mut buf = tokio::io::ReadBuf::new(&mut storage);
+        assert!(tokio::io::AsyncRead::poll_read(reader.as_mut(), &mut cx, &mut buf).is_ready());
+        assert!(
+            fired.load(std::sync::atomic::Ordering::SeqCst),
+            "a read fires it"
         );
     }
 }

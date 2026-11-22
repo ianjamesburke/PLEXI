@@ -5135,6 +5135,11 @@
               "const": "target_unavailable",
               "description": "The target could not be told of the connection.",
               "type": "string"
+            },
+            {
+              "const": "opener_full",
+              "description": "The opener has no room now for another connection's close: it holds\ntoo many connections, or its input is full.",
+              "type": "string"
             }
           ]
         },

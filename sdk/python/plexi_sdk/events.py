@@ -340,8 +340,9 @@ class PipeOpenRefused:
     """This app's :class:`effects.PipeOpenDirected` for ``pipe_id`` was
     refused and the sends that waited for it were dropped. ``reason`` is one
     of ``denied``, ``no_target``, ``not_a_plugin``, ``out_of_reach``,
-    ``in_use``, ``name_conflict``, ``opener_unplaced`` or
-    ``target_unavailable``."""
+    ``in_use``, ``name_conflict``, ``opener_unplaced``,
+    ``target_unavailable`` or ``opener_full`` (this app holds as many
+    connections as its input has room to close, or its input is full)."""
     pipe_id: str
     reason: str
 

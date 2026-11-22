@@ -1634,6 +1634,9 @@ pub struct LivePythonPane {
     /// `held_intake`.
     intake_room_freed: Arc<std::sync::atomic::AtomicBool>,
     intake_wake: control_room::CapacityWake,
+    /// Test hook: runs as intake holds an open, as if the guest read then.
+    #[cfg(test)]
+    on_intake_held_for_test: Option<Arc<dyn Fn() + Send + Sync>>,
     /// File-picker backend (stint 0508). Native rfd dialog in production, a
     /// scripted queue under `PLEXI_PICKER_SCRIPT` / harness override so agent
     /// tests can drive the full pick → grant → read/write flow headlessly.
@@ -3263,6 +3266,8 @@ impl LivePythonPane {
             held_intake: None,
             intake_room_freed,
             intake_wake,
+            #[cfg(test)]
+            on_intake_held_for_test: None,
             presence: PanePresence::default(),
             runtime,
             config,
@@ -3348,28 +3353,41 @@ impl LivePythonPane {
         self.held_intake.is_some()
     }
 
+    /// Test hook: whether the held intake's capacity wake has fired.
+    #[cfg(test)]
+    pub(crate) fn intake_room_freed_for_test(&self) -> bool {
+        self.intake_room_freed
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Test hook: run `hook` each time intake holds an open for room.
+    #[cfg(test)]
+    pub(crate) fn on_intake_held_for_test(&mut self, hook: Arc<dyn Fn() + Send + Sync>) {
+        self.on_intake_held_for_test = Some(hook);
+    }
+
     /// Whether this guest can still take directed-pipe control events: its
     /// stdin closes when the guest thread exits, however it exits.
     pub(crate) fn is_directed_pipe_endpoint(&self) -> bool {
         self.runtime.stdin.is_open()
     }
 
-    /// Admit an open request the guest made: hold room for its answer and
-    /// for the close of the connection it may become.
+    /// Admit an open request the guest made: hold room for its answer, and
+    /// for the close of the connection it may become when the opener close
+    /// pool has it. Without room, the intake wake is armed.
     fn admit_open(
         &self,
         request_id: &str,
         pipe_id: &str,
     ) -> Result<crate::host::pane::OpenAdmission, control_room::NoRoom> {
-        let stdin = &self.runtime.stdin;
-        let answer = stdin.reserve(
-            control_room::ControlPool::Answers,
+        let (answer, close) = self.runtime.stdin.reserve_open(
             answer_room(request_id, pipe_id),
+            close_room(pipe_id),
+            &self.intake_wake,
         )?;
-        let close = stdin.reserve(control_room::ControlPool::OpenerCloses, close_room(pipe_id))?;
         Ok(crate::host::pane::OpenAdmission {
             answer: crate::host::pane::ControlSlot::Stdin(answer),
-            close: crate::host::pane::ControlSlot::Stdin(close),
+            close: close.map(crate::host::pane::ControlSlot::Stdin),
         })
     }
 
@@ -3378,6 +3396,9 @@ impl LivePythonPane {
         room: crate::host::pane::ControlRoom<'_>,
     ) -> Result<control_room::StdinSlot, crate::host::pane::NotAdmitted> {
         let (pool, bytes) = match room {
+            crate::host::pane::ControlRoom::OpenerClose { pipe_id } => {
+                (control_room::ControlPool::OpenerCloses, close_room(pipe_id))
+            }
             crate::host::pane::ControlRoom::TargetClose { pipe_id } => {
                 (control_room::ControlPool::TargetCloses, close_room(pipe_id))
             }
@@ -3389,9 +3410,9 @@ impl LivePythonPane {
             );
             match error {
                 control_room::NoRoom::Closed => crate::host::pane::NotAdmitted::NotAnEndpoint,
-                control_room::NoRoom::Full | control_room::NoRoom::Oversize => {
-                    crate::host::pane::NotAdmitted::Full
-                }
+                control_room::NoRoom::Full
+                | control_room::NoRoom::PoolFull
+                | control_room::NoRoom::Oversize => crate::host::pane::NotAdmitted::Full,
             }
         })
     }
@@ -4154,16 +4175,21 @@ impl LivePythonPane {
                     {
                         match self.admit_open(request_id, pipe_id) {
                             Ok(admitted) => *admission = Some(admitted),
-                            Err(control_room::NoRoom::Full) => {
+                            Err(
+                                why @ (control_room::NoRoom::Full | control_room::NoRoom::PoolFull),
+                            ) => {
+                                // `admit_open` armed the intake wake under
+                                // the lock that found no room.
                                 log::info!(
-                                    "plugin::{}: open request '{}' waits: no room in the guest's stdin for its answer",
+                                    "plugin::{}: open request '{}' waits: no room in the guest's stdin for its answer ({why:?})",
                                     self.plugin_id,
                                     guest_text::shown(request_id)
                                 );
                                 self.held_intake = Some(message);
-                                self.runtime
-                                    .stdin
-                                    .arm_capacity_wake(Arc::clone(&self.intake_wake));
+                                #[cfg(test)]
+                                if let Some(hook) = &self.on_intake_held_for_test {
+                                    hook();
+                                }
                                 return;
                             }
                             Err(control_room::NoRoom::Closed) => {
