@@ -149,6 +149,8 @@ Every fact lives in exactly one place. Other files reference it; they never rest
 - **CLI context:** Plexi CLI almost always runs inside a Plexi pane with `PLEXI_SOCKET` set.
 - **Runtime topology & channels:** Agent panes run under `plexi-beta`. To target a specific channel, always use the channel-named shim (`plexi-alpha`, `plexi-pr-<N>`) or explicit `env PLEXI_CHANNEL=<ch> plexi ...` — never rely on bare `plexi` or inherited `PLEXI_SOCKET`.
 - **Parallel worktrees:** When rebasing same-wave branch conflicts on shared files, keep the most complete fix.
+- **Alpha divergence before worktree:** `git fetch` and check `git log origin/alpha..HEAD` before `wtp add`.
+- **Bundle rebase conflicts:** When a multi-issue bundle conflicts because `alpha` already absorbed one issue's changes, take HEAD for those sections, keep only the branch's additive changes, and build-verify before continuing each rebase step.
 - **Login shell probes:** Host-spawned probes must be setsid-isolated (no controlling TTY, stdin=/dev/null, capture stdio). Use `run_login_shell_probe` in `src/host/shell.rs`.
 - **egui repaint scheduling:** Add `InputState::predicted_dt` to remaining delay; avoid literal zero-delay requests which cause immediate repaint loops.
 - **macOS App Nap:** Non-frontmost idle host gets napped without `NSProcessInfo` activity (`platform::app_nap::disable_app_nap`).
