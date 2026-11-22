@@ -122,8 +122,10 @@ impl Painter {
         surface_state: &SurfaceState,
         render_state: &RenderState,
         config: &WgpuConfiguration,
+        cause: resize_trace::Cause,
     ) {
         profiling::function_scope!();
+        let trace_start = web_time::Instant::now();
 
         let width = surface_state.width;
         let height = surface_state.height;
@@ -147,6 +149,7 @@ impl Painter {
         surface_state
             .surface
             .configure(&render_state.device, &surf_config);
+        resize_trace::note_configure(cause, trace_start.elapsed());
     }
 
     /// Updates (or clears) the [`winit::window::Window`] associated with the [`Painter`]
@@ -365,7 +368,12 @@ impl Painter {
         surface_state.width = width;
         surface_state.height = height;
 
-        Self::configure_surface(surface_state, render_state, &self.configuration);
+        Self::configure_surface(
+            surface_state,
+            render_state,
+            &self.configuration,
+            resize_trace::Cause::Resized,
+        );
 
         if let Some(depth_format) = self.options.depth_stencil_format {
             self.depth_texture_view.insert(
@@ -463,6 +471,11 @@ impl Painter {
                         state,
                         self.render_state.as_ref().unwrap(),
                         &self.configuration,
+                        if resizing {
+                            resize_trace::Cause::ResizeStart
+                        } else {
+                            resize_trace::Cause::ResizeEnd
+                        },
                     );
                 }
             }
@@ -623,7 +636,12 @@ impl Painter {
         };
 
         if present && surface_state.needs_reconfigure {
-            Self::configure_surface(surface_state, render_state, &self.configuration);
+            Self::configure_surface(
+                surface_state,
+                render_state,
+                &self.configuration,
+                resize_trace::Cause::Recover,
+            );
             surface_state.needs_reconfigure = false;
         }
 
@@ -634,6 +652,11 @@ impl Painter {
                 let start = web_time::Instant::now();
                 let output_frame = surface_state.surface.get_current_texture();
                 vsync_sec += start.elapsed().as_secs_f32();
+                resize_trace::note_acquire(
+                    start.elapsed(),
+                    surface_state.width,
+                    surface_state.height,
+                );
                 output_frame
             };
             let output_frame = match output_frame {
@@ -658,6 +681,7 @@ impl Painter {
                                     surface_state,
                                     render_state,
                                     &self.configuration,
+                                    resize_trace::Cause::Recover,
                                 );
                             }
                             self.context.request_repaint_of(viewport_id);
@@ -800,6 +824,9 @@ impl Painter {
                 .queue
                 .submit(user_cmd_bufs.into_iter().chain([encoded]));
             vsync_sec += start.elapsed().as_secs_f32();
+            if present {
+                resize_trace::note_submit(start.elapsed());
+            }
         };
 
         // Ensure that the queue guard does not do unnecessary work when dropped
@@ -833,6 +860,7 @@ impl Painter {
             let start = web_time::Instant::now();
             output_frame.present();
             vsync_sec += start.elapsed().as_secs_f32();
+            resize_trace::note_present(start.elapsed());
         }
 
         vsync_sec
@@ -862,5 +890,95 @@ impl Painter {
 
     pub fn destroy(&mut self) {
         // TODO(emilk): something here?
+    }
+}
+
+/// Diagnostic timing of the surface work a window resize triggers (Plexi
+/// stint 1224 diagnosis). Always on; the host drains it once per resize
+/// gesture with [`resize_trace::take`].
+pub mod resize_trace {
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    /// Why the surface was reconfigured.
+    #[derive(Clone, Copy)]
+    pub enum Cause {
+        /// `on_window_resize_state_change(true)`.
+        ResizeStart,
+        /// `on_window_resize_state_change(false)`.
+        ResizeEnd,
+        /// `on_window_resized`.
+        Resized,
+        /// Suboptimal or outdated surface recovery during paint.
+        Recover,
+    }
+
+    /// Accumulated since the last [`take`]. Durations in milliseconds.
+    #[derive(Default, Clone)]
+    pub struct Trace {
+        pub configure_ms: Vec<f32>,
+        pub configures_by_cause: [u32; 4],
+        pub acquire_ms: Vec<f32>,
+        pub submit_ms: Vec<f32>,
+        pub present_ms: Vec<f32>,
+        pub max_pixels: (u32, u32),
+        /// The window events that ended the resize state, by short name.
+        pub resize_end_events: Vec<(String, u32)>,
+    }
+
+    static TRACE: Mutex<Option<Trace>> = Mutex::new(None);
+
+    fn with(f: impl FnOnce(&mut Trace)) {
+        let mut guard = TRACE.lock().unwrap_or_else(|e| e.into_inner());
+        f(guard.get_or_insert_with(Trace::default));
+    }
+
+    fn ms(d: Duration) -> f32 {
+        d.as_secs_f32() * 1000.0
+    }
+
+    pub(crate) fn note_configure(cause: Cause, d: Duration) {
+        with(|t| {
+            t.configure_ms.push(ms(d));
+            t.configures_by_cause[cause as usize] += 1;
+        });
+    }
+
+    pub(crate) fn note_acquire(d: Duration, width: u32, height: u32) {
+        with(|t| {
+            t.acquire_ms.push(ms(d));
+            if u64::from(width) * u64::from(height)
+                > u64::from(t.max_pixels.0) * u64::from(t.max_pixels.1)
+            {
+                t.max_pixels = (width, height);
+            }
+        });
+    }
+
+    pub(crate) fn note_submit(d: Duration) {
+        with(|t| t.submit_ms.push(ms(d)));
+    }
+
+    pub(crate) fn note_present(d: Duration) {
+        with(|t| t.present_ms.push(ms(d)));
+    }
+
+    /// Record the window event that ended a resize state (eframe calls this).
+    pub fn note_resize_end_event(name: &str) {
+        with(
+            |t| match t.resize_end_events.iter_mut().find(|(n, _)| n == name) {
+                Some((_, count)) => *count += 1,
+                None => t.resize_end_events.push((name.to_owned(), 1)),
+            },
+        );
+    }
+
+    /// Return and clear everything recorded since the previous call.
+    pub fn take() -> Trace {
+        TRACE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .unwrap_or_default()
     }
 }

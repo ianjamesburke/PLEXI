@@ -856,6 +856,9 @@ impl WgpuWinitRunning<'_> {
         if let Some(id) = viewport_id
             && shared.resized_viewport == viewport_id
         {
+            egui_wgpu::winit::resize_trace::note_resize_end_event(
+                egui_winit::short_window_event_description(event),
+            );
             shared.painter.on_window_resize_state_change(id, false);
             shared.resized_viewport = None;
         }
