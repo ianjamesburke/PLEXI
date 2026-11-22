@@ -6419,6 +6419,94 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Stint 1538: text an earlier host left unsaved is offered in the editor
+    /// header on the next launch; Restore puts it back, unsaved.
+    #[test]
+    fn text_editor_offers_unsaved_text_recovered_from_the_last_session() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 360.0);
+        h.step();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("release-notes.md");
+        let on_disk = "# Release notes\n\n- Faster startup\n";
+        let typed =
+            "# Release notes\n\n- Faster startup\n- Unsaved text comes back after a crash\n";
+        std::fs::write(&path, on_disk).expect("seed file");
+        // The last session journaled the edit and ended without saving it.
+        crate::host::unsaved_buffers::record(
+            &path,
+            typed,
+            Some(crate::app::text_editor_view::fnv1a64(on_disk.as_bytes())),
+        );
+        assert!(crate::host::unsaved_buffers::flush_now().is_empty());
+        crate::host::unsaved_buffers::begin_session();
+
+        let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let pane_id = h.with_app_mut(|app| {
+            let pane_id = app.host.alloc_pane_id();
+            let view_pane = ViewPane {
+                incarnation: Default::default(),
+                pip_status: None,
+                id: pane_id,
+                runtime: ViewRuntime::Builtin(Box::new(
+                    crate::app::text_editor_view::TextEditorView::new(path.clone()),
+                )),
+                workspace_root: crate::testing::scratch_context_root("ui"),
+                permissions: PluginPermissions::builtin(),
+                manifest_id: "text-editor".to_string(),
+                name: file_name.clone(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
+            };
+            let win = &mut app.windows[app.active_window];
+            win.panes
+                .insert(pane_id, Pane::View(Box::new(view_pane)))
+                .unwrap();
+            let tile_id = win.tree.tiles.insert_pane(pane_id);
+            if win.tree.root.is_none() {
+                win.tree.root = Some(tile_id);
+            }
+            win.focused_pane = Some(tile_id);
+            pane_id
+        });
+        h.run_steps(3);
+        h.harness().get_by_label("Unsaved changes recovered");
+        h.harness().get_by_label("Saved");
+        h.save_screenshot(&evidence_png!("_offer"))
+            .expect("render recovery offer");
+
+        h.harness().get_by_label("Restore").click();
+        h.run_steps(3);
+        assert!(h
+            .harness()
+            .query_by_label("Unsaved changes recovered")
+            .is_none());
+        h.harness().get_by_label("Unsaved");
+        h.save_screenshot(&evidence_png!("_restored"))
+            .expect("render restored text");
+        let text = h.with_app_mut(|app| {
+            let win = &mut app.windows[app.active_window];
+            let Some(Pane::View(view)) = win.panes.get_mut(&pane_id) else {
+                panic!("editor pane");
+            };
+            let ViewRuntime::Builtin(b) = &mut view.runtime else {
+                panic!("builtin editor");
+            };
+            let editor = b
+                .as_any_mut()
+                .downcast_mut::<crate::app::text_editor_view::TextEditorView>()
+                .expect("text editor");
+            let text = editor.open_buffer().text;
+            editor.test_discard_unsaved();
+            text
+        });
+        assert_eq!(text, typed, "Restore puts the recovered text in the buffer");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), on_disk);
+    }
+
     /// Visual review surface for tiered notes (stint 0746): the picker as a root
     /// context's "master view" — the active context's own tier unchipped, notes
     /// rolled up from nested tiers chipped with their relative path, and the

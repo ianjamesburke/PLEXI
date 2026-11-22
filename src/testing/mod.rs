@@ -265,6 +265,8 @@ impl HostHarness {
         app.permission_store_dir = profile_path.clone();
         app.focus_journal_path = profile_path.join("focus-journal.jsonl");
 
+        // Mirrors `PlexiApp::new`: this launch reads what the last one left unsaved.
+        crate::host::unsaved_buffers::begin_session();
         // Mirrors `PlexiApp::new`: an unusable file blocks this session's saves.
         let loaded = crate::workspace::WorkspaceFile::load_from(&profile_path);
         if let Err(error) = &loaded {

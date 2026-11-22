@@ -386,6 +386,14 @@ pub trait View: Send {
 
     fn resolve_unsaved_changes(&mut self, _choice: crate::ui::dialog::UnsavedChangesChoice) {}
 
+    /// Keeps unsaved text in the host's recovery journal (stint 1538) and
+    /// offers text an earlier host left unsaved. Runs from `App::logic` for
+    /// every pane; `force` (quit paths) skips the write throttle. Returns how
+    /// long until a throttled write is due.
+    fn sync_unsaved_recovery(&mut self, _force: bool) -> Option<std::time::Duration> {
+        None
+    }
+
     /// Off-paint servicing of external state the plugin mirrors (files on disk).
     /// Runs from `App::logic` every pass for every pane, including panes in
     /// hidden windows and inactive contexts, so it must be cheap when idle.

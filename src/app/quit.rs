@@ -437,6 +437,7 @@ impl super::PlexiApp {
         self.begin_quit_cleanup();
         self.flush_ui_scale_persist_now();
         self.flush_editor_positions_now();
+        self.flush_unsaved_buffers_now();
         self.bank_final_focus_segment();
         self.flush_admission_summaries();
         exit_host(

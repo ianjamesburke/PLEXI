@@ -18,6 +18,9 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const DEBOUNCE: Duration = Duration::from_secs(2);
+/// Least time between two recovery-journal writes of one buffer (stint 1538).
+/// A host that ends without warning loses at most this much typing.
+const RECOVERY_INTERVAL: Duration = Duration::from_secs(1);
 /// Mirrors the terminal pane name bar (`render_name_bar_and_tabs`): same
 /// height and fill, so note panes and file panes match terminal chrome.
 const NOTE_HEADER_BAR_HEIGHT: f32 = 20.0;
@@ -179,6 +182,21 @@ pub struct TextEditorView {
     /// Set when `config.toml` is saved so the host reloads config immediately
     /// on the next frame (stint 0881).
     config_saved: bool,
+    /// What this buffer last put in the unsaved-text journal (stint 1538).
+    recovery_recorded: Option<RecoveryRecord>,
+    /// Text an earlier host left unsaved for `path`, offered until the person
+    /// restores or discards it.
+    recovered: Option<crate::host::unsaved_buffers::Recovered>,
+    /// The path the journal was last asked about, so a switch asks again.
+    recovery_checked_for: Option<PathBuf>,
+}
+
+/// One buffer's last journal write: which file, for which edit, and when.
+#[derive(Clone, Debug)]
+struct RecoveryRecord {
+    path: PathBuf,
+    edit: Instant,
+    at: Instant,
 }
 
 /// The file changed on disk while the buffer held unsaved edits, or vanished.
@@ -333,6 +351,9 @@ impl TextEditorView {
             workspace_root: inferred_ws_root,
             commands_diagnostics: Vec::new(),
             config_saved: false,
+            recovery_recorded: None,
+            recovered: None,
+            recovery_checked_for: None,
         };
         app.refresh_commands_diagnostics();
         app.restore_remembered_position();
@@ -676,6 +697,158 @@ impl TextEditorView {
                 log::info!("changes: editor reject refused id={id} error={error:?}");
             }
         }
+    }
+
+    /// Offers text an earlier host left unsaved for this file, once per path.
+    fn check_recovered(&mut self) {
+        if self.load_error.is_some()
+            || self.recovery_checked_for.as_deref() == Some(self.path.as_path())
+        {
+            return;
+        }
+        self.recovery_checked_for = Some(self.path.clone());
+        self.recovered = crate::host::unsaved_buffers::offer(&self.path, &self.composed());
+    }
+
+    /// Keeps the unsaved-text journal in step with the buffer: a dirty buffer
+    /// is journaled at most once per `RECOVERY_INTERVAL` (always when
+    /// `force`), a clean one is forgotten. Returns how long until a throttled
+    /// write is due.
+    fn journal_unsaved(&mut self, force: bool) -> Option<Duration> {
+        if let Some(record) = &self.recovery_recorded {
+            if record.path != self.path || self.last_edit.is_none() {
+                crate::host::unsaved_buffers::forget(&record.path);
+                self.recovery_recorded = None;
+            }
+        }
+        let edit = self.last_edit?;
+        if self.load_error.is_some() {
+            return None;
+        }
+        if let Some(record) = &self.recovery_recorded {
+            if record.edit == edit {
+                return None;
+            }
+            let since = record.at.elapsed();
+            if !force && since < RECOVERY_INTERVAL {
+                return Some(RECOVERY_INTERVAL - since);
+            }
+        }
+        crate::host::unsaved_buffers::record(&self.path, &self.composed(), self.disk_hash);
+        self.recovery_recorded = Some(RecoveryRecord {
+            path: self.path.clone(),
+            edit,
+            at: Instant::now(),
+        });
+        None
+    }
+
+    /// Restore: the recovered text replaces the buffer, unsaved, so Cmd+S (or
+    /// a note's autosave) writes it.
+    fn restore_recovered(&mut self) {
+        let Some(recovered) = self.recovered.take() else {
+            return;
+        };
+        self.replace_body(&recovered.text);
+        self.last_edit = Some(Instant::now());
+        crate::host::unsaved_buffers::resolve(&self.path);
+        log::info!(
+            "text_editor: restored recovered unsaved text path={:?} bytes={}",
+            self.path,
+            recovered.text.len()
+        );
+    }
+
+    fn discard_recovered(&mut self) {
+        if self.recovered.take().is_none() {
+            return;
+        }
+        crate::host::unsaved_buffers::resolve(&self.path);
+        log::info!(
+            "text_editor: discarded recovered unsaved text path={:?}",
+            self.path
+        );
+    }
+
+    fn show_recovery_banner(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
+        let Some(recovered) = &self.recovered else {
+            return;
+        };
+        let when = chrono::DateTime::from_timestamp_millis(recovered.saved_at_ms)
+            .map(|at| {
+                at.with_timezone(&chrono::Local)
+                    .format("%b %-d at %-I:%M %p")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "an unknown time".to_string());
+        let changed = recovered.base_hash != self.disk_hash;
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(crate::ui::style::SPACE_SM);
+            ui.label(
+                egui::RichText::new("Unsaved changes recovered")
+                    .size(crate::ui::style::TEXT_BODY)
+                    .color(colors.legible_on(colors.warning, ui.visuals().panel_fill)),
+            );
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(crate::ui::style::SPACE_SM);
+            let mut detail = format!(
+                "Plexi closed before your edits from {when} were saved. Restore puts them back \
+                 in the editor; nothing is written until you save."
+            );
+            if changed {
+                detail.push_str(" The file has changed on disk since.");
+            }
+            ui.label(
+                egui::RichText::new(detail)
+                    .size(crate::ui::style::TEXT_CAPTION)
+                    .color(colors.text_primary),
+            );
+        });
+        let mut choice = None;
+        ui.horizontal(|ui| {
+            ui.add_space(crate::ui::style::SPACE_SM);
+            if ui
+                .add(
+                    crate::ui::button::KitButton::new("Restore", colors)
+                        .kind(crate::ui::button::ButtonKind::Primary)
+                        .min_width(72.0),
+                )
+                .clicked()
+            {
+                choice = Some(true);
+            }
+            if ui
+                .add(
+                    crate::ui::button::KitButton::new("Discard", colors)
+                        .kind(crate::ui::button::ButtonKind::Danger)
+                        .min_width(72.0),
+                )
+                .clicked()
+            {
+                choice = Some(false);
+            }
+        });
+        match choice {
+            Some(true) => self.restore_recovered(),
+            Some(false) => self.discard_recovered(),
+            None => {}
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_recovered_text(&self) -> Option<&str> {
+        self.recovered.as_ref().map(|r| r.text.as_str())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_restore_recovered(&mut self) {
+        self.restore_recovered();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_discard_recovered(&mut self) {
+        self.discard_recovered();
     }
 
     fn show_change_banner(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
@@ -2716,6 +2889,7 @@ impl View for TextEditorView {
         }
 
         self.show_commands_diagnostics_banner(ui, colors);
+        self.show_recovery_banner(ui, colors);
         self.show_change_banner(ui, colors);
 
         // When the find bar is open, plan its bands from the pane's width and
@@ -2995,6 +3169,11 @@ impl View for TextEditorView {
         std::mem::take(&mut self.pending_commands)
     }
 
+    fn sync_unsaved_recovery(&mut self, force: bool) -> Option<Duration> {
+        self.check_recovered();
+        self.journal_unsaved(force)
+    }
+
     fn serialize_state(&self) -> Option<serde_json::Value> {
         let mut state = serde_json::json!({
             "path": self.path.to_string_lossy(),
@@ -3200,6 +3379,13 @@ impl View for TextEditorView {
             "input_released": self.input_released,
             "last_drop_result": self.last_drop_result,
             "path": self.path,
+            "recovered_unsaved": self.recovered.as_ref().map(|r| {
+                serde_json::json!({
+                    "saved_at_ms": r.saved_at_ms,
+                    "bytes": r.text.len(),
+                    "file_changed_since": r.base_hash != self.disk_hash,
+                })
+            }),
             "change_set": self.change_view.as_ref().map(|view| {
                 serde_json::json!({
                     "id": view.id,
@@ -3244,7 +3430,7 @@ impl View for TextEditorView {
 
 /// Stable 64-bit FNV-1a content hash: deterministic across builds/releases,
 /// so asset names derived from it stay stable forever.
-fn fnv1a64(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in bytes {
         hash ^= u64::from(*byte);
@@ -3402,6 +3588,8 @@ impl Drop for TextEditorView {
         }
         // Unprompted close paths (CLI, quit) save a dirty file like they always
         // did; `flush_with` refuses when that would clobber an external write.
+        // A buffer that is still dirty stays in the journal for the next launch.
+        self.journal_unsaved(true);
         self.remember_position();
     }
 }
@@ -3412,6 +3600,58 @@ impl super::PlexiApp {
     pub(super) fn service_editor_positions(&mut self) {
         let notices = crate::host::editor_positions::service(&self.ui_wake);
         self.post_editor_position_notices(notices);
+    }
+
+    /// Journal every editor's unsaved text and write the journal off the UI
+    /// thread (stint 1538). Runs from `App::logic`, so an occluded host and
+    /// inactive contexts are covered.
+    pub(super) fn service_unsaved_buffers(&mut self, ctx: &egui::Context) {
+        let mut due: Option<Duration> = None;
+        for window in &mut self.windows {
+            for pane in window.panes.values_mut() {
+                if let Some(app) = pane.as_view_mut() {
+                    if let Some(wait) = app.runtime.sync_unsaved_recovery(false) {
+                        due = Some(due.map_or(wait, |d| d.min(wait)));
+                    }
+                }
+            }
+        }
+        if let Some(wait) = due {
+            let frame = Duration::from_secs_f32(ctx.input(|i| i.predicted_dt));
+            ctx.request_repaint_after(wait + frame);
+        }
+        let notices = crate::host::unsaved_buffers::service(&self.ui_wake);
+        self.post_unsaved_buffer_notices(notices);
+    }
+
+    /// Blocking final journal write of every editor's unsaved text. Quit
+    /// paths only: `exit_host` ends the process without dropping any view.
+    pub(crate) fn flush_unsaved_buffers_now(&mut self) {
+        for window in &mut self.windows {
+            for pane in window.panes.values_mut() {
+                if let Some(app) = pane.as_view_mut() {
+                    app.runtime.sync_unsaved_recovery(true);
+                }
+            }
+        }
+        let notices = crate::host::unsaved_buffers::flush_now();
+        self.post_unsaved_buffer_notices(notices);
+    }
+
+    fn post_unsaved_buffer_notices(&mut self, notices: Vec<crate::host::unsaved_buffers::Notice>) {
+        for notice in notices {
+            log::info!("unsaved_buffers: notice posted title={:?}", notice.title);
+            self.enqueue_notification(
+                crate::app::notifications::NotifySource::HostInternal,
+                crate::app::notifications::PendingNotification {
+                    notify_id: crate::app::notifications::new_notify_id("unsaved-buffers"),
+                    title: notice.title.to_string(),
+                    body: notice.body,
+                    scope: crate::protocol::NotifyScope::Global,
+                    ..Default::default()
+                },
+            );
+        }
     }
 
     /// Blocking final write of unsaved editor positions. Quit paths only.

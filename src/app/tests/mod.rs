@@ -25,3 +25,5 @@ mod terminal_page_scroll_tests;
 
 #[cfg(unix)]
 mod pane_close_tests;
+
+mod unsaved_recovery_tests;

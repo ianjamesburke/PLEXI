@@ -41,6 +41,7 @@ pub mod shell;
 pub mod state_scope;
 pub mod state_watch;
 pub mod typed_pipes;
+pub mod unsaved_buffers;
 pub(crate) mod update_status;
 mod wasm_engine;
 pub mod wasm_frame;

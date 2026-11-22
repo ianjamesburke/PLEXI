@@ -2665,6 +2665,13 @@ impl ViewRuntime {
         }
     }
 
+    pub(crate) fn sync_unsaved_recovery(&mut self, force: bool) -> Option<std::time::Duration> {
+        match self {
+            ViewRuntime::Builtin(app) => app.sync_unsaved_recovery(force),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => None,
+        }
+    }
+
     pub(crate) fn editor_buffer(&self) -> Option<crate::host::changes::OpenEditorBuffer> {
         match self {
             ViewRuntime::Builtin(app) => app.editor_buffer(),
