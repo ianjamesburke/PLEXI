@@ -226,6 +226,7 @@ pub struct ListRow<'a> {
     secondary: Option<&'a str>,
     chip: Option<&'a str>,
     metadata_chips: &'a [&'a str],
+    metadata_reserve: &'a [&'a str],
     pane_pips: Option<ListRowPips>,
     trailing: Option<&'a str>,
     meta: Option<&'a str>,
@@ -243,6 +244,7 @@ impl<'a> ListRow<'a> {
             secondary: None,
             chip: None,
             metadata_chips: &[],
+            metadata_reserve: &[],
             pane_pips: None,
             trailing: None,
             meta: None,
@@ -285,6 +287,14 @@ impl<'a> ListRow<'a> {
         self
     }
 
+    /// Reserve the chip lane at least as wide as the widest single chip in
+    /// `labels` (pass each distinct chip label of the list once), so the meta
+    /// text to its left keeps one right edge down the list.
+    pub fn metadata_reserve(mut self, labels: &'a [&'a str]) -> Self {
+        self.metadata_reserve = labels;
+        self
+    }
+
     pub fn pane_pips(mut self, pips: ListRowPips) -> Self {
         self.pane_pips = Some(pips);
         self
@@ -295,15 +305,16 @@ impl<'a> ListRow<'a> {
         self
     }
 
-    /// Short muted text at the row's right edge, such as a relative time.
-    /// Its width is reserved in the lane layout, so the title elides first.
+    /// Short muted text right-aligned just left of the metadata chips (at the
+    /// row's right edge when there are none), such as a relative time. Its
+    /// width is reserved in the lane layout, so the title elides first.
     pub fn meta(mut self, label: &'a str) -> Self {
         self.meta = (!label.is_empty()).then_some(label);
         self
     }
 
     /// Reserve the meta slot at least as wide as `sample`, so a list whose
-    /// meta labels vary in width keeps its metadata chips in one column.
+    /// meta labels vary in width keeps its title column one width.
     pub fn meta_reserve(mut self, sample: &'a str) -> Self {
         self.meta_reserve = sample;
         self
@@ -549,6 +560,15 @@ impl<'a> ListRow<'a> {
                 required: true,
             });
         }
+        let metadata = self.metadata_lane_width(ui);
+        if metadata > 0.0 {
+            slots.push(super::bounded::Slot {
+                id: "metadata",
+                width: metadata,
+                compact: Some(metadata.min(bounds.width() * 0.45)),
+                required: false,
+            });
+        }
         if let Some(label) = self.meta {
             slots.push(super::bounded::Slot {
                 id: "meta",
@@ -557,15 +577,6 @@ impl<'a> ListRow<'a> {
                     .into_iter()
                     .fold(0.0, f32::max),
                 compact: None,
-                required: false,
-            });
-        }
-        let metadata = self.metadata_lane_width(ui);
-        if metadata > 0.0 {
-            slots.push(super::bounded::Slot {
-                id: "metadata",
-                width: metadata,
-                compact: Some(metadata.min(bounds.width() * 0.45)),
                 required: false,
             });
         }
@@ -588,7 +599,14 @@ impl<'a> ListRow<'a> {
     }
 
     fn metadata_lane_width(&self, ui: &egui::Ui) -> f32 {
-        let chip_width = metadata_chip_row_width(ui, self.metadata_chips);
+        let chip_width = if self.metadata_chips.is_empty() {
+            0.0
+        } else {
+            self.metadata_reserve
+                .iter()
+                .map(|label| chip_size(ui, label).x)
+                .fold(metadata_chip_row_width(ui, self.metadata_chips), f32::max)
+        };
         let pip_width = self
             .pane_pips
             .as_ref()

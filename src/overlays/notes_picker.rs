@@ -39,8 +39,8 @@ pub(crate) fn notes_picker_chip_label<'a>(
     })
 }
 
-/// The widest common `note_age_label`; reserving it keeps the project chips
-/// of every row in one column.
+/// The widest common `note_age_label`; reserving it keeps the title column
+/// one width down the list.
 const NOTE_AGE_COLUMN_SAMPLE: &str = "Yesterday";
 
 /// Compact age of a note for its picker row: "now" under a minute (and for
@@ -1280,6 +1280,22 @@ impl PlexiApp {
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 ui.spacing_mut().item_spacing.y = style::SPACE_SM;
+                                let root = &self.router.active().root;
+                                let global_notes = crate::notes::global_notes_dir();
+                                // Distinct chip labels: the chip lane reserves the
+                                // widest, so every age shares one right edge.
+                                let chip_labels: Vec<&str> = filtered
+                                    .iter()
+                                    .map(|&i| {
+                                        notes_picker_chip_label(
+                                            &self.notes_picker_entries[i],
+                                            root,
+                                            &global_notes,
+                                        )
+                                    })
+                                    .collect::<std::collections::BTreeSet<_>>()
+                                    .into_iter()
+                                    .collect();
                                 for (row, &entry_idx) in filtered.iter().enumerate() {
                                     let entry = &self.notes_picker_entries[entry_idx];
                                     let is_selected = row == selected;
@@ -1288,15 +1304,15 @@ impl PlexiApp {
                                     } else {
                                         entry.preview.chars().take(50).collect()
                                     };
-                                    let chip = notes_picker_chip_label(
-                                        entry, &self.router.active().root, &crate::notes::global_notes_dir(),
-                                    );
+                                    let chip =
+                                        notes_picker_chip_label(entry, root, &global_notes);
                                     let age =
                                         note_age_label(entry.modified, &now).unwrap_or_default();
                                     let row_response = ListRow::new(&entry.title)
                                         .meta(&age)
                                         .meta_reserve(NOTE_AGE_COLUMN_SAMPLE)
                                         .metadata_chips(std::slice::from_ref(&chip))
+                                        .metadata_reserve(&chip_labels)
                                         .secondary(&secondary)
                                         .selected(is_selected)
                                         .show(ui, &colors);

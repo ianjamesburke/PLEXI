@@ -1467,6 +1467,18 @@ mod tests {
 
         // One instant, so equal ages tie and keep their seeded order.
         let now = std::time::SystemTime::now();
+        // Yesterday's local midnight: at least 24 hours and one calendar day
+        // back, so row 3 always reads "Yesterday".
+        let since_yesterday = {
+            let local = chrono::Local::now();
+            let midnight = local
+                .date_naive()
+                .pred_opt()
+                .and_then(|d| d.and_hms_opt(0, 0, 0))
+                .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
+                .expect("yesterday's local midnight");
+            (local - midnight).num_seconds() as u64
+        };
         h.with_app_mut(|app| {
             app.open_notes_picker();
             let entries: Vec<crate::notes::NotePickerEntry> = realistic_notes
@@ -1489,7 +1501,7 @@ mod tests {
                         // every label form.
                         modified: Some(
                             now - std::time::Duration::from_secs(
-                                [20, 7 * 60, 3 * 3600, 30 * 3600, 4 * 86_400, 40 * 86_400]
+                                [20, 7 * 60, 3 * 3600, since_yesterday, 4 * 86_400, 40 * 86_400]
                                     .get(i)
                                     .copied()
                                     .unwrap_or(i as u64 * 10 * 86_400),
@@ -6554,53 +6566,80 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         h.save_screenshot(&evidence_png!("_project")).expect("render failed");
     }
 
-    /// Stint 1645: the `ListRow` meta text sits flush right in its reserved
-    /// slot, and a long title elides before it rather than running under it.
+    /// Stint 1645: the metadata chip sits at the row's right edge and the
+    /// meta text right-aligns just left of it. Chips of different widths
+    /// share one reserved lane, so every meta label keeps one right edge, and
+    /// a long title elides before either slot.
     #[test]
-    fn list_row_meta_is_right_aligned_and_title_elides_first() {
+    fn list_row_meta_sits_left_of_chip_on_one_edge_and_title_elides_first() {
         use crate::ui::{list::ListRow, style};
         const TITLE: &str = "A very long note title that cannot possibly fit beside its age";
+        const RESERVE: &[&str] = &["active", "global", "workspace"];
+        let rows = [
+            (TITLE, "global", "Yesterday"),
+            ("Second row", "workspace", "3h"),
+            ("Third row", "active", "Nov 12"),
+        ];
         let ctx = egui::Context::default();
         crate::ui::theme::setup_fonts(&ctx);
         let colors = crate::ui::theme::Colors::from_config(
             &crate::ui::theme::preset_colors("plexi-dusk").expect("preset"),
         );
         let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
-        for (width, selected) in [(240.0, false), (420.0, true)] {
+        for (width, selected) in [(300.0, false), (420.0, true)] {
             let mut row_rect = egui::Rect::NOTHING;
             let output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 ui.set_width(width);
-                row_rect = ListRow::new(TITLE)
-                    .secondary("first line of the note")
-                    .metadata_chips(&["global"])
-                    .meta("Yesterday")
-                    .selected(selected)
-                    .show(ui, &colors)
-                    .response()
-                    .rect;
+                for (i, (title, chip, age)) in rows.iter().enumerate() {
+                    row_rect = ListRow::new(title)
+                        .secondary("first line of the note")
+                        .metadata_chips(std::slice::from_ref(chip))
+                        .metadata_reserve(RESERVE)
+                        .meta(age)
+                        .selected(selected && i == 0)
+                        .show(ui, &colors)
+                        .response()
+                        .rect;
+                }
             });
             let mut texts = Vec::new();
             for shape in &output.shapes {
                 gallery_text_shapes(&shape.shape, &mut texts);
             }
-            let meta = painted_rect(&texts, "Yesterday");
+            let edge = row_rect.right() - style::LIST_ROW_PAD_H - style::SPACE_SM;
+            let metas: Vec<_> = rows
+                .iter()
+                .map(|(_, _, age)| painted_rect(&texts, age))
+                .collect();
+            for ((_, chip, age), meta) in rows.iter().zip(&metas) {
+                let chip_rect = painted_rect(&texts, chip);
+                assert!(
+                    chip_rect.left() >= meta.right() + style::LIST_ROW_GAP - 0.5,
+                    "chip {chip:?} {chip_rect:?} must sit right of meta {age:?} {meta:?} at {width}"
+                );
+                assert!(
+                    chip_rect.right() <= edge + 0.5 && chip_rect.right() >= edge - 8.0,
+                    "chip {chip:?} {chip_rect:?} at the right edge {edge} at {width}"
+                );
+                assert!(
+                    (meta.right() - metas[0].right()).abs() <= 1.0,
+                    "meta {age:?} {meta:?} shares one right edge with {:?} at {width}",
+                    metas[0]
+                );
+            }
             let title = painted_rect(&texts, "A very long");
             let (_, title_text) = texts
                 .iter()
                 .find(|(_, t)| t.starts_with("A very long"))
                 .unwrap();
-            let edge = row_rect.right() - style::LIST_ROW_PAD_H - style::SPACE_SM;
-            assert!(
-                (meta.right() - edge).abs() <= 1.0,
-                "meta right-aligned at {width}: {meta:?} vs edge {edge}"
-            );
             assert!(
                 title_text.ends_with('…'),
                 "title elides at {width}: {title_text:?}"
             );
             assert!(
-                title.right() + style::LIST_ROW_GAP <= meta.left() + 0.5,
-                "title {title:?} must stop before meta {meta:?} at {width}"
+                title.right() + style::LIST_ROW_GAP <= metas[0].left() + 0.5,
+                "title {title:?} must stop before meta {:?} at {width}",
+                metas[0]
             );
             let errors: Vec<_> = crate::ui::layout_report::snapshot(&ctx)
                 .iter()
