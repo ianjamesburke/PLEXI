@@ -9397,9 +9397,7 @@ fn text_input_keeps_the_draft_while_the_guest_echo_is_in_flight() {
 #[test]
 fn escape_leaving_todo_form_field_cancels_form_without_closing_or_reclaiming_pane() {
     let mut h = HostHarness::new();
-    let plugin_dir = crate::testing::launchable_plugin_path(
-        &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/todo"),
-    );
+    let plugin_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/todo");
     h.app
         .trust_plugin_path_for_test(&plugin_dir.to_string_lossy());
     h.app
@@ -12327,64 +12325,6 @@ fn hot_reload_serviced_while_window_hidden() {
             .list_pending()
             .is_empty(),
         "an edit in a trusted folder asks nothing"
-    );
-}
-
-/// Stint 1398: an installed profile copy is allowed for its exact bytes. An
-/// edit does not reload into the changed code; it files a new ask, and the
-/// running guest keeps the allowed code.
-#[test]
-fn hot_reload_of_a_changed_installed_copy_asks_again() {
-    let mut h = HostHarness::new();
-    let dir = h.profile_dir().join("plugins").join("hidden-axis-probe");
-    std::fs::create_dir_all(&dir).unwrap();
-    write_hidden_axis_probe(&dir, "v1");
-    // The test app's registry points at a placeholder global folder; use the
-    // harness profile's own plugins folder, as the host does.
-    h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(
-        &h.profile_dir().join("plugins"),
-    );
-    h.app
-        .registries
-        .admission()
-        .allow_copy_for_test("hidden-axis-probe", &dir);
-    h.app
-        .launch_view_by_path_with_layout(&dir.to_string_lossy(), None, None, &[])
-        .expect("launch the allowed copy");
-    let pane_id = *h.state().open_panes.last().expect("pane appears");
-    let start = std::time::Instant::now();
-    while python_pane_title(&h, pane_id).as_deref() != Some("v1") {
-        h.run_frames(1);
-        assert!(
-            start.elapsed()
-                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "baseline title must land (last title: {:?})",
-            python_pane_title(&h, pane_id)
-        );
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-
-    write_hidden_axis_probe(&dir, "v2");
-    assert!(
-        !h.app.reload_view_pane(pane_id, "test edit"),
-        "a changed copy must not relaunch"
-    );
-    h.run_frames(5);
-    assert_ne!(
-        python_pane_title(&h, pane_id).as_deref(),
-        Some("v2"),
-        "the changed code never ran"
-    );
-    let asks: Vec<_> = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir())
-        .unwrap()
-        .list_pending()
-        .into_iter()
-        .filter(|pending| pending.tool == crate::host::plugin_admission::LOAD_INSTALLED_TOOL)
-        .collect();
-    assert_eq!(
-        asks.len(),
-        1,
-        "the changed copy waits for one allow: {asks:?}"
     );
 }
 

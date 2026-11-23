@@ -65,8 +65,9 @@ pub enum TargetType {
     FileScope,
     Secret,
     /// Loading one plugin tree that is not bundled with Plexi (stint 1398).
-    /// A profile install binds the plugin id and content digest; a plugin
-    /// folder binds the folder. Never bound to a pane or context.
+    /// A profile install binds the plugin id in that profile (not its
+    /// content; stint 1279); a plugin folder binds the folder. Never bound to
+    /// a pane or context.
     Package,
     ModelPointer,
     UndoCheckpoint,
@@ -1041,6 +1042,7 @@ impl GrantStore {
         let mut data = parse_legacy_grant_store(&body).ok()?;
         fill_capability_grant_ids(&mut data.records);
         drop_once_grants(&mut data.records);
+        drop_plugin_admissions(&mut data.records);
         log::info!(
             "grant_store: migrated legacy unsealed grants.toml records={}",
             data.records.len()
@@ -1450,6 +1452,17 @@ impl GrantStore {
         // A deny record always wins over an allow record for the same cap.
         allowed.retain(|c| !denied.contains(c));
         (allowed, denied)
+    }
+}
+
+/// Plugin admission (stint 1398) never existed in unsealed grant files, so a
+/// legacy record allowing plugin code can only be forged; it is dropped.
+fn drop_plugin_admissions(records: &mut Vec<GrantRecord>) {
+    let before = records.len();
+    records.retain(|record| record.target_type != TargetType::Package);
+    let dropped = before - records.len();
+    if dropped > 0 {
+        log::info!("grant_store: refused {dropped} legacy plugin admission record(s)");
     }
 }
 

@@ -1417,7 +1417,7 @@ impl PermissionMonitor {
             )
         {
             return Err(
-                "plugin code is allowed until it changes, or denied: choose Allow or Deny"
+                "loading a plugin is allowed or denied, never once: choose Allow or Deny"
                     .to_string(),
             );
         }
@@ -1485,8 +1485,9 @@ impl PermissionMonitor {
                 Some(self.session_id().to_string()),
                 None,
             ),
-            // Bound to the plugin's content or folder, so it never expires:
-            // a changed copy is a different binding and asks again.
+            // A plugin allow or folder trust stands until revoked or reset.
+            // It is keyed to the plugin id or folder, not to content (stint
+            // 1279 owns content binding).
             ApprovalChoice::Always if pending.binding.target_type == TargetType::Package => {
                 (GrantDuration::PackageIdentity, None, None)
             }
@@ -8270,6 +8271,78 @@ mod tests {
             let audit = dir.path().join("permission-audit.jsonl");
             assert!(audit.is_file(), "adopt starts an authenticated audit tip");
             crate::broker::seal::verify_audit(TEST_HOST, &audit).expect("new audit tip verifies");
+        });
+    }
+
+    /// Stint 1398: plugin admission did not exist when grants were unsealed,
+    /// so a legacy file can only carry a plugin-load or folder-trust allow if
+    /// someone wrote it. Adoption drops both and keeps every other grant.
+    #[test]
+    fn legacy_adoption_never_adopts_a_plugin_admission() {
+        crate::broker::host_key::without_mac_key(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let ws = tempfile::tempdir().unwrap();
+            let admission = |tool: &str, actor_type: ActorType, actor_id: &str| {
+                let binding = ExactBinding {
+                    actor_type,
+                    actor_id: actor_id.to_string(),
+                    actor_scope: ActorScope::User,
+                    trust_origin: "host".to_string(),
+                    workspace_root: ws.path().to_path_buf(),
+                    target_type: TargetType::Package,
+                    target_id: tool.to_string(),
+                    resource_scope: super::super::ResourceScope::Workspace,
+                    resource_id: None,
+                    args_fingerprint: fingerprint_args("{}").unwrap(),
+                    session_id: None,
+                    package_id: String::new(),
+                    instance_id: None,
+                    context_id: None,
+                    call_id: String::new(),
+                    operation_id: String::new(),
+                };
+                GrantRecord::from_binding(
+                    &binding,
+                    Decision::Allow,
+                    GrantDuration::PackageIdentity,
+                    GrantSource::User,
+                    &format!("grant_{tool}"),
+                )
+            };
+            write_legacy_grants(
+                dir.path(),
+                vec![
+                    GrantRecord::plugin_capability(
+                        "assistant",
+                        ws.path(),
+                        crate::app::permissions::Capability::FsRead,
+                        Decision::Allow,
+                    ),
+                    admission(
+                        crate::host::plugin_admission::LOAD_INSTALLED_TOOL,
+                        ActorType::Plugin,
+                        "planted",
+                    ),
+                    admission(
+                        crate::host::plugin_admission::TRUST_FOLDER_TOOL,
+                        ActorType::User,
+                        crate::broker::principal::LOCAL_USER_ID,
+                    ),
+                ],
+                "",
+            );
+            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+            let records = monitor.store().records().to_vec();
+            assert!(
+                records.iter().any(|record| record.target_id == "fs.read"),
+                "other grants are kept: {records:?}"
+            );
+            assert!(
+                records
+                    .iter()
+                    .all(|record| record.target_type != TargetType::Package),
+                "no plugin admission is adopted: {records:?}"
+            );
         });
     }
 

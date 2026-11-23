@@ -149,10 +149,6 @@ pub fn install_pack_cli(spec: &str, refresh_local: bool) -> i32 {
             }
         }
     };
-    if let Err(refusal) = crate::cli::install_host::admit_pack_sources(&pack) {
-        eprintln!("error: {refusal}");
-        return 1;
-    }
     let target_root = crate::app::registry::plugins_dir();
     if let Err(e) = std::fs::create_dir_all(&target_root) {
         eprintln!("error: create plugins dir {}: {e}", target_root.display());

@@ -764,7 +764,7 @@ mod tests {
     #[test]
     fn schema2_concurrent_git_installs_keep_one_command_owner() {
         use crate::app::packs::SourceSpec;
-        use crate::cli::install_host::{install_one, test_support::MockCloner};
+        use crate::cli::install_host::test_support::MockCloner;
         let target = tempfile::tempdir().unwrap();
         let first = GOOD
             .replace("main.wasm", "run.sh")
@@ -785,7 +785,12 @@ mod tests {
                     let target = target.path();
                     scope.spawn(move || {
                         barrier.wait();
-                        install_one(cloner, &SourceSpec::Git(url.into()), None, target)
+                        crate::cli::install_host::test_support::install_one_admitted(
+                            cloner,
+                            &SourceSpec::Git(url.into()),
+                            None,
+                            target,
+                        )
                     })
                 })
                 .collect();
@@ -809,11 +814,16 @@ mod tests {
     #[test]
     fn schema2_git_install_rejects_invalid_capability_before_placing_plugin() {
         use crate::app::packs::SourceSpec;
-        use crate::cli::install_host::{install_one, test_support::MockCloner};
+        use crate::cli::install_host::test_support::MockCloner;
         let target = tempfile::tempdir().unwrap();
         let cloner = MockCloner::new().with_manifest("bad", &fixture("reserved-read"));
-        let error =
-            install_one(&cloner, &SourceSpec::Git("bad".into()), None, target.path()).unwrap_err();
+        let error = crate::cli::install_host::test_support::install_one_admitted(
+            &cloner,
+            &SourceSpec::Git("bad".into()),
+            None,
+            target.path(),
+        )
+        .unwrap_err();
         assert!(
             error.contains("sample")
                 && error.contains("usage.read")

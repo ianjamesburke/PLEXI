@@ -871,7 +871,13 @@ impl PluginRegistry {
                 Ok(installed) => {
                     let id = installed.manifest.id.clone();
                     let refusal = match gate {
-                        Some(gate) => gate.decide(&id, &entry_dir).err(),
+                        Some(gate) => gate
+                            .decide(
+                                &id,
+                                &entry_dir,
+                                crate::host::plugin_admission::Launch::Discovery,
+                            )
+                            .err(),
                         None if source != RegistrySource::Global => {
                             crate::host::plugin_admission::reserved_id(&id, &entry_dir).err()
                         }
@@ -1515,6 +1521,22 @@ pub(crate) fn resolve_entry(
             ));
         }
         return Err(format!("entry '{entry}' not found in {:?}", plugin_dir));
+    }
+    // The entry must be a regular file inside the plugin folder after
+    // resolving `..` and symlinks: admission decides that folder, so code from
+    // anywhere else would run unchecked (stint 1398).
+    let resolved = std::fs::canonicalize(&path).map_err(|error| {
+        format!("entry '{entry}' in {plugin_dir:?} cannot be resolved: {error}")
+    })?;
+    let root = std::fs::canonicalize(plugin_dir)
+        .map_err(|error| format!("plugin folder {plugin_dir:?} cannot be resolved: {error}"))?;
+    if !resolved.starts_with(&root) || !resolved.is_file() {
+        return Err(format!(
+            "entry '{entry}' resolves to {} outside the plugin folder {}; \
+             an entry must be a file inside its plugin's folder",
+            resolved.display(),
+            root.display()
+        ));
     }
 
     Ok(path)

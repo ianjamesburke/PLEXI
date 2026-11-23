@@ -1221,9 +1221,7 @@ fn plugin_install_with_pin_inner(
         src.display()
     );
     println!("Run `plexi view open {plugin_id}` to launch it.");
-    println!(
-        "The first time it opens, Plexi asks you to allow it in its window (Cmd+I); a changed copy asks again."
-    );
+    println!("The first time it opens, Plexi asks you to allow it in its window (Cmd+I).");
     0
 }
 

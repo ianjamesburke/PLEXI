@@ -275,6 +275,27 @@ fn install_one_with_ref_policy(
     target_root: &Path,
     ref_policy: GitRefPolicy,
 ) -> Result<InstallOutcome, String> {
+    // The shared install boundary (stint 1398): every caller inherits the
+    // source decision, and a refused source is never fetched.
+    if let SourceSpec::Git(url) = source {
+        crate::host::plugin_admission::admit_install_source(
+            crate::host::plugin_admission::InstallSource::Git(url),
+        )
+        .map_err(|refusal| refusal.to_string())?;
+    }
+    install_one_admitted(cloner, provision, source, git_ref, target_root, ref_policy)
+}
+
+/// Install a source the boundary already admitted. Only the admission
+/// boundaries call this (and tests of the fetch mechanics behind them).
+fn install_one_admitted(
+    cloner: &dyn Cloner,
+    provision: &dyn Provision,
+    source: &SourceSpec,
+    git_ref: Option<&str>,
+    target_root: &Path,
+    ref_policy: GitRefPolicy,
+) -> Result<InstallOutcome, String> {
     match source {
         SourceSpec::Git(url) => {
             install_one_git(cloner, provision, url, git_ref, target_root, ref_policy)
@@ -589,6 +610,30 @@ fn apply_pack_with(
     target_root: &Path,
     refresh_local: bool,
 ) -> Vec<InstallOutcome> {
+    // One refused source refuses the whole pack before anything is fetched
+    // or written, so a pack is never half-applied (stint 1398).
+    if let Err(refusal) = admit_pack_sources(pack) {
+        let error = refusal.to_string();
+        return pack
+            .plugins
+            .iter()
+            .map(|entry| InstallOutcome {
+                id: entry.id.clone(),
+                status: InstallStatus::Failed(error.clone()),
+            })
+            .collect();
+    }
+    apply_admitted_pack(cloner, provision, pack, target_root, refresh_local)
+}
+
+/// Apply a pack whose sources the boundary already admitted.
+fn apply_admitted_pack(
+    cloner: &dyn Cloner,
+    provision: &dyn Provision,
+    pack: &Pack,
+    target_root: &Path,
+    refresh_local: bool,
+) -> Vec<InstallOutcome> {
     let mut outcomes = Vec::with_capacity(pack.plugins.len());
     let installed = installed_versions(target_root);
     for entry in &pack.plugins {
@@ -677,7 +722,7 @@ fn apply_pack_entry(
         SourceSpec::Git(_) => Some(entry.version.as_str()),
         SourceSpec::Local(_) => None,
     };
-    match install_one_with_ref_policy(
+    match install_one_admitted(
         cloner,
         provision,
         &source,
@@ -1283,9 +1328,7 @@ pub fn examples_pack_ids() -> std::collections::HashSet<String> {
 
 /// Admit every source a pack names before any is fetched (stint 1398): one
 /// git entry refuses the whole pack, so nothing is half-applied.
-pub(crate) fn admit_pack_sources(
-    pack: &Pack,
-) -> Result<(), crate::host::plugin_admission::Refusal> {
+fn admit_pack_sources(pack: &Pack) -> Result<(), crate::host::plugin_admission::Refusal> {
     use crate::host::plugin_admission::{admit_install_source, InstallSource};
     for entry in &pack.plugins {
         match parse_source_spec(&entry.source) {
@@ -1311,7 +1354,6 @@ pub fn apply_workspace_pack(
         );
     }
     let pack = Pack::from_path(&plugins_toml)?;
-    admit_pack_sources(&pack).map_err(|refusal| refusal.to_string())?;
     let workspace_apps = crate::app::registry::workspace_plugins_dir(workspace_root);
     std::fs::create_dir_all(&workspace_apps).map_err(|e| {
         format!(
@@ -1348,6 +1390,36 @@ pub fn workspace_manifest_ids(workspace_root: &Path) -> std::collections::HashSe
 pub(crate) mod test_support {
     use super::*;
     use std::sync::Mutex;
+
+    /// The fetch mechanics behind the admission boundary, for tests of git
+    /// install behaviour that stays in the code until third-party installs
+    /// open (stint 1398). Production callers go through `install_one`.
+    pub fn install_one_admitted(
+        cloner: &dyn Cloner,
+        source: &SourceSpec,
+        git_ref: Option<&str>,
+        target_root: &Path,
+    ) -> Result<InstallOutcome, String> {
+        super::install_one_admitted(
+            cloner,
+            &UvProvisioner,
+            source,
+            git_ref,
+            target_root,
+            GitRefPolicy::Strict,
+        )
+    }
+
+    /// `apply_pack` behind the admission boundary; see [`install_one_admitted`].
+    pub(crate) fn apply_pack_admitted(
+        cloner: &dyn Cloner,
+        provision: &dyn Provision,
+        pack: &Pack,
+        target_root: &Path,
+        refresh_local: bool,
+    ) -> Vec<InstallOutcome> {
+        apply_admitted_pack(cloner, provision, pack, target_root, refresh_local)
+    }
 
     /// Extract this binary's embedded `local:<name>` plugin under `target_root`
     /// the way the installer does, without provisioning a venv.
@@ -1635,7 +1707,7 @@ mod install_tests {
     fn install_clone_writes_plugin_dir_with_manifest_id() {
         let target = tmp();
         let cloner = MockCloner::new();
-        let outcome = install_one(
+        let outcome = test_support::install_one_admitted(
             &cloner,
             &SourceSpec::Git("https://example.com/foo.git".into()),
             None,
@@ -1652,7 +1724,7 @@ mod install_tests {
         let target = tmp();
         let cloner = MockCloner::new();
         // First install: succeeds.
-        install_one(
+        test_support::install_one_admitted(
             &cloner,
             &SourceSpec::Git("https://example.com/foo.git".into()),
             None,
@@ -1660,7 +1732,7 @@ mod install_tests {
         )
         .expect("first install should succeed");
         // Second install: must error with a clear message.
-        let err = install_one(
+        let err = test_support::install_one_admitted(
             &cloner,
             &SourceSpec::Git("https://example.com/foo.git".into()),
             None,
@@ -1681,7 +1753,7 @@ mod install_tests {
             MANIFEST_SCHEMA_VERSION + 1
         );
         let cloner = MockCloner::new().with_manifest("https://example.com/future.git", &manifest);
-        let err = install_one(
+        let err = test_support::install_one_admitted(
             &cloner,
             &SourceSpec::Git("https://example.com/future.git".into()),
             None,
@@ -1699,7 +1771,7 @@ mod install_tests {
     fn install_passes_ref_to_checkout_when_set() {
         let target = tmp();
         let cloner = MockCloner::new();
-        install_one(
+        test_support::install_one_admitted(
             &cloner,
             &SourceSpec::Git("https://example.com/bar.git".into()),
             Some("v1.0.0"),
@@ -1716,7 +1788,7 @@ mod install_tests {
         let target = tmp();
         let cloner = MockCloner::new();
         cloner.fail_next_checkout("git checkout missing failed");
-        let err = install_one(
+        let err = test_support::install_one_admitted(
             &cloner,
             &SourceSpec::Git("https://example.com/strict.git".into()),
             Some("missing"),
@@ -1799,11 +1871,13 @@ mod pack_tests {
         let cloner = MockCloner::new();
         let pack = pack_with(&[("foo", "github:owner/foo", "0.0.1")]);
 
-        let first = apply_pack(&cloner, &pack, target.path(), false);
+        let first =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
         assert!(matches!(first[0].status, InstallStatus::Installed(_)));
 
         // Second apply: same id at same version → AlreadyAtVersion.
-        let second = apply_pack(&cloner, &pack, target.path(), false);
+        let second =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
         assert!(matches!(second[0].status, InstallStatus::AlreadyAtVersion));
     }
 
@@ -1818,7 +1892,8 @@ mod pack_tests {
         let cloner = MockCloner::new();
         let pack = pack_with(&[("logs", "local:logs", "bundled")]);
 
-        let first = apply_pack(&cloner, &pack, target.path(), false);
+        let first =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
         assert!(matches!(first[0].status, InstallStatus::Installed(_)));
 
         // Simulate a stale profile: drift the installed copy from the
@@ -1832,7 +1907,8 @@ mod pack_tests {
         // Without refresh: untouched (skipped or up-to-date — the installed
         // manifest's real version never equals the pack's "bundled", which is
         // precisely why version comparison can't drive core-plugin updates).
-        let plain = apply_pack(&cloner, &pack, target.path(), false);
+        let plain =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
         assert!(matches!(
             plain[0].status,
             InstallStatus::AlreadyAtVersion | InstallStatus::SkippedOtherVersion { .. }
@@ -1842,7 +1918,8 @@ mod pack_tests {
             .contains("stale drift"));
 
         // With refresh: replaced wholesale from the embedded tree.
-        let refreshed = apply_pack(&cloner, &pack, target.path(), true);
+        let refreshed =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), true);
         assert!(
             matches!(refreshed[0].status, InstallStatus::Refreshed(_)),
             "expected Refreshed, got {:?}",
@@ -1867,7 +1944,8 @@ mod pack_tests {
             ("beta", "github:owner/beta", "v1"),
         ]);
 
-        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
+        let outcomes =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
         assert_eq!(outcomes.len(), 2);
         // Exactly one failure, one install — order depends on apply_pack
         // iteration, just count by status.
@@ -1891,7 +1969,8 @@ mod pack_tests {
         let target = tempfile::tempdir().unwrap();
         let cloner = MockCloner::new();
         let pack = pack_with(&[("ok", "github:owner/ok", "v1"), ("bad", "ftp://nope", "v1")]);
-        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
+        let outcomes =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
         let bad = outcomes.iter().find(|o| o.id == "bad").unwrap();
         match &bad.status {
             InstallStatus::Failed(msg) => assert!(msg.contains("unknown source scheme")),
@@ -1929,7 +2008,8 @@ mod pack_tests {
         let cloner = TimedOutFetch(MockCloner::new());
         let pack = pack_with(&[("slow", "github:owner/slow", "0.0.1")]);
 
-        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
+        let outcomes =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
 
         assert!(
             matches!(&outcomes[0].status, InstallStatus::Failed(msg) if msg.contains("did not finish within")),
@@ -1957,7 +2037,8 @@ mod pack_tests {
             "`uv pip install` could not be stopped".into(),
         ));
 
-        let outcomes = apply_pack_with(&cloner, &stuck, &pack, target.path(), false);
+        let outcomes =
+            test_support::apply_pack_admitted(&cloner, &stuck, &pack, target.path(), false);
 
         assert!(
             matches!(&outcomes[0].status, InstallStatus::Failed(msg) if msg.contains("could not be stopped")),
@@ -1968,7 +2049,8 @@ mod pack_tests {
 
         let target = tempfile::tempdir().unwrap();
         let missing = Stuck(VenvError::Unavailable("could not start uv".into()));
-        let outcomes = apply_pack_with(&cloner, &missing, &pack, target.path(), false);
+        let outcomes =
+            test_support::apply_pack_admitted(&cloner, &missing, &pack, target.path(), false);
         assert!(
             matches!(outcomes[0].status, InstallStatus::Installed(_)),
             "got {:?}",
@@ -1985,7 +2067,8 @@ mod pack_tests {
         cloner.fail_next_checkout_fatally("git fetch 0.0.1 could not be stopped");
         let pack = pack_with(&[("stuck", "github:owner/stuck", "0.0.1")]);
 
-        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
+        let outcomes =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
 
         assert!(
             matches!(&outcomes[0].status, InstallStatus::Failed(msg) if msg.contains("could not be stopped")),
@@ -2027,7 +2110,8 @@ mod pack_tests {
         cloner.fail_next_checkout("git checkout 0.0.1 failed");
         let pack = pack_with(&[("fallback", "github:owner/fallback", "0.0.1")]);
 
-        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
+        let outcomes =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
 
         assert_eq!(cloner.checkouts.lock().unwrap().as_slice(), ["0.0.1"]);
         assert!(

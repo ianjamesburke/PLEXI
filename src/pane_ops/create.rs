@@ -524,7 +524,11 @@ pub(crate) fn restore_view_pane_in_profile(
                 crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(plugin_dir)
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
-            profile_admission(profile_dir).admit_or_ask(&config.plugin_id, plugin_dir)?;
+            profile_admission(profile_dir).admit_or_ask(
+                &config.plugin_id,
+                plugin_dir,
+                crate::host::plugin_admission::Launch::ExplicitPath,
+            )?;
             let permissions = gate_plugin_permissions_in_profile(
                 profile_dir,
                 &config.plugin_id,
@@ -604,7 +608,11 @@ pub(crate) fn restore_view_pane_in_profile(
                     || wasm_path.clone(),
                     |installed| installed.plugin_dir.clone(),
                 );
-            profile_admission(profile_dir).admit_or_ask(manifest_id, &admitted_dir)?;
+            profile_admission(profile_dir).admit_or_ask(
+                manifest_id,
+                &admitted_dir,
+                crate::host::plugin_admission::Launch::ExplicitPath,
+            )?;
             match registry.get(manifest_id) {
                 Some(installed)
                     if installed.manifest.manifest_type == ManifestType::Wasm
@@ -1384,9 +1392,14 @@ impl PlexiApp {
             "plugin::{} reload triggered ({reason}) for CPython WASM pane {pane_id}",
             view_pane.manifest_id
         );
-        // A reload runs the files as they are now: a changed profile copy
-        // needs a new allow before it runs (stint 1398).
-        if let Err(error) = admission.admit_or_ask(&view_pane.manifest_id, runtime.plugin_dir()) {
+        // A reload is a new launch of this pane's tree: its folder trust or
+        // profile allow must still stand (it may have been reset). Edits in a
+        // trusted folder never ask again (stint 1398).
+        if let Err(error) = admission.admit_or_ask(
+            &view_pane.manifest_id,
+            runtime.plugin_dir(),
+            crate::host::plugin_admission::Launch::ExplicitPath,
+        ) {
             log::info!("plugin::{} reload refused: {error}", view_pane.manifest_id);
             return false;
         }
@@ -2652,22 +2665,42 @@ impl PlexiApp {
         manifest_id: &str,
         context_id: Option<u64>,
     ) -> Option<(usize, PaneId, usize)> {
+        self.locate_view_instance_of_tree(manifest_id, context_id, None)
+    }
+
+    /// [`Self::locate_view_instance`], restricted to Python panes running the
+    /// plugin tree at `tree` when given. A dev copy path-launched under a
+    /// bundled id is a different tree, so opening the bundled plugin by id
+    /// never focuses it, and the reverse (stint 1398).
+    pub(crate) fn locate_view_instance_of_tree(
+        &self,
+        manifest_id: &str,
+        context_id: Option<u64>,
+        tree: Option<&Path>,
+    ) -> Option<(usize, PaneId, usize)> {
+        let tree = tree.map(crate::platform::path::canonical_or_self);
+        let runs_tree = |app: &crate::host::pane::ViewPane| match (&tree, &app.runtime) {
+            (Some(tree), crate::host::pane::ViewRuntime::Python(runtime)) => {
+                crate::platform::path::canonical_or_self(runtime.plugin_dir()) == *tree
+            }
+            _ => true,
+        };
         // Walk a pane's overlay-replacement chain, returning how many overlays
         // sit above the first pane whose manifest id matches (`0` = the pane
         // itself matches). The replaced pane an overlay stores can be any
         // variant; only view panes carry an id and a further chain.
-        fn overlay_depth(pane: &Pane, manifest_id: &str) -> Option<usize> {
+        let overlay_depth = |pane: &Pane, manifest_id: &str| -> Option<usize> {
             let mut current = pane;
             let mut depth = 0;
             loop {
                 let app = current.as_view()?;
-                if app.manifest_id == manifest_id {
+                if app.manifest_id == manifest_id && runs_tree(app) {
                     return Some(depth);
                 }
                 current = app.overlay_replaced.as_deref()?;
                 depth += 1;
             }
-        }
+        };
 
         self.windows.iter().enumerate().find_map(|(win_idx, win)| {
             if context_id.is_some_and(|c| c != win.context_id) {
@@ -2720,11 +2753,19 @@ impl PlexiApp {
         args: &[String],
         cwd_override: Option<&Path>,
     ) -> Option<PaneId> {
-        let on_launch = self
+        let view = self
             .registries
-            .view_for_context(caller_context_id, &self.router)
-            .on_launch_for(id);
-        self.focus_for_on_launch(on_launch, id, caller_context_id, args, cwd_override)
+            .view_for_context(caller_context_id, &self.router);
+        let on_launch = view.on_launch_for(id);
+        let tree = view.get(id).map(|installed| installed.plugin_dir.clone());
+        self.focus_for_on_launch(
+            on_launch,
+            id,
+            tree.as_deref(),
+            caller_context_id,
+            args,
+            cwd_override,
+        )
     }
 
     /// Focus a live instance when `policy` says this launch must not spawn.
@@ -2732,6 +2773,7 @@ impl PlexiApp {
         &mut self,
         on_launch: crate::app::registry::OnLaunchPolicy,
         id: &str,
+        tree: Option<&Path>,
         caller_context_id: u64,
         args: &[String],
         cwd_override: Option<&Path>,
@@ -2739,12 +2781,13 @@ impl PlexiApp {
         use crate::app::registry::OnLaunchPolicy;
         let (scope, target) = match on_launch {
             OnLaunchPolicy::AlwaysNew => return None,
-            OnLaunchPolicy::FocusExisting => {
-                ("focus_existing", self.locate_view_instance(id, None))
-            }
+            OnLaunchPolicy::FocusExisting => (
+                "focus_existing",
+                self.locate_view_instance_of_tree(id, None, tree),
+            ),
             OnLaunchPolicy::FocusExistingInContext => (
                 "focus_existing_in_context",
-                self.locate_view_instance(id, Some(caller_context_id)),
+                self.locate_view_instance_of_tree(id, Some(caller_context_id), tree),
             ),
         };
         let Some((win_idx, slot, overlay_depth)) = target else {
@@ -3371,7 +3414,11 @@ impl PlexiApp {
                 Some(id) => id,
                 None => {
                     let id = bare_wasm_plugin_id(&plugin_dir)?;
-                    self.registries.admission().admit_or_ask(&id, &plugin_dir)?;
+                    self.registries.admission().admit_or_ask(
+                        &id,
+                        &plugin_dir,
+                        crate::host::plugin_admission::Launch::ExplicitPath,
+                    )?;
                     id
                 }
             };
@@ -3409,9 +3456,11 @@ impl PlexiApp {
                 return Err(format!("failed to load plugin at '{app_path}': {e}"));
             }
         };
-        self.registries
-            .admission()
-            .admit_or_ask(&installed.manifest.id, &plugin_dir)?;
+        self.registries.admission().admit_or_ask(
+            &installed.manifest.id,
+            &plugin_dir,
+            crate::host::plugin_admission::Launch::ExplicitPath,
+        )?;
 
         let view = installed
             .contributes
@@ -3448,9 +3497,14 @@ impl PlexiApp {
                 .as_deref()
                 .and_then(|mode| crate::app::registry::OnLaunchPolicy::parse(mode).ok())
                 .unwrap_or_default();
-            if let Some(existing) =
-                self.focus_for_on_launch(policy, &plugin_id, context_id, args, None)
-            {
+            if let Some(existing) = self.focus_for_on_launch(
+                policy,
+                &plugin_id,
+                Some(plugin_dir.as_path()),
+                context_id,
+                args,
+                None,
+            ) {
                 log::info!(
                     "open_view_by_path_with_layout: focused existing {plugin_id} pane {existing}"
                 );
@@ -4534,11 +4588,15 @@ mod tests {
         let mut manifest =
             std::fs::read_to_string(root.join("plugins/wasm-poc/sysmon/manifest.toml"))
                 .expect("sysmon manifest");
+        // An entry must be a file inside its plugin folder (stint 1398).
+        std::fs::copy(
+            root.join("tests/wasm-fixtures/sysmon.wasm"),
+            plugin_dir.join("sysmon.wasm"),
+        )
+        .expect("installed entry");
         manifest = manifest.replace(
             "../../../target/wasm32-wasip1/release/sysmon.wasm",
-            root.join("tests/wasm-fixtures/sysmon.wasm")
-                .to_str()
-                .unwrap(),
+            "sysmon.wasm",
         );
         if !declares_timer {
             manifest = manifest.replace("capabilities = [\"timer\"]", "capabilities = []");
@@ -4607,8 +4665,7 @@ mod tests {
             !requires_review,
             "fixture imports must isolate timer from sensitive review"
         );
-        let manifest = format!(
-            r#"schema_version = 2
+        let manifest = r#"schema_version = 2
 [plugin]
 id = "com.plexi.timer-only"
 name = "Timer only"
@@ -4617,20 +4674,29 @@ version = "0.1.0"
 capabilities = ["timer"]
 [runtime]
 kind = "wasm"
-entry = '{}'
+entry = 'component.wasm'
 [[contributes.views]]
 id = "com.plexi.timer-only.main"
 default = true
-"#,
-            wasm_path.display()
-        );
+"#
+        .to_string();
+        // An entry must live inside its plugin folder (stint 1398).
+        let installed_wasm = plugin_dir.join("component.wasm");
+        std::fs::copy(&wasm_path, &installed_wasm).expect("installed entry");
         let manifest = match manifest_case {
             "unknown" => manifest.replace("[\"timer\"]", "[\"timer\", \"unknown-timer-cap\"]"),
             "mismatch" => {
                 std::fs::copy(&wasm_path, plugin_dir.join("different.wasm")).expect("other entry");
-                manifest.replace(&wasm_path.display().to_string(), "different.wasm")
+                manifest.replace("component.wasm", "different.wasm")
             }
             _ => manifest,
+        };
+        // The saved layout names the installed entry when the manifest
+        // matches it, and the outside fixture otherwise.
+        let wasm_path = if manifest_case == "matching" {
+            installed_wasm
+        } else {
+            wasm_path
         };
         if manifest_case != "missing" {
             std::fs::write(plugin_dir.join("manifest.toml"), manifest).expect("manifest");
