@@ -198,8 +198,14 @@ impl PluginAdmission {
     pub(crate) fn new(profile_dir: &Path, profile_plugins: &Path) -> Self {
         Self {
             profile_dir: profile_dir.to_path_buf(),
-            profile_plugins: crate::platform::path::canonical_or_self(profile_plugins),
+            profile_plugins: profile_plugins.to_path_buf(),
         }
+    }
+
+    /// The profile plugins folder, resolved now: it may not have existed
+    /// when this check was built, and paths compare in canonical form.
+    fn plugins_folder(&self) -> PathBuf {
+        crate::platform::path::canonical_or_self(&self.profile_plugins)
     }
 
     /// Decide whether the host may load plugin `id` from `plugin_dir`. Reads
@@ -230,7 +236,8 @@ impl PluginAdmission {
             });
         };
         let principal = request.principal();
-        match monitor.stored_decision(&request.admit_request(&self.profile_plugins, &principal)) {
+        let plugins = self.plugins_folder();
+        match monitor.stored_decision(&request.admit_request(&plugins, &principal)) {
             Decision::Allow => Ok(match request {
                 Request::Copy { .. } => Admitted::AllowedCopy,
                 Request::Folder { .. } => Admitted::TrustedFolder,
@@ -252,7 +259,8 @@ impl PluginAdmission {
     /// that holds `plugin_dir`).
     fn request_for(&self, id: &str, plugin_dir: &Path) -> Result<Option<Request>, Refusal> {
         let path = crate::platform::path::canonical_or_self(plugin_dir);
-        let Ok(inside) = path.strip_prefix(&self.profile_plugins) else {
+        let plugins = self.plugins_folder();
+        let Ok(inside) = path.strip_prefix(&plugins) else {
             if crate::cli::install_host::is_bundled_plugin_id(id) {
                 // Either an identical bundled copy, which needs no click, or
                 // a refusal no click can lift.
@@ -271,7 +279,7 @@ impl PluginAdmission {
                 error: "the profile plugins folder itself is not a plugin".to_string(),
             });
         };
-        let dir = self.profile_plugins.join(install);
+        let dir = plugins.join(install);
         if crate::cli::install_host::is_bundled_plugin_id(id)
             && crate::cli::install_host::matches_bundled_plugin(id, &dir)
         {
@@ -347,10 +355,8 @@ impl PluginAdmission {
         let monitor = PermissionMonitor::for_profile(&self.profile_dir)
             .map_err(|error| format!("plugin admission cannot ask: {error}"))?;
         let principal = request.principal();
-        match monitor.admit_plugin_code(
-            request.admit_request(&self.profile_plugins, &principal),
-            &disclosure,
-        ) {
+        let plugins = self.plugins_folder();
+        match monitor.admit_plugin_code(request.admit_request(&plugins, &principal), &disclosure) {
             Admission::Required { pending_request_id } => {
                 log::info!(
                     "plugin_admission: asked {pending_request_id} for {}",
@@ -453,8 +459,8 @@ impl PluginAdmission {
             id: "test-fixture".to_string(),
             folder: crate::platform::path::canonical_or_self(folder),
         };
-        if monitor.stored_decision(&request.admit_request(&self.profile_plugins, &principal))
-            == Decision::Allow
+        let plugins = self.plugins_folder();
+        if monitor.stored_decision(&request.admit_request(&plugins, &principal)) == Decision::Allow
         {
             return;
         }

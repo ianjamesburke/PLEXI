@@ -287,3 +287,93 @@ fn host_launches_from_untrusted_folders_are_refused_and_ask() {
         .collect();
     assert_eq!(asks.len(), 2, "one ask per folder: {asks:?}");
 }
+
+/// Remove every `__pycache__` folder and `.pyc` under `dir`, as the packager's
+/// ignore patterns do when it seeds an alpha profile.
+fn strip_bytecode(dir: &Path) {
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|name| name == "__pycache__") {
+                std::fs::remove_dir_all(&path).unwrap();
+            } else {
+                strip_bytecode(&path);
+            }
+        } else if path.extension().is_some_and(|ext| ext == "pyc") {
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+}
+
+/// A fresh alpha profile holds every maintained plugin, copied without
+/// bytecode. None of them may ask on first open, even when the binary was
+/// built from a checkout whose plugin folders hold `__pycache__`.
+#[test]
+fn a_fresh_alpha_profile_opens_every_maintained_plugin_without_asking() {
+    let rig = Rig::new();
+    let repo_plugins = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
+    let mut ids = Vec::new();
+    for entry in std::fs::read_dir(&repo_plugins).unwrap().flatten() {
+        if entry.path().join("manifest.toml").is_file() {
+            let id = entry.file_name().to_string_lossy().into_owned();
+            strip_bytecode(&extract_bundled(&id, &rig.plugins()));
+            ids.push(id);
+        }
+    }
+    assert!(!ids.is_empty());
+    let registry = rig.load();
+    for id in &ids {
+        assert!(
+            registry.get(id).is_some(),
+            "{id} asks on a fresh profile: {:?}",
+            registry.skipped_reason(id)
+        );
+    }
+    assert!(rig.monitor().list_pending().is_empty());
+}
+
+/// Bytecode the binary does not embed is not bundled: a planted `.pyc` in a
+/// bundled plugin's folder makes it an ordinary copy that must be allowed.
+#[test]
+fn a_planted_pyc_in_a_bundled_plugin_asks() {
+    let rig = Rig::new();
+    let todo = extract_bundled("todo", &rig.plugins());
+    let cache = todo.join("__pycache__");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("planted.cpython-312.pyc"), b"not bundled").unwrap();
+    let refusal = rig.refusal(&rig.load(), "todo");
+    assert!(matches!(refusal, Refusal::NotAllowed { .. }), "{refusal:?}");
+}
+
+/// Stint 1497: an unsigned update rotates the seal key and resets grants.
+/// Every plugin allow and folder trust goes with them, and the plugins are
+/// refused and asked again; nothing loads silently.
+#[test]
+fn a_seal_key_reset_drops_admissions_and_fails_closed() {
+    let rig = Rig::new();
+    write_plugin(&rig.plugins(), "mine");
+    write_plugin(&rig.repo_plugins(), "repo-tool");
+    let copy = rig.refusal(&rig.load(), "mine");
+    rig.click(&copy, ApprovalChoice::Always).unwrap();
+    let folder = rig.refusal(&rig.load(), "repo-tool");
+    rig.click(&folder, ApprovalChoice::Always).unwrap();
+    let loaded = rig.load();
+    assert!(loaded.get("mine").is_some() && loaded.get("repo-tool").is_some());
+
+    crate::broker::seal::reset_unverified_profile(
+        &crate::broker::custody::HostProcess::for_test(),
+        rig.profile.path(),
+    )
+    .unwrap();
+    PermissionMonitor::reload_for_test(rig.profile.path());
+
+    let after = rig.load();
+    assert!(matches!(
+        rig.refusal(&after, "mine"),
+        Refusal::NotAllowed { .. }
+    ));
+    assert!(matches!(
+        rig.refusal(&after, "repo-tool"),
+        Refusal::UntrustedFolder { .. }
+    ));
+}

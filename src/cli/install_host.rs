@@ -1031,6 +1031,11 @@ pub(crate) fn is_bundled_plugin_id(id: &str) -> bool {
 /// A manifest id or package claim cannot satisfy this. It covers the plugin
 /// folder only, not the SDK or stdlib a guest also imports. The walk stops at
 /// the first difference, so its cost is bounded by the embedded tree.
+///
+/// Compiled bytecode the binary happens to embed (a checkout's `__pycache__`)
+/// may be absent on disk: the packager leaves it out, and a missing `.pyc`
+/// loads nothing (stint 1398). A `.pyc` that is present must still be one the
+/// binary embeds, byte for byte.
 pub(crate) fn matches_bundled_plugin(name: &str, plugin_dir: &Path) -> bool {
     let Some(bundled) = EMBEDDED_APPS.get_dir(name) else {
         log::warn!("bundled_check: no embedded plugin '{name}'");
@@ -1041,10 +1046,11 @@ pub(crate) fn matches_bundled_plugin(name: &str, plugin_dir: &Path) -> bool {
     collect_embedded(bundled, Path::new(name), &mut files, &mut dirs);
     let outcome =
         compare_with_embedded(plugin_dir, Path::new(""), &files, &dirs).and_then(|matched| {
-            if matched == files.len() {
+            let required = files.keys().filter(|rel| !is_bytecode(rel)).count();
+            if matched == required {
                 Ok(())
             } else {
-                Err(format!("{} bundled file(s) missing", files.len() - matched))
+                Err(format!("{} bundled file(s) missing", required - matched))
             }
         });
     match outcome {
@@ -1084,7 +1090,16 @@ fn collect_embedded<'a>(
     }
 }
 
-/// Count the bundled files found under `rel`, or name the first difference.
+/// Python bytecode: a `.pyc` file or anything under `__pycache__`.
+fn is_bytecode(rel: &Path) -> bool {
+    rel.extension().is_some_and(|ext| ext == "pyc")
+        || rel
+            .components()
+            .any(|part| part.as_os_str() == "__pycache__")
+}
+
+/// Count the bundled non-bytecode files found under `rel`, or name the first
+/// difference.
 fn compare_with_embedded(
     root: &Path,
     rel: &Path,
@@ -1125,7 +1140,9 @@ fn compare_with_embedded(
         if actual != *expected {
             return Err(format!("changed file {}", child.display()));
         }
-        matched += 1;
+        if !is_bytecode(&child) {
+            matched += 1;
+        }
     }
     Ok(matched)
 }
