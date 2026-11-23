@@ -906,6 +906,7 @@ pub(crate) fn handle_socket_line_in(
                 crate::protocol::HostRequest::SpawnPane { source, .. }
                 | crate::protocol::HostRequest::AgentSpawn { source, .. }
                 | crate::protocol::HostRequest::AgentOpen { source, .. }
+                | crate::protocol::HostRequest::AgentNewChat { source, .. }
                 | crate::protocol::HostRequest::AgentReopen { source, .. }
                 | crate::protocol::HostRequest::CreateContext { source, .. }
                 | crate::protocol::HostRequest::CreateSubContext { source, .. }

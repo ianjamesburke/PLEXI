@@ -502,6 +502,11 @@ impl PlexiApp {
                     Some(name) => self.admit_defined_worker_role(name, &placement.effective_cwd)?,
                     None => None,
                 };
+                if let (Some(name), Some(_), false) =
+                    (record.config_name.as_deref(), &role_grant, record.ephemeral)
+                {
+                    Self::prepare_agent_memory(name, &placement.effective_cwd)?;
+                }
                 self.launch_agent_worker(
                     crate::pane_ops::create::AgentWorkerLaunch {
                         grant: crate::pane_ops::create::AgentWorkerGrant {
@@ -5579,6 +5584,27 @@ impl PlexiApp {
                     Err(error) => {
                         serde_json::json!({ "ok": false, "error": error })
                     }
+                };
+                write_json_response(response_file, payload);
+            }
+            crate::protocol::HostRequest::AgentNewChat {
+                name,
+                cwd,
+                caller_pane_id,
+                response_file,
+                source,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=agent_new_chat name={name} cwd={cwd} caller={caller_pane_id:?}"
+                );
+                let payload = match self.new_named_agent_chat(
+                    name,
+                    std::path::Path::new(cwd),
+                    *caller_pane_id,
+                    source,
+                ) {
+                    Ok(outcome) => outcome.to_json(),
+                    Err(error) => serde_json::json!({ "ok": false, "error": error }),
                 };
                 write_json_response(response_file, payload);
             }

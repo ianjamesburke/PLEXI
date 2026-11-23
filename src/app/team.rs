@@ -772,7 +772,9 @@ impl PlexiApp {
                             h_cfg.model = member.model.clone();
                         }
                     }
-                    crate::cli::agent::build_agent_start_command(&def, harness.adapter(), Some(&task))
+                    // A member casts one ballot for this run: a task, not one
+                    // of the agent's chats, so it is given no memory folder.
+                    crate::cli::agent::build_agent_start_command(&def, harness.adapter(), Some(&task), None)
                         .unwrap_or_else(|_| {
                             harness
                                 .adapter()

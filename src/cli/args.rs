@@ -3353,6 +3353,21 @@ pub enum AgentCmd {
         #[arg(long)]
         cwd: Option<String>,
     },
+    /// Start a new chat with a named agent, archiving its current chat.
+    ///
+    /// The current chat is the one `agent open` would return to. A pane holding it is closed; the
+    /// chat stays in `agent history` and `agent reopen <run-id>` resumes it, but `agent open` no
+    /// longer does. The new chat shares the agent's memory folder. Prints `new_chat <pane-id>
+    /// [archived <run-id>]`.
+    ///
+    /// Example: plexi agent new-chat researcher
+    NewChat {
+        /// Agent name in `<workspace>/.plexi/agents/<name>/` or `~/.plexi-<channel>/agents/<name>/`
+        name: String,
+        /// Working directory for workspace lookup
+        #[arg(long)]
+        cwd: Option<String>,
+    },
     /// Spawn an agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
     ///
     /// Loads `<name>` through `AgentRegistry` (workspace shadowing global), refuses agents without
@@ -4080,6 +4095,20 @@ mod tests {
             Cli::try_parse_from(["plexi", "view", "open", "--mcp", "npx", "server", "/tmp"])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn agent_new_chat_parses_name_and_cwd() {
+        let cli = Cli::try_parse_from(["plexi", "agent", "new-chat", "researcher", "--cwd", "/p"])
+            .unwrap();
+        let Some(Commands::Agent {
+            cmd: super::AgentCmd::NewChat { name, cwd },
+        }) = cli.command
+        else {
+            panic!("expected agent new-chat");
+        };
+        assert_eq!((name.as_str(), cwd.as_deref()), ("researcher", Some("/p")));
+        assert!(Cli::try_parse_from(["plexi", "agent", "new-chat"]).is_err());
     }
 
     #[test]

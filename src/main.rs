@@ -897,6 +897,9 @@ fn main() -> eframe::Result {
                             cwd.as_deref(),
                             json,
                         )),
+                        AgentCmd::NewChat { name, cwd } => cli::trace::exit(
+                            cli::agent_new_chat_cli(&name, cwd.as_deref(), json),
+                        ),
                         AgentCmd::Reopen { target, subcontext } => cli::trace::exit(
                             cli::agent_reopen_cli(&target, subcontext.as_deref(), json),
                         ),

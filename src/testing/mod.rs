@@ -761,6 +761,7 @@ impl HostHarness {
             HostRequest::SpawnPane { source, .. }
             | HostRequest::AgentSpawn { source, .. }
             | HostRequest::AgentOpen { source, .. }
+            | HostRequest::AgentNewChat { source, .. }
             | HostRequest::AgentReopen { source, .. }
             | HostRequest::CreateContext { source, .. }
             | HostRequest::CreateSubContext { source, .. }
@@ -1038,6 +1039,8 @@ mod daw_gate;
 mod flow_tests;
 #[cfg(test)]
 mod harness_tests;
+#[cfg(test)]
+mod agent_chat_tests;
 
 #[cfg(test)]
 mod agent_security_tests;

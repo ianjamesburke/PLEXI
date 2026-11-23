@@ -931,6 +931,24 @@ pub enum HostRequest {
         source: SpawnSource,
     },
 
+    /// New chat for a named agent (`plexi agent new-chat <name>`, stint
+    /// 1397): archive the chat `agent open` would return to, then start an
+    /// empty one with the same memory folder.
+    AgentNewChat {
+        /// Agent name, resolved through `AgentRegistry` like `agent start`.
+        name: String,
+        /// Working directory for workspace lookup.
+        cwd: String,
+        /// Calling pane (`PLEXI_PANE_ID`), parent of the started pane.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller_pane_id: Option<u64>,
+        response_file: String,
+        /// Who submitted this request, stamped by the host and never read
+        /// from the wire (stint 1632).
+        #[serde(skip)]
+        source: SpawnSource,
+    },
+
     AgentReopen {
         /// Run ID (`run-...`) or harness session ID to reopen.
         query: String,
@@ -1974,6 +1992,7 @@ impl HostRequest {
                 | Self::FileOpen { .. }
                 | Self::AgentSpawn { .. }
                 | Self::AgentOpen { .. }
+                | Self::AgentNewChat { .. }
                 | Self::AgentReopen { .. }
                 | Self::CreateContext { .. }
                 | Self::CreateSubContext { .. }

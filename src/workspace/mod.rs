@@ -170,6 +170,11 @@ pub struct AgentHistoryRecord {
     pub fleet_seen: bool,
     #[serde(default)]
     pub fleet_dismissed: bool,
+    /// Set when a New chat replaced this chat (stint 1397): `agent open` no
+    /// longer resumes it, and `agent reopen <run-id>` still does. Rows written
+    /// before the field existed are not archived.
+    #[serde(default)]
+    pub chat_archived: bool,
     pub run_id: String,
     pub pane_id: u64,
     pub context_id: u64,
@@ -1916,6 +1921,7 @@ mod tests {
         let rec = AgentHistoryRecord {
             fleet_seen: false,
             fleet_dismissed: false,
+            chat_archived: false,
             run_id: "run-42-100".to_string(),
             pane_id: 42,
             pane_name: Some("worker-1".to_string()),
@@ -1980,6 +1986,7 @@ pub(crate) fn archive_saved_completion(
     let record = AgentHistoryRecord {
         fleet_seen: session.fleet_seen,
         fleet_dismissed: session.fleet_dismissed,
+        chat_archived: false,
         run_id: format!("run-{}-{}", pane.id, session.fleet_since),
         pane_id: pane.id,
         context_id,

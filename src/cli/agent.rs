@@ -1345,8 +1345,26 @@ pub fn resolve_harness_adapter(
     Ok(primary)
 }
 
+/// The memory folder a launch of `definition` is told about: a named
+/// (non-ephemeral) chat's, else none. Resolution only; the host creates the
+/// folder when it admits the launch (`PlexiApp::admit_worker_role`).
+pub fn named_agent_memory(
+    definition: &crate::agent::AgentDefinition,
+    ephemeral: bool,
+) -> Result<Option<PathBuf>, String> {
+    if ephemeral {
+        return Ok(None);
+    }
+    crate::agent::memory::memory_dir(definition).map(Some)
+}
+
 /// Build the `# Plexi worker contract` section included in every spawned agent session.
-pub fn format_worker_contract(definition: &crate::agent::AgentDefinition) -> String {
+/// `memory` is the agent's memory folder (`crate::agent::memory`), given to named
+/// chats only: an ephemeral run has no durable identity to remember for.
+pub fn format_worker_contract(
+    definition: &crate::agent::AgentDefinition,
+    memory: Option<&Path>,
+) -> String {
     let mut contract = format!(
         "# Plexi worker contract\n\
          You are agent `{}` running in an interactive Plexi agent session.\n\
@@ -1364,6 +1382,13 @@ pub fn format_worker_contract(definition: &crate::agent::AgentDefinition) -> Str
             contract.push_str(&format!("\nResult schema: {schema_json}"));
         }
     }
+    if let Some(memory) = memory {
+        contract.push_str(&format!(
+            "\nYour memory folder is {}. Every chat of agent `{}` shares it, including a New chat: read it when a chat starts, and keep in it what you should still know in the next chat.",
+            memory.display(),
+            definition.id
+        ));
+    }
     contract
 }
 
@@ -1379,8 +1404,9 @@ pub fn build_agent_spawn_command(
     definition: &crate::agent::AgentDefinition,
     adapter: &HarnessAdapter,
     task: &str,
+    memory: Option<&Path>,
 ) -> Result<String, String> {
-    build_agent_start_command(definition, adapter, non_empty_string(task))
+    build_agent_start_command(definition, adapter, non_empty_string(task), memory)
 }
 
 /// Pure function building the exact interactive shell command `plexi agent start` and
@@ -1394,6 +1420,7 @@ pub fn build_agent_start_command(
     definition: &crate::agent::AgentDefinition,
     adapter: &HarnessAdapter,
     message: Option<&str>,
+    memory: Option<&Path>,
 ) -> Result<String, String> {
     let harness_cfg = definition.harness.as_ref().ok_or_else(|| {
         format!(
@@ -1411,7 +1438,7 @@ pub fn build_agent_start_command(
         ));
     }
     let persona = definition.prompt.trim();
-    let contract = format_worker_contract(definition);
+    let contract = format_worker_contract(definition, memory);
     let system_instructions = if persona.is_empty() {
         contract.clone()
     } else {
@@ -2101,7 +2128,13 @@ pub fn agent_show_in(
             if let Some(display_harness) = display_def.harness.as_mut() {
                 display_harness.flags = redact_harness_flags(&display_harness.flags);
             }
-            Some(build_agent_spawn_command(&display_def, adapter, "<TASK>")?)
+            let memory = named_agent_memory(&def, h.ephemeral)?;
+            Some(build_agent_spawn_command(
+                &display_def,
+                adapter,
+                "<TASK>",
+                memory.as_deref(),
+            )?)
         }
         None => None,
     };
@@ -2420,9 +2453,14 @@ pub fn resolve_agent_spawn_in_stopping_at(
         ));
     };
     let adapter = resolve_harness_adapter(harness_cfg)?;
+    let effective_ephemeral = match ephemeral_override {
+        Some(explicit) => explicit,
+        None => harness_cfg.ephemeral,
+    };
+    let memory = named_agent_memory(&def, effective_ephemeral)?;
     let cmd_string = with_auto_state_hooks(
         adapter,
-        build_agent_start_command(&def, adapter, task_or_message)?,
+        build_agent_start_command(&def, adapter, task_or_message, memory.as_deref())?,
     );
     let project_cwd = workspace_root
         .or_else(|| {
@@ -2432,10 +2470,6 @@ pub fn resolve_agent_spawn_in_stopping_at(
     let task_text = task_or_message
         .and_then(non_empty_string)
         .unwrap_or_default();
-    let effective_ephemeral = match ephemeral_override {
-        Some(explicit) => explicit,
-        None => harness_cfg.ephemeral,
-    };
 
     let mut payload = serde_json::json!({
         "type": "agent_spawn",
@@ -2992,6 +3026,24 @@ pub fn agent_history_cli(limit: usize, json: bool) -> i32 {
 /// `plexi agent open <name> [--cwd <DIR>] [--json]` (stint 1396). The host owns the resolver,
 /// because only it sees running panes and closed runs.
 pub fn agent_open_cli(agent_name: &str, cwd: Option<&str>, json: bool) -> i32 {
+    named_agent_cli("agent_open", "agent open", agent_name, cwd, json)
+}
+
+/// `plexi agent new-chat <name> [--cwd <DIR>] [--json]` (stint 1397): archive the agent's
+/// current chat and start an empty one. The host decides which chat is current.
+pub fn agent_new_chat_cli(agent_name: &str, cwd: Option<&str>, json: bool) -> i32 {
+    named_agent_cli("agent_new_chat", "agent new-chat", agent_name, cwd, json)
+}
+
+/// Send a named-agent request of wire `kind` and print `<outcome> <pane-id>`, plus
+/// `archived <run-id>` when the host archived a chat.
+fn named_agent_cli(
+    kind: &str,
+    label: &str,
+    agent_name: &str,
+    cwd: Option<&str>,
+    json: bool,
+) -> i32 {
     let Some(name) = non_empty_string(agent_name) else {
         eprintln!("error: agent name cannot be empty");
         return 1;
@@ -3004,16 +3056,20 @@ pub fn agent_open_cli(agent_name: &str, cwd: Option<&str>, json: bool) -> i32 {
         .ok()
         .and_then(|v| v.parse().ok());
     log::info!(
-        "agent_open:cli: name={name} cwd={} caller={caller_pane_id:?}",
+        "{kind}:cli: name={name} cwd={} caller={caller_pane_id:?}",
         effective_cwd.display()
     );
     let payload = serde_json::json!({
-        "type": "agent_open",
+        "type": kind,
         "name": name,
         "cwd": effective_cwd.to_string_lossy(),
         "caller_pane_id": caller_pane_id,
     });
-    let content = match super::request(payload, "agent-open-response", "agent open") {
+    let content = match super::request(
+        payload,
+        &format!("{}-response", kind.replace('_', "-")),
+        label,
+    ) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -3030,16 +3086,19 @@ pub fn agent_open_cli(agent_name: &str, cwd: Option<&str>, json: bool) -> i32 {
             v.get("pane_id").and_then(|p| p.as_u64()),
         ) {
             (Some(outcome), Some(pane_id)) => {
-                println!("{outcome} {pane_id}");
+                match v.get("archived_run_id").and_then(|r| r.as_str()) {
+                    Some(run_id) => println!("{outcome} {pane_id} archived {run_id}"),
+                    None => println!("{outcome} {pane_id}"),
+                }
                 0
             }
             _ => {
-                eprintln!("error: agent open: reply has no outcome and pane_id: {content}");
+                eprintln!("error: {label}: reply has no outcome and pane_id: {content}");
                 1
             }
         },
         Err(e) => {
-            eprintln!("error: agent open: reply is not JSON ({e}): {content}");
+            eprintln!("error: {label}: reply is not JSON ({e}): {content}");
             1
         }
     }
@@ -4636,9 +4695,13 @@ mod agent_tests {
         // 1. pi: interactive (no -p), uses --no-extensions --no-mcp, --append-system-prompt with persona + contract + schema, and initial message.
         let pi_def = make_def("pi", Some("openrouter/~z-ai/glm-flash-latest"));
         let pi_adapter = super::harness_adapter("pi").unwrap();
-        let pi_cmd =
-            super::build_agent_spawn_command(&pi_def, pi_adapter, "Find where AgentRegistry loads")
-                .unwrap();
+        let pi_cmd = super::build_agent_spawn_command(
+            &pi_def,
+            pi_adapter,
+            "Find where AgentRegistry loads",
+            None,
+        )
+        .unwrap();
         assert!(
             pi_cmd.starts_with(
                 "pi --no-extensions --no-mcp --models '*' --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'You are a fast codebase researcher.\n\n# Plexi worker contract"
@@ -4655,7 +4718,7 @@ mod agent_tests {
         assert!(pi_cmd.contains("plexi agent ask \"<question>\""));
         assert!(pi_cmd.contains("\"required\":[\"answer\"]"));
         assert!(!pi_cmd.contains("# Persona"));
-        let raw_contract = super::format_worker_contract(&pi_def);
+        let raw_contract = super::format_worker_contract(&pi_def, None);
         assert!(
             raw_contract.contains("plexi agent done --summary \"<one line>\" --result '<json>'")
         );
@@ -4664,7 +4727,8 @@ mod agent_tests {
         let claude_def = make_def("claude", Some("claude-sonnet-4-5"));
         let claude_adapter = super::harness_adapter("claude").unwrap();
         let claude_cmd =
-            super::build_agent_spawn_command(&claude_def, claude_adapter, "Audit module").unwrap();
+            super::build_agent_spawn_command(&claude_def, claude_adapter, "Audit module", None)
+                .unwrap();
         assert!(
             claude_cmd.starts_with(
                 "claude --model claude-sonnet-4-5 --append-system-prompt 'You are a fast codebase researcher.\n\n# Plexi worker contract"
@@ -4681,7 +4745,7 @@ mod agent_tests {
         let codex_def = make_def("codex", Some("gpt-5-codex"));
         let codex_adapter = super::harness_adapter("codex").unwrap();
         let codex_cmd =
-            super::build_agent_spawn_command(&codex_def, codex_adapter, "Run suite").unwrap();
+            super::build_agent_spawn_command(&codex_def, codex_adapter, "Run suite", None).unwrap();
         assert!(
             codex_cmd.starts_with("codex --model gpt-5-codex --sandbox workspace-write -c sandbox_workspace_write.network_access=true -c "),
             "unexpected codex command: {codex_cmd}"
@@ -4701,7 +4765,8 @@ mod agent_tests {
         let agy_def = make_def("agy", Some("gemini-2.5-pro"));
         let agy_adapter = super::harness_adapter("agy").unwrap();
         let agy_cmd =
-            super::build_agent_spawn_command(&agy_def, agy_adapter, "Implement feature").unwrap();
+            super::build_agent_spawn_command(&agy_def, agy_adapter, "Implement feature", None)
+                .unwrap();
         assert!(
             agy_cmd.starts_with("agy --model gemini-2.5-pro --prompt-interactive "),
             "unexpected agy command: {agy_cmd}"
@@ -4721,7 +4786,8 @@ mod agent_tests {
             "[agent]\nid = \"helper\"\ndisplay_name = \"Helper\"\ndefault_tier = \"low\"\n\n[permissions]\ndefault_posture = \"ask\"\n",
         )
         .unwrap();
-        let err = super::build_agent_spawn_command(&assistant_only, pi_adapter, "hi").unwrap_err();
+        let err =
+            super::build_agent_spawn_command(&assistant_only, pi_adapter, "hi", None).unwrap_err();
         assert!(err.contains("[harness]"), "{err}");
     }
 
@@ -4735,7 +4801,7 @@ mod agent_tests {
         )
         .unwrap();
         let default_cmd =
-            super::build_agent_spawn_command(&default_def, pi_adapter, "do task").unwrap();
+            super::build_agent_spawn_command(&default_def, pi_adapter, "do task", None).unwrap();
         assert!(
             default_cmd.starts_with(
                 "pi --no-extensions --no-mcp --models '*' --model sonnet --append-system-prompt 'Secret persona text that must not appear in flags log.\n\n# Plexi worker contract"
@@ -4759,7 +4825,8 @@ mod agent_tests {
             "[agent]\nid = \"worker\"\ndisplay_name = \"Worker\"\n\n[harness]\ncli = \"pi\"\nextensions = [\"/tmp/my ext.ts\", \"builtin:plan-mode\"]\n",
         )
         .unwrap();
-        let ext_cmd = super::build_agent_spawn_command(&ext_def, pi_adapter, "do task").unwrap();
+        let ext_cmd =
+            super::build_agent_spawn_command(&ext_def, pi_adapter, "do task", None).unwrap();
         assert!(
             ext_cmd.starts_with(
                 "pi --no-extensions --no-mcp --models '*' -e '/tmp/my ext.ts' -e builtin:plan-mode --append-system-prompt 'Secret persona text.\n\n# Plexi worker contract"
@@ -5543,7 +5610,7 @@ mod agent_tests {
         // 1. pi: interactive (no -p), applies persona + worker contract via --append-system-prompt.
         let pi_def = make_def("pi", Some("openrouter/~z-ai/glm-flash-latest"));
         let pi_adapter = super::harness_adapter("pi").unwrap();
-        let pi_cmd = super::build_agent_start_command(&pi_def, pi_adapter, None).unwrap();
+        let pi_cmd = super::build_agent_start_command(&pi_def, pi_adapter, None, None).unwrap();
         assert!(
             pi_cmd.starts_with(
                 "pi --no-extensions --no-mcp --models '*' --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt "
@@ -5558,7 +5625,8 @@ mod agent_tests {
         assert!(pi_cmd.contains("# Plexi worker contract"));
 
         let pi_with_msg =
-            super::build_agent_start_command(&pi_def, pi_adapter, Some("Inspect auth")).unwrap();
+            super::build_agent_start_command(&pi_def, pi_adapter, Some("Inspect auth"), None)
+                .unwrap();
         assert!(
             pi_with_msg.ends_with("'Inspect auth'"),
             "pi start with initial message must append quoted message: {pi_with_msg}"
@@ -5569,7 +5637,8 @@ mod agent_tests {
         let claude_def = make_def("claude", Some("claude-sonnet-4-5"));
         let claude_adapter = super::harness_adapter("claude").unwrap();
         let claude_cmd =
-            super::build_agent_start_command(&claude_def, claude_adapter, Some("Hello")).unwrap();
+            super::build_agent_start_command(&claude_def, claude_adapter, Some("Hello"), None)
+                .unwrap();
         assert!(
             claude_cmd.starts_with("claude --model claude-sonnet-4-5 --append-system-prompt "),
             "unexpected claude start command: {claude_cmd}"
@@ -5583,7 +5652,7 @@ mod agent_tests {
         let codex_def = make_def("codex", Some("gpt-5-codex"));
         let codex_adapter = super::harness_adapter("codex").unwrap();
         let codex_cmd =
-            super::build_agent_start_command(&codex_def, codex_adapter, Some("Run checks"))
+            super::build_agent_start_command(&codex_def, codex_adapter, Some("Run checks"), None)
                 .unwrap();
         assert!(
             codex_cmd.starts_with(
@@ -5602,7 +5671,8 @@ mod agent_tests {
         let agy_def = make_def("agy", Some("gemini-2.5-pro"));
         let agy_adapter = super::harness_adapter("agy").unwrap();
         let agy_cmd =
-            super::build_agent_start_command(&agy_def, agy_adapter, Some("Summarize")).unwrap();
+            super::build_agent_start_command(&agy_def, agy_adapter, Some("Summarize"), None)
+                .unwrap();
         assert!(
             agy_cmd.starts_with("agy --model gemini-2.5-pro --prompt-interactive "),
             "unexpected agy start command: {agy_cmd}"
