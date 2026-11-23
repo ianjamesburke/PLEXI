@@ -555,20 +555,24 @@ impl PlexiApp {
             return serde_json::json!({ "ok": false, "error_code": "permission_denied", "error": error });
         }
         let result = self.spawn_agent_worker_attributed(
-            Some(spawned_by.clone()),
-            *anchor_pane,
-            role,
-            harness,
-            command,
-            task.as_deref().unwrap_or_default(),
-            subcontext.as_deref(),
-            *ephemeral,
-            effective_parent,
-            cwd.as_deref().map(std::path::PathBuf::from),
-            result_schema.clone(),
-            None,
-            false,
-            None,
+            crate::pane_ops::create::WorkerAttribution {
+                spawned_by: Some(spawned_by.clone()),
+                anchor_pane: *anchor_pane,
+            },
+            crate::pane_ops::create::WorkerSpawn {
+                role,
+                harness,
+                cmd: command,
+                task: task.as_deref().unwrap_or_default(),
+                subcontext: subcontext.as_deref(),
+                ephemeral: *ephemeral,
+                from_pane_id: effective_parent,
+                cwd_override: cwd.as_deref().map(std::path::PathBuf::from),
+                result_schema: result_schema.clone(),
+                run_token: None,
+                conjoined: false,
+                origin_context_id: None,
+            },
         );
         let payload = match result {
             Ok((new_pane_id, target_ctx_id)) => {

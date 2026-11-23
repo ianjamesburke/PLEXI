@@ -853,6 +853,18 @@ fn wildcard_stream_refusal(
     ))
 }
 
+/// One grant row the Assistant writes, with the decision that admits it.
+struct GrantWrite<'a, 'e> {
+    actor_id: &'a str,
+    actor_scope: ActorScope,
+    target_type: TargetType,
+    target: &'a str,
+    duration: GrantDuration,
+    source: GrantSource,
+    decision: Decision,
+    evidence: Option<crate::broker::consent::CoveredDecision<'e>>,
+}
+
 impl AssistantView {
     fn service_settings_watches(
         &mut self,
@@ -3015,16 +3027,16 @@ impl AssistantView {
             PermissionChoice::Deny | PermissionChoice::DenyAlways => {
                 if choice == PermissionChoice::DenyAlways {
                     let before = self.durable_grant_ids();
-                    self.record_grant_with_decision(
-                        ASSISTANT_ACTOR_ID,
-                        ActorScope::BuiltIn,
-                        TargetType::PluginEventStream,
-                        &target,
-                        GrantDuration::Always,
-                        GrantSource::User,
-                        Decision::Deny,
+                    self.record_grant_with_decision(GrantWrite {
+                        actor_id: ASSISTANT_ACTOR_ID,
+                        actor_scope: ActorScope::BuiltIn,
+                        target_type: TargetType::PluginEventStream,
+                        target: &target,
+                        duration: GrantDuration::Always,
+                        source: GrantSource::User,
+                        decision: Decision::Deny,
                         evidence,
-                    );
+                    });
                     if let Err(error) = self.save_durable_grants(&before) {
                         return ToolCallResult::err(error);
                     }
@@ -3091,16 +3103,16 @@ impl AssistantView {
             } else {
                 Decision::Deny
             };
-            self.record_grant_with_decision(
-                ASSISTANT_ACTOR_ID,
-                ActorScope::BuiltIn,
-                TargetType::PluginEventStream,
-                &target,
-                GrantDuration::Always,
-                GrantSource::User,
+            self.record_grant_with_decision(GrantWrite {
+                actor_id: ASSISTANT_ACTOR_ID,
+                actor_scope: ActorScope::BuiltIn,
+                target_type: TargetType::PluginEventStream,
+                target: &target,
+                duration: GrantDuration::Always,
+                source: GrantSource::User,
                 decision,
                 evidence,
-            );
+            });
             if let Err(error) = self.save_durable_grants(&before) {
                 self.fail_subscribe_save(reply, error);
                 return;
@@ -3167,15 +3179,16 @@ impl AssistantView {
             .pending_connector_actor
             .clone()
             .unwrap_or_else(|| self.connector_actor());
-        self.record_grant(
-            &actor_id,
+        self.record_grant_with_decision(GrantWrite {
+            actor_id: &actor_id,
             actor_scope,
             target_type,
             target,
             duration,
             source,
-            None,
-        );
+            decision: Decision::Allow,
+            evidence: None,
+        });
     }
 
     fn durable_grant_ids(&self) -> Vec<String> {
@@ -3241,52 +3254,29 @@ impl AssistantView {
         source: GrantSource,
         evidence: Option<crate::broker::consent::CoveredDecision<'_>>,
     ) {
-        self.record_grant(
-            ASSISTANT_ACTOR_ID,
-            ActorScope::BuiltIn,
+        self.record_grant_with_decision(GrantWrite {
+            actor_id: ASSISTANT_ACTOR_ID,
+            actor_scope: ActorScope::BuiltIn,
             target_type,
             target,
             duration,
             source,
+            decision: Decision::Allow,
             evidence,
-        );
+        });
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn record_grant(
-        &mut self,
-        actor_id: &str,
-        actor_scope: ActorScope,
-        target_type: TargetType,
-        target: &str,
-        duration: GrantDuration,
-        source: GrantSource,
-        evidence: Option<crate::broker::consent::CoveredDecision<'_>>,
-    ) {
-        self.record_grant_with_decision(
+    fn record_grant_with_decision(&mut self, write: GrantWrite<'_, '_>) {
+        let GrantWrite {
             actor_id,
             actor_scope,
             target_type,
             target,
             duration,
             source,
-            Decision::Allow,
+            decision,
             evidence,
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn record_grant_with_decision(
-        &mut self,
-        actor_id: &str,
-        actor_scope: ActorScope,
-        target_type: TargetType,
-        target: &str,
-        duration: GrantDuration,
-        source: GrantSource,
-        decision: Decision,
-        evidence: Option<crate::broker::consent::CoveredDecision<'_>>,
-    ) {
+        } = write;
         // Canonicalize to match `PermissionRequest`'s workspace normalization
         // (macOS tempdirs resolve `/var` → `/private/var`).
         let workspace_root = self
@@ -4441,16 +4431,16 @@ impl AssistantView {
                         );
                         continue;
                     };
-                    self.record_grant_with_decision(
-                        &actor_id,
+                    self.record_grant_with_decision(GrantWrite {
+                        actor_id: &actor_id,
                         actor_scope,
                         target_type,
-                        &row.target_id,
+                        target: &row.target_id,
                         duration,
                         source,
-                        row.decision,
+                        decision: row.decision,
                         evidence,
-                    );
+                    });
                     self.grants().save();
                     let _ = self.audit.append(&AuditEvent::now(
                         &self.audit_actor(),

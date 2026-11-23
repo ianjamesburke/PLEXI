@@ -382,6 +382,16 @@ pub struct HostSubscribeRequest {
     pub reply: SyncSender<HostSubscribeReply>,
 }
 
+/// Who an always event-stream grant is for and what it covers; the
+/// person's decision travels beside it.
+struct AlwaysStreamGrant<'a> {
+    actor_type: ActorType,
+    actor_id: &'a str,
+    plugin_id: &'a str,
+    targets: &'a [String],
+    workspace_root: &'a Path,
+}
+
 /// The resolved principal behind a subscribe request.
 #[derive(Clone, Debug)]
 pub enum SubscriberAuthority {
@@ -961,11 +971,13 @@ impl HostSubscriptionService {
             let persisted = match decision {
                 Some(Err(error)) => Err(error),
                 Some(Ok(evidence)) => self.persist_always_grants(
-                    subscriber_type,
-                    &broker_actor_id,
-                    &plugin_id,
-                    &targets,
-                    &workspace_root,
+                    AlwaysStreamGrant {
+                        actor_type: subscriber_type,
+                        actor_id: &broker_actor_id,
+                        plugin_id: &plugin_id,
+                        targets: &targets,
+                        workspace_root: &workspace_root,
+                    },
                     config_dir,
                     evidence,
                 ),
@@ -1095,17 +1107,19 @@ impl HostSubscriptionService {
     /// the consent touched (built by the caller via [`subscription_targets`] or
     /// [`publish_targets`]), then reload so later evaluations see it. Shared by
     /// the subscribe and publish consent paths.
-    #[allow(clippy::too_many_arguments)]
     fn persist_always_grants(
         &mut self,
-        actor_type: ActorType,
-        actor_id: &str,
-        plugin_id: &str,
-        targets: &[String],
-        workspace_root: &Path,
+        grant: AlwaysStreamGrant<'_>,
         config_dir: &Path,
         evidence: crate::broker::consent::CoveredDecision<'_>,
     ) -> Result<(), String> {
+        let AlwaysStreamGrant {
+            actor_type,
+            actor_id,
+            plugin_id,
+            targets,
+            workspace_root,
+        } = grant;
         let before: Vec<String> = self
             .grant_store
             .records()

@@ -2179,8 +2179,39 @@ impl PlexiApp {
         origin_context_id: Option<u64>,
     ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
         self.spawn_agent_worker_attributed(
-            None,
-            None,
+            WorkerAttribution {
+                spawned_by: None,
+                anchor_pane: None,
+            },
+            WorkerSpawn {
+                role,
+                harness,
+                cmd,
+                task,
+                subcontext,
+                ephemeral,
+                from_pane_id,
+                cwd_override,
+                result_schema,
+                run_token,
+                conjoined,
+                origin_context_id,
+            },
+        )
+    }
+
+    /// [`Self::spawn_agent_worker_pane`] with the attribution and placement
+    /// anchor its admission already decided. Neither grants anything.
+    pub(crate) fn spawn_agent_worker_attributed(
+        &mut self,
+        attribution: WorkerAttribution,
+        spawn: WorkerSpawn<'_>,
+    ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
+        let WorkerAttribution {
+            spawned_by,
+            anchor_pane,
+        } = attribution;
+        let WorkerSpawn {
             role,
             harness,
             cmd,
@@ -2193,29 +2224,7 @@ impl PlexiApp {
             run_token,
             conjoined,
             origin_context_id,
-        )
-    }
-
-    /// [`Self::spawn_agent_worker_pane`] with the attribution and placement
-    /// anchor its admission already decided. Neither grants anything.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn spawn_agent_worker_attributed(
-        &mut self,
-        spawned_by: Option<String>,
-        anchor_pane: Option<u64>,
-        role: &str,
-        harness: &str,
-        cmd: &str,
-        task: &str,
-        subcontext: Option<&str>,
-        ephemeral: bool,
-        from_pane_id: Option<u64>,
-        cwd_override: Option<std::path::PathBuf>,
-        result_schema: Option<serde_json::Value>,
-        run_token: Option<&str>,
-        conjoined: bool,
-        origin_context_id: Option<u64>,
-    ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
+        } = spawn;
         let anchor_at = anchor_pane.and_then(|pane| {
             let (window, _) = self.find_pane_in_any_window(pane)?;
             Some((pane, window, self.windows[window].context_id))
@@ -4269,6 +4278,29 @@ fn sanitize_wasm_path_component(input: &str) -> String {
     }
 }
 
+/// Who an agent worker is attributed to and where its admission placed it,
+/// both decided before the spawn. Neither grants anything.
+pub(crate) struct WorkerAttribution {
+    pub(crate) spawned_by: Option<String>,
+    pub(crate) anchor_pane: Option<u64>,
+}
+
+/// What agent worker to start, and from where.
+pub(crate) struct WorkerSpawn<'a> {
+    pub(crate) role: &'a str,
+    pub(crate) harness: &'a str,
+    pub(crate) cmd: &'a str,
+    pub(crate) task: &'a str,
+    pub(crate) subcontext: Option<&'a str>,
+    pub(crate) ephemeral: bool,
+    pub(crate) from_pane_id: Option<u64>,
+    pub(crate) cwd_override: Option<std::path::PathBuf>,
+    pub(crate) result_schema: Option<serde_json::Value>,
+    pub(crate) run_token: Option<&'a str>,
+    pub(crate) conjoined: bool,
+    pub(crate) origin_context_id: Option<u64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4819,3 +4851,4 @@ default = true
         );
     }
 }
+
