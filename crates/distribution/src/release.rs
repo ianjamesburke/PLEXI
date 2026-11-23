@@ -943,6 +943,17 @@ mod tests {
     }
 
     #[test]
+    fn github_request_retries_a_200_whose_body_stops_short() {
+        let truncated =
+            Some("HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nshort".into());
+        let (base, server) = stub(vec![truncated, ok(&release_json("v0.5.2", "stable"))]);
+        let agent = ureq::Agent::new();
+        let latest = GithubApi::new(&agent, base, FAST).latest().unwrap();
+        assert_eq!(latest.unwrap().tag_name, "v0.5.2");
+        assert_eq!(server.join().unwrap().len(), 2);
+    }
+
+    #[test]
     fn persistent_504_stops_after_the_bounded_attempts_with_a_friendly_error() {
         let (base, server) = stub(vec![gateway_timeout(); 3]);
         let agent = ureq::Agent::new();

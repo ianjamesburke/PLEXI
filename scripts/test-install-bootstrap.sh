@@ -125,6 +125,13 @@ FAILURES = {"flaky": 1, "down": 10**9}
 FIXTURES["flaky"] = FIXTURES["reported"]
 FIXTURES["down"] = FIXTURES["reported"]
 
+# A port nothing listens on: bound once for a number, then closed.
+import socket
+_probe = socket.socket()
+_probe.bind(("127.0.0.1", 0))
+CLOSED_PORT = _probe.getsockname()[1]
+_probe.close()
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -145,6 +152,20 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in parsed.path.split("/") if p]
         with open(hit_log, "a", encoding="utf-8") as fh:
             fh.write("AUTH " + self.headers.get("Authorization", "") + "\n")
+        if parts[:2] == ["fixtures", "truncated"]:
+            self.send_response(504)
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            self.wfile.write(b"short")
+            self.wfile.flush()
+            self.close_connection = True
+            return
+        if parts[:2] == ["fixtures", "redirect-closed"]:
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{CLOSED_PORT}/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if parts[:2] == ["fixtures", "rate-limit"]:
             self.send_response(403)
             self.send_header("x-ratelimit-remaining", "0")
@@ -393,9 +414,14 @@ else
   echo "PASS rate limit is not retried"
 fi
 
-# curl keeps a received status but exits nonzero when the body then resets
-# (56) or times out (28). The status decides; only a 5xx is retried.
-mkdir -p "$root/fakebin"
+# classify_response, cell by cell, through a fake curl: it writes the row's
+# status and extra header (no header file for 000), prints %{http_code} and
+# exits with the row's code. A no-op sleep keeps retry rows instant. Rows
+# follow the table in the PR #3292 design: status rc header calls expected.
+# expected: "rate" = rate-limit message, "slow" = GitHub is slow, "fail" = an
+# immediate failure that is not "slow", otherwise the HTTP status the caller
+# reports.
+mkdir -p "$root/fakebin" "$root/fakesleep"
 cat >"$root/fakebin/curl" <<'SH'
 #!/bin/sh
 echo call >>"$FAKE_CURL_CALLS"
@@ -404,28 +430,70 @@ for arg in "$@"; do
   [ "$previous" = "-D" ] && headers="$arg"
   previous="$arg"
 done
-{ printf 'HTTP/1.1 %s\r\n' "$FAKE_CURL_STATUS"; [ "$FAKE_CURL_STATUS" = 429 ] && printf 'retry-after: 60\r\n'; printf '\r\n'; } >"$headers"
+if [ "$FAKE_CURL_STATUS" != 000 ]; then
+  { printf 'HTTP/1.1 %s\r\n' "$FAKE_CURL_STATUS"; [ "$FAKE_CURL_HEADER" != - ] && printf '%s\r\n' "$(printf '%s' "$FAKE_CURL_HEADER" | sed 's/:/: /')"; printf '\r\n'; } >"$headers"
+fi
 printf '%s' "$FAKE_CURL_STATUS"
 exit "$FAKE_CURL_EXIT"
 SH
-chmod +x "$root/fakebin/curl"
-# name status exit expected_calls expected_stderr
-fake_curl_case() {
-  local name="$1" status="$2" code="$3" calls="$4" expected="$5" err
-  : >"$root/calls"
-  if err="$(env -u PLEXI_BOOTSTRAP_TAG PATH="$root/fakebin:$PATH" FAKE_CURL_CALLS="$root/calls" FAKE_CURL_STATUS="$status" FAKE_CURL_EXIT="$code" PLEXI_GITHUB_REPO_API="$base/fixtures/reported" bash "$repo/install.sh" --channel alpha 2>&1)"; then
-    echo "FAIL $name succeeded"
-    fail=1
-  elif [[ "$err" != *"$expected"* || "$(wc -l <"$root/calls" | tr -d ' ')" != "$calls" ]]; then
-    echo "FAIL $name: $(wc -l <"$root/calls" | tr -d ' ') calls, stderr: $err"
-    fail=1
-  else
+printf '#!/bin/sh\nexit 0\n' >"$root/fakesleep/sleep"
+chmod +x "$root/fakebin/curl" "$root/fakesleep/sleep"
+cp "$root/fakesleep/sleep" "$root/fakebin/sleep"
+
+# Checks one bootstrap run's stderr and request count against a row.
+check_row() {
+  local name="$1" err="$2" calls_got="$3" calls="$4" expected="$5" ok=1
+  case "$expected" in
+    rate) [[ "$err" == *"GitHub API rate limit reached"* ]] || ok=0 ;;
+    slow) [[ "$err" == *"GitHub is slow, try again."* ]] || ok=0 ;;
+    fail) [[ "$err" == *"GitHub request to "*" failed (curl exit "* && "$err" != *"GitHub is slow"* ]] || ok=0 ;;
+    *) [[ "$err" == *"Unable to list Plexi release tags: HTTP $expected."* ]] || ok=0 ;;
+  esac
+  if (( ok )) && [[ "$calls_got" == "$calls" ]]; then
     echo "PASS $name"
+  else
+    echo "FAIL $name: $calls_got calls (want $calls), stderr: $err"
+    fail=1
   fi
 }
-fake_curl_case "HTTP 429 then reset is a rate limit, not retried" 429 56 1 "GitHub API rate limit reached"
-fake_curl_case "HTTP 404 then timeout is not retried" 404 28 1 "Unable to list Plexi release tags: HTTP 404."
-fake_curl_case "HTTP 504 then reset is retried and bounded" 504 56 3 "GitHub is slow, try again."
+
+while read -r status code header calls expected; do
+  [[ -z "$status" || "$status" == \#* ]] && continue
+  : >"$root/calls"
+  err="$(env -u PLEXI_BOOTSTRAP_TAG PATH="$root/fakebin:$PATH" FAKE_CURL_CALLS="$root/calls" FAKE_CURL_STATUS="$status" FAKE_CURL_EXIT="$code" FAKE_CURL_HEADER="$header" PLEXI_GITHUB_REPO_API="$base/fixtures/reported" bash "$repo/install.sh" --channel alpha 2>&1)" && err="unexpected success: $err"
+  check_row "curl $status / exit $code ($header)" "$err" "$(wc -l <"$root/calls" | tr -d ' ')" "$calls" "$expected"
+done <<'ROWS'
+429 0 - 1 rate
+429 56 - 1 rate
+403 28 x-ratelimit-remaining:0 1 rate
+403 0 - 1 403
+404 28 - 1 404
+504 0 - 3 slow
+504 56 - 3 slow
+504 18 - 3 slow
+504 92 - 3 slow
+200 18 - 3 slow
+200 28 - 3 slow
+200 23 - 1 fail
+302 0 - 1 302
+302 7 - 3 slow
+302 47 - 1 fail
+000 7 - 3 slow
+000 28 - 3 slow
+000 6 - 1 fail
+000 60 - 1 fail
+000 127 - 1 fail
+000 99 - 3 slow
+ROWS
+
+# The same cells through real curl: a 504 whose body stops short of its
+# Content-Length (curl 504 / exit 18) and a redirect to a closed port
+# (curl 302 / exit 7). Both are retried.
+for fixture in truncated redirect-closed; do
+  : >"$hits"
+  err="$(env -u PLEXI_BOOTSTRAP_TAG PATH="$root/fakesleep:$PATH" PLEXI_GITHUB_REPO_API="$base/fixtures/$fixture" bash "$repo/install.sh" --channel alpha 2>&1)" && err="unexpected success: $err"
+  check_row "real curl $fixture" "$err" "$(grep -c "^/fixtures/$fixture/" "$hits")" 3 slow
+done
 
 if [[ "$fail" -ne 0 ]]; then
   echo "install bootstrap channel selection failed"

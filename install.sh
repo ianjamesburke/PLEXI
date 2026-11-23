@@ -103,12 +103,35 @@ release_tag_with_asset() {
   ' || true
 }
 
+# Verdict for one finished curl run: ok, status, rate_limit, retry or fail.
+# <status> is curl's %{http_code} ("" when no response arrived), <rc> its exit
+# code, <limited> is 1 when the headers show a rate limit.
+classify_response() {
+  local status="$1" rc="$2" limited="$3"
+  # A 4xx or 5xx is the server's answer and its body is unused: rc is ignored.
+  case "$status" in
+    429) echo rate_limit; return ;;
+    403) if [[ "$limited" == 1 ]]; then echo rate_limit; else echo status; fi; return ;;
+    4??) echo status; return ;;
+    5??) echo retry; return ;;
+  esac
+  # No answer: a 2xx needs its whole body, and a 1xx or 3xx beside a failed exit
+  # is an earlier hop's status (curl -L keeps it when the next hop breaks).
+  case "$rc" in
+    0) case "$status" in 2??) echo ok ;; 3??) echo status ;; *) echo retry ;; esac ;;
+    # The same command would fail again: bad URL or option, DNS, local write,
+    # redirect loop, certificate trust, curl missing or killed.
+    1|2|3|4|5|6|23|26|27|43|47|48|51|53|54|58|59|60|66|77|83|90|91|12[6-9]|1[3-9][0-9]|2[0-9][0-9]) echo fail ;;
+    *) echo retry ;;
+  esac
+}
+
 # GET <path> under the repository API into <file>; prints the HTTP status.
-# Server errors, timeouts and resets are retried with doubling delays; a rate
-# limit or other 4xx answers at once. Exhausted retries say GitHub is slow.
+# classify_response decides each attempt; retries double their delay and
+# exhausted retries say GitHub is slow.
 github_get() {
   local url="$repo_api/$1" out="$2" attempt=1 attempts=3 delay=1
-  local headers status rc detail reset retry_after remaining
+  local headers status rc detail reset retry_after remaining limited
   while :; do
     headers="$(mktemp)"
     local curl_args=(-q -sS -L --connect-timeout 10 --max-time 20 -H 'Accept: application/vnd.github+json' -D "$headers" -o "$out" -w '%{http_code}')
@@ -119,34 +142,24 @@ github_get() {
     reset="$(awk 'tolower($1) == "x-ratelimit-reset:" {sub(/\r$/, "", $2); print $2}' "$headers" | tail -n 1)"
     retry_after="$(awk 'tolower($1) == "retry-after:" {sub(/\r$/, "", $2); print $2}' "$headers" | tail -n 1)"
     rm -f "$headers"
-    # A received status decides first: a 4xx or rate limit stands even when the
-    # body then resets or times out (curl keeps the status and exits nonzero).
     [[ "$status" =~ ^[1-9][0-9][0-9]$ ]] || status=""
-    if [[ "$status" == 429 || ( "$status" == 403 && ( "$remaining" == 0 || -n "$retry_after" ) ) ]]; then
-      local reset_at=""
-      if [[ "$reset" =~ ^[0-9]+$ ]]; then
-        reset_at="$(date -d "@$reset" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || date -r "$reset" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || true)"
-      elif [[ "$retry_after" =~ ^[0-9]+$ ]]; then
-        local until=$(( $(date +%s) + retry_after ))
-        reset_at="$(date -d "@$until" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || date -r "$until" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || true)"
-      fi
-      [[ -n "$reset_at" ]] || reset_at="the time shown by GitHub"
-      echo "GitHub API rate limit reached (unauthenticated limit is 60 requests/hour per IP). Resets at ${reset_at}. Set GITHUB_TOKEN (or GH_TOKEN) and retry, or retry after the reset." >&2
-      return 1
-    fi
-    if [[ -n "$status" ]] && (( status >= 300 && status < 500 )); then
-      printf '%s' "$status"
-      return 0
-    fi
-    if [[ -n "$status" ]] && (( status < 300 )) && (( rc == 0 )); then
-      printf '%s' "$status"
-      return 0
-    fi
-    # Left: a 5xx, or a transport failure before or during the body.
-    case "$rc" in
-      0) detail="HTTP $status" ;;
-      7|28|35|52|55|56) detail="curl exit $rc${status:+ after HTTP $status}" ;;
-      *) echo "Unable to reach GitHub at $url (curl exit $rc)." >&2; return 1 ;;
+    limited=0
+    [[ "$remaining" == 0 || -n "$retry_after" ]] && limited=1
+    if (( rc != 0 )); then detail="curl exit $rc${status:+ after HTTP $status}"; else detail="HTTP ${status:-status missing}"; fi
+    case "$(classify_response "$status" "$rc" "$limited")" in
+      ok|status) printf '%s' "$status"; return 0 ;;
+      rate_limit)
+        local reset_at=""
+        if [[ "$reset" =~ ^[0-9]+$ ]]; then
+          reset_at="$(date -d "@$reset" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || date -r "$reset" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || true)"
+        elif [[ "$retry_after" =~ ^[0-9]+$ ]]; then
+          local until=$(( $(date +%s) + retry_after ))
+          reset_at="$(date -d "@$until" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || date -r "$until" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || true)"
+        fi
+        [[ -n "$reset_at" ]] || reset_at="the time shown by GitHub"
+        echo "GitHub API rate limit reached (unauthenticated limit is 60 requests/hour per IP). Resets at ${reset_at}. Set GITHUB_TOKEN (or GH_TOKEN) and retry, or retry after the reset." >&2
+        return 1 ;;
+      fail) echo "GitHub request to $url failed ($detail)." >&2; return 1 ;;
     esac
     if (( attempt >= attempts )); then
       echo "GitHub is slow, try again. ($detail from $url after $attempts attempts)" >&2
