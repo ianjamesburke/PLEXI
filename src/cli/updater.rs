@@ -1,7 +1,7 @@
 use std::{path::Path, time::Duration};
 
 use crate::app::ui_mailbox::UiMailbox;
-use crate::cli::release_resolver::{self, GithubRelease, ReleaseTag, UpdateChannel};
+use crate::cli::release_resolver::{self, ReleaseTag, UpdateChannel};
 use crate::host::update_status::{CheckMode, UpdateEvent};
 
 pub(crate) const CHECK_INTERVAL: Duration = Duration::from_secs(86_400);
@@ -77,16 +77,16 @@ fn run_check(cache_dir: &Path, mode: CheckMode, mailbox: &UiMailbox<UpdateEvent>
         build_id: env!("PLEXI_BUILD_ID"),
         now: crate::platform::clock::now_secs(),
     };
-    let fetch = || {
+    let resolve = |current: &ReleaseTag| {
         let agent = ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(5))
             .build();
-        release_resolver::fetch_releases(&agent)
+        release_resolver::resolve_latest(&agent, check.channel, current)
     };
     check_and_install(
         &check,
         mode,
-        fetch,
+        resolve,
         |tag| background_build(tag, cache_dir),
         mailbox,
     )
@@ -108,7 +108,7 @@ struct Check<'a> {
 fn check_and_install(
     check: &Check,
     mode: CheckMode,
-    fetch: impl FnOnce() -> Result<Vec<GithubRelease>, String>,
+    resolve: impl FnOnce(&ReleaseTag) -> Result<Option<ReleaseTag>, String>,
     install: impl FnOnce(&str) -> Result<(), String>,
     mailbox: &UiMailbox<UpdateEvent>,
 ) -> UpdateEvent {
@@ -117,7 +117,7 @@ fn check_and_install(
         current_raw,
         ..
     } = *check;
-    let (latest, checked_at) = match latest_release(check, mode, fetch) {
+    let (latest, checked_at) = match latest_release(check, mode, resolve) {
         Ok(found) => found,
         Err(reason) => {
             log::warn!("update check: {reason}");
@@ -206,7 +206,7 @@ fn detect_channel() -> UpdateChannel {
 fn latest_release(
     check: &Check,
     mode: CheckMode,
-    fetch: impl FnOnce() -> Result<Vec<GithubRelease>, String>,
+    resolve: impl FnOnce(&ReleaseTag) -> Result<Option<ReleaseTag>, String>,
 ) -> Result<(Option<String>, u64), String> {
     if mode == CheckMode::Scheduled {
         if let Ok(bytes) = std::fs::read(check.cache_path) {
@@ -220,7 +220,7 @@ fn latest_release(
             }
         }
     }
-    fetch_and_cache(check, fetch)
+    resolve_and_cache(check, resolve)
 }
 
 fn update_cache_fresh_for(
@@ -318,7 +318,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    fn published(tag: &str) -> GithubRelease {
+    fn published(tag: &str) -> plexi_distribution::release::Release {
         let platform = plexi_distribution::release::platform().expect("supported test platform");
         let asset = plexi_distribution::release::archive_name(&platform, "alpha");
         serde_json::from_value(serde_json::json!({
@@ -329,11 +329,51 @@ mod tests {
         .expect("release fixture")
     }
 
+    /// Published releases as a `release::resolve` source.
+    struct Listed(Vec<plexi_distribution::release::Release>);
+
+    impl plexi_distribution::release::ReleaseSource for Listed {
+        fn latest(
+            &self,
+        ) -> plexi_distribution::Result<Option<plexi_distribution::release::Release>> {
+            Ok(self.0.iter().find(|r| !r.prerelease).cloned())
+        }
+        fn tags(&self) -> plexi_distribution::Result<Vec<String>> {
+            Ok(self.0.iter().map(|r| r.tag_name.clone()).collect())
+        }
+        fn release(
+            &self,
+            tag: &str,
+        ) -> plexi_distribution::Result<Option<plexi_distribution::release::Release>> {
+            Ok(self.0.iter().find(|r| r.tag_name == tag).cloned())
+        }
+    }
+
     /// Runs the check thread's whole decision as a scheduled launch check on
-    /// the alpha channel, with a cache an older build left behind that names
-    /// v0.5.0-beta.1. Returns the outcome, every event sent before it, and the
-    /// tags handed to the installer.
+    /// the alpha channel against `tags`, published through the production
+    /// resolution policy.
     fn launch_check(current: &str, tags: &[&str]) -> (UpdateEvent, Vec<UpdateEvent>, Vec<String>) {
+        let source = Listed(tags.iter().map(|tag| published(tag)).collect());
+        launch_check_with(current, |current| {
+            let platform = plexi_distribution::release::platform().map_err(|e| e.to_string())?;
+            let chosen = plexi_distribution::release::resolve(
+                &source,
+                UpdateChannel::Alpha.key(),
+                &platform,
+                Some(&current.raw),
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(chosen.and_then(|r| ReleaseTag::parse(&r.tag_name)))
+        })
+    }
+
+    /// The same launch check with a cache an older build left behind that
+    /// names v0.5.0-beta.1. Returns the outcome, every event sent before it,
+    /// and the tags handed to the installer.
+    fn launch_check_with(
+        current: &str,
+        resolve: impl FnOnce(&ReleaseTag) -> Result<Option<ReleaseTag>, String>,
+    ) -> (UpdateEvent, Vec<UpdateEvent>, Vec<String>) {
         let dir =
             std::env::temp_dir().join(format!("plexi-update-check-test-{}", uuid::Uuid::new_v4()));
         let now = 1_000_000;
@@ -346,7 +386,6 @@ mod tests {
             build_id: "this-build",
             now,
         };
-        let releases: Vec<_> = tags.iter().map(|tag| published(tag)).collect();
         let (mailbox, rx) = UiMailbox::channel(
             std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new()),
             "update_check",
@@ -355,7 +394,7 @@ mod tests {
         let outcome = check_and_install(
             &check,
             CheckMode::Scheduled,
-            || Ok(releases),
+            resolve,
             |tag| {
                 installed.push(tag.to_string());
                 Ok(())
@@ -365,6 +404,22 @@ mod tests {
         let events = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         let _ = std::fs::remove_dir_all(dir);
         (outcome, events, installed)
+    }
+
+    #[test]
+    fn update_check_shows_the_friendly_github_error_not_the_status() {
+        let slow = plexi_distribution::Error::GithubSlow {
+            detail: "GET https://api.github.com/x: status code 504 after 3 attempts".into(),
+        };
+        let (outcome, events, installed) =
+            launch_check_with("v0.5.0-alpha.6", |_| Err(slow.to_string()));
+        assert_eq!(
+            outcome,
+            UpdateEvent::Failed {
+                reason: "GitHub is slow, try again".into()
+            }
+        );
+        assert!(events.is_empty() && installed.is_empty());
     }
 
     #[test]
@@ -460,14 +515,15 @@ mod tests {
     }
 }
 
-fn fetch_and_cache(
+/// `resolve` errors are already worded for people ("GitHub is slow, try
+/// again"); their status detail is in the log.
+fn resolve_and_cache(
     check: &Check,
-    fetch: impl FnOnce() -> Result<Vec<GithubRelease>, String>,
+    resolve: impl FnOnce(&ReleaseTag) -> Result<Option<ReleaseTag>, String>,
 ) -> Result<(Option<String>, u64), String> {
-    let releases = fetch().map_err(|e| format!("could not fetch releases: {e}"))?;
     let current = ReleaseTag::parse(check.current_raw)
         .ok_or_else(|| format!("could not read the running version {}", check.current_raw))?;
-    let best = release_resolver::resolve_best(&releases, check.channel, &current);
+    let best = resolve(&current)?;
 
     let latest_raw = best.as_ref().map(|t| t.raw.clone());
     let cache = serde_json::json!({

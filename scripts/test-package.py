@@ -83,12 +83,16 @@ def main(args):
                 def __init__(self, *a, **kw): super().__init__(*a, directory=str(server_root), **kw)
                 def log_message(self, *a): pass
                 def do_GET(self):
-                    if self.path.startswith('/releases'):
-                        self.send_response(200); self.end_headers(); self.wfile.write(json.dumps([release]).encode())
-                    else: super().do_GET()
+                    if self.path in ('/releases/latest', '/releases/tags/' + tag):
+                        body = json.dumps(release).encode()
+                    elif self.path == '/git/matching-refs/tags/v':
+                        body = json.dumps([dict(ref='refs/tags/' + tag)]).encode()
+                    else:
+                        return super().do_GET()
+                    self.send_response(200); self.end_headers(); self.wfile.write(body)
             server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
             worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
-            env.update(PLEXI_BOOTSTRAP_TAG=tag, PLEXI_RELEASES_URL=f'http://127.0.0.1:{server.server_port}/releases', PLEXI_RELEASE_BASE_URL=f'http://127.0.0.1:{server.server_port}/download', PLEXI_INSTALL_DIR=str(root / 'install'), PLEXI_BIN_DIR=str(root / 'bin'))
+            env.update(PLEXI_BOOTSTRAP_TAG=tag, PLEXI_GITHUB_REPO_API=f'http://127.0.0.1:{server.server_port}', PLEXI_RELEASE_BASE_URL=f'http://127.0.0.1:{server.server_port}/download', PLEXI_INSTALL_DIR=str(root / 'install'), PLEXI_BIN_DIR=str(root / 'bin'))
             try:
                 bootstrap = ['powershell', '-NoProfile', '-File', REPO / 'scripts/install-windows.ps1', '-Channel', channel] if os.name == 'nt' else ['bash', REPO / 'install.sh', '--channel', channel]
                 if not args.gui: bootstrap.append('-InstallOnly' if os.name == 'nt' else '--install-only')
@@ -96,7 +100,7 @@ def main(args):
                 auto_started = args.gui
             finally:
                 server.shutdown(); server.server_close(); worker.join()
-                for key in ['PLEXI_BOOTSTRAP_TAG', 'PLEXI_RELEASES_URL', 'PLEXI_RELEASE_BASE_URL']:
+                for key in ['PLEXI_BOOTSTRAP_TAG', 'PLEXI_GITHUB_REPO_API', 'PLEXI_RELEASE_BASE_URL']:
                     env.pop(key)
         else:
             run([installer, '--package', package, '--channel', channel, '--install-dir', root / 'install', '--bin-dir', root / 'bin', '--applications-dir', home / 'Applications', '--install-only'])

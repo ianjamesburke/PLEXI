@@ -12,17 +12,25 @@ case "$(uname -m)" in
   *) echo 'Unsupported processor architecture.' >&2; exit 1 ;;
 esac
 base="${PLEXI_RELEASE_BASE_URL:-https://github.com/ianjamesburke/PLEXI/releases/download}"
-releases_url="${PLEXI_RELEASES_URL:-https://api.github.com/repos/ianjamesburke/PLEXI/releases}"
+# Resolution reads releases/latest, git/matching-refs/tags/v and releases/tags/<tag>,
+# never the paginated release list (it returned 504 for hours on 2026-11-23).
+repo_api="${PLEXI_GITHUB_REPO_API:-https://api.github.com/repos/ianjamesburke/PLEXI}"
+max_tag_lookups=5
 github_token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 
-# Last --channel wins. The original argv is forwarded unchanged.
+# Last --channel and --tag win. The original argv is forwarded unchanged.
 channel=stable
+user_tag=""
 previous=""
 for arg in "$@"; do
   if [[ "$previous" == "--channel" ]]; then
     channel="$arg"
   elif [[ "$arg" == --channel=* ]]; then
     channel="${arg#--channel=}"
+  elif [[ "$previous" == "--tag" ]]; then
+    user_tag="$arg"
+  elif [[ "$arg" == --tag=* ]]; then
+    user_tag="${arg#--tag=}"
   fi
   previous="$arg"
 done
@@ -75,21 +83,14 @@ max_semver() {
   printf '%s' "$best"
 }
 
-# GitHub emits compact JSON with tag_name before draft. Drafts and non-channel tags are dropped.
-extract_tags() {
+# Prints the tag of one release JSON object when it is not a draft and carries $asset.
+# GitHub emits tag_name before draft and assets.
+release_tag_with_asset() {
   grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"|"draft"[[:space:]]*:[[:space:]]*(true|false)|"name"[[:space:]]*:[[:space:]]*"[^"]+"' | awk -v asset="$asset" '
-    function flush() {
-      if (have && !draft && has_asset && tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+(-alpha\.[0-9]+|-beta\.[0-9]+)?$/) print tag
-    }
     /"tag_name"/ {
-      flush()
       tag = $0
       sub(/.*"tag_name"[[:space:]]*:[[:space:]]*"/, "", tag)
       sub(/".*/, "", tag)
-      draft = 0
-      has_asset = 0
-      have = 1
-      next
     }
     /"draft"/ { draft = ($0 ~ /true/) }
     /"name"/ {
@@ -98,28 +99,27 @@ extract_tags() {
       sub(/".*/, "", name)
       if (name == asset) has_asset = 1
     }
-    END { flush() }
+    END { if (!draft && has_asset && tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+(-alpha\.[0-9]+|-beta\.[0-9]+)?$/) print tag }
   ' || true
 }
 
-fetch_tags() {
-  local page=1 batch extracted count tags="" headers body status reset retry_after remaining
-  while (( page <= 1000 )); do
+# GET <path> under the repository API into <file>; prints the HTTP status.
+# Server errors, timeouts and resets are retried with doubling delays; a rate
+# limit or other 4xx answers at once. Exhausted retries say GitHub is slow.
+github_get() {
+  local url="$repo_api/$1" out="$2" attempt=1 attempts=3 delay=1
+  local headers status rc detail reset retry_after remaining
+  while :; do
     headers="$(mktemp)"
-    body="$(mktemp)"
-    local curl_args=(-q -sS -L --retry 3 --connect-timeout 15 -D "$headers" -o "$body" -w '%{http_code}')
+    local curl_args=(-q -sS -L --connect-timeout 10 --max-time 20 -H 'Accept: application/vnd.github+json' -D "$headers" -o "$out" -w '%{http_code}')
     [[ -n "$github_token" ]] && curl_args+=(-H "Authorization: Bearer $github_token")
-    status="$(curl "${curl_args[@]}" "${releases_url}?per_page=100&page=${page}")" || {
-      rm -f "$headers" "$body"
-      echo "Unable to fetch Plexi releases page ${page}." >&2
-      exit 1
-    }
-    batch="$(cat "$body")"
+    rc=0
+    status="$(curl "${curl_args[@]}" "$url" 2>/dev/null)" || rc=$?
     remaining="$(awk 'tolower($1) == "x-ratelimit-remaining:" {sub(/\r$/, "", $2); print $2}' "$headers" | tail -n 1)"
     reset="$(awk 'tolower($1) == "x-ratelimit-reset:" {sub(/\r$/, "", $2); print $2}' "$headers" | tail -n 1)"
     retry_after="$(awk 'tolower($1) == "retry-after:" {sub(/\r$/, "", $2); print $2}' "$headers" | tail -n 1)"
-    rm -f "$headers" "$body"
-    if [[ "$status" == 429 || ( "$status" == 403 && ( "$remaining" == 0 || -n "$retry_after" ) ) ]]; then
+    rm -f "$headers"
+    if (( rc == 0 )) && [[ "$status" == 429 || ( "$status" == 403 && ( "$remaining" == 0 || -n "$retry_after" ) ) ]]; then
       local reset_at=""
       if [[ "$reset" =~ ^[0-9]+$ ]]; then
         reset_at="$(date -d "@$reset" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || date -r "$reset" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || true)"
@@ -129,28 +129,53 @@ fetch_tags() {
       fi
       [[ -n "$reset_at" ]] || reset_at="the time shown by GitHub"
       echo "GitHub API rate limit reached (unauthenticated limit is 60 requests/hour per IP). Resets at ${reset_at}. Set GITHUB_TOKEN (or GH_TOKEN) and retry, or retry after the reset." >&2
-      exit 1
+      return 1
     fi
-    if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
-      echo "Unable to fetch Plexi releases page ${page}: HTTP ${status}." >&2
-      exit 1
+    if (( rc == 0 )) && [[ "$status" =~ ^[0-9]+$ ]] && (( status < 500 )); then
+      printf '%s' "$status"
+      return 0
     fi
-    extracted="$(printf '%s' "$batch" | extract_tags)"
-    if [[ -n "$extracted" ]]; then
-      tags="${tags}${extracted}"$'\n'
+    case "$rc" in
+      0) detail="HTTP $status" ;;
+      7|28|35|52|55|56) detail="curl exit $rc" ;;
+      *) echo "Unable to reach GitHub at $url (curl exit $rc)." >&2; return 1 ;;
+    esac
+    if (( attempt >= attempts )); then
+      echo "GitHub is slow, try again. ($detail from $url after $attempts attempts)" >&2
+      return 1
     fi
-    count="$(printf '%s' "$batch" | grep -o '"tag_name"' | wc -l | tr -d ' ')" || count=0
-    [[ -n "$count" ]] || count=0
-    if (( count < 100 )); then
-      break
-    fi
-    if (( page == 1000 )); then
-      echo 'release pagination exceeded its bound' >&2
-      exit 1
-    fi
-    page=$((page + 1))
+    echo "GitHub request failed ($detail); retrying in ${delay}s (attempt $attempt/$attempts)." >&2
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
   done
-  printf '%s' "$tags"
+}
+
+# Prints the release's tag when <path> names a published release carrying $asset.
+release_at() {
+  local body status
+  body="$(mktemp)"
+  status="$(github_get "$1" "$body")" || { rm -f "$body"; return 1; }
+  case "$status" in
+    200) release_tag_with_asset <"$body" ;;
+    404) ;;
+    *) rm -f "$body"; echo "Unable to read Plexi release $1: HTTP ${status}." >&2; return 1 ;;
+  esac
+  rm -f "$body"
+}
+
+fetch_tags() {
+  local body status
+  body="$(mktemp)"
+  status="$(github_get "git/matching-refs/tags/v" "$body")" || { rm -f "$body"; return 1; }
+  if [[ "$status" != 200 ]]; then
+    rm -f "$body"
+    echo "Unable to list Plexi release tags: HTTP ${status}." >&2
+    return 1
+  fi
+  grep -oE '"ref"[[:space:]]*:[[:space:]]*"refs/tags/[^"]+"' "$body" | sed -E 's#.*refs/tags/##; s#"$##' |
+    grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-alpha\.[0-9]+|-beta\.[0-9]+)?$' || true
+  rm -f "$body"
 }
 
 lane_tags() {
@@ -165,32 +190,59 @@ lane_tags() {
   return 0
 }
 
-# Mirrors release::select for the installer binary's tag. Alpha uses
-# alpha_preference (alpha, then beta, then stable). Beta is plain SemVer
-# across beta and stable. See crates/distribution/src/release.rs.
+# The best <count> tags on stdin, best first.
+top_tags() {
+  local count="$1" tags best
+  tags="$(cat)"
+  while (( count > 0 )); do
+    best="$(printf '%s\n' "$tags" | max_semver)"
+    [[ -z "$best" ]] && break
+    printf '%s\n' "$best"
+    tags="$(printf '%s\n' "$tags" | grep -vxF "$best" || true)"
+    count=$((count - 1))
+  done
+}
+
+# Mirrors release::resolve (crates/distribution/src/release.rs). Stable is
+# GitHub's latest release. Alpha ranks alpha, then beta, then stable tags; beta
+# ranks beta and stable tags by SemVer. The best ranked tags are looked up one
+# at a time and the first published release with the installer wins.
 select_channel_tag() {
-  local want="$1" tags best
-  tags="$(fetch_tags)" || exit 1
-  if [[ "$want" == alpha ]]; then
-    best="$(printf '%s\n' "$tags" | lane_tags alpha | max_semver)"
-    [[ -n "$best" ]] && { printf '%s' "$best"; return; }
-    best="$(printf '%s\n' "$tags" | lane_tags beta | max_semver)"
-    [[ -n "$best" ]] && { printf '%s' "$best"; return; }
-    printf '%s' "$(printf '%s\n' "$tags" | lane_tags stable | max_semver)"
-    return
-  fi
+  local want="$1" tags ranked tag found count=0
   if [[ "$want" == stable ]]; then
-    printf '%s' "$(printf '%s\n' "$tags" | lane_tags stable | max_semver)"
+    release_at "releases/latest"
     return
   fi
-  best="$(printf '%s\n' "$tags" | lane_tags beta; printf '%s\n' "$tags" | lane_tags stable)"
-  printf '%s\n' "$best" | max_semver
+  tags="$(fetch_tags)" || return 1
+  if [[ "$want" == alpha ]]; then
+    ranked="$(
+      printf '%s\n' "$tags" | lane_tags alpha | top_tags $((max_tag_lookups + 1))
+      printf '%s\n' "$tags" | lane_tags beta | top_tags $((max_tag_lookups + 1))
+      printf '%s\n' "$tags" | lane_tags stable | top_tags $((max_tag_lookups + 1))
+    )"
+  else
+    ranked="$({ printf '%s\n' "$tags" | lane_tags beta; printf '%s\n' "$tags" | lane_tags stable; } | top_tags $((max_tag_lookups + 1)))"
+  fi
+  while IFS= read -r tag; do
+    [[ -z "$tag" ]] && continue
+    if (( count == max_tag_lookups )); then
+      echo "None of the newest ${max_tag_lookups} ${want} releases has ${asset}." >&2
+      return 1
+    fi
+    found="$(release_at "releases/tags/$tag")" || return 1
+    if [[ -n "$found" ]]; then
+      printf '%s' "$found"
+      return
+    fi
+    count=$((count + 1))
+  done <<<"$ranked"
 }
 
 # Resolve once, then pin both executable and checksum to the same released tag.
 # PLEXI_BOOTSTRAP_TAG overrides channel selection.
+# A user --tag pins the installer to that release and needs no lookup.
 asset="plexi-installer-${os}-${arch}"
-tag="${PLEXI_BOOTSTRAP_TAG:-}"
+tag="${PLEXI_BOOTSTRAP_TAG:-$user_tag}"
 if [[ -z "$tag" ]]; then
   case "$channel" in
     alpha|beta) tag="$(select_channel_tag "$channel")" || exit 1 ;;

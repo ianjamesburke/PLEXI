@@ -19,11 +19,14 @@ irm https://plexiapp.com/install.ps1 | iex
 ```
 
 The bootstrap pins the installer and its checksum to one released tag.
-`PLEXI_BOOTSTRAP_TAG` overrides selection. Otherwise `--channel` / `-Channel`
-`alpha` and `beta` follow `release::select` (`crates/distribution/src/release.rs`):
-alpha prefers the newest alpha tag, then beta, then stable, and beta takes the
-greatest SemVer among beta and stable. The default and `stable` use the latest
-stable release. Neither public entrypoint downloads executable code from
+`PLEXI_BOOTSTRAP_TAG`, then a user `--tag`, override selection without any
+API request. Otherwise `--channel` / `-Channel` `alpha` and `beta` follow
+`release::resolve` (`crates/distribution/src/release.rs`): alpha prefers the
+newest alpha tag, then beta, then stable, and beta takes the greatest SemVer
+among beta and stable. The default and `stable` use GitHub's latest release.
+Resolution reads `releases/latest`, the tag refs and single releases by tag,
+never the paginated release list, and retries GitHub server errors and
+timeouts a bounded number of times. Neither public entrypoint downloads executable code from
 a development branch. Deploy these website entrypoints only after the first
 package-based release has passed publication gates and contains the installer
 assets; a code merge alone does not publish those assets.
@@ -261,7 +264,7 @@ responsibilities; fixture tests do not establish those results.
 `test-distribution.py` uses tiny host fixtures to exercise ownership, recovery,
 rollback, simultaneous installs, PATH integration, checksums and bootstrap HTTP
 failures. `test-install-bootstrap.sh` checks the public bootstrap's resolved tag
-for each channel against a fake release API (`PLEXI_RELEASES_URL`). `test-package.py` runs the real packaged WASI guest and optionally
+for each channel against a fake repository API (`PLEXI_GITHUB_REPO_API`). `test-package.py` runs the real packaged WASI guest and optionally
 launches a native host, drives terminal I/O and Calculator, captures through
 `host screenshot`, restarts and removes the channel. Inspect the resulting PNG.
 `test-uninstall-data.py --package <alpha-package> --installer <native-installer>`

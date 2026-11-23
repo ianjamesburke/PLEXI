@@ -23,6 +23,11 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Helper(#[from] bounded::RunError),
+    /// GitHub kept failing with a server error, timeout or reset after the
+    /// bounded retries. The text is for people; `detail` (status or transport
+    /// error, URL and attempt count) is already in the log.
+    #[error("GitHub is slow, try again")]
+    GithubSlow { detail: String },
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
