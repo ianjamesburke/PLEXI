@@ -555,7 +555,9 @@ impl PlexiUiHarness {
                 .copied()
                 .collect()
         });
-        let path = plugin_dir.to_string_lossy().into_owned();
+        let path = crate::testing::launchable_plugin_path(plugin_dir)
+            .to_string_lossy()
+            .into_owned();
         self.with_app_mut(|app| {
             app.launch_view_by_path_with_layout(&path, Some("split_v".to_string()), None, args)
                 .map(|_| ())

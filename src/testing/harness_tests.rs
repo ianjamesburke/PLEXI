@@ -9397,7 +9397,9 @@ fn text_input_keeps_the_draft_while_the_guest_echo_is_in_flight() {
 #[test]
 fn escape_leaving_todo_form_field_cancels_form_without_closing_or_reclaiming_pane() {
     let mut h = HostHarness::new();
-    let plugin_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/todo");
+    let plugin_dir = crate::testing::launchable_plugin_path(
+        &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/todo"),
+    );
     h.app
         .trust_plugin_path_for_test(&plugin_dir.to_string_lossy());
     h.app

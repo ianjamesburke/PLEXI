@@ -1105,7 +1105,9 @@ fn second_chess_pane_routes_by_instance() {
     assert_eq!(again, first, "view open chess focuses the open board");
     assert_eq!(chess_panes(&h).len(), 1, "one chess pane per context");
 
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/chess");
+    let path = crate::testing::launchable_plugin_path(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/chess"),
+    );
     let second = h
         .app
         .launch_view_by_path_forced(&path.to_string_lossy(), Some(h.workspace_root()), &[])

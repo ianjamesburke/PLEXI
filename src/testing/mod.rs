@@ -850,7 +850,9 @@ impl HostHarness {
     /// rooted in the harness's scratch workspace (so any `PersistState` lands
     /// in a tempdir, never the checkout), and wait for its first render.
     pub fn launch_repo_view(&mut self, rel_dir: &str, args: &[String]) -> PaneId {
-        let plugin_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel_dir);
+        let plugin_dir = launchable_plugin_path(
+            &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel_dir),
+        );
         let workspace = self._workspace_dir.path().to_path_buf();
         let before = self.state().open_panes;
         let focused = self
@@ -1118,4 +1120,36 @@ fn root_repaint_delay(output: &egui::FullOutput) -> std::time::Duration {
         .viewport_output
         .get(&egui::ViewportId::ROOT)
         .map_or(std::time::Duration::MAX, |viewport| viewport.repaint_delay)
+}
+
+/// The path tests launch for the plugin at `plugin_dir` (stint 1398). A
+/// checkout's own `plugins/<bundled id>` loads only while it is byte-identical
+/// to the copy built into this binary, and running a plugin's own tests writes
+/// `__pycache__` into the checkout. A bundled plugin is therefore launched from
+/// a fresh copy of the embedded tree, extracted once per test process; any
+/// other path is returned unchanged.
+pub(crate) fn launchable_plugin_path(plugin_dir: &std::path::Path) -> std::path::PathBuf {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    let repo_plugins = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
+    let Some(id) = plugin_dir
+        .strip_prefix(&repo_plugins)
+        .ok()
+        .and_then(|rel| rel.to_str())
+        .filter(|id| crate::cli::install_host::is_bundled_plugin_id(id))
+        .map(str::to_owned)
+    else {
+        return plugin_dir.to_path_buf();
+    };
+    static COPIES: OnceLock<Mutex<HashMap<String, std::path::PathBuf>>> = OnceLock::new();
+    COPIES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .entry(id.clone())
+        .or_insert_with(|| {
+            let root = tempfile::tempdir().expect("bundled copy dir").keep();
+            crate::cli::install_host::test_support::extract_bundled(&id, &root)
+        })
+        .clone()
 }
