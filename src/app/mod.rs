@@ -58,6 +58,8 @@ mod secret_get;
 pub mod secrets_view;
 pub(crate) mod startup_error;
 mod sync;
+#[cfg(test)]
+mod system_quit_tests;
 mod team;
 pub mod text_editor_view;
 pub(crate) mod ui_mailbox;
@@ -234,6 +236,9 @@ pub struct PlexiApp {
     pub(crate) ui_gallery_focused_buf: String,
     pub(crate) quitting: bool,
     pub(crate) quit_coordinator: quit::QuitCoordinator,
+    /// Dock Quit, quit Apple events, logout, restart and shutdown, waiting
+    /// for the Cmd+Q decision (`service_system_quit`, stint 1538).
+    pub(crate) system_quit: crate::platform::system_quit::SystemQuitInbox,
     pub(crate) quit_press_count: u8,
     pub(crate) quit_last_press: Option<std::time::Instant>,
     pub(crate) pending_close: bool,
@@ -1650,6 +1655,8 @@ impl PlexiApp {
 
         #[cfg(target_os = "macos")]
         crate::platform::macos_menu::customize_app_menu();
+        let system_quit =
+            crate::platform::system_quit::SystemQuitInbox::install(std::sync::Arc::clone(&ui_wake));
         #[cfg(target_os = "macos")]
         crate::platform::finder_service::register(std::sync::Arc::clone(&ui_wake));
 
@@ -1880,6 +1887,7 @@ impl PlexiApp {
                     ui_gallery_focused_buf: "Focused field".to_string(),
                     quitting: false,
                     quit_coordinator: quit::QuitCoordinator::default(),
+                    system_quit,
                     quit_press_count: 0,
                     quit_last_press: None,
                     config: config.clone(),
@@ -2180,6 +2188,7 @@ impl PlexiApp {
             ui_gallery_focused_buf: "Focused field".to_string(),
             quitting: false,
             quit_coordinator: quit::QuitCoordinator::default(),
+            system_quit,
             quit_press_count: 0,
             quit_last_press: None,
             config,
@@ -3224,6 +3233,7 @@ impl PlexiApp {
             ui_gallery_focused_buf: "Focused field".to_string(),
             quitting: false,
             quit_coordinator: quit::QuitCoordinator::default(),
+            system_quit: crate::platform::system_quit::SystemQuitInbox::install(std::sync::Arc::clone(&ui_wake)),
             quit_press_count: 0,
             quit_last_press: None,
             config,
@@ -3774,6 +3784,7 @@ impl eframe::App for PlexiApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.service_system_quit();
         if self.service_quit(frame) {
             return;
         }

@@ -14,6 +14,7 @@ pub mod logging;
 pub mod macos_menu;
 pub mod path;
 pub mod rolling;
+pub mod system_quit;
 pub mod text;
 pub mod titlebar;
 pub mod toml_store;

@@ -507,6 +507,40 @@ impl super::PlexiApp {
         }
     }
 
+    /// Dock Quit, a quit Apple event, logout, restart and shutdown (stint
+    /// 1538). AppKit is waiting on `NSTerminateLater`; the request takes the
+    /// Cmd+Q decision. If the quit goes ahead, `exit_host` ends the process
+    /// and AppKit's question is moot. Whenever Plexi is not exiting without
+    /// waiting on anyone (a prompt is up, a save failed, the person cancelled)
+    /// the system request is cancelled at once, so a logout never sits on an
+    /// unanswered prompt: nothing is lost and the person logs out again after
+    /// answering.
+    pub(crate) fn service_system_quit(&mut self) {
+        while let Ok(reason) = self.system_quit.rx.try_recv() {
+            self.system_quit.pending = true;
+            if self.quit_coordinator.is_active() {
+                log::info!(
+                    "quit: system quit reason={} joins the quit already under way",
+                    reason.label()
+                );
+                continue;
+            }
+            trace("system_quit");
+            if self.prepare_user_quit() {
+                log::info!(
+                    "quit: system quit reason={} accepted; nothing to ask",
+                    reason.label()
+                );
+                self.request_quit(ExitReason::WindowClosed);
+            }
+        }
+        if self.system_quit.pending && !self.quit_coordinator.blocks_input() {
+            self.system_quit.pending = false;
+            log::info!("quit: system quit cancelled; Plexi waits for the person to answer");
+            crate::platform::system_quit::cancel_terminate();
+        }
+    }
+
     /// Normal desktop quit shares pane-close protection. Forced IPC stop and
     /// process termination cannot present an interactive unsaved-work prompt.
     pub(crate) fn prepare_user_quit(&mut self) -> bool {
