@@ -176,6 +176,44 @@ fn actionable(event: &egui::Event) -> bool {
     )
 }
 
+/// How many of `rest` complete `event`'s own gesture: a press's moves up to
+/// its release, or a key's up, with nothing actionable in between. Zero when
+/// the completion is not in this delivery.
+fn completion(event: &egui::Event, rest: &VecDeque<egui::Event>) -> usize {
+    use egui::Event as E;
+    for (index, next) in rest.iter().enumerate() {
+        let done = match (event, next) {
+            (
+                E::PointerButton {
+                    button,
+                    pressed: true,
+                    ..
+                },
+                E::PointerButton {
+                    button: up,
+                    pressed: false,
+                    ..
+                },
+            ) => button == up,
+            (E::PointerButton { pressed: true, .. }, E::PointerMoved(_)) => continue,
+            (
+                E::Key {
+                    key, pressed: true, ..
+                },
+                E::Key {
+                    key: up,
+                    pressed: false,
+                    ..
+                },
+            ) => key == up,
+            (_, next) if !actionable(next) => continue,
+            _ => false,
+        };
+        return if done { index + 1 } else { 0 };
+    }
+    0
+}
+
 /// Keys that edit or move rather than type: a modal may act on them.
 fn command_key(key: egui::Key) -> bool {
     use egui::Key as K;
@@ -272,6 +310,7 @@ impl InputRoute {
                 }
             }
             while let Some(event) = segment.events.pop_front() {
+                let follow = completion(&event, &segment.events);
                 let Some(decisive) =
                     self.route_event(event, authority, bindings, terminal_at, &mut out)
                 else {
@@ -280,6 +319,11 @@ impl InputRoute {
                 out.modifiers = Some(segment.modifiers);
                 out.synthetic |= segment.synthetic;
                 if let Some(class) = decisive {
+                    // The edge's own completion is bound to the same owner,
+                    // so it rides in this run; the run still ends after it.
+                    for event in segment.events.drain(..follow).collect::<Vec<_>>() {
+                        self.route_event(event, authority, bindings, terminal_at, &mut out);
+                    }
                     if !segment.events.is_empty() {
                         segment.bound = Some((authority.owner(class), class));
                         self.waiting.push_front(segment);
@@ -758,8 +802,13 @@ mod tests {
         let pass = route(&mut r, vec![], &pane);
         assert!(pass.events.is_empty(), "barrier: {:?}", pass.events);
         assert_eq!(pass.unfold_keys, vec![egui::Key::Escape]);
-        let pass = route(&mut r, vec![press(true), press(false)], &pane);
-        assert_eq!(pass.events.len(), 1, "a fresh press is routed");
+        let pass = route(
+            &mut r,
+            vec![press(true), press(false), key(egui::Key::A, true)],
+            &pane,
+        );
+        assert_eq!(pass.events.len(), 2, "a fresh click is routed whole");
+        assert!(pass.waiting, "the key after the click waits for its commit");
     }
 
     /// A key retired with its owner takes its repeats, text and up with it.
