@@ -6,8 +6,7 @@
 //! An account is optional. Local use — installing and running plugins, the
 //! assistant, the ledger, retention — never reads one and never creates one.
 //! A session only links this desktop to cloud features: publishing,
-//! buying a paid plugin, and the Plexi AI subscription. See
-//! `docs/marketplace-hosted.md`.
+//! buying a paid plugin, and the Plexi AI subscription.
 //!
 //! This module is that link. Two providers exist, chosen by
 //! `[marketplace].account_backend`:

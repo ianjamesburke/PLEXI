@@ -3,7 +3,7 @@
 //! happens here — [`crate::editor::Document`] commits every plan as one
 //! recorded transaction, so each Markdown command is atomically undoable.
 //!
-//! Rules (see `docs/notes-editor.md`, Editing Contract):
+//! Rules:
 //! - Tab indents the current line or every selected line (list or not);
 //!   inside a fenced code block a collapsed Tab falls back to a plain
 //!   caret-position indent.

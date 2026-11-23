@@ -1,7 +1,7 @@
 //! Hosted marketplace layer — registry catalog and publisher submission
 //! (stints `0018`-`0021`, `0340`).
 //!
-//! # Invariant carried from `docs/marketplace-hosted.md`
+//! # Invariant
 //!
 //! Hosted services **distribute metadata and broker money**. They never become
 //! a dependency for running a local plugin. Everything in this module is a
@@ -11,7 +11,7 @@
 //!
 //! # No client-side licensing
 //!
-//! Per `docs/marketplace-monetization.md`, a purchase is a server-side fact (a
+//! A purchase is a server-side fact (a
 //! row in the plexiapp.com database keyed on the account), never a file on disk.
 //! The host presents its account bearer token when downloading a paid artifact
 //! and the server decides — there is no `License`, no `LicenseStore`, and no
@@ -482,8 +482,7 @@ impl InstalledRegistrySource {
 
 // ── Publisher submission ──────────────────────────────────────────────────────
 
-/// Lifecycle of a publisher submission. Mirrors the states in
-/// `marketplace-hosted.md` §3. The host only ever *creates* a submission
+/// Lifecycle of a publisher submission. Mirrors the hosted review states. The host only ever *creates* a submission
 /// (`Submitted`); the hosted review system advances the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -219,7 +219,7 @@ pub(super) fn explicit_keychain_password(value: Option<&str>) -> Result<&str, &'
 ///
 /// Maintains `~/.plexi-<channel>/secrets-index.json` so list operations work
 /// without invoking `security dump-keychain` (which triggers an invisible
-/// permission prompt). See DEV_LOG 2026-04-11.
+/// permission prompt).
 ///
 /// Item selection, interaction policy and every native status live in
 /// [`super::mac_keychain`]. Background calls keep Keychain UI off;

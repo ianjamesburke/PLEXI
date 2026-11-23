@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Linux bringup smoke check — see docs/linux-support-plan.md, Phase 4.
+# Linux bringup smoke check.
 #
 # Drives a real host through the CLI on an X display and asserts a success
 # signal at every step. Exits non-zero at the first failure, naming the step.

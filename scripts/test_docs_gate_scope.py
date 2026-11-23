@@ -377,7 +377,7 @@ class RealRepoSanityTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(scope.decide_with([path], bindings)[0], path)
         # Narrowed groups: a file-level include leaves its siblings skippable.
-        for path in ("AGENTS.md", "NORTH_STAR.md", "docs/AGENTS.md", "docs/notes-editor.md",
+        for path in ("AGENTS.md", "NORTH_STAR.md", "docs/AGENTS.md", "docs/palette-picker.md",
                      "website/src/content/docs/getting-started.md", "website/src/content/docs/NEW.md"):
             with self.subTest(path=path):
                 self.assertTrue(scope.decide_with([path], bindings)[0], path)

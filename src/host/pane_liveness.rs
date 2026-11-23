@@ -5,8 +5,7 @@
 //! itself (`state=running`, with a step token embedded in the value by
 //! convention) — it is not liveness. A wedged head sat 3h10m with its own
 //! status slot still reading `running` because the two facts shared one
-//! field (`docs/agent-run-orchestration.md`, "A status slot that is a
-//! claim, not liveness"). `compute` is the single accessor for both: it
+//! field. `compute` is the single accessor for both: it
 //! always returns the claim and the observation together, in one object, so
 //! a caller cannot read one without the other.
 

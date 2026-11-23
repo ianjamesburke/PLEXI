@@ -2,10 +2,9 @@
 
 Status: active.
 Stint: `0554`.
-Parent: [`assistant-host-app.md`](assistant-host-app.md).
 Last updated: 2026-07-27.
 
-This is the authoritative threat model and capability design for the host Assistant. [`assistant-host-app.md`](assistant-host-app.md) owns the Assistant's product surface — agents, skills, slash commands, settings, UI, marketplace. This document owns the authority plane underneath it: what the Assistant is trusted to do, who decides, what a grant binds to, and what must be true before any new Assistant power ships.
+This is the authoritative threat model and capability design for the host Assistant. This document owns the authority plane under the Assistant's product surface (agents, skills, slash commands, settings, UI): what the Assistant is trusted to do, who decides, what a grant binds to, and what must be true before any new Assistant power ships.
 
 The third-party plugin security model is not restated here. Capability declaration, manifest parsing, the wasmtime component boundary, and marketplace trust labels are owned by [`app-framework-marketplace.md`](app-framework-marketplace.md) and [`wasm-runtime.md`](wasm-runtime.md). This document describes only the boundary those documents do not cover: the host protecting itself from its own built-in Assistant.
 
@@ -141,7 +140,7 @@ Project instructions — the root and nested `AGENTS.md` files, compatible `CLAU
 
 ### Turn input
 
-One ordered content-block envelope serves every entrypoint: the pane composer, Quick Note, Notes panes, plugin connectors, tests, and headless clients. The behavioral contract — provenance, bounded decoding, provider-native image blocks, persistence of metadata rather than payloads, and structured acceptance and rejection events — is specified in [`assistant-host-app.md`](assistant-host-app.md) and not repeated here.
+One ordered content-block envelope serves every entrypoint: the pane composer, Quick Note, Notes panes, plugin connectors, tests, and headless clients.
 
 The authority rule for that envelope: an attachment reference is a claim, never a capability. A path in note Markdown, a screenshot reference, or a client-supplied filename is resolved canonically and then authorized as an exact-file request through the reference monitor. Resolution is relative to the source note or the declaring pane. Nothing scans the surrounding directory for related files. A remote URL is never fetched implicitly; it requires an approved network action first. A rejected attachment fails visibly and never reaches the provider.
 

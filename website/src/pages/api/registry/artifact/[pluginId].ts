@@ -21,7 +21,7 @@ export const prerender = false;
  * - Bearer, no purchase → 402 with the extensible envelope (checkout url + id).
  * - Bearer, purchased   → 200 streaming the .plexipkg from private storage.
  *
- * Registry METADATA stays free (marketplace-hosted.md §1); only the bytes gate.
+ * Registry METADATA stays free; only the bytes gate.
  */
 export const GET: APIRoute = async ({ request, cookies, params }) => {
   const pluginId = params.pluginId ?? '';
