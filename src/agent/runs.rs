@@ -627,8 +627,17 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
         }
     }
     let dir = agents_root(req.workspace).join(req.name);
-    if dir.exists() {
+    if crate::agent::authority_file_migrating_legacy(&dir).is_some() {
         return json!({"ok": false, "error_code": "agent_exists", "error": format!("agent '{}' already exists", req.name)});
+    }
+    // A definition without an authority record (a seeded `default`, a
+    // `plexi agent create` folder) is adopted: only `agent.json` is written.
+    let adopt = dir.exists();
+    if let Some(issue) = crate::agent::unrecognised_agent_dir(&dir) {
+        return json!({
+            "ok": false, "error_code": "agent_unrecognised",
+            "error": format!("agent directory {} is unrecognised: {}", dir.display(), issue.issue.describe()),
+        });
     }
     let now = gate.now_secs();
     let soft_days = crate::config::PlexiConfig::load_with_workspace(Some(req.workspace))
@@ -662,7 +671,12 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
         temporary: req.temporary,
         grants: resolved_grants,
     };
-    if let Err(error) = create_definition(req.workspace, &card) {
+    let written = if adopt {
+        write_authority(&dir, &card)
+    } else {
+        create_definition(req.workspace, &card)
+    };
+    if let Err(error) = written {
         log::error!("agents_api: create agent {} failed: {error}", req.name);
         return json!({"ok": false, "error_code": "io_error", "error": error});
     }
@@ -679,7 +693,7 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
         }
     }
     log::info!(
-        "agents_api: created agent {} actor={actor} temporary={} grants={} workspace={}",
+        "agents_api: created agent {} actor={actor} adopted_definition={adopt} temporary={} grants={} workspace={}",
         card.id,
         card.temporary,
         card.grants.len(),
@@ -2453,24 +2467,46 @@ mod tests {
         assert!(review.expires_at.is_none());
     }
 
-    /// A directory that already holds a definition (even one with no
-    /// `agent.json`, like a seeded `default`) is never replaced by create.
+    /// A definition with no authority record (the seeded workspace
+    /// `default`) is adopted by create: `agent.json` is written and the
+    /// user's definition files stay byte for byte. A second create refuses.
     #[test]
-    fn create_refuses_existing_definition_directory() {
+    fn create_adopts_existing_definition_writing_only_authority() {
+        let fix = Fixture::new();
+        let dir = crate::agent::ensure_workspace_default_agent(fix.ws()).unwrap();
+        let settings =
+            "# mine\n".to_string() + &fs::read_to_string(dir.join("settings.toml")).unwrap();
+        fs::write(dir.join("settings.toml"), &settings).unwrap();
+        let persona = fs::read(dir.join("persona.md")).unwrap();
+        let result = create(&fix, "default", &["agents.ping=allow"]);
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(
+            fs::read_to_string(dir.join("settings.toml")).unwrap(),
+            settings
+        );
+        assert_eq!(fs::read(dir.join("persona.md")).unwrap(), persona);
+        assert!(!dir.join("AGENT.md").exists());
+        assert_eq!(read_agent(&dir).unwrap().grants[0].tool, "agents.ping");
+        let again = create(&fix, "default", &[]);
+        assert_eq!(again["error_code"], "agent_exists", "{again}");
+        assert_eq!(
+            fs::read_to_string(dir.join("settings.toml")).unwrap(),
+            settings
+        );
+    }
+
+    /// A folder that is not a usable definition is reported, never filled in.
+    #[test]
+    fn create_refuses_unrecognised_directory() {
         let fix = Fixture::new();
         let dir = agents_root(fix.ws()).join("worker");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("AGENT.md"), "hand written\n").unwrap();
-        fs::write(dir.join("settings.toml"), "# mine\n").unwrap();
         let result = create(&fix, "worker", &["agents.ping=allow"]);
-        assert_eq!(result["error_code"], "agent_exists", "{result}");
+        assert_eq!(result["error_code"], "agent_unrecognised", "{result}");
         assert_eq!(
             fs::read_to_string(dir.join("AGENT.md")).unwrap(),
             "hand written\n"
-        );
-        assert_eq!(
-            fs::read_to_string(dir.join("settings.toml")).unwrap(),
-            "# mine\n"
         );
         assert!(!dir.join("agent.json").exists());
     }
