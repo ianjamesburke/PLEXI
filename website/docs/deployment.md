@@ -18,8 +18,8 @@ service tracked `main` and prod drifted weeks behind alpha.
 
 The site builds via `Dockerfile` and runs as a Node standalone server on
 Railway. Persistence is **Railway Postgres**; the schema and its tables are
-described in `docs/marketplace-monetization.md` (repo root). Migrations in
-`src/server/migrations/` run automatically on first request.
+defined by the migrations in
+`src/server/migrations/`, which run automatically on first request.
 
 One-time setup:
 

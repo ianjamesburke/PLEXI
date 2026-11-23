@@ -4,7 +4,7 @@ description: Install Plexi on an Apple Silicon Mac, open an unsigned build, and 
 order: 1
 ---
 
-Plexi runs on Apple Silicon Macs today. Windows and Linux builds are coming soon.
+Plexi runs on Apple Silicon Macs.
 
 ## Install
 

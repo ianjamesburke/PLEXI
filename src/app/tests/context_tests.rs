@@ -3606,8 +3606,8 @@ fn context_sub_assigns_distinct_default_pane_names() {
 }
 
 // ── Stint 0678 audit evidence ────────────────────────────────────────────────
-// Part of the reproduction half of the context-scoped state persistence audit
-// (docs/context-state-persistence-audit.md). The rest of the audit's evidence
+// Part of the reproduction half of the context-scoped state persistence audit.
+// The rest of the audit's evidence
 // lives in `host::wasm_python::tests::audit_0678`, next to the function that
 // computes a state address; that module's doc comment carries the assertion
 // discipline every audit test follows.

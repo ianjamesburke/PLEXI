@@ -58,7 +58,6 @@ Linux support is X11-only; Wayland is not supported. This is not an apt, yay,
 AUR, Flatpak, AppImage, `.deb`, or `.rpm` package. Linux secrets use Secret Service via `secret-tool`, or an AES-256-GCM
 encrypted-file fallback with key material outside the profile. See
 [Linux secret storage](https://plexiapp.com/docs/secrets/#linux-storage).
-Hardware video decoding is not implemented. See [Linux support](docs/linux-support-plan.md) for limitations.
 
 ### Windows (x64)
 
@@ -80,9 +79,6 @@ Stable, alpha and beta builds are unsigned and not notarized. Follow [Opening an
 build](docs/unsigned-install.md) before bypassing a macOS Gatekeeper or Windows
 SmartScreen warning. Linux users who unpack an archive manually may need
 `chmod +x plexi`.
-
-See [v1 binary install](docs/v1-binary-install.md) and [release artifact
-policy](docs/release-artifacts.md) for supported release assets and channels.
 
 First run:
 

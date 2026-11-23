@@ -1,7 +1,6 @@
 # Plexi App Framework + Marketplace PRM
 
 Status: active.
-Stint: 0008-0031 (sprint graph in `.stint/`).
 
 This PRM defines the path from "Plexi can run plugins" to "Plexi is a plugin platform." For v1 it owns plugin authoring, plugin packaging, marketplace trust, hosted marketplace install, paid-plugin planning, and Plexi AI subscription planning.
 
@@ -135,7 +134,7 @@ The exact command names can change during implementation, but the user workflow 
 
 ### 4. Add Marketplace
 
-Hosted marketplace work starts after local packages are useful. The detailed S4 spec lives in [`marketplace-hosted.md`](marketplace-hosted.md), covering tasks `0018`-`0022`.
+Hosted marketplace work starts after local packages are useful.
 
 Marketplace surfaces:
 
@@ -202,7 +201,7 @@ Raw/canvas remains the escape hatch:
 MCPUI lane:
 
 - first: export Plexi plugins as MCPUI resources through the MCP bridge
-- later: host MCPUI plugins in Plexi using the WebView pane contract in [`browser-surface.md`](browser-surface.md)
+- later: host MCPUI plugins in Plexi
 - keep PGAP and MCPUI parallel; do not contort PGAP into HTML
 
 WASM/WASI lane:

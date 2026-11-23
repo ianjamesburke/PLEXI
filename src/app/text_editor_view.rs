@@ -3339,7 +3339,7 @@ impl TextEditorView {
         // flat, so this is the tier's own `assets/` for a note in one and a
         // sibling directory for arbitrary Markdown — one rule, no special case,
         // and a context tier's attachments stay inside the context root where
-        // they move with the project (contract: docs/notes-editor.md).
+        // they move with the project.
         let assets_dir = parent.join("assets");
         std::fs::create_dir_all(&assets_dir)
             .map_err(|e| format!("failed to create {}: {e}", assets_dir.display()))?;
