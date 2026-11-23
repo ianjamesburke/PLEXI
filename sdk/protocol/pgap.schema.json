@@ -2365,15 +2365,6 @@
           "additionalProperties": false,
           "description": "New chat for a named agent (`plexi agent new-chat <name>`, stint\n1397): archive the chat `agent open` would return to, then start an\nempty one with the same memory folder.",
           "properties": {
-            "caller_pane_id": {
-              "description": "Calling pane (`PLEXI_PANE_ID`), parent of the started pane.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
             "cwd": {
               "description": "Working directory for workspace lookup.",
               "type": "string"

@@ -697,7 +697,6 @@ New chat for a named agent (`plexi agent new-chat <name>`, stint 1397): archive 
 
 | Field | Type | Required |
 |-------|------|----------|
-| `caller_pane_id` | `integer?` | no |
 | `cwd` | `string` | yes |
 | `name` | `string` | yes |
 | `response_file` | `string` | yes |
