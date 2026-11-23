@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Resolves the public install.sh tag against a local release API.
-# PLEXI_RELEASES_URL replaces api.github.com; the downloaded "installer" records its argv.
+# PLEXI_GITHUB_REPO_API replaces api.github.com; the downloaded "installer" records its argv.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,6 +10,9 @@ argv="$root/argv"
 port_file="$root/port"
 pid=""
 fail=0
+case "$(uname -s)" in Darwin) host_os=macos ;; *) host_os=linux ;; esac
+case "$(uname -m)" in arm64|aarch64) host_arch=arm64 ;; *) host_arch=x64 ;; esac
+platform="$host_os-$host_arch"
 
 cleanup() {
   if [[ -n "$pid" ]]; then
@@ -20,12 +23,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-python3 - "$port_file" "$hits" <<'PY' &
+python3 - "$port_file" "$hits" "plexi-installer-$platform" <<'PY' &
 import hashlib, json, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-port_file, hit_log = sys.argv[1], sys.argv[2]
+port_file, hit_log, installer_asset = sys.argv[1], sys.argv[2], sys.argv[3]
 INSTALLER = b"""#!/bin/sh
 : > "$PLEXI_BOOTSTRAP_ARGV_OUT"
 for arg in "$@"; do
@@ -35,7 +38,7 @@ done
 DIGEST = hashlib.sha256(INSTALLER).hexdigest()
 
 def rel(tag, draft=False, linux=True):
-    assets = [{"name": "plexi-installer-linux-x64"}] if linux else []
+    assets = [{"name": installer_asset}] if linux else []
     return {"tag_name": tag, "draft": draft, "prerelease": "-" in tag.split(".", 3)[-1] or tag.count("-") > 0, "assets": assets}
 
 def stables(n):
@@ -117,6 +120,18 @@ FIXTURES = {
     },
 }
 
+# 504s served before each fixture answers; "down" never answers.
+FAILURES = {"flaky": 1, "down": 10**9}
+FIXTURES["flaky"] = FIXTURES["reported"]
+FIXTURES["down"] = FIXTURES["reported"]
+
+# A port nothing listens on: bound once for a number, then closed.
+import socket
+_probe = socket.socket()
+_probe.bind(("127.0.0.1", 0))
+CLOSED_PORT = _probe.getsockname()[1]
+_probe.close()
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -137,6 +152,20 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in parsed.path.split("/") if p]
         with open(hit_log, "a", encoding="utf-8") as fh:
             fh.write("AUTH " + self.headers.get("Authorization", "") + "\n")
+        if parts[:2] == ["fixtures", "truncated"]:
+            self.send_response(504)
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            self.wfile.write(b"short")
+            self.wfile.flush()
+            self.close_connection = True
+            return
+        if parts[:2] == ["fixtures", "redirect-closed"]:
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{CLOSED_PORT}/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if parts[:2] == ["fixtures", "rate-limit"]:
             self.send_response(403)
             self.send_header("x-ratelimit-remaining", "0")
@@ -157,18 +186,30 @@ class Handler(BaseHTTPRequestHandler):
             if fixture is None:
                 self.send_error(404)
                 return
-            if parts[-1] == "latest":
-                tag = fixture["latest"]
-                body = next(r for r in fixture["releases"] if r["tag_name"] == tag and not r["draft"])
+            rest = parts[2:]
+            failures = FAILURES.get(parts[1], 0)
+            if failures:
+                FAILURES[parts[1]] = failures - 1
+                self.send_response(504)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            published = [r for r in fixture["releases"] if not r["draft"]]
+            if rest == ["releases", "latest"]:
+                body = next(r for r in published if r["tag_name"] == fixture["latest"])
                 self._send(json.dumps(body, separators=(",", ":")))
                 return
-            qs = parse_qs(parsed.query)
-            per_page = int(qs.get("per_page", ["30"])[0])
-            page = int(qs.get("page", ["1"])[0])
-            start = (page - 1) * per_page
-            chunk = fixture["releases"][start : start + per_page]
-            self._send(json.dumps(chunk, separators=(",", ":")))
-            return
+            if rest == ["git", "matching-refs", "tags", "v"]:
+                refs = [{"ref": "refs/tags/" + r["tag_name"]} for r in fixture["releases"]]
+                self._send(json.dumps(refs, separators=(",", ":")))
+                return
+            if rest[:2] == ["releases", "tags"] and len(rest) == 3:
+                body = next((r for r in published if r["tag_name"] == rest[2]), None)
+                if body is None:
+                    self.send_error(404)
+                else:
+                    self._send(json.dumps(body, separators=(",", ":")))
+                return
         self.send_error(404)
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -192,9 +233,9 @@ run_case() {
   : >"$argv"
   local err="" status=0
   if [[ -n "$bootstrap_tag" ]]; then
-    err="$(env -u PLEXI_CHANNEL PLEXI_BOOTSTRAP_TAG="$bootstrap_tag" PLEXI_RELEASES_URL="$base/fixtures/$fixture" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" "$@" 2>&1)" || status=$?
+    err="$(env -u PLEXI_CHANNEL PLEXI_BOOTSTRAP_TAG="$bootstrap_tag" PLEXI_GITHUB_REPO_API="$base/fixtures/$fixture" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" "$@" 2>&1)" || status=$?
   else
-    err="$(env -u PLEXI_CHANNEL -u PLEXI_BOOTSTRAP_TAG PLEXI_RELEASES_URL="$base/fixtures/$fixture" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" "$@" 2>&1)" || status=$?
+    err="$(env -u PLEXI_CHANNEL -u PLEXI_BOOTSTRAP_TAG PLEXI_GITHUB_REPO_API="$base/fixtures/$fixture" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" "$@" 2>&1)" || status=$?
   fi
   local got="" argv_got="" expected_channel=stable previous_arg="" forward_resolved_tag=1
   for arg in "$@"; do
@@ -230,8 +271,6 @@ run_case "channel stable uses latest stable" reported v0.3.5 "" "--channel
 stable" --channel stable
 run_case "stable ignores newer beta" ordering v0.9.0 "" "--channel
 stable" --channel stable
-run_case "stable skips newest release without a Linux installer" stable-asset-fallback v0.3.9 "" "--channel
-stable" --channel stable
 run_case "channel main uses latest stable" reported v0.3.5 "" "--channel
 main" --channel main
 run_case "main ignores newer beta" ordering v0.9.0 "" "--channel
@@ -242,7 +281,7 @@ run_case "alpha equals form" reported v0.3.5-alpha.4 "" "--channel=alpha" --chan
 run_case "alpha forwards remaining installer args" reported v0.3.5-alpha.4 "" "--install-only
 --channel
 alpha" --install-only --channel alpha
-run_case "user tag is not duplicated" reported v0.3.5 "" "--tag
+run_case "user tag pins the installer and is not duplicated" reported v0.3.5-alpha.4 "" "--tag
 v0.3.5-alpha.4" --tag v0.3.5-alpha.4
 run_case "beta falls back to newer stable" reported v0.3.5 "" "--channel
 beta" --channel beta
@@ -262,28 +301,28 @@ run_case "beta falls back to stable" stable-only v0.3.5 "" "--channel
 beta" --channel beta
 run_case "beta does not prefer same-series prerelease over stable" same-series-beta v0.3.5 "" "--channel
 beta" --channel beta
-run_case "alpha reads later release pages" paged v0.3.5-alpha.10 "" "--channel
+run_case "alpha sees tags past the newest hundred releases" paged v0.3.5-alpha.10 "" "--channel
 alpha" --channel alpha
-run_case "beta reads later release pages" paged v0.3.6-beta.1 "" "--channel
+run_case "beta sees tags past the newest hundred releases" paged v0.3.6-beta.1 "" "--channel
 beta" --channel beta
 run_case "pr channel keeps stable installer tag out of package argv" reported v0.3.5 "" "--channel
 pr-12" --channel pr-12
 run_case "pr channel ignores newer beta" ordering v0.9.0 "" "--channel
 pr-12" --channel pr-12
-run_case "alpha skips newest release without a Linux installer" alpha-linux-fallback v0.3.9-alpha.8 "" "--channel
+run_case "alpha skips newest release without this platform's installer" alpha-linux-fallback v0.3.9-alpha.8 "" "--channel
 alpha" --channel alpha
 
-if err="$(env -u PLEXI_BOOTSTRAP_TAG PLEXI_RELEASES_URL="$base/fixtures/no-linux-assets" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha 2>&1)"; then
+if err="$(env -u PLEXI_BOOTSTRAP_TAG PLEXI_GITHUB_REPO_API="$base/fixtures/no-linux-assets" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha 2>&1)"; then
   echo "FAIL no Linux installer release was accepted"
   fail=1
-elif [[ "$err" != *"No alpha release of Plexi is published for linux-x64 yet."* ]]; then
+elif [[ "$err" != *"No alpha release of Plexi is published for $platform yet."* ]]; then
   echo "FAIL no Linux installer stderr: $err"
   fail=1
 else
   echo "PASS no Linux installer release is clear"
 fi
 
-if err="$(env -u PLEXI_BOOTSTRAP_TAG PLEXI_RELEASES_URL="$base/fixtures/reported" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alph 2>&1)"; then
+if err="$(env -u PLEXI_BOOTSTRAP_TAG PLEXI_GITHUB_REPO_API="$base/fixtures/reported" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alph 2>&1)"; then
   echo "FAIL unsupported channel was accepted"
   fail=1
 elif [[ "$err" != *"Unsupported install channel: alph"* ]]; then
@@ -294,7 +333,7 @@ else
 fi
 
 : >"$hits"
-if ! env -u PLEXI_BOOTSTRAP_TAG GITHUB_TOKEN=bootstrap-test-token PLEXI_RELEASES_URL="$base/fixtures/reported" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha >/dev/null 2>&1; then
+if ! env -u PLEXI_BOOTSTRAP_TAG GITHUB_TOKEN=bootstrap-test-token PLEXI_GITHUB_REPO_API="$base/fixtures/reported" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha >/dev/null 2>&1; then
   echo "FAIL bootstrap token fixture"
   fail=1
 elif ! grep -Fq 'AUTH Bearer bootstrap-test-token' "$hits"; then
@@ -304,15 +343,157 @@ else
   echo "PASS bootstrap sends GITHUB_TOKEN"
 fi
 
-if err="$(env -u PLEXI_BOOTSTRAP_TAG PLEXI_RELEASES_URL="$base/fixtures/rate-limit" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha 2>&1)"; then
+if err="$(env -u PLEXI_BOOTSTRAP_TAG PLEXI_GITHUB_REPO_API="$base/fixtures/rate-limit" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha 2>&1)"; then
   echo "FAIL rate-limited bootstrap succeeded"
   fail=1
-elif [[ "$err" != *"GitHub API rate limit reached"* || "$err" != *"GITHUB_TOKEN"* || "$err" == *"No alpha release of Plexi is published for linux-x64 yet."* ]]; then
+elif [[ "$err" != *"GitHub API rate limit reached"* || "$err" != *"GITHUB_TOKEN"* || "$err" == *"No alpha release of Plexi is published for $platform yet."* ]]; then
   echo "FAIL rate-limit bootstrap stderr: $err"
   fail=1
 else
   echo "PASS rate-limit bootstrap is clear"
 fi
+
+run_case "flaky GitHub is retried" flaky v0.3.5-alpha.4 "" "--channel
+alpha" --channel alpha
+
+: >"$hits"
+for args in "--channel alpha" "--channel beta" "--channel stable" "--tag v0.3.5-alpha.4"; do
+  # shellcheck disable=SC2086
+  env -u PLEXI_BOOTSTRAP_TAG PLEXI_GITHUB_REPO_API="$base/fixtures/reported" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" $args >/dev/null 2>&1 || true
+done
+if grep -Eq '^/fixtures/[^ ]+/releases(\?[^ ]*)? ' "$hits"; then
+  echo "FAIL bootstrap read the paginated release list"
+  grep -E '^/fixtures/[^ ]+/releases(\?[^ ]*)? ' "$hits" | head -3
+  fail=1
+else
+  echo "PASS bootstrap never reads the paginated release list"
+fi
+
+: >"$hits"
+env -u PLEXI_BOOTSTRAP_TAG PLEXI_GITHUB_REPO_API="$base/fixtures/reported" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --tag v0.3.5-alpha.4 >/dev/null 2>&1 || true
+if grep -q '^/fixtures/' "$hits"; then
+  echo "FAIL --tag queried the release API"
+  fail=1
+else
+  echo "PASS --tag makes no release API request"
+fi
+
+if err="$(env -u PLEXI_BOOTSTRAP_TAG PLEXI_GITHUB_REPO_API="$base/fixtures/stable-asset-fallback" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel stable 2>&1)"; then
+  echo "FAIL stable installed a release older than GitHub's latest"
+  fail=1
+elif [[ "$err" != *"No stable release of Plexi is published for $platform yet."* ]]; then
+  echo "FAIL stable incomplete latest stderr: $err"
+  fail=1
+else
+  echo "PASS stable uses only GitHub's latest release"
+fi
+
+: >"$hits"
+started=$SECONDS
+if err="$(env -u PLEXI_BOOTSTRAP_TAG PLEXI_GITHUB_REPO_API="$base/fixtures/down" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha 2>&1)"; then
+  echo "FAIL persistent 504 bootstrap succeeded"
+  fail=1
+elif [[ "$err" != *"GitHub is slow, try again."* || "$err" != *"HTTP 504"* ]]; then
+  echo "FAIL persistent 504 stderr: $err"
+  fail=1
+elif [[ "$(grep -c '^/fixtures/down/' "$hits")" != 3 ]] || (( SECONDS - started > 10 )); then
+  echo "FAIL persistent 504 was not bounded to 3 attempts: $(grep -c '^/fixtures/down/' "$hits") requests in $((SECONDS - started))s"
+  fail=1
+else
+  echo "PASS persistent 504 stops after 3 attempts and says GitHub is slow"
+fi
+
+: >"$hits"
+if env -u PLEXI_BOOTSTRAP_TAG PLEXI_GITHUB_REPO_API="$base/fixtures/rate-limit" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha >/dev/null 2>&1; then
+  echo "FAIL rate-limited bootstrap succeeded"
+  fail=1
+elif [[ "$(grep -c '^/fixtures/rate-limit/' "$hits")" != 1 ]]; then
+  echo "FAIL rate limit was retried: $(grep -c '^/fixtures/rate-limit/' "$hits") requests"
+  fail=1
+else
+  echo "PASS rate limit is not retried"
+fi
+
+# classify_response, cell by cell, through a fake curl: it writes the row's
+# status and extra header (no header file for 000), prints %{http_code} and
+# exits with the row's code. A no-op sleep keeps retry rows instant. Rows
+# follow the table in the PR #3292 design: status rc header calls expected.
+# expected: "rate" = rate-limit message, "slow" = GitHub is slow, "fail" = an
+# immediate failure that is not "slow", otherwise the HTTP status the caller
+# reports.
+mkdir -p "$root/fakebin" "$root/fakesleep"
+cat >"$root/fakebin/curl" <<'SH'
+#!/bin/sh
+echo call >>"$FAKE_CURL_CALLS"
+headers="" previous=""
+for arg in "$@"; do
+  [ "$previous" = "-D" ] && headers="$arg"
+  previous="$arg"
+done
+if [ "$FAKE_CURL_STATUS" != 000 ]; then
+  { printf 'HTTP/1.1 %s\r\n' "$FAKE_CURL_STATUS"; [ "$FAKE_CURL_HEADER" != - ] && printf '%s\r\n' "$(printf '%s' "$FAKE_CURL_HEADER" | sed 's/:/: /')"; printf '\r\n'; } >"$headers"
+fi
+printf '%s' "$FAKE_CURL_STATUS"
+exit "$FAKE_CURL_EXIT"
+SH
+printf '#!/bin/sh\nexit 0\n' >"$root/fakesleep/sleep"
+chmod +x "$root/fakebin/curl" "$root/fakesleep/sleep"
+cp "$root/fakesleep/sleep" "$root/fakebin/sleep"
+
+# Checks one bootstrap run's stderr and request count against a row.
+check_row() {
+  local name="$1" err="$2" calls_got="$3" calls="$4" expected="$5" ok=1
+  case "$expected" in
+    rate) [[ "$err" == *"GitHub API rate limit reached"* ]] || ok=0 ;;
+    slow) [[ "$err" == *"GitHub is slow, try again."* ]] || ok=0 ;;
+    fail) [[ "$err" == *"GitHub request to "*" failed (curl exit "* && "$err" != *"GitHub is slow"* ]] || ok=0 ;;
+    *) [[ "$err" == *"Unable to list Plexi release tags: HTTP $expected."* ]] || ok=0 ;;
+  esac
+  if (( ok )) && [[ "$calls_got" == "$calls" ]]; then
+    echo "PASS $name"
+  else
+    echo "FAIL $name: $calls_got calls (want $calls), stderr: $err"
+    fail=1
+  fi
+}
+
+while read -r status code header calls expected; do
+  [[ -z "$status" || "$status" == \#* ]] && continue
+  : >"$root/calls"
+  err="$(env -u PLEXI_BOOTSTRAP_TAG PATH="$root/fakebin:$PATH" FAKE_CURL_CALLS="$root/calls" FAKE_CURL_STATUS="$status" FAKE_CURL_EXIT="$code" FAKE_CURL_HEADER="$header" PLEXI_GITHUB_REPO_API="$base/fixtures/reported" bash "$repo/install.sh" --channel alpha 2>&1)" && err="unexpected success: $err"
+  check_row "curl $status / exit $code ($header)" "$err" "$(wc -l <"$root/calls" | tr -d ' ')" "$calls" "$expected"
+done <<'ROWS'
+429 0 - 1 rate
+429 56 - 1 rate
+403 28 x-ratelimit-remaining:0 1 rate
+403 0 - 1 403
+404 28 - 1 404
+504 0 - 3 slow
+504 56 - 3 slow
+504 18 - 3 slow
+504 92 - 3 slow
+200 18 - 3 slow
+200 28 - 3 slow
+200 23 - 1 fail
+302 0 - 1 302
+302 7 - 3 slow
+302 47 - 1 fail
+000 7 - 3 slow
+000 28 - 3 slow
+000 6 - 1 fail
+000 60 - 1 fail
+000 127 - 1 fail
+000 99 - 3 slow
+ROWS
+
+# The same cells through real curl: a 504 whose body stops short of its
+# Content-Length (curl 504 / exit 18) and a redirect to a closed port
+# (curl 302 / exit 7). Both are retried.
+for fixture in truncated redirect-closed; do
+  : >"$hits"
+  err="$(env -u PLEXI_BOOTSTRAP_TAG PATH="$root/fakesleep:$PATH" PLEXI_GITHUB_REPO_API="$base/fixtures/$fixture" bash "$repo/install.sh" --channel alpha 2>&1)" && err="unexpected success: $err"
+  check_row "real curl $fixture" "$err" "$(grep -c "^/fixtures/$fixture/" "$hits")" 3 slow
+done
 
 if [[ "$fail" -ne 0 ]]; then
   echo "install bootstrap channel selection failed"

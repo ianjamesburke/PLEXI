@@ -1,6 +1,5 @@
 //! Host adapter for the distribution crate's release policy and asset checks.
 use std::cmp::Ordering;
-pub use plexi_distribution::release::Release as GithubRelease;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseTag { pub raw: String }
@@ -31,13 +30,19 @@ impl UpdateChannel {
     pub fn key(self) -> &'static str { match self { Self::Stable => "stable", Self::Beta => "beta", Self::Alpha => "alpha" } }
 }
 
-pub fn resolve_best(releases: &[GithubRelease], channel: UpdateChannel, current: &ReleaseTag) -> Option<ReleaseTag> {
-    let platform = plexi_distribution::release::platform().ok()?;
-    plexi_distribution::release::select(releases, channel.key(), &platform, Some(&current.raw))
-        .and_then(|r| ReleaseTag::parse(&r.tag_name))
-}
-pub fn fetch_releases(agent: &ureq::Agent) -> Result<Vec<GithubRelease>, String> {
-    plexi_distribution::release::fetch(agent, plexi_distribution::release::RELEASES_URL).map_err(|e| e.to_string())
+/// The release the channel moves to from `current`, read through
+/// `release::resolve` (never the paginated release list).
+pub fn resolve_latest(
+    agent: &ureq::Agent,
+    channel: UpdateChannel,
+    current: &ReleaseTag,
+) -> Result<Option<ReleaseTag>, String> {
+    use plexi_distribution::release;
+    let platform = release::platform().map_err(|e| e.to_string())?;
+    let api = release::GithubApi::new(agent, release::REPO_API_URL, release::Retry::GITHUB);
+    let chosen = release::resolve(&api, channel.key(), &platform, Some(&current.raw))
+        .map_err(|e| e.to_string())?;
+    Ok(chosen.and_then(|r| ReleaseTag::parse(&r.tag_name)))
 }
 
 #[cfg(test)]

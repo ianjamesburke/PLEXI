@@ -411,26 +411,34 @@ time.sleep(600)
             def __init__(self, *a, **kw): super().__init__(*a, directory=str(server_root), **kw)
             def log_message(self, *a): pass
             def do_GET(self):
-                if self.path.startswith('/rate-limited-releases'):
+                if self.path.startswith('/rate-limited/'):
                     self.send_response(403)
                     self.send_header('x-ratelimit-remaining', '0')
                     self.send_header('x-ratelimit-reset', '1700000060')
                     self.send_header('Content-Length', '0')
                     self.end_headers()
                     return
-                if self.path.startswith('/releases'):
-                    body = json.dumps(release if self.path.startswith('/releases/latest') else [release]).encode()
-                    self.send_response(200); self.end_headers(); self.wfile.write(body)
-                else: super().do_GET()
+                # The repository API: latest, the tag refs and one release by tag.
+                if self.path in ('/releases/latest', '/releases/tags/' + release['tag_name']):
+                    body = json.dumps(release).encode()
+                elif self.path.startswith('/releases?'):
+                    # install-windows.ps1 still pages the release list.
+                    body = json.dumps([release]).encode()
+                elif self.path == '/git/matching-refs/tags/v':
+                    body = json.dumps([dict(ref='refs/tags/' + release['tag_name'])]).encode()
+                else:
+                    return super().do_GET()
+                self.send_response(200); self.end_headers(); self.wfile.write(body)
         server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         base = f'http://127.0.0.1:{server.server_port}'
-        http_env = env | {'PLEXI_RELEASES_URL': base + '/releases', 'PLEXI_RELEASE_BASE_URL': base + '/download'}
+        # PLEXI_RELEASES_URL is read only by install-windows.ps1.
+        http_env = env | {'PLEXI_GITHUB_REPO_API': base, 'PLEXI_RELEASES_URL': base + '/releases', 'PLEXI_RELEASE_BASE_URL': base + '/download'}
         try:
             bootstrap = ['powershell', '-NoProfile', '-File', REPO / 'scripts/install-windows.ps1', '-InstallOnly'] if os.name == 'nt' else ['bash', REPO / 'install.sh', '--install-only']
             run(bootstrap, http_env)
             assert active() == 'new'
-            rate_limited_env = http_env | {'PLEXI_RELEASES_URL': base + '/rate-limited-releases'}
+            rate_limited_env = http_env | {'PLEXI_GITHUB_REPO_API': base + '/rate-limited'}
             run([installer, '--channel', 'stable', '--tag', 'v1.1.0', '--install-only'], rate_limited_env)
             run([installer, '--channel', 'alpha', '--tag', 'v1.1.0', '--install-only'], rate_limited_env)
             limited = run([installer, '--channel', 'stable', '--install-only'], rate_limited_env, False)

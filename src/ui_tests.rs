@@ -8770,13 +8770,13 @@ open(out + ".done", "w").close()
             let mut status = crate::host::update_status::UpdateStatus::default();
             status.begin_check();
             status.apply(crate::host::update_status::UpdateEvent::Failed {
-                reason: "could not fetch releases: HTTP 503".into(),
+                reason: "GitHub is slow, try again".into(),
             });
             app.update_status = status;
         });
         h.run_steps(2);
         h.harness()
-            .get_by_label("Update check failed: could not fetch releases: HTTP 503");
+            .get_by_label("Update check failed: GitHub is slow, try again");
         assert!(h.harness().query_by_label("Restart to update").is_none());
         h.save_screenshot(&evidence_png!("_failed")).expect("render failed");
         println!("Screenshot saved to {}", evidence_png!("_failed"));

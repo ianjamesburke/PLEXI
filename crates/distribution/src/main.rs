@@ -218,10 +218,10 @@ fn run(args: Args) -> Result<i32> {
             release::validate_tag(channel, tag)?;
             tag.clone()
         } else {
-            let endpoint = std::env::var("PLEXI_RELEASES_URL")
-                .unwrap_or_else(|_| release::RELEASES_URL.into());
-            let releases = release::fetch(&agent, &endpoint)?;
-            release::select(&releases, channel, &platform, None)
+            let repo = std::env::var("PLEXI_GITHUB_REPO_API")
+                .unwrap_or_else(|_| release::REPO_API_URL.into());
+            let api = release::GithubApi::new(&agent, repo, release::Retry::GITHUB);
+            release::resolve(&api, channel, &platform, None)?
                 .ok_or_else(|| {
                     Error::Invalid(format!(
                         "no complete published release for {channel} on {platform}"

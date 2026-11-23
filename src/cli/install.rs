@@ -671,10 +671,11 @@ fn run_self_update() -> Result<String, String> {
         .timeout(std::time::Duration::from_secs(30))
         .build();
 
-    let releases = release_resolver::fetch_releases(&agent).map_err(|e| format!("error: {e}"))?;
     let current_tag = release_resolver::ReleaseTag::parse(&current_version_raw)
         .ok_or_else(|| format!("error: could not parse current version {current_version_raw}"))?;
-    let selected = match release_resolver::resolve_best(&releases, update_channel, &current_tag) {
+    let selected = match release_resolver::resolve_latest(&agent, update_channel, &current_tag)
+        .map_err(|e| format!("error: {e}"))?
+    {
         Some(t) => t,
         None => return Ok(format!("Already up to date ({current_version_raw}).")),
     };
