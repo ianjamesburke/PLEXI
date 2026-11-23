@@ -3476,7 +3476,14 @@ impl PermissionMonitor {
         }
         for (actor, grant_id, resource_id, workspace_root) in &expired {
             if let Some(ws) = workspace_root {
-                crate::agent::runs::expire_soft_grant_in_workspace(ws, actor, resource_id);
+                if let Err(error) =
+                    crate::agent::runs::expire_soft_grant_in_workspace(ws, actor, resource_id)
+                {
+                    log::error!(
+                        "permission_monitor: sync expired soft grant {grant_id} actor={actor} tool={resource_id} workspace={} failed: {error}",
+                        ws.display()
+                    );
+                }
             }
             let _ = self.audit(&AuditFact {
                 kind: "expire".to_string(),

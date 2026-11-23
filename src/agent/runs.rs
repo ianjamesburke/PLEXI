@@ -291,50 +291,49 @@ fn record_scope_allow(
 }
 
 /// Sync `agent.json` and any active run in `runs.jsonl` when a soft grant expires.
-pub fn expire_soft_grant_in_workspace(workspace: &Path, actor_id: &str, tool: &str) {
+/// Writes only the authority record and the run journal; the user-owned
+/// definition files (`AGENT.md`, `settings.toml`) are never touched.
+pub fn expire_soft_grant_in_workspace(
+    workspace: &Path,
+    actor_id: &str,
+    tool: &str,
+) -> Result<(), String> {
     let agent_id = actor_id.strip_prefix("agent:").unwrap_or(actor_id);
     let agent_dir = agents_root(workspace).join(agent_id);
     if crate::agent::authority_file_migrating_legacy(&agent_dir).is_some() {
-        if let Ok(mut card) = read_agent(&agent_dir) {
-            let mut changed = false;
-            for grant in &mut card.grants {
-                if grant.tool == tool && grant.kind == GrantKind::Soft && grant.decision == "allow"
-                {
-                    grant.decision = "ask".to_string();
-                    grant.expires_at = None;
-                    changed = true;
-                }
-            }
-            if changed {
-                if let Err(error) = write_definition(workspace, &card) {
-                    log::error!(
-                        "agents_api: failed to update expired soft grant on agent {}: {error}",
-                        card.id
-                    );
-                }
-            }
+        let mut card = read_agent(&agent_dir)?;
+        if expire_soft_allow(&mut card.grants, tool) {
+            write_authority(&agent_dir, &card)?;
+            log::info!(
+                "agents_api: expired soft grant agent={} tool={tool} -> ask (agent.json only)",
+                card.id
+            );
         }
     }
     let _guard = journal_lock().lock().unwrap_or_else(|e| e.into_inner());
-    if let Ok(runs) = load_runs(workspace) {
-        for mut run in runs {
-            if !run.active || (run.actor_id != actor_id && run.agent_id != agent_id) {
-                continue;
-            }
-            let mut changed = false;
-            for grant in &mut run.grants {
-                if grant.tool == tool && grant.kind == GrantKind::Soft && grant.decision == "allow"
-                {
-                    grant.decision = "ask".to_string();
-                    grant.expires_at = None;
-                    changed = true;
-                }
-            }
-            if changed {
-                let _ = append_run_record(workspace, &run);
-            }
+    for mut run in load_runs(workspace)? {
+        if !run.active || (run.actor_id != actor_id && run.agent_id != agent_id) {
+            continue;
+        }
+        if expire_soft_allow(&mut run.grants, tool) {
+            append_run_record(workspace, &run)
+                .map_err(|error| format!("expire soft grant on run {}: {error}", run.id))?;
         }
     }
+    Ok(())
+}
+
+/// Flip every soft `allow` grant for `tool` to `ask`; true when any changed.
+fn expire_soft_allow(grants: &mut [ToolGrant], tool: &str) -> bool {
+    let mut changed = false;
+    for grant in grants {
+        if grant.tool == tool && grant.kind == GrantKind::Soft && grant.decision == "allow" {
+            grant.decision = "ask".to_string();
+            grant.expires_at = None;
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// Grant `tool=allow` on `run_id` only (in `runs.jsonl`), without modifying `agent.json`.
@@ -367,9 +366,15 @@ pub fn grant_tool_for_run(workspace: &Path, run_id: &str, tool: &str) -> Result<
     Ok(updated.actor_id)
 }
 
-fn write_definition(workspace: &Path, card: &AgentAuthorityRecord) -> Result<(), String> {
-    let dir = agents_root(workspace).join(&card.id);
-    fs::create_dir_all(&dir).map_err(|error| format!("create {}: {error}", dir.display()))?;
+/// Create a new agent definition: `AGENT.md`, `settings.toml` and `agent.json`.
+/// Creation only. `create_dir` refuses an existing directory, so a user's
+/// definition files are never replaced; later authority changes go through
+/// `write_authority`.
+fn create_definition(workspace: &Path, card: &AgentAuthorityRecord) -> Result<(), String> {
+    let root = agents_root(workspace);
+    fs::create_dir_all(&root).map_err(|error| format!("create {}: {error}", root.display()))?;
+    let dir = root.join(&card.id);
+    fs::create_dir(&dir).map_err(|error| format!("create {}: {error}", dir.display()))?;
     let prompt = format!(
         "# {}\n\nGuidance only. This file grants no tools and no scopes.\nReporting line: {}.\n",
         card.display_name,
@@ -402,10 +407,24 @@ fn write_definition(workspace: &Path, card: &AgentAuthorityRecord) -> Result<(),
     );
     fs::write(dir.join("settings.toml"), settings)
         .map_err(|error| format!("write settings.toml: {error}"))?;
-    let body = serde_json::to_string_pretty(card).map_err(|error| error.to_string())?;
-    fs::write(dir.join("agent.json"), body)
-        .map_err(|error| format!("write agent.json: {error}"))?;
-    Ok(())
+    write_authority(&dir, card)
+}
+
+/// Write the authority record `agent.json` in an existing agent directory.
+fn write_authority(dir: &Path, card: &AgentAuthorityRecord) -> Result<(), String> {
+    let path = dir.join("agent.json");
+    let result = serde_json::to_string_pretty(card)
+        .map_err(|error| format!("serialize authority for {}: {error}", card.id))
+        .and_then(|body| {
+            fs::write(&path, body).map_err(|error| format!("write {}: {error}", path.display()))
+        });
+    if let Err(error) = &result {
+        log::error!(
+            "agents_api: write_authority failed agent={}: {error}",
+            card.id
+        );
+    }
+    result
 }
 
 fn read_agent(dir: &Path) -> Result<AgentAuthorityRecord, String> {
@@ -611,6 +630,15 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
     if crate::agent::authority_file_migrating_legacy(&dir).is_some() {
         return json!({"ok": false, "error_code": "agent_exists", "error": format!("agent '{}' already exists", req.name)});
     }
+    // A definition without an authority record (a seeded `default`, a
+    // `plexi agent create` folder) is adopted: only `agent.json` is written.
+    let adopt = dir.exists();
+    if let Some(issue) = crate::agent::unrecognised_agent_dir(&dir) {
+        return json!({
+            "ok": false, "error_code": "agent_unrecognised",
+            "error": format!("agent directory {} is unrecognised: {}", dir.display(), issue.issue.describe()),
+        });
+    }
     let now = gate.now_secs();
     let soft_days = crate::config::PlexiConfig::load_with_workspace(Some(req.workspace))
         .soft_grant_days() as i64;
@@ -643,7 +671,12 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
         temporary: req.temporary,
         grants: resolved_grants,
     };
-    if let Err(error) = write_definition(req.workspace, &card) {
+    let written = if adopt {
+        write_authority(&dir, &card)
+    } else {
+        create_definition(req.workspace, &card)
+    };
+    if let Err(error) = written {
         log::error!("agents_api: create agent {} failed: {error}", req.name);
         return json!({"ok": false, "error_code": "io_error", "error": error});
     }
@@ -660,7 +693,7 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
         }
     }
     log::info!(
-        "agents_api: created agent {} actor={actor} temporary={} grants={} workspace={}",
+        "agents_api: created agent {} actor={actor} adopted_definition={adopt} temporary={} grants={} workspace={}",
         card.id,
         card.temporary,
         card.grants.len(),
@@ -2392,6 +2425,108 @@ mod tests {
             next_call["error_code"], "permission_denied",
             "subsequent run must not inherit run-only grant: {next_call}"
         );
+    }
+
+    /// Stint 1713: expiring a soft grant flips only the grant in `agent.json`;
+    /// the user's hand-edited `AGENT.md` and `settings.toml` survive byte for byte.
+    #[test]
+    fn soft_grant_expiry_keeps_hand_edited_definition_files() {
+        let fix = Fixture::new();
+        let t0: i64 = 1_700_000_000;
+        monitor().unwrap().set_now_for_test(t0);
+        let created = handle_request(
+            "create_agent",
+            &json!({
+                "workspace": fix.ws(),
+                "name": "worker",
+                "grants": ["agents.review=allow:soft"],
+            }),
+        );
+        assert_eq!(created["ok"], true, "{created}");
+        let dir = agents_root(fix.ws()).join("worker");
+        let persona = "# Worker\n\nYou are a terse reviewer. Quote \"exact\" lines.\n";
+        let settings = "# my comment, keep me\n[agent]\nid = \"worker\"\ndisplay_name = \"Worker \\\"W\\\"\"\ndefault_tier = \"high\"\ndescription = \"says \\\"hi\\\"\"\n\n[permissions]\ndefault_posture = \"ask\"\n\n[notes]\nowner = \"me\"\n";
+        fs::write(dir.join("AGENT.md"), persona).unwrap();
+        fs::write(dir.join("settings.toml"), settings).unwrap();
+
+        monitor().unwrap().set_now_for_test(t0 + 400 * 86_400);
+        assert!(monitor().unwrap().expire_soft_grants() >= 1);
+
+        assert_eq!(fs::read_to_string(dir.join("AGENT.md")).unwrap(), persona);
+        assert_eq!(
+            fs::read_to_string(dir.join("settings.toml")).unwrap(),
+            settings
+        );
+        let record = read_agent(&dir).unwrap();
+        let review = record
+            .grants
+            .iter()
+            .find(|g| g.tool == "agents.review")
+            .unwrap();
+        assert_eq!(review.decision, "ask");
+        assert!(review.expires_at.is_none());
+    }
+
+    /// A definition with no authority record (the seeded workspace
+    /// `default`) is adopted by create: `agent.json` is written and the
+    /// user's definition files stay byte for byte. A second create refuses.
+    #[test]
+    fn create_adopts_existing_definition_writing_only_authority() {
+        let fix = Fixture::new();
+        let dir = crate::agent::ensure_workspace_default_agent(fix.ws()).unwrap();
+        let settings =
+            "# mine\n".to_string() + &fs::read_to_string(dir.join("settings.toml")).unwrap();
+        fs::write(dir.join("settings.toml"), &settings).unwrap();
+        let persona = fs::read(dir.join("persona.md")).unwrap();
+        let result = create(&fix, "default", &["agents.ping=allow"]);
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(
+            fs::read_to_string(dir.join("settings.toml")).unwrap(),
+            settings
+        );
+        assert_eq!(fs::read(dir.join("persona.md")).unwrap(), persona);
+        assert!(!dir.join("AGENT.md").exists());
+        assert_eq!(read_agent(&dir).unwrap().grants[0].tool, "agents.ping");
+        let again = create(&fix, "default", &[]);
+        assert_eq!(again["error_code"], "agent_exists", "{again}");
+        assert_eq!(
+            fs::read_to_string(dir.join("settings.toml")).unwrap(),
+            settings
+        );
+    }
+
+    /// A folder that is not a usable definition is reported, never filled in.
+    #[test]
+    fn create_refuses_unrecognised_directory() {
+        let fix = Fixture::new();
+        let dir = agents_root(fix.ws()).join("worker");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("AGENT.md"), "hand written\n").unwrap();
+        let result = create(&fix, "worker", &["agents.ping=allow"]);
+        assert_eq!(result["error_code"], "agent_unrecognised", "{result}");
+        assert_eq!(
+            fs::read_to_string(dir.join("AGENT.md")).unwrap(),
+            "hand written\n"
+        );
+        assert!(!dir.join("agent.json").exists());
+    }
+
+    /// A failed authority write during expiry is returned to the caller.
+    #[test]
+    fn expiry_returns_authority_write_failure() {
+        let fix = Fixture::new();
+        assert_eq!(
+            create(&fix, "worker", &["agents.review=allow:soft"])["ok"],
+            true
+        );
+        let dir = agents_root(fix.ws()).join("worker");
+        let authority = dir.join("agent.json");
+        let mut perms = fs::metadata(&authority).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&authority, perms).unwrap();
+        let error =
+            expire_soft_grant_in_workspace(fix.ws(), "agent:worker", "agents.review").unwrap_err();
+        assert!(error.contains("agent.json"), "{error}");
     }
 
     #[test]
