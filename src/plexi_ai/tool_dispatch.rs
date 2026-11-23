@@ -773,6 +773,8 @@ pub struct ToolDispatcher {
     host_tools: HashMap<String, AiTool>,
     /// Handler for `host_tools` calls. Runs on the broker worker thread.
     host_handler: Option<HostToolHandler>,
+    /// Refuses an invalid `host_tools` input before admission.
+    host_input_check: Option<HostInputCheck>,
     /// Caller identity for audit logging.
     caller_plugin_id: String,
     /// Caller pane id for audit logging.
@@ -786,6 +788,10 @@ pub struct ToolDispatcher {
 
 /// Handler for caller-local host tools: `(tool_name, input_json) → result`.
 pub type HostToolHandler = Arc<dyn Fn(&str, &str) -> ToolCallResult + Send + Sync>;
+
+/// `(tool_name, input_json) → refusal`. It can only refuse: a call it passes
+/// still goes through the permission monitor.
+pub type HostInputCheck = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
 
 impl std::fmt::Debug for ToolDispatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -873,6 +879,7 @@ impl ToolDispatcher {
             provider_apps,
             host_tools: HashMap::new(),
             host_handler: None,
+            host_input_check: None,
             cancel: crate::plexi_ai::CancelToken::new(),
             caller_plugin_id,
             caller_pane_id,
@@ -896,6 +903,12 @@ impl ToolDispatcher {
             self.host_tools.insert(tool.name.clone(), tool);
         }
         self.host_handler = Some(handler);
+    }
+
+    /// Set the check that refuses invalid host-tool input before admission,
+    /// so a call that can never run raises no permission prompt.
+    pub fn set_host_input_check(&mut self, check: HostInputCheck) {
+        self.host_input_check = Some(check);
     }
 
     /// Observation and presentation only. Hooks cannot allow or deny a call;
@@ -1025,6 +1038,21 @@ impl ToolDispatcher {
                 call_id = crate::host::guest_text::shown(&call_id)
             ));
             return self.dispatch_inner(call_id, name, input_json, None);
+        }
+        if self.host_tools.contains_key(name) {
+            if let Some(message) = self
+                .host_input_check
+                .as_ref()
+                .and_then(|check| check(name, &input_json))
+            {
+                log::info!(
+                    "tool_dispatch: refused before admission caller={} tool={name} call_id={call_id}",
+                    self.caller_plugin_id,
+                    name = crate::host::guest_text::shown(name),
+                    call_id = crate::host::guest_text::shown(&call_id)
+                );
+                return ToolCallResult::err(message);
+            }
         }
         let Some(principal) = crate::broker::principal::Principal::from_actor(
             self.scope.actor_type,
