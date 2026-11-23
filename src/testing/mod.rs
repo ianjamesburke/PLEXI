@@ -810,6 +810,7 @@ impl HostHarness {
     pub fn launch_dev_view_without_render(&mut self, name: &str) -> PaneId {
         let plugin_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join(format!("plugins/dev/{name}"));
+        self.trust_plugin_folder(plugin_dir.parent().expect("plugins/dev"));
         let before = self.state().open_panes;
         let focused = self
             .app
@@ -831,6 +832,18 @@ impl HostHarness {
         let pane_id = self.launch_dev_view_without_render(name);
         self.wait_for_first_render(pane_id);
         pane_id
+    }
+
+    /// Trust the plugin folder `folder` in this harness's profile, as a
+    /// desktop click on its ask does (stint 1398). Path launches of fixtures
+    /// outside the profile need it.
+    pub fn trust_plugin_folder(&mut self, folder: &std::path::Path) {
+        // Canonical paths must match the scan's, so the folder must exist.
+        std::fs::create_dir_all(folder).expect("create plugin folder");
+        self.app
+            .registries
+            .admission()
+            .trust_folder_for_test(folder);
     }
 
     /// Launch the real process plugin at `<repo>/<rel_dir>` with launch `args`,

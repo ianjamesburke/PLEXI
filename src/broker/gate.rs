@@ -1112,6 +1112,52 @@ impl PermissionMonitor {
         self.admit_inner(req, None, Some(disclosure))
     }
 
+    /// Admit loading one plugin tree that is not bundled with Plexi (stint
+    /// 1398). `disclosure` is the approval text: the plugin, the folder and
+    /// what allowing it means. Display only.
+    pub fn admit_plugin_code(&self, req: AdmitRequest<'_>, disclosure: &str) -> Admission {
+        debug_assert!(req.target_type == TargetType::Package);
+        self.admit_inner(req, None, Some(disclosure))
+    }
+
+    /// The stored decision for `req`, without filing an ask, an audit row or
+    /// a trace. A registry scan reads admission this way: a scan never asks.
+    pub fn stored_decision(&self, req: &AdmitRequest<'_>) -> Decision {
+        let Ok(fingerprint) = fingerprint_args(req.input_json) else {
+            return Decision::Deny;
+        };
+        if req.workspace_root.as_os_str().is_empty() {
+            return Decision::Deny;
+        }
+        let binding = self.exact_binding(req, fingerprint);
+        let now = self.now_secs();
+        self.store()
+            .evaluate_at(&PermissionRequest::exact(&binding), None, now)
+    }
+
+    /// The exact binding a request is decided on.
+    fn exact_binding(&self, req: &AdmitRequest<'_>, fingerprint: String) -> ExactBinding {
+        let (resource_scope, resource_id) = resource_of(req.tool, req.input_json);
+        ExactBinding {
+            actor_type: req.principal.actor_type(),
+            actor_id: req.principal.actor_id().to_string(),
+            actor_scope: req.actor_scope,
+            trust_origin: req.trust_origin.to_string(),
+            workspace_root: req.workspace_root.to_path_buf(),
+            target_type: req.target_type,
+            target_id: req.tool.to_string(),
+            resource_scope,
+            resource_id,
+            args_fingerprint: fingerprint,
+            session_id: Some(self.session_id.clone()),
+            package_id: req.package_id.to_string(),
+            instance_id: Some(req.instance_id),
+            context_id: Some(req.context_id),
+            call_id: req.call_id.to_string(),
+            operation_id: operation_id_of(req.input_json),
+        }
+    }
+
     fn admit_inner(
         &self,
         req: AdmitRequest<'_>,
@@ -1143,25 +1189,7 @@ impl PermissionMonitor {
                 code: "permission_denied",
             };
         }
-        let (resource_scope, resource_id) = resource_of(req.tool, req.input_json);
-        let binding = ExactBinding {
-            actor_type: req.principal.actor_type(),
-            actor_id: req.principal.actor_id().to_string(),
-            actor_scope: req.actor_scope,
-            trust_origin: req.trust_origin.to_string(),
-            workspace_root: req.workspace_root.to_path_buf(),
-            target_type: req.target_type,
-            target_id: req.tool.to_string(),
-            resource_scope,
-            resource_id,
-            args_fingerprint: fingerprint,
-            session_id: Some(self.session_id.clone()),
-            package_id: req.package_id.to_string(),
-            instance_id: Some(req.instance_id),
-            context_id: Some(req.context_id),
-            call_id: req.call_id.to_string(),
-            operation_id: operation_id_of(req.input_json),
-        };
+        let binding = self.exact_binding(&req, fingerprint);
         let request = PermissionRequest::exact(&binding);
         self.expire_soft_grants();
         let now = self.now_secs();
@@ -1380,6 +1408,19 @@ impl PermissionMonitor {
             );
             return Err("an outside process can be decided once or for this session".to_string());
         }
+        // Plugin code is allowed for one exact copy or folder, or not at all
+        // (stint 1398); a once or session load has no meaning for a scan.
+        if pending.binding.target_type == TargetType::Package
+            && matches!(
+                choice,
+                ApprovalChoice::Once | ApprovalChoice::Session | ApprovalChoice::AllowTool
+            )
+        {
+            return Err(
+                "plugin code is allowed until it changes, or denied: choose Allow or Deny"
+                    .to_string(),
+            );
+        }
         if matches!(choice, ApprovalChoice::Deny | ApprovalChoice::DenyAlways) {
             let grant_id = if choice == ApprovalChoice::DenyAlways {
                 let evidence = evidence.ok_or("deny always needs the person's decision")?;
@@ -1444,6 +1485,11 @@ impl PermissionMonitor {
                 Some(self.session_id().to_string()),
                 None,
             ),
+            // Bound to the plugin's content or folder, so it never expires:
+            // a changed copy is a different binding and asks again.
+            ApprovalChoice::Always if pending.binding.target_type == TargetType::Package => {
+                (GrantDuration::PackageIdentity, None, None)
+            }
             ApprovalChoice::Always => (
                 GrantDuration::Always,
                 None,
@@ -1456,7 +1502,9 @@ impl PermissionMonitor {
         let plugin_capability = is_plugin_capability(&pending.binding);
         let mut binding = pending.binding.clone();
         binding.session_id = session_id.clone();
-        if plugin_capability && choice == ApprovalChoice::Always {
+        if (plugin_capability && choice == ApprovalChoice::Always)
+            || binding.target_type == TargetType::Package
+        {
             binding.instance_id = None;
             binding.context_id = None;
         }

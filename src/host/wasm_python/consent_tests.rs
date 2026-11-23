@@ -103,6 +103,7 @@ fn fetch(port: u16, path: &str) -> String {
 }
 
 fn launch(h: &mut HostHarness, dir: &std::path::Path) -> PaneId {
+    h.app.trust_plugin_path_for_test(&dir.to_string_lossy());
     h.app
         .launch_view_by_path_with_layout_no_review_modal(&dir.to_string_lossy(), None, None, &[])
         .expect("launch probe")

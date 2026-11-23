@@ -6120,6 +6120,11 @@ impl LivePythonPane {
             .unwrap_or_else(|e| e.into_inner())
             .suppressed
     }
+    /// The plugin tree this pane runs; a relaunch reads it again.
+    pub(crate) fn plugin_dir(&self) -> &Path {
+        &self.config.plugin_dir
+    }
+
     pub fn relaunch(&mut self) -> Result<(), WasmPythonError> {
         // Check the files before the new guest can run, and drop the old
         // trust first so a failed launch leaves the pane untrusted.
@@ -9148,7 +9153,10 @@ mod tests {
             harness
                 .app
                 .set_context_root(root.path().to_path_buf(), Some(context_id));
-            let plugin_dir = write_python_plugin(root.path(), "todo");
+            let plugin_dir = write_python_plugin(root.path(), "state-fixture");
+            harness
+                .app
+                .trust_plugin_path_for_test(&plugin_dir.to_string_lossy());
 
             let pane_id = harness
                 .app
@@ -9251,7 +9259,10 @@ mod tests {
 
             // The launch root is the context root — what `resolve_new_pane_cwd`
             // yields for a plugin the registry has no workspace root for.
-            let plugin_dir = write_python_plugin(root_a.path(), "todo");
+            let plugin_dir = write_python_plugin(root_a.path(), "state-fixture");
+            harness
+                .app
+                .trust_plugin_path_for_test(&plugin_dir.to_string_lossy());
             let pane_id = harness
                 .app
                 .launch_view_by_path_with_layout_no_review_modal(
@@ -9265,7 +9276,7 @@ mod tests {
             let at_launch = live_state_address(&harness, pane_id);
             assert_eq!(
                 at_launch,
-                python_state_path_for_config(&state_test_config(root_a.path(), "todo")),
+                python_state_path_for_config(&state_test_config(root_a.path(), "state-fixture")),
                 "precondition: the running plugin is addressed under the context root"
             );
             seed_items(&at_launch, &serde_json::json!(["buy milk"]));
@@ -9281,7 +9292,7 @@ mod tests {
             );
             assert_state_address_lost(
                 &at_launch,
-                &python_state_path_for_config(&state_test_config(root_b.path(), "todo")),
+                &python_state_path_for_config(&state_test_config(root_b.path(), "state-fixture")),
                 "set_context_root while the plugin is running",
             );
         }

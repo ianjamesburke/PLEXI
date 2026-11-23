@@ -34,6 +34,7 @@ pub mod pane_liveness;
 pub mod pane_result;
 pub(crate) mod path_watch;
 pub(crate) mod picker;
+pub(crate) mod plugin_admission;
 pub mod plugin_timeline;
 pub(crate) mod resource_leases;
 pub mod scheduler;

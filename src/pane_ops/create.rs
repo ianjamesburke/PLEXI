@@ -465,6 +465,11 @@ pub(crate) struct RestoredViewPane {
     pub hot_reload_dir: PathBuf,
 }
 
+/// The admission check for `profile_dir`'s own plugins folder.
+fn profile_admission(profile_dir: &Path) -> crate::host::plugin_admission::PluginAdmission {
+    crate::host::plugin_admission::PluginAdmission::new(profile_dir, &profile_dir.join("plugins"))
+}
+
 /// Restore a saved Python or WASM view pane by relaunching it through the same
 /// runtime-construction path a fresh open uses — never through
 /// `place_view_pane`, which allocates a new pane id and mutates the tile tree.
@@ -519,6 +524,7 @@ pub(crate) fn restore_view_pane_in_profile(
                 crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(plugin_dir)
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
+            profile_admission(profile_dir).admit_or_ask(&config.plugin_id, plugin_dir)?;
             let permissions = gate_plugin_permissions_in_profile(
                 profile_dir,
                 &config.plugin_id,
@@ -586,6 +592,19 @@ pub(crate) fn restore_view_pane_in_profile(
             }
             let registry =
                 PluginRegistry::load_with_global(&workspace_root, &profile_dir.join("plugins"));
+            // A saved layout names a path; admission decides the tree that
+            // holds it, as a fresh launch does.
+            let admitted_dir = registry
+                .get(manifest_id)
+                .filter(|installed| {
+                    crate::platform::path::canonical_or_self(&installed.bin_path)
+                        == crate::platform::path::canonical_or_self(wasm_path)
+                })
+                .map_or_else(
+                    || wasm_path.clone(),
+                    |installed| installed.plugin_dir.clone(),
+                );
+            profile_admission(profile_dir).admit_or_ask(manifest_id, &admitted_dir)?;
             match registry.get(manifest_id) {
                 Some(installed)
                     if installed.manifest.manifest_type == ManifestType::Wasm
@@ -1349,6 +1368,7 @@ impl PlexiApp {
 
     /// Relaunch a CPython-in-WASM pane while preserving its pane envelope.
     pub(crate) fn reload_view_pane(&mut self, pane_id: PaneId, reason: &str) -> bool {
+        let admission = self.registries.admission().clone();
         let active = self.active_window;
         let Some(view_pane) = self.windows[active]
             .panes
@@ -1364,6 +1384,12 @@ impl PlexiApp {
             "plugin::{} reload triggered ({reason}) for CPython WASM pane {pane_id}",
             view_pane.manifest_id
         );
+        // A reload runs the files as they are now: a changed profile copy
+        // needs a new allow before it runs (stint 1398).
+        if let Err(error) = admission.admit_or_ask(&view_pane.manifest_id, runtime.plugin_dir()) {
+            log::info!("plugin::{} reload refused: {error}", view_pane.manifest_id);
+            return false;
+        }
         if runtime.relaunch().is_err() {
             return false;
         }
@@ -3220,6 +3246,9 @@ impl PlexiApp {
                         skipped.error,
                         id = crate::host::guest_text::shown(id)
                     );
+                    if let Some(refusal) = skipped.refusal.clone() {
+                        return Err(self.registries.admission().refusal_message(&refusal));
+                    }
                     return Err(skipped.load_error(id));
                 }
                 log::warn!(
@@ -3241,6 +3270,16 @@ impl PlexiApp {
                     id = crate::host::guest_text::shown(id)
                 ))
             }
+        }
+    }
+
+    /// Trust the folder holding the plugin at `path`, as a desktop click on
+    /// its ask does (stint 1398). For tests that path-launch fixtures.
+    #[cfg(test)]
+    pub(crate) fn trust_plugin_path_for_test(&self, path: impl AsRef<str>) {
+        let path = crate::platform::path::canonical_or_self(Path::new(path.as_ref()));
+        if let Some(folder) = path.parent() {
+            self.registries.admission().trust_folder_for_test(folder);
         }
     }
 
@@ -3322,13 +3361,20 @@ impl PlexiApp {
         // not a manifest-backed process plugin. Route it to the wasmtime path.
         if plugin_dir.extension().and_then(|e| e.to_str()) == Some("wasm") {
             require_wasm_experiment()?;
-            let plugin_id = self
+            let registered = self
                 .registries
                 .view_for_context(context_id, &self.router)
                 .manifest_id_for_wasm_path(&plugin_dir)
-                .map(str::to_owned)
-                .map(Ok)
-                .unwrap_or_else(|| bare_wasm_plugin_id(&plugin_dir))?;
+                .map(str::to_owned);
+            let plugin_id = match registered {
+                // Already admitted: the host view holds only admitted plugins.
+                Some(id) => id,
+                None => {
+                    let id = bare_wasm_plugin_id(&plugin_dir)?;
+                    self.registries.admission().admit_or_ask(&id, &plugin_dir)?;
+                    id
+                }
+            };
             let workspace_root = workspace_root_override.unwrap_or_else(|| {
                 plugin_dir
                     .parent()
@@ -3363,6 +3409,9 @@ impl PlexiApp {
                 return Err(format!("failed to load plugin at '{app_path}': {e}"));
             }
         };
+        self.registries
+            .admission()
+            .admit_or_ask(&installed.manifest.id, &plugin_dir)?;
 
         let view = installed
             .contributes
@@ -4600,6 +4649,17 @@ default = true
             monitor.store().records().is_empty(),
             "no prior launch grants"
         );
+        // Restore is admission-checked (stint 1398): allow the installed copy,
+        // or trust the fixture folder the saved path names.
+        let admission = crate::host::plugin_admission::PluginAdmission::new(
+            h.profile_dir(),
+            &h.profile_dir().join("plugins"),
+        );
+        if manifest_case == "matching" {
+            admission.allow_copy_for_test("com.plexi.timer-only", &plugin_dir);
+        } else {
+            admission.trust_folder_for_test(wasm_path.parent().expect("fixture folder"));
+        }
         let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
         let pane_id = 1596;
         let logs = crate::testing::test_log::capture();
@@ -4779,6 +4839,8 @@ default = true
         let mut h = HostHarness::new();
         let ctx1_root = h.app.router.active().root.clone();
         h.app.registries.set_view_for_test(&ctx1_root, registry);
+        h.app
+            .trust_plugin_path_for_test(wasm_path.to_str().expect("UTF-8 fixture path"));
         let error = h
             .app
             .launch_view_by_path_with_layout_no_review_modal(

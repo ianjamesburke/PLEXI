@@ -105,6 +105,16 @@ fn core_only_registry_stays_empty_after_rescan_and_context_changes() {
         std::fs::create_dir_all(&plugin).unwrap();
         std::fs::write(plugin.join("manifest.toml"), "schema_version = 2\n\n[plugin]\nid = 'probe'\nname = 'Probe'\nversion = '0.1.0'\n\n[runtime]\nkind = \"python\"\nentry = 'run.sh'\n\n[[contributes.views]]\nid = \"probe.main\"\ndefault = true\n").unwrap();
         std::fs::write(plugin.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+        // The first scan migrates `apps/` to `plugins/`; then trust that
+        // folder (stint 1398) so only core-only mode decides.
+        h.app.registries.rescan_root(root.path());
+        let plugins = root
+            .path()
+            .join(crate::config::workspace_channel_dir())
+            .join("plugins");
+        if plugins.is_dir() {
+            h.trust_plugin_folder(&plugins);
+        }
         let registry = h.app.registries.rescan_root(root.path());
         assert_eq!(registry.get("probe").is_none(), enabled);
         assert_eq!(

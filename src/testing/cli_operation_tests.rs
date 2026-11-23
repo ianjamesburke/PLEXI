@@ -156,6 +156,9 @@ impl E2e {
         let before = self.h.state().open_panes;
         self.h
             .app
+            .trust_plugin_path_for_test(&plugin_dir.to_string_lossy());
+        self.h
+            .app
             .launch_view_by_path_with_layout(
                 &plugin_dir.to_string_lossy(),
                 None,

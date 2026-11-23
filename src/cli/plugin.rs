@@ -1091,6 +1091,12 @@ fn plugin_install_with_pin_inner(
             return 1;
         }
     };
+    if let Err(refusal) = crate::host::plugin_admission::admit_install_source(
+        crate::host::plugin_admission::InstallSource::Folder(&src),
+    ) {
+        eprintln!("error: {refusal}");
+        return 1;
+    }
 
     // The 0015 validator is the install gate (stint 0016). User-initiated
     // installs must pass it; PreApproved installs (bundled first-party
@@ -1215,6 +1221,9 @@ fn plugin_install_with_pin_inner(
         src.display()
     );
     println!("Run `plexi view open {plugin_id}` to launch it.");
+    println!(
+        "The first time it opens, Plexi asks you to allow it in its window (Cmd+I); a changed copy asks again."
+    );
     0
 }
 
@@ -1330,6 +1339,12 @@ fn plugin_install_package_inner(
     source_metadata: Option<crate::app::marketplace::InstalledRegistrySource>,
 ) -> i32 {
     log::info!("app_install:cli: package file={file} pin={pin:?} confirm={confirm:?}");
+    if let Err(refusal) = crate::host::plugin_admission::admit_install_source(
+        crate::host::plugin_admission::InstallSource::PackageFile(std::path::Path::new(file)),
+    ) {
+        eprintln!("error: {refusal}");
+        return 1;
+    }
     let pkg_path = match std::path::Path::new(file).canonicalize() {
         Ok(p) => p,
         Err(e) => {
@@ -2873,7 +2888,7 @@ mod version_pin_tests {
     }
 
     #[test]
-    fn marketplace_package_install_records_source_metadata() {
+    fn marketplace_package_install_is_refused_while_third_party_installs_are_off() {
         let profile = TempDir::new().unwrap();
         let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
         let plugin_src = TempDir::new().unwrap();
@@ -2898,19 +2913,17 @@ mod version_pin_tests {
             None,
             super::InstallConfirm::PreApproved,
             true,
-            Some(metadata.clone()),
+            Some(metadata),
         );
 
-        assert_eq!(code, 0);
-        let source_path = profile
+        // Marketplace packages stay off until third-party installs open
+        // (stint 1398): nothing is installed and no source is recorded.
+        assert_eq!(code, 1);
+        assert!(!profile
             .path()
             .join("plugins")
             .join("reviewed-notes")
-            .join(crate::app::marketplace::INSTALLED_REGISTRY_SOURCE_FILE);
-        let text = std::fs::read_to_string(source_path).unwrap();
-        let parsed: crate::app::marketplace::InstalledRegistrySource =
-            toml::from_str(&text).unwrap();
-        assert_eq!(parsed, metadata);
+            .exists());
     }
 }
 

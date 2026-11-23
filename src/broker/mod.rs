@@ -64,6 +64,9 @@ pub enum TargetType {
     McpTool,
     FileScope,
     Secret,
+    /// Loading one plugin tree that is not bundled with Plexi (stint 1398).
+    /// A profile install binds the plugin id and content digest; a plugin
+    /// folder binds the folder. Never bound to a pane or context.
     Package,
     ModelPointer,
     UndoCheckpoint,
@@ -504,8 +507,12 @@ impl GrantRecord {
         // A CLI operation grant is bound to package content and the operation
         // binding, not to the pane that asked: a remembered grant must survive a
         // restart that reassigns pane and context ids. A remembered plugin
-        // capability decision is plugin-wide in the same way (stint 1489).
-        let pane_bound = self.target_type != TargetType::CliOperation && !self.plugin_wide();
+        // capability decision is plugin-wide in the same way (stint 1489), and
+        // so is permission to load plugin code (stint 1398).
+        let pane_bound = !matches!(
+            self.target_type,
+            TargetType::CliOperation | TargetType::Package
+        ) && !self.plugin_wide();
         if self.package_id != req.package_id
             || (pane_bound
                 && (self.instance_id != req.instance_id || self.context_id != req.context_id))

@@ -1221,7 +1221,7 @@ Manage your Plexi plugins — open, install, list, scaffold, and inspect.
 
 | Subcommand | Description |
 |---|---|
-| `install` | Install a plugin from a local path, a remote source, or a pack file |
+| `install` | Install a plugin from a local path, a bundled plugin, or a pack file |
 | `uninstall` | Remove an installed plugin by id |
 | `list` | Show all installed plugins with their versions |
 | `prune` | Report obsolete first-party pre-v3 plugins that launch-time reseeding quarantines |
@@ -1243,13 +1243,13 @@ Manage your Plexi plugins — open, install, list, scaffold, and inspect.
 
 ### `plexi plugin install`
 
-Install a plugin from a local path, a remote source, or a pack file.
+Install a plugin from a local path, a bundled plugin, or a pack file.
 
-Local path: `plexi plugin install ./my-plugin` — copies the plugin dir into Plexi's store. Remote source: `plexi plugin install github:owner/repo` — fetches and installs from GitHub. Pack file: `plexi plugin install --pack core` — installs from a pack file or the built-in core pack. Workspace pack: `plexi plugin install` (no args) — installs from `<repo>/.plexi-<channel>/plugins.toml` (or `<repo>/.plexi/plugins.toml` on stable).
+Local path: `plexi plugin install ./my-plugin` — copies the plugin dir into Plexi's store; Plexi asks you to allow it in its window the first time it opens. Bundled plugin: `plexi plugin install local:<name>` — extracts a plugin built into this Plexi. Pack file: `plexi plugin install --pack core` — installs from a pack file or the built-in core pack. Workspace pack: `plexi plugin install` (no args) — installs from `<repo>/.plexi-<channel>/plugins.toml` (or `<repo>/.plexi/plugins.toml` on stable). Remote sources (github:, git+, marketplace ids, .plexipkg files, and pack entries naming them) are refused until third-party installs open.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<spec_or_path>` | string | no | Source to install: a local path, GitHub spec (github:owner/repo), or bare plugin id. Omit to install from the workspace pack (`<repo>/.plexi-<channel>/plugins.toml`, or `<repo>/.plexi/plugins.toml` on stable) |
+| `<spec_or_path>` | string | no | Source to install: a local path or local:<name>. Remote sources are refused. Omit to install from the workspace pack (`<repo>/.plexi-<channel>/plugins.toml`, or `<repo>/.plexi/plugins.toml` on stable) |
 | `--pack` | string | no | Install from a pack file or 'core' |
 | `--refresh` | flag | no | With --pack: re-extract already-installed `local:` plugins from this binary's embedded tree, replacing the installed copy. The update path for bundled core plugins on stable channels |
 | `--yes` / `-y` | flag | no | Skip the trust-sheet confirmation prompt. Required for non-interactive (scripted) installs — without a terminal the install fails closed instead of proceeding silently. Confirms the install only: no permission is granted, and the plugin asks in the Plexi window when it first runs |

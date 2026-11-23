@@ -258,6 +258,7 @@ mod tests {
             dir: std::path::PathBuf::from("/profile/plugins/broken-app"),
             source: crate::app::registry::RegistrySource::Global,
             error: "invalid manifest: missing field `runtime`".into(),
+            refusal: None,
         }];
         let text = skipped_plugin_lines(&skipped).join("\n");
         assert!(text.contains("broken-app"), "{text}");
@@ -286,6 +287,7 @@ mod tests {
             dir: std::path::PathBuf::from("/profile/plugins/broken-app"),
             source: crate::app::registry::RegistrySource::Global,
             error: "invalid manifest: missing field `runtime`".into(),
+            refusal: None,
         }];
         let value = plugin_list_json(&globals, &[], &skipped);
         assert_eq!(

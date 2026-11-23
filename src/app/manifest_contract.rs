@@ -667,9 +667,22 @@ mod tests {
             .join(format!("schema2-{}.plexipkg", uuid::Uuid::new_v4()));
         package::build_package(dir.path(), Some(&archive)).unwrap();
         assert_eq!(package::validate_package(&archive).unwrap().id, "sample");
+        // Package files do not install while third-party installs are off
+        // (stint 1398); the extracted package installs as a local folder.
         assert_eq!(
             crate::cli::plugin::plugin_install_package(
                 archive.to_str().unwrap(),
+                None,
+                InstallConfirm::PreApproved,
+                true
+            ),
+            1
+        );
+        let extracted = tempfile::tempdir().unwrap();
+        package::extract_package(&archive, extracted.path()).unwrap();
+        assert_eq!(
+            plugin_install_with_pin(
+                extracted.path().to_str().unwrap(),
                 None,
                 InstallConfirm::PreApproved,
                 true

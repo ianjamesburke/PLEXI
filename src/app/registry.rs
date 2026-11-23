@@ -8,7 +8,10 @@
 //!
 //! `workspace_root` is the nearest ancestor of the current working directory that
 //! contains a `.plexi/` directory; if none is found, only global plugins are loaded.
-//! When ids collide, the local entry wins and the shadow is logged at info level.
+//! When ids collide, the local entry wins and the shadow is logged at info level,
+//! except that a local entry never takes the id of a plugin bundled with Plexi
+//! (stint 1398). The host loads through [`PluginRegistry::load_admitted`], which
+//! also skips every entry `host::plugin_admission` refuses.
 //!
 //! # App directory layout
 //!
@@ -662,6 +665,9 @@ pub struct SkippedPlugin {
     pub dir: PathBuf,
     pub source: RegistrySource,
     pub error: String,
+    /// Set when plugin admission refused the entry (stint 1398); the host
+    /// files an ask for refusals a click can lift.
+    pub refusal: Option<crate::host::plugin_admission::Refusal>,
 }
 
 impl SkippedPlugin {
@@ -723,7 +729,30 @@ impl PluginRegistry {
     /// Same as [`load`], but with an explicit global plugins directory. Used by
     /// tests so they can stage a fake `~/.plexi-<channel>/plugins/` without
     /// touching the real one.
+    ///
+    /// This is the inventory of what is on disk, for the CLI and tests: it
+    /// does not check plugin admission. The host loads through
+    /// [`Self::load_admitted`].
     pub fn load_with_global(cwd: &Path, global_dir: &Path) -> Self {
+        Self::load_gated(cwd, global_dir, None)
+    }
+
+    /// What the host may load: every entry passes
+    /// [`crate::host::plugin_admission::PluginAdmission::decide`] before it is
+    /// inserted, so a refused workspace entry never displaces a global one.
+    pub(crate) fn load_admitted(
+        cwd: &Path,
+        global_dir: &Path,
+        admission: &crate::host::plugin_admission::PluginAdmission,
+    ) -> Self {
+        Self::load_gated(cwd, global_dir, Some(admission))
+    }
+
+    fn load_gated(
+        cwd: &Path,
+        global_dir: &Path,
+        gate: Option<&crate::host::plugin_admission::PluginAdmission>,
+    ) -> Self {
         let channel_dir = registry_config_dir();
         let mut registry = Self {
             plugins: HashMap::new(),
@@ -742,7 +771,7 @@ impl PluginRegistry {
         }
 
         if global_dir.is_dir() {
-            registry.scan_dir(global_dir, RegistrySource::Global, None);
+            registry.scan_dir(global_dir, RegistrySource::Global, None, gate);
         }
 
         // Local plugins + agents — only scanned when a workspace root exists.
@@ -757,11 +786,16 @@ impl PluginRegistry {
             }
             let local_apps = root.join(&channel_dir).join("plugins");
             if local_apps.is_dir() {
-                registry.scan_dir(&local_apps, RegistrySource::LocalPlugin, Some(root.clone()));
+                registry.scan_dir(
+                    &local_apps,
+                    RegistrySource::LocalPlugin,
+                    Some(root.clone()),
+                    gate,
+                );
             }
             let local_agents = root.join(&channel_dir).join("agents");
             if local_agents.is_dir() {
-                registry.scan_dir(&local_agents, RegistrySource::LocalAgent, Some(root));
+                registry.scan_dir(&local_agents, RegistrySource::LocalAgent, Some(root), gate);
             }
         }
 
@@ -807,7 +841,13 @@ impl PluginRegistry {
     /// Scan one directory of manifest-bearing subdirs, inserting discovered
     /// entries. Calls made later in `load()` shadow earlier ones; on shadow
     /// the displaced entry's source is logged so users can debug discovery.
-    fn scan_dir(&mut self, dir: &Path, source: RegistrySource, workspace_root: Option<PathBuf>) {
+    fn scan_dir(
+        &mut self,
+        dir: &Path,
+        source: RegistrySource,
+        workspace_root: Option<PathBuf>,
+        gate: Option<&crate::host::plugin_admission::PluginAdmission>,
+    ) {
         let read_dir = match std::fs::read_dir(dir) {
             Ok(d) => d,
             Err(e) => {
@@ -830,6 +870,23 @@ impl PluginRegistry {
             match self.load_plugin(&entry_dir) {
                 Ok(installed) => {
                     let id = installed.manifest.id.clone();
+                    let refusal = match gate {
+                        Some(gate) => gate.decide(&id, &entry_dir).err(),
+                        None if source != RegistrySource::Global => {
+                            crate::host::plugin_admission::reserved_id(&id, &entry_dir).err()
+                        }
+                        None => None,
+                    };
+                    if let Some(refusal) = refusal {
+                        skipped.push(SkippedPlugin {
+                            id: Some(id),
+                            dir: entry_dir,
+                            source,
+                            error: refusal.to_string(),
+                            refusal: Some(refusal),
+                        });
+                        continue;
+                    }
                     log::debug!(
                         "PluginRegistry: contract id={} python_compat={:?} min_size={:?}x{:?} secrets={} state_scopes={:?} state_format={} state_declared={}",
                         id,
@@ -881,6 +938,7 @@ impl PluginRegistry {
                             dir: entry_dir,
                             source,
                             error: error.to_string(),
+                            refusal: None,
                         });
                         continue;
                     }
@@ -914,6 +972,7 @@ impl PluginRegistry {
                             dir: entry_dir,
                             source,
                             error: e,
+                            refusal: None,
                         });
                     }
                 }

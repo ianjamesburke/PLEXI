@@ -14,7 +14,7 @@ entry = "balls.py"
 # publisher = "plexi"     # first-party Plexi app
 
 [plugin]
-id = "balls"
+id = "balls-dev"
 name = "Balls"
 version = "0.1.0"
 description = "Physics simulation — elastic circle collisions demonstrating DrawCommand::Circle."
@@ -23,5 +23,5 @@ description = "Physics simulation — elastic circle collisions demonstrating Dr
 capabilities = []
 
 [[contributes.views]]
-id = "balls.main"
+id = "balls-dev.main"
 default = true

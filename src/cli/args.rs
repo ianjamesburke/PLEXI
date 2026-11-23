@@ -1535,14 +1535,15 @@ pub enum SecretCmd {
 
 #[derive(Subcommand)]
 pub enum PluginCmd {
-    /// Install a plugin from a local path, a remote source, or a pack file.
+    /// Install a plugin from a local path, a bundled plugin, or a pack file.
     ///
-    /// Local path: `plexi plugin install ./my-plugin` — copies the plugin dir into Plexi's store.
-    /// Remote source: `plexi plugin install github:owner/repo` — fetches and installs from GitHub.
+    /// Local path: `plexi plugin install ./my-plugin` — copies the plugin dir into Plexi's store; Plexi asks you to allow it in its window the first time it opens.
+    /// Bundled plugin: `plexi plugin install local:<name>` — extracts a plugin built into this Plexi.
     /// Pack file: `plexi plugin install --pack core` — installs from a pack file or the built-in core pack.
     /// Workspace pack: `plexi plugin install` (no args) — installs from `<repo>/.plexi-<channel>/plugins.toml` (or `<repo>/.plexi/plugins.toml` on stable).
+    /// Remote sources (github:, git+, marketplace ids, .plexipkg files, and pack entries naming them) are refused until third-party installs open.
     Install {
-        /// Source to install: a local path, GitHub spec (github:owner/repo), or bare plugin id.
+        /// Source to install: a local path or local:<name>. Remote sources are refused.
         /// Omit to install from the workspace pack (`<repo>/.plexi-<channel>/plugins.toml`, or `<repo>/.plexi/plugins.toml` on stable).
         spec_or_path: Option<String>,
         /// Install from a pack file or 'core'

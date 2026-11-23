@@ -17,8 +17,8 @@
 //! active. This is the "shared root ⇒ shared root-backed definitions,
 //! distinct runtime ownership" rule from the stint.
 //!
-//! Every view is produced by [`crate::app::registry::PluginRegistry::load`] (or
-//! `load_with_global` for the global-dir override tests need) — this module
+//! Every view is produced by [`crate::app::registry::PluginRegistry::load_admitted`]
+//! (stint 1398: only admitted plugins enter a host view) — this module
 //! never reimplements discovery, shadowing, or conflict handling; it only
 //! decides which root to scan and when to rescan it.
 
@@ -38,14 +38,25 @@ pub(crate) struct RegistryViews {
     /// tests substitute a tempdir so they never touch the user's real profile
     /// (mirrors `PluginRegistry::load_with_global`'s existing test seam).
     global_dir: PathBuf,
+    /// Every view is admission-checked (stint 1398): the host loads only
+    /// bundled plugins, allowed profile copies and trusted folders.
+    admission: crate::host::plugin_admission::PluginAdmission,
     core_only: bool,
 }
 
 impl RegistryViews {
     pub(crate) fn new() -> Self {
+        Self::with_global(&crate::app::registry::plugins_dir())
+    }
+
+    fn with_global(global_dir: &Path) -> Self {
         Self {
             views: HashMap::new(),
-            global_dir: crate::app::registry::plugins_dir(),
+            global_dir: global_dir.to_path_buf(),
+            admission: crate::host::plugin_admission::PluginAdmission::new(
+                &crate::config::config_dir(),
+                global_dir,
+            ),
             core_only: false,
         }
     }
@@ -54,11 +65,13 @@ impl RegistryViews {
     /// tests stage a fake global plugins dir instead of the real profile.
     #[cfg(test)]
     pub(crate) fn new_with_global(global_dir: &Path) -> Self {
-        Self {
-            views: HashMap::new(),
-            global_dir: global_dir.to_path_buf(),
-            core_only: false,
-        }
+        Self::with_global(global_dir)
+    }
+
+    /// The admission check this cache loads through; the launch path uses it
+    /// to ask for a refused plugin.
+    pub(crate) fn admission(&self) -> &crate::host::plugin_admission::PluginAdmission {
+        &self.admission
     }
 
     pub(crate) fn set_core_only(&mut self, core_only: bool) {
@@ -70,7 +83,7 @@ impl RegistryViews {
         if self.core_only {
             return PluginRegistry::empty();
         }
-        PluginRegistry::load_with_global(root, &self.global_dir)
+        PluginRegistry::load_admitted(root, &self.global_dir, &self.admission)
     }
 
     /// The view for `root`, loading it on first access. Cheap on every
@@ -245,11 +258,20 @@ mod tests {
         std::fs::write(plugin_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
     }
 
+    /// Trust `root`'s workspace plugin folder, as a click does (stint 1398).
+    fn trust(views: &RegistryViews, root: &Path) {
+        let channel_dir = crate::config::workspace_channel_dir();
+        let plugins = root.join(&channel_dir).join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        views.admission().trust_folder_for_test(&plugins);
+    }
+
     #[test]
     fn view_for_root_loads_once_and_caches() {
         let global = tempfile::tempdir().unwrap();
         let root = tempfile::tempdir().unwrap();
         let mut views = RegistryViews::new_with_global(global.path());
+        trust(&views, root.path());
         assert!(views.view_for_root(root.path()).get("nope").is_none());
         // Install after the first load; without a rescan the cached view must
         // not pick it up (proves it's actually caching, not reloading).
@@ -279,6 +301,7 @@ mod tests {
 
         let router = WorkspaceRouter::new(vec![ctx(1, root.path()), ctx(2, root.path())], 0);
         let mut views = RegistryViews::new_with_global(global.path());
+        trust(&views, root.path());
         assert!(views
             .view_for_context(1, &router)
             .get("shared-app")
@@ -301,6 +324,8 @@ mod tests {
 
         let router = WorkspaceRouter::new(vec![ctx(1, root_a.path()), ctx(2, root_b.path())], 0);
         let mut views = RegistryViews::new_with_global(global.path());
+        trust(&views, root_a.path());
+        trust(&views, root_b.path());
         assert!(views.view_for_context(1, &router).get("app-a").is_some());
         assert!(views.view_for_context(1, &router).get("app-b").is_none());
         assert!(views.view_for_context(2, &router).get("app-b").is_some());
@@ -335,6 +360,8 @@ mod tests {
 
         let router = WorkspaceRouter::new(vec![ctx(1, root_a.path()), ctx(2, root_b.path())], 0);
         let mut views = RegistryViews::new_with_global(global.path());
+        trust(&views, root_a.path());
+        trust(&views, root_b.path());
         assert_eq!(
             views
                 .view_for_context(1, &router)
@@ -367,6 +394,7 @@ mod tests {
         );
 
         let mut views = RegistryViews::new_with_global(global.path());
+        trust(&views, new_root.path());
         // Prime the old root's view before the "move".
         views.view_for_root(old_root.path());
         assert_eq!(views.roots().len(), 1);
@@ -450,6 +478,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
         let mut views = RegistryViews::new_with_global(global.path());
+        trust(&views, root.path());
         views.view_for_root(root.path());
         assert!(views.view_for_root(root.path()).get("fresh").is_none());
 

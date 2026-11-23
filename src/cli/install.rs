@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 pub fn install_cli(spec: &str, assume_yes: bool) -> i32 {
     use crate::cli::marketplace::InstallPlan;
     let (source_str, git_ref) = crate::cli::install_host::split_source_and_ref(spec);
+    if let Err(refusal) = admit_install_spec(&source_str) {
+        eprintln!("error: {refusal}");
+        return 1;
+    }
     let resolved = if is_bare_id(&source_str) {
         // A bare id resolves only through the hosted marketplace catalog. A
         // free/licensed plugin installs from its CDN artifact (or a declared github
@@ -108,6 +112,22 @@ pub fn install_cli(spec: &str, assume_yes: bool) -> i32 {
     }
 }
 
+/// Admit a `plugin install <spec>` source before anything is resolved or
+/// fetched (stint 1398): `local:<name>` is bundled; a bare id goes to the
+/// marketplace; everything else is a git source.
+pub(crate) fn admit_install_spec(
+    source_str: &str,
+) -> Result<(), crate::host::plugin_admission::Refusal> {
+    use crate::host::plugin_admission::{admit_install_source, InstallSource};
+    match crate::app::packs::parse_source_spec(source_str) {
+        Ok(crate::app::packs::SourceSpec::Local(name)) => {
+            admit_install_source(InstallSource::Bundled(&name))
+        }
+        _ if is_bare_id(source_str) => admit_install_source(InstallSource::Marketplace(source_str)),
+        _ => admit_install_source(InstallSource::Git(source_str)),
+    }
+}
+
 /// `plexi install --pack <path|core>` — apply a whole pack file.
 /// `refresh_local`: re-extract already-installed `local:` plugins from the
 /// embedded tree (see `install_host::apply_pack`).
@@ -129,6 +149,10 @@ pub fn install_pack_cli(spec: &str, refresh_local: bool) -> i32 {
             }
         }
     };
+    if let Err(refusal) = crate::cli::install_host::admit_pack_sources(&pack) {
+        eprintln!("error: {refusal}");
+        return 1;
+    }
     let target_root = crate::app::registry::plugins_dir();
     if let Err(e) = std::fs::create_dir_all(&target_root) {
         eprintln!("error: create plugins dir {}: {e}", target_root.display());

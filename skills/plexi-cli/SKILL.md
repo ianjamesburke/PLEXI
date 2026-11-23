@@ -489,7 +489,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi context push`: Push a pane into a new sub-context
 - `plexi context list`: List all open contexts as a JSON array
 - `plexi plugin`: Open, install, list, scaffold and inspect plugins
-- `plexi plugin install`: Install a plugin from a local path, a remote source, or a pack file
+- `plexi plugin install`: Install a plugin from a local path, a bundled plugin, or a pack file
 - `plexi plugin uninstall`: Remove an installed plugin by id
 - `plexi plugin list`: Show all installed plugins with their versions
 - `plexi plugin prune`: Report obsolete first-party pre-v3 plugins that launch-time reseeding quarantines

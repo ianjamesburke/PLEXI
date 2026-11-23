@@ -398,6 +398,7 @@ fn write_registry_plugin(root: &std::path::Path, id: &str, name: &str) {
     )
     .expect("write manifest");
     std::fs::write(plugin_dir.join("main.py"), "#!/usr/bin/env python3\n").expect("write entry");
+    crate::host::plugin_admission::trust_workspace_plugins_for_test(root);
 }
 
 /// Issue #1392: creating a child context must NOT remove or replace the parent's
@@ -1307,6 +1308,8 @@ fn context_transition_rescans_registry() {
     )
     .unwrap();
     std::fs::write(apps_b.join("test-1801-plugin-b").join("app.py"), b"").unwrap();
+    crate::host::plugin_admission::trust_workspace_plugins_for_test(&dir_a);
+    crate::host::plugin_admission::trust_workspace_plugins_for_test(&dir_b);
 
     // Switch context 0 to root A and verify registry picks up plugin-a.
     let idx0 = app.router.active_idx();
@@ -3754,6 +3757,7 @@ fn write_registry_wasm_view(root: &std::path::Path, id: &str) {
     )
     .expect("write manifest");
     std::fs::copy(counter_wasm_fixture(), plugin_dir.join("counter.wasm")).expect("copy fixture");
+    crate::host::plugin_admission::trust_workspace_plugins_for_test(root);
 }
 
 /// Stint 1454: a plugin the registry skipped for an invalid manifest is not
@@ -4723,6 +4727,10 @@ fn context_targets_background_id_open_uses_owning_root() {
     )).unwrap();
     std::fs::copy(counter_wasm_fixture(), plugin_dir.join("counter.wasm")).unwrap();
     h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(global.path());
+    h.app
+        .registries
+        .admission()
+        .allow_copy_for_test(id, &plugin_dir);
     for (owner, visible, caller, expected, wrong) in [
         (0, 1, caller_a, a.as_path(), b.path()),
         (1, 0, caller_b, b.path(), a.as_path()),

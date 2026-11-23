@@ -735,6 +735,11 @@ pub fn update_plugin_dir(cloner: &dyn Cloner, id: &str, dest: &Path) -> Result<(
     if !dest.join(".git").exists() {
         return Err("not a git checkout (likely bundled core plugin)".to_string());
     }
+    let source = dest.display().to_string();
+    crate::host::plugin_admission::admit_install_source(
+        crate::host::plugin_admission::InstallSource::Git(&source),
+    )
+    .map_err(|refusal| refusal.to_string())?;
     cloner.pull(dest)?;
     log::info!("update: {id} at {}", dest.display());
     Ok(())
@@ -1008,6 +1013,17 @@ fn is_installer_written_root_entry(name: &str) -> bool {
     name == ".venv" || crate::app::package::HOST_METADATA_FILES.contains(&name)
 }
 
+/// True when this binary embeds a plugin named `id` (a top-level folder of
+/// `plugins/` with a manifest), so `local:<id>` installs it. Such ids are
+/// reserved: no workspace or folder plugin may take one (stint 1398).
+pub(crate) fn is_bundled_plugin_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.contains(['/', '\\'])
+        && EMBEDDED_APPS
+            .get_file(format!("{id}/manifest.toml"))
+            .is_some()
+}
+
 /// Host-derived provenance: true when `plugin_dir` holds exactly the plugin
 /// this binary embeds as `local:<name>`. Same files, identical bytes, nothing
 /// extra, no symlinks. Package content identity is not enough here because it
@@ -1248,6 +1264,21 @@ pub fn examples_pack_ids() -> std::collections::HashSet<String> {
         .unwrap_or_default()
 }
 
+/// Admit every source a pack names before any is fetched (stint 1398): one
+/// git entry refuses the whole pack, so nothing is half-applied.
+pub(crate) fn admit_pack_sources(
+    pack: &Pack,
+) -> Result<(), crate::host::plugin_admission::Refusal> {
+    use crate::host::plugin_admission::{admit_install_source, InstallSource};
+    for entry in &pack.plugins {
+        match parse_source_spec(&entry.source) {
+            Ok(SourceSpec::Local(name)) => admit_install_source(InstallSource::Bundled(&name))?,
+            _ => admit_install_source(InstallSource::Git(&entry.source))?,
+        }
+    }
+    Ok(())
+}
+
 /// Read `<workspace_root>/<channel_dir>/plugins.toml` and install declared plugins into the
 /// workspace-scoped plugins dir (`<workspace_root>/<channel_dir>/plugins/`).
 pub fn apply_workspace_pack(
@@ -1263,6 +1294,7 @@ pub fn apply_workspace_pack(
         );
     }
     let pack = Pack::from_path(&plugins_toml)?;
+    admit_pack_sources(&pack).map_err(|refusal| refusal.to_string())?;
     let workspace_apps = crate::app::registry::workspace_plugins_dir(workspace_root);
     std::fs::create_dir_all(&workspace_apps).map_err(|e| {
         format!(
@@ -2383,14 +2415,16 @@ mod workspace_pack_tests {
         std::fs::create_dir_all(&plexi_dir).unwrap();
         std::fs::write(
             plexi_dir.join("plugins.toml"),
-            "schema_version = 2\n\n[[plugin]]\nid = \"my-tool\"\nsource = \"github:org/my-tool\"\nversion = \"v1.0.0\"\n",
+            // Git entries are refused while third-party installs are off
+            // (stint 1398); a bundled source installs.
+            "schema_version = 2\n\n[[plugin]]\nid = \"todo\"\nsource = \"local:todo\"\nversion = \"bundled\"\n",
         )
         .unwrap();
 
         let cloner = MockCloner::new();
         let outcomes = apply_workspace_pack(ws.path(), &cloner).expect("should succeed");
         assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].id, "my-tool");
+        assert_eq!(outcomes[0].id, "todo");
         assert!(
             matches!(outcomes[0].status, InstallStatus::Installed(_)),
             "expected Installed, got {:?}",
@@ -2399,10 +2433,7 @@ mod workspace_pack_tests {
 
         let workspace_apps = crate::app::registry::workspace_plugins_dir(ws.path());
         assert!(
-            workspace_apps
-                .join("my-tool")
-                .join("manifest.toml")
-                .exists(),
+            workspace_apps.join("todo").join("manifest.toml").exists(),
             "plugin should be present in workspace plugins dir at {}",
             workspace_apps.display()
         );
@@ -2453,10 +2484,17 @@ mod workspace_pack_tests {
         let channel_dir = crate::config::workspace_channel_dir();
         let plexi_dir = ws.path().join(&channel_dir);
         std::fs::create_dir_all(&plexi_dir).unwrap();
-        // MockCloner writes version "0.0.1" by default — pack must match for AlreadyAtVersion.
+        // The pack version must match the installed manifest's for
+        // AlreadyAtVersion; git entries are refused (stint 1398).
+        let version = installed_versions(&std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/plugins"
+        )))
+        .remove("todo")
+        .expect("bundled todo has a version");
         std::fs::write(
             plexi_dir.join("plugins.toml"),
-            "schema_version = 2\n\n[[plugin]]\nid = \"my-tool\"\nsource = \"github:org/my-tool\"\nversion = \"0.0.1\"\n",
+            format!("schema_version = 2\n\n[[plugin]]\nid = \"todo\"\nsource = \"local:todo\"\nversion = \"{version}\"\n"),
         )
         .unwrap();
 
