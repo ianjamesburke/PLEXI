@@ -103,7 +103,12 @@
     },
     {
       "id": "src/overlays/misc.rs::draw_changelog_overlay",
-      "gap": "Unresolved: misc has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "fixture": {
+        "file": "src/ui_tests.rs",
+        "test": "screenshot_update_ui_matrix"
+      },
+      "states": "update status checking, downloading, ready, restart confirm, failed with a long URL reason, unavailable; 1024 and 420 wide at 1x, 1024 at 1.5x, 560 at 2x",
+      "minimum": "The update status is a StatusPanel; its actions keep full labels inside the panel and stack before eliding. The changelog body below it is unchanged and not covered."
     },
     {
       "id": "src/overlays/misc.rs::draw_edit_description_overlay",
@@ -419,6 +424,15 @@
     {
       "id": "src/ui/snap.rs",
       "gap": "Unresolved: snap has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+    },
+    {
+      "id": "src/ui/status_panel.rs",
+      "fixture": {
+        "file": "src/ui_tests.rs",
+        "test": "screenshot_update_ui_matrix"
+      },
+      "states": "update status checking, downloading, ready, restart confirm, failed with a long URL reason, unavailable; 1024 and 420 wide at 1x, 1024 at 1.5x, 560 at 2x",
+      "minimum": "Caption elides to one row; the message wraps on word boundaries in at most three rows with overlong tokens middle-elided; the busy mark hides below its own width; actions use the dialog kit row, which stacks full width when the row does not fit."
     },
     {
       "id": "src/ui/style.rs",
