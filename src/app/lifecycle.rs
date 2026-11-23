@@ -415,6 +415,14 @@ impl PlexiApp {
             log::info!("command_view: refused workspace={workspace} caller={}: {message}", caller.class());
             super::socket_policy::Refusal { code: "permission_denied", message }
         };
+        let dashboard = crate::release::ReleaseFeature::AgentsDashboard;
+        if !crate::release::feature_enabled(dashboard) {
+            let refusal = refuse(crate::release::feature_unavailable_text(dashboard));
+            return Err(super::socket_policy::Refusal {
+                code: "experiment_disabled",
+                ..refusal
+            });
+        }
         let path = std::path::Path::new(workspace);
         match caller {
             SocketCaller::Pane(pane) => {
@@ -1182,7 +1190,19 @@ impl PlexiApp {
                     .map(std::path::PathBuf::from)
                     .or_else(crate::config::active_workspace_root)
                     .unwrap_or_else(|| self.router.active().root.clone());
+                let dashboard = crate::release::ReleaseFeature::AgentsDashboard;
                 let body = match op.as_str() {
+                    // The dashboard experiment gates every read of it at the
+                    // host, not only the CLI (Codex 3290 r2). Cancel stays:
+                    // it is the documented way to free a stuck agent.
+                    "open" | "list" if !crate::release::feature_enabled(dashboard) => {
+                        log::info!("command_view: op={op} refused: experiment off");
+                        serde_json::json!({
+                            "ok": false,
+                            "error_code": "experiment_disabled",
+                            "error": crate::release::feature_unavailable_text(dashboard),
+                        })
+                    }
                     "open" => match self.open_command_view(&workspace) {
                         Ok(pane_id) => serde_json::json!({"ok": true, "pane_id": pane_id}),
                         Err(error) => serde_json::json!({"ok": false, "error": error}),

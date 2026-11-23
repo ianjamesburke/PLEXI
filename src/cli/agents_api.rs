@@ -23,24 +23,8 @@ pub fn command_view_cli(op: &str, json_out: bool) -> i32 {
         "command_view:cli: op={op} workspace={}",
         workspace.display()
     );
-    let content = match super::request_with(
-        json!({"type": "command_view", "op": op, "payload": {"workspace": workspace}}),
-        "agents-dashboard",
-        "agents-dashboard",
-        std::time::Duration::from_secs(20),
-    ) {
-        Ok(content) => content,
-        Err(code) => return code,
-    };
-    println!("{content}");
-    match serde_json::from_str::<Value>(&content) {
-        Ok(value) if value.get("ok").and_then(|v| v.as_bool()) != Some(false) => {
-            let _ = json_out;
-            0
-        }
-        Ok(_) => 1,
-        Err(_) => 1,
-    }
+    let _ = json_out;
+    send_dashboard(dashboard_frame(&workspace, op, None), "agents-dashboard")
 }
 
 pub fn command_view_cancel_cli(run: &str) -> i32 {
@@ -49,14 +33,27 @@ pub fn command_view_cancel_cli(run: &str) -> i32 {
         Err(code) => return code,
     };
     log::info!("command_view:cli: cancel run={run}");
-    let content = match super::request_with(
-        json!({
-            "type": "command_view",
-            "op": "cancel",
-            "payload": {"workspace": workspace, "run": run}
-        }),
-        "agents-dashboard-cancel",
+    send_dashboard(
+        dashboard_frame(&workspace, "cancel", Some(run)),
         "agents-dashboard cancel",
+    )
+}
+
+/// The host's `agents_dashboard` request for `op` in `workspace`.
+fn dashboard_frame(workspace: &std::path::Path, op: &str, run: Option<&str>) -> Value {
+    let mut payload = json!({"workspace": workspace});
+    if let Some(run) = run {
+        payload["run"] = json!(run);
+    }
+    json!({"type": "agents_dashboard", "op": op, "payload": payload})
+}
+
+/// Send one dashboard request and print the host's answer; 0 when it is ok.
+fn send_dashboard(frame: Value, label: &str) -> i32 {
+    let content = match super::request_with(
+        frame,
+        &label.replace(' ', "-"),
+        label,
         std::time::Duration::from_secs(20),
     ) {
         Ok(content) => content,
@@ -204,4 +201,45 @@ pub(crate) fn team_run_text(value: &Value) -> String {
             .unwrap_or_else(|| value["error"].as_str().unwrap_or("No team report returned")),
         value["result_path"].as_str().unwrap_or("unavailable")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::cli::test_env::socket_env_guard;
+    use std::io::{BufRead as _, BufReader};
+    use std::os::unix::net::UnixListener;
+
+    /// Codex 3290 r2: `plexi agents-dashboard cancel` and `list` send a frame
+    /// the host reads as its dashboard request. The CLI's send path writes
+    /// the line to a socket; it must parse as `HostRequest::AgentsDashboard`
+    /// (the cwd-to-workspace step is the only part left out).
+    #[test]
+    fn dashboard_cli_frames_are_the_hosts_dashboard_request() {
+        let workspace = tempfile::tempdir().unwrap();
+        for (op, run) in [("cancel", Some("run_x")), ("list", None)] {
+            let frame = super::dashboard_frame(workspace.path(), op, run);
+            let run_cli = move || super::send_dashboard(frame, "agents-dashboard");
+            let env = socket_env_guard();
+            let dir = tempfile::tempdir().unwrap();
+            let socket_path = dir.path().join("notify.sock");
+            let listener = UnixListener::bind(&socket_path).unwrap();
+            env.set(&socket_path);
+            let host = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream).read_line(&mut line).unwrap();
+                let request: crate::protocol::HostRequest = serde_json::from_str(&line)
+                    .unwrap_or_else(|error| panic!("the host cannot read {line}: {error}"));
+                let crate::protocol::HostRequest::AgentsDashboard { op, response_file, .. } = request
+                else {
+                    panic!("not a dashboard request: {line}");
+                };
+                crate::rpc::write_json_response(&response_file, serde_json::json!({"ok": true}));
+                op
+            });
+            assert_eq!(run_cli(), 0, "{op}");
+            assert_eq!(host.join().unwrap(), op);
+            drop(env);
+        }
+    }
 }

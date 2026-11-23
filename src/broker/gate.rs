@@ -4647,6 +4647,21 @@ impl PermissionMonitor {
             .collect()
     }
 
+    /// Pending requests whose stored binding names `workspace`. A projection
+    /// for one workspace never shows another's (Codex 3290 r2).
+    pub fn list_pending_in_workspace(&self, workspace: &Path) -> Vec<PendingView> {
+        let workspace = crate::platform::path::canonical_or_self(workspace);
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|row| {
+                crate::platform::path::canonical_or_self(&row.binding.workspace_root) == workspace
+            })
+            .map(pending_view)
+            .collect()
+    }
+
     pub fn show_pending(&self, id: &str) -> Option<PendingView> {
         self.pending
             .lock()
@@ -8910,7 +8925,10 @@ mod tests {
     }
 
     fn write_legacy_grants(dir: &Path, records: Vec<GrantRecord>, extra: &str) {
-        let mut body = toml::to_string_pretty(&super::super::GrantStoreData { records }).unwrap();
+        let mut body = toml::to_string_pretty(&super::super::GrantStoreData {
+            records,
+            run_owners: Default::default(),
+        }).unwrap();
         if !extra.is_empty() {
             body.push('\n');
             body.push_str(extra);

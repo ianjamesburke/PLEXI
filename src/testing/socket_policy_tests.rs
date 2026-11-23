@@ -21,14 +21,31 @@ fn outside() -> PeerWitness {
     peer
 }
 
+/// Read the client half of a reply connection to its end, as the CLI does:
+/// the host's ack byte is dropped and the JSON body returned. There is no
+/// file fallback on this path, so a reply that took one is never seen.
+fn read_client(mut client: std::os::unix::net::UnixStream, line: &str) -> serde_json::Value {
+    use std::io::Read as _;
+    // macOS refuses a timeout (EINVAL) once the host half is closed; the
+    // read then ends at once anyway.
+    let _ = client.set_read_timeout(Some(std::time::Duration::from_secs(3)));
+    let mut bytes = Vec::new();
+    client
+        .read_to_end(&mut bytes)
+        .unwrap_or_else(|error| panic!("no reply on the connection to {line}: {error}"));
+    let body = String::from_utf8_lossy(&bytes);
+    let body = body.trim_start_matches('\u{6}').trim();
+    assert!(!body.is_empty(), "no reply on the connection to {line}");
+    serde_json::from_str(body).unwrap_or_else(|_| serde_json::json!({ "raw": body }))
+}
+
 /// Send one request line as the socket listener would, from `peer`, and
-/// return the reply written on the request's reply stream.
+/// return the reply read from the client's end of that connection.
 fn send(h: &mut HostHarness, mut request: serde_json::Value, peer: Option<PeerWitness>) -> serde_json::Value {
     let token = crate::rpc::response_file("socket-policy-test", "json");
     request["response_file"] = serde_json::json!(token);
     let line = request.to_string();
     let (mut server, client) = std::os::unix::net::UnixStream::pair().unwrap();
-    crate::rpc::register_client_stream(token.clone(), client);
     crate::app::handle_socket_line_in(
         &crate::config::config_dir(),
         &line,
@@ -38,9 +55,12 @@ fn send(h: &mut HostHarness, mut request: serde_json::Value, peer: Option<PeerWi
     );
     drop(server);
     h.run_frames(2);
-    let body = crate::rpc::poll_string(&token, Some(std::time::Duration::from_secs(3)))
-        .unwrap_or_else(|error| panic!("no reply to {line}: {error}"));
-    serde_json::from_str(&body).unwrap_or_else(|_| serde_json::json!({ "raw": body }))
+    let reply = read_client(client, &line);
+    assert!(
+        !std::path::Path::new(&token).exists(),
+        "the reply took the file fallback: {line}"
+    );
+    reply
 }
 
 fn pane_witness(h: &HostHarness, pane: u64) -> PeerWitness {
@@ -996,16 +1016,23 @@ fn entry_outcome(
     h: &mut HostHarness,
     request: crate::protocol::HostRequest,
     peer: Option<PeerWitness>,
+    dispatch: bool,
 ) -> Option<String> {
     let caller = h.app.classify_socket_peer(peer.as_ref());
     let policy = crate::app::socket_policy::socket_policy(&request).unwrap();
-    crate::app::socket_policy::admit(&caller, policy).err()?;
-    let token = crate::rpc::response_file("socket-operations", "json");
+    if crate::app::socket_policy::admit(&caller, policy).is_ok() && !dispatch {
+        return None;
+    }
+    let token = serde_json::to_value(&request)
+        .ok()
+        .and_then(|value| value["response_file"].as_str().map(str::to_string))
+        .filter(|token| !token.is_empty())
+        .unwrap_or_else(|| crate::rpc::response_file("socket-operations", "json"));
     let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
-    crate::rpc::register_client_stream(token.clone(), client);
-    // The host half is registered as the listener registers it, so the
-    // reply travels the connection and never the test-only file fallback.
-    crate::rpc::ReplyRegistry::register(token.clone(), server.try_clone().unwrap());
+    // The host half is registered as the listener registers it; the reply is
+    // read from the client half, so the test-only file fallback cannot
+    // satisfy a cell.
+    crate::rpc::ReplyRegistry::register(token.clone(), server);
     h.app.service_pane_ipc_message(crate::app::socket_caller::PaneIpcMessage::Request {
         ingress: crate::app::socket_caller::Ingress::Socket {
             peer,
@@ -1013,15 +1040,12 @@ fn entry_outcome(
         },
         request: Box::new(request),
     });
-    drop(server);
-    let body = crate::rpc::poll_string(&token, Some(std::time::Duration::from_secs(3)))
-        .unwrap_or_else(|error| panic!("refused request wrote no reply: {error}"));
-    assert!(
-        !std::path::Path::new(&token).exists(),
-        "the refusal took the file fallback, not the connection"
-    );
-    let reply: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(reply["ok"], false, "{reply}");
+    h.run_frames(1);
+    let reply = read_client(client, &token);
+    assert!(!std::path::Path::new(&token).exists(), "the reply took the file fallback");
+    if reply["ok"] == true || reply.get("error_code").is_none() {
+        return None;
+    }
     Some(reply["error_code"].as_str().unwrap().to_string())
 }
 
@@ -1029,6 +1053,7 @@ fn entry_outcome(
 fn socket_operations_admit_by_caller_class() {
     let mut h = HostHarness::new();
     let pane = h.add_focused_terminal();
+    let foreign = h.add_focused_terminal();
     let variants = host_request_variants();
     for (op, policy) in SOCKET_OPERATIONS {
         for caller in [Caller::PaneSelf, Caller::PaneOther, Caller::External, Caller::Unidentified] {
@@ -1045,11 +1070,33 @@ fn socket_operations_admit_by_caller_class() {
                         .err()
                         .map(|refusal| refusal.code.to_string())
                 }
-                _ => entry_outcome(&mut h, row_request(*op, &variants).unwrap(), peer),
+                _ => {
+                    // A request naming a pane names the caller's own for
+                    // PaneSelf and a real foreign pane for PaneOther.
+                    let mut request = serde_json::to_value(row_request(*op, &variants).unwrap()).unwrap();
+                    if request.get("pane_id").is_some() {
+                        let target = if caller == Caller::PaneOther { foreign } else { pane };
+                        request["pane_id"] = serde_json::json!(target);
+                    }
+                    let request = serde_json::from_value(request).unwrap();
+                    entry_outcome(&mut h, request, peer, false)
+                }
             };
             assert_eq!(actual.as_deref(), expected, "{op:?} from {caller:?}");
         }
     }
+    // Past the entry, an own-pane report aimed at the foreign pane is refused
+    // by its handler and changes nothing on that pane.
+    for tag in ["agent_done", "agent_ask"] {
+        let mut request = serde_json::to_value(row_request(Op::Request(tag), &variants).unwrap()).unwrap();
+        request["pane_id"] = serde_json::json!(foreign);
+        request["response_file"] = serde_json::json!(crate::rpc::response_file("pane-other", "json"));
+        let peer = pane_witness(&h, pane);
+        let outcome = entry_outcome(&mut h, serde_json::from_value(request).unwrap(), Some(peer), true);
+        assert_eq!(outcome.as_deref(), Some("permission_denied"), "{tag} at a foreign pane");
+    }
+    let foreign_terminal = h.app.terminal_incarnation(foreign).unwrap();
+    assert!(!foreign_terminal.agent_completed && foreign_terminal.agent.is_none());
 }
 
 /// Ruling (ledger row 169): an outside process is refused `plexi secret get`
@@ -1522,8 +1569,7 @@ fn deferred_work_keeps_the_admitted_pane_and_refuses_it_once_closed() {
 
     let token = crate::rpc::response_file("deferred-secret", "json");
     let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
-    crate::rpc::register_client_stream(token.clone(), client);
-    crate::rpc::ReplyRegistry::register(token.clone(), server.try_clone().unwrap());
+    crate::rpc::ReplyRegistry::register(token.clone(), server);
     h.app.serve_secret_get(
         "DEFERRED_1285",
         true,
@@ -1531,10 +1577,9 @@ fn deferred_work_keeps_the_admitted_pane_and_refuses_it_once_closed() {
         &crate::broker::caller::RequestOrigin::Socket(caller),
         &token,
     );
-    drop(server);
-    let body = crate::rpc::poll_string(&token, Some(std::time::Duration::from_secs(3))).unwrap();
-    let reply: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let reply = read_client(client, &token);
     assert_eq!(reply["status"], "denied", "{reply}");
+    assert!(reply.get("value").is_none(), "{reply}");
 }
 
 /// The PaneOther cells past the entry: a pane reporting for another pane
@@ -1580,6 +1625,8 @@ fn own_pane_operations_from_another_pane_reach_no_effect() {
 /// started.
 #[test]
 fn dashboard_follow_and_cancel_are_scoped_to_the_caller() {
+    let _dashboard =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentsDashboard]);
     let mut h = HostHarness::new();
     let pane = h.add_focused_terminal();
     let caller = h.app.classify_socket_peer(Some(&pane_witness(&h, pane)));
@@ -1605,4 +1652,42 @@ fn dashboard_follow_and_cancel_are_scoped_to_the_caller() {
         Some(peer),
     );
     assert_eq!(cancel["error_code"], "permission_denied", "{cancel}");
+}
+
+/// Design 1285 section 4, condition 3: with the dashboard experiment off,
+/// both raw host entries refuse: the list request and the follow stream.
+#[test]
+fn the_dashboard_experiment_gates_both_raw_host_entries() {
+    let _none = crate::release::set_test_experiments(&[]);
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let root = h.workspace_root();
+    h.app.set_context_root(root.clone(), None);
+    let peer = pane_witness(&h, pane);
+    let caller = h.app.classify_socket_peer(Some(&peer));
+    let listed = send(
+        &mut h,
+        serde_json::json!({"type": "agents_dashboard", "op": "list",
+            "payload": {"workspace": root}}),
+        Some(peer.clone()),
+    );
+    assert_eq!(listed["error_code"], "experiment_disabled", "{listed}");
+    assert!(listed.get("runs").is_none() && listed.get("needs_you").is_none(), "{listed}");
+    let follow = h
+        .app
+        .admit_dashboard_workspace(&caller, &root.to_string_lossy())
+        .unwrap_err();
+    assert_eq!(follow.code, "experiment_disabled");
+
+    drop(_none);
+    let _on =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentsDashboard]);
+    let listed = send(
+        &mut h,
+        serde_json::json!({"type": "agents_dashboard", "op": "list",
+            "payload": {"workspace": root}}),
+        Some(peer),
+    );
+    assert_eq!(listed["ok"], true, "{listed}");
+    assert!(h.app.admit_dashboard_workspace(&caller, &root.to_string_lossy()).is_ok());
 }

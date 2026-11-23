@@ -76,10 +76,6 @@ struct TokenRec {
     run_id: String,
     actor_id: String,
     workspace: PathBuf,
-    /// The socket principal that started the run; `None` for host code. Only
-    /// it (or host code) may call, finish or re-issue the run (stint 1285).
-    /// Kept in the host's memory, never in the workspace run file.
-    owner: Option<String>,
 }
 
 fn tokens() -> &'static Mutex<HashMap<String, TokenRec>> {
@@ -112,9 +108,21 @@ pub fn authenticate_run_token(token: &str) -> Option<RunAuth> {
     })
 }
 
-/// The run's token for `owner`: the existing one when `owner` started the
-/// run, a new one for a run with none (host code only, since only the host
-/// can vouch for a run it holds no record of), else a refusal.
+/// The principal that started `run_id`, from the sealed grant store: it
+/// survives a host restart, and the workspace journal holds no bearer for
+/// it (stint 1285). `None` for a run host code started, or one started
+/// before ownership was recorded.
+fn run_started_by(run_id: &str) -> Option<String> {
+    let gate = monitor().ok()?;
+    let store = gate.store();
+    store.run_owner(run_id).map(str::to_string)
+}
+
+/// The run's token for `owner` (`None` is host code). A fresh run binds its
+/// owner in the sealed store first. A retry is answered only for the
+/// principal bound to the run, or for host code, which is the trusted
+/// recovery path for a run with no recorded owner. A token lost with a
+/// restarted host is minted again for that same caller.
 fn remember_token(
     workspace: &Path,
     run_id: &str,
@@ -122,17 +130,25 @@ fn remember_token(
     owner: Option<&str>,
     fresh: bool,
 ) -> Result<String, Value> {
+    if fresh {
+        if let Some(owner) = owner {
+            let gate = monitor()?;
+            let mut store = gate.store();
+            store.bind_run_owner(run_id, owner);
+            if let Err(error) = store.try_save() {
+                store.release_run_owner(run_id);
+                log::error!("agents_api: run {run_id} owner not sealed: {error}");
+                return Err(json!({"ok": false, "error_code": "io_error",
+                    "error": format!("the owner of run {run_id} could not be recorded: {error}")}));
+            }
+            log::info!("agents_api: run={run_id} owner={owner} sealed");
+        }
+    } else if owner.is_some() && run_started_by(run_id).as_deref() != owner {
+        return Err(not_run_owner(run_id, owner));
+    }
     let mut by_run = token_by_run().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = by_run.get(run_id) {
-        let tokens = tokens().lock().unwrap_or_else(|e| e.into_inner());
-        let started_by = tokens.get(existing).and_then(|rec| rec.owner.as_deref());
-        if owner.is_some() && owner != started_by {
-            return Err(not_run_owner(run_id, owner));
-        }
         return Ok(existing.clone());
-    }
-    if !fresh && owner.is_some() {
-        return Err(not_run_owner(run_id, owner));
     }
     let token = format!("run_{}", uuid::Uuid::new_v4());
     by_run.insert(run_id.to_string(), token.clone());
@@ -143,7 +159,6 @@ fn remember_token(
             run_id: run_id.to_string(),
             actor_id: actor_id.to_string(),
             workspace: workspace.to_path_buf(),
-            owner: owner.map(str::to_string),
         },
     );
     Ok(token)
@@ -161,23 +176,24 @@ fn not_run_owner(run_id: &str, caller: Option<&str>) -> Value {
     })
 }
 
-/// Only the principal that started `run_id`, or host code, acts on it.
+/// Only the principal bound to `run_id`, or host code, acts on it.
 fn require_run_owner(run_id: &str, caller: &AgentsCaller) -> Result<(), Value> {
     let AgentsCaller::Principal { principal, .. } = caller else {
         return Ok(());
     };
     let owner = principal.actor_id();
-    let by_run = token_by_run().lock().unwrap_or_else(|e| e.into_inner());
-    let tokens = tokens().lock().unwrap_or_else(|e| e.into_inner());
-    let started_by = by_run
-        .get(run_id)
-        .and_then(|token| tokens.get(token))
-        .and_then(|rec| rec.owner.as_deref());
-    if started_by == Some(owner) {
+    if run_started_by(run_id).as_deref() == Some(owner) {
         Ok(())
     } else {
         Err(not_run_owner(run_id, Some(owner)))
     }
+}
+
+/// Test only: the host's in-memory run tokens are gone, as after a restart.
+#[cfg(test)]
+fn forget_run_tokens_for_test() {
+    tokens().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    token_by_run().lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
 fn actor_of(agent_id: &str) -> String {
@@ -1460,7 +1476,14 @@ fn finish_run(workspace: &Path, id: &str) -> Value {
         }
         finished
     };
-    host_gate!().revoke_run_grants(id);
+    let gate = host_gate!();
+    gate.revoke_run_grants(id);
+    {
+        let mut store = gate.store();
+        if store.release_run_owner(id) {
+            store.save();
+        }
+    }
     log::info!("agents_api: finished run {id}");
     json!({"ok": true, "run": finished})
 }
@@ -1785,7 +1808,8 @@ pub fn projection(workspace: &Path) -> Value {
         &host,
     );
     let runs = handle_request("list_runs", &json!({"workspace": &workspace}), &host);
-    let pending = serde_json::to_value(host_gate!().list_pending()).unwrap_or(json!([]));
+    let pending = serde_json::to_value(host_gate!().list_pending_in_workspace(&workspace))
+        .unwrap_or(json!([]));
     json!({
         "ok": true,
         "agents": agents.get("agents").cloned().unwrap_or(json!([])),
@@ -2861,6 +2885,100 @@ mod tests {
             &test_host(),
         );
         assert_eq!(own["ok"], true, "{own}");
+    }
+
+    /// Design 1285 section 4, condition 1: a run's owner is sealed with the
+    /// grants, so after a host restart the pane that started it can retry and
+    /// finish it and a stranger still cannot. A run with no recorded owner
+    /// (started by host code, or before ownership was recorded) is recovered
+    /// only by host code: the desktop dashboard's cancel or a team.
+    #[test]
+    fn run_ownership_survives_a_host_restart() {
+        let fix = Fixture::new();
+        create(&fix, "worker", &["agents.ping=ask"]);
+        let owner = pane_caller(42, None);
+        let stranger = pane_caller(43, None);
+        let start = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-restart"});
+        let started = handle_request("spawn_run", &start, &owner);
+        assert_eq!(started["ok"], true, "{started}");
+        let run_id = started["run"]["id"].as_str().unwrap().to_string();
+
+        forget_run_tokens_for_test();
+        PermissionMonitor::reload_for_test(&crate::config::config_dir());
+
+        let foreign_retry = handle_request("spawn_run", &start, &stranger);
+        assert_eq!(foreign_retry["error_code"], "permission_denied", "{foreign_retry}");
+        assert!(foreign_retry.get("run_token").is_none());
+        let finish = json!({"workspace": fix.ws(), "id": run_id});
+        let foreign_finish = handle_request("finish_run", &finish, &stranger);
+        assert_eq!(foreign_finish["error_code"], "permission_denied", "{foreign_finish}");
+        assert!(find_run(fix.ws(), &run_id).unwrap().active);
+
+        let retry = handle_request("spawn_run", &start, &owner);
+        assert_eq!(retry["ok"], true, "{retry}");
+        assert_eq!(retry["run"]["id"], run_id.as_str());
+        assert!(retry["run_token"].is_string(), "the owner gets a token again: {retry}");
+        let finished = handle_request("finish_run", &finish, &owner);
+        assert_eq!(finished["ok"], true, "{finished}");
+        assert!(!find_run(fix.ws(), &run_id).unwrap().active);
+
+        // A run with no recorded owner: no socket caller recovers it; host
+        // code does.
+        let legacy = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-legacy"}),
+            &test_host(),
+        );
+        let legacy_id = legacy["run"]["id"].as_str().unwrap().to_string();
+        forget_run_tokens_for_test();
+        PermissionMonitor::reload_for_test(&crate::config::config_dir());
+        let legacy_finish = json!({"workspace": fix.ws(), "id": legacy_id});
+        let refused = handle_request("finish_run", &legacy_finish, &owner);
+        assert_eq!(refused["error_code"], "permission_denied", "{refused}");
+        let recovered = handle_request("finish_run", &legacy_finish, &test_host());
+        assert_eq!(recovered["ok"], true, "{recovered}");
+    }
+
+    /// Design 1285 section 4, condition 3: the dashboard projection of one
+    /// workspace lists only the pending requests whose stored binding names
+    /// that workspace.
+    #[test]
+    fn dashboard_projection_lists_only_its_workspaces_pending_requests() {
+        use crate::broker::gate::{Admission, AdmitRequest};
+        let fix = Fixture::new();
+        let other = tempfile::tempdir().unwrap();
+        let ask = |workspace: &Path, marker: &str| {
+            let Admission::Required { pending_request_id } = monitor().unwrap().admit(AdmitRequest {
+                call_id: &format!("call-{marker}"),
+                tool: "agents.review",
+                input_json: &json!({"marker": marker}).to_string(),
+                principal: &Principal::agent("agent:worker"),
+                actor_scope: ActorScope::Workspace,
+                trust_origin: "host",
+                workspace_root: &crate::platform::path::canonical_or_self(workspace),
+                context_id: 0,
+                package_id: PACKAGE,
+                instance_id: 0,
+                target_type: TargetType::HostTool,
+            }) else {
+                panic!("expected a pending request");
+            };
+            pending_request_id
+        };
+        let mine = ask(fix.ws(), "alpha-1285");
+        let theirs = ask(other.path(), "bravo-1285");
+        let listed = |workspace: &Path| -> Vec<String> {
+            projection(workspace)["needs_you"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["pending_request_id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(listed(fix.ws()), vec![mine.clone()]);
+        assert_eq!(listed(other.path()), vec![theirs.clone()]);
+        let body = projection(fix.ws()).to_string();
+        assert!(!body.contains("bravo-1285"), "another workspace's summary leaked: {body}");
     }
 
     /// Codex 3290 r1 P1: a delegated allow stops working when the parent's

@@ -23,6 +23,7 @@ pub(crate) mod seal;
 use crate::app::permissions::{Capability, PermissionState, PermissionStore};
 use crate::platform::toml_store::TomlStore;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 #[cfg(test)]
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -908,6 +909,11 @@ impl TargetRule {
 struct GrantStoreData {
     #[serde(default)]
     records: Vec<GrantRecord>,
+    /// Agent run id -> the principal that started it, sealed with the
+    /// grants so ownership survives a host restart without any bearer in
+    /// the workspace journal (stint 1285).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    run_owners: BTreeMap<String, String>,
 }
 
 /// Loads, evaluates, and persists generalized grants in
@@ -1264,6 +1270,24 @@ impl GrantStore {
         &self.file.data.records
     }
 
+    /// The principal that started agent run `run_id`, if a socket caller did.
+    pub fn run_owner(&self, run_id: &str) -> Option<&str> {
+        self.file.data.run_owners.get(run_id).map(String::as_str)
+    }
+
+    /// Bind agent run `run_id` to the principal that started it.
+    pub fn bind_run_owner(&mut self, run_id: &str, owner: &str) {
+        self.file
+            .data
+            .run_owners
+            .insert(run_id.to_string(), owner.to_string());
+    }
+
+    /// Forget a finished run's owner.
+    pub fn release_run_owner(&mut self, run_id: &str) -> bool {
+        self.file.data.run_owners.remove(run_id).is_some()
+    }
+
     /// Mutable records. Callers that revoke or consume a one-shot hold the
     /// monitor admission lock first.
     pub fn records_mut(&mut self) -> &mut Vec<GrantRecord> {
@@ -1479,7 +1503,12 @@ fn parse_legacy_grant_store(raw: &str) -> Result<GrantStoreData, String> {
     if skipped > 0 && kept.is_empty() {
         return Err("legacy grants.toml had no readable records".to_string());
     }
-    Ok(GrantStoreData { records: kept })
+    // An unsealed file names no run owners: ownership is trusted only from
+    // a sealed store.
+    Ok(GrantStoreData {
+        records: kept,
+        run_owners: BTreeMap::new(),
+    })
 }
 
 fn fill_capability_grant_ids(records: &mut [GrantRecord]) {
