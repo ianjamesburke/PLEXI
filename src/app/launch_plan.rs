@@ -27,7 +27,6 @@ use super::launch_spec::PaneLaunchSpec;
 use super::PlexiApp;
 use crate::host::worktree::ManagedWorktree;
 use crate::pane_ops::create::{AgentOrigin, SubcontextTarget};
-use crate::protocol::SpawnSource;
 use crate::spatial::tiling::PaneId;
 
 /// A window as the caller selected it, at its tree generation then.
@@ -140,9 +139,8 @@ pub(crate) struct TerminalLaunchPlan {
 /// The caller of an `agent call`, kept so commit can authenticate it again.
 #[derive(Clone, Debug)]
 pub(crate) struct AdmittedAgentCaller {
-    pane_claim: Option<u64>,
+    origin: crate::broker::caller::RequestOrigin,
     credential: Option<String>,
-    peer_ancestry: Vec<u32>,
 }
 
 /// Everything that authorizes and shapes an agent launch: the caller's grant,
@@ -457,38 +455,45 @@ impl PlexiApp {
             .transpose()
     }
 
-    /// Resolve who submitted a launch from its host-stamped source. A
-    /// request whose socket peer was not captured is refused. A captured peer
-    /// is the terminal process it resolves to, covered by an overlay or not,
-    /// and the new pane is bounded by that pane's grant; a captured peer that
-    /// is no pane is an outside process. In-process host code acts on the
-    /// person's own input: the pane it names is placement and tree parent,
-    /// never a grant to inherit.
+    /// Resolve who submitted a launch from its origin (stint 1285). A socket
+    /// caller in a pane bounds the new pane by that pane's grant; an outside
+    /// process is an outside process; an unidentified caller is refused.
+    /// Host-owned input acts on the person's own gesture: the pane it names
+    /// is placement and tree parent, never a grant to inherit.
     pub(crate) fn resolve_launch_source(
         &self,
-        source: &SpawnSource,
+        origin: &crate::broker::caller::RequestOrigin,
         claimed: Option<PaneId>,
     ) -> Result<LaunchCaller, String> {
+        use crate::broker::caller::{RequestOrigin, SocketCaller};
         use crate::broker::pane_authority::GrantSource;
-        let (caller_pane, grant_source) = match source {
-            SpawnSource::Unverified => {
-                return Err(refused(
-                    "the launch arrived without a verified socket peer identity".into(),
-                ))
+        let (caller_pane, grant_source) = match origin {
+            RequestOrigin::Socket(SocketCaller::Unidentified(reason)) => {
+                return Err(refused(format!(
+                    "the launch's caller could not be identified: {reason}"
+                )))
             }
-            SpawnSource::InProcess => (claimed, GrantSource::DesktopInput),
-            SpawnSource::SocketPeer(pids) => match self.resolve_socket_peer_pane(pids) {
-                Some((pane, _, _)) => (Some(pane), self.caller_grant_source(pane)),
-                None => (None, GrantSource::OutsideProcess),
-            },
-            SpawnSource::SpawnQueue => (None, GrantSource::SpawnQueue),
-            SpawnSource::PluginInstance(pane_id) => {
-                (None, GrantSource::PluginInstance { pane_id: *pane_id })
+            RequestOrigin::Socket(SocketCaller::Pane(pane)) => (
+                Some(pane.terminal_pane),
+                self.caller_grant_source(pane.terminal_pane),
+            ),
+            RequestOrigin::Socket(SocketCaller::External(_)) => {
+                (None, GrantSource::OutsideProcess)
             }
+            RequestOrigin::HostUi => (claimed, GrantSource::DesktopInput),
+            RequestOrigin::HostSystem => (claimed, GrantSource::HostSystem),
+            RequestOrigin::SpawnQueue => (None, GrantSource::SpawnQueue),
+            RequestOrigin::PluginGuest(instance) => (
+                None,
+                GrantSource::PluginInstance {
+                    pane_id: instance.instance_id.unwrap_or_default(),
+                },
+            ),
         };
         let spawned_by = self.spawned_by_for(&grant_source);
         log::info!(
-            "launch_plan: resolved source {source:?} claimed={claimed:?} -> caller={caller_pane:?} spawned_by={spawned_by}"
+            "launch_plan: resolved origin={} claimed={claimed:?} -> caller={caller_pane:?} spawned_by={spawned_by}",
+            origin.class()
         );
         Ok(LaunchCaller {
             caller_pane,
@@ -526,7 +531,7 @@ impl PlexiApp {
         // `from_pane_id` is a placement origin only (stint 1632).
         let LaunchCaller {
             source, spawned_by, ..
-        } = self.resolve_launch_source(&spec.source, spec.from_pane_id)?;
+        } = self.resolve_launch_source(&spec.origin, spec.from_pane_id)?;
         let caller = self.admitted_incarnation(&source);
         let vertical = matches!(layout, "split_h" | "split_right" | "split_left");
         let new_pane_first = matches!(layout, "split_above" | "split_left");
@@ -1000,14 +1005,12 @@ impl PlexiApp {
             return Err("task must be non-empty".into());
         }
         let caller = AdmittedAgentCaller {
-            pane_claim: request.parent_pane_id,
+            origin: request.origin.clone(),
             credential: request.credential.map(str::to_string),
-            peer_ancestry: request.peer_ancestry.to_vec(),
         };
         let parent = self.agent_tool_caller(AgentCaller {
-            pane_id: caller.pane_claim,
+            origin: &caller.origin,
             credential: caller.credential.as_deref(),
-            peer_ancestry: &caller.peer_ancestry,
         })?;
         if request.handoff && parent.is_none() {
             return Err("handoff requires a live caller pane".into());
@@ -1024,6 +1027,13 @@ impl PlexiApp {
             origin.context_id,
             request.role,
             request.handoff,
+        )?;
+        self.admit_outside_use(
+            &caller.origin,
+            "agent.call",
+            &json!({"role": request.role, "task": request.task, "cwd": request.cwd}),
+            &grant_root,
+            origin.context_id,
         )?;
         let lookup_root = match (parent, request.cwd) {
             (None, Some(cwd)) => PathBuf::from(cwd),
@@ -1202,10 +1212,13 @@ impl PlexiApp {
         plan: &AgentCallPlan,
         prepared: Option<&ManagedWorktree>,
     ) -> Result<PaneId, String> {
+        // The admitted caller again, at commit: the same live incarnation,
+        // or nothing launches (stint 1285).
+        self.deferred_origin_is_current(&plan.caller.origin, None)
+            .map_err(refused)?;
         let parent = self.agent_tool_caller(AgentCaller {
-            pane_id: plan.caller.pane_claim,
+            origin: &plan.caller.origin,
             credential: plan.caller.credential.as_deref(),
-            peer_ancestry: &plan.caller.peer_ancestry,
         })?;
         if parent != plan.authority.parent {
             return Err(refused(format!(
@@ -1506,8 +1519,7 @@ mod tests {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            source: crate::protocol::SpawnSource::InProcess,
-        })
+        }, crate::broker::caller::RequestOrigin::HostUi)
         .expect("valid terminal spec")
     }
 
@@ -1521,7 +1533,7 @@ mod tests {
             .backend
             .child_pid();
         let mut launch = spec(h, layout, Some(caller), None);
-        launch.source = SpawnSource::SocketPeer(vec![pid]);
+        launch.origin = h.app.socket_origin_for_pids(&[pid]);
         launch
     }
 
@@ -1842,10 +1854,9 @@ mod tests {
             .admit_agent_call(&AgentCallRequest {
                 role: "tester",
                 task: "Verify",
-                parent_pane_id: None,
+                origin: &crate::broker::caller::RequestOrigin::HostUi,
                 credential: None,
                 // An outside-pane caller: authenticated socket, no pane.
-                peer_ancestry: &[u32::MAX],
                 cwd: Some(root.to_str().unwrap()),
                 worktree,
                 asynchronous: true,
@@ -2331,7 +2342,7 @@ mod tests {
         let canonical_a = crate::platform::path::canonical_or_self(root_a.path());
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let call = monitor
-            .authenticate_call(Some(pane), credentials.call_token(), None)
+            .authenticate_credential_for_test(credentials.call_token().expect("credential"))
             .unwrap();
         assert_eq!(call.workspace_root, canonical_a, "call credential scope");
         assert_eq!(
@@ -2356,7 +2367,7 @@ mod tests {
             .unwrap()
             .agent_role = Some("lead".into());
         let mut outside = spec(&h, "split_h", Some(agent), None);
-        outside.source = SpawnSource::SocketPeer(vec![u32::MAX]);
+        outside.origin = crate::broker::caller::RequestOrigin::outside_for_test();
         let plan = h.app.admit_terminal_launch(&outside).unwrap();
         assert_eq!(plan.caller, None);
         assert_eq!(plan.grant.provenance, Provenance::OutsideProcess);
@@ -2391,11 +2402,8 @@ mod tests {
             )
         };
         let profile = h.profile_dir().to_path_buf();
-        let stamp = |ancestry: Option<&[u32]>, extra: &str| {
-            let peer = ancestry.map(|pids| crate::protocol::PeerAncestry {
-                pids: pids.to_vec(),
-                end: crate::protocol::AncestryEnd::ReachedRoot,
-            });
+        // One line through the socket entry, as the listener delivers it.
+        let stamp = |peer: Option<crate::broker::caller::PeerWitness>, extra: &str| {
             super::super::handle_socket_line_in(
                 &profile,
                 &line(extra),
@@ -2413,37 +2421,41 @@ mod tests {
             );
         }
         let unverified = stamp(None, "").expect("queued");
-        let stamped_unverified = matches!(
-            &unverified,
-            HostRequest::SpawnPane {
-                source: SpawnSource::Unverified,
-                ..
-            }
-        );
         let before = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
-        h.app.handle_pane_ipc_request(unverified);
+        h.app.service_pane_ipc_message(unverified);
         let reply: Value =
             serde_json::from_str(&std::fs::read_to_string(&response).unwrap()).unwrap();
         assert!(
             reply["error"]
                 .as_str()
-                .is_some_and(|e| e.contains("without a verified socket peer")),
+                .is_some_and(|e| e.contains("could not be established")),
             "{reply}"
         );
         let after = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
         assert_eq!(before, after, "a refused launch builds nothing");
-        assert!(
-            stamped_unverified,
-            "an uncaptured peer is stamped Unverified"
-        );
 
-        let admit = |h: &mut HostHarness, request: HostRequest| {
+        // The grant a queued socket launch gets, from its classified caller.
+        let admit = |h: &mut HostHarness, message: crate::app::socket_caller::PaneIpcMessage| {
+            let crate::app::socket_caller::PaneIpcMessage::Request {
+                ingress: crate::app::socket_caller::Ingress::Socket { peer, .. },
+                request,
+            } = message
+            else {
+                panic!("expected a socket request");
+            };
+            let origin = crate::broker::caller::RequestOrigin::Socket(
+                h.app.classify_socket_peer(peer.as_ref()),
+            );
             h.app
-                .admit_terminal_launch(&PaneLaunchSpec::from_spawn_pane(&request).unwrap())
+                .admit_terminal_launch(&PaneLaunchSpec::from_spawn_pane(&request, origin).unwrap())
                 .unwrap()
                 .grant
         };
-        let verified = admit(&mut h, stamp(Some(&[agent_pid]), "").unwrap());
+        let verified = admit(
+            &mut h,
+            stamp(Some(crate::broker::caller::PeerWitness::for_live_pids(&[agent_pid])), "")
+                .unwrap(),
+        );
         assert_eq!(
             verified.provenance,
             Provenance::VerifiedPane { pane_id: agent }
@@ -2454,7 +2466,14 @@ mod tests {
             verified.posture().unwrap(),
             Some(&posture(&["tool.secret"]))
         );
-        let outside = admit(&mut h, stamp(Some(&[u32::MAX]), "").unwrap());
+        let outside = admit(
+            &mut h,
+            stamp(
+                Some(crate::broker::caller::PeerWitness::capture(std::process::id())),
+                "",
+            )
+            .unwrap(),
+        );
         assert_eq!(
             (outside.provenance.clone(), outside.spawned_by.as_str()),
             (Provenance::OutsideProcess, "outside")
@@ -2570,18 +2589,17 @@ mod tests {
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let token = monitor.issue_credential(
             Some(caller),
-            h.app.windows[window_of(&h, caller)].context_id,
-            &root,
             "agent:tester",
+
+
         );
         let call = |h: &mut HostHarness| {
             h.app
                 .admit_agent_call(&AgentCallRequest {
                     role: "tester",
                     task: "Sub",
-                    parent_pane_id: Some(caller),
+                    origin: &h.origin_from_pane(caller),
                     credential: Some(&token),
-                    peer_ancestry: &[],
                     cwd: None,
                     worktree: None,
                     asynchronous: true,
@@ -2653,7 +2671,7 @@ mod tests {
         let published = crate::pane_ops::construct::probes::on_publish(move |pane_id, env| {
             let call = env["PLEXI_CALL_CREDENTIAL"].clone();
             let verified = monitor
-                .authenticate_call(Some(pane_id), Some(&call), None)
+                .authenticate_credential_for_test(&call)
                 .expect("the call credential authenticates at publication");
             assert_eq!(verified.pane_id, Some(pane_id));
             let binding = monitor
@@ -2758,18 +2776,17 @@ mod tests {
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let token = monitor.issue_credential(
             Some(caller),
-            h.app.windows[window_of(&h, caller)].context_id,
-            &root,
             "agent:tester",
+
+
         );
         let plan = h
             .app
             .admit_agent_call(&AgentCallRequest {
                 role: "tester",
                 task: "Sub",
-                parent_pane_id: Some(caller),
+                origin: &h.origin_from_pane(caller),
                 credential: Some(&token),
-                peer_ancestry: &[],
                 cwd: None,
                 worktree: None,
                 asynchronous: true,
@@ -2793,7 +2810,7 @@ mod tests {
             .clone()
             .expect("credentials were published");
         assert!(matches!(
-            monitor.authenticate_call(Some(pane), Some(&call), None),
+            monitor.authenticate_credential_for_test(&call),
             Err(crate::broker::gate::IdentityError::StaleCredential)
         ));
         assert_eq!(
@@ -2893,16 +2910,18 @@ mod tests {
         let context_id = h.app.windows[window_of(&h, caller)].context_id;
         cover_with_overlay(&mut h, caller);
 
-        assert_eq!(
-            h.app
-                .resolve_socket_peer_pane(&[pid])
-                .map(|(pane, _, _)| pane),
-            Some(caller),
+        assert!(
+            matches!(
+                h.app.classify_socket_peer(Some(
+                    &crate::broker::caller::PeerWitness::for_live_pids(&[pid])
+                )),
+                crate::broker::caller::SocketCaller::Pane(ref found) if found.terminal_pane == caller
+            ),
             "the covered terminal's process is still that pane"
         );
         assert_eq!(h.app.pane_ceiling_or_none(caller), posture);
         let mut socket = spec(&h, "split_h", None, None);
-        socket.source = SpawnSource::SocketPeer(vec![pid]);
+        socket.origin = h.app.socket_origin_for_pids(&[pid]);
         let plan = h.app.admit_terminal_launch(&socket).expect("admits");
         assert_eq!(plan.caller.as_ref().map(|c| c.pane_id), Some(caller));
         assert!(
@@ -2930,14 +2949,14 @@ mod tests {
         let root = h.workspace_root();
         h.app.set_context_root(root.clone(), None);
         let claimed = spawn_tester(&mut h, &root);
-        let request = |source: SpawnSource| HostRequest::AgentSpawn {
+        let request = HostRequest::AgentSpawn {
+            anchor_pane: None,
             role: "tester".to_string(),
             harness: "pi".to_string(),
             command: "sleep 30".to_string(),
             task: None,
             subcontext: None,
             ephemeral: false,
-            parent_pane_id: Some(claimed),
             name: None,
             cwd: Some(root.to_string_lossy().into_owned()),
             worktree: None,
@@ -2945,24 +2964,23 @@ mod tests {
             initial_slots: Vec::new(),
             focus: false,
             response_file: String::new(),
-            source,
         };
         let panes = |h: &HostHarness| h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
         let before = panes(&h);
-        let unverified = h.app.agent_spawn_reply(&request(SpawnSource::Unverified));
+        let unverified = h.app.agent_spawn_reply(&crate::broker::caller::RequestOrigin::unidentified_for_test(), &request);
         assert_eq!(unverified["ok"], false, "{unverified}");
         assert!(
             unverified["error"]
                 .as_str()
                 .unwrap_or("")
-                .contains("verified socket peer"),
+                .contains("could not be identified"),
             "{unverified}"
         );
         assert_eq!(panes(&h), before, "an unverified spawn starts nothing");
 
         let outside = h
             .app
-            .agent_spawn_reply(&request(SpawnSource::SocketPeer(vec![u32::MAX])));
+            .agent_spawn_reply(&crate::broker::caller::RequestOrigin::outside_for_test(), &request);
         assert_eq!(outside["ok"], true, "{outside}");
         assert_eq!(
             outside["parent_pane_id"],
@@ -2971,14 +2989,16 @@ mod tests {
         );
         assert_eq!(outside["spawned_by"], "outside", "{outside}");
 
-        let in_process = h.app.agent_spawn_reply(&request(SpawnSource::InProcess));
-        assert_eq!(in_process["parent_pane_id"], json!(claimed), "{in_process}");
+        // A host gesture names no parent through the request (stint 1285).
+        let in_process = h.app.agent_spawn_reply(&crate::broker::caller::RequestOrigin::HostUi, &request);
+        assert_eq!(in_process["parent_pane_id"], Value::Null, "{in_process}");
+        let _ = claimed;
 
         let error = h
             .app
-            .open_named_agent("tester", &root, Some(claimed), &SpawnSource::Unverified)
+            .open_named_agent("tester", &root, Some(claimed), &crate::broker::caller::RequestOrigin::unidentified_for_test())
             .expect_err("an unverified open is refused");
-        assert!(error.contains("verified socket peer"), "{error}");
+        assert!(error.contains("could not be identified"), "{error}");
     }
 
     /// Round 3 item 8: a spawn-queue launch has no verifiable identity, so it
@@ -3002,7 +3022,7 @@ mod tests {
         );
         // An identified outside caller is a socket caller: no secret.
         let mut outside = spec(&h, "new_window", None, None);
-        outside.source = SpawnSource::SocketPeer(vec![u32::MAX]);
+        outside.origin = crate::broker::caller::RequestOrigin::outside_for_test();
         let launched = launch_observed(&mut h, &outside);
         assert!(
             launched.reads.is_empty(),
@@ -3010,7 +3030,7 @@ mod tests {
             launched.reads
         );
         let mut queued = spec(&h, "new_window", None, None);
-        queued.source = SpawnSource::SpawnQueue;
+        queued.origin = crate::broker::caller::RequestOrigin::SpawnQueue;
         let launched = launch_observed(&mut h, &queued);
         assert!(
             launched.reads.is_empty(),
@@ -3033,14 +3053,15 @@ mod tests {
                 *path = Some(app_path.to_string_lossy().into_owned());
             }
             let before = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
-            h.app.handle_pane_ipc_request(request);
+            h.inject_socket(request, None);
+            h.hidden_frame();
             let body: Value =
                 serde_json::from_str(&std::fs::read_to_string(&reply).expect("a reply")).unwrap();
             assert!(
                 body["error"]
                     .as_str()
                     .unwrap_or("")
-                    .contains("verified socket peer"),
+                    .contains("could not be established"),
                 "{type_id}: {body}"
             );
             assert_eq!(
@@ -3194,7 +3215,7 @@ mod tests {
             .backend
             .child_pid();
         let mut from_pane = spec(&h, "split_h", Some(human), None);
-        from_pane.source = SpawnSource::SocketPeer(vec![human_pid]);
+        from_pane.origin = h.app.socket_origin_for_pids(&[human_pid]);
         let launched = launch_observed(&mut h, &from_pane);
         assert_eq!(launched.reads, Vec::new(), "pane caller: no secret read");
         let agent = spawn_tester(&mut h, &root_a);
@@ -3317,18 +3338,17 @@ mod tests {
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let token = monitor.issue_credential(
             Some(caller),
-            h.app.windows[0].context_id,
-            &root,
             "agent:lead",
+
+
         );
         let response = root.join("handoff-successor.json");
         h.app
             .start_agent_tool_call(AgentCallRequest {
                 role: "writer",
                 task: "Continue",
-                parent_pane_id: Some(caller),
+                origin: &h.origin_from_pane(caller),
                 credential: Some(&token),
-                peer_ancestry: &[],
                 cwd: None,
                 worktree: None,
                 asynchronous: false,
@@ -3394,8 +3414,7 @@ mod tests {
             )
             .unwrap();
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
-        let context_id = h.app.windows[window_of(h, caller)].context_id;
-        let token = monitor.issue_credential(Some(caller), context_id, root, "agent:lead");
+        let token = monitor.issue_credential(Some(caller), "agent:lead");
         (caller, token)
     }
 
@@ -3425,13 +3444,16 @@ mod tests {
         let root = h.workspace_root();
         h.app.set_context_root(root.clone(), None);
         let (caller, token) = spawn_lead(&mut h, &root);
-        fn request<'a>(caller: PaneId, token: &'a str, response: &'a str) -> AgentCallRequest<'a> {
+        fn request<'a>(
+            origin: &'a crate::broker::caller::RequestOrigin,
+            token: &'a str,
+            response: &'a str,
+        ) -> AgentCallRequest<'a> {
             AgentCallRequest {
                 role: "writer",
                 task: "Continue",
-                parent_pane_id: Some(caller),
+                origin,
                 credential: Some(token),
-                peer_ancestry: &[],
                 cwd: None,
                 worktree: None,
                 asynchronous: false,
@@ -3454,7 +3476,7 @@ mod tests {
         let rejected = root.join("handoff-rejected.json");
         let error = h
             .app
-            .start_agent_tool_call(request(caller, &token, rejected.to_str().unwrap()))
+            .start_agent_tool_call(request(&h.origin_from_pane(caller), &token, rejected.to_str().unwrap()))
             .expect_err("schema mismatch refuses");
         assert!(error.contains("handoff completion"), "{error}");
         assert_eq!(starts.get(), 0, "no worker started");
@@ -3474,7 +3496,7 @@ mod tests {
         });
         let response = root.join("handoff-successor.json");
         h.app
-            .start_agent_tool_call(request(caller, &token, response.to_str().unwrap()))
+            .start_agent_tool_call(request(&h.origin_from_pane(caller), &token, response.to_str().unwrap()))
             .expect("handoff succeeds");
         let reply: Value =
             serde_json::from_str(&std::fs::read_to_string(&response).unwrap()).unwrap();
@@ -3730,7 +3752,6 @@ mod tests {
         let response_file = crate::rpc::response_file("grant-1632-list", "json");
         let request = HostRequest::PaneSecretList {
             context: context.into(),
-            peer_ancestry: vec![pid],
             response_file: response_file.clone(),
         };
         let line = serde_json::to_string(&request).unwrap();
@@ -3761,7 +3782,7 @@ mod tests {
             crate::host::shell::secret_reads::take();
             let child = shell_from(&mut h, agent);
             let mut queue = spec(&h, "new_window", None, None);
-            queue.source = SpawnSource::SpawnQueue;
+            queue.origin = crate::broker::caller::RequestOrigin::SpawnQueue;
             let plan = h.app.admit_terminal_launch(&queue).unwrap();
             let queued = apply(&mut h, &plan).unwrap();
             // The child's own next launch.
@@ -3778,13 +3799,10 @@ mod tests {
                 (queued, false),
                 (grandchild, false),
             ] {
-                assert_eq!(h.app.is_human_owned_pane(pane), human, "pane {pane} live");
+                assert_eq!(h.app.terminal_incarnation(pane).is_some_and(|t| t.is_desktop_granted()), human, "pane {pane} live");
                 let pid = pid_of(&mut h, pane);
-                assert_eq!(
-                    lists_other_context(&mut h, &context, pid),
-                    human,
-                    "pane {pane} live"
-                );
+                // Ownership decides nothing: every pane is brokered (stint 1285).
+                assert!(!lists_other_context(&mut h, &context, pid), "pane {pane} live");
             }
             assert!(h.app.save_workspace_now(), "saved");
             (desktop, child, queued, grandchild)
@@ -3804,16 +3822,12 @@ mod tests {
                 "fixture: pane {pane} restored with no agent session"
             );
             assert_eq!(
-                h.app.is_human_owned_pane(pane),
+                h.app.terminal_incarnation(pane).is_some_and(|t| t.is_desktop_granted()),
                 human,
                 "pane {pane} restored"
             );
             let pid = pid_of(&mut h, pane);
-            assert_eq!(
-                lists_other_context(&mut h, &context, pid),
-                human,
-                "pane {pane} restored"
-            );
+            assert!(!lists_other_context(&mut h, &context, pid), "pane {pane} restored");
         }
         assert_eq!(
             grant_of(&h, child).secrets,
@@ -3978,7 +3992,7 @@ mod tests {
             h.app.pane_ceiling(plain).is_err(),
             "a legacy plain shell is sealed"
         );
-        assert!(!h.app.is_human_owned_pane(plain));
+        assert!(!h.app.terminal_incarnation(plain).is_some_and(|t| t.is_desktop_granted()));
         drop(h);
 
         // Unreadable child role.
@@ -4042,9 +4056,8 @@ mod tests {
             .admit_agent_call(&AgentCallRequest {
                 role: "ghost",
                 task: "Haunt",
-                parent_pane_id: None,
+                origin: &crate::broker::caller::RequestOrigin::HostUi,
                 credential: None,
-                peer_ancestry: &[u32::MAX],
                 cwd: Some(root.to_str().unwrap()),
                 worktree: None,
                 asynchronous: true,
@@ -4176,13 +4189,16 @@ mod tests {
         };
         crate::workspace::append_agent_history_to(h.profile_dir(), &record).unwrap();
         let reply_file = h.workspace_root().join("reopen-1632.json");
-        // As the socket handler stamps a captured peer that is no pane.
-        h.app.handle_pane_ipc_request(HostRequest::AgentReopen {
-            query: record.run_id.clone(),
-            subcontext: None,
-            response_file: reply_file.to_string_lossy().into_owned(),
-            source: SpawnSource::SocketPeer(vec![u32::MAX]),
-        });
+        // A captured peer that is no pane.
+        h.inject_socket(
+            HostRequest::AgentReopen {
+                query: record.run_id.clone(),
+                subcontext: None,
+                response_file: reply_file.to_string_lossy().into_owned(),
+            },
+            Some(crate::broker::caller::PeerWitness::capture(std::process::id())),
+        );
+        h.hidden_frame();
         let reply: Value =
             serde_json::from_str(&std::fs::read_to_string(&reply_file).unwrap()).unwrap();
         let reopened = reply["pane_id"]
@@ -4278,7 +4294,9 @@ mod tests {
                     subscriber_authority:
                         crate::host::event_subscriptions::SubscriberAuthority::External,
                     context_id_override: None,
-                    peer_ancestry: Some(vec![pid]),
+                    socket_caller: Some(h.app.classify_socket_peer(Some(
+                        &crate::broker::caller::PeerWitness::for_live_pids(&[pid]),
+                    ))),
                     cancelled: Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                         false,
                     ))),
@@ -4333,7 +4351,7 @@ mod tests {
         // The workspace each transport reports, and the revision behind it.
         let observe = |h: &HostHarness| {
             let verified = monitor
-                .authenticate_call(Some(pane), Some(&call), None)
+                .authenticate_credential_for_test(&call)
                 .unwrap();
             let over_mcp = crate::app::host_mcp::authenticated_workspace_for_test(&mcp).unwrap();
             let revision = h.app.pane_authority(pane).unwrap().scope().revision;
@@ -4429,7 +4447,6 @@ mod tests {
         let response_file = crate::rpc::response_file("grant-1632-sealed", "json");
         let line = serde_json::to_string(&HostRequest::PaneSecretList {
             context,
-            peer_ancestry: vec![pid],
             response_file: response_file.clone(),
         })
         .unwrap();
@@ -4451,7 +4468,7 @@ mod tests {
             .open_pane_beside_sealed(shell)
             .expect("a new pane opens");
         assert!(
-            h.app.is_human_owned_pane(opened),
+            h.app.terminal_incarnation(opened).is_some_and(|t| t.is_desktop_granted()),
             "the new pane is the person's"
         );
         assert_eq!(
@@ -4464,10 +4481,9 @@ mod tests {
         );
     }
 
-    /// Round 5 P1-6: a desktop shell running a detected agent opens
-    /// agent-spawned children. Before detection its plain child is the
-    /// person's (control); after, a new child is restricted and its next
-    /// cross-context inventory goes through admission.
+    /// Round 5 P1-6: a child a shell opens over the socket is never the
+    /// person's, before an agent is detected in it (stint 1285) or after, and
+    /// its cross-context inventory goes through admission.
     #[test]
     fn grant_detected_agents_plain_child_is_agent_spawned() {
         let mut h = HostHarness::new();
@@ -4478,8 +4494,8 @@ mod tests {
         let context = secret_context(&mut h, other.path());
         let before = shell_from(&mut h, shell);
         assert!(
-            h.app.is_human_owned_pane(before),
-            "fixture: the person's shell's child"
+            !h.app.terminal_incarnation(before).is_some_and(|t| t.is_desktop_granted()),
+            "a socket request is never the person, from any shell"
         );
         let win = window_of(&h, shell);
         h.app.windows[win]
@@ -4495,12 +4511,12 @@ mod tests {
             session_id: None,
         });
         assert!(
-            !h.app.is_human_owned_pane(shell),
+            h.app.terminal_incarnation(shell).is_some_and(|t| t.is_agent_pane()),
             "fixture: an agent was detected"
         );
         let child = shell_from(&mut h, shell);
         assert!(
-            !h.app.is_human_owned_pane(child),
+            !h.app.terminal_incarnation(child).is_some_and(|t| t.is_desktop_granted()),
             "the child is agent-spawned"
         );
         let pid = pid_of(&mut h, child);
@@ -4630,18 +4646,17 @@ mod tests {
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let token = monitor.issue_credential(
             Some(caller),
-            h.app.windows[window_of(&h, caller)].context_id,
-            &root,
             "agent:tester",
+
+
         );
         let call = |h: &mut HostHarness| {
             h.app
                 .admit_agent_call(&AgentCallRequest {
                     role: "tester",
                     task: "Sub",
-                    parent_pane_id: Some(caller),
+                    origin: &h.origin_from_pane(caller),
                     credential: Some(&token),
-                    peer_ancestry: &[],
                     cwd: None,
                     worktree: None,
                     asynchronous: true,

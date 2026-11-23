@@ -1432,18 +1432,12 @@ fn copy_dir_all_inner(
     Ok(())
 }
 
-/// Build the `list_plugin_tools` IPC request payload, attaching caller pane/context
-/// env hints when present.
+/// Build the `list_plugin_tools` IPC request payload. The host identifies the
+/// caller from the socket.
 pub(crate) fn build_list_plugin_tools_payload(
     plugin_id: Option<&str>,
     context_id: Option<u64>,
 ) -> serde_json::Value {
-    let caller_pane_id = std::env::var("PLEXI_PANE_ID")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok());
-    let caller_context_id = std::env::var("PLEXI_CONTEXT_ID")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok());
     let mut payload = serde_json::json!({
         "type": "list_plugin_tools",
     });
@@ -1452,12 +1446,6 @@ pub(crate) fn build_list_plugin_tools_payload(
     }
     if let Some(ctx) = context_id {
         payload["context_id"] = serde_json::json!(ctx);
-    }
-    if let Some(pane) = caller_pane_id {
-        payload["caller_pane_id"] = serde_json::json!(pane);
-    }
-    if let Some(ctx) = caller_context_id {
-        payload["caller_context_id"] = serde_json::json!(ctx);
     }
     payload
 }
@@ -2105,14 +2093,7 @@ pub fn plugin_call_cli(
             return 1;
         }
     };
-    // Provenance, not authority: the host validates the pane id and resolves
-    // its live context; it never trusts an identity carried in `input`.
-    let caller_pane_id = std::env::var("PLEXI_PANE_ID")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok());
-    log::info!(
-        "plugin_call:cli: plugin={plugin_id:?} tool={tool:?} caller_pane={caller_pane_id:?}"
-    );
+    log::info!("plugin_call:cli: plugin={plugin_id:?} tool={tool:?}");
     let mut payload = serde_json::json!({
         "type": "call_plugin_tool",
         "plugin_id": plugin_id,
@@ -2120,9 +2101,6 @@ pub fn plugin_call_cli(
         "input_json": input_value.to_string(),
         "wait_approved": wait_approved,
     });
-    if let Some(pane_id) = caller_pane_id {
-        payload["caller_pane_id"] = serde_json::json!(pane_id);
-    }
     if let Some(pane) = target_pane {
         payload["target_pane_id"] = serde_json::json!(pane);
         log::info!("plugin_call:cli: target_pane={pane}");

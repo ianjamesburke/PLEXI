@@ -195,7 +195,9 @@ pub fn allow_edit(agent: &str, path: &Path, old: &str, new: &str) -> Result<(), 
 
 /// Record a saved once-grant so `plexi changes accept` in another process can
 /// commit a set the Assistant already prepared. The editor's Accept button
-/// does not use this grant; the click itself is the human decision.
+/// does not use this grant; the click itself is the human decision. No
+/// person decided this row: it carries the Assistant's own admitted edit
+/// forward, so its source is `Delegated`, never `User` (stint 1285).
 pub fn authorize_accept(id: &str) -> Result<(), String> {
     let set = load_set(id)?;
     let edit = bind(
@@ -210,7 +212,7 @@ pub fn authorize_accept(id: &str) -> Result<(), String> {
         &bound,
         Decision::Allow,
         GrantDuration::Once,
-        GrantSource::User,
+        GrantSource::Delegated,
         &grant_id,
     );
     let mon = monitor()?;

@@ -372,16 +372,12 @@ pub struct HostSubscribeRequest {
     /// no real context, mirroring `AgentHost`'s pre-attach sentinel) at the
     /// point the request is classified.
     pub context_id_override: Option<u64>,
-    /// Host-captured kernel ancestor-pid chain of the socket peer (stint
-    /// 0636's `capture_peer_ancestry`, threaded the same way as
-    /// `Notify`/`DismissNotification`'s `peer_pid`). `Some` only for the raw
-    /// CLI-socket transport; when present it independently re-derives
-    /// `from_pane_id` instead of trusting the client-forwarded
-    /// `PLEXI_PANE_ID` value, closing the gap where any local process could
-    /// otherwise claim to be calling from an arbitrary pane. `None` for
-    /// transports that already establish identity another way (host MCP's
-    /// bearer credential, a WASM/Python plugin's own host-known pane id).
-    pub peer_ancestry: Option<Vec<u32>>,
+    /// The command-socket caller the admission entry classified (stint
+    /// 1285). `Some` only for the raw CLI-socket transport, whose
+    /// `from_pane_id` is then always `None`: no wire field names a pane.
+    /// `None` for transports that establish identity another way (host
+    /// MCP's bearer credential, a plugin's own host-known pane id).
+    pub socket_caller: Option<crate::broker::caller::SocketCaller>,
     pub cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub reply: SyncSender<HostSubscribeReply>,
 }
@@ -534,9 +530,9 @@ pub struct HostPublishRequest {
     /// twin. Stamped onto every `PluginEventRecord`/stream declaration this
     /// request produces.
     pub context_id_override: Option<u64>,
-    /// See [`HostSubscribeRequest::peer_ancestry`]; same contract, publish
+    /// See [`HostSubscribeRequest::socket_caller`]; same contract, publish
     /// twin.
-    pub peer_ancestry: Option<Vec<u32>>,
+    pub socket_caller: Option<crate::broker::caller::SocketCaller>,
     pub reply: SyncSender<HostPublishReply>,
 }
 
@@ -658,11 +654,15 @@ impl HostSubscriptionService {
     /// (`agent:assistant`) or a `WASM plugin runtime` (its `type_id`). A connection with
     /// no pane context (rare) gets a stable anonymous id.
     pub fn resolve_cli_subscriber(from_pane_id: Option<u64>) -> (ActorType, String) {
-        let id = match from_pane_id {
-            Some(p) => format!("pane:{p}"),
-            None => "cli:anon".to_string(),
-        };
-        (ActorType::Agent, id)
+        match from_pane_id {
+            Some(p) => (ActorType::Agent, format!("pane:{p}")),
+            // No pane: the one stored identity of a process outside Plexi,
+            // disjoint from every agent name (stint 1285).
+            None => (
+                ActorType::External,
+                crate::broker::principal::EXTERNAL_ID.to_string(),
+            ),
+        }
     }
 
     /// Record an in-memory session-scoped `Allow` grant so a parent master pane
@@ -855,7 +855,7 @@ impl HostSubscriptionService {
                     req.publisher_plugin_id
                 );
                 Some(PendingEventConsent {
-                    request_id: crate::app::approval_keyboard::next_consent_request_id(),
+                    request_id: crate::broker::consent::next_consent_request_id(),
                     subscriber_type,
                     subscriber_id,
                     broker_actor_id,
@@ -882,17 +882,35 @@ impl HostSubscriptionService {
     /// session subscription. Fires the transport's reply either way. If the
     /// transport already gave up (its `reply` receiver dropped), the freshly
     /// recorded subscription is rolled back so no orphan accumulates deliveries.
+    /// A test standing in for the click on the consent dialog.
+    #[cfg(test)]
     pub fn resolve_consent(
         &mut self,
         consent: PendingEventConsent,
         choice: ConsentChoice,
         config_dir: &Path,
     ) {
+        let evidence = crate::broker::consent::DecisionEvidence::for_test(
+            &consent.request_id.to_string(),
+            "allow_always",
+        );
+        self.resolve_consent_decided(consent, choice, config_dir, Some(evidence));
+    }
+
+    /// Settle one consent. `AllowAlways` writes standing grants, so it needs
+    /// the dialog's evidence (stint 1285); without it the consent is denied.
+    pub(crate) fn resolve_consent_decided(
+        &mut self,
+        consent: PendingEventConsent,
+        choice: ConsentChoice,
+        config_dir: &Path,
+        evidence: Option<crate::broker::consent::DecisionEvidence>,
+    ) {
         if consent.is_cancelled() {
             return;
         }
         let PendingEventConsent {
-            request_id: _,
+            request_id,
             subscriber_type,
             subscriber_id,
             broker_actor_id,
@@ -903,6 +921,14 @@ impl HostSubscriptionService {
             workspace_root,
             action,
         } = consent;
+        // An outside process's grant lasts at most the session: its Always
+        // is this one use, never a standing row (stint 1285).
+        let choice = if subscriber_type == ActorType::External && choice == ConsentChoice::AllowAlways {
+            log::info!("event_subscriptions: outside process Always applied as once");
+            ConsentChoice::AllowOnce
+        } else {
+            choice
+        };
         // Consent applies to the scope the request was admitted under. A
         // revoked pane or a moved scope releases nothing under it.
         if let Some(stale) = admitted.as_ref().and_then(|a| a.current().err()) {
@@ -929,14 +955,23 @@ impl HostSubscriptionService {
                 ConsentAction::Subscribe { .. } => subscription_targets(&plugin_id, &event_names),
                 ConsentAction::Publish { .. } => publish_targets(&plugin_id, &event_names),
             };
-            if let Err(message) = self.persist_always_grants(
-                subscriber_type,
-                &broker_actor_id,
-                &plugin_id,
-                &targets,
-                &workspace_root,
-                config_dir,
-            ) {
+            let decision = evidence
+                .as_ref()
+                .map(|e| e.admit(&request_id.to_string(), "allow_always"));
+            let persisted = match decision {
+                Some(Err(error)) => Err(error),
+                Some(Ok(evidence)) => self.persist_always_grants(
+                    subscriber_type,
+                    &broker_actor_id,
+                    &plugin_id,
+                    &targets,
+                    &workspace_root,
+                    config_dir,
+                    evidence,
+                ),
+                None => Err("an always grant needs the person's decision".to_string()),
+            };
+            if let Err(message) = persisted {
                 match action {
                     ConsentAction::Subscribe { reply, .. } => {
                         let _ = reply.send(HostSubscribeReply::Err { message });
@@ -1060,6 +1095,7 @@ impl HostSubscriptionService {
     /// the consent touched (built by the caller via [`subscription_targets`] or
     /// [`publish_targets`]), then reload so later evaluations see it. Shared by
     /// the subscribe and publish consent paths.
+    #[allow(clippy::too_many_arguments)]
     fn persist_always_grants(
         &mut self,
         actor_type: ActorType,
@@ -1068,6 +1104,7 @@ impl HostSubscriptionService {
         targets: &[String],
         workspace_root: &Path,
         config_dir: &Path,
+        evidence: crate::broker::consent::CoveredDecision<'_>,
     ) -> Result<(), String> {
         let before: Vec<String> = self
             .grant_store
@@ -1076,16 +1113,19 @@ impl HostSubscriptionService {
             .map(|record| record.grant_id.clone())
             .collect();
         for target in targets {
-            self.grant_store.record(GrantRecord::event_stream_allow(
-                actor_type,
-                actor_id,
-                ActorScope::User,
-                target,
-                workspace_root,
-                GrantDuration::Always,
-                GrantSource::User,
-                None,
-            ));
+            self.grant_store.record_decided(
+                GrantRecord::event_stream_allow(
+                    actor_type,
+                    actor_id,
+                    ActorScope::User,
+                    target,
+                    workspace_root,
+                    GrantDuration::Always,
+                    GrantSource::User,
+                    None,
+                ),
+                evidence,
+            );
         }
         if let Err(error) = self.grant_store.try_save() {
             self.grant_store
@@ -1195,7 +1235,7 @@ impl HostSubscriptionService {
                     req.plugin_id
                 );
                 Some(PendingEventConsent {
-                    request_id: crate::app::approval_keyboard::next_consent_request_id(),
+                    request_id: crate::broker::consent::next_consent_request_id(),
                     subscriber_type: actor_type,
                     // Publish is one-shot with no long-poll, so routing and
                     // authorization identity are the same emitter id.
@@ -1388,7 +1428,7 @@ mod tests {
             workspace_root_override: Some(PathBuf::from("/workspace/notes")),
             subscriber_authority: SubscriberAuthority::External,
             context_id_override: Some(CTX),
-            peer_ancestry: None,
+            socket_caller: None,
             cancelled: None,
             reply,
         };
@@ -1432,7 +1472,7 @@ mod tests {
             workspace_root_override: Some(PathBuf::from("/tmp/ws")),
             subscriber_authority: SubscriberAuthority::External,
             context_id_override: Some(CTX),
-            peer_ancestry: None,
+            socket_caller: None,
             cancelled: None,
             reply: tx,
         };
@@ -1463,7 +1503,7 @@ mod tests {
             workspace_root_override: Some(PathBuf::from("/tmp/ws")),
             subscriber_authority: SubscriberAuthority::External,
             context_id_override: Some(CTX),
-            peer_ancestry: None,
+            socket_caller: None,
             cancelled: None,
             reply: tx,
         };
@@ -1744,7 +1784,7 @@ mod tests {
             subscriber_override: override_id.map(String::from),
             workspace_root_override: Some(PathBuf::from("/tmp/ws")),
             context_id_override: Some(CTX),
-            peer_ancestry: None,
+            socket_caller: None,
             reply: tx,
         };
         (req, rx)

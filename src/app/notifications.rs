@@ -29,8 +29,8 @@ pub(crate) struct PendingNotification {
     pub notify_id: String,
     pub sender_pane_id: u64,
     /// Host-resolved pane id allowed to dismiss this notification via
-    /// `plexi notify dismiss` (`DismissNotification`'s `peer_pid` resolved
-    /// through `resolve_socket_peer_pane`). 0 = no verified sender —
+    /// `plexi notify dismiss` (the dismissing socket peer, classified by
+    /// `PlexiApp::classify_socket_peer`). 0 = no verified sender —
     /// unreachable by any dismiss request. Distinct from `sender_pane_id`,
     /// which drives auto-dismiss-on-focus and is deliberately left 0 for CLI
     /// notifications regardless of sender identity.
@@ -580,8 +580,8 @@ impl PlexiApp {
     /// a UI-only close so sticky entries cannot survive a CLI dismissal.
     ///
     /// `resolved_pane_id` is the host-established sender pane — resolved by
-    /// `handle_pane_ipc_request` from the socket peer's OS credential via
-    /// `resolve_socket_peer_pane`, never from the request's own fields.
+    /// the admission entry from the socket peer's OS credential via
+    /// `PlexiApp::classify_socket_peer`, never from the request's own fields.
     /// Ownership is checked against `PendingNotification::dismiss_owner_pane_id`
     /// (stamped the same way at enqueue time), not by re-parsing `notify_id` —
     /// `notify_id` is client-generated (`plexi notify`'s `"cli:{pane_id}:{uuid}"`),

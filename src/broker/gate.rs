@@ -13,6 +13,7 @@ use std::sync::atomic::AtomicI64;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use super::consent::{CoveredDecision, DecisionEvidence};
 use super::{
     ActorScope, ActorType, Decision, ExactBinding, GrantDuration, GrantRecord, GrantSource,
     GrantStore, PermissionRequest, ResourceScope, TargetType,
@@ -374,6 +375,8 @@ pub struct NeedsYouReceipt {
 struct PendingWiden {
     entry_id: String,
     action: String,
+    /// The duration the prompt showed; an approval applies exactly it.
+    duration: ApprovalChoice,
 }
 
 /// What a restore installed: every id the journal held open, and the
@@ -406,16 +409,25 @@ pub struct PermissionEntry {
     pub summary: String,
 }
 
-/// Who is asking to change a stored permission.
+/// Who is asking to change a stored permission. No caller is the human:
+/// `allow` and `reset` always file Needs you, and only a desktop click
+/// applies them (stints 1264, 1271, 1285).
 #[derive(Debug, Clone)]
 pub struct PermissionCaller {
-    /// `true` only for host-owned trusted input. It is never derived from the
-    /// absence of an agent signal: socket callers (pane or not, credential or
-    /// not), MCP and Assistant tools, and plugin guest messages (including the
-    /// bundled Permissions plugin's) pass `false`, so their `allow`/`reset`
-    /// file Needs you and a desktop click applies them (stints 1264, 1271).
-    pub human: bool,
     pub actor_id: String,
+    /// Whose rows a `revoke` applies to directly. Revoking another
+    /// principal's row files Needs you like a widening.
+    pub revoke_scope: RevokeScope,
+}
+
+/// Whose stored permissions a caller may revoke without a desktop click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevokeScope {
+    /// Only rows whose actor is the caller's own.
+    Own,
+    /// Any row: the bundled Permissions view, a host surface the person
+    /// drives (`permission_ui_trust`).
+    Any,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -512,9 +524,6 @@ pub struct PermissionMonitor {
     run_outcomes: Mutex<BTreeMap<String, RunOutcome>>,
     /// Durable run / continuation records keyed by `run_id`.
     continuations: Mutex<BTreeMap<String, ContinuationRecord>>,
-    /// One-time UI answer tokens keyed by `needs_you_id` so interactive host/Pi UI
-    /// prompts can settle a question while unauthenticated pane tool calls cannot.
-    question_tokens: Mutex<BTreeMap<String, String>>,
     /// Serializes list, expiry, resolve, permission mutations and
     /// retirement so one terminal receipt wins. Lock order (stint 1383):
     /// `needs_resolve` is taken before `decision_lock`, `needs_you` and the
@@ -569,13 +578,9 @@ pub struct SessionCredential {
 #[derive(Clone)]
 enum CredentialBinding {
     Pane(std::sync::Arc<super::pane_authority::LivePaneAuthority>),
-    /// A test caller with a fixed scope and no grant.
+    /// A test credential naming a pane, with no grant.
     #[cfg(test)]
-    Fixed {
-        pane_id: Option<u64>,
-        context_id: u64,
-        workspace_root: PathBuf,
-    },
+    Fixed { pane_id: Option<u64> },
 }
 
 impl CredentialBinding {
@@ -591,7 +596,6 @@ impl CredentialBinding {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentityError {
     Missing,
-    Forged,
     Mismatch,
     StaleCredential,
 }
@@ -604,8 +608,6 @@ pub struct VerifiedCaller {
     pub pane_id: Option<u64>,
     pub context_id: u64,
     pub workspace_root: PathBuf,
-    /// Socket and credential callers are never the human at the keyboard.
-    pub is_human: bool,
     /// The incarnation a pane credential carries (stint 1632): the caller's
     /// grant, resolved from the credential itself. `context_id` and
     /// `workspace_root` are one snapshot of its scope.
@@ -640,6 +642,28 @@ pub enum Admission {
     Denied {
         code: &'static str,
     },
+}
+
+impl ApprovalChoice {
+    /// A requested grant length from its wire spelling.
+    pub fn parse_duration(raw: &str) -> Option<Self> {
+        match raw {
+            "once" => Some(Self::Once),
+            "session" => Some(Self::Session),
+            "always" => Some(Self::Always),
+            _ => None,
+        }
+    }
+
+    /// How a prompt names this grant's length.
+    fn duration_label(self) -> &'static str {
+        match self {
+            Self::Once => "once",
+            Self::Session | Self::AllowTool => "this session",
+            Self::Always => "always",
+            Self::Deny | Self::DenyAlways => "not allowed",
+        }
+    }
 }
 
 impl PermissionMonitor {
@@ -981,7 +1005,6 @@ impl PermissionMonitor {
             origins: Mutex::new(BTreeMap::new()),
             run_outcomes: Mutex::new(BTreeMap::new()),
             continuations: Mutex::new(BTreeMap::new()),
-            question_tokens: Mutex::new(BTreeMap::new()),
             needs_resolve: Mutex::new(()),
             retire_due: std::sync::atomic::AtomicBool::new(false),
             retire_trigger: Mutex::new(""),
@@ -1167,7 +1190,7 @@ impl PermissionMonitor {
                     .store()
                     .records()
                     .iter()
-                    .find(|record| record.matches(&request, now))
+                    .find(|record| record.matches(&request, now) && record.duration_admissible())
                     .map(|record| record.grant_id.clone())
                     .unwrap_or_default();
                 trace("allow", mechanism, &format!("grant={grant_id}"));
@@ -1284,8 +1307,32 @@ impl PermissionMonitor {
         )
     }
 
+    /// A test standing in for the click that decides `pending_id`.
+    #[cfg(test)]
     pub fn approve_pending(&self, pending_id: &str, choice: ApprovalChoice) -> Result<(), String> {
-        let result = self.approve_pending_inner(pending_id, choice);
+        let evidence = DecisionEvidence::for_test(pending_id, &format!("{choice:?}"));
+        self.decide_pending(&evidence, pending_id, choice)
+    }
+
+    /// Apply the person's decision on pending approval `pending_id` (stint
+    /// 1285): only with evidence the surface showing it issued, for this
+    /// request and this choice.
+    pub(crate) fn decide_pending(
+        &self,
+        evidence: &DecisionEvidence,
+        pending_id: &str,
+        choice: ApprovalChoice,
+    ) -> Result<(), String> {
+        let decision = evidence.admit(pending_id, &format!("{choice:?}"))?;
+        let result = self.approve_pending_inner(pending_id, choice, Some(decision));
+        self.drain_retirements();
+        result
+    }
+
+    /// End a pending ask with a plain deny: a timeout, a cancelled caller, a
+    /// revoke. It narrows and writes no grant, so it needs no evidence.
+    pub(crate) fn cancel_pending(&self, pending_id: &str) -> Result<(), String> {
+        let result = self.approve_pending_inner(pending_id, ApprovalChoice::Deny, None);
         self.drain_retirements();
         result
     }
@@ -1294,7 +1341,12 @@ impl PermissionMonitor {
         &self,
         pending_id: &str,
         choice: ApprovalChoice,
+        evidence: Option<CoveredDecision<'_>>,
     ) -> Result<(), String> {
+        if evidence.is_none() && choice != ApprovalChoice::Deny {
+            log::info!("permission_monitor: refused {choice:?} on {pending_id}: no evidence");
+            return Err("only the person at the desktop can decide this".to_string());
+        }
         // Serialize the check and grant mutation, including concurrent desktop decisions.
         let _decision = self.decision_lock.lock().unwrap_or_else(|e| e.into_inner());
         if self
@@ -1317,9 +1369,21 @@ impl PermissionMonitor {
         {
             return Err("tool allowance is only available for plugin tools".to_string());
         }
+        if pending.binding.actor_type == ActorType::External
+            && matches!(
+                choice,
+                ApprovalChoice::Always | ApprovalChoice::AllowTool | ApprovalChoice::DenyAlways
+            )
+        {
+            log::info!(
+                "permission_monitor: refused {choice:?} on {pending_id}: an outside process holds a grant once or for the session"
+            );
+            return Err("an outside process can be decided once or for this session".to_string());
+        }
         if matches!(choice, ApprovalChoice::Deny | ApprovalChoice::DenyAlways) {
             let grant_id = if choice == ApprovalChoice::DenyAlways {
-                self.record_tool_scoped(&pending.binding, Decision::Deny, None)?
+                let evidence = evidence.ok_or("deny always needs the person's decision")?;
+                self.record_tool_scoped(&pending.binding, Decision::Deny, None, evidence)?
             } else {
                 String::new()
             };
@@ -1418,7 +1482,10 @@ impl PermissionMonitor {
                     && (binding.target_id == "pane.send" || plugin_capability)))
             || (binding.target_type == TargetType::CliOperation
                 && matches!(choice, ApprovalChoice::Session | ApprovalChoice::Always));
-        self.store().record(record);
+        match evidence {
+            Some(evidence) => self.store().record_decided(record, evidence),
+            None => return Err("an allow needs the person's decision".to_string()),
+        }
         if choice == ApprovalChoice::Always {
             // Drop the store guard before locking it again on failure. A
             // temporary in `if let` lives for the whole block.
@@ -1574,16 +1641,15 @@ impl PermissionMonitor {
     /// File an agent question or a blocked run. Gate approvals are filed by admission.
     pub fn file_needs_you(&self, filed: NeedsYouFile) -> Result<String, String> {
         self.file_needs_you_with_details(filed, None)
-            .map(|(id, _)| id)
     }
 
     /// File an agent question or blocked run with optional structured question
-    /// metadata and durable continuation binding. Returns `(needs_you_id, ui_answer_token)`.
+    /// metadata and durable continuation binding. Returns the item id.
     pub fn file_needs_you_with_details(
         &self,
         filed: NeedsYouFile,
         details: Option<NeedsYouDetails>,
-    ) -> Result<(String, String), String> {
+    ) -> Result<String, String> {
         if filed.kind.is_approval() {
             return Err("approval items are filed by the permission gate".to_string());
         }
@@ -1621,17 +1687,7 @@ impl PermissionMonitor {
                         existing.kind.as_str()
                     );
                     let id = existing.id.clone();
-                    let record = existing.clone();
-                    drop(map);
-                    let token = self
-                        .question_tokens
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .entry(id.clone())
-                        .or_insert_with(|| format!("nytok_{}", uuid::Uuid::new_v4()))
-                        .clone();
-                    let _ = (now, record);
-                    return Ok((id, token));
+                    return Ok(id);
                 }
             }
             let id = format!("ny_{}", uuid::Uuid::new_v4());
@@ -1659,11 +1715,6 @@ impl PermissionMonitor {
             (id, record, false)
         };
         let _ = reused;
-        let token = format!("nytok_{}", uuid::Uuid::new_v4());
-        self.question_tokens
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id.clone(), token.clone());
         self.remember_origin(&id);
         if matches!(
             record.kind,
@@ -1701,7 +1752,7 @@ impl PermissionMonitor {
         if record.kind != NeedsYouKind::Keychain {
             self.persist_queue();
         }
-        Ok((id, token))
+        Ok(id)
     }
 
     /// Answer an open creative `Question` or `BlockedRun` item.
@@ -1710,13 +1761,10 @@ impl PermissionMonitor {
     /// kinds (`ApprovalClick`, `PermissionChange`, `Integrity`, `Keychain`) on all
     /// surfaces, and refuses unauthenticated agent-pane callers so a model or tool
     /// call inside the pane cannot forge a human answer.
-    pub fn answer_needs_you_from(
+    fn answer_needs_you(
         &self,
         id: &str,
         answer: &str,
-        surface: ResolveSurface,
-        ui_token: Option<&str>,
-        caller_is_agent_pane: bool,
     ) -> Result<NeedsYouReceipt, NeedsYouResolveError> {
         let answer_trimmed = answer.trim();
         if answer_trimmed.is_empty() {
@@ -1730,31 +1778,9 @@ impl PermissionMonitor {
             kind,
             Some(NeedsYouKind::Question | NeedsYouKind::BlockedRun)
         );
-        let surface_allowed = match surface {
-            ResolveSurface::Desktop => is_question_kind,
-            ResolveSurface::Socket => {
-                if !is_question_kind {
-                    false
-                } else if !caller_is_agent_pane {
-                    true
-                } else {
-                    let expected = self
-                        .question_tokens
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .get(id)
-                        .cloned();
-                    matches!(
-                        (expected.as_deref(), ui_token),
-                        (Some(exp), Some(tok)) if !exp.is_empty() && exp == tok
-                    )
-                }
-            }
-        };
-        if !surface_allowed {
+        if !is_question_kind {
             log::info!(
-                "needs_you: refused {} answer {id} kind={} agent_pane={caller_is_agent_pane}",
-                surface.as_str(),
+                "needs_you: refused answer {id} kind={}",
                 kind.map(NeedsYouKind::as_str).unwrap_or("unknown")
             );
             self.refuse_client_resolve(id);
@@ -1804,10 +1830,6 @@ impl PermissionMonitor {
                 "needs-you item {id} could not be audited"
             )));
         }
-        self.question_tokens
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(id);
         self.run_outcomes
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1819,8 +1841,7 @@ impl PermissionMonitor {
             outcome,
         );
         log::info!(
-            "needs_you: {} answered {id} answer={:?} run_outcome={}",
-            surface.as_str(),
+            "needs_you: desktop answered {id} answer={:?} run_outcome={}",
             answer_trimmed,
             outcome.as_str()
         );
@@ -1866,10 +1887,6 @@ impl PermissionMonitor {
             if !self.close_needs_you(&id, NeedsYouResolution::Denied, "withdrawn", "") {
                 continue;
             }
-            self.question_tokens
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&id);
             self.run_outcomes
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -2041,7 +2058,7 @@ impl PermissionMonitor {
                 row.kind.as_str()
             );
             if row.kind.is_approval() {
-                if let Err(error) = self.approve_pending(&row.id, ApprovalChoice::Deny) {
+                if let Err(error) = self.cancel_pending(&row.id) {
                     log::info!("needs_you: auto-deny pending {} failed: {error}", row.id);
                 }
             }
@@ -2081,11 +2098,107 @@ impl PermissionMonitor {
     /// refused decision leaves the item open and audits `refused_resolve`. For
     /// an unknown id a non-desktop approve is still refused; a deny reports
     /// the unknown id.
+    /// Approve Needs-you item `id` with the evidence the surface showing it
+    /// issued (stint 1285).
+    pub(crate) fn resolve_needs_you_decided(
+        &self,
+        evidence: DecisionEvidence,
+        id: &str,
+    ) -> Result<NeedsYouReceipt, NeedsYouResolveError> {
+        let decision = evidence
+            .admit(id, "approve")
+            .map_err(|_| NeedsYouResolveError::Refused)?;
+        self.resolve_needs_you_on(id, true, ResolveSurface::Desktop, Some(decision))
+    }
+
+    /// Refuse or dismiss Needs-you item `id` at the desktop. It narrows.
+    pub(crate) fn dismiss_needs_you_at_desktop(
+        &self,
+        id: &str,
+    ) -> Result<NeedsYouReceipt, NeedsYouResolveError> {
+        self.resolve_needs_you_on(id, false, ResolveSurface::Desktop, None)
+    }
+
+    /// Close an agent-finished notice once its result was opened. It grants
+    /// nothing, so it takes no evidence; any other kind is refused.
+    pub(crate) fn close_agent_done_item(&self, id: &str) -> Result<NeedsYouReceipt, String> {
+        if self.needs_you_of(id).map(|row| row.kind) != Some(NeedsYouKind::AgentDone) {
+            return Err(format!("{id} is not an agent result notice"));
+        }
+        let result = self.resolve_needs_you_locked(id, true, None);
+        self.drain_retirements();
+        result
+    }
+
+    /// A test standing in for a desktop decision on this item.
+    #[cfg(test)]
+    fn resolve_needs_you_for_test(
+        &self,
+        id: &str,
+        approve: bool,
+    ) -> Result<NeedsYouReceipt, String> {
+        let evidence = DecisionEvidence::for_test(id, "approve");
+        let decision = evidence.admit(id, "approve").ok().filter(|_| approve);
+        self.resolve_needs_you(id, approve, decision)
+    }
+
+    #[cfg(test)]
+    fn apply_mutation_for_test(&self, id: &str, action: &str) -> PermissionMutation {
+        let evidence = DecisionEvidence::for_test(id, action);
+        // As `mutate_entry`: the sweep cannot see the swap, and what it
+        // removed retires from settled state.
+        let outcome = {
+            let _mutating = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
+            self.apply_mutation(id, action, evidence.admit(id, action).ok(), ApprovalChoice::Always)
+        };
+        self.drain_retirements();
+        outcome
+    }
+
+    /// A resolve from the command socket: it can never approve.
+    pub(crate) fn resolve_needs_you_from_socket(
+        &self,
+        id: &str,
+        approve: bool,
+    ) -> Result<NeedsYouReceipt, NeedsYouResolveError> {
+        self.resolve_needs_you_on(id, approve, ResolveSurface::Socket, None)
+    }
+
+    /// Answer Needs-you question `id` with the person's answer (stint 1285).
+    pub(crate) fn answer_needs_you_decided(
+        &self,
+        evidence: DecisionEvidence,
+        id: &str,
+        answer: &str,
+    ) -> Result<NeedsYouReceipt, NeedsYouResolveError> {
+        if !evidence.covers(id, answer) {
+            log::info!("needs_you: refused desktop answer {id}: evidence is for another request or answer");
+            return Err(NeedsYouResolveError::Refused);
+        }
+        self.answer_needs_you(id, answer)
+    }
+
+    /// A test standing in for the surface: a desktop approval carries the
+    /// evidence a click would.
+    #[cfg(test)]
     pub fn resolve_needs_you_from(
         &self,
         id: &str,
         approve: bool,
         surface: ResolveSurface,
+    ) -> Result<NeedsYouReceipt, NeedsYouResolveError> {
+        let evidence = (approve && surface == ResolveSurface::Desktop)
+            .then(|| DecisionEvidence::for_test(id, "approve"));
+        let decision = evidence.as_ref().and_then(|e| e.admit(id, "approve").ok());
+        self.resolve_needs_you_on(id, approve, surface, decision)
+    }
+
+    fn resolve_needs_you_on(
+        &self,
+        id: &str,
+        approve: bool,
+        surface: ResolveSurface,
+        evidence: Option<CoveredDecision<'_>>,
     ) -> Result<NeedsYouReceipt, NeedsYouResolveError> {
         let kind = self.needs_you_of(id).map(|row| row.kind);
         let allowed = match kind {
@@ -2105,20 +2218,35 @@ impl PermissionMonitor {
             "needs_you: {} resolve {id} approve={approve}",
             surface.as_str()
         );
-        self.resolve_needs_you(id, approve)
+        self.resolve_needs_you(id, approve, evidence)
             .map_err(NeedsYouResolveError::Failed)
     }
 
     /// Settle one item. A second call returns the first receipt. Private:
-    /// every caller goes through `resolve_needs_you_from`.
-    fn resolve_needs_you(&self, id: &str, approve: bool) -> Result<NeedsYouReceipt, String> {
-        let result = self.resolve_needs_you_locked(id, approve);
+    /// every caller goes through `resolve_needs_you_on`. An approval carries
+    /// the person's evidence; a refusal needs none.
+    fn resolve_needs_you(
+        &self,
+        id: &str,
+        approve: bool,
+        evidence: Option<CoveredDecision<'_>>,
+    ) -> Result<NeedsYouReceipt, String> {
+        if approve && evidence.is_none() {
+            log::info!("needs_you: refused approval of {id}: no evidence");
+            return Err("only the person at the desktop can approve this".to_string());
+        }
+        let result = self.resolve_needs_you_locked(id, approve, evidence);
         // Retirements noted while the lock was held run now (stint 1383).
         self.drain_retirements();
         result
     }
 
-    fn resolve_needs_you_locked(&self, id: &str, approve: bool) -> Result<NeedsYouReceipt, String> {
+    fn resolve_needs_you_locked(
+        &self,
+        id: &str,
+        approve: bool,
+        evidence: Option<CoveredDecision<'_>>,
+    ) -> Result<NeedsYouReceipt, String> {
         let _guard = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
         self.expire_needs_you_locked();
         let Some(row) = self.needs_you_of(id) else {
@@ -2148,7 +2276,9 @@ impl PermissionMonitor {
                 } else {
                     ApprovalChoice::Deny
                 };
-                if let Err(error) = self.approve_pending(id, choice) {
+                let applied = self.approve_pending_inner(id, choice, evidence);
+                self.drain_retirements();
+                if let Err(error) = applied {
                     if let Some(existing) = self.resolved_receipt(id, true) {
                         return Ok(existing);
                     }
@@ -2161,9 +2291,17 @@ impl PermissionMonitor {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(id);
-                let (entry_id, action) = match &widen {
-                    Some(pending) => (pending.entry_id.clone(), pending.action.clone()),
-                    None => split_widen_tag(row.run_tag.as_deref()),
+                // A record with no filed duration applies the narrowest one.
+                let (entry_id, action, widen_duration) = match &widen {
+                    Some(pending) => (
+                        pending.entry_id.clone(),
+                        pending.action.clone(),
+                        pending.duration,
+                    ),
+                    None => {
+                        let (entry_id, action) = split_widen_tag(row.run_tag.as_deref());
+                        (entry_id, action, ApprovalChoice::Once)
+                    }
                 };
                 let gone = entry_id.is_empty()
                     || action.is_empty()
@@ -2186,7 +2324,7 @@ impl PermissionMonitor {
                     // Apply first: the item is recorded approved only once the
                     // change is real. This item is not open to retirement
                     // meanwhile, because retirement waits for `needs_resolve`.
-                    match self.apply_mutation(&entry_id, &action) {
+                    match self.apply_mutation(&entry_id, &action, evidence, widen_duration) {
                         PermissionMutation::Applied { .. } => {
                             log::info!(
                                 "needs_you: permission change {id} applied action={action} entry={entry_id}"
@@ -2248,27 +2386,15 @@ impl PermissionMonitor {
                         .map(PathBuf::from);
                     if let Some(ws) = ws_path.as_deref() {
                         if !target_run.is_empty() {
-                            match crate::agent::runs::grant_tool_for_run(ws, &target_run, &tool) {
-                                Ok(actor_id) => {
-                                    minted_grant_id = self.record_run_only_grant(
-                                        ws,
-                                        &actor_id,
-                                        &target_run,
-                                        &tool,
-                                    )?;
-                                }
-                                Err(error) => {
-                                    log::warn!(
-                                        "needs_you: permission_request {id} run grant update failed for run={target_run}: {error}"
-                                    );
-                                    minted_grant_id = self.record_run_only_grant(
-                                        ws,
-                                        &row.actor,
-                                        &target_run,
-                                        &tool,
-                                    )?;
-                                }
-                            }
+                            // A sealed row bound to this run; the workspace's
+                            // run file is never a grant source (stint 1285).
+                            minted_grant_id = self.record_run_only_grant(
+                                ws,
+                                &row.actor,
+                                &target_run,
+                                &tool,
+                                det.pane_id,
+                            )?;
                         } else if let Some(pane_id) = det.pane_id {
                             minted_grant_id = self.record_pane_session_grant(ws, pane_id, &tool)?;
                         }
@@ -3511,6 +3637,7 @@ impl PermissionMonitor {
         actor_id: &str,
         run_id: &str,
         tool: &str,
+        requester_pane: Option<u64>,
     ) -> Result<String, String> {
         let binding = ExactBinding {
             actor_type: ActorType::Agent,
@@ -3542,6 +3669,7 @@ impl PermissionMonitor {
         record.session_id = Some(self.session_id.clone());
         record.args_unbound = true;
         record.bound_operation_id = Some(run_id.to_string());
+        record.run_requester_pane = requester_pane;
         self.store().record(record);
         self.audit(&AuditFact {
             kind: "grant".to_string(),
@@ -3559,6 +3687,29 @@ impl PermissionMonitor {
             "permission_monitor: granted {grant_id} actor={actor_id} tool={tool} for run={run_id} only"
         );
         Ok(grant_id)
+    }
+
+    /// Whether a live, sealed desktop approval is bound to `run_id` for `tool`.
+    pub fn run_holds_approval(
+        &self,
+        workspace: &Path,
+        actor_id: &str,
+        run_id: &str,
+        tool: &str,
+    ) -> bool {
+        let workspace = crate::platform::path::canonical_or_self(workspace);
+        let now = self.now_secs();
+        self.store().records().iter().any(|row| {
+            row.bound_operation_id.as_deref() == Some(run_id)
+                && row.actor_type == ActorType::Agent
+                && row.actor_id == actor_id
+                && row.target_id == tool
+                && row.decision == Decision::Allow
+                && !row.consumed
+                && row.workspace_root.as_deref() == Some(workspace.as_path())
+                && row.session_id.as_deref() == Some(self.session_id.as_str())
+                && row.expires_at.is_none_or(|expiry| now < expiry)
+        })
     }
 
     /// Record and persist a pane-scoped session tool grant (`GrantDuration::Session`)
@@ -3845,14 +3996,15 @@ impl PermissionMonitor {
     }
 
     /// Persist one capability id (manifest capability or raw WASM import).
-    pub fn grant_capability_id(
+    pub(crate) fn grant_capability_id(
         &self,
+        _decision: CoveredDecision<'_>,
         plugin_id: &str,
         workspace_root: &Path,
         capability_id: &str,
         decision: Decision,
-        source: GrantSource,
     ) {
+        let source = GrantSource::User;
         {
             let mut store = self.store();
             store.upsert_capability(plugin_id, workspace_root, capability_id, decision, source);
@@ -4073,12 +4225,23 @@ impl PermissionMonitor {
         action: &str,
         caller: &PermissionCaller,
     ) -> PermissionMutation {
+        self.mutate_entry_for(id, action, caller, None)
+    }
+
+    /// [`Self::mutate_entry`] with the duration an `allow` request asks for.
+    pub fn mutate_entry_for(
+        &self,
+        id: &str,
+        action: &str,
+        caller: &PermissionCaller,
+        requested: Option<ApprovalChoice>,
+    ) -> PermissionMutation {
         // Held across the mutation and its save: `allow_entry` removes a
         // denial and restores it if the save fails, and the expiry sweep
         // (which also takes `needs_resolve`) must not see that window.
         let outcome = {
             let _mutating = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
-            self.mutate_entry_inner(id, action, caller)
+            self.mutate_entry_inner(id, action, caller, requested)
         };
         // Retire what this removed only now, from settled state.
         self.drain_retirements();
@@ -4090,6 +4253,7 @@ impl PermissionMonitor {
         id: &str,
         action: &str,
         caller: &PermissionCaller,
+        requested: Option<ApprovalChoice>,
     ) -> PermissionMutation {
         let action = action.trim();
         if !matches!(action, "reset" | "allow" | "revoke") {
@@ -4099,20 +4263,52 @@ impl PermissionMonitor {
             };
         }
         let widening = matches!(action, "reset" | "allow");
-        if widening && !caller.human {
-            return self.file_widen(id, action, &caller.actor_id);
+        let foreign_revoke = action == "revoke"
+            && caller.revoke_scope == RevokeScope::Own
+            && self
+                .entry_by_id(id)
+                .is_some_and(|entry| entry.actor_id != caller.actor_id);
+        if widening || foreign_revoke {
+            return self.file_widen(id, action, &caller.actor_id, requested);
         }
-        let outcome = self.apply_mutation(id, action);
+        let outcome = self.apply_mutation(id, action, None, ApprovalChoice::Once);
         log::info!(
-            "permission_monitor: mutate {action} id={id:?} human={} actor={} outcome={}",
-            caller.human,
+            "permission_monitor: mutate {action} id={id:?} actor={} revoke_scope={:?} outcome={}",
             caller.actor_id,
+            caller.revoke_scope,
             mutation_label(&outcome)
         );
         outcome
     }
 
-    fn file_widen(&self, id: &str, action: &str, actor: &str) -> PermissionMutation {
+    /// The duration a widening applies: what was asked, else the ask's own
+    /// one use, or the standing row a denial was. An outside process holds
+    /// nothing past the session.
+    fn effective_widen_duration(
+        &self,
+        id: &str,
+        entry: &PermissionEntry,
+        requested: Option<ApprovalChoice>,
+    ) -> ApprovalChoice {
+        let asked = requested.unwrap_or(if self.pending_exists(id) {
+            ApprovalChoice::Once
+        } else {
+            ApprovalChoice::Always
+        });
+        if entry.actor_type == "external" && asked == ApprovalChoice::Always {
+            ApprovalChoice::Session
+        } else {
+            asked
+        }
+    }
+
+    fn file_widen(
+        &self,
+        id: &str,
+        action: &str,
+        actor: &str,
+        requested: Option<ApprovalChoice>,
+    ) -> PermissionMutation {
         let Some(entry) = self.entry_by_id(id) else {
             log::info!("permission_monitor: widen {action} missing id={id:?} actor={actor:?}");
             return PermissionMutation::Missing {
@@ -4130,6 +4326,12 @@ impl PermissionMonitor {
                 entry_id: id.to_string(),
             };
         }
+        let duration = self.effective_widen_duration(id, &entry, requested);
+        let shown = if action == "allow" {
+            format!("{action} ({})", duration.duration_label())
+        } else {
+            action.to_string()
+        };
         match self.file_needs_you(NeedsYouFile {
             kind: NeedsYouKind::PermissionChange,
             actor: if actor.is_empty() {
@@ -4139,7 +4341,7 @@ impl PermissionMonitor {
             },
             resource: entry.tool.clone(),
             summary: format!(
-                "Approve {action} for {} {} ({id}). A request cannot widen this by itself.",
+                "Approve {shown} for {} {} ({id}). A request cannot widen this by itself.",
                 entry.actor_id, entry.tool
             ),
             expires_at: None,
@@ -4154,6 +4356,7 @@ impl PermissionMonitor {
                         PendingWiden {
                             entry_id: id.to_string(),
                             action: action.to_string(),
+                            duration,
                         },
                     );
                 log::info!(
@@ -4171,11 +4374,21 @@ impl PermissionMonitor {
         }
     }
 
-    fn apply_mutation(&self, id: &str, action: &str) -> PermissionMutation {
-        match action {
-            "revoke" => self.revoke_entry(id),
-            "reset" => self.reset_entry(id),
-            "allow" => self.allow_entry(id),
+    fn apply_mutation(
+        &self,
+        id: &str,
+        action: &str,
+        evidence: Option<CoveredDecision<'_>>,
+        duration: ApprovalChoice,
+    ) -> PermissionMutation {
+        match (action, evidence) {
+            ("revoke", _) => self.revoke_entry(id),
+            ("reset", Some(_)) => self.reset_entry(id),
+            ("allow", Some(evidence)) => self.allow_entry(id, evidence, duration),
+            ("reset" | "allow", None) => PermissionMutation::Rejected {
+                entry_id: id.to_string(),
+                error: "only the person at the desktop can widen this".to_string(),
+            },
             _ => PermissionMutation::Rejected {
                 entry_id: id.to_string(),
                 error: "action must be reset, allow, or revoke".to_string(),
@@ -4185,7 +4398,7 @@ impl PermissionMonitor {
 
     fn revoke_entry(&self, id: &str) -> PermissionMutation {
         if self.pending_exists(id) {
-            return match self.approve_pending(id, ApprovalChoice::Deny) {
+            return match self.cancel_pending(id) {
                 Ok(()) => PermissionMutation::Applied {
                     entry_id: id.to_string(),
                 },
@@ -4244,9 +4457,16 @@ impl PermissionMonitor {
         self.removal_outcome(id)
     }
 
-    fn allow_entry(&self, id: &str) -> PermissionMutation {
+    fn allow_entry(
+        &self,
+        id: &str,
+        evidence: CoveredDecision<'_>,
+        choice: ApprovalChoice,
+    ) -> PermissionMutation {
         if self.pending_exists(id) {
-            return match self.approve_pending(id, ApprovalChoice::Always) {
+            let applied = self.approve_pending_inner(id, choice, Some(evidence));
+            self.drain_retirements();
+            return match applied {
                 Ok(()) => PermissionMutation::Applied {
                     entry_id: id.to_string(),
                 },
@@ -4284,16 +4504,28 @@ impl PermissionMonitor {
         let mut allow = record.clone();
         allow.grant_id = grant_id.clone();
         allow.decision = Decision::Allow;
-        allow.duration = GrantDuration::Always;
-        allow.source = GrantSource::User;
+        (allow.duration, allow.source, allow.session_id, allow.expires_at) = match choice {
+            ApprovalChoice::Once => (GrantDuration::Once, GrantSource::Session, None, None),
+            ApprovalChoice::Session => (
+                GrantDuration::Session,
+                GrantSource::Session,
+                Some(self.session_id.clone()),
+                None,
+            ),
+            _ => (
+                GrantDuration::Always,
+                GrantSource::User,
+                None,
+                Some(self.now_secs() + ALWAYS_TTL_SECS),
+            ),
+        };
         allow.tool_scoped = true;
         allow.consumed = false;
         allow.created_at = self.now_secs();
-        allow.expires_at = Some(self.now_secs() + ALWAYS_TTL_SECS);
         {
             let mut store = self.store();
             store.records_mut().retain(|row| row.grant_id != id);
-            store.record(allow);
+            store.record_decided(allow, evidence);
         }
         #[cfg(test)]
         {
@@ -4310,7 +4542,7 @@ impl PermissionMonitor {
             self.store()
                 .records_mut()
                 .retain(|row| row.grant_id != grant_id);
-            self.store().record(record);
+            self.store().record_decided(record.clone(), evidence);
             let message = grant_not_saved(&error);
             log::error!("permission_monitor: {message}");
             return PermissionMutation::Rejected {
@@ -4353,6 +4585,7 @@ impl PermissionMonitor {
         binding: &ExactBinding,
         decision: Decision,
         expires_at: Option<i64>,
+        evidence: CoveredDecision<'_>,
     ) -> Result<String, String> {
         let grant_id = format!("grant_{}", uuid::Uuid::new_v4());
         let mut record = GrantRecord::from_binding(
@@ -4370,7 +4603,7 @@ impl PermissionMonitor {
         record.tool_scoped = true;
         record.expires_at = expires_at;
         record.session_id = None;
-        self.store().record(record);
+        self.store().record_decided(record, evidence);
         if let Err(error) = self.save_durable() {
             self.store()
                 .records_mut()
@@ -4509,21 +4742,8 @@ impl PermissionMonitor {
     }
 
     #[cfg(test)]
-    pub fn issue_credential(
-        &self,
-        pane_id: Option<u64>,
-        context_id: u64,
-        workspace_root: &Path,
-        actor_id: &str,
-    ) -> String {
-        self.insert_credential(
-            actor_id,
-            CredentialBinding::Fixed {
-                pane_id,
-                context_id,
-                workspace_root: crate::platform::path::canonical_or_self(workspace_root),
-            },
-        )
+    pub fn issue_credential(&self, pane_id: Option<u64>, actor_id: &str) -> String {
+        self.insert_credential(actor_id, CredentialBinding::Fixed { pane_id })
     }
 
     fn insert_credential(&self, actor_id: &str, binding: CredentialBinding) -> String {
@@ -4575,6 +4795,33 @@ impl PermissionMonitor {
             })
     }
 
+    /// What a credential alone resolves to, as the transports that carry
+    /// only a credential see it: its incarnation's grant and scope, or
+    /// `StaleCredential` once revoked. Tests only; the socket always pairs
+    /// a credential with its classified caller (`authenticate_call`).
+    #[cfg(test)]
+    pub(crate) fn authenticate_credential_for_test(
+        &self,
+        token: &str,
+    ) -> Result<VerifiedCaller, IdentityError> {
+        let live = self
+            .credential_authority(token)
+            .ok_or(IdentityError::StaleCredential)?;
+        if live.is_revoked() {
+            return Err(IdentityError::StaleCredential);
+        }
+        let scope = live.scope();
+        Ok(VerifiedCaller {
+            actor_id: format!("pane:{}", live.pane_id()),
+            actor_type: ActorType::Agent,
+            actor_scope: ActorScope::User,
+            pane_id: Some(live.pane_id()),
+            context_id: scope.context_id,
+            workspace_root: crate::platform::path::canonical_or_self(&scope.workspace_root),
+            authority: Some(live),
+        })
+    }
+
     /// Revoke a call credential; it authenticates nothing afterwards.
     pub(crate) fn revoke_credential(&self, token: &str) {
         let removed = self
@@ -4591,107 +4838,77 @@ impl PermissionMonitor {
         }
     }
 
-    /// Socket identity. A missing, forged, or mismatched claim is denied.
-    /// No pane is never the human `user`.
-    pub fn authenticate_call(
+    /// Socket identity (stint 1285). The caller is what the host classified
+    /// from the kernel; a credential, when one is presented, must have been
+    /// issued from the very authority handle of the caller's live terminal
+    /// incarnation. A credential from another pane, another incarnation, a
+    /// revoked pane, or presented by an outside or unidentified caller is
+    /// refused. No socket caller is ever the human.
+    pub(crate) fn authenticate_call(
         &self,
-        claimed_pane: Option<u64>,
+        caller: &super::caller::SocketCaller,
         credential: Option<&str>,
-        peer_pane: Option<u64>,
     ) -> Result<VerifiedCaller, IdentityError> {
+        use super::caller::SocketCaller;
+        let pane = match caller {
+            SocketCaller::Pane(pane) => pane,
+            SocketCaller::External(_) | SocketCaller::Unidentified(_) => {
+                if credential.is_some() {
+                    log::info!(
+                        "permission_monitor: call credential presented by a {} caller",
+                        caller.class()
+                    );
+                    return Err(IdentityError::Mismatch);
+                }
+                return Err(IdentityError::Missing);
+            }
+        };
         if let Some(token) = credential {
             let creds = self.credentials.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(cred) = creds.get(token) else {
+            let Some(cred) = creds.get(token).filter(|cred| cred.token == token) else {
                 log::info!("permission_monitor: stale or unknown call credential");
                 return Err(IdentityError::StaleCredential);
             };
-            // One coherent snapshot of the credential's scope for this
-            // request; a revoked incarnation authenticates nothing.
-            let (cred_pane, context_id, workspace_root, authority, scope_revision): (
-                _,
-                _,
-                _,
-                _,
-                Option<u64>,
-            ) = match &cred.binding {
-                CredentialBinding::Pane(live) => {
-                    if live.is_revoked() {
-                        log::info!(
-                            "permission_monitor: credential of revoked pane {} incarnation {}",
-                            live.pane_id(),
-                            live.incarnation()
-                        );
-                        return Err(IdentityError::StaleCredential);
-                    }
-                    let scope = live.scope();
-                    (
-                        Some(live.pane_id()),
-                        scope.context_id,
-                        crate::platform::path::canonical_or_self(&scope.workspace_root),
-                        Some(live.clone()),
-                        Some(scope.revision),
-                    )
-                }
+            let same_handle = match &cred.binding {
+                CredentialBinding::Pane(live) => std::sync::Arc::ptr_eq(live, &pane.authority),
                 #[cfg(test)]
-                CredentialBinding::Fixed {
-                    pane_id,
-                    context_id,
-                    workspace_root,
-                } => (*pane_id, *context_id, workspace_root.clone(), None, None),
+                CredentialBinding::Fixed { pane_id, .. } => *pane_id == Some(pane.terminal_pane),
             };
-            if let (Some(cred_pane), Some(claim)) = (cred_pane, claimed_pane) {
-                if cred_pane != claim {
-                    log::info!("permission_monitor: credential pane {cred_pane} != claim {claim}");
-                    return Err(IdentityError::Mismatch);
-                }
-            }
-            if let (Some(peer), Some(claim)) = (peer_pane, claimed_pane.or(cred_pane)) {
-                if peer != claim {
-                    log::info!("permission_monitor: peer pane {peer} != claim {claim}");
-                    return Err(IdentityError::Mismatch);
-                }
-            }
-            if cred.token != token || (cred_pane.is_none() && claimed_pane.is_some()) {
+            if !same_handle {
+                log::info!(
+                    "permission_monitor: credential for {:?} presented by pane {} incarnation {}",
+                    cred.binding.pane_id(),
+                    pane.terminal_pane,
+                    pane.authority.incarnation()
+                );
                 return Err(IdentityError::Mismatch);
             }
+        }
+        if pane.authority.is_revoked() {
             log::info!(
-                "permission_monitor: authenticated credential actor={} pane={cred_pane:?} context={context_id} revision={scope_revision:?}",
-                cred.actor_id,
+                "permission_monitor: revoked pane {} incarnation {}",
+                pane.terminal_pane,
+                pane.authority.incarnation()
             );
-            return Ok(VerifiedCaller {
-                actor_id: cred.actor_id.clone(),
-                actor_type: ActorType::Agent,
-                actor_scope: ActorScope::User,
-                pane_id: cred_pane,
-                context_id,
-                workspace_root,
-                is_human: false,
-                authority,
-            });
+            return Err(IdentityError::StaleCredential);
         }
-        let Some(peer) = peer_pane else {
-            log::info!("permission_monitor: call missing peer identity and credential");
-            return Err(if claimed_pane.is_some() {
-                IdentityError::Forged
-            } else {
-                IdentityError::Missing
-            });
-        };
-        if let Some(claim) = claimed_pane {
-            if claim != peer {
-                log::info!("permission_monitor: forged caller pane {claim} (peer {peer})");
-                return Err(IdentityError::Forged);
-            }
-        }
+        let scope = pane.authority.scope();
+        log::info!(
+            "permission_monitor: authenticated pane={} incarnation={} context={} revision={} credential={}",
+            pane.terminal_pane,
+            pane.authority.incarnation(),
+            scope.context_id,
+            scope.revision,
+            credential.is_some()
+        );
         Ok(VerifiedCaller {
-            actor_id: format!("pane:{peer}"),
+            actor_id: pane.principal().actor_id().to_string(),
             actor_type: ActorType::Agent,
             actor_scope: ActorScope::User,
-            pane_id: Some(peer),
-            context_id: 0,
-            workspace_root: PathBuf::new(),
-            is_human: false,
-            authority: None,
+            pane_id: Some(pane.terminal_pane),
+            context_id: scope.context_id,
+            workspace_root: crate::platform::path::canonical_or_self(&scope.workspace_root),
+            authority: Some(pane.authority.clone()),
         })
     }
 
@@ -5711,14 +5928,14 @@ mod tests {
 
     fn agent_caller() -> PermissionCaller {
         PermissionCaller {
-            human: false,
+            revoke_scope: crate::broker::gate::RevokeScope::Own,
             actor_id: "agent:test".to_string(),
         }
     }
 
     fn human_caller() -> PermissionCaller {
         PermissionCaller {
-            human: true,
+            revoke_scope: crate::broker::gate::RevokeScope::Any,
             actor_id: "human".to_string(),
         }
     }
@@ -6044,7 +6261,7 @@ mod tests {
                 };
             }));
         }
-        let swap = monitor.mutate_entry(&deny, "allow", &human_caller());
+        let swap = monitor.apply_mutation_for_test(&deny, "allow");
         assert!(
             matches!(swap, PermissionMutation::Rejected { .. }),
             "the save must fail: {swap:?}"
@@ -6093,7 +6310,7 @@ mod tests {
         else {
             panic!("an agent's reset files a widen item");
         };
-        let swap = monitor.mutate_entry(&deny, "allow", &human_caller());
+        let swap = monitor.apply_mutation_for_test(&deny, "allow");
         assert!(
             matches!(swap, PermissionMutation::Applied { .. }),
             "{swap:?}"
@@ -6574,7 +6791,7 @@ mod tests {
             "click items do not expire"
         );
         let receipt = monitor
-            .resolve_needs_you(&pending_request_id, true)
+            .resolve_needs_you_for_test(&pending_request_id, true)
             .unwrap();
         assert!(!receipt.already);
         assert_eq!(receipt.resolution, NeedsYouResolution::Approved);
@@ -6585,7 +6802,7 @@ mod tests {
         );
         assert_eq!(needs_you_decisions(&monitor, "approved"), 1);
         let again = monitor
-            .resolve_needs_you(&pending_request_id, false)
+            .resolve_needs_you_for_test(&pending_request_id, false)
             .unwrap();
         assert!(again.already);
         assert_eq!(again.resolution, NeedsYouResolution::Approved);
@@ -7132,7 +7349,7 @@ mod tests {
                 .expect("the Keychain item")
                 .id;
             monitor
-                .resolve_needs_you(&keychain_id, true)
+                .resolve_needs_you_for_test(&keychain_id, true)
                 .expect("interactive unlock succeeds");
             let open = monitor.open_needs_you();
             assert!(
@@ -7285,14 +7502,14 @@ mod tests {
         assert_eq!(open[0].id, blocked);
         assert_eq!(needs_you_decisions(&monitor, "auto_denied"), 1);
         let grants = monitor.store().records().len();
-        let receipt = monitor.resolve_needs_you(&blocked, true).unwrap();
+        let receipt = monitor.resolve_needs_you_for_test(&blocked, true).unwrap();
         assert!(!receipt.already);
         assert_eq!(receipt.resolution, NeedsYouResolution::Approved);
         assert_eq!(monitor.store().records().len(), grants);
-        let again = monitor.resolve_needs_you(&blocked, false).unwrap();
+        let again = monitor.resolve_needs_you_for_test(&blocked, false).unwrap();
         assert!(again.already);
         assert_eq!(again.resolution, NeedsYouResolution::Approved);
-        let denied = monitor.resolve_needs_you(&question, true).unwrap();
+        let denied = monitor.resolve_needs_you_for_test(&question, true).unwrap();
         assert!(denied.already);
         assert_eq!(denied.resolution, NeedsYouResolution::Denied);
         assert_eq!(needs_you_decisions(&monitor, "approved"), 1);
@@ -7353,7 +7570,7 @@ mod tests {
         assert!(!grant.matches(&PermissionRequest::exact(&next_binding), grant.created_at));
         assert_eq!(grant.duration, GrantDuration::Session);
         let caller = PermissionCaller {
-            human: false,
+            revoke_scope: crate::broker::gate::RevokeScope::Own,
             actor_id: row.actor_id.clone(),
         };
         assert!(matches!(
@@ -7404,6 +7621,63 @@ mod tests {
         assert_ne!(entries[0].summary, "{}");
     }
 
+    /// The prompt shows the duration asked for and the click applies exactly it.
+    #[test]
+    fn a_filed_session_request_shows_and_applies_session() {
+        let monitor = PermissionMonitor::ephemeral();
+        let row = binding("ignored");
+        let args = r#"{"game_id":"game-1","move":"e2e4"}"#;
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &row, args) else {
+            panic!("first call asks");
+        };
+        let PermissionMutation::NeedsYou { needs_you_id, .. } = monitor.mutate_entry_for(
+            &pending_request_id,
+            "allow",
+            &agent_caller(),
+            Some(ApprovalChoice::Session),
+        ) else {
+            panic!("a request files a widen item");
+        };
+        let item = monitor.needs_you_of(&needs_you_id).unwrap();
+        assert!(item.summary.contains("allow (this session)"), "{}", item.summary);
+        monitor.resolve_needs_you_for_test(&needs_you_id, true).unwrap();
+        let granted = monitor.store().records().to_vec();
+        assert!(
+            granted
+                .iter()
+                .any(|r| r.decision == Decision::Allow && r.duration == GrantDuration::Session),
+            "{granted:?}"
+        );
+        assert!(!granted.iter().any(|r| r.duration == GrantDuration::Always));
+    }
+
+    /// With nothing asked, a pending ask applies one use, never a standing row.
+    #[test]
+    fn a_filed_pending_allow_defaults_to_once() {
+        let monitor = PermissionMonitor::ephemeral();
+        let row = binding("ignored");
+        let args = r#"{"game_id":"game-1","move":"e2e4"}"#;
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &row, args) else {
+            panic!("first call asks");
+        };
+        let PermissionMutation::NeedsYou { needs_you_id, .. } =
+            monitor.mutate_entry(&pending_request_id, "allow", &agent_caller())
+        else {
+            panic!("a request files a widen item");
+        };
+        assert!(monitor
+            .needs_you_of(&needs_you_id)
+            .unwrap()
+            .summary
+            .contains("allow (once)"));
+        monitor.resolve_needs_you_for_test(&needs_you_id, true).unwrap();
+        assert!(!monitor
+            .store()
+            .records()
+            .iter()
+            .any(|r| r.duration == GrantDuration::Always));
+    }
+
     #[test]
     fn deny_once_asks_again_and_always_deny_sticks_until_reset() {
         let monitor = PermissionMonitor::ephemeral();
@@ -7439,7 +7713,7 @@ mod tests {
             "always deny answers the next call"
         );
         let agent = PermissionCaller {
-            human: false,
+            revoke_scope: crate::broker::gate::RevokeScope::Own,
             actor_id: "agent:test".to_string(),
         };
         let filed = monitor.mutate_entry(&deny_id, "allow", &agent);
@@ -7451,11 +7725,8 @@ mod tests {
             .list_entries()
             .iter()
             .any(|entry| entry.id == deny_id));
-        let human = PermissionCaller {
-            human: true,
-            actor_id: "human".to_string(),
-        };
-        let reset = monitor.mutate_entry(&deny_id, "reset", &human);
+        // What the desktop click applies once the request is approved.
+        let reset = monitor.apply_mutation_for_test(&deny_id, "reset");
         assert!(
             matches!(reset, PermissionMutation::Applied { .. }),
             "{reset:?}"
@@ -7482,7 +7753,23 @@ mod tests {
             admit_of(&monitor, &row, args),
             Admission::Proceed { .. }
         ));
-        let revoked = monitor.mutate_entry(&grant_id, "revoke", &agent);
+        let foreign = monitor.mutate_entry(&grant_id, "revoke", &agent);
+        assert!(
+            matches!(foreign, PermissionMutation::NeedsYou { .. }),
+            "another principal's row is not revoked directly: {foreign:?}"
+        );
+        assert!(
+            matches!(admit_of(&monitor, &row, args), Admission::Proceed { .. }),
+            "a filed revoke changes nothing yet"
+        );
+        let owner = PermissionCaller {
+            revoke_scope: crate::broker::gate::RevokeScope::Own,
+            actor_id: monitor
+                .entry_by_id(&grant_id)
+                .expect("the grant is still listed")
+                .actor_id,
+        };
+        let revoked = monitor.mutate_entry(&grant_id, "revoke", &owner);
         assert!(
             matches!(revoked, PermissionMutation::Applied { .. }),
             "{revoked:?}"
@@ -7642,7 +7929,7 @@ mod tests {
         assert_retired_at_restart(&restored, &pending_request_id);
         assert!(
             restored
-                .resolve_needs_you(&pending_request_id, true)
+                .resolve_needs_you_for_test(&pending_request_id, true)
                 .unwrap()
                 .already
         );
@@ -7655,7 +7942,7 @@ mod tests {
             ),
             "the exact request asks again"
         );
-        let question = restored.resolve_needs_you(&blocked, true).unwrap();
+        let question = restored.resolve_needs_you_for_test(&blocked, true).unwrap();
         assert_eq!(question.run_outcome, RunOutcome::OutcomeUnknown);
     }
 
@@ -7693,7 +7980,7 @@ mod tests {
             open.iter().any(|row| row.kind == NeedsYouKind::Integrity),
             "a rejected queue must surface an integrity item, not disappear: {open:?}"
         );
-        assert!(restored.resolve_needs_you("req_forged", true).is_err());
+        assert!(restored.resolve_needs_you_for_test("req_forged", true).is_err());
         assert!(
             restored
                 .store()
@@ -7987,7 +8274,7 @@ mod tests {
             .expect(
                 "an unreadable existing key must offer recovery even without profile seal files",
             );
-        monitor.resolve_needs_you(&recovery.id, true).unwrap();
+        monitor.resolve_needs_you_for_test(&recovery.id, true).unwrap();
         assert_eq!(
             *crate::broker::seal::mac_key_bytes(TEST_HOST, dir.path()).unwrap(),
             *original
@@ -8063,7 +8350,7 @@ mod tests {
         let id = monitor.open_needs_you()[0].id.clone();
         assert_eq!(monitor.open_needs_you()[0].kind, NeedsYouKind::Keychain);
         assert_eq!(denied.interactive_reads(), 0);
-        monitor.resolve_needs_you(&id, true).expect("click unlocks");
+        monitor.resolve_needs_you_for_test(&id, true).expect("click unlocks");
         assert_eq!(
             denied.interactive_reads(),
             1,
@@ -8100,7 +8387,7 @@ mod tests {
         assert_eq!(monitor.open_needs_you()[0].kind, NeedsYouKind::Keychain);
         assert_eq!(monitor.open_needs_you()[0].summary, KEYCHAIN_ACCESS_SUMMARY);
         let id = monitor.open_needs_you()[0].id.clone();
-        monitor.resolve_needs_you(&id, true).expect("click rotates");
+        monitor.resolve_needs_you_for_test(&id, true).expect("click rotates");
         assert_eq!(
             denied.interactive_reads(),
             0,
@@ -8133,7 +8420,7 @@ mod tests {
         let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         let id = monitor.open_needs_you()[0].id.clone();
         monitor
-            .resolve_needs_you(&id, false)
+            .resolve_needs_you_for_test(&id, false)
             .expect("deny dismisses");
         assert_eq!(denied.interactive_reads(), 0);
         assert!(monitor.store().records().is_empty());
@@ -8162,7 +8449,7 @@ mod tests {
         corrupt_mac(&dir.path().join("grants.toml"));
         let id = monitor.open_needs_you()[0].id.clone();
         monitor
-            .resolve_needs_you(&id, true)
+            .resolve_needs_you_for_test(&id, true)
             .expect("click reads the key");
         assert_grants_quarantined(dir.path(), &monitor);
         assert!(
@@ -8340,7 +8627,7 @@ mod tests {
 
         let keychain_id = monitor.open_needs_you()[0].id.clone();
         monitor
-            .resolve_needs_you(&keychain_id, true)
+            .resolve_needs_you_for_test(&keychain_id, true)
             .expect("interactive unlock succeeds");
 
         let open = monitor.open_needs_you();
@@ -8542,7 +8829,7 @@ mod tests {
             command_socket_answers_ready(dir.path());
             drop(block);
             monitor
-                .resolve_needs_you(&id, true)
+                .resolve_needs_you_for_test(&id, true)
                 .expect("the keychain needs-you item is resolvable once the call returns");
             assert!(
                 monitor.open_needs_you().is_empty(),
@@ -8889,7 +9176,7 @@ mod tests {
             expected_revision: Some("rev-1".to_string()),
             ..Default::default()
         };
-        let (qid, ui_token) = monitor
+        let qid = monitor
             .file_needs_you_with_details(
                 NeedsYouFile {
                     kind: NeedsYouKind::Question,
@@ -8909,20 +9196,26 @@ mod tests {
         assert_eq!(cont.needs_you_id.as_deref(), Some(qid.as_str()));
         assert_eq!(cont.expected_revision.as_deref(), Some("rev-1"));
 
-        // 1. Unauthenticated agent-pane socket caller cannot forge a human answer
-        let forged =
-            monitor.answer_needs_you_from(&qid, "9:16", ResolveSurface::Socket, None, true);
+        // 1. Evidence for another answer settles nothing
+        let forged = monitor.answer_needs_you_decided(
+            DecisionEvidence::for_test(&qid, "16:9"),
+            &qid,
+            "9:16",
+        );
         assert_eq!(forged, Err(NeedsYouResolveError::Refused));
         assert!(monitor.get_needs_you(&qid).unwrap().resolution.is_none());
 
         // 2. Invalid choice when allow_free_text=false is rejected
-        let invalid =
-            monitor.answer_needs_you_from(&qid, "21:9", ResolveSurface::Desktop, None, false);
+        let invalid = monitor.answer_needs_you_decided(
+            DecisionEvidence::for_test(&qid, "21:9"),
+            &qid,
+            "21:9",
+        );
         assert!(matches!(invalid, Err(NeedsYouResolveError::Failed(_))));
 
-        // 3. Authenticated interactive UI token OR desktop click settles the question once
+        // 3. The desktop answer settles the question once
         let receipt = monitor
-            .answer_needs_you_from(&qid, "9:16", ResolveSurface::Socket, Some(&ui_token), true)
+            .answer_needs_you_decided(DecisionEvidence::for_test(&qid, "9:16"), &qid, "9:16")
             .unwrap();
         assert_eq!(receipt.resolution, NeedsYouResolution::Approved);
         assert!(!receipt.already);

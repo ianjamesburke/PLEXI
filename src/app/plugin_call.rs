@@ -18,7 +18,12 @@ use super::PlexiApp;
 /// re-admits the captured request, so revocation before execution still wins.
 struct WaitingApproval {
     monitor: std::sync::Arc<crate::broker::gate::PermissionMonitor>,
-    peer_pid: u32,
+    /// The connecting process at its kernel incarnation: a reused pid is
+    /// not the caller that asked (stint 1285).
+    peer: crate::broker::caller::PeerHop,
+    /// A pane caller's grant as it was admitted: closing, replacing or
+    /// re-scoping the pane while it waits cancels the call (Codex 3290 r1).
+    authority: Option<crate::host::plugin_timeline::AdmittedScope>,
     timeout: std::time::Duration,
 }
 
@@ -30,21 +35,27 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for WaitingApproval {
         _summary: &str,
         _actor: &str,
         _resource: &str,
-    ) -> Result<crate::broker::gate::ApprovalChoice, String> {
+    ) -> Result<crate::plexi_ai::tool_dispatch::PresentedChoice, String> {
         let started = std::time::Instant::now();
         log::info!("plugin_call: waiting for desktop approval pending={pending_id}");
         loop {
             let expired = started.elapsed() >= self.timeout;
-            if expired || !crate::host::pane_liveness::pid_is_alive(self.peer_pid) {
+            let revoked = self
+                .authority
+                .as_ref()
+                .is_some_and(|authority| authority.current().is_err());
+            if expired || revoked || !self.peer.is_live() {
                 // Only cancel this request. A late click cannot restart this worker.
                 if let Err(error) = self
                     .monitor
-                    .approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Deny)
+                    .cancel_pending(pending_id)
                 {
                     log::info!("plugin_call: cancellation pending={pending_id}: {error}");
                 }
                 let reason = if expired {
                     "approval_timeout"
+                } else if revoked {
+                    "caller_revoked"
                 } else {
                     "caller_exited"
                 };
@@ -53,7 +64,7 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for WaitingApproval {
             }
             if let Some(choice) = self.monitor.approval_resolution(pending_id) {
                 log::info!("plugin_call: desktop resolved pending={pending_id} choice={choice:?}");
-                return Ok(choice);
+                return Ok(crate::plexi_ai::tool_dispatch::PresentedChoice::observed(choice));
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -106,6 +117,7 @@ pub(crate) fn caller_identity(caller_pane_id: Option<u64>, session_actor: Option
 impl PlexiApp {
     pub(crate) fn observe_permissions(
         &mut self,
+        origin: &crate::broker::caller::RequestOrigin,
         op: &str,
         pending_id: Option<&String>,
         choice: Option<&String>,
@@ -125,9 +137,24 @@ impl PlexiApp {
                     return;
                 }
             };
+        // A socket caller observes only its own principal's pending asks and
+        // audit rows (stint 1285); host surfaces see them all.
+        let own_actor = match origin {
+            crate::broker::caller::RequestOrigin::Socket(caller) => Some(
+                caller
+                    .principal()
+                    .map_or_else(String::new, |p| p.actor_id().to_string()),
+            ),
+            _ => None,
+        };
+        let visible = |actor: &str| own_actor.as_deref().is_none_or(|own| own == actor);
         let body = match op {
             "list" => {
-                let pending = monitor.list_pending();
+                let pending: Vec<_> = monitor
+                    .list_pending()
+                    .into_iter()
+                    .filter(|row| visible(&row.actor_id))
+                    .collect();
                 log::info!("permission_monitor: list pending count={}", pending.len());
                 let mut buttons: Vec<serde_json::Value> = monitor.sheet_buttons_json();
                 buttons.extend(self.approval_buttons.iter().map(|button| {
@@ -156,14 +183,18 @@ impl PlexiApp {
                 serde_json::json!({
                     "ok": true,
                     "pending": pending,
-                    "audit": monitor.audit_records(),
+                    "audit": monitor
+                        .audit_records()
+                        .into_iter()
+                        .filter(|fact| visible(&fact.actor))
+                        .collect::<Vec<_>>(),
                     "buttons": buttons,
                     "panes": panes,
                 })
             }
             "show" => {
                 let id = pending_id.map(String::as_str).unwrap_or("");
-                match monitor.show_pending(id) {
+                match monitor.show_pending(id).filter(|row| visible(&row.actor_id)) {
                     Some(row) => {
                         log::info!("permission_monitor: show pending {id}");
                         serde_json::json!({"ok": true, "pending": row})
@@ -197,14 +228,29 @@ impl PlexiApp {
     /// human: a pane, a credential, or their absence changes nothing about
     /// that (`docs/prm/permissions-broker.md`, admission step 5). `allow` and
     /// `reset` therefore file Needs you; `revoke` narrows and applies.
-    /// `caller_pane` is the host-resolved peer pane, kept for the audit trail.
+    /// The caller is the host-classified socket caller; it sees and
+    /// revokes only its own principal's rows (stint 1285). The full
+    /// inventory lives in the desktop Permissions view.
     pub(crate) fn permissions_cli_request(
         &mut self,
+        origin: &crate::broker::caller::RequestOrigin,
         op: &str,
         id: Option<&str>,
-        caller_pane: Option<u64>,
+        duration: Option<&str>,
         response_file: &str,
     ) {
+        let requested = match duration.map(crate::broker::gate::ApprovalChoice::parse_duration) {
+            Some(None) => {
+                crate::rpc::write_json_response(
+                    response_file,
+                    serde_json::json!({"ok": false, "error_code": "invalid_argument",
+                        "error": "duration must be once, session, or always"}),
+                );
+                return;
+            }
+            Some(parsed) => parsed,
+            None => None,
+        };
         let monitor =
             match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
             {
@@ -219,12 +265,28 @@ impl PlexiApp {
                     return;
                 }
             };
-        let actor_id = match caller_pane {
-            Some(id) => format!("pane:{id}"),
-            None => "socket".to_string(),
+        let Some(principal) = origin
+            .socket_caller()
+            .and_then(crate::broker::caller::SocketCaller::principal)
+        else {
+            crate::rpc::write_json_response(
+                response_file,
+                serde_json::json!({"ok": false, "error_code": "permission_denied",
+                    "error": format!("permissions are not served to a {} caller", origin.class())}),
+            );
+            return;
         };
+        let actor_id = principal.actor_id().to_string();
+        let actor_type = serde_json::to_value(principal.actor_type())
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
         let body = if op == "list" {
-            let entries = monitor.list_entries();
+            let entries: Vec<_> = monitor
+                .list_entries()
+                .into_iter()
+                .filter(|entry| entry.actor_id == actor_id && entry.actor_type == actor_type)
+                .collect();
             log::info!(
                 "permissions:cli list count={} surface=socket actor={actor_id}",
                 entries.len()
@@ -232,13 +294,14 @@ impl PlexiApp {
             serde_json::json!({"ok": true, "entries": entries})
         } else {
             let id = id.unwrap_or("");
-            let outcome = monitor.mutate_entry(
+            let outcome = monitor.mutate_entry_for(
                 id,
                 op,
                 &crate::broker::gate::PermissionCaller {
-                    human: false,
                     actor_id: actor_id.clone(),
+                    revoke_scope: crate::broker::gate::RevokeScope::Own,
                 },
+                requested,
             );
             let mut body = serde_json::to_value(&outcome).unwrap_or(serde_json::Value::Null);
             log::info!(
@@ -259,6 +322,7 @@ impl PlexiApp {
 
     pub(crate) fn observe_needs_you(
         &mut self,
+        origin: &crate::broker::caller::RequestOrigin,
         op: &str,
         id: Option<&String>,
         approve: Option<bool>,
@@ -285,7 +349,26 @@ impl PlexiApp {
         };
         let body = match op {
             "list" => {
-                let items = monitor.list_needs_you();
+                // A socket caller sees the items it filed; host surfaces see
+                // them all (stint 1285).
+                let own = origin.socket_caller().map(|caller| {
+                    (
+                        caller.principal().map(|p| p.actor_id().to_string()),
+                        caller.pane().map(|pane| pane.terminal_pane),
+                    )
+                });
+                let items: Vec<_> = monitor
+                    .list_needs_you()
+                    .into_iter()
+                    .filter(|item| match &own {
+                        None => true,
+                        Some((actor, pane)) => {
+                            actor.as_deref() == Some(item.actor.as_str())
+                                || (pane.is_some()
+                                    && item.details.as_ref().and_then(|d| d.pane_id) == *pane)
+                        }
+                    })
+                    .collect();
                 log::info!("needs_you: host list count={}", items.len());
                 serde_json::json!({"ok": true, "items": items})
             }
@@ -295,11 +378,7 @@ impl PlexiApp {
                 // the host window is the only path that approves.
                 let id = id.map(String::as_str).unwrap_or("");
                 let approve = approve.unwrap_or(false);
-                match monitor.resolve_needs_you_from(
-                    id,
-                    approve,
-                    crate::broker::gate::ResolveSurface::Socket,
-                ) {
+                match monitor.resolve_needs_you_from_socket(id, approve) {
                     Ok(receipt) => serde_json::json!({
                         "ok": !receipt.already,
                         "id": receipt.id,
@@ -330,9 +409,10 @@ impl PlexiApp {
         &mut self,
         op: &str,
         payload: &serde_json::Value,
-        peer_ancestry: &[u32],
+        origin: &crate::broker::caller::RequestOrigin,
         response_file: &str,
     ) {
+        use crate::broker::caller::{RequestOrigin, SocketCaller};
         let profile = crate::config::config_dir();
         let Some(monitor) = crate::broker::gate::PermissionMonitor::loaded(&profile) else {
             log::warn!("needs_you: host api query ({op}) arrived before the monitor was ready");
@@ -349,7 +429,24 @@ impl PlexiApp {
             return;
         };
 
-        let peer_pane = self.resolve_socket_peer_pane(peer_ancestry);
+        let caller_pane = origin.socket_caller().and_then(SocketCaller::pane);
+        // The principal a socket caller asks and completes as; never a name
+        // from the payload (stint 1285).
+        let caller_actor = match origin {
+            RequestOrigin::Socket(caller) => caller.principal().map(|p| p.actor_id().to_string()),
+            RequestOrigin::PluginGuest(plugin) => Some(plugin.plugin_id.clone()),
+            RequestOrigin::HostUi | RequestOrigin::HostSystem | RequestOrigin::SpawnQueue => None,
+        };
+        // What a socket caller may read back: what its own principal filed,
+        // or what was filed for its own pane. Payload filters only narrow
+        // that (stint 1285). Host surfaces and plugins read as before.
+        let own_pane = caller_pane.map(|pane| pane.terminal_pane);
+        let socket = matches!(origin, RequestOrigin::Socket(_));
+        let readable = |actor: &str, pane: Option<u64>| {
+            !socket
+                || caller_actor.as_deref() == Some(actor)
+                || (own_pane.is_some() && pane == own_pane)
+        };
         let body = match op {
             "ask" if ask_recommend_error(payload).is_some() => {
                 let error = ask_recommend_error(payload).unwrap_or_default();
@@ -370,23 +467,13 @@ impl PlexiApp {
                     .unwrap_or("workspace")
                     .trim()
                     .to_string();
-                let explicit_pane = payload.get("pane_id").and_then(|v| v.as_u64());
-                let resolved_pane = peer_pane.map(|(pane_id, _, _)| pane_id).or(explicit_pane);
-                let resolved_context = peer_pane
-                    .map(|(_, _, ctx_id)| ctx_id)
-                    .or_else(|| payload.get("context_id").and_then(|v| v.as_u64()))
-                    .or_else(|| {
-                        resolved_pane
-                            .and_then(|pid| self.find_pane_in_any_window(pid))
-                            .map(|(win_idx, _)| self.windows[win_idx].context_id)
-                    })
+                let resolved_pane = caller_pane.map(|pane| pane.visible_pane);
+                let resolved_context = caller_pane
+                    .map(|pane| pane.context_id)
                     .unwrap_or_else(|| self.windows[self.active_window].context_id);
-                let actor = payload
-                    .get("actor")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.trim().is_empty())
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| caller_identity(resolved_pane, None));
+                let actor = caller_actor
+                    .clone()
+                    .unwrap_or_else(|| caller_identity(None, None));
                 let choices: Vec<String> = payload
                     .get("choices")
                     .and_then(|v| v.as_array())
@@ -461,14 +548,13 @@ impl PlexiApp {
                     },
                     Some(details),
                 ) {
-                    Ok((id, ui_token)) => {
+                    Ok(id) => {
                         let item = monitor.get_needs_you(&id);
                         let continuation = monitor.get_continuation(&id);
-                        log::info!("needs_you: api ask filed id={id} pane={resolved_pane:?} context={resolved_context}");
+                        log::info!("needs_you: api ask filed id={id} pane={resolved_pane:?} context={resolved_context} caller={}", origin.class());
                         serde_json::json!({
                             "ok": true,
                             "id": id,
-                            "ui_token": ui_token,
                             "item": item,
                             "continuation": continuation,
                         })
@@ -481,8 +567,12 @@ impl PlexiApp {
             }
             "show" => {
                 let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let item = monitor.get_needs_you(id);
-                let continuation = monitor.get_continuation(id);
+                let item = monitor.get_needs_you(id).filter(|item| {
+                    readable(&item.actor, item.details.as_ref().and_then(|d| d.pane_id))
+                });
+                let continuation = monitor
+                    .get_continuation(id)
+                    .filter(|row| readable(&row.actor, row.pane_id));
                 if item.is_none() && continuation.is_none() {
                     serde_json::json!({
                         "ok": false,
@@ -498,49 +588,19 @@ impl PlexiApp {
                 }
             }
             "answer" => {
+                // An answer is the person's decision: only the desktop
+                // surface that shows the question applies one (stint 1285).
                 let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let answer = payload.get("answer").and_then(|v| v.as_str()).unwrap_or("");
-                let ui_token = payload.get("ui_token").and_then(|v| v.as_str());
-                let explicit_agent = payload
-                    .get("caller_pane_id")
-                    .and_then(|v| v.as_u64())
-                    .is_some();
-                let caller_is_agent_pane = peer_pane.is_some() || explicit_agent;
-                match monitor.answer_needs_you_from(
-                    id,
-                    answer,
-                    crate::broker::gate::ResolveSurface::Socket,
-                    ui_token,
-                    caller_is_agent_pane,
-                ) {
-                    Ok(receipt) => {
-                        let item = monitor.get_needs_you(id);
-                        let continuation = monitor.get_continuation(id);
-                        serde_json::json!({
-                            "ok": !receipt.already,
-                            "id": receipt.id,
-                            "resolution": receipt.resolution.as_str(),
-                            "already": receipt.already,
-                            "run_outcome": receipt.run_outcome.as_str(),
-                            "answer": item.as_ref().and_then(|i| i.answer.clone()),
-                            "item": item,
-                            "continuation": continuation,
-                        })
-                    }
-                    Err(crate::broker::gate::NeedsYouResolveError::Refused) => serde_json::json!({
-                        "ok": false,
-                        "error_code": "permission_denied",
-                        "error": "only the person at the desktop or an interactive UI prompt can answer a question; model and tool calls inside a pane cannot forge human answers or approve permissions",
-                        "id": id,
-                    }),
-                    Err(crate::broker::gate::NeedsYouResolveError::Failed(error)) => {
-                        serde_json::json!({
-                            "ok": false,
-                            "error": error,
-                            "id": id,
-                        })
-                    }
-                }
+                log::info!(
+                    "needs_you: refused api answer id={id} caller={} outcome=approval_required",
+                    origin.class()
+                );
+                serde_json::json!({
+                    "ok": false,
+                    "error_code": "approval_required",
+                    "error": "Answer it in the Plexi window.",
+                    "id": id,
+                })
             }
             "reconcile" => {
                 let session_id = payload
@@ -554,6 +614,7 @@ impl PlexiApp {
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.trim().is_empty());
                 let mut continuations = monitor.list_continuations(session_id, pane_id, context_id);
+                continuations.retain(|row| readable(&row.actor, row.pane_id));
                 if let Some(id) = id_filter {
                     continuations.retain(|c| {
                         c.run_id == id
@@ -565,6 +626,9 @@ impl PlexiApp {
                 let mut items = monitor.all_needs_you();
                 items.retain(|item| {
                     let details = item.details.as_ref();
+                    if !readable(&item.actor, details.and_then(|d| d.pane_id)) {
+                        return false;
+                    }
                     let match_id = id_filter.is_none_or(|id| {
                         item.id == id
                             || item.run_tag.as_deref() == Some(id)
@@ -614,10 +678,24 @@ impl PlexiApp {
                     .get("receipt")
                     .and_then(|v| v.as_str())
                     .map(ToString::to_string);
-                if monitor
-                    .get_continuation(id)
-                    .is_some_and(|record| record.request_fingerprint.is_some())
-                {
+                let record = monitor.get_continuation(id);
+                let foreign = match (origin, &record) {
+                    (RequestOrigin::Socket(_), Some(record)) => {
+                        caller_actor.as_deref() != Some(record.actor.as_str())
+                    }
+                    _ => false,
+                };
+                if foreign {
+                    log::info!(
+                        "needs_you: refused completion of {id} by {} (not its asker)",
+                        origin.class()
+                    );
+                    serde_json::json!({
+                        "ok": false,
+                        "error_code": "permission_denied",
+                        "error": "only the caller that asked can complete this operation",
+                    })
+                } else if record.is_some_and(|record| record.request_fingerprint.is_some()) {
                     log::info!(
                         "needs_you: refused external completion of host-owned operation {id}"
                     );
@@ -653,9 +731,8 @@ impl PlexiApp {
         plugin_id: String,
         tool: String,
         input_json: String,
-        caller_pane_id: Option<u64>,
+        origin: &crate::broker::caller::RequestOrigin,
         call_credential: Option<String>,
-        peer_ancestry: Vec<u32>,
         target_pane_id: Option<u64>,
         response_file: Option<String>,
         wait_approved: bool,
@@ -676,29 +753,22 @@ impl PlexiApp {
                     return;
                 }
             };
-        let peer_pane = self
-            .resolve_socket_peer_pane(&peer_ancestry)
-            .map(|(pane_id, _, _)| pane_id);
-        let verified = match monitor.authenticate_call(
-            caller_pane_id,
-            call_credential.as_deref(),
-            peer_pane,
-        ) {
+        let unidentified = crate::broker::caller::SocketCaller::Unidentified(
+            crate::broker::caller::UnidentifiedReason::NoPeerCredential,
+        );
+        let socket_caller = origin.socket_caller().unwrap_or(&unidentified);
+        let verified = match monitor.authenticate_call(socket_caller, call_credential.as_deref()) {
             Ok(caller) => caller,
             Err(error) => {
-                let actor = caller_pane_id
-                    .map(|pane| format!("pane:{pane}"))
-                    .unwrap_or_else(|| "session:unscoped".to_string());
+                let actor = socket_caller
+                    .principal()
+                    .map_or_else(|| "unidentified".to_string(), |p| p.actor_id().to_string());
                 monitor.note_denial(&actor, "app-call", &plugin_id, "", "identity");
                 log::info!(
-                    "plugin_call: denied plugin={plugin_id} tool={tool} identity={error:?} claim={caller_pane_id:?} actor={actor}"
+                    "plugin_call: denied plugin={plugin_id} tool={tool} identity={error:?} caller={} actor={actor}",
+                    origin.class()
                 );
-                let code = match error {
-                    crate::broker::gate::IdentityError::StaleCredential => "permission_denied",
-                    crate::broker::gate::IdentityError::Forged
-                    | crate::broker::gate::IdentityError::Mismatch
-                    | crate::broker::gate::IdentityError::Missing => "permission_denied",
-                };
+                let code = "permission_denied";
                 reply(serde_json::json!({
                     "ok": false,
                     "error_code": code,
@@ -707,14 +777,6 @@ impl PlexiApp {
                 return;
             }
         };
-        if verified.is_human {
-            reply(serde_json::json!({
-                "ok": false,
-                "error_code": "permission_denied",
-                "error": "socket caller cannot be the human user",
-            }));
-            return;
-        }
         // A pane caller must be live, however it authenticated: a credential
         // carries the context it was issued in, never proof the pane still
         // exists (stint 1632).
@@ -786,7 +848,7 @@ impl PlexiApp {
             std::sync::Arc::clone(&monitor),
         );
         if wait_approved {
-            let Some(peer_pid) = peer_ancestry.first().copied() else {
+            let Some(peer) = socket_caller.peer().and_then(|peer| peer.hops.first().copied()) else {
                 reply(
                     serde_json::json!({"ok":false, "error_code":"permission_denied",
                     "error":"approval waiting requires a verified live socket peer"}),
@@ -795,7 +857,10 @@ impl PlexiApp {
             };
             dispatcher.set_presenter(std::sync::Arc::new(WaitingApproval {
                 monitor: std::sync::Arc::clone(&monitor),
-                peer_pid,
+                peer,
+                authority: socket_caller
+                    .pane()
+                    .map(|pane| crate::host::plugin_timeline::AdmittedScope::of(&pane.authority)),
                 timeout: crate::cli::plugin::APP_CALL_APPROVAL_TIMEOUT,
             }));
         }
@@ -852,9 +917,7 @@ impl PlexiApp {
         &self,
         plugin_id: Option<&str>,
         explicit_context_id: Option<u64>,
-        caller_pane_id: Option<u64>,
-        caller_context_id: Option<u64>,
-        peer_ancestry: &[u32],
+        origin: &crate::broker::caller::RequestOrigin,
         response_file: &str,
     ) {
         let context_known = |id: u64| {
@@ -874,20 +937,12 @@ impl PlexiApp {
                 return;
             }
             ctx_id
-        } else if let Some((_pane_id, _win_id, peer_ctx_id)) =
-            self.resolve_socket_peer_pane(peer_ancestry)
+        } else if let Some(pane) = origin
+            .socket_caller()
+            .and_then(crate::broker::caller::SocketCaller::pane)
         {
-            peer_ctx_id
-        } else if let Some(pane_id) = caller_pane_id {
-            if let Some((win_idx, _)) = self.find_pane_in_any_window(pane_id) {
-                self.windows[win_idx].context_id
-            } else if let Some(ctx_id) = caller_context_id.filter(|&id| context_known(id)) {
-                ctx_id
-            } else {
-                self.windows[self.active_window].context_id
-            }
-        } else if let Some(ctx_id) = caller_context_id.filter(|&id| context_known(id)) {
-            ctx_id
+            // The caller's context, never its window id (stint 1673).
+            pane.context_id
         } else {
             self.windows[self.active_window].context_id
         };
@@ -1009,33 +1064,62 @@ impl PlexiApp {
             Some("not_now") => false,
             _ => return,
         };
-        let _ = self.resolve_from_desktop(&item.id, approve, "keychain recovery");
+        let outcome = if approve {
+            self.keychain_recovery_guard
+                .witness(crate::broker::consent::ConsentDecision {
+                    displayed: request,
+                    target: &item.id,
+                    choice: "approve",
+                    refuses: false,
+                    now,
+                    synthetic: self.synthetic_input_frame,
+                })
+                .and_then(|evidence| {
+                    self.approve_from_desktop(evidence, &item.id, "keychain recovery")
+                })
+        } else {
+            self.refuse_from_desktop(&item.id, "keychain recovery")
+        };
+        if let Err(error) = outcome {
+            log::info!("keychain_recovery: decision on {} not applied: {error}", item.id);
+        }
     }
 
-    /// Resolve a Needs-you record from a desktop click or key. Synthetic
-    /// input and sockets never reach this: it is the single guarded
-    /// desktop path shared by the recovery banner and the attention review.
-    /// Resolving a record never mints a plugin grant.
-    pub(crate) fn resolve_from_desktop(
+    /// Approve a Needs-you record with the evidence the surface showing it
+    /// issued (stint 1285). Resolving a record never mints a plugin grant.
+    pub(crate) fn approve_from_desktop(
         &mut self,
+        evidence: crate::broker::consent::DecisionEvidence,
         id: &str,
-        approve: bool,
         label: &str,
     ) -> Result<(), String> {
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .map_err(|error| error.to_string())?;
+        self.settle_desktop_receipt(monitor.resolve_needs_you_decided(evidence, id), id, true, label)
+    }
+
+    /// Refuse or dismiss a Needs-you record at the desktop. It narrows, so
+    /// it needs real input but no arm delay and no evidence.
+    pub(crate) fn refuse_from_desktop(&mut self, id: &str, label: &str) -> Result<(), String> {
         if self.synthetic_input_frame {
-            log::info!(
-                "permission_seal: ignored synthetic {label} click id={id} approve={approve}"
-            );
+            log::info!("permission_seal: ignored synthetic {label} refusal id={id}");
             return Err("Ignored: only the person at the desktop can do this.".to_string());
         }
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .map_err(|error| error.to_string())?;
-        match monitor.resolve_needs_you_from(
-            id,
-            approve,
-            crate::broker::gate::ResolveSurface::Desktop,
-        ) {
+        self.settle_desktop_receipt(monitor.dismiss_needs_you_at_desktop(id), id, false, label)
+    }
+
+    fn settle_desktop_receipt(
+        &mut self,
+        receipt: Result<crate::broker::gate::NeedsYouReceipt, crate::broker::gate::NeedsYouResolveError>,
+        id: &str,
+        approve: bool,
+        label: &str,
+    ) -> Result<(), String> {
+        match receipt {
             Ok(receipt) => {
                 if approve && receipt.run_outcome == crate::broker::gate::RunOutcome::OutcomeUnknown
                 {
@@ -1071,26 +1155,15 @@ impl PlexiApp {
     /// Never mints a plugin grant or widens permission scopes.
     pub(crate) fn answer_from_desktop(
         &mut self,
+        evidence: crate::broker::consent::DecisionEvidence,
         id: &str,
         answer: &str,
         label: &str,
     ) -> Result<(), String> {
-        if self.synthetic_input_frame {
-            log::info!(
-                "permission_seal: ignored synthetic {label} answer click id={id} answer={answer:?}"
-            );
-            return Err("Ignored: only the person at the desktop can do this.".to_string());
-        }
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .map_err(|error| error.to_string())?;
-        match monitor.answer_needs_you_from(
-            id,
-            answer,
-            crate::broker::gate::ResolveSurface::Desktop,
-            None,
-            false,
-        ) {
+        match monitor.answer_needs_you_decided(evidence, id, answer) {
             Ok(receipt) => {
                 log::info!(
                     "permission_seal: desktop {label} answered id={} answer={answer:?} resolution={}",
@@ -1233,13 +1306,28 @@ mod tests {
         use crate::broker::gate::{Admission, AdmitRequest, ApprovalChoice, PermissionMonitor};
         use crate::broker::{ActorScope, TargetType};
         use crate::plexi_ai::tool_dispatch::PermissionPresenter;
-        for (peer_pid, timeout, reason) in [
+        use crate::broker::caller::PeerHop;
+        use crate::platform::process::ProcStart;
+        let me = PeerHop {
+            pid: std::process::id(),
+            start: crate::platform::process::process_info(std::process::id())
+                .unwrap()
+                .start,
+        };
+        for (peer, timeout, reason) in [
+            (me, std::time::Duration::ZERO, "approval_timeout"),
             (
-                std::process::id(),
-                std::time::Duration::ZERO,
-                "approval_timeout",
+                PeerHop { pid: 0, start: me.start },
+                std::time::Duration::from_secs(1),
+                "caller_exited",
             ),
-            (0, std::time::Duration::from_secs(1), "caller_exited"),
+            // A live pid at another start time is a reused pid: the asker
+            // is gone (stint 1285).
+            (
+                PeerHop { pid: me.pid, start: ProcStart::for_test(0) },
+                std::time::Duration::from_secs(1),
+                "caller_exited",
+            ),
         ] {
             let monitor = PermissionMonitor::ephemeral();
             let workspace = tempfile::tempdir().unwrap();
@@ -1263,7 +1351,8 @@ mod tests {
             let unrelated = ask("other", r#"{"other":true}"#);
             let waiter = super::WaitingApproval {
                 monitor: monitor.clone(),
-                peer_pid,
+                peer,
+                authority: None,
                 timeout,
             };
             let error = waiter
@@ -1283,6 +1372,53 @@ mod tests {
             assert!(monitor.show_pending(&unrelated).is_some());
             assert!(!monitor.approval_granted(&pending));
         }
+    }
+
+    /// Codex 3290 r1 P2: a plugin call waiting for approval is bound to the
+    /// pane grant it was admitted under; closing the pane cancels it.
+    #[test]
+    fn waiting_approval_ends_when_the_callers_pane_is_closed() {
+        use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
+        use crate::plexi_ai::tool_dispatch::PermissionPresenter;
+        let mut h = crate::testing::HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let admitted = crate::host::plugin_timeline::AdmittedScope::of(
+            h.app.terminal_incarnation(pane).unwrap().authority().unwrap(),
+        );
+        h.app.close_pane_by_id(pane);
+        let monitor = PermissionMonitor::ephemeral();
+        let workspace = tempfile::tempdir().unwrap();
+        let Admission::Required { pending_request_id } = monitor.admit(AdmitRequest {
+            call_id: "closed",
+            tool: "probe.add",
+            input_json: "{}",
+            principal: &crate::broker::principal::Principal::agent(format!("pane:{pane}")),
+            actor_scope: crate::broker::ActorScope::User,
+            trust_origin: "host",
+            workspace_root: workspace.path(),
+            context_id: 1,
+            package_id: "probe",
+            instance_id: 1,
+            target_type: crate::broker::TargetType::PluginConnector,
+        }) else {
+            panic!("expected pending request");
+        };
+        let me = crate::broker::caller::PeerHop {
+            pid: std::process::id(),
+            start: crate::platform::process::process_info(std::process::id())
+                .unwrap()
+                .start,
+        };
+        let waiter = super::WaitingApproval {
+            monitor: monitor.clone(),
+            peer: me,
+            authority: Some(admitted),
+            timeout: std::time::Duration::from_secs(5),
+        };
+        let error = waiter
+            .present(&pending_request_id, "probe.add", "{}", "pane", "")
+            .unwrap_err();
+        assert!(error.contains("caller_revoked"), "{error}");
     }
 
     #[test]

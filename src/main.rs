@@ -564,19 +564,12 @@ fn main() -> eframe::Result {
                                 }),
                             ))
                         }
-                        NeedsYouCmd::Answer {
-                            id,
-                            answer,
-                            ui_token,
-                        } => cli::trace::exit(cli::needs_you_api_cli(
-                            "answer",
-                            serde_json::json!({
-                                "id": id,
-                                "answer": answer,
-                                "ui_token": ui_token,
-                                "caller_pane_id": std::env::var("PLEXI_PANE_ID").ok().and_then(|v| v.parse::<u64>().ok()),
-                            }),
-                        )),
+                        NeedsYouCmd::Answer { id, answer } => {
+                            cli::trace::exit(cli::needs_you_api_cli(
+                                "answer",
+                                serde_json::json!({ "id": id, "answer": answer }),
+                            ))
+                        }
                         NeedsYouCmd::Reconcile {
                             session_id,
                             pane_id,
@@ -659,16 +652,21 @@ fn main() -> eframe::Result {
                     },
                     Commands::Permissions { cmd } => match cmd {
                         PermissionsCmd::List => {
-                            cli::trace::exit(cli::permissions_cli("list", None, json))
+                            cli::trace::exit(cli::permissions_cli("list", None, None, json))
                         }
                         PermissionsCmd::Reset { id } => {
-                            cli::trace::exit(cli::permissions_cli("reset", Some(&id), true))
+                            cli::trace::exit(cli::permissions_cli("reset", Some(&id), None, true))
                         }
                         PermissionsCmd::Revoke { id } => {
-                            cli::trace::exit(cli::permissions_cli("revoke", Some(&id), true))
+                            cli::trace::exit(cli::permissions_cli("revoke", Some(&id), None, true))
                         }
-                        PermissionsCmd::Allow { id } => {
-                            cli::trace::exit(cli::permissions_cli("allow", Some(&id), true))
+                        PermissionsCmd::Allow { id, duration } => {
+                            cli::trace::exit(cli::permissions_cli(
+                                "allow",
+                                Some(&id),
+                                duration.as_deref(),
+                                true,
+                            ))
                         }
                     },
                     Commands::AgentsDashboard { cmd, follow } => {
@@ -1361,27 +1359,8 @@ fn main() -> eframe::Result {
                         HostCmd::Key { key } => cli::trace::exit(cli::host_key_cli(&key)),
                     },
                     Commands::Notify { cmd, post } => {
-                        // The caller's own identity, stamped by the pane env.
-                        // A set-but-garbled value is corrupt state, not an
-                        // outside-pane caller — fail loudly, never reinterpret.
-                        let caller_env_id = |key: &str| match std::env::var(key) {
-                            Ok(s) => match s.parse::<u64>() {
-                                Ok(id) => Some(id),
-                                Err(_) => {
-                                    eprintln!("error: {key} is not a valid number: {s}");
-                                    cli::trace::exit(1);
-                                }
-                            },
-                            Err(_) => None,
-                        };
-                        let source_context_id = caller_env_id("PLEXI_CONTEXT_ID");
-                        let source_pane_id = caller_env_id("PLEXI_PANE_ID");
                         if let Some(NotifyCmd::Dismiss { notify_id }) = cmd {
-                            cli::trace::exit(cli::dismiss_notify_cli(
-                                &notify_id,
-                                source_context_id,
-                                source_pane_id,
-                            ));
+                            cli::trace::exit(cli::dismiss_notify_cli(&notify_id));
                         }
                         let Some(title) = post.title else {
                             eprintln!("error: --title is required when posting a notification");
@@ -1466,8 +1445,6 @@ fn main() -> eframe::Result {
                             display_timeout_secs: timeout,
                             wait_timeout_secs: wait_timeout,
                             scope: parsed_scope,
-                            source_context_id,
-                            source_pane_id,
                         }));
                     }
                     Commands::Pane { cmd } => match cmd {

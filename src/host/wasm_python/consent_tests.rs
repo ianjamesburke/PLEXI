@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use super::consent;
-use crate::app::approval_keyboard::ARM_DELAY;
+use crate::broker::consent::ARM_DELAY;
 use crate::broker::gate::{
     ApprovalChoice, NeedsYouResolution, PermissionCaller, PermissionMonitor, PermissionMutation,
 };
@@ -213,7 +213,7 @@ fn monitor() -> Arc<PermissionMonitor> {
 
 fn human() -> PermissionCaller {
     PermissionCaller {
-        human: true,
+        revoke_scope: crate::broker::gate::RevokeScope::Any,
         actor_id: "user:local".to_string(),
     }
 }
@@ -561,10 +561,21 @@ fn always_deny_names_the_allow_command_and_allowing_applies_live() {
     );
     assert!(hits(&server).is_empty());
 
-    assert!(matches!(
-        monitor().mutate_entry(&deny.id, "allow", &human()),
-        PermissionMutation::Applied { .. }
-    ));
+    // The socket files the widening; the desktop approval applies it.
+    let PermissionMutation::NeedsYou { needs_you_id, .. } =
+        monitor().mutate_entry(&deny.id, "allow", &human())
+    else {
+        panic!("a socket allow files a Needs-you item");
+    };
+    guest_fetch(&mut h, pane, port, "/still-denied");
+    assert!(hits(&server).is_empty(), "filing the request grants nothing");
+    monitor()
+        .resolve_needs_you_from(
+            &needs_you_id,
+            true,
+            crate::broker::gate::ResolveSurface::Desktop,
+        )
+        .expect("the desktop approves");
     guest_fetch(&mut h, pane, port, "/z");
     wait_until(&mut h, "the allowed request", |_| !hits(&server).is_empty());
     assert_eq!(hits(&server), vec!["/z"]);

@@ -14,10 +14,10 @@ impl PlexiApp {
     pub(crate) fn serve_secret_list(
         &mut self,
         context: &str,
-        ancestry: &[u32],
+        origin: &crate::broker::caller::RequestOrigin,
         response_file: &str,
     ) {
-        let result = self.context_secret_inventory(context, ancestry);
+        let result = self.context_secret_inventory(context, origin);
         let body = match result {
             Ok(inventory) => serde_json::to_value(inventory)
                 .unwrap_or_else(|error| serde_json::json!({"error": error.to_string()})),
@@ -32,7 +32,7 @@ impl PlexiApp {
     fn context_secret_inventory(
         &self,
         context: &str,
-        ancestry: &[u32],
+        origin: &crate::broker::caller::RequestOrigin,
     ) -> Result<crate::workspace::secrets::manager::SecretInventory, String> {
         use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
         use crate::broker::{ActorScope, TargetType};
@@ -50,17 +50,35 @@ impl PlexiApp {
             return Err(format!("Context '{context}' is missing or ambiguous. Use its id or root from `plexi context list`."));
         };
         let root = crate::platform::path::canonical_or_self(&ctx.root);
-        let Some((pane, _, _)) = self.resolve_socket_peer_pane(ancestry) else {
-            return Err("permission_denied: caller identity could not be verified; run --context from a human-owned Plexi pane.".into());
-        };
-        log::info!(
-            "secret_list: explicit context={} pane={pane} human={}",
-            ctx.context_id,
-            self.is_human_owned_pane(pane)
-        );
-        if self.is_human_owned_pane(pane) {
+        // An outside process is admitted as itself, per exact context.
+        if matches!(
+            origin,
+            crate::broker::caller::RequestOrigin::Socket(
+                crate::broker::caller::SocketCaller::External(_)
+            )
+        ) {
+            self.admit_outside_use(
+                origin,
+                "secret.list",
+                &serde_json::json!({"path": root}),
+                &root,
+                ctx.context_id,
+            )?;
             return crate::workspace::secrets::manager::inventory_for_context(&root);
         }
+        // Every pane is admitted as its own principal; a pane the person
+        // opened has no inventory shortcut (stint 1285).
+        let Some(pane) = origin
+            .socket_caller()
+            .and_then(crate::broker::caller::SocketCaller::pane)
+            .map(|pane| pane.terminal_pane)
+        else {
+            return Err(format!(
+                "permission_denied: a {} caller holds no secret inventory; run --context from a Plexi pane.",
+                origin.class()
+            ));
+        };
+        log::info!("secret_list: explicit context={} pane={pane}", ctx.context_id);
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir())
             .map_err(|error| error.to_string())?;
         let actor = format!("pane:{pane}");
@@ -91,7 +109,7 @@ impl PlexiApp {
         name: &str,
         global: bool,
         workspace_root: Option<&Path>,
-        peer_ancestry: &[u32],
+        origin: &crate::broker::caller::RequestOrigin,
         response_file: &str,
     ) {
         let reply_path = PathBuf::from(response_file);
@@ -113,9 +131,21 @@ impl PlexiApp {
                     return;
                 }
             };
-        let Some((pane_id, _, _)) = self.resolve_socket_peer_pane(peer_ancestry) else {
+        let Some((pane_id, admitted)) = origin
+            .socket_caller()
+            .and_then(crate::broker::caller::SocketCaller::pane)
+            .map(|pane| {
+                (
+                    pane.terminal_pane,
+                    crate::host::plugin_timeline::AdmittedScope::of(&pane.authority),
+                )
+            })
+        else {
             monitor.note_denial("session:unscoped", "secret-get", name, "", "identity");
-            log::info!("secret_get: denied name={name} caller resolves to no pane");
+            log::info!(
+                "secret_get: denied name={name} caller={} is no pane",
+                origin.class()
+            );
             write_reply(&reply_path, serde_json::json!({"status": "denied"}), false);
             return;
         };
@@ -190,6 +220,18 @@ impl PlexiApp {
         let failure_path = reply_path.clone();
         let repaint = self.ctx.clone();
         let read = move || {
+            // The pane that asked, as it was admitted: one closed, replaced
+            // or re-scoped since gets no value, before or after the read
+            // (Codex 3290 r1).
+            let still_admitted = || {
+                admitted.current().map(|_| ()).inspect_err(|error| {
+                    log::info!("secret_get: pane={pane_id} withheld: {error}");
+                })
+            };
+            if still_admitted().is_err() {
+                write_reply(&reply_path, serde_json::json!({"status": "denied"}), false);
+                return;
+            }
             let result = crate::workspace::secrets::read_pane_secret_with_posture(
                 &monitor,
                 crate::workspace::secrets::system_store(),
@@ -200,6 +242,9 @@ impl PlexiApp {
                 posture.as_ref(),
             );
             let (body, holds_value) = match result {
+                Ok(ReadResult::Value(_)) if still_admitted().is_err() => {
+                    (serde_json::json!({"status": "denied"}), false)
+                }
                 Ok(ReadResult::Value(value)) => (
                     serde_json::json!({"status": "value", "value": value.as_str()}),
                     true,
@@ -277,13 +322,11 @@ mod list_tests {
     fn request(
         h: &mut HostHarness,
         context: &str,
-        claimed_pid: u32,
         peer: &[u32],
     ) -> serde_json::Value {
         let response_file = crate::rpc::response_file("secret-list-test", "json");
         let request = crate::protocol::HostRequest::PaneSecretList {
             context: context.into(),
-            peer_ancestry: vec![claimed_pid],
             response_file: response_file.clone(),
         };
         let line = serde_json::to_string(&request).unwrap();
@@ -313,17 +356,16 @@ mod list_tests {
         secrets::system_store()
             .set(&account, "not-for-output")
             .unwrap();
+        // A pane the person opened is brokered like any other (stint 1285).
         for target in [&context, "inventory-target", root.to_str().unwrap()] {
-            let human = request(&mut h, target, pid, &[pid]);
-            assert!(human["entries"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["name"] == name));
+            let refused = request(&mut h, target, &[pid]);
+            assert!(refused.get("entries").is_none(), "{refused}");
+            let error = refused["error"].as_str().unwrap();
+            assert!(error.contains("secret.list") && error.contains("Needs you"), "{error}");
         }
         // The listener overwrites forged ancestry before dispatch, including while hidden.
         assert_eq!(
-            request(&mut h, &context, pid, &[])["error_code"],
+            request(&mut h, &context, &[])["error_code"],
             "permission_denied"
         );
         let restricted = crate::broker::pane_authority::PaneAuthority::for_test(
@@ -339,7 +381,7 @@ mod list_tests {
             .as_terminal_mut()
             .unwrap()
             .replace_grant_for_test(restricted);
-        let denied = request(&mut h, &context, pid, &[pid]);
+        let denied = request(&mut h, &context, &[pid]);
         let error = denied["error"].as_str().unwrap();
         assert!(error.contains("secret.list") && error.contains("Needs you"));
         let monitor =
@@ -353,14 +395,14 @@ mod list_tests {
         monitor
             .approve_pending(&pending.id, crate::broker::gate::ApprovalChoice::Once)
             .unwrap();
-        let allowed = request(&mut h, &context, pid, &[pid]);
+        let allowed = request(&mut h, &context, &[pid]);
         assert!(allowed["entries"]
             .as_array()
             .unwrap()
             .iter()
             .any(|entry| entry["name"] == name));
         assert_eq!(
-            request(&mut h, &context, pid, &[pid])["error_code"],
+            request(&mut h, &context, &[pid])["error_code"],
             "permission_denied"
         );
         secrets::system_store().delete(&account).unwrap();
@@ -385,7 +427,6 @@ mod list_tests {
             name: name.into(),
             global: false,
             workspace_root: Some(h.workspace_root()),
-            peer_ancestry: vec![],
             response_file: response_file.clone(),
         };
         let line = serde_json::to_string(&request).unwrap();
@@ -553,7 +594,6 @@ mod list_tests {
             response_file: Some(send_resp.clone()),
             operation_id: None,
             generated_operation_id: false,
-            peer_ancestry: None,
         };
         let send_line = serde_json::to_string(&send_req).unwrap();
         crate::app::handle_socket_line(&send_line, &h.ipc_tx, Some(&[denied_pid]), &mut Vec::new());
@@ -676,7 +716,6 @@ mod list_tests {
             response_file: Some(send_resp.clone()),
             operation_id: None,
             generated_operation_id: false,
-            peer_ancestry: None,
         };
         let send_line = serde_json::to_string(&send_req).unwrap();
         crate::app::handle_socket_line(&send_line, &h.ipc_tx, Some(&[worker_pid]), &mut Vec::new());
@@ -710,15 +749,15 @@ mod list_tests {
         secrets::system_store().delete(&account).unwrap();
     }
 
-    /// Boundary guard for the missing-snapshot fallback: a human-owned pane has
-    /// no posture snapshot either, and must keep sending without broker gating.
+    /// A pane the person opened has no posture snapshot either, and that buys
+    /// it nothing: its send asks the broker like any pane's (stint 1285).
     #[test]
-    fn human_owned_caller_pane_sends_without_broker_gating() {
+    fn a_desktop_pane_with_no_posture_is_brokered_like_any_pane() {
         let mut h = HostHarness::new();
         let human_pane = h.add_focused_terminal();
         let human_pid = h.terminal_backend(human_pane).child_pid();
         assert!(
-            h.app.is_human_owned_pane(human_pane),
+            h.app.terminal_incarnation(human_pane).is_some_and(|t| t.is_desktop_granted()),
             "fixture must be a human-owned terminal pane"
         );
         assert!(
@@ -735,26 +774,23 @@ mod list_tests {
             response_file: Some(send_resp.clone()),
             operation_id: None,
             generated_operation_id: false,
-            peer_ancestry: None,
         };
         let send_line = serde_json::to_string(&send_req).unwrap();
         crate::app::handle_socket_line(&send_line, &h.ipc_tx, Some(&[human_pid]), &mut Vec::new());
         h.hidden_frame();
-        let send_reply: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&send_resp).unwrap()).unwrap();
-        assert_eq!(
-            send_reply["ok"], true,
-            "human-owned pane must send without broker gating: {send_reply}"
+        assert!(
+            !std::path::Path::new(&send_resp).exists(),
+            "the send waits for a decision instead of being written"
         );
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .unwrap();
         assert!(
-            !monitor
+            monitor
                 .list_pending()
                 .iter()
                 .any(|row| row.tool == "pane.send"),
-            "human-owned pane must not file a pane.send approval request"
+            "the send files a pane.send approval request"
         );
     }
 

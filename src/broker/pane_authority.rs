@@ -73,6 +73,62 @@ pub(crate) enum Ownership {
     Restricted,
 }
 
+/// Who started a pane, read from its stored `spawned_by` label. Attribution
+/// only: it never decides what a pane may do (stint 1285).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Spawner {
+    Desktop,
+    HostSystem,
+    Pane(u64),
+    Agent(String),
+    Team(String),
+    Plugin(u64),
+    External,
+    SpawnQueue,
+    Unknown,
+}
+
+impl Spawner {
+    pub(crate) fn parse(label: Option<&str>) -> Self {
+        let Some(label) = label.map(str::trim).filter(|label| !label.is_empty()) else {
+            return Self::Unknown;
+        };
+        match label {
+            "human" => return Self::Desktop,
+            "system" => return Self::HostSystem,
+            "outside" => return Self::External,
+            "queue" => return Self::SpawnQueue,
+            "team" => return Self::Team(String::new()),
+            _ => {}
+        }
+        let id = |rest: &str| rest.parse::<u64>().ok();
+        if let Some(pane) = label.strip_prefix("pane:").and_then(id) {
+            Self::Pane(pane)
+        } else if let Some(pane) = label.strip_prefix("plugin:").and_then(id) {
+            Self::Plugin(pane)
+        } else if let Some(name) = label.strip_prefix("agent:").filter(|n| !n.is_empty()) {
+            Self::Agent(name.to_string())
+        } else if let Some(team) = label.strip_prefix("team:").filter(|t| !t.is_empty()) {
+            Self::Team(team.to_string())
+        } else {
+            Self::Unknown
+        }
+    }
+
+    /// A parent walk stops here: nothing above this spawner is an agent
+    /// that should hear from the pane.
+    pub(crate) fn ends_parent_walk(&self) -> bool {
+        matches!(
+            self,
+            Self::Desktop | Self::HostSystem | Self::External | Self::SpawnQueue | Self::Plugin(_)
+        )
+    }
+
+    pub(crate) fn is_agent(&self) -> bool {
+        matches!(self, Self::Agent(_) | Self::Team(_))
+    }
+}
+
 /// Who admitted the pane, as the host established it.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -333,7 +389,9 @@ impl PaneAuthority {
                 Provenance::VerifiedPane {
                     pane_id: caller.pane_id,
                 },
-                caller.ownership,
+                // A pane a process asked for is never opened by a desktop
+                // action, whoever's pane asked (stint 1285).
+                Ownership::Restricted,
                 caller.ceiling,
                 caller.can_call,
                 caller.can_handoff,
@@ -750,6 +808,28 @@ impl SavedPaneAuthority {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_spawner_label_parses_to_one_type_and_only_agents_continue_a_walk() {
+        use super::Spawner as S;
+        for (label, spawner, ends) in [
+            ("human", S::Desktop, true),
+            ("system", S::HostSystem, true),
+            ("outside", S::External, true),
+            ("queue", S::SpawnQueue, true),
+            ("plugin:7", S::Plugin(7), true),
+            ("pane:7", S::Pane(7), false),
+            ("agent:lead", S::Agent("lead".into()), false),
+            ("team:t/r", S::Team("t/r".into()), false),
+            ("pane:x", S::Unknown, false),
+            ("", S::Unknown, false),
+        ] {
+            let parsed = S::parse(Some(label));
+            assert_eq!(parsed, spawner, "{label}");
+            assert_eq!(parsed.ends_parent_walk(), ends, "{label}");
+        }
+        assert_eq!(S::parse(None), S::Unknown);
+    }
+
     use super::*;
 
     fn roles(names: &[&str]) -> Delegation {

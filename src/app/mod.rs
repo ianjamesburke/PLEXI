@@ -55,6 +55,8 @@ pub(crate) mod render;
 pub(crate) mod screenshot;
 mod sdk_spawn;
 mod secret_get;
+pub(crate) mod socket_caller;
+pub(crate) mod socket_policy;
 pub mod secrets_view;
 pub(crate) mod startup_error;
 mod sync;
@@ -153,7 +155,6 @@ use crate::config;
 use crate::host::context::Window;
 use crate::host::keys::{self, Action};
 use crate::host::pane::Pane;
-use crate::host::shell;
 use crate::spatial::tiling::PaneId;
 use crate::ui::theme::{self, Colors};
 use crate::workspace::router::ContextMove;
@@ -624,7 +625,7 @@ pub struct PlexiApp {
     pub(crate) shutdown_requested: bool,
     /// Receiver for HostRequests sent over the PLEXI_SOCKET Unix socket listener.
     /// Drained each frame in `drain_pane_cmd_channel`.
-    pane_ipc_rx: ui_mailbox::MailboxReceiver<crate::protocol::HostRequest>,
+    pane_ipc_rx: ui_mailbox::MailboxReceiver<socket_caller::PaneIpcMessage>,
     /// Host-owned event subscription core shared by the CLI NDJSON transport and
     /// the host MCP server. Resolves subscriber identity, runs the broker check,
     /// and records subscriptions in the global timeline.
@@ -711,9 +712,9 @@ pub struct PlexiApp {
     /// Consent input guards for the event-consent, raw WASM review and
     /// keychain recovery dialogs (stints 1498, 1560); the capability prompt
     /// keeps its own on its pane.
-    pub(crate) event_consent_guard: approval_keyboard::ConsentGuard,
-    pub(crate) raw_wasm_review_guard: approval_keyboard::ConsentGuard,
-    pub(crate) keychain_recovery_guard: approval_keyboard::ConsentGuard,
+    pub(crate) event_consent_guard: crate::broker::consent::ConsentGuard,
+    pub(crate) raw_wasm_review_guard: crate::broker::consent::ConsentGuard,
+    pub(crate) keychain_recovery_guard: crate::broker::consent::ConsentGuard,
     // Drop after the host resources that may still refer to these test paths.
     #[cfg(test)]
     _test_scratch: Option<tempfile::TempDir>,
@@ -781,7 +782,7 @@ pub(crate) fn configure_native_semantics(ctx: &egui::Context) {
 /// `DismissNotification` request. `notify_cli`/`dismiss_notify_cli` block
 /// reading this before the fire-and-forget path is allowed to exit — see
 /// the long comment at the ack-write call site below for why this exists.
-const PEER_IDENTITY_ACK: &[u8] = &[0x06]; // ASCII ACK
+pub(crate) const PEER_IDENTITY_ACK: &[u8] = &[0x06]; // ASCII ACK
 
 /// Handle one newline-delimited JSON line from the notify socket: parse the
 /// `HostRequest` and queue it on the pane-IPC mailbox (which owns the UI wake).
@@ -815,20 +816,17 @@ impl SocketAckWriter for crate::platform::ipc::IpcStream {
 impl SocketAckWriter for Vec<u8> {}
 impl SocketAckWriter for std::io::Sink {}
 
-/// Test entry: `peer_ancestry` is a synthetic lineage taken as a complete
-/// walk (it reached the OS root). Tests about incomplete walks call
-/// [`handle_socket_line_in`] with an explicit [`crate::protocol::PeerAncestry`].
+/// Test entry: the peer is a lineage of live processes taken as complete
+/// (`PeerWitness::for_live_pids`). Tests about other walks call
+/// [`handle_socket_line_in`] with an explicit witness.
 #[cfg(test)]
 pub(crate) fn handle_socket_line(
     line: &str,
-    mailbox: &ui_mailbox::UiMailbox<crate::protocol::HostRequest>,
+    mailbox: &ui_mailbox::UiMailbox<socket_caller::PaneIpcMessage>,
     peer_ancestry: Option<&[u32]>,
     ack_writer: &mut impl SocketAckWriter,
 ) {
-    let peer = peer_ancestry.map(|pids| crate::protocol::PeerAncestry {
-        pids: pids.to_vec(),
-        end: crate::protocol::AncestryEnd::ReachedRoot,
-    });
+    let peer = peer_ancestry.map(crate::broker::caller::PeerWitness::for_live_pids);
     handle_socket_line_in(
         &crate::config::config_dir(),
         line,
@@ -838,179 +836,121 @@ pub(crate) fn handle_socket_line(
     );
 }
 
+/// How long a socket thread waits for the host thread to admit a streaming
+/// frame before refusing it.
+const STREAM_ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Admit a frame served on the socket thread: the host thread classifies
+/// the peer and applies the frame's policy (stint 1285). The socket thread
+/// never classifies.
+pub(crate) fn admit_stream_frame(
+    mailbox: &ui_mailbox::UiMailbox<socket_caller::PaneIpcMessage>,
+    peer: Option<&crate::broker::caller::PeerWitness>,
+    frame: socket_policy::StreamFrame,
+    scope: Option<String>,
+) -> Result<crate::broker::caller::SocketCaller, socket_policy::Refusal> {
+    let (reply, admitted) = std::sync::mpsc::sync_channel(1);
+    if mailbox
+        .send(socket_caller::PaneIpcMessage::Admit {
+            peer: peer.cloned(),
+            frame,
+            scope,
+            reply,
+        })
+        .is_err()
+    {
+        return Err(socket_policy::Refusal {
+            code: "host_not_ready",
+            message: "the host is not accepting requests".to_string(),
+        });
+    }
+    admitted
+        .recv_timeout(STREAM_ADMISSION_TIMEOUT)
+        .unwrap_or_else(|error| {
+            log::warn!("socket_policy: {} admission not answered: {error}", frame.as_str());
+            Err(socket_policy::Refusal {
+                code: "host_not_ready",
+                message: "the host did not answer in time; retry".to_string(),
+            })
+        })
+}
+
 pub(crate) fn handle_socket_line_in(
     profile: &std::path::Path,
     line: &str,
-    mailbox: &ui_mailbox::UiMailbox<crate::protocol::HostRequest>,
-    peer: Option<&crate::protocol::PeerAncestry>,
+    mailbox: &ui_mailbox::UiMailbox<socket_caller::PaneIpcMessage>,
+    peer: Option<&crate::broker::caller::PeerWitness>,
     ack_writer: &mut impl SocketAckWriter,
 ) {
-    let peer_ancestry: Option<&[u32]> = peer.map(|walk| walk.pids.as_slice());
     if let Ok(frame) = serde_json::from_str::<serde_json::Value>(line) {
         if frame["type"] == "cli_trace" {
-            match crate::host::flight_recorder::handle_cli_trace(profile, &frame) {
-                Ok(()) => {
-                    if let Err(error) = ack_writer.write_all(PEER_IDENTITY_ACK) {
-                        log::warn!("cli_trace: acknowledgement failed: {error}");
+            match admit_stream_frame(mailbox, peer, socket_policy::StreamFrame::CliTrace, None) {
+                // The pane on the record is the one the kernel named.
+                Ok(caller) => match crate::host::flight_recorder::record_cli_trace(
+                    profile,
+                    &frame,
+                    caller.pane().map(|pane| pane.terminal_pane),
+                ) {
+                    Ok(()) => {
+                        if let Err(error) = ack_writer.write_all(PEER_IDENTITY_ACK) {
+                            log::warn!("cli_trace: acknowledgement failed: {error}");
+                        }
                     }
-                }
-                Err(error) => log::warn!("{error}"),
+                    Err(error) => log::warn!("{error}"),
+                },
+                // Traced by the host thread when it refused.
+                Err(refusal) => log::debug!("cli_trace: not recorded: {}", refusal.code),
             }
             return;
         }
     }
+    // A pre-1285 `plexi notify` names its pane and context and reads only
+    // the ack byte, so a refusal would print success with nothing posted.
+    // Its claims are dropped unread; the sender is the kernel-named peer
+    // (Codex 3290 r1).
+    let legacy_notify = serde_json::from_str::<serde_json::Value>(line)
+        .ok()
+        .filter(|frame| frame["type"] == "notify")
+        .and_then(|mut frame| {
+            let object = frame.as_object_mut()?;
+            let dropped: Vec<&str> = ["source_pane_id", "source_context_id"]
+                .into_iter()
+                .filter(|field| object.remove(*field).is_some())
+                .collect();
+            (!dropped.is_empty()).then(|| {
+                log::info!("pane_ipc: notify from an older CLI; dropped unread claims {dropped:?}");
+                frame.to_string()
+            })
+        });
+    let line = legacy_notify.as_deref().unwrap_or(line);
     match serde_json::from_str::<crate::protocol::HostRequest>(line) {
-        Ok(mut cmd) => {
-            let consumes_identity = cmd.consumes_peer_identity();
-            if consumes_identity && peer_ancestry.is_none() {
-                log::warn!("pane_ipc: request arrived without a verified socket peer identity");
+        Ok(cmd) => {
+            if let Some(field) = crate::protocol::removed_payload_identity_field(&cmd) {
+                refuse_removed_field(ack_writer, field);
+                return;
+            }
+            let reply_token = crate::rpc::extract_response_file_token(line);
+            if peer.is_none() {
+                log::warn!("pane_ipc: request arrived without a kernel peer credential");
             }
             // A request with a reply token holds its connection open until the
-            // reply, so its peer stays readable; the rest are fire-and-forget
-            // and wait for this ack before disconnecting.
-            let needs_identity_ack = consumes_identity
-                && (matches!(
-                    cmd,
-                    crate::protocol::HostRequest::Notify { .. }
-                        | crate::protocol::HostRequest::DismissNotification { .. }
-                ) || crate::rpc::extract_response_file_token(line).is_none());
-            match &mut cmd {
-                crate::protocol::HostRequest::Notify { peer_pid: p, .. }
-                | crate::protocol::HostRequest::DismissNotification { peer_pid: p, .. } => {
-                    *p = peer_ancestry.map(<[u32]>::to_vec);
-                }
-                crate::protocol::HostRequest::AgentCall {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::AgentMessage {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::CallPluginTool {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::ListPluginTools {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::PaneSecretGet {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::PaneSecretList {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::NeedsYouApi {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::ResourceLease {
-                    peer_ancestry: p, ..
-                } => {
-                    // Overwrite any client-supplied ancestry. A missing capture
-                    // leaves the vector empty so the call cannot pretend to be a pane.
-                    *p = peer_ancestry.unwrap_or(&[]).to_vec();
-                    log::info!("pane_ipc: stamped peer ancestry ({} pid(s))", p.len());
-                }
-                crate::protocol::HostRequest::SpawnPane { source, .. }
-                | crate::protocol::HostRequest::AgentSpawn { source, .. }
-                | crate::protocol::HostRequest::AgentOpen { source, .. }
-                | crate::protocol::HostRequest::AgentNewChat { source, .. }
-                | crate::protocol::HostRequest::AgentReopen { source, .. }
-                | crate::protocol::HostRequest::CreateContext { source, .. }
-                | crate::protocol::HostRequest::CreateSubContext { source, .. }
-                | crate::protocol::HostRequest::FocusContext { source, .. } => {
-                    // An uncaptured peer stays `Unverified`: it can never pass
-                    // for an in-process caller (stint 1632).
-                    *source = match peer_ancestry {
-                        Some(pids) if !pids.is_empty() => {
-                            crate::protocol::SpawnSource::SocketPeer(pids.to_vec())
-                        }
-                        _ => crate::protocol::SpawnSource::Unverified,
-                    };
-                    log::info!("pane_ipc: stamped launch source {source:?}");
-                }
-                crate::protocol::HostRequest::SetAgentState {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::AgentDone {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::AgentAsk {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::Permissions {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::CallerContext {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::AgentWait {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::PaneMessageSend {
-                    peer_ancestry: p, ..
-                }
-                | crate::protocol::HostRequest::SendToPane {
-                    peer_ancestry: p, ..
-                } => {
-                    // Same rule as CallPluginTool: the wire value is never the
-                    // caller's identity. None when this process has no peer
-                    // capture (tests that enqueue the request directly).
-                    *p = peer_ancestry.map(<[u32]>::to_vec);
-                    log::info!(
-                        "pane_ipc: stamped peer ancestry ({} pid(s))",
-                        p.as_ref().map(|pids| pids.len()).unwrap_or(0)
-                    );
-                }
-                crate::protocol::HostRequest::FileOpen { peer: p, .. } => {
-                    // The whole walk, with how it ended: `file.open` admits a
-                    // caller outside every pane only on a complete lineage.
-                    *p = peer.cloned();
-                    log::info!(
-                        "pane_ipc: stamped file_open peer ({} pid(s), end={:?})",
-                        p.as_ref().map_or(0, |walk| walk.pids.len()),
-                        p.as_ref().map(|walk| walk.end)
-                    );
-                }
-                crate::protocol::HostRequest::AgentsApi { payload, .. } => {
-                    if let Some(obj) = payload.as_object_mut() {
-                        match peer_ancestry {
-                            Some(pids) if !pids.is_empty() => {
-                                obj.insert("peer_ancestry".to_string(), serde_json::json!(pids));
-                                log::info!(
-                                    "pane_ipc: stamped agents_api peer ancestry ({} pid(s))",
-                                    pids.len()
-                                );
-                            }
-                            _ => {
-                                obj.remove("peer_ancestry");
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
+            // reply, so its peer stays readable; a fire-and-forget client that
+            // waits for this ack before exiting gets it once the witness exists.
+            let needs_identity_ack = matches!(
+                cmd,
+                crate::protocol::HostRequest::Notify { .. }
+                    | crate::protocol::HostRequest::DismissNotification { .. }
+            ) || reply_token.is_none();
             if needs_identity_ack {
-                // `capture_peer_ancestry` already ran, synchronously, in the
-                // accept loop — strictly before this connection was ever
-                // handed to a thread, let alone reached this line-parsing
-                // step. Sending this ack now, rather than never (as before
-                // this fix), lets a cooperating fire-and-forget caller
-                // (`plexi notify`/`plexi notify dismiss`, which otherwise
-                // exits the instant its write completes) block on reading
-                // it before exiting. Without this, a short-lived CLI process
-                // can race the host's own accept()-return latency under
-                // scheduler load: it exits before the host code that reads
-                // its ancestry has even run, `get_pid_ppid` then fails on an
-                // already-gone pid, and the notification silently
-                // misattributes to "outside pane" (global scope, no
-                // dismiss) even though the sender really was a live, known
-                // pane. A write failure here is logged, not fatal — the
-                // request is still queued below; an uncooperative or
-                // already-gone peer just proceeds without the guarantee,
-                // exactly like today's behavior.
+                // The witness was captured synchronously in the accept loop,
+                // before this connection reached a thread. A fire-and-forget
+                // CLI (`plexi notify`) blocks on this byte before exiting, so
+                // it cannot exit before the host read its lineage. A write
+                // failure is logged, not fatal: the request is still queued.
                 if let Err(e) = ack_writer.write_all(PEER_IDENTITY_ACK) {
                     log::warn!("pane_ipc: peer identity ack write failed: {e}");
                 }
             }
-            let reply_token = crate::rpc::extract_response_file_token(line);
             if let Some(ref token) = reply_token {
                 if let Some(reply_stream) = ack_writer.clone_reply_stream() {
                     crate::rpc::ReplyRegistry::register(token.clone(), reply_stream);
@@ -1024,13 +964,34 @@ pub(crate) fn handle_socket_line_in(
                     return;
                 }
             }
-            if mailbox.send(cmd).is_ok() {
+            // A queued spawn is written only after this byte: the reply stream
+            // is registered by then, so the drain cannot answer into nothing.
+            if matches!(cmd, crate::protocol::HostRequest::SpawnReceipt { .. }) {
+                if let Err(error) = ack_writer.write_all(PEER_IDENTITY_ACK) {
+                    log::warn!("spawn-queue: receipt ack failed: {error}");
+                }
+            }
+            let message = socket_caller::PaneIpcMessage::Request {
+                ingress: socket_caller::Ingress::Socket {
+                    peer: peer.cloned(),
+                    reply: reply_token.clone(),
+                },
+                request: Box::new(cmd),
+            };
+            if mailbox.send(message).is_ok() {
                 log::debug!("pane_ipc: request queued — mailbox wakes idle UI thread");
             } else if let Some(ref token) = reply_token {
                 crate::rpc::ReplyRegistry::remove(token);
             }
         }
         Err(e) => {
+            if let Some(field) = serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .and_then(|frame| crate::protocol::removed_identity_field(&frame))
+            {
+                refuse_removed_field(ack_writer, field);
+                return;
+            }
             let kind = serde_json::from_str::<serde_json::Value>(line)
                 .ok()
                 .and_then(|frame| frame["type"].as_str().map(str::to_string));
@@ -1040,7 +1001,7 @@ pub(crate) fn handle_socket_line_in(
                 log::info!(
                     "pane_ipc: refused removed request kind={kind} surface=socket \
                      outcome=request_removed peer_pids={}",
-                    peer_ancestry.map_or(0, <[u32]>::len)
+                    peer.map_or(0, |witness| witness.hops.len())
                 );
                 let reply = serde_json::json!({
                     "error": message,
@@ -1078,6 +1039,15 @@ pub(crate) fn handle_socket_line_in(
     }
 }
 
+/// Tell an older client which identity field this host no longer reads.
+fn refuse_removed_field(ack_writer: &mut impl SocketAckWriter, field: &str) {
+    log::info!("pane_ipc: refused removed identity field={field} outcome=removed_field");
+    let reply = crate::protocol::removed_field_reply(field);
+    if let Err(error) = ack_writer.write_all(reply.to_string().as_bytes()) {
+        log::warn!("pane_ipc: could not report removed field {field}: {error}");
+    }
+}
+
 /// Read one complete newline-delimited request frame. EOF without a newline is
 /// an incomplete transport write, even when its bytes happen to form valid
 /// JSON, and must never be dispatched.
@@ -1101,7 +1071,7 @@ fn read_socket_frame(reader: &mut impl std::io::BufRead) -> std::io::Result<Opti
 }
 
 fn spawn_socket_listener(
-    mailbox: ui_mailbox::UiMailbox<crate::protocol::HostRequest>,
+    mailbox: ui_mailbox::UiMailbox<socket_caller::PaneIpcMessage>,
     subscribe_mailbox: ui_mailbox::UiMailbox<
         crate::host::event_subscriptions::HostSubscribeRequest,
     >,
@@ -1148,8 +1118,8 @@ fn spawn_socket_listener(
             // can lose the race against. Resolving and walking the ancestry
             // right here, on the accept thread, removes that gap entirely —
             // this runs before the OS has even scheduled a new thread.
-            let peer_pid = resolve_socket_peer_pid(&stream);
-            let peer_ancestry = peer_pid.map(capture_peer_ancestry);
+            let peer = resolve_socket_peer_pid(&stream)
+                .map(crate::broker::caller::PeerWitness::capture);
             let mailbox = mailbox.clone();
             let subscribe_mailbox = subscribe_mailbox.clone();
             let publish_mailbox = publish_mailbox.clone();
@@ -1161,7 +1131,7 @@ fn spawn_socket_listener(
                     mailbox,
                     subscribe_mailbox,
                     publish_mailbox,
-                    peer_ancestry,
+                    peer,
                 );
             });
         }
@@ -1176,25 +1146,18 @@ fn spawn_socket_listener(
 fn handle_socket_connection(
     trace_profile: &std::path::Path,
     stream: crate::platform::ipc::IpcStream,
-    mailbox: ui_mailbox::UiMailbox<crate::protocol::HostRequest>,
+    mailbox: ui_mailbox::UiMailbox<socket_caller::PaneIpcMessage>,
     subscribe_mailbox: ui_mailbox::UiMailbox<
         crate::host::event_subscriptions::HostSubscribeRequest,
     >,
     publish_mailbox: ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostPublishRequest>,
-    // The peer's host-established ancestor-pid chain, captured by the
-    // caller (the accept loop in `spawn_socket_listener`) BEFORE this
-    // connection was handed to a spawned thread — not resolved in here.
-    // `None` means the peer credential lookup itself failed (platform
-    // unsupported, or the kernel call errored); a resolved-but-empty or
-    // no-match ancestry is logged separately in `resolve_socket_peer_pane`.
-    // This is the only trustworthy sender identity for
-    // `Notify`/`DismissNotification` — the request body's
-    // `source_context_id`/`source_pane_id` are attacker controlled (any
-    // process that can write to the socket can claim any pane).
-    peer: Option<crate::protocol::PeerAncestry>,
+    // The kernel's account of the peer, captured by the accept loop in
+    // `spawn_socket_listener` BEFORE this connection was handed to a thread.
+    // `None` means the kernel gave no peer credential. It is the only
+    // source of the caller's identity: nothing on the wire names one.
+    peer: Option<crate::broker::caller::PeerWitness>,
 ) {
-    let peer_ancestry: Option<Vec<u32>> = peer.as_ref().map(|walk| walk.pids.clone());
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufRead, BufReader, Write as _};
     // A writable clone so a streaming handler can push NDJSON back while the
     // BufReader owns the read side.
     let mut write_half = match stream.try_clone() {
@@ -1221,37 +1184,68 @@ fn handle_socket_connection(
     // JSON shape but are not `HostRequest` variants, so anything else falls
     // through to the normal one-shot path.
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&first) {
-        match val.get("type").and_then(|t| t.as_str()) {
-            Some("events_subscribe" | "pane_lifecycle_wait" | "pane_lifecycle_follow") => {
-                event_stream::handle_events_subscribe(
+        let frame = val
+            .get("type")
+            .and_then(|t| t.as_str())
+            .and_then(socket_policy::StreamFrame::parse)
+            .filter(|frame| *frame != socket_policy::StreamFrame::CliTrace);
+        if let Some(frame) = frame {
+            if val.get("from_pane_id").is_some() {
+                let mut ack: Vec<u8> = Vec::new();
+                refuse_removed_field(&mut ack, "from_pane_id");
+                if let Err(error) = writeln!(write_half, "{}", String::from_utf8_lossy(&ack)) {
+                    log::info!("pane_ipc: could not report removed field: {error}");
+                }
+                return;
+            }
+            // A follow names its workspace; the host checks it is in the
+            // caller's scope before anything is served (stint 1285).
+            let scope = (frame == socket_policy::StreamFrame::CommandViewFollow).then(|| {
+                val.get("workspace")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            });
+            let caller = match admit_stream_frame(&mailbox, peer.as_ref(), frame, scope) {
+                Ok(caller) => caller,
+                Err(refusal) => {
+                    let mut reply = refusal.reply();
+                    reply["type"] = serde_json::json!("error");
+                    reply["message"] = reply["error"].clone();
+                    if let Err(error) = writeln!(write_half, "{reply}") {
+                        log::info!("pane_ipc: could not report {} refusal: {error}", frame.as_str());
+                    }
+                    return;
+                }
+            };
+            use socket_policy::StreamFrame;
+            match frame {
+                StreamFrame::EventsSubscribe
+                | StreamFrame::PaneLifecycleWait
+                | StreamFrame::PaneLifecycleFollow => event_stream::handle_events_subscribe(
                     write_half,
                     reader.lines(),
                     val,
                     &subscribe_mailbox,
                     &mailbox,
-                    peer_ancestry.as_deref(),
-                );
-                return;
+                    caller,
+                ),
+                StreamFrame::EventsList => handle_events_list(write_half, &val),
+                StreamFrame::CommandViewFollow => {
+                    let workspace = val
+                        .get("workspace")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    log::info!("command_view: follow connected caller={}", caller.class());
+                    crate::host::command_view::serve_follow(write_half, workspace);
+                }
+                StreamFrame::EventsDeclare | StreamFrame::EventsEmit => {
+                    handle_events_publish(write_half, val, &publish_mailbox, caller)
+                }
+                StreamFrame::CliTrace => {}
             }
-            Some("events_list") => {
-                handle_events_list(write_half, &val);
-                return;
-            }
-            Some("command_view_follow") => {
-                let workspace = val
-                    .get("workspace")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                log::info!("command_view: follow connected");
-                crate::host::command_view::serve_follow(write_half, workspace);
-                return;
-            }
-            Some("events_declare") | Some("events_emit") => {
-                handle_events_publish(write_half, val, &publish_mailbox, peer_ancestry.as_deref());
-                return;
-            }
-            _ => {}
+            return;
         }
     }
     // Normal path: first line plus any remaining lines as HostRequests.
@@ -1291,59 +1285,6 @@ fn handle_socket_connection(
     }
 }
 
-/// Walk `peer_pid`'s ancestor chain and collect every visited pid
-/// (including `peer_pid` itself), using `get_pid_ppid`. Bounded to 32 hops
-/// so a lookup failure or a recycled pid mid-walk cannot spin forever;
-/// stops at pid 0/1 or a repeated pid (cycle guard). Called eagerly at
-/// socket-accept time — see the call site in `handle_socket_connection` for
-/// why this cannot be deferred to the UI thread.
-pub(crate) fn capture_peer_ancestry(peer_pid: u32) -> crate::protocol::PeerAncestry {
-    walk_peer_ancestry(peer_pid, shell::get_pid_ppid)
-}
-
-/// [`capture_peer_ancestry`] over an injected parent lookup. The result keeps
-/// why the walk ended: only reaching the OS root (pid 0 or 1) proves the
-/// lineage is complete.
-pub(crate) fn walk_peer_ancestry(
-    peer_pid: u32,
-    parent_of: impl Fn(u32) -> Option<u32>,
-) -> crate::protocol::PeerAncestry {
-    use crate::protocol::{AncestryEnd, PeerAncestry};
-    const MAX_ANCESTOR_HOPS: u32 = 32;
-
-    let mut pids = Vec::new();
-    let mut candidate = peer_pid;
-    let mut seen = std::collections::HashSet::new();
-    for _ in 0..MAX_ANCESTOR_HOPS {
-        if candidate == 0 || candidate == 1 {
-            return PeerAncestry {
-                pids,
-                end: AncestryEnd::ReachedRoot,
-            };
-        }
-        if !seen.insert(candidate) {
-            return PeerAncestry {
-                pids,
-                end: AncestryEnd::Cycle,
-            };
-        }
-        pids.push(candidate);
-        match parent_of(candidate) {
-            Some(ppid) => candidate = ppid,
-            None => {
-                return PeerAncestry {
-                    pids,
-                    end: AncestryEnd::LookupFailed,
-                }
-            }
-        }
-    }
-    PeerAncestry {
-        pids,
-        end: AncestryEnd::HopLimit,
-    }
-}
-
 /// Resolve the pid of the process on the other end of a connected IPC stream.
 ///
 /// Every platform needs its own call: macOS has no stable-std API
@@ -1377,7 +1318,7 @@ fn resolve_socket_peer_pid(stream: &crate::platform::ipc::IpcStream) -> Option<u
     // `UnixStream::peer_cred` is still unstable (`peer_credentials_unix_socket`),
     // so read the same kernel-provided credentials directly. `SO_PEERCRED`
     // yields the pid recorded at `connect()` time — exactly the peer identity
-    // `resolve_socket_peer_pane` needs to walk back to the owning shell.
+    // `PeerWitness::capture` needs to walk back to the owning shell.
     use std::os::unix::io::AsRawFd;
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -1470,8 +1411,8 @@ fn handle_events_publish(
     mut write_half: crate::platform::ipc::IpcStream,
     val: serde_json::Value,
     publish_mailbox: &ui_mailbox::UiMailbox<crate::host::event_subscriptions::HostPublishRequest>,
-    // See `handle_events_subscribe`'s matching parameter.
-    peer_ancestry: Option<&[u32]>,
+    // The caller the admission entry classified.
+    caller: crate::broker::caller::SocketCaller,
 ) {
     use crate::host::event_subscriptions::{HostPublishReply, HostPublishRequest, PublishAction};
     use std::io::Write;
@@ -1491,7 +1432,8 @@ fn handle_events_publish(
         reply_err(write_half, "missing required field: plugin_id".to_string());
         return;
     }
-    let from_pane_id = val["from_pane_id"].as_u64();
+    // Never from the wire: the admitted caller names the pane (stint 1285).
+    let from_pane_id = None;
 
     // Build the publish action from the wire shape. Identity fields are never
     // parsed here — the UI thread host-stamps them.
@@ -1553,7 +1495,7 @@ fn handle_events_publish(
         // Resolved on the UI thread — see `drain_event_subscribe_channel`.
         workspace_root_override: None,
         context_id_override: None,
-        peer_ancestry: peer_ancestry.map(<[u32]>::to_vec),
+        socket_caller: Some(caller),
         reply: reply_tx,
     };
     if publish_mailbox.send(req).is_err() {
@@ -2442,16 +2384,6 @@ impl PlexiApp {
             .find_map(|(idx, win)| win.tree.tiles.find_pane(&pane_id).map(|tile| (idx, tile)))
     }
 
-    /// True when `pane_id` is a live human-owned terminal pane with no bound
-    /// team member. View panes, agent panes, and panes spawned by an agent
-    /// (including via `plexi pane new`) return `false`.
-    pub(crate) fn is_human_owned_pane(&self, pane_id: crate::spatial::tiling::PaneId) -> bool {
-        if self.team_member_for_pane(pane_id).is_some() {
-            return false;
-        }
-        self.terminal_incarnation(pane_id)
-            .is_some_and(|term| term.is_human_owned())
-    }
 
     /// The live terminal process in `pane_id`'s slot, covered by an overlay
     /// or not. Every identity and authority question about a pane (its
@@ -2512,23 +2444,21 @@ impl PlexiApp {
             .unwrap_or(0)
     }
 
-    /// The principal a verified event-bus caller subscribes as.
+    /// The principal a classified event-bus caller subscribes as: a pane
+    /// under the exact authority handle it was classified with (so a closed
+    /// or replaced pane never becomes an outside caller), an outside process
+    /// as itself. Anything else is refused (Codex 3290 r1).
     pub(crate) fn subscriber_authority(
-        &self,
-        verified_pane: Option<crate::spatial::tiling::PaneId>,
+        caller: Option<&crate::broker::caller::SocketCaller>,
     ) -> crate::host::event_subscriptions::SubscriberAuthority {
+        use crate::broker::caller::SocketCaller;
         use crate::host::event_subscriptions::SubscriberAuthority;
-        let Some(pane_id) = verified_pane else {
-            return SubscriberAuthority::External;
-        };
-        match self.terminal_incarnation(pane_id) {
-            Some(terminal) => match terminal.authority() {
-                Some(authority) => SubscriberAuthority::Pane(
-                    crate::host::plugin_timeline::AdmittedScope::of(authority),
-                ),
-                None => SubscriberAuthority::Sealed,
-            },
-            None => SubscriberAuthority::External,
+        match caller {
+            Some(SocketCaller::Pane(pane)) => SubscriberAuthority::Pane(
+                crate::host::plugin_timeline::AdmittedScope::of(&pane.authority),
+            ),
+            Some(SocketCaller::External(_)) => SubscriberAuthority::External,
+            Some(SocketCaller::Unidentified(_)) | None => SubscriberAuthority::Sealed,
         }
     }
 
@@ -2575,29 +2505,22 @@ impl PlexiApp {
         let Some(pane_root) = self.pane_context_authority_root(pane_id) else {
             return false;
         };
-        self.scope_may_access(&pane_root, target_path, self.is_human_owned_pane(pane_id))
+        self.scope_may_access(&pane_root, target_path)
     }
 
     /// The containment and nested-scope rules behind
     /// [`Self::pane_may_access_context_root`], for a principal that is not a
-    /// pane. `target_path` must be inside `pane_root`. `human` skips the
-    /// nested-scope checks, and only a human-owned terminal may pass it.
+    /// pane. `target_path` must be inside `pane_root`. Every pane runs every
+    /// check: a pane the person opened reaches no further than an agent's
+    /// (stint 1285), so cd and context creation never widen anyone's reach.
     pub(crate) fn scope_may_access(
         &self,
         pane_root: &std::path::Path,
         target_path: &std::path::Path,
-        human: bool,
     ) -> bool {
         let target_canon = crate::platform::path::canonical_or_self(target_path);
         if !target_canon.starts_with(pane_root) {
             return false;
-        }
-        // A person may organize panes into nested contexts without losing
-        // access to folders they already controlled. Agent panes still run
-        // every narrowing check below, so cd and context creation never widen
-        // their delegated reach.
-        if human {
-            return true;
         }
         if target_canon != pane_root {
             // Check 1: another context in the router is rooted at a deeper
@@ -2641,54 +2564,6 @@ impl PlexiApp {
         true
     }
 
-    /// Resolve a notify-socket peer's pre-captured ancestor chain
-    /// (`capture_peer_ancestry`) to the pane that owns it, by matching each
-    /// candidate pid against every live terminal pane's shell pid
-    /// (`TerminalBackend::child_pid()`). This is the trustworthy sender
-    /// identity for CLI commands whose provenance controls scope/ownership
-    /// (`Notify`, `DismissNotification`) — the ancestry is host-established
-    /// (captured from the socket's kernel credential at accept time, never
-    /// from the wire), so a match here cannot be forged by the request body.
-    ///
-    /// Deliberately does no OS lookups: the ancestry was already walked
-    /// eagerly, at accept time, while the peer process was still guaranteed
-    /// connected. A short-lived CLI process (the common case — `plexi
-    /// notify` does not wait around) can have already exited by the time
-    /// this runs on the UI thread after the mailbox drains; walking
-    /// `get_pid_ppid` lazily here would then fail on the very first hop and
-    /// misattribute every fire-and-forget notification to "unresolvable".
-    ///
-    /// Known limitation: this does not cross-check process start time, so a
-    /// pid reused between the CLI's fork and the ancestry capture could in
-    /// principle misattribute — `TerminalBackend` exposes no spawn
-    /// timestamp to guard against this, and adding one is out of scope for
-    /// this stint.
-    ///
-    /// Returns `(pane_id, context_id, window_id)` — the same identity shape
-    /// `Notify`/`DismissNotification` need, sourced from the owning window's
-    /// live `context_id`/`window_id` rather than the caller's claim.
-    pub(crate) fn resolve_socket_peer_pane(
-        &self,
-        peer_ancestry: &[u32],
-    ) -> Option<(crate::spatial::tiling::PaneId, u64, u64)> {
-        for &candidate in peer_ancestry {
-            for window in self.windows.iter() {
-                for (pane_id, pane) in window.panes.iter() {
-                    let Some(terminal) = pane.terminal_incarnation() else {
-                        continue;
-                    };
-                    if terminal.backend.child_pid() == candidate {
-                        return Some((*pane_id, window.context_id, window.window_id));
-                    }
-                }
-            }
-        }
-        log::info!(
-            "pane_ipc: peer identity: ancestry {peer_ancestry:?} resolved to no live pane — treating as outside-pane caller"
-        );
-        None
-    }
-
     /// Resolve the host-established `ScopeOrigin` for a live pane: the
     /// window's `context_id`, the router's canonical `Context.root` for that
     /// context, the window's `window_id`, `pane_id` itself, and — for a plugin
@@ -2721,40 +2596,24 @@ impl PlexiApp {
         })
     }
 
-    /// Resolve the host-established origin for a raw event-bus socket request
-    /// (`events_subscribe`/`events_declare`/`events_emit`) — stint 0724 Phase
-    /// D. Returns `(verified_pane_id, context_id, workspace_root)`, all
-    /// `None` together when neither ancestry nor the claimed pane id resolve
-    /// to a live pane (an outside-pane connection).
-    ///
-    /// `peer_ancestry` (host-captured kernel ancestor-pid chain, present only
-    /// for the raw CLI socket transport) is tried FIRST and, when it resolves
-    /// to a live pane, wins outright — this is the same trust upgrade
-    /// `Notify`/`DismissNotification` already get from stint 0636's
-    /// `resolve_socket_peer_pane`. `claimed_pane_id` (the client-forwarded
-    /// `PLEXI_PANE_ID`) is only a fallback for when ancestry resolution fails
-    /// (platform unsupported, or the peer already exited) — never trusted
-    /// over a successful ancestry resolution, since any local process can set
-    /// that environment variable to name an arbitrary pane.
+    /// The host-established origin of a raw event-bus socket request (stint
+    /// 1285): `(pane_id, context_id, workspace_root)` of the admitted
+    /// caller's terminal, all `None` together for an outside process. No
+    /// claimed pane is consulted.
     pub(crate) fn resolve_event_bus_caller(
         &self,
-        claimed_pane_id: Option<u64>,
-        peer_ancestry: Option<&[u32]>,
+        caller: Option<&crate::broker::caller::SocketCaller>,
     ) -> (Option<u64>, Option<u64>, Option<std::path::PathBuf>) {
-        let verified_pane_id = peer_ancestry
-            .and_then(|ancestry| self.resolve_socket_peer_pane(ancestry))
-            .map(|(pane_id, _context_id, _window_id)| pane_id);
-        let effective_pane_id = verified_pane_id.or(claimed_pane_id);
-        let Some(effective_pane_id) = effective_pane_id else {
+        let Some(pane) = caller.and_then(crate::broker::caller::SocketCaller::pane) else {
             return (None, None, None);
         };
-        match self.origin_for_pane(effective_pane_id) {
+        match self.origin_for_pane(pane.terminal_pane) {
             Some(origin) => (
-                Some(effective_pane_id),
+                Some(pane.terminal_pane),
                 Some(origin.context_id),
                 Some(origin.context_root),
             ),
-            None => (Some(effective_pane_id), None, None),
+            None => (Some(pane.terminal_pane), None, None),
         }
     }
 
@@ -3011,9 +2870,8 @@ impl PlexiApp {
             context_id_override: context_id,
             // This request never travels over the raw event-bus socket — the
             // pane id is already host-known (the WASM/Python plugin dispatch
-            // path resolved it, not a client claim), so there is no peer
-            // ancestry to verify against.
-            peer_ancestry: None,
+            // path resolved it, not a client claim).
+            socket_caller: None,
             cancelled: None,
             reply,
         };
@@ -3120,7 +2978,7 @@ impl PlexiApp {
     pub fn new_for_test(
         ctx: egui::Context,
         frame_tick: crate::platform::logging::FrameTick,
-    ) -> (Self, ui_mailbox::UiMailbox<crate::protocol::HostRequest>) {
+    ) -> (Self, ui_mailbox::UiMailbox<socket_caller::PaneIpcMessage>) {
         Self::new_for_test_with_config(ctx, frame_tick, config::PlexiConfig::default())
     }
 
@@ -3132,7 +2990,7 @@ impl PlexiApp {
         ctx: egui::Context,
         frame_tick: crate::platform::logging::FrameTick,
         config: config::PlexiConfig,
-    ) -> (Self, ui_mailbox::UiMailbox<crate::protocol::HostRequest>) {
+    ) -> (Self, ui_mailbox::UiMailbox<socket_caller::PaneIpcMessage>) {
         let core_only = config.core_only.unwrap_or(false);
         let key_bindings = crate::host::keys::build_key_bindings_with_user_keys(
             config.keybindings.as_ref(),
@@ -3166,7 +3024,7 @@ impl PlexiApp {
             }
         }
         let (pane_ipc_tx, pane_ipc_rx) =
-            ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
+            ui_mailbox::UiMailbox::<socket_caller::PaneIpcMessage>::channel(
                 std::sync::Arc::clone(&ui_wake),
                 "pane_ipc",
             );
@@ -6346,7 +6204,10 @@ pub(crate) fn restore_workspace(
                             .spawned_by
                             .clone()
                             .filter(|s| {
-                                !s.is_empty() && !(s == "human" && session.parent_pane_id.is_some())
+                                !s.is_empty()
+                                    && !(crate::broker::pane_authority::Spawner::parse(Some(s))
+                                        == crate::broker::pane_authority::Spawner::Desktop
+                                        && session.parent_pane_id.is_some())
                             })
                             .or_else(|| {
                                 let pid = session.parent_pane_id?;

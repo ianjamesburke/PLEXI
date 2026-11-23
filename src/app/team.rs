@@ -4,6 +4,31 @@ mod tests {
     use crate::testing::HostHarness;
     use serde_json::{json, Value};
 
+    /// The fixtures' teams act for a caller holding the members' tools.
+    fn team_caller() -> crate::agent::runs::AgentsCaller {
+        let row = |tool: &str| crate::agent::runs::CeilingRow {
+            tool: tool.to_string(),
+            decision: crate::broker::Decision::Allow,
+            duration: crate::broker::GrantDuration::Always,
+            expires_at: None,
+            bound_run: None,
+        };
+        crate::agent::runs::AgentsCaller::Host {
+            ceiling: vec![row("agents.review"), row("agents.ping"), row("agents.admin")],
+        }
+    }
+
+    /// A pane holding nothing in the grant store.
+    fn bare_pane_caller(pane: u64) -> crate::agent::runs::AgentsCaller {
+        crate::agent::runs::AgentsCaller::Principal {
+            principal: crate::broker::principal::Principal::agent(format!("pane:{pane}")),
+            pane: Some(pane),
+            agent: None,
+            context_root: None,
+            context_denied: false,
+        }
+    }
+
     fn scripted_fixture() -> (HostHarness, std::path::PathBuf) {
         let mut h = HostHarness::new();
         std::fs::write(
@@ -29,15 +54,14 @@ mod tests {
     fn team_timeout_keeps_members_and_revokes_runs_with_failed_report() {
         let (mut h, workspace) = scripted_fixture();
         let reply = workspace.join("timeout.json");
-        h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), reply.to_str().unwrap()).unwrap();
+        h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), &team_caller(), reply.to_str().unwrap()).unwrap();
         let run_ids = h.app.team_runs[0].run_ids.clone();
         let state_dir = h.profile_dir().to_path_buf();
         let panes: Vec<_> = h.app.team_runs[0].members.iter().map(|(p, _)| *p).collect();
         // Exercise the same broker entry point used by a run-scoped MCP bearer.
         let denied = crate::agent::runs::handle_request(
             "call",
-            &json!({"workspace":state_dir.clone(),"run_id":run_ids[1],"tool":"agents.review","input_json":"{}"}),
-        );
+            &json!({"workspace":state_dir.clone(),"run_id":run_ids[1],"tool":"agents.review","input_json":"{}"}), &crate::agent::runs::AgentsCaller::Host { ceiling: Vec::new() });
         assert_eq!(denied["error_code"], "permission_denied", "{denied}");
         h.app.team_runs[0].deadline = std::time::Instant::now();
         h.hidden_frame();
@@ -52,8 +76,7 @@ mod tests {
         for id in run_ids {
             let run = crate::agent::runs::handle_request(
                 "show_run",
-                &json!({"workspace":state_dir,"id":id}),
-            );
+                &json!({"workspace":state_dir,"id":id}), &crate::agent::runs::AgentsCaller::Host { ceiling: Vec::new() });
             assert_eq!(run["run"]["active"], false);
         }
     }
@@ -69,7 +92,7 @@ mod tests {
     fn clean_unreported_member_degrades_quorum_and_commits_fallback_result() {
         let (mut h, workspace) = scripted_fixture();
         let reply = workspace.join("reply.json");
-        h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), reply.to_str().unwrap()).unwrap();
+        h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), &team_caller(), reply.to_str().unwrap()).unwrap();
         let panes: Vec<_> = h.app.team_runs[0].members.iter().map(|(p, _)| *p).collect();
         for (i, pane) in panes.iter().take(2).enumerate() {
             h.inject_ipc(serde_json::from_value(json!({"type":"agent_done","pane_id":pane,
@@ -97,7 +120,7 @@ mod tests {
     fn clean_unreported_schema_fallback_is_not_presented_as_valid() {
         let (mut h, workspace) = scripted_fixture();
         let reply = workspace.join("reply.json");
-        h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), reply.to_str().unwrap()).unwrap();
+        h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), &team_caller(), reply.to_str().unwrap()).unwrap();
         let pane = h.app.team_runs[0].members[0].0;
         h.app
             .pane_results
@@ -125,7 +148,7 @@ mod tests {
             std::fs::write(path, format!("quorum = {quorum}\n{raw}")).unwrap();
         }
         let reply = workspace.join("reply.json");
-        h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), reply.to_str().unwrap()).unwrap();
+        h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), &team_caller(), reply.to_str().unwrap()).unwrap();
         let root = h.app.team_runs[0].root_pane;
         let panes: Vec<_> = h.app.team_runs[0].members.iter().map(|(p, _)| *p).collect();
         for (i, pane) in panes.iter().enumerate() {
@@ -195,7 +218,7 @@ mod tests {
     fn accepted_ballot_survives_late_harness_exit() {
         let (mut h, workspace) = scripted_fixture();
         let reply = workspace.join("reply.json");
-        h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), reply.to_str().unwrap()).unwrap();
+        h.app.start_team(&json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("out")}), &team_caller(), reply.to_str().unwrap()).unwrap();
         let pane = h.app.team_runs[0].members[0].0;
         h.inject_ipc(serde_json::from_value(json!({"type":"agent_done","pane_id":pane,
             "result":json!({"ranking":["Proceed","Experiment","Defer"],"rationale":"Accepted"}).to_string(),
@@ -229,7 +252,7 @@ mod tests {
             json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace});
         assert!(h
             .app
-            .start_team(&request, reply.to_str().unwrap())
+            .start_team(&request, &team_caller(), reply.to_str().unwrap())
             .unwrap_err()
             .contains("already exists"));
         assert_eq!(
@@ -243,8 +266,11 @@ mod tests {
             .join("teams/test-team.toml");
         std::fs::write(path, toml::to_string(&team).unwrap()).unwrap();
         let caller = h.add_test_pane();
-        let request = json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("other"),"caller_pane":caller});
-        assert!(h.app.start_team(&request, reply.to_str().unwrap()).is_err());
+        let request = json!({"workspace":workspace,"name":"test-team","question":"Choose","out":workspace.join("other")});
+        assert!(h
+            .app
+            .start_team(&request, &bare_pane_caller(caller), reply.to_str().unwrap())
+            .is_err());
         assert!(h.app.team_runs.is_empty());
     }
 
@@ -277,8 +303,8 @@ mod tests {
                     "workspace": profile.clone(), "name": "global-team", "question": "Choose",
                     "global_scope": true, "timeout": 60
                 }),
-                reply.to_str().unwrap(),
-            )
+                &team_caller(),
+                reply.to_str().unwrap())
             .unwrap();
         let out = &h.app.team_runs[0].out;
         // The run canonicalizes its state dir (/var -> /private/var on macOS).
@@ -304,8 +330,8 @@ mod tests {
                     "workspace": workspace, "name": "consult-experts", "question": "Choose",
                     "global_scope": true,
                 }),
-                reply.to_str().unwrap(),
-            )
+                &team_caller(),
+                reply.to_str().unwrap())
             .unwrap();
 
         assert_eq!(h.app.team_runs.len(), 1);
@@ -319,7 +345,7 @@ mod tests {
             "[experiments]\nagent_mesh = true\n",
         )
         .unwrap();
-        let caller = h.add_focused_terminal();
+        h.add_focused_terminal();
         let profile = h.profile_dir().to_path_buf();
         let teams = profile.join("teams");
         std::fs::create_dir_all(&teams).unwrap();
@@ -334,10 +360,10 @@ mod tests {
             .start_team(
                 &json!({
                     "workspace": profile, "name": "global-team", "question": "Choose",
-                    "global_scope": true, "caller_pane": caller,
+                    "global_scope": true,
                 }),
-                reply.to_str().unwrap(),
-            )
+                &team_caller(),
+                reply.to_str().unwrap())
             .unwrap();
 
         assert_eq!(h.app.team_runs.len(), 1);
@@ -372,18 +398,20 @@ mod tests {
         )
         .unwrap();
         let outside = tempfile::tempdir().unwrap();
+        let payload = json!({
+            "execution_cwd": outside.path(), "state_dir": profile,
+            "name": "global-team", "question": "Choose",
+        });
+        let admitted = h.app.agents_caller(&h.origin_from_pane(caller), &payload).unwrap();
         let error = h
             .app
             .start_team(
-                &json!({
-                    "execution_cwd": outside.path(), "state_dir": profile,
-                    "name": "global-team", "question": "Choose", "caller_pane": caller,
-                }),
-                h.workspace_root().join("reply.json").to_str().unwrap(),
-            )
+                &payload,
+                &admitted,
+                h.workspace_root().join("reply.json").to_str().unwrap())
             .unwrap_err();
 
-        assert!(error.contains("admission refused for pane:"), "{error}");
+        assert!(error.contains("outside the caller's context"), "{error}");
         assert!(h.app.team_runs.is_empty());
     }
 
@@ -398,8 +426,8 @@ mod tests {
                     "workspace": workspace, "name": "test-team", "question": "Choose",
                     "out": workspace.join("out"),
                 }),
-                reply.to_str().unwrap(),
-            )
+                &team_caller(),
+                reply.to_str().unwrap())
             .unwrap();
 
         assert_eq!(h.app.team_runs.len(), 1);
@@ -413,7 +441,7 @@ mod tests {
             "[experiments]\nagent_mesh = true\n",
         )
         .unwrap();
-        h.add_test_pane();
+        let shell = h.add_focused_terminal();
         let workspace = h.workspace_root();
         let dir = workspace
             .join(crate::config::workspace_channel_dir())
@@ -427,7 +455,8 @@ mod tests {
         std::fs::write(dir.join("test-team.toml"), toml::to_string(&team).unwrap()).unwrap();
         let out = workspace.join("result");
         let reply = workspace.join("team-reply.json");
-        h.inject_ipc(
+        h.inject_from_pane(
+            shell,
             serde_json::from_value(json!({
                 "type":"agents_api", "op":"team_run", "payload": {
                     "workspace": workspace, "name":"test-team", "question":"Which action?",
@@ -517,10 +546,18 @@ pub(crate) struct TeamRun {
     pub(crate) run_ids: Vec<String>,
     pub(crate) members: Vec<(u64, String)>,
     deadline: Instant,
+    /// The team's agents-API caller: its own run principal, bounded by
+    /// what the starting caller held (stint 1285).
+    host: crate::agent::runs::AgentsCaller,
 }
-fn api(workspace: &Path, op: &str, mut payload: Value) -> Result<Value, String> {
+fn api(
+    workspace: &Path,
+    op: &str,
+    mut payload: Value,
+    caller: &crate::agent::runs::AgentsCaller,
+) -> Result<Value, String> {
     payload["workspace"] = json!(workspace);
-    let result = crate::agent::runs::handle_request(op, &payload);
+    let result = crate::agent::runs::handle_request(op, &payload, caller);
     if result["ok"] == true {
         Ok(result)
     } else {
@@ -544,9 +581,12 @@ impl PlexiApp {
             .find(|(id, _)| *id == pane)
             .map(|(_, member)| member.clone())
     }
+    /// Start a team for `caller` (stint 1285): the caller is the host's
+    /// classification of the request, never a pane named in the payload.
     pub(crate) fn start_team(
         &mut self,
         payload: &Value,
+        caller: &crate::agent::runs::AgentsCaller,
         response_file: &str,
     ) -> Result<(), String> {
         super::agent_open::admit_agent_mesh_route("team_run")?;
@@ -604,10 +644,22 @@ impl PlexiApp {
         if !(1..=86400).contains(&timeout) {
             return Err("timeout must be 1..86400 seconds".into());
         }
-        let caller = payload["caller_pane"].as_u64();
-        if caller.is_some_and(|id| self.find_pane_in_any_window(id).is_none()) {
+        if caller.context_denied() {
+            return Err(format!(
+                "permission_denied: {} is outside the caller's context",
+                execution_cwd.display()
+            ));
+        }
+        let caller_pane = caller.pane();
+        if caller_pane.is_some_and(|id| self.find_pane_in_any_window(id).is_none()) {
             return Err("caller pane not found".into());
         }
+        // The team acts under its own run principal, bounded by what the
+        // caller holds where it runs. Storage in the state directory is not
+        // an authority decision.
+        let host = crate::agent::runs::AgentsCaller::Host {
+            ceiling: caller.ceiling(&execution_cwd, None),
+        };
         let id = format!("team-{}", uuid::Uuid::new_v4().simple());
         let out = payload["out"]
             .as_str()
@@ -629,29 +681,23 @@ impl PlexiApp {
             let (tool, decision) = spec
                 .split_once('=')
                 .ok_or_else(|| format!("invalid grant {spec}"))?;
+            // One ordering of decisions; an unknown one is an error, never
+            // ranked above allow (stint 1285).
             let rank = |d: &str| match d {
-                "deny" => 0,
-                "ask" => 1,
-                "allow" | "allow:hard" | "allow:soft" => 2,
-                _ => 3,
+                "deny" => Ok(0),
+                "ask" => Ok(1),
+                "allow" | "allow:hard" | "allow:soft" => Ok(2),
+                other => Err(format!("invalid grant decision {other} in {spec}")),
             };
-            if union.get(tool).is_none_or(|old| rank(decision) > rank(old)) {
+            let new_rank = rank(decision)?;
+            if union
+                .get(tool)
+                .map_or(Ok(true), |old| rank(old).map(|old| new_rank > old))?
+            {
                 union.insert(tool.into(), decision.into());
             }
         }
         let parent_grants: Vec<_> = union.iter().map(|(t, d)| format!("{t}={d}")).collect();
-        let caller_human = caller.is_some_and(|p| self.is_human_owned_pane(p));
-        // A human's command follows the shell's live directory while retaining
-        // its context membership. Agents keep their existing grant envelope;
-        // changing directory cannot widen it.
-        let caller_ctx_root = caller.and_then(|p| {
-            caller_human
-                .then_some(execution_cwd.clone())
-                .or_else(|| self.pane_context_authority_root(p))
-        });
-        let caller_ctx_denied = caller.is_some_and(|p| {
-            !caller_human && !self.pane_may_access_context_root(p, &execution_cwd)
-        });
         api(
             &state_dir,
             "create_agent",
@@ -659,17 +705,14 @@ impl PlexiApp {
                 "name": id,
                 "temporary": true,
                 "grants": parent_grants,
-                "caller_pane": caller,
-                "caller_agent": caller.and_then(|p| self.team_member_for_pane(p)),
-                "caller_human_pane": caller_human,
-                "caller_context_root": caller_ctx_root,
-                "caller_context_denied": caller_ctx_denied,
             }),
+            &host,
         )?;
         let parent = api(
             &state_dir,
             "spawn_run",
             json!({"agent":id,"admission":id}),
+            &host,
         )?;
         let parent_run = field(&parent["run"], "id")?;
         let spawned = self.spawn_agent_worker_pane(
@@ -679,7 +722,7 @@ impl PlexiApp {
             &question,
             Some(&id),
             false,
-            caller,
+            caller_pane,
             Some(execution_cwd.clone()),
             None,
             None,
@@ -689,7 +732,7 @@ impl PlexiApp {
         let (root_pane, context_id) = match spawned {
             Ok(ids) => ids,
             Err(error) => {
-                if let Err(cleanup) = api(&state_dir, "finish_run", json!({"id":parent_run})) {
+                if let Err(cleanup) = api(&state_dir, "finish_run", json!({"id":parent_run}), &host) {
                     log::error!("team setup cleanup: {cleanup}");
                 }
                 return Err(error);
@@ -718,6 +761,7 @@ impl PlexiApp {
             run_ids: vec![parent_run],
             members: vec![],
             deadline: Instant::now() + Duration::from_secs(timeout),
+            host,
         };
         crate::host::flight_recorder::record(
             "team_start",
@@ -753,6 +797,7 @@ impl PlexiApp {
                 &run.state_dir,
                 "delegate",
                 json!({"parent_run":run.run_ids[0],"name":member_agent,"grants":member.grants}),
+                &run.host,
             )?;
             let child_run = field(&child["run"], "id")?;
             run.run_ids.push(child_run.clone());
@@ -966,7 +1011,7 @@ impl PlexiApp {
             Ok(())
         });
         for id in run.run_ids.iter().rev() {
-            if let Err(error) = api(&run.state_dir, "finish_run", json!({"id":id})) {
+            if let Err(error) = api(&run.state_dir, "finish_run", json!({"id":id}), &run.host) {
                 log::error!("agent_team: finish run {id}: {error}");
                 outcome = Err(error);
             }

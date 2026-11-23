@@ -369,10 +369,28 @@ impl PlexiApp {
         };
 
         if let Some(choice) = choice {
+            // A standing grant needs this dialog's evidence for this request.
+            let evidence = match choice {
+                ConsentChoice::AllowAlways => match self.event_consent_guard.witness(crate::broker::consent::ConsentDecision {
+                    displayed: request,
+                    target: &request.to_string(),
+                    choice: "allow_always",
+                    refuses: false,
+                    now,
+                    synthetic: self.synthetic_input_frame,
+                }) {
+                    Ok(evidence) => Some(evidence),
+                    Err(error) => {
+                        log::info!("event_consent: always not applied: {error}");
+                        return;
+                    }
+                },
+                _ => None,
+            };
             if let Some(consent) = self.pending_event_consents.pop_front() {
                 let config_dir = crate::config::config_dir();
                 self.host_subscriptions
-                    .resolve_consent(consent, choice, &config_dir);
+                    .resolve_consent_decided(consent, choice, &config_dir, evidence);
             }
         }
     }
@@ -419,6 +437,20 @@ impl PlexiApp {
                 });
 
         if response.selected == Some("allow") {
+            let evidence = match self.raw_wasm_review_guard.witness(crate::broker::consent::ConsentDecision {
+                displayed: review.request_id,
+                target: &review.plugin_id,
+                choice: "allow",
+                refuses: false,
+                now,
+                synthetic: self.synthetic_input_frame,
+            }) {
+                Ok(evidence) => evidence,
+                Err(error) => {
+                    log::info!("raw_wasm_review: allow not applied: {error}");
+                    return;
+                }
+            };
             let Some(review) = self.pending_raw_wasm_launches.pop_front() else {
                 return;
             };
@@ -434,6 +466,13 @@ impl PlexiApp {
                     return;
                 }
             };
+            let Ok(decision) = evidence.admit(&review.plugin_id, "allow") else {
+                log::info!(
+                    "raw_wasm_review: allow not applied: evidence is not for {}",
+                    review.plugin_id
+                );
+                return;
+            };
             for capability in &review.missing_capabilities {
                 store.set_wasm(
                     &review.plugin_id,
@@ -445,11 +484,11 @@ impl PlexiApp {
             store.save();
             for capability in &review.missing_capabilities {
                 monitor.grant_capability_id(
+                    decision,
                     &review.plugin_id,
                     &review.workspace_root,
                     capability,
                     crate::broker::Decision::Allow,
-                    crate::broker::GrantSource::User,
                 );
             }
             log::info!(

@@ -292,8 +292,9 @@ pub fn context_open_cli(path: Option<&str>) -> i32 {
 
 /// `plexi context set-root [path]`
 ///
-/// Sets the root of the caller's context (PLEXI_CONTEXT_ID), falling back to
-/// the active context. Uses CWD if path omitted.
+/// Sets the root of the caller's own context: the host names it from the
+/// calling pane, never from the environment (stint 1285). Uses CWD if path
+/// omitted.
 pub fn context_set_root_cli(path: Option<&str>) -> i32 {
     let root = match resolve_path(path) {
         Ok(p) => p,
@@ -302,18 +303,11 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
             return 1;
         }
     };
-    let context_id = caller_context_id();
-    log::info!(
-        "context_set_root_cli: root={} context_id={context_id:?}",
-        root.display()
-    );
-    let mut payload = serde_json::json!({
+    log::info!("context_set_root_cli: root={}", root.display());
+    let payload = serde_json::json!({
         "type": "set_context_root",
         "root": root,
     });
-    if let Some(cid) = context_id {
-        payload["context_id"] = serde_json::Value::from(cid);
-    }
     let rc = context_mutation(payload, "context set-root");
     if rc == 0 {
         print_tip(

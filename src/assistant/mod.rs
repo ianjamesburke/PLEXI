@@ -215,6 +215,8 @@ enum PermissionReply {
     /// Run the call. The monitor records an exact grant for this choice.
     Allow {
         choice: model::PermissionChoice,
+        /// The click, unless a durable choice already spent it on the monitor.
+        evidence: Option<crate::broker::consent::DecisionEvidence>,
     },
     Deny,
     /// A durable choice did not reach disk. The call does not run, and the
@@ -315,6 +317,18 @@ struct AssistantToolHooks {
     flow_tx: Sender<ToolFlowEvent>,
 }
 
+/// The broker's name for a sheet choice.
+fn approval_of(choice: model::PermissionChoice) -> crate::broker::gate::ApprovalChoice {
+    use crate::broker::gate::ApprovalChoice;
+    match choice {
+        model::PermissionChoice::AllowOnce => ApprovalChoice::Once,
+        model::PermissionChoice::AllowSession => ApprovalChoice::Session,
+        model::PermissionChoice::AllowAlways => ApprovalChoice::Always,
+        model::PermissionChoice::Deny => ApprovalChoice::Deny,
+        model::PermissionChoice::DenyAlways => ApprovalChoice::DenyAlways,
+    }
+}
+
 struct AssistantPresenter {
     cancel: CancelToken,
     flow_tx: Sender<ToolFlowEvent>,
@@ -334,7 +348,8 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for AssistantPresenter 
         summary: &str,
         actor: &str,
         resource: &str,
-    ) -> Result<crate::broker::gate::ApprovalChoice, String> {
+    ) -> Result<crate::plexi_ai::tool_dispatch::PresentedChoice, String> {
+        use crate::plexi_ai::tool_dispatch::PresentedChoice;
         let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
         if self
             .flow_tx
@@ -350,22 +365,15 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for AssistantPresenter 
             })
             .is_err()
         {
-            return Ok(crate::broker::gate::ApprovalChoice::Deny);
+            return Ok(PresentedChoice::observed(crate::broker::gate::ApprovalChoice::Deny));
         }
         match self.cancel.recv(&reply_rx) {
-            Some(PermissionReply::Allow { choice }) => Ok(match choice {
-                model::PermissionChoice::AllowOnce => crate::broker::gate::ApprovalChoice::Once,
-                model::PermissionChoice::AllowSession => {
-                    crate::broker::gate::ApprovalChoice::Session
-                }
-                model::PermissionChoice::AllowAlways => crate::broker::gate::ApprovalChoice::Always,
-                model::PermissionChoice::Deny => crate::broker::gate::ApprovalChoice::Deny,
-                model::PermissionChoice::DenyAlways => {
-                    crate::broker::gate::ApprovalChoice::DenyAlways
-                }
+            Some(PermissionReply::Allow { choice, evidence }) => Ok(PresentedChoice {
+                choice: approval_of(choice),
+                evidence,
             }),
             Some(PermissionReply::NotSaved { message }) => Err(message),
-            _ => Ok(crate::broker::gate::ApprovalChoice::Deny),
+            _ => Ok(PresentedChoice::observed(crate::broker::gate::ApprovalChoice::Deny)),
         }
     }
 }
@@ -745,6 +753,10 @@ pub struct AssistantView {
     /// conversation did not open it.
     permission_owner: Option<IsolatedPermissionOwner>,
     pending_permission_cancel: Option<CancelToken>,
+    /// Armed for the ask the permission sheet shows (stint 1285).
+    permission_guard: crate::broker::consent::ConsentGuard,
+    /// Armed for the open permissions manager.
+    permissions_manager_guard: crate::broker::consent::ConsentGuard,
     /// Turn ids a caller was told are `waiting_for_permission`.
     outcome_interest: HashSet<String>,
     /// The host-tool handler was entered from an isolated external turn.
@@ -1021,6 +1033,8 @@ impl AssistantView {
             side_conversation: None,
             permission_owner: None,
             pending_permission_cancel: None,
+            permission_guard: Default::default(),
+            permissions_manager_guard: Default::default(),
             outcome_interest: HashSet::new(),
             host_call_from_isolated: false,
             external_outcomes: HashMap::new(),
@@ -2374,7 +2388,11 @@ impl AssistantView {
 
     /// A folder-secret sheet has no tool-worker reply. The click word goes
     /// to the host gate, which calls `approve_pending` for exactly that pending.
-    fn deliver_folder_secret_sheet(&mut self, choice: PermissionChoice) -> bool {
+    fn deliver_folder_secret_sheet(
+        &mut self,
+        choice: PermissionChoice,
+        evidence: &mut Option<crate::broker::consent::DecisionEvidence>,
+    ) -> bool {
         let Some(pending) = self.model.pending_permission.as_ref() else {
             return false;
         };
@@ -2389,7 +2407,7 @@ impl AssistantView {
             PermissionChoice::DenyAlways => "deny_always",
             PermissionChoice::Deny => "deny",
         };
-        if !crate::workspace::secrets::deliver_folder_secret_choice(word) {
+        if !crate::workspace::secrets::deliver_folder_secret_choice(word, evidence.take()) {
             return false;
         }
         log::info!("assistant: folder secret sheet decision pending={pending_id} choice={word}");
@@ -2732,16 +2750,77 @@ impl AssistantView {
 
     /// Apply the user's permission-sheet decision: record the grant per its
     /// duration, audit it, and unblock the worker thread.
+    #[cfg(test)]
     pub(crate) fn resolve_permission(&mut self, choice: PermissionChoice) {
+        let target = self.permission_sheet_target();
+        let evidence =
+            crate::broker::consent::DecisionEvidence::for_test(&target, &format!("{:?}", approval_of(choice)));
+        self.resolve_permission_decided(choice, Some(evidence));
+    }
+
+    /// The record a sheet decision applies to.
+    fn permission_sheet_target(&self) -> String {
+        self.model
+            .pending_permission
+            .as_ref()
+            .map(|pending| {
+                if pending.pending_request_id.is_empty() {
+                    pending.tool.clone()
+                } else {
+                    pending.pending_request_id.clone()
+                }
+            })
+            .unwrap_or_default()
+    }
+
+    /// Test hook: the sheet has been on screen past the arm delay.
+    #[cfg(test)]
+    pub(crate) fn arm_permission_sheet_for_test(&mut self) {
+        self.permission_guard
+            .backdate(crate::broker::consent::ARM_DELAY * 2);
+    }
+
+    /// A click on the sheet this frame: its guard's evidence for this ask
+    /// and this choice, or nothing happens (stint 1285). A refusal needs none.
+    fn permission_click(&mut self, choice: PermissionChoice, synthetic: bool) {
+        let target = self.permission_sheet_target();
+        let refuses = choice == PermissionChoice::Deny;
+        let approval = format!("{:?}", approval_of(choice));
+        let witnessed = self.permission_guard.witness(crate::broker::consent::ConsentDecision {
+            displayed: crate::broker::consent::consent_request_key(&target),
+            target: &target,
+            choice: &approval,
+            refuses,
+            now: std::time::Instant::now(),
+            synthetic,
+        });
+        match witnessed {
+            Ok(evidence) => self.resolve_permission_decided(choice, Some(evidence)),
+            Err(error) => log::info!("assistant: sheet decision on {target} ignored: {error}"),
+        }
+    }
+
+    pub(crate) fn resolve_permission_decided(
+        &mut self,
+        choice: PermissionChoice,
+        mut evidence: Option<crate::broker::consent::DecisionEvidence>,
+    ) {
+        // No evidence, no allow: fail closed to a one-time deny.
+        let choice = if evidence.is_none() && choice != PermissionChoice::Deny {
+            log::info!("assistant: {choice:?} without desktop evidence denied");
+            PermissionChoice::Deny
+        } else {
+            choice
+        };
         if self.pending_permission_cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
             self.unblock_pending_workers("cancelled: permission owner ended");
             return;
         }
         if self.pending_subscribe.is_some() {
-            self.resolve_subscribe_permission(choice);
+            self.resolve_subscribe_permission(choice, evidence.as_ref());
             return;
         }
-        if self.deliver_folder_secret_sheet(choice) {
+        if self.deliver_folder_secret_sheet(choice, &mut evidence) {
             return;
         }
         let Some(pending) = self.model.pending_permission.clone() else {
@@ -2762,10 +2841,15 @@ impl AssistantView {
                 PermissionChoice::DenyAlways => crate::broker::gate::ApprovalChoice::DenyAlways,
                 _ => unreachable!("durable choices matched above"),
             };
-            if let Err(error) = self
-                .monitor
-                .approve_pending(&pending.pending_request_id, approval)
-            {
+            let decided = match evidence.as_ref() {
+                Some(evidence) => self.monitor.decide_pending(
+                    evidence,
+                    &pending.pending_request_id,
+                    approval,
+                ),
+                None => Err("a durable choice needs the person's decision".to_string()),
+            };
+            if let Err(error) = decided {
                 self.fail_unpersisted_permission(&pending, error);
                 return;
             }
@@ -2776,24 +2860,28 @@ impl AssistantView {
                 "deny_always",
                 PermissionReply::Allow {
                     choice: PermissionChoice::DenyAlways,
+                    evidence: None,
                 },
             ),
             PermissionChoice::AllowOnce => (
                 "allow_once",
                 PermissionReply::Allow {
                     choice: PermissionChoice::AllowOnce,
+                    evidence: evidence.take(),
                 },
             ),
             PermissionChoice::AllowSession => (
                 "allow_session",
                 PermissionReply::Allow {
                     choice: PermissionChoice::AllowSession,
+                    evidence: evidence.take(),
                 },
             ),
             PermissionChoice::AllowAlways => (
                 "allow_always",
                 PermissionReply::Allow {
                     choice: PermissionChoice::AllowAlways,
+                    evidence: None,
                 },
             ),
         };
@@ -2809,7 +2897,7 @@ impl AssistantView {
         {
             match tool_input.as_deref() {
                 Some(input) => {
-                    let outcome = self.subscribe_approval_result(input, choice);
+                    let outcome = self.subscribe_approval_result(input, choice, evidence.as_ref());
                     if let Some(message) = outcome.error.clone() {
                         self.prepared_host_calls
                             .lock()
@@ -2881,7 +2969,11 @@ impl AssistantView {
         &mut self,
         input_json: &str,
         choice: PermissionChoice,
+        evidence: Option<&crate::broker::consent::DecisionEvidence>,
     ) -> ToolCallResult {
+        let sheet = self.permission_sheet_target();
+        let approval = format!("{:?}", approval_of(choice));
+        let evidence = evidence.and_then(|e| e.admit(&sheet, &approval).ok());
         let value = match serde_json::from_str::<serde_json::Value>(input_json) {
             Ok(value) => value,
             Err(error) => {
@@ -2931,6 +3023,7 @@ impl AssistantView {
                         GrantDuration::Always,
                         GrantSource::User,
                         Decision::Deny,
+                        evidence,
                     );
                     if let Err(error) = self.save_durable_grants(&before) {
                         return ToolCallResult::err(error);
@@ -2945,7 +3038,7 @@ impl AssistantView {
             }
         };
         let before = self.durable_grant_ids();
-        self.record_assistant_grant(TargetType::PluginEventStream, &target, duration, source);
+        self.record_assistant_grant(TargetType::PluginEventStream, &target, duration, source, evidence);
         if choice == PermissionChoice::AllowAlways {
             if let Err(error) = self.save_durable_grants(&before) {
                 return ToolCallResult::err(error);
@@ -2971,7 +3064,14 @@ impl AssistantView {
     /// Apply the user's permission-sheet decision for an ask-gated
     /// `host.events.subscribe`: record the grant per its duration, create
     /// the live subscription, audit it, and unblock the worker thread.
-    fn resolve_subscribe_permission(&mut self, choice: PermissionChoice) {
+    fn resolve_subscribe_permission(
+        &mut self,
+        choice: PermissionChoice,
+        evidence: Option<&crate::broker::consent::DecisionEvidence>,
+    ) {
+        let sheet = self.permission_sheet_target();
+        let approval = format!("{:?}", approval_of(choice));
+        let evidence = evidence.and_then(|e| e.admit(&sheet, &approval).ok());
         let Some(pending) = self.pending_subscribe.take() else {
             return;
         };
@@ -2999,6 +3099,7 @@ impl AssistantView {
                 GrantDuration::Always,
                 GrantSource::User,
                 decision,
+                evidence,
             );
             if let Err(error) = self.save_durable_grants(&before) {
                 self.fail_subscribe_save(reply, error);
@@ -3015,6 +3116,7 @@ impl AssistantView {
                     &target,
                     GrantDuration::Session,
                     GrantSource::Session,
+                    None,
                 );
                 "allow_session"
             }
@@ -3072,6 +3174,7 @@ impl AssistantView {
             target,
             duration,
             source,
+            None,
         );
     }
 
@@ -3136,6 +3239,7 @@ impl AssistantView {
         target: &str,
         duration: GrantDuration,
         source: GrantSource,
+        evidence: Option<crate::broker::consent::CoveredDecision<'_>>,
     ) {
         self.record_grant(
             ASSISTANT_ACTOR_ID,
@@ -3144,9 +3248,11 @@ impl AssistantView {
             target,
             duration,
             source,
+            evidence,
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn record_grant(
         &mut self,
         actor_id: &str,
@@ -3155,6 +3261,7 @@ impl AssistantView {
         target: &str,
         duration: GrantDuration,
         source: GrantSource,
+        evidence: Option<crate::broker::consent::CoveredDecision<'_>>,
     ) {
         self.record_grant_with_decision(
             actor_id,
@@ -3164,6 +3271,7 @@ impl AssistantView {
             duration,
             source,
             Decision::Allow,
+            evidence,
         );
     }
 
@@ -3177,6 +3285,7 @@ impl AssistantView {
         duration: GrantDuration,
         source: GrantSource,
         decision: Decision,
+        evidence: Option<crate::broker::consent::CoveredDecision<'_>>,
     ) {
         // Canonicalize to match `PermissionRequest`'s workspace normalization
         // (macOS tempdirs resolve `/var` → `/private/var`).
@@ -3201,10 +3310,10 @@ impl AssistantView {
                 session_id,
             );
             record.decision = decision;
-            self.grants().record(record);
+            self.store_sheet_grant(record, evidence);
             return;
         }
-        self.grants().record(GrantRecord {
+        let record = GrantRecord {
             actor_type: ActorType::Agent,
             actor_id: actor_id.to_string(),
             actor_scope,
@@ -3219,7 +3328,20 @@ impl AssistantView {
             created_at: crate::platform::clock::now_secs() as i64,
             expires_at: None,
             ..GrantRecord::unbound()
-        });
+        };
+        self.store_sheet_grant(record, evidence);
+    }
+
+    /// A row that says the person decided it goes in only on their evidence.
+    fn store_sheet_grant(
+        &mut self,
+        record: GrantRecord,
+        evidence: Option<crate::broker::consent::CoveredDecision<'_>>,
+    ) {
+        match evidence {
+            Some(evidence) => self.grants().record_decided(record, evidence),
+            None => self.grants().record(record),
+        }
     }
 
     /// Compare the combined settings/agent posture, ignoring list ordering,
@@ -4257,7 +4379,12 @@ impl AssistantView {
     /// decision changed touch the grant store: Ask reverts a target to the
     /// posture default (delete), Allow/Deny re-record the existing grant's
     /// metadata with the new decision. Every write is audited.
-    fn apply_permission_grants(&mut self, rows: Vec<GrantRow>) {
+    fn apply_permission_grants(
+        &mut self,
+        rows: Vec<GrantRow>,
+        evidence: Option<&crate::broker::consent::DecisionEvidence>,
+    ) {
+        let evidence = evidence.and_then(|e| e.admit("permissions-manager", "apply").ok());
         let current: std::collections::HashMap<String, Decision> = self
             .assistant_grant_rows()
             .into_iter()
@@ -4322,6 +4449,7 @@ impl AssistantView {
                         duration,
                         source,
                         row.decision,
+                        evidence,
                     );
                     self.grants().save();
                     let _ = self.audit.append(&AuditEvent::now(
@@ -4351,7 +4479,7 @@ impl AssistantView {
 
     /// Confirm the open overlay (Enter): dispatch the selection through the
     /// same handlers the text commands use, then close.
-    fn confirm_overlay(&mut self) {
+    fn confirm_overlay(&mut self, evidence: Option<crate::broker::consent::DecisionEvidence>) {
         match std::mem::take(&mut self.model.overlay) {
             AssistantOverlay::ModelPicker {
                 selected,
@@ -4367,7 +4495,7 @@ impl AssistantView {
                 }
             }
             AssistantOverlay::PermissionsManager { grants, .. } => {
-                self.apply_permission_grants(grants);
+                self.apply_permission_grants(grants, evidence.as_ref());
             }
             AssistantOverlay::None => {}
         }
@@ -5113,7 +5241,7 @@ impl View for AssistantView {
         // the buffer for `render.rs`'s `handle_permission_keys` to consume.
         if self.model.pending_permission.is_some() {
             if input.key_pressed(egui::Key::Escape) {
-                self.resolve_permission(PermissionChoice::Deny);
+                self.resolve_permission_decided(PermissionChoice::Deny, None);
                 return KeyDisposition::Consumed;
             }
             return KeyDisposition::Passthrough;
@@ -5150,6 +5278,21 @@ impl View for AssistantView {
         ctx: &ViewRenderContext<'_>,
     ) {
         self.pump_turn_io();
+        let now = std::time::Instant::now();
+        if self.model.pending_permission.is_some() {
+            let key = crate::broker::consent::consent_request_key(&self.permission_sheet_target());
+            self.permission_guard.present(key, ui.ctx().cumulative_pass_nr(), now);
+            if !self.permission_guard.input(now, false).armed {
+                ui.ctx().request_repaint_after(self.permission_guard.remaining(now));
+            }
+        }
+        if matches!(self.model.overlay, AssistantOverlay::PermissionsManager { .. }) {
+            self.permissions_manager_guard.present(
+                crate::broker::consent::consent_request_key("permissions-manager"),
+                ui.ctx().cumulative_pass_nr(),
+                now,
+            );
+        }
         // Active panes do not receive `background_tick`; defer until after
         // this frame draws the status row, then compact before the next frame.
         let compact_visible_this_frame = self.compact_pending;
@@ -5166,7 +5309,9 @@ impl View for AssistantView {
                 let effects = self.model.submit();
                 self.execute_effects(effects);
             }
-            Some(ComposerEvent::Permission(choice)) => self.resolve_permission(choice),
+            Some(ComposerEvent::Permission(choice)) => {
+                self.permission_click(choice, ctx.synthetic_input)
+            }
             Some(ComposerEvent::ReviewPermissions) => {
                 log::info!("assistant: review permissions opens the permissions pane");
                 self.pending_commands.push(ViewCommand::SpawnView {
@@ -5176,7 +5321,32 @@ impl View for AssistantView {
                     emitter: None,
                 });
             }
-            Some(ComposerEvent::OverlayConfirm) => self.confirm_overlay(),
+            Some(ComposerEvent::OverlayConfirm) => {
+                let evidence = matches!(
+                    self.model.overlay,
+                    AssistantOverlay::PermissionsManager { .. }
+                )
+                .then(|| {
+                    self.permissions_manager_guard.witness(crate::broker::consent::ConsentDecision {
+                        displayed: crate::broker::consent::consent_request_key(
+                            "permissions-manager",
+                        ),
+                        target: "permissions-manager",
+                        choice: "apply",
+                        refuses: false,
+                        now,
+                        synthetic: ctx.synthetic_input,
+                    })
+                })
+                .and_then(|witnessed| {
+                    witnessed
+                        .inspect_err(|error| {
+                            log::info!("assistant: permissions manager apply: {error}")
+                        })
+                        .ok()
+                });
+                self.confirm_overlay(evidence);
+            }
             None => {}
         }
         if compact_visible_this_frame && self.run_pending_compaction() {
@@ -6636,7 +6806,7 @@ enabled = ["allowed.tool"]
         // Cycle the row Allow -> Ask -> Deny, then apply.
         app.model.overlay_cycle_decision();
         app.model.overlay_cycle_decision();
-        app.confirm_overlay();
+        app.confirm_overlay(Some(crate::broker::consent::DecisionEvidence::for_test("permissions-manager", "apply")));
 
         assert!(!app.model.overlay_active());
         let store = app.grants();
@@ -6670,7 +6840,7 @@ enabled = ["allowed.tool"]
 
         // Allow -> Ask reverts to the posture default: the record is deleted.
         app.model.overlay_cycle_decision();
-        app.confirm_overlay();
+        app.confirm_overlay(Some(crate::broker::consent::DecisionEvidence::for_test("permissions-manager", "apply")));
 
         assert!(
             app.grants().records().is_empty(),
@@ -6801,6 +6971,7 @@ enabled = ["allowed.tool"]
                 "chess::move.played",
                 GrantDuration::Always,
                 GrantSource::User,
+                None,
             );
             first.grants().save();
         }
@@ -7558,7 +7729,7 @@ enabled = ["allowed.tool"]
         assert_eq!(app.model.overlay_selected(), 1);
         app.model.overlay_move_down();
         assert_eq!(app.model.overlay_selected(), 2);
-        app.confirm_overlay();
+        app.confirm_overlay(Some(crate::broker::consent::DecisionEvidence::for_test("permissions-manager", "apply")));
 
         assert!(!app.model.overlay_active(), "overlay closes on confirm");
         assert_eq!(app.session_overrides.model_tier, Some(ModelTier::High));

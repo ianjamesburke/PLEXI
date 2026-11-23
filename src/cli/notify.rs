@@ -27,8 +27,6 @@ pub struct NotifyCliArgs<'a> {
     pub display_timeout_secs: u64,
     pub wait_timeout_secs: u64,
     pub scope: Option<crate::protocol::NotifyScope>,
-    pub source_context_id: Option<u64>,
-    pub source_pane_id: Option<u64>,
 }
 
 pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
@@ -40,28 +38,10 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
         display_timeout_secs,
         wait_timeout_secs,
         scope,
-        source_context_id,
-        source_pane_id,
     } = args;
-    // An explicit context/window scope needs the caller's own identity on the
-    // wire — the host never guesses the sender from its active state, so
-    // without `PLEXI_CONTEXT_ID` there is no context to attach to.
-    if matches!(
-        scope,
-        Some(crate::protocol::NotifyScope::Window | crate::protocol::NotifyScope::Context)
-    ) && source_context_id.is_none()
-    {
-        let scope_name = if scope == Some(crate::protocol::NotifyScope::Window) {
-            "window"
-        } else {
-            "context"
-        };
-        eprintln!(
-            "error: --scope {scope_name} requires a caller context — PLEXI_CONTEXT_ID is not set; \
-             run this inside a Plexi pane or use --scope global"
-        );
-        return 1;
-    }
+    // The host attaches the notification to the caller's own context from
+    // the kernel's account of this process; nothing here names a pane
+    // (stint 1285). A caller outside every pane gets a global notification.
 
     let socket_path = match super::resolve_command_socket() {
         Some(path) => path,
@@ -93,11 +73,7 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
         None
     };
 
-    let notify_id = format!(
-        "cli:{}:{}",
-        source_pane_id.unwrap_or(0),
-        uuid::Uuid::new_v4()
-    );
+    let notify_id = format!("cli:{}", uuid::Uuid::new_v4());
     let mut payload = serde_json::json!({
         "type": "notify",
         "notify_id": notify_id,
@@ -120,22 +96,12 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
         };
         payload["scope"] = serde_json::Value::String(s_str.to_string());
     }
-    // The caller's own identity, so the host attaches the notification to the
-    // context that actually produced it. Absent for outside-pane callers.
-    if let Some(ctx_id) = source_context_id {
-        payload["source_context_id"] = serde_json::Value::from(ctx_id);
-    }
-    if let Some(pane_id) = source_pane_id {
-        payload["source_pane_id"] = serde_json::Value::from(pane_id);
-    }
 
     log::info!(
-        "notify:cli: sending via socket choices={} wait_for_response={} scope={:?} source_context_id={:?} source_pane_id={:?} response_file={:?}",
+        "notify:cli: sending via socket choices={} wait_for_response={} scope={:?} response_file={:?}",
         choices.len(),
         wait_for_response,
         scope,
-        source_context_id,
-        source_pane_id,
         response_file_str
     );
 
@@ -213,16 +179,7 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
     }
 }
 
-pub fn dismiss_notify_cli(
-    notify_id: &str,
-    source_context_id: Option<u64>,
-    source_pane_id: Option<u64>,
-) -> i32 {
-    let (Some(source_context_id), Some(source_pane_id)) = (source_context_id, source_pane_id)
-    else {
-        eprintln!("error: notify dismiss requires a caller pane and context");
-        return 1;
-    };
+pub fn dismiss_notify_cli(notify_id: &str) -> i32 {
     let Some(socket_path) = super::resolve_command_socket() else {
         eprintln!("{}", super::NO_COMMAND_SOCKET);
         return 1;
@@ -231,8 +188,6 @@ pub fn dismiss_notify_cli(
     let payload = serde_json::json!({
         "type": "dismiss_notification",
         "notify_id": notify_id,
-        "source_context_id": source_context_id,
-        "source_pane_id": source_pane_id,
         "response_file": response_file,
     });
     use std::io::Write;
@@ -368,7 +323,7 @@ mod notify_tests {
         assert_eq!(payload["timeout_secs"], 30);
         assert!(payload["notify_id"]
             .as_str()
-            .is_some_and(|id| id.starts_with("cli:0:")));
+            .is_some_and(|id| id.starts_with("cli:")));
     }
 
     /// The stint 0536 leak fix: a blocking choice that times out must exit 2
@@ -487,23 +442,21 @@ mod notify_tests {
         );
     }
 
-    /// Fix round 1 blocker 2: the CLI stamps the caller's own identity onto
-    /// the wire so the host never derives provenance from its active state.
+    /// The CLI names no caller on the wire: the host takes it from the
+    /// kernel (stint 1285).
     #[test]
-    fn notify_cli_sends_caller_identity() {
+    fn notify_cli_sends_no_caller_identity() {
         let env = socket_env_guard();
         let (code, payload) = capture_notify_payload(&env, || {
             notify_cli(NotifyCliArgs {
                 title: "T",
                 body: "B",
-                source_context_id: Some(7),
-                source_pane_id: Some(42),
                 ..Default::default()
             })
         });
         assert_eq!(code, 0);
-        assert_eq!(payload["source_context_id"], 7);
-        assert_eq!(payload["source_pane_id"], 42);
+        assert!(payload.get("source_context_id").is_none(), "{payload}");
+        assert!(payload.get("source_pane_id").is_none(), "{payload}");
     }
 
     /// An outside-pane caller has no identity — the fields must be absent, not

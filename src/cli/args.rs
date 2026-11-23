@@ -1099,9 +1099,6 @@ pub enum NeedsYouCmd {
         /// Selected choice or free-text answer.
         #[arg(long)]
         answer: String,
-        /// Interactive UI prompt token returned when the question was filed.
-        #[arg(long)]
-        ui_token: Option<String>,
     },
     /// Reconcile open and resolved needs-you items and continuation records for a session, pane, or context.
     Reconcile {
@@ -1159,6 +1156,9 @@ pub enum PermissionsCmd {
     Allow {
         /// Decision id from `plexi permissions list`.
         id: String,
+        /// How long to ask for. Defaults to once for a pending ask and always for a stored denial
+        #[arg(long, value_parser = ["once", "session", "always"])]
+        duration: Option<String>,
     },
 }
 
@@ -3393,7 +3393,7 @@ pub enum AgentCmd {
         /// Auto-close the pane on clean exit (`0`) so the sub-context collapses when all workers finish
         #[arg(long)]
         ephemeral: bool,
-        /// Parent/caller pane id or name (defaults to `$PLEXI_PANE_ID`)
+        /// Place the worker beside this pane id or name. It does not change who spawned it
         #[arg(long, value_name = "PANE_ID")]
         from: Option<PaneTarget>,
         /// Working directory for workspace lookup and the spawned worker pane

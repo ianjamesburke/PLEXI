@@ -1035,7 +1035,7 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
     app.delete_context(a_idx_now);
     assert_eq!(held.held_count(), 2, "both removed windows await disposal");
     assert!(
-        call_credential_revoked(a_pane_id, &a_call) && call_credential_revoked(b_pane_id, &b_call),
+        call_credential_revoked( &a_call) && call_credential_revoked( &b_call),
         "deleting a context revokes its panes' call credentials before disposal"
     );
 
@@ -1122,7 +1122,7 @@ fn delete_window_revokes_removed_pane_credentials() {
     app.delete_window(1);
     assert_eq!(held.held_count(), 1, "the removed window awaits disposal");
     assert!(
-        call_credential_revoked(removed_pane_id, &removed_call),
+        call_credential_revoked( &removed_call),
         "deleting a window revokes its panes' call credentials before disposal"
     );
 
@@ -1867,11 +1867,11 @@ fn credentialed_terminal(
 }
 
 /// The call credential `token` no longer authenticates pane `pane_id`.
-fn call_credential_revoked(pane_id: u64, token: &str) -> bool {
+fn call_credential_revoked(token: &str) -> bool {
     matches!(
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
             .expect("permission monitor")
-            .authenticate_call(Some(pane_id), Some(token), None),
+            .authenticate_credential_for_test(token),
         Err(crate::broker::gate::IdentityError::StaleCredential)
     )
 }
@@ -4273,7 +4273,8 @@ fn spawn_stamp_matches_placement_for_caller_in_inactive_context() {
     let mut spawned_any = false;
     for layout in ["split_h", "tab", "new_window"] {
         let total_before: usize = app.windows.iter().map(|w| w.panes.len()).sum();
-        let _ = ipc_tx.send(crate::protocol::HostRequest::SpawnPane {
+        let _ = ipc_tx.send(crate::app::socket_caller::PaneIpcMessage::host(
+            crate::protocol::HostRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some(layout.to_string()),
             args: vec![],
@@ -4292,8 +4293,7 @@ fn spawn_stamp_matches_placement_for_caller_in_inactive_context() {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            source: crate::protocol::SpawnSource::InProcess,
-        });
+        }));
         app.drain_pane_cmd_channel();
         let total_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
         spawned_any |= total_after > total_before;
@@ -4614,20 +4614,11 @@ fn context_target_request(
     let file = h.profile_dir().join("context-target-reply.json");
     let _ = std::fs::remove_file(&file);
     payload["response_file"] = serde_json::json!(file);
-    let mut request = serde_json::from_value(payload.clone()).unwrap_or_else(|_| {
+    let request = serde_json::from_value(payload.clone()).unwrap_or_else(|_| {
         payload.as_object_mut().unwrap().remove("response_file");
         serde_json::from_value(payload).unwrap()
     });
-    // The harness stands in for a verified caller: a launch's claimed
-    // pane is trusted as an in-process caller's is.
-    if let crate::protocol::HostRequest::SpawnPane { source, .. }
-    | crate::protocol::HostRequest::FocusContext { source, .. }
-    | crate::protocol::HostRequest::CreateContext { source, .. } = &mut request
-    {
-        *source = crate::protocol::SpawnSource::InProcess;
-    }
-    h.inject_ipc(request);
-    h.app.drain_pane_cmd_channel();
+    h.inject_in_process(request);
     std::fs::read_to_string(file)
         .ok()
         .map(|s| serde_json::from_str(&s).unwrap())
@@ -4790,20 +4781,12 @@ fn context_targets_invalid_view_context_never_spawns_in_active() {
     h.add_test_pane();
     let count = h.app.windows[0].panes.len();
     let file = h.profile_dir().join("context-target-reply.json");
-    let mut request: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+    let request: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "spawn_pane", "type_id": "agents", "target_context": u64::MAX, "args": [],
         "response_file": file,
     }))
     .unwrap();
-    // A verified caller, so the request reaches the target check.
-    if let crate::protocol::HostRequest::SpawnPane { source, .. }
-    | crate::protocol::HostRequest::FocusContext { source, .. }
-    | crate::protocol::HostRequest::CreateContext { source, .. } = &mut request
-    {
-        *source = crate::protocol::SpawnSource::InProcess;
-    }
-    h.inject_ipc(request);
-    h.app.drain_pane_cmd_channel();
+    h.inject_in_process(request);
     let reply: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
     assert_eq!(h.app.windows[0].panes.len(), count);

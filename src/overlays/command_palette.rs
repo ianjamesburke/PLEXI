@@ -2411,7 +2411,7 @@ impl PlexiApp {
                     pane_id,
                     shell_cmd.chars().count()
                 );
-                self.handle_pane_ipc_request(crate::protocol::HostRequest::SendToPane {
+                self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::SendToPane {
                     generated_operation_id: false,
                     pane_id,
                     text: shell_cmd.to_string(),
@@ -2419,7 +2419,6 @@ impl PlexiApp {
                     paste: false,
                     response_file: None,
                     operation_id: None,
-                    peer_ancestry: None,
                 });
                 return Some(pane_id);
             }
@@ -2697,9 +2696,8 @@ impl PlexiApp {
                         boot_timeout_secs: boot_timeout,
                         worktree,
                         result_schema: parsed_result_schema,
-                        source: crate::protocol::SpawnSource::InProcess,
                     };
-                    self.handle_pane_ipc_request(req);
+                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, req);
                     let mut created_pane_id = self.user_command_focused_pane(command);
                     if let Ok(content) = std::fs::read_to_string(&resp_path) {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -2737,7 +2735,7 @@ impl PlexiApp {
                     if !exists {
                         return HostStepOutcome::Exited(1);
                     }
-                    self.handle_pane_ipc_request(crate::protocol::HostRequest::SetPaneTitle {
+                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::SetPaneTitle {
                         pane_id: pid,
                         name,
                     });
@@ -2761,7 +2759,7 @@ impl PlexiApp {
                     if !exists {
                         return HostStepOutcome::Exited(1);
                     }
-                    self.handle_pane_ipc_request(crate::protocol::HostRequest::FocusPane {
+                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::FocusPane {
                         pane_id,
                     });
                     HostStepOutcome::Exited(0)
@@ -2779,7 +2777,7 @@ impl PlexiApp {
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
-                    self.handle_pane_ipc_request(crate::protocol::HostRequest::ClosePane {
+                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::ClosePane {
                         pane_id: pid,
                         response_file: Some(resp_str),
                     });
@@ -2804,7 +2802,7 @@ impl PlexiApp {
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
-                    self.handle_pane_ipc_request(crate::protocol::HostRequest::SendToPane {
+                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::SendToPane {
                         generated_operation_id: false,
                         pane_id,
                         text,
@@ -2812,7 +2810,6 @@ impl PlexiApp {
                         paste,
                         response_file: Some(resp_str),
                         operation_id,
-                        peer_ancestry: None,
                     });
                     if let Ok(content) = std::fs::read_to_string(&resp_path) {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -2829,7 +2826,7 @@ impl PlexiApp {
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
-                    self.handle_pane_ipc_request(crate::protocol::HostRequest::KeyPane {
+                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::KeyPane {
                         pane_id,
                         key,
                         response_file: Some(resp_str),
@@ -2873,7 +2870,6 @@ impl PlexiApp {
                     &crate::config::config_dir(),
                     &eff_cwd,
                     task_str.as_deref(),
-                    default_pane_id,
                     &[],
                 ) else {
                     return HostStepOutcome::Exited(1);
@@ -2882,7 +2878,7 @@ impl PlexiApp {
                 else {
                     return HostStepOutcome::Exited(1);
                 };
-                let reply = self.agent_spawn_reply_admitted(&req, admitted);
+                let reply = self.agent_spawn_reply_admitted(&crate::broker::caller::RequestOrigin::HostUi, default_pane_id, &req, admitted);
                 if let Some(error) = reply.get("error").and_then(serde_json::Value::as_str) {
                     self.notify_command_refused("agent launch", error);
                     return HostStepOutcome::Exited(1);
@@ -2903,7 +2899,7 @@ impl PlexiApp {
                     &name,
                     &eff_cwd,
                     default_pane_id,
-                    &crate::protocol::SpawnSource::InProcess,
+                    &crate::broker::caller::RequestOrigin::HostUi,
                 ) {
                     Ok(_) => HostStepOutcome::Exited(0),
                     Err(error) => {
@@ -2936,10 +2932,13 @@ impl PlexiApp {
                     .map(std::path::PathBuf::from)
                     .or_else(|| ws_root.map(std::path::Path::to_path_buf))
                     .unwrap_or_else(|| command.context_root.clone());
-                let from_id = from
-                    .as_ref()
-                    .and_then(|t| self.resolve_host_pane_target(t))
-                    .or(default_pane_id);
+                let from_id = match from {
+                    Some(ref target) => match self.resolve_host_pane_target(target) {
+                        Some(id) => Some(id),
+                        None => return HostStepOutcome::Exited(1),
+                    },
+                    None => default_pane_id,
+                };
                 let Ok(payload) = crate::cli::agent::resolve_agent_spawn_in_stopping_at(
                     &name,
                     &crate::config::config_dir(),
@@ -2947,7 +2946,6 @@ impl PlexiApp {
                     (!task.is_empty()).then_some(task.as_str()),
                     subcontext.as_deref(),
                     ephemeral.then_some(true),
-                    from_id,
                     &[],
                 ) else {
                     return HostStepOutcome::Exited(1);
@@ -2956,7 +2954,7 @@ impl PlexiApp {
                 else {
                     return HostStepOutcome::Exited(1);
                 };
-                let reply = self.agent_spawn_reply_admitted(&req, admitted);
+                let reply = self.agent_spawn_reply_admitted(&crate::broker::caller::RequestOrigin::HostUi, from_id, &req, admitted);
                 if let Some(error) = reply.get("error").and_then(serde_json::Value::as_str) {
                     self.notify_command_refused("agent launch", error);
                     return HostStepOutcome::Exited(1);
@@ -3027,9 +3025,8 @@ impl PlexiApp {
                     boot_timeout_secs: None,
                     worktree: None,
                     result_schema: None,
-                    source: crate::protocol::SpawnSource::InProcess,
                 };
-                self.handle_pane_ipc_request(req);
+                self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, req);
                 if let Ok(content) = std::fs::read_to_string(&resp_path) {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                         if val.get("error").is_some() {
@@ -5720,16 +5717,13 @@ steps = [
                 let mut reader = std::io::BufReader::new(stream);
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_ok() && !line.trim().is_empty() {
-                    if let Ok(mut req) =
+                    if let Ok(req) =
                         serde_json::from_str::<crate::protocol::HostRequest>(line.trim())
                     {
-                        // Stamp the peer the way the socket handler does: the
+                        // Classify the peer the way the socket entry does: the
                         // CLI runs on a thread of this test process.
-                        if let crate::protocol::HostRequest::SpawnPane { source, .. } = &mut req {
-                            *source =
-                                crate::protocol::SpawnSource::SocketPeer(vec![std::process::id()]);
-                        }
-                        h.app.handle_pane_ipc_request(req);
+                        let origin = h.app.socket_origin_for_pids(&[std::process::id()]);
+                        h.app.handle_pane_ipc_request(origin, req);
                     }
                 }
             } else {
@@ -5747,7 +5741,7 @@ steps = [
         // Verify `plexi pane list --json` (`ListPanes`) shows both new panes.
         let list_file = sock_dir.path().join("pane-list.json");
         h.app
-            .handle_pane_ipc_request(crate::protocol::HostRequest::ListPanes {
+            .handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::ListPanes {
                 response_file: list_file.to_string_lossy().into_owned(),
                 context_id: None,
             });
@@ -5837,7 +5831,7 @@ steps = [
         let list_dir = tempfile::tempdir().unwrap();
         let list_file = list_dir.path().join("pane-list-onload.json");
         h.app
-            .handle_pane_ipc_request(crate::protocol::HostRequest::ListPanes {
+            .handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::ListPanes {
                 response_file: list_file.to_string_lossy().into_owned(),
                 context_id: None,
             });
@@ -6300,19 +6294,16 @@ steps = [
                 let mut reader = std::io::BufReader::new(stream);
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_ok() && !line.trim().is_empty() {
-                    if let Ok(mut req) =
+                    if let Ok(req) =
                         serde_json::from_str::<crate::protocol::HostRequest>(line.trim())
                     {
-                        // Stamp the peer the way the socket handler does: the
-                        // CLI runs on a thread of this test process.
-                        if let crate::protocol::HostRequest::SpawnPane { source, .. } = &mut req {
-                            *source =
-                                crate::protocol::SpawnSource::SocketPeer(vec![std::process::id()]);
-                        }
                         if let crate::protocol::HostRequest::SpawnPane { from_pane_id, .. } = &req {
                             seen_from_ids.push(*from_pane_id);
                         }
-                        h.app.handle_pane_ipc_request(req);
+                        // Classify the peer the way the socket entry does: the
+                        // CLI runs on a thread of this test process.
+                        let origin = h.app.socket_origin_for_pids(&[std::process::id()]);
+                        h.app.handle_pane_ipc_request(origin, req);
                     }
                 }
             } else {

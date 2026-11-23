@@ -102,6 +102,9 @@ pub enum ViewCommand {
     /// capability check passes.
     ForwardPaneRequest {
         request: crate::protocol::HostRequest,
+        /// Who asked: a builtin view on the person's gesture, or a plugin
+        /// guest (stint 1285).
+        origin: crate::broker::caller::RequestOrigin,
     },
     /// Request the host to cd sibling terminals (same split container) to `cwd`.
     CdRequest {

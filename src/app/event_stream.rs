@@ -76,8 +76,11 @@ impl Consumer {
 struct Connection {
     socket: IpcStream,
     cancelled: Arc<AtomicBool>,
+    /// The exact key the subscription was registered under; cleanup clears
+    /// that key and no other.
+    subscriber_type: ActorType,
     subscriber: String,
-    wake: UiMailbox<HostRequest>,
+    wake: UiMailbox<crate::app::socket_caller::PaneIpcMessage>,
 }
 
 impl Drop for Connection {
@@ -90,12 +93,16 @@ impl Drop for Connection {
         }
         match plugin_timeline::global().lock() {
             Ok(mut timeline) => {
-                timeline.clear_subscriber(ActorType::Agent, &self.subscriber);
+                timeline.clear_subscriber(self.subscriber_type, &self.subscriber);
                 timeline.event_ready().notify_all();
             }
             Err(error) => log::error!("events: subscription cleanup failed: {error}"),
         }
-        if self.wake.send(HostRequest::Wake).is_err() {
+        if self
+            .wake
+            .send(crate::app::socket_caller::PaneIpcMessage::host(HostRequest::Wake))
+            .is_err()
+        {
             log::debug!("events: host stopped before cancellation wake");
         }
         log::info!("events: connection {} released", self.subscriber);
@@ -141,8 +148,8 @@ pub(super) fn handle_events_subscribe(
     remaining: Lines<BufReader<IpcStream>>,
     val: Value,
     subscribe: &UiMailbox<HostSubscribeRequest>,
-    wake: &UiMailbox<HostRequest>,
-    peer_ancestry: Option<&[u32]>,
+    wake: &UiMailbox<crate::app::socket_caller::PaneIpcMessage>,
+    caller: crate::broker::caller::SocketCaller,
 ) {
     let consumer = match Consumer::parse(&val) {
         Ok(consumer) => consumer,
@@ -162,9 +169,10 @@ pub(super) fn handle_events_subscribe(
         error(&mut socket, format!("setting event write deadline: {err}"));
         return;
     }
-    let connection = Connection {
+    let mut connection = Connection {
         socket: clone,
         cancelled: Arc::new(AtomicBool::new(false)),
+        subscriber_type: ActorType::Agent,
         subscriber: format!("cli-connection:{}", uuid::Uuid::new_v4()),
         wake: wake.clone(),
     };
@@ -182,7 +190,10 @@ pub(super) fn handle_events_subscribe(
             Ok(timeline) => timeline.event_ready().notify_all(),
             Err(error) => log::error!("events: disconnect notification failed: {error}"),
         }
-        if disconnect_wake.send(HostRequest::Wake).is_err() {
+        if disconnect_wake
+            .send(crate::app::socket_caller::PaneIpcMessage::host(HostRequest::Wake))
+            .is_err()
+        {
             log::debug!("events: host stopped before disconnect wake");
         }
     });
@@ -222,7 +233,8 @@ pub(super) fn handle_events_subscribe(
         } else {
             val["resource_id"].as_str().map(String::from)
         },
-        from_pane_id: val["from_pane_id"].as_u64(),
+        // Never from the wire: the admitted caller names the pane.
+        from_pane_id: None,
         subscriber_override: Some(connection.subscriber.clone()),
         subscriber_type_override: None,
         // The host resolves the stable broker actor from the verified caller.
@@ -231,7 +243,7 @@ pub(super) fn handle_events_subscribe(
         // Resolved on the host thread from the verified peer.
         subscriber_authority: crate::host::event_subscriptions::SubscriberAuthority::External,
         context_id_override: None,
-        peer_ancestry: peer_ancestry.map(<[u32]>::to_vec),
+        socket_caller: Some(caller),
         cancelled: Some(Arc::clone(&connection.cancelled)),
         reply,
     };
@@ -270,6 +282,8 @@ pub(super) fn handle_events_subscribe(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     };
+    connection.subscriber_type = subscriber_type;
+    connection.subscriber = subscriber_id.clone();
     log::info!("events: registered {subscription_id} plugin={plugin_id} lifecycle={lifecycle}");
     let timeline = plugin_timeline::global();
     let snapshot = {

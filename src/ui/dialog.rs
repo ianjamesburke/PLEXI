@@ -206,10 +206,10 @@ pub(crate) struct ActionModal<'a> {
     default_action: Option<&'a str>,
     focus_surface: Option<crate::ui::focus::SurfaceKey>,
     /// Set for a consent dialog (stint 1498); see [`Self::consent_input`].
-    consent_input: Option<crate::app::approval_keyboard::ConsentInput>,
+    consent_input: Option<crate::broker::consent::ConsentInput>,
     /// Set for a dialog with destructive actions (stint 1513); see
     /// [`Self::destructive_input`].
-    destructive_input: Option<crate::app::approval_keyboard::ConsentInput>,
+    destructive_input: Option<crate::broker::consent::ConsentInput>,
     /// See [`Self::banner`].
     banner: bool,
 }
@@ -262,7 +262,7 @@ impl<'a> ActionModal<'a> {
     /// action counts only once armed, and is drawn disabled until then.
     pub(crate) fn consent_input(
         mut self,
-        input: crate::app::approval_keyboard::ConsentInput,
+        input: crate::broker::consent::ConsentInput,
     ) -> Self {
         self.consent_input = Some(input);
         self
@@ -274,7 +274,7 @@ impl<'a> ActionModal<'a> {
     /// Other actions (save, cancel) stay as they are.
     pub(crate) fn destructive_input(mut self, synthetic_frame: bool) -> Self {
         self.destructive_input =
-            Some(crate::app::approval_keyboard::ConsentInput::without_arm_delay(synthetic_frame));
+            Some(crate::broker::consent::ConsentInput::without_arm_delay(synthetic_frame));
         self
     }
 
@@ -580,7 +580,7 @@ struct ButtonRow<'a, 'c> {
     actions: &'a [DialogAction<'a>],
     colors: &'c Colors,
     focusable: bool,
-    consent: Option<crate::app::approval_keyboard::ConsentInput>,
+    consent: Option<crate::broker::consent::ConsentInput>,
     /// The fill the row sits on, when it is not the modal shell's.
     surface: Option<egui::Color32>,
 }

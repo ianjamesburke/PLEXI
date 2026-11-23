@@ -93,7 +93,7 @@ fn pane_key_ipc_drives_native_file_browser_handle_key() {
     let rf_dir = tempfile::tempdir().expect("tempdir");
     let rf = rf_dir.path().join("key-response.json");
     h.with_app_mut(|app| {
-        app.handle_pane_ipc_request(crate::protocol::HostRequest::KeyPane {
+        app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::KeyPane {
             pane_id,
             key: "enter".to_string(),
             response_file: Some(rf.to_string_lossy().into_owned()),

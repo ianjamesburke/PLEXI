@@ -663,8 +663,8 @@ fn tool_permissions(
         id,
         op,
         &crate::broker::gate::PermissionCaller {
-            human: false,
             actor_id: format!("mcp:pane:{}", caller.pane_id),
+            revoke_scope: crate::broker::gate::RevokeScope::Own,
         },
     );
     log::info!("host_mcp: permissions_{op} id={id} pane={}", caller.pane_id);
@@ -769,7 +769,7 @@ fn tool_subscribe_and_wait(
         // caller's identity (bound to `caller.pane_id`/`context_id` at
         // registration — see `register_pane_credential`); there is no raw
         // socket peer to independently verify here.
-        peer_ancestry: None,
+        socket_caller: None,
         cancelled: None,
         reply: reply_tx,
     };

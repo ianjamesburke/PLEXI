@@ -8,7 +8,6 @@ use super::harness_tests::{
 };
 use super::*;
 use crate::app::agent_open::AgentOpenOutcome;
-use crate::protocol::SpawnSource;
 
 fn terminal(h: &HostHarness, pane_id: PaneId) -> &crate::host::pane::TerminalPane {
     h.app
@@ -39,7 +38,6 @@ fn start_agent(h: &mut HostHarness, fx: &AgentFocusFixture, name: &str, caller: 
         &fx.profile_dir,
         &fx.proj_dir,
         None,
-        Some(caller),
         &fx.stops(),
     )
     .expect("resolve agent start payload");
@@ -48,7 +46,7 @@ fn start_agent(h: &mut HostHarness, fx: &AgentFocusFixture, name: &str, caller: 
         panic!("expected AgentSpawn");
     };
     let reply = response_file.clone();
-    h.inject_ipc(req);
+    h.inject_from_pane(caller, req);
     h.run_frames(2);
     read_json_response(&reply)["pane_id"]
         .as_u64()
@@ -66,7 +64,7 @@ fn new_chat(
             "researcher",
             &fx.proj_dir,
             Some(caller),
-            &SpawnSource::InProcess,
+            &crate::broker::caller::RequestOrigin::HostUi,
         )
         .expect("new chat");
     h.run_frames(2);
@@ -132,7 +130,7 @@ fn new_chat_archives_the_current_chat() {
             "researcher",
             &fx.proj_dir,
             Some(caller),
-            &SpawnSource::InProcess,
+            &crate::broker::caller::RequestOrigin::HostUi,
         )
         .expect("open");
     assert_eq!(outcome, AgentOpenOutcome::Focused { pane_id });
@@ -174,7 +172,7 @@ fn new_chat_with_no_chat_yet_only_starts_one() {
             "no-such-agent",
             &fx.proj_dir,
             Some(caller),
-            &SpawnSource::InProcess,
+            &crate::broker::caller::RequestOrigin::HostUi,
         )
         .expect_err("unknown agents fail before anything is archived");
     assert!(error.contains("no-such-agent"), "{error}");
@@ -197,7 +195,6 @@ fn archived_chat_reopens_from_history() {
         query: run_id.clone(),
         subcontext: None,
         response_file: reply.clone(),
-        source: SpawnSource::Unverified,
     });
     h.run_frames(2);
 
@@ -225,7 +222,6 @@ fn new_chat_reads_the_same_memory_folder() {
         "researcher",
         &fx.profile_dir,
         &fx.proj_dir,
-        None,
         None,
         &fx.stops(),
     )
@@ -256,7 +252,6 @@ fn new_chat_reads_the_same_memory_folder() {
         &fx.profile_dir,
         &fx.proj_dir,
         None,
-        None,
         &fx.stops(),
     )
     .unwrap();
@@ -279,7 +274,6 @@ fn new_chat_reads_the_same_memory_folder() {
         Some("task"),
         None,
         Some(true),
-        None,
         &fx.stops(),
     )
     .unwrap();
@@ -368,7 +362,7 @@ fn agent_open_after_restart_returns_the_new_chat_never_the_archived_one() {
         let cwd = fx.proj_dir.canonicalize().unwrap();
         let outcome = restarted
             .app
-            .open_named_agent("researcher", &cwd, Some(caller), &SpawnSource::InProcess)
+            .open_named_agent("researcher", &cwd, Some(caller), &crate::broker::caller::RequestOrigin::HostUi)
             .expect("open after restart");
         match (new_chat_state, &outcome) {
             ("open", AgentOpenOutcome::Focused { pane_id }) => {

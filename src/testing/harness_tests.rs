@@ -338,7 +338,7 @@ fn assistant_send_without_a_pane_creates_a_hidden_one() {
     let focused_before = h.app.windows[0].focused_pane;
     let missing = crate::config::config_dir().join("assistant-missing-pane.json");
     h.app
-        .handle_pane_ipc_request(HostRequest::SubmitAssistantTurn {
+        .handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, HostRequest::SubmitAssistantTurn {
             text: "hello".to_string(),
             request_id: "missing".to_string(),
             response_file: missing.display().to_string(),
@@ -362,7 +362,7 @@ fn assistant_send_without_a_pane_creates_a_hidden_one() {
 
     let response = crate::config::config_dir().join("assistant-headless-send.json");
     h.app
-        .handle_pane_ipc_request(HostRequest::SubmitAssistantTurn {
+        .handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, HostRequest::SubmitAssistantTurn {
             text: "hello".to_string(),
             request_id: "headless".to_string(),
             response_file: response.display().to_string(),
@@ -2181,7 +2181,7 @@ fn send_to_view_pane_injects_text_through_focused_render_input() {
     h.run_frames(2);
     let response_file = temp_response(tmp.path(), "send-text");
 
-    h.app.handle_pane_ipc_request(HostRequest::SendToPane {
+    h.app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, HostRequest::SendToPane {
         generated_operation_id: false,
         paste: false,
         pane_id,
@@ -2189,7 +2189,6 @@ fn send_to_view_pane_injects_text_through_focused_render_input() {
         submit: false,
         response_file: Some(response_file.clone()),
         operation_id: None,
-        peer_ancestry: None,
     });
     assert_eq!(
         h.app.pending_pane_inputs.get(&pane_id).map_or(0, Vec::len),
@@ -2833,7 +2832,6 @@ fn pane_message_fifo_ordering_and_drain_without_clobbering() {
             pane_id: pane,
             payload: body.to_string(),
             submit: false,
-            peer_ancestry: None,
             response_file: send_file.clone(),
         });
         h.run_frames(1);
@@ -2890,13 +2888,12 @@ fn pane_message_stamps_sender_pane_id_from_peer_ancestry() {
     let sender_pid = h.terminal_backend(sender_pane).child_pid();
 
     let send_file = temp_response(tmp.path(), "msg-sender-stamp");
-    h.inject_ipc(HostRequest::PaneMessageSend {
+    h.inject_socket(HostRequest::PaneMessageSend {
         pane_id: receiver_pane,
         payload: "from worker".to_string(),
         submit: false,
-        peer_ancestry: Some(vec![999_999, sender_pid]),
         response_file: send_file.clone(),
-    });
+    }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[999_999, sender_pid])));
     h.run_frames(1);
 
     let ack = read_json_response(&send_file);
@@ -2944,7 +2941,6 @@ fn pane_message_submit_does_not_interrupt_busy_agent() {
         pane_id: pane,
         payload: "hold until idle".to_string(),
         submit: true,
-        peer_ancestry: None,
         response_file: send_file.clone(),
     });
     h.run_frames(1);
@@ -2991,7 +2987,6 @@ fn pane_message_submit_wakes_idle_agent() {
         pane_id: pane,
         payload: "wake up".to_string(),
         submit: true,
-        peer_ancestry: None,
         response_file: send_file.clone(),
     });
     h.run_frames(1);
@@ -3036,7 +3031,6 @@ fn pane_message_recv_wait_completes_when_message_arrives_while_hidden() {
         pane_id: pane,
         payload: "unblock waiter".to_string(),
         submit: false,
-        peer_ancestry: None,
         response_file: send_file.clone(),
     });
     h.run_hidden_frames(1);
@@ -3430,10 +3424,10 @@ fn set_pane_title_unknown_pane_id_does_not_panic() {
     // Must run without panicking and log a warn — verifies the drain path is wired.
     let mut h = HostHarness::new();
     h.ipc_tx
-        .send(HostRequest::SetPaneTitle {
+        .send(crate::app::socket_caller::PaneIpcMessage::host(HostRequest::SetPaneTitle {
             pane_id: 9999,
             name: "ghost".into(),
-        })
+        }))
         .unwrap();
     h.run_frames(1); // must not panic; logs warn "not found"
 }
@@ -4540,38 +4534,30 @@ fn emitted_plugin_event_is_recorded_and_awaitable() {
     );
 }
 
-/// Stint 0724 Phase D: `PlexiApp::resolve_event_bus_caller` resolves the
-/// event-bus socket transport's caller identity — used to fill in
-/// `HostSubscribeRequest`/`HostPublishRequest`'s `context_id_override`/
-/// `workspace_root_override` when a CLI request arrives with neither
-/// pre-resolved. With no `peer_ancestry` (the common case for a platform
-/// where kernel ancestry capture is unavailable, or simply not exercised by
-/// this test), the claimed pane id is used as-is and its context/workspace
-/// come from the same `origin_for_pane` every other Phase C/D consumer uses
-/// — never a stale ambient default.
+/// Stint 1285 (replaces the claimed-pane fallback pinned since 0724):
+/// `PlexiApp::resolve_event_bus_caller` resolves the event-bus caller only
+/// from the admitted socket caller. A pane named in the request is never an
+/// input, so an unclassified caller resolves to nothing, and a pane caller
+/// resolves to its own terminal's context and root.
 #[test]
-fn resolve_event_bus_caller_falls_back_to_claimed_pane_id_without_ancestry() {
+fn resolve_event_bus_caller_takes_the_admitted_caller_never_a_claim() {
     let mut h = HostHarness::new();
-
-    let pane_id = h.launch_dev_view_without_render("event-probe");
-
+    let pane_id = h.add_focused_terminal();
     let expected_origin = h
         .app
         .origin_for_pane(pane_id)
-        .expect("the just-launched pane must resolve an origin");
+        .expect("the terminal must resolve an origin");
 
+    assert_eq!(h.app.resolve_event_bus_caller(None), (None, None, None));
+
+    let caller = h.app.classify_socket_peer(Some(
+        &crate::broker::caller::PeerWitness::for_live_pids(&[h.shell_pid(pane_id)]),
+    ));
     let (resolved_pane_id, context_id, workspace_root) =
-        h.app.resolve_event_bus_caller(Some(pane_id), None);
+        h.app.resolve_event_bus_caller(Some(&caller));
     assert_eq!(resolved_pane_id, Some(pane_id));
     assert_eq!(context_id, Some(expected_origin.context_id));
     assert_eq!(workspace_root, Some(expected_origin.context_root));
-
-    // A claim naming no pane at all (an outside-pane connection) resolves to
-    // nothing — no ambient default fills in silently.
-    let (resolved_pane_id, context_id, workspace_root) = h.app.resolve_event_bus_caller(None, None);
-    assert_eq!(resolved_pane_id, None);
-    assert_eq!(context_id, None);
-    assert_eq!(workspace_root, None);
 }
 
 // ── Directed pipes: context-scoped keys + reachability (stint 0724 Phase D 2/2) ──
@@ -7774,7 +7760,7 @@ fn node_ref_of(h: &HostHarness, pane_id: PaneId, role: &str, label: &str) -> Str
 fn activate_now(h: &mut HostHarness, pane_id: PaneId, node_ref: &str) -> serde_json::Value {
     let dir = tempfile::tempdir().expect("tempdir");
     let response_file = temp_response(dir.path(), "activate");
-    h.app.handle_pane_ipc_request(HostRequest::ClickPaneNode {
+    h.app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, HostRequest::ClickPaneNode {
         pane_id,
         node_ref: node_ref.to_string(),
         response_file: Some(response_file.clone()),
@@ -10368,7 +10354,6 @@ fn editor_gate_harness_matrix() {
                         submit: false,
                         response_file: Some(response.clone()),
                         operation_id: None,
-                        peer_ancestry: None,
                     }),
                     GateHostInput::Key(key) => h.inject_ipc(HostRequest::KeyPane {
                         pane_id,
@@ -10482,7 +10467,6 @@ fn editor_gate_host_surfaces() {
         submit: false,
         response_file: Some(response.clone()),
         operation_id: None,
-        peer_ancestry: None,
     });
     h.run_frames(2);
     assert_eq!(read_json_response(&response)["ok"], true);
@@ -10567,7 +10551,6 @@ fn editor_gate_save_failure_reports_error_semantically() {
         submit: false,
         response_file: Some(response.clone()),
         operation_id: None,
-        peer_ancestry: None,
     });
     h.run_frames(2);
     assert_eq!(read_json_response(&response)["ok"], true);
@@ -10612,7 +10595,7 @@ fn host_log_marker_dispatches_and_acknowledges() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
     let response = temp_response(tmp.path(), "log-marker");
-    h.app.handle_pane_ipc_request(HostRequest::LogMarker {
+    h.app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, HostRequest::LogMarker {
         source: "editor_gate".to_string(),
         message: "started scenes=9\nsecond line flattened".to_string(),
         response_file: Some(response.clone()),
@@ -10699,7 +10682,7 @@ fn key_pane_terminal_bytes(
 ) -> (serde_json::Value, Vec<u8>) {
     h.terminal_backend(term).enable_input_tap();
     let response = temp_response(dir, "terminal-key");
-    h.app.handle_pane_ipc_request(HostRequest::KeyPane {
+    h.app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, HostRequest::KeyPane {
         pane_id: term,
         key: key.to_string(),
         response_file: Some(response.clone()),
@@ -11227,7 +11210,6 @@ fn blank_text_editor_open_acquires_input_focus() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        source: crate::protocol::SpawnSource::InProcess,
     });
     // R3 moved IPC draining into logic so the editor can be opened while eframe
     // skips ui for an occluded window. At this point no text surface has
@@ -11246,7 +11228,6 @@ fn blank_text_editor_open_acquires_input_focus() {
         submit: false,
         response_file: Some(text_response.clone()),
         operation_id: None,
-        peer_ancestry: None,
     });
     h.hidden_frame();
     h.run_frames(4);
@@ -12928,7 +12909,7 @@ fn file_browser_rename_modal_preselects_entry_name() {
     // Complete the tester's repro end-to-end: typed text must REPLACE the
     // selected prefill, and the rename must land in the source's own
     // directory (not the browse/host cwd).
-    h.app.handle_pane_ipc_request(HostRequest::SendToPane {
+    h.app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, HostRequest::SendToPane {
         generated_operation_id: false,
         paste: false,
         pane_id,
@@ -12936,7 +12917,6 @@ fn file_browser_rename_modal_preselects_entry_name() {
         submit: false,
         response_file: None,
         operation_id: None,
-        peer_ancestry: None,
     });
     run_blurred_frames(&mut h, 2);
     let enter_response = temp_response(tmp.path(), "rename-enter");
@@ -13004,7 +12984,7 @@ fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
 
     // Queue text for B while A's raw widget still holds egui focus.
     let response_file = temp_response(tmp.path(), "send-text-b");
-    h.app.handle_pane_ipc_request(HostRequest::SendToPane {
+    h.app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, HostRequest::SendToPane {
         generated_operation_id: false,
         paste: false,
         pane_id: pane_b,
@@ -13012,7 +12992,6 @@ fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
         submit: false,
         response_file: Some(response_file.clone()),
         operation_id: None,
-        peer_ancestry: None,
     });
     h.run_frames(4);
 
@@ -13296,7 +13275,7 @@ mod routine_firing {
         let active_win_before = h.app.active_window;
         let main_panes_before = h.app.windows[0].panes.len();
         let response = temp_response(tmp.path(), "ctx-name-spawn");
-        h.app.handle_pane_ipc_request(HostRequest::SpawnPane {
+        h.app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, HostRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some("split_h".to_string()),
             args: vec!["true".to_string()],
@@ -13315,7 +13294,6 @@ mod routine_firing {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            source: crate::protocol::SpawnSource::InProcess,
         });
 
         let reply = read_json_response(&response);
@@ -13348,7 +13326,7 @@ mod routine_firing {
         let panes_before = h.app.windows[0].panes.len();
 
         let response = temp_response(tmp.path(), "ctx-name-missing");
-        h.app.handle_pane_ipc_request(HostRequest::SpawnPane {
+        h.app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, HostRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some("split_h".to_string()),
             args: vec!["true".to_string()],
@@ -13367,7 +13345,6 @@ mod routine_firing {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            source: crate::protocol::SpawnSource::InProcess,
         });
 
         let reply = read_json_response(&response);
@@ -13811,7 +13788,6 @@ mod agent_boot {
             boot_timeout_secs,
             worktree: None,
             result_schema: None,
-            source: crate::protocol::SpawnSource::InProcess,
         });
         response
     }
@@ -13830,7 +13806,6 @@ mod agent_boot {
 
     fn report_agent(h: &mut HostHarness, pane_id: u64, state: AgentState) {
         h.inject_ipc(HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id,
             state,
             agent: "claude-code".to_string(),
@@ -14028,7 +14003,6 @@ mod agent_boot {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            source: crate::protocol::SpawnSource::InProcess,
         });
         h.run_frames(1);
 
@@ -14848,7 +14822,6 @@ mod pane_send_submit_tests {
             submit: true,
             response_file,
             operation_id: None,
-            peer_ancestry: None,
         });
     }
 
@@ -14861,7 +14834,6 @@ mod pane_send_submit_tests {
             submit: false,
             response_file,
             operation_id: None,
-            peer_ancestry: None,
         });
     }
 
@@ -16404,14 +16376,14 @@ mod pane_lifecycle_events {
                 "pr_url": { "type": "string" }
             }
         });
-        h.inject_ipc(crate::protocol::HostRequest::AgentSpawn {
+        h.inject_from_pane(master_pane, crate::protocol::HostRequest::AgentSpawn {
+            anchor_pane: None,
             role: "worker".into(),
             harness: "codex".into(),
             command: "sleep 30".into(),
             task: Some("Ship stint 0802".into()),
             subcontext: Some("squad-alpha".into()),
             ephemeral: true,
-            parent_pane_id: Some(master_pane),
             name: None,
             cwd: None,
             worktree: None,
@@ -16419,7 +16391,6 @@ mod pane_lifecycle_events {
             initial_slots: vec![],
             focus: false,
             response_file: spawn_reply.clone(),
-            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
 
@@ -16464,7 +16435,6 @@ mod pane_lifecycle_events {
         // 1. Invalid result payload is rejected synchronously by schema validation.
         let bad_done = temp_response(dir.path(), "agent-done-bad");
         h.inject_ipc(crate::protocol::HostRequest::AgentDone {
-            peer_ancestry: None,
             pane_id: worker_id,
             result: Some(r#"{"wrong": 123}"#.into()),
             summary: Some("incomplete".into()),
@@ -16478,7 +16448,6 @@ mod pane_lifecycle_events {
         // 2. Valid result payload commits result, writes `completed` + `summary` slots.
         let good_done = temp_response(dir.path(), "agent-done-good");
         h.inject_ipc(crate::protocol::HostRequest::AgentDone {
-            peer_ancestry: None,
             pane_id: worker_id,
             result: Some(r#"{"pr_url": "https://github.com/org/repo/pull/802"}"#.into()),
             summary: Some("Shipped agent squads".into()),
@@ -16540,14 +16509,14 @@ mod pane_lifecycle_events {
         let dir = tempfile::tempdir().unwrap();
 
         let spawn_reply = temp_response(dir.path(), "agent-spawn-crash");
-        h.inject_ipc(crate::protocol::HostRequest::AgentSpawn {
+        h.inject_from_pane(master_pane, crate::protocol::HostRequest::AgentSpawn {
+            anchor_pane: None,
             role: "crasher".into(),
             harness: "claude".into(),
             command: "sleep 30".into(),
             task: Some("Crash task".into()),
             subcontext: Some("squad-crash".into()),
             ephemeral: true,
-            parent_pane_id: Some(master_pane),
             name: None,
             cwd: None,
             worktree: None,
@@ -16555,7 +16524,6 @@ mod pane_lifecycle_events {
             initial_slots: vec![],
             focus: false,
             response_file: spawn_reply.clone(),
-            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
 
@@ -16610,14 +16578,14 @@ mod pane_lifecycle_events {
         let initial_needs_you_count = mon.list_needs_you().len();
 
         let spawn_reply = temp_response(dir.path(), "agent-spawn-ask");
-        h.inject_ipc(crate::protocol::HostRequest::AgentSpawn {
+        h.inject_from_pane(master_pane, crate::protocol::HostRequest::AgentSpawn {
+            anchor_pane: None,
             role: "implementer".into(),
             harness: "codex".into(),
             command: "sleep 30".into(),
             task: Some("Implement feature".into()),
             subcontext: Some("squad-ask".into()),
             ephemeral: true,
-            parent_pane_id: Some(master_pane),
             name: None,
             cwd: None,
             worktree: None,
@@ -16625,7 +16593,6 @@ mod pane_lifecycle_events {
             initial_slots: vec![],
             focus: false,
             response_file: spawn_reply.clone(),
-            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
         let spawned = read_json_response(&spawn_reply);
@@ -16660,7 +16627,6 @@ mod pane_lifecycle_events {
         // rolls up `ContextStatus::Blocked` on parent PortalPane, and does NOT file human NeedsYou.
         let ask_reply = temp_response(dir.path(), "agent-ask");
         h.inject_ipc(crate::protocol::HostRequest::AgentAsk {
-            peer_ancestry: None,
             pane_id: worker_id,
             question: "Should we use BTreeMap or HashMap?".into(),
             response_file: ask_reply.clone(),
@@ -16750,14 +16716,14 @@ mod pane_lifecycle_events {
 
         let spawn_worker = |h: &mut HostHarness, role: &str| -> (u64, u64) {
             let reply = temp_response(dir.path(), &format!("spawn-{role}"));
-            h.inject_ipc(crate::protocol::HostRequest::AgentSpawn {
+            h.inject_from_pane(master_pane, crate::protocol::HostRequest::AgentSpawn {
+                anchor_pane: None,
                 role: role.into(),
                 harness: "codex".into(),
                 command: "sleep 30".into(),
                 task: Some(format!("Task for {role}")),
                 subcontext: Some("squad-visual".into()),
                 ephemeral: true,
-                parent_pane_id: Some(master_pane),
                 name: Some(role.into()),
                 cwd: None,
                 worktree: None,
@@ -16765,7 +16731,6 @@ mod pane_lifecycle_events {
                 initial_slots: vec![],
                 focus: false,
                 response_file: reply.clone(),
-                source: crate::protocol::SpawnSource::InProcess,
             });
             h.hidden_frame();
             let spawned = read_json_response(&reply);
@@ -16940,7 +16905,7 @@ mod flight_recorder_session {
     #[test]
     fn multi_pane_session_with_desktop_approval_writes_a_complete_ordered_trace() {
         let mut h = HostHarness::new();
-        let caller = h.add_test_pane();
+        let caller = h.add_focused_terminal();
         let target = h.add_test_pane();
         let workspace = h.workspace_root();
         let context_id = h.app.windows[h.app.active_window].context_id;
@@ -16960,9 +16925,9 @@ mod flight_recorder_session {
 
         let credential = mon.issue_credential(
             Some(caller),
-            context_id,
-            &workspace,
             &format!("pane:{caller}"),
+
+
         );
         let (tx, rx) = std::sync::mpsc::channel();
         let tool_timeout = crate::testing::load_aware_timeout(Duration::from_secs(5));
@@ -16990,12 +16955,12 @@ mod flight_recorder_session {
         let reply = workspace.join("flight-reply.json");
         let request: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
             "type":"call_plugin_tool", "plugin_id":"flight-probe", "tool":"probe.todo",
-            "input_json": r#"{"text":"Buy groceries"}"#, "caller_pane_id": caller,
-            "call_credential": credential, "peer_ancestry": [std::process::id()],
+            "input_json": r#"{"text":"Buy groceries"}"#,
+            "call_credential": credential,
             "target_pane_id": target, "wait_approved": true, "response_file": reply,
         }))
         .unwrap();
-        h.inject_ipc(request);
+        h.inject_from_pane(caller, request);
         pump_until(&mut h, || !mon.list_pending().is_empty());
         mon.approve_pending(
             &mon.list_pending()[0].pending_request_id,
@@ -17156,16 +17121,16 @@ mod attention_review {
                 "session_id": "sess-pi-host",
                 "expected_revision": "rev-1",
             }),
-            &[],
+            &crate::broker::caller::RequestOrigin::HostSystem,
             &ask_file,
         );
         let ask_val: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&ask_file).unwrap()).unwrap();
         assert_eq!(ask_val["ok"], true, "{ask_val}");
         let qid = ask_val["id"].as_str().unwrap().to_string();
-        let ui_token = ask_val["ui_token"].as_str().unwrap().to_string();
+        assert!(ask_val.get("ui_token").is_none(), "{ask_val}");
 
-        // Unauthenticated agent pane caller (`caller_pane_id` present, no `ui_token`) is refused
+        // The API never answers: the question stays open for the desktop.
         let forged_file =
             crate::rpc::response_file_in(&crate::config::config_dir(), "test-ny-forged", "json");
         h.app.handle_needs_you_api(
@@ -17173,34 +17138,28 @@ mod attention_review {
             &serde_json::json!({
                 "id": qid,
                 "answer": "9:16",
-                "caller_pane_id": 1,
             }),
-            &[],
+            &crate::broker::caller::RequestOrigin::HostSystem,
             &forged_file,
         );
         let forged_val: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&forged_file).unwrap()).unwrap();
         assert_eq!(forged_val["ok"], false, "{forged_val}");
-        assert_eq!(forged_val["error_code"], "permission_denied");
+        assert_eq!(forged_val["error_code"], "approval_required");
+        assert!(monitor.get_needs_you(&qid).unwrap().resolution.is_none());
 
-        // Authenticated answer settles the question without minting a grant
-        let ans_file =
-            crate::rpc::response_file_in(&crate::config::config_dir(), "test-ny-ans", "json");
-        h.app.handle_needs_you_api(
-            "answer",
-            &serde_json::json!({
-                "id": qid,
-                "answer": "9:16",
-                "ui_token": ui_token,
-                "caller_pane_id": 1,
-            }),
-            &[],
-            &ans_file,
+        // The desktop answer settles the question without minting a grant
+        monitor
+            .answer_needs_you_decided(
+                crate::broker::consent::DecisionEvidence::for_test(&qid, "9:16"),
+                &qid,
+                "9:16",
+            )
+            .unwrap();
+        assert_eq!(
+            monitor.get_needs_you(&qid).unwrap().answer.as_deref(),
+            Some("9:16")
         );
-        let ans_val: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&ans_file).unwrap()).unwrap();
-        assert_eq!(ans_val["ok"], true, "{ans_val}");
-        assert_eq!(ans_val["answer"], "9:16");
         assert_eq!(monitor.store().records().len(), grants_before);
 
         // Complete continuation and reconcile by session_id
@@ -17213,7 +17172,7 @@ mod attention_review {
                 "state": "completed",
                 "receipt": r#"{"ok":true,"clip_id":"intro","revision_after":"rev-2"}"#,
             }),
-            &[],
+            &crate::broker::caller::RequestOrigin::HostSystem,
             &comp_file,
         );
         let comp_val: serde_json::Value =
@@ -17228,7 +17187,7 @@ mod attention_review {
             &serde_json::json!({
                 "session_id": "sess-pi-host",
             }),
-            &[],
+            &crate::broker::caller::RequestOrigin::HostSystem,
             &rec_file,
         );
         let rec_val: serde_json::Value =
@@ -17301,7 +17260,6 @@ mod pane_worktree_tests {
             boot_timeout_secs: None,
             worktree: Some("feature/0668-clean".to_string()),
             result_schema: None,
-            source: crate::protocol::SpawnSource::InProcess,
         });
         h.run_frames(1);
 
@@ -17380,7 +17338,6 @@ mod pane_worktree_tests {
             boot_timeout_secs: None,
             worktree: Some("feature/0668-dirty".to_string()),
             result_schema: None,
-            source: crate::protocol::SpawnSource::InProcess,
         });
         h.run_frames(1);
 
@@ -17455,7 +17412,6 @@ mod pane_worktree_tests {
             boot_timeout_secs: None,
             worktree: Some("feature/0668-ahead".to_string()),
             result_schema: None,
-            source: crate::protocol::SpawnSource::InProcess,
         });
         h.run_frames(1);
 
@@ -17541,7 +17497,6 @@ mod pane_result_harness_tests {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: Some(schema),
-            source: crate::protocol::SpawnSource::InProcess,
         });
         h.run_frames(1);
 
@@ -17780,7 +17735,6 @@ mod agent_state_restoration_tests {
 
         h.app.workspace_dirty = false;
         h.inject_ipc(HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id,
             state: AgentState::Working,
             agent: "claude".to_string(),
@@ -18197,7 +18151,6 @@ mod agent_state_restoration_tests {
             paste: false,
             response_file: Some(send_resp),
             operation_id: None,
-            peer_ancestry: None,
         });
         h.hidden_frame();
 
@@ -18348,14 +18301,14 @@ mod agent_state_restoration_tests {
         let master_pane = h.add_focused_terminal();
 
         let spawn_reply = temp_response(tmp.path(), "spawn-worker");
-        h.inject_ipc(HostRequest::AgentSpawn {
+        h.inject_from_pane(master_pane, HostRequest::AgentSpawn {
+            anchor_pane: None,
             role: "auditor".into(),
             harness: "pi".into(),
             command: "sleep 30".into(),
             task: Some("Audit auth".into()),
             subcontext: None,
             ephemeral: true,
-            parent_pane_id: Some(master_pane),
             name: Some("auditor-worker".into()),
             cwd: Some(tmp.path().to_string_lossy().to_string()),
             worktree: None,
@@ -18363,14 +18316,12 @@ mod agent_state_restoration_tests {
             initial_slots: vec![("summary".into(), "Auth audit passed".into())],
             focus: false,
             response_file: spawn_reply.clone(),
-            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
         let spawned = read_json_response(&spawn_reply);
         let worker_id = spawned["pane_id"].as_u64().unwrap();
 
         h.inject_ipc(HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id: worker_id,
             state: AgentState::Completed,
             agent: "pi".into(),
@@ -18430,7 +18381,6 @@ mod agent_state_restoration_tests {
             query: "pi-sess-900".into(),
             subcontext: None,
             response_file: reopen_reply.clone(),
-            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
 
@@ -18740,7 +18690,6 @@ mod agent_state_restoration_tests {
         // Starting and immediately exiting a blank `pi` instance (reporting `idle` with `session_id: None`)
         // on pane 12 must NOT clobber its previously persisted `agent_session_id`.
         h.inject_ipc(HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id: 12,
             state: AgentState::Idle,
             agent: "pi".to_string(),
@@ -18751,7 +18700,6 @@ mod agent_state_restoration_tests {
         });
         h.hidden_frame();
         h.inject_ipc(HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id: 12,
             state: AgentState::Idle,
             agent: "pi".to_string(),
@@ -18802,7 +18750,6 @@ mod agent_state_restoration_tests {
                 paste: false,
                 response_file: Some(send_resp),
                 operation_id: None,
-                peer_ancestry: None,
             });
             h.hidden_frame();
 
@@ -19961,7 +19908,7 @@ fn agent_tool_call_protocol_accepts_blocking_and_async_requests() {
     for asynchronous in [false, true] {
         let request = serde_json::json!({
             "type": "agent_call", "role": "tester", "task": "Verify result",
-            "parent_pane_id": 42, "asynchronous": asynchronous,
+            "asynchronous": asynchronous,
             "response_file": "/tmp/unused-agent-call-reply"
         });
         assert!(serde_json::from_value::<crate::protocol::HostRequest>(request).is_ok());
@@ -20030,7 +19977,6 @@ fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_an
         &profile_dir,
         &proj_dir,
         Some("Investigate module"),
-        None,
         &stops,
     )
     .expect("resolve agent start payload");
@@ -20170,31 +20116,23 @@ impl AgentFocusFixture {
         payload["command"] = serde_json::Value::String("sleep 30".into());
         payload["response_file"] =
             serde_json::Value::String(temp_response(self.home.path(), "agent-focus"));
-        let mut request: HostRequest =
-            serde_json::from_value(payload).expect("valid AgentSpawn request");
-        // The harness stands in for the verified socket path: the claimed
-        // caller is trusted as an in-process caller's is.
-        if let HostRequest::AgentSpawn { source, .. } = &mut request {
-            *source = crate::protocol::SpawnSource::InProcess;
-        }
-        request
+        serde_json::from_value(payload).expect("valid AgentSpawn request")
     }
 
-    pub(super) fn start(&self, caller: Option<u64>) -> HostRequest {
+    pub(super) fn start(&self) -> HostRequest {
         self.request(
             crate::cli::agent::resolve_agent_start_in_stopping_at(
                 "researcher",
                 &self.profile_dir,
                 &self.proj_dir,
                 None,
-                caller,
                 &self.stops(),
             )
             .expect("resolve agent start payload"),
         )
     }
 
-    fn spawn(&self, caller: Option<u64>) -> HostRequest {
+    fn spawn(&self) -> HostRequest {
         self.request(
             crate::cli::agent::resolve_agent_spawn_in_stopping_at(
                 "researcher",
@@ -20203,7 +20141,6 @@ impl AgentFocusFixture {
                 Some("background task"),
                 None,
                 None,
-                caller,
                 &self.stops(),
             )
             .expect("resolve agent spawn payload"),
@@ -20231,9 +20168,9 @@ fn agent_start_from_focused_terminal_focuses_new_pane_and_routes_typed_input() {
         crate::app::input_owner::InputOwner::Pane(caller)
     );
 
-    let req = fx.start(Some(caller));
+    let req = fx.start();
     let reply = agent_spawn_reply(&req);
-    h.inject_ipc(req);
+    h.inject_from_pane(caller, req);
     h.hidden_frame();
     let spawned = read_json_response(&reply);
     assert_eq!(spawned["ok"], true, "agent start must succeed: {spawned}");
@@ -20282,9 +20219,9 @@ fn agent_spawn_background_worker_preserves_caller_focus() {
     let fx = AgentFocusFixture::new();
     let mut h = HostHarness::new();
     let caller = h.add_focused_terminal();
-    let req = fx.spawn(Some(caller));
+    let req = fx.spawn();
     let reply = agent_spawn_reply(&req);
-    h.inject_ipc(req);
+    h.inject_from_pane(caller, req);
     h.run_frames(3);
     assert_eq!(read_json_response(&reply)["ok"], true);
     assert_eq!(h.app.active_focused_pane_id(), Some(caller));
@@ -20294,14 +20231,14 @@ fn agent_spawn_background_worker_preserves_caller_focus() {
     );
 }
 
-/// Stint 1117: a stale caller id (pane closed or never existed) must not
-/// manufacture a focus handoff.
+/// Stint 1117: a caller the host cannot identify must not manufacture a
+/// focus handoff (stint 1285: there is no claimed caller id to go stale).
 #[test]
 fn agent_start_with_stale_caller_preserves_focus() {
     let fx = AgentFocusFixture::new();
     let mut h = HostHarness::new();
     let caller = h.add_focused_terminal();
-    h.inject_ipc(fx.start(Some(9_999_999)));
+    h.inject_socket(fx.start(), None);
     h.run_frames(3);
     assert_eq!(h.app.active_focused_pane_id(), Some(caller));
     assert_eq!(
@@ -20325,7 +20262,7 @@ fn agent_start_from_background_context_caller_preserves_active_focus() {
     assert_eq!(h.app.router.active().context_id, active_ctx);
     assert_eq!(h.app.active_focused_pane_id(), Some(front_pane));
 
-    h.inject_ipc(fx.start(Some(background_caller)));
+    h.inject_from_pane(background_caller, fx.start());
     h.run_frames(3);
     assert_eq!(h.app.router.active().context_id, active_ctx);
     assert_eq!(h.app.active_focused_pane_id(), Some(front_pane));
@@ -20344,7 +20281,6 @@ fn agent_start_unknown_agent_fails_before_launch_and_preserves_focus() {
         &fx.profile_dir,
         &fx.proj_dir,
         None,
-        Some(caller),
         &fx.stops(),
     );
     assert!(err.is_err(), "unknown agent must fail to resolve");
@@ -20364,14 +20300,14 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
 
     // 1. Human-spawned lead agent (`researcher`).
     let spawn_lead_reply = temp_response(&workspace, "spawn-lead");
-    h.inject_ipc(HostRequest::AgentSpawn {
+    h.inject_from_pane(human_shell, HostRequest::AgentSpawn {
+        anchor_pane: None,
         role: "researcher".into(),
         harness: "pi".into(),
         command: "sleep 30".into(),
         task: Some("Investigate auth flow".into()),
         subcontext: None,
         ephemeral: false,
-        parent_pane_id: Some(human_shell),
         name: None,
         cwd: Some(workspace.to_string_lossy().into_owned()),
         worktree: None,
@@ -20379,24 +20315,24 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
         initial_slots: vec![],
         focus: false,
         response_file: spawn_lead_reply.clone(),
-        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let lead_resp = read_json_response(&spawn_lead_reply);
     assert_eq!(lead_resp["ok"], true);
     let lead_pane = lead_resp["pane_id"].as_u64().unwrap();
-    assert_eq!(lead_resp["spawned_by"], "human");
+    // A socket request is the pane that sent it, never the person (stint 1285).
+    assert_eq!(lead_resp["spawned_by"], format!("pane:{human_shell}"));
 
     // 2. Agent-spawned child (`auditor`) from `lead_pane` (`researcher`).
     let spawn_child_reply = temp_response(&workspace, "spawn-child");
-    h.inject_ipc(HostRequest::AgentSpawn {
+    h.inject_from_pane(lead_pane, HostRequest::AgentSpawn {
+        anchor_pane: None,
         role: "auditor".into(),
         harness: "claude".into(),
         command: "sleep 30".into(),
         task: Some("Audit token lifetimes".into()),
         subcontext: None,
         ephemeral: false,
-        parent_pane_id: Some(lead_pane),
         name: None,
         cwd: Some(workspace.to_string_lossy().into_owned()),
         worktree: None,
@@ -20404,7 +20340,6 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
         initial_slots: vec![],
         focus: false,
         response_file: spawn_child_reply.clone(),
-        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let child_resp = read_json_response(&spawn_child_reply);
@@ -20424,6 +20359,19 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
                 "question": "Choose caching layer",
                 "out": workspace.join("team-out"),
             }),
+            // A host-started team bounded by the members' tools.
+            &crate::agent::runs::AgentsCaller::Host {
+                ceiling: ["agents.review", "agents.ping", "agents.admin"]
+                    .iter()
+                    .map(|tool| crate::agent::runs::CeilingRow {
+                        tool: tool.to_string(),
+                        decision: crate::broker::Decision::Allow,
+                        duration: crate::broker::GrantDuration::Always,
+                        expires_at: None,
+                        bound_run: None,
+                    })
+                    .collect(),
+            },
             team_reply.to_str().unwrap(),
         )
         .unwrap();
@@ -20452,7 +20400,7 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
             .find(|p| p["id"].as_u64() == Some(id))
             .unwrap_or_else(|| panic!("missing pane {id} in {arr:?}"))
     };
-    assert_eq!(find_pane(lead_pane)["spawned_by"], "human");
+    assert_eq!(find_pane(lead_pane)["spawned_by"], format!("pane:{human_shell}"));
     assert_eq!(find_pane(child_pane)["spawned_by"], "agent:researcher");
     assert_eq!(find_pane(child_pane)["parent_pane_id"], lead_pane);
     assert_eq!(
@@ -20520,14 +20468,14 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
 
     // Spawn interactive parent agent (`lead`), initially Working (mid-turn).
     let lead_reply = temp_response(dir.path(), "spawn-lead");
-    h.inject_ipc(HostRequest::AgentSpawn {
+    h.inject_from_pane(human_shell, HostRequest::AgentSpawn {
+        anchor_pane: None,
         role: "lead".into(),
         harness: "pi".into(),
         command: "sleep 30".into(),
         task: Some("Coordinate two workers".into()),
         subcontext: None,
         ephemeral: false,
-        parent_pane_id: Some(human_shell),
         name: None,
         cwd: None,
         worktree: None,
@@ -20535,7 +20483,6 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
         initial_slots: vec![],
         focus: false,
         response_file: lead_reply.clone(),
-        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let lead_id = read_json_response(&lead_reply)["pane_id"].as_u64().unwrap();
@@ -20544,14 +20491,14 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     let mut child_ids = Vec::new();
     for i in 1..=3 {
         let rep = temp_response(dir.path(), &format!("spawn-worker-{i}"));
-        h.inject_ipc(HostRequest::AgentSpawn {
+        h.inject_from_pane(lead_id, HostRequest::AgentSpawn {
+            anchor_pane: None,
             role: format!("worker-{i}"),
             harness: "claude".into(),
             command: "sleep 30".into(),
             task: Some(format!("Subtask {i}")),
             subcontext: None,
             ephemeral: false,
-            parent_pane_id: Some(lead_id),
             name: None,
             cwd: None,
             worktree: None,
@@ -20559,7 +20506,6 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
             initial_slots: vec![],
             focus: false,
             response_file: rep.clone(),
-            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
         child_ids.push(read_json_response(&rep)["pane_id"].as_u64().unwrap());
@@ -20570,7 +20516,6 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     for (cid, label, ans) in [(c1, "first Done", "alpha"), (c2, "second Done", "beta")] {
         let done_rep = temp_response(dir.path(), &format!("done-{cid}"));
         h.inject_ipc(HostRequest::AgentDone {
-            peer_ancestry: None,
             pane_id: cid,
             result: Some(serde_json::json!({"answer": ans}).to_string()),
             summary: Some(label.to_string()),
@@ -20606,7 +20551,6 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
 
     // 2. When `lead_id` reports `Idle`, ALL queued results (c1 and c2) are delivered as ONE batched turn!
     h.inject_ipc(HostRequest::SetAgentState {
-        peer_ancestry: None,
         pane_id: lead_id,
         state: AgentState::Idle,
         agent: "pi".into(),
@@ -20643,7 +20587,6 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     // Clear any in-flight submit from batch 1 first.
     h.app.pending_submits.clear();
     h.inject_ipc(HostRequest::SetAgentState {
-        peer_ancestry: None,
         pane_id: lead_id,
         state: AgentState::Working,
         agent: "pi".into(),
@@ -20659,7 +20602,6 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
         pane_ids: vec![c3],
         timeout_secs: 30.0,
         response_file: wait_c3_reply.clone(),
-        peer_ancestry: None,
     });
     h.hidden_frame();
     assert!(
@@ -20669,7 +20611,6 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
 
     let done_c3_reply = temp_response(dir.path(), "done-c3");
     h.inject_ipc(HostRequest::AgentDone {
-        peer_ancestry: None,
         pane_id: c3,
         result: Some(serde_json::json!({"answer": "gamma"}).to_string()),
         summary: Some("third Done".into()),
@@ -20684,7 +20625,6 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
 
     // Transition `lead_id` to Idle -> no second batch is delivered because c3 was pulled via AgentWait!
     h.inject_ipc(HostRequest::SetAgentState {
-        peer_ancestry: None,
         pane_id: lead_id,
         state: AgentState::Idle,
         agent: "pi".into(),
@@ -20714,7 +20654,6 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
         pane_ids: vec![c1, c2, c3],
         timeout_secs: 5.0,
         response_file: wait_after_close.clone(),
-        peer_ancestry: None,
     });
     h.hidden_frame();
     let after_close_json = read_json_response(&wait_after_close);
@@ -20732,14 +20671,14 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
     let human_shell_id = h.add_focused_terminal();
 
     let spawn_reply = temp_response(dir.path(), "human-spawn-worker");
-    h.inject_ipc(HostRequest::AgentSpawn {
+    h.inject_from_pane(human_shell_id, HostRequest::AgentSpawn {
+        anchor_pane: None,
         role: "helper".into(),
         harness: "script".into(),
         command: "sleep 30".into(),
         task: None,
         subcontext: None,
         ephemeral: false,
-        parent_pane_id: Some(human_shell_id),
         name: None,
         cwd: Some(dir.path().to_string_lossy().into_owned()),
         worktree: None,
@@ -20747,7 +20686,6 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
         initial_slots: vec![],
         focus: false,
         response_file: spawn_reply.clone(),
-        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let spawn_json = read_json_response(&spawn_reply);
@@ -20759,7 +20697,6 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
         result: Some(serde_json::json!({"ok": true}).to_string()),
         summary: Some("helper finished".into()),
         response_file: done_reply.clone(),
-        peer_ancestry: None,
     });
     h.hidden_frame();
     let done_json = read_json_response(&done_reply);
@@ -20893,7 +20830,6 @@ allow = ["pane.send"]
         &profile_dir,
         &proj_dir,
         None,
-        Some(human_shell),
         &stops,
     )
     .expect("resolve agent start without message");
@@ -20948,14 +20884,14 @@ allow = ["pane.send"]
     // 3. Claude parent provenance:
     // Spawn a parent agent running Claude (`role: "claude-code"`).
     let spawn_claude_reply = temp_response(fake_home.path(), "spawn-claude");
-    h.inject_ipc(HostRequest::AgentSpawn {
+    h.inject_from_pane(human_shell, HostRequest::AgentSpawn {
+        anchor_pane: None,
         role: "claude-code".into(),
         harness: "claude".into(),
         command: "sleep 30".into(),
         task: Some("Coordinate security audit".into()),
         subcontext: None,
         ephemeral: false,
-        parent_pane_id: Some(human_shell),
         name: None,
         cwd: Some(proj_dir.to_string_lossy().into_owned()),
         worktree: None,
@@ -20963,13 +20899,12 @@ allow = ["pane.send"]
         initial_slots: vec![],
         focus: false,
         response_file: spawn_claude_reply.clone(),
-        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let claude_resp = read_json_response(&spawn_claude_reply);
     assert_eq!(claude_resp["ok"], true);
     let claude_pane = claude_resp["pane_id"].as_u64().unwrap();
-    assert_eq!(claude_resp["spawned_by"], "human");
+    assert_eq!(claude_resp["spawned_by"], format!("pane:{human_shell}"));
 
     // Task-seeded interactive spawn from Claude parent:
     let spawn_payload = crate::cli::agent::resolve_agent_spawn_in_stopping_at(
@@ -20979,7 +20914,6 @@ allow = ["pane.send"]
         Some("Audit token lifetimes"),
         None,
         Some(false),
-        Some(claude_pane),
         &stops,
     )
     .expect("resolve agent spawn with task");
@@ -20997,7 +20931,7 @@ allow = ["pane.send"]
     let mut req_2 = spawn_payload.clone();
     req_2["command"] = serde_json::Value::String("sleep 30".to_string());
     req_2["response_file"] = serde_json::Value::String(spawn_reply_2.clone());
-    h.inject_in_process(serde_json::from_value(req_2).unwrap());
+    h.inject_from_pane(claude_pane, serde_json::from_value(req_2).unwrap());
     h.hidden_frame();
 
     let spawn_resp_2 = read_json_response(&spawn_reply_2);
@@ -21024,7 +20958,6 @@ allow = ["pane.send"]
         pane_ids: vec![child_pane_id],
         timeout_secs: 30.0,
         response_file: wait_reply.clone(),
-        peer_ancestry: None,
     });
     h.hidden_frame();
     assert!(
@@ -21038,7 +20971,6 @@ allow = ["pane.send"]
         pane_id: child_pane_id,
         result: Some(serde_json::json!({"status": "passed", "vulnerabilities": 0}).to_string()),
         summary: Some("Token lifetime audit passed cleanly".to_string()),
-        peer_ancestry: None,
         response_file: done_reply.clone(),
     });
     h.hidden_frame();
@@ -21106,7 +21038,6 @@ allow = ["pane.send"]
         pane_ids: vec![child_pane_id],
         timeout_secs: 5.0,
         response_file: wait_after_close.clone(),
-        peer_ancestry: None,
     });
     h.hidden_frame();
     let wait_closed_resp = read_json_response(&wait_after_close);
@@ -21120,7 +21051,6 @@ allow = ["pane.send"]
         pane_ids: vec![start_pane_id],
         timeout_secs: 30.0,
         response_file: start_close_wait.clone(),
-        peer_ancestry: None,
     });
     h.hidden_frame();
     assert!(
@@ -21156,7 +21086,6 @@ allow = ["pane.send"]
         Some("Exercise nonzero lifecycle"),
         None,
         Some(false),
-        Some(claude_pane),
         &stops,
     )
     .expect("resolve task-seeded spawn for failed lifecycle");
@@ -21175,7 +21104,6 @@ allow = ["pane.send"]
         pane_ids: vec![failed_child_pane_id],
         timeout_secs: 30.0,
         response_file: failed_wait.clone(),
-        peer_ancestry: None,
     });
     h.hidden_frame();
     assert!(
@@ -21191,7 +21119,6 @@ allow = ["pane.send"]
         session_id: None,
         event: Some("HarnessExit".to_string()),
         blocked_reason: None,
-        peer_ancestry: None,
     });
     h.hidden_frame();
 
@@ -21356,7 +21283,7 @@ ask = ["pane.send"]
         .backend
         .child_pid();
     let send_reply = temp_response(ws_dir.path(), "restored-lead-send");
-    h.inject_ipc(HostRequest::SendToPane {
+    h.inject_socket(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: 11,
         text: "hello from restored lead".to_string(),
@@ -21364,8 +21291,7 @@ ask = ["pane.send"]
         paste: false,
         response_file: Some(send_reply.clone()),
         operation_id: None,
-        peer_ancestry: Some(vec![lead_pid]),
-    });
+    }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[lead_pid])));
     h.hidden_frame();
 
     let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile_dir.path()).unwrap();
@@ -21429,7 +21355,7 @@ ask = ["pane.send"]
         .child_pid();
 
     let reply_1 = temp_response(&ws, "send-parked-1");
-    h.inject_ipc(HostRequest::SendToPane {
+    h.inject_socket(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: target_pane,
         text: "first message".to_string(),
@@ -21437,8 +21363,7 @@ ask = ["pane.send"]
         paste: false,
         response_file: Some(reply_1.clone()),
         operation_id: None,
-        peer_ancestry: Some(vec![lead_pid]),
-    });
+    }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[lead_pid])));
     h.hidden_frame();
 
     assert!(
@@ -21464,7 +21389,7 @@ ask = ["pane.send"]
 
     // Second send must require a fresh approval because the Once grant was consumed.
     let reply_2 = temp_response(&ws, "send-parked-2");
-    h.inject_ipc(HostRequest::SendToPane {
+    h.inject_socket(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: target_pane,
         text: "second message".to_string(),
@@ -21472,8 +21397,7 @@ ask = ["pane.send"]
         paste: false,
         response_file: Some(reply_2.clone()),
         operation_id: None,
-        peer_ancestry: Some(vec![lead_pid]),
-    });
+    }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[lead_pid])));
     h.hidden_frame();
     assert!(
         !std::path::Path::new(&reply_2).exists(),
@@ -21533,13 +21457,14 @@ ask = ["pane.send"]
         .child_pid();
 
     let reply_1 = temp_response(&ws, "send-retry-1");
-    h.inject_ipc(
+    h.inject_socket(
         serde_json::from_value(serde_json::json!({
             "type": "send_to_pane", "pane_id": target_pane, "text": "attempt 1",
             "submit": false, "paste": false, "response_file": reply_1,
-            "peer_ancestry": [lead_pid], "operation_id": "op-pane-send-1"
+            "operation_id": "op-pane-send-1"
         }))
         .unwrap(),
+        Some(crate::broker::caller::PeerWitness::for_live_pids(&[lead_pid])),
     );
     h.hidden_frame();
 
@@ -21601,7 +21526,7 @@ ask = ["pane.send"]
     // Approval of one payload must not authorize a different payload to the
     // same pane, even when the earlier caller has already timed out.
     let unrelated_reply = temp_response(&ws, "send-retry-unrelated");
-    h.inject_ipc(HostRequest::SendToPane {
+    h.inject_socket(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: target_pane,
         text: "unrelated message".to_string(),
@@ -21609,8 +21534,7 @@ ask = ["pane.send"]
         paste: false,
         response_file: Some(unrelated_reply.clone()),
         operation_id: None,
-        peer_ancestry: Some(vec![lead_pid]),
-    });
+    }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[lead_pid])));
     h.hidden_frame();
     assert!(
         !std::path::Path::new(&unrelated_reply).exists(),
@@ -21620,7 +21544,7 @@ ask = ["pane.send"]
 
     // Agent retries `pane send` — must consume the Once grant and succeed without asking again.
     let reply_2 = temp_response(&ws, "send-retry-2");
-    h.inject_ipc(HostRequest::SendToPane {
+    h.inject_socket(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: target_pane,
         text: "attempt 1".to_string(),
@@ -21628,8 +21552,7 @@ ask = ["pane.send"]
         paste: false,
         response_file: Some(reply_2.clone()),
         operation_id: Some("op-pane-send-1".into()),
-        peer_ancestry: Some(vec![lead_pid]),
-    });
+    }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[lead_pid])));
     h.hidden_frame();
 
     let json_2 = read_json_response(&reply_2);
@@ -21650,7 +21573,7 @@ ask = ["pane.send"]
     // A transport retry of an already executed operation must return a
     // duplicate receipt, not write the same terminal input a second time.
     let duplicate_reply = temp_response(&ws, "send-retry-duplicate");
-    h.inject_ipc(HostRequest::SendToPane {
+    h.inject_socket(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: target_pane,
         text: "attempt 1".to_string(),
@@ -21658,8 +21581,7 @@ ask = ["pane.send"]
         paste: false,
         response_file: Some(duplicate_reply.clone()),
         operation_id: Some("op-pane-send-1".into()),
-        peer_ancestry: Some(vec![lead_pid]),
-    });
+    }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[lead_pid])));
     h.hidden_frame();
     let duplicate = read_json_response(&duplicate_reply);
     assert_eq!(duplicate["duplicate"], true, "{duplicate}");
@@ -21675,7 +21597,7 @@ ask = ["pane.send"]
         &serde_json::json!({
             "id": "op-pane-send-1", "state": "running"
         }),
-        &[lead_pid],
+        &h.app.socket_origin_for_pids(&[lead_pid]),
         &forged_reply,
     );
     let forged = read_json_response(&forged_reply);
@@ -21686,7 +21608,7 @@ ask = ["pane.send"]
     );
 
     let conflict_reply = temp_response(&ws, "send-retry-conflict");
-    h.inject_ipc(HostRequest::SendToPane {
+    h.inject_socket(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: target_pane,
         text: "different text with same id".to_string(),
@@ -21694,8 +21616,7 @@ ask = ["pane.send"]
         paste: false,
         response_file: Some(conflict_reply.clone()),
         operation_id: Some("op-pane-send-1".into()),
-        peer_ancestry: Some(vec![lead_pid]),
-    });
+    }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[lead_pid])));
     h.hidden_frame();
     let conflict = read_json_response(&conflict_reply);
     assert_eq!(
@@ -21709,7 +21630,7 @@ ask = ["pane.send"]
 
     // A third call after the retry consumed the Once grant must ask again.
     let reply_3 = temp_response(&ws, "send-retry-3");
-    h.inject_ipc(HostRequest::SendToPane {
+    h.inject_socket(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: target_pane,
         text: "attempt 3".to_string(),
@@ -21717,8 +21638,7 @@ ask = ["pane.send"]
         paste: false,
         response_file: Some(reply_3.clone()),
         operation_id: None,
-        peer_ancestry: Some(vec![lead_pid]),
-    });
+    }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[lead_pid])));
     h.hidden_frame();
     assert_eq!(
         monitor.list_pending().len(),
@@ -21733,7 +21653,17 @@ ask = ["pane.send"]
         .find(|wait| wait.response_file.as_deref() == Some(reply_3.as_str()))
         .expect("third send remains parked");
     // The pane still exists, but the socket client that made this call died.
-    parked.peer_ancestry = Some(vec![0, lead_pid]);
+    // A client that really died: this pid has exited and been reaped.
+    let mut exited = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+    let exited_pid = exited.id();
+    exited.wait().unwrap();
+    parked.origin = crate::broker::caller::RequestOrigin::Socket(
+        crate::broker::caller::SocketCaller::External(crate::broker::caller::PeerWitness {
+            pid: exited_pid,
+            hops: Vec::new(),
+            end: crate::broker::caller::AncestryEnd::ReachedRoot,
+        }),
+    );
     let disconnected_id = parked.pending_request_id.clone();
     monitor
         .approve_pending(&disconnected_id, crate::broker::gate::ApprovalChoice::Once)
@@ -21792,14 +21722,14 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
         h.hidden_frame();
 
         let lead_reply = temp_response(ws_dir.path(), "spawn-lead");
-        h.inject_ipc(HostRequest::AgentSpawn {
+        h.inject_in_process(HostRequest::AgentSpawn {
+            anchor_pane: None,
             role: "lead".into(),
             harness: "script".into(),
             command: "sleep 30".into(),
             task: None,
             subcontext: None,
             ephemeral: false,
-            parent_pane_id: None,
             name: None,
             cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
             worktree: None,
@@ -21807,7 +21737,6 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
             initial_slots: vec![],
             focus: false,
             response_file: lead_reply.clone(),
-            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
         let lead_id = read_json_response(&lead_reply)["pane_id"]
@@ -21815,14 +21744,14 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
             .expect("lead pane_id");
 
         let helper_reply = temp_response(ws_dir.path(), "spawn-helper");
-        h.inject_ipc(HostRequest::AgentSpawn {
+        h.inject_from_pane(lead_id, HostRequest::AgentSpawn {
+            anchor_pane: None,
             role: "helper".into(),
             harness: "script".into(),
             command: "sleep 30".into(),
             task: Some("assist lead".into()),
             subcontext: None,
             ephemeral: false,
-            parent_pane_id: Some(lead_id),
             name: None,
             cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
             worktree: None,
@@ -21830,7 +21759,6 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
             initial_slots: vec![],
             focus: false,
             response_file: helper_reply.clone(),
-            source: crate::protocol::SpawnSource::InProcess,
         });
         h.hidden_frame();
         let helper_id = read_json_response(&helper_reply)["pane_id"]
@@ -21922,14 +21850,14 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
         }
     }
     let spawn_reply = temp_response(ws_dir.path(), "spawn-oneshot");
-    h.inject_ipc(HostRequest::AgentSpawn {
+    h.inject_from_pane(human_shell, HostRequest::AgentSpawn {
+        anchor_pane: None,
         role: "oneshot".into(),
         harness: "script".into(),
         command: "sleep 30".into(),
         task: None,
         subcontext: None,
         ephemeral: false,
-        parent_pane_id: Some(human_shell),
         name: None,
         cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
         worktree: None,
@@ -21937,7 +21865,6 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
         initial_slots: vec![],
         focus: false,
         response_file: spawn_reply.clone(),
-        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let oneshot_pane = read_json_response(&spawn_reply)["pane_id"]
@@ -21951,7 +21878,6 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
         result: Some("{}".to_string()),
         summary: Some("oneshot-ok".to_string()),
         response_file: done_reply.clone(),
-        peer_ancestry: None,
     });
     h.hidden_frame();
     let done_json = read_json_response(&done_reply);
@@ -21965,7 +21891,6 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
         session_id: None,
         event: Some("HarnessExit".to_string()),
         blocked_reason: None,
-        peer_ancestry: None,
     });
     h.hidden_frame();
 
@@ -22130,7 +22055,6 @@ mod restore_followups_0983b {
             paste: false,
             response_file: Some(send_resp),
             operation_id: None,
-            peer_ancestry: None,
         });
         h.hidden_frame();
         let term = h.app.windows[win_idx].panes[&30]
@@ -22193,14 +22117,14 @@ mod restore_followups_0983b {
             }
 
             let spawn_reply = temp_response(ws_dir.path(), "spawn-oneshot-wait");
-            h.inject_ipc(HostRequest::AgentSpawn {
+            h.inject_from_pane(human_shell, HostRequest::AgentSpawn {
+                anchor_pane: None,
                 role: "oneshot".into(),
                 harness: "script".into(),
                 command: "sleep 30".into(),
                 task: None,
                 subcontext: None,
                 ephemeral: false,
-                parent_pane_id: Some(human_shell),
                 name: None,
                 cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
                 worktree: None,
@@ -22208,7 +22132,6 @@ mod restore_followups_0983b {
                 initial_slots: vec![],
                 focus: false,
                 response_file: spawn_reply.clone(),
-                source: crate::protocol::SpawnSource::InProcess,
             });
             h.hidden_frame();
             let child_id = read_json_response(&spawn_reply)["pane_id"]
@@ -22220,7 +22143,6 @@ mod restore_followups_0983b {
                 pane_ids: vec![child_id],
                 timeout_secs: 30.0,
                 response_file: wait_reply.clone(),
-                peer_ancestry: None,
             });
 
             let done_reply = temp_response(ws_dir.path(), "oneshot-done-wait");
@@ -22229,7 +22151,6 @@ mod restore_followups_0983b {
                 result: Some("{\"answer\":42}".to_string()),
                 summary: Some("oneshot-ok".to_string()),
                 response_file: done_reply,
-                peer_ancestry: None,
             });
 
             h.inject_ipc(HostRequest::SetAgentState {
@@ -22240,7 +22161,6 @@ mod restore_followups_0983b {
                 session_id: None,
                 event: None,
                 blocked_reason: None,
-                peer_ancestry: None,
             });
             h.hidden_frame();
 
@@ -24879,9 +24799,9 @@ fn named_agent_focuses_when_running() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
     let caller = h.add_focused_terminal();
-    let req = fx.start(Some(caller));
+    let req = fx.start();
     let reply = agent_spawn_reply(&req);
-    h.inject_ipc(req);
+    h.inject_from_pane(caller, req);
     h.run_frames(2);
     let running = read_json_response(&reply)["pane_id"]
         .as_u64()
@@ -24908,7 +24828,7 @@ fn named_agent_focuses_when_running() {
             "researcher",
             &fx.proj_dir,
             Some(caller),
-            &crate::protocol::SpawnSource::InProcess,
+            &crate::broker::caller::RequestOrigin::HostUi,
         )
         .expect("open");
     h.run_frames(2);
@@ -24950,7 +24870,7 @@ fn named_agent_resumes_last_chat_when_stopped() {
             "researcher",
             &fx.proj_dir,
             Some(caller),
-            &crate::protocol::SpawnSource::InProcess,
+            &crate::broker::caller::RequestOrigin::HostUi,
         )
         .expect("open");
     h.run_frames(2);
@@ -25020,7 +24940,7 @@ fn named_agent_resumes_exited_chat_before_closed_history() {
                 "researcher",
                 &fx.proj_dir,
                 Some(caller),
-                &crate::protocol::SpawnSource::InProcess,
+                &crate::broker::caller::RequestOrigin::HostUi,
             )
             .unwrap();
         let crate::app::agent_open::AgentOpenOutcome::Resumed {
@@ -25064,7 +24984,7 @@ fn named_agent_resumes_exited_chat_before_closed_history() {
                     "researcher",
                     &fx.proj_dir,
                     Some(caller),
-                    &crate::protocol::SpawnSource::InProcess
+                    &crate::broker::caller::RequestOrigin::HostUi
                 )
                 .unwrap(),
             crate::app::agent_open::AgentOpenOutcome::Focused { pane_id }
@@ -25106,7 +25026,7 @@ fn named_agent_exited_chat_selects_newest_eligible_pane() {
             "researcher",
             &fx.proj_dir,
             Some(caller),
-            &crate::protocol::SpawnSource::InProcess,
+            &crate::broker::caller::RequestOrigin::HostUi,
         )
         .unwrap();
     assert_eq!(
@@ -25165,7 +25085,7 @@ fn named_agent_exited_chat_selects_newest_eligible_pane() {
                 "researcher",
                 &fx.proj_dir,
                 Some(caller),
-                &crate::protocol::SpawnSource::InProcess,
+                &crate::broker::caller::RequestOrigin::HostUi,
             )
             .unwrap();
         assert_eq!(
@@ -25186,7 +25106,7 @@ fn named_agent_exited_chat_selects_newest_eligible_pane() {
                 "researcher",
                 &fx.proj_dir,
                 Some(caller),
-                &crate::protocol::SpawnSource::InProcess
+                &crate::broker::caller::RequestOrigin::HostUi
             )
             .unwrap(),
         crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: live },
@@ -25228,7 +25148,7 @@ fn named_agent_starts_new_when_never_run() {
             "researcher",
             &fx.proj_dir,
             Some(caller),
-            &crate::protocol::SpawnSource::InProcess,
+            &crate::broker::caller::RequestOrigin::HostUi,
         )
         .expect("open");
     h.run_frames(2);
@@ -25254,7 +25174,7 @@ fn named_agent_starts_new_when_never_run() {
             "no-such-agent",
             &fx.proj_dir,
             Some(caller),
-            &crate::protocol::SpawnSource::InProcess,
+            &crate::broker::caller::RequestOrigin::HostUi,
         )
         .expect_err("unknown agents fail before launch");
     assert!(missing.contains("no-such-agent"), "{missing}");
@@ -25270,9 +25190,9 @@ fn cli_agent_open_matches_palette() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
     let caller = h.add_focused_terminal();
-    let req = fx.start(Some(caller));
+    let req = fx.start();
     let reply = agent_spawn_reply(&req);
-    h.inject_ipc(req);
+    h.inject_from_pane(caller, req);
     h.run_frames(2);
     let running = read_json_response(&reply)["pane_id"]
         .as_u64()
@@ -25281,12 +25201,10 @@ fn cli_agent_open_matches_palette() {
 
     h.app.pane_navigate(caller);
     let cli_reply = temp_response(fx.home.path(), "agent-open");
-    h.inject_ipc(HostRequest::AgentOpen {
+    h.inject_from_pane(caller, HostRequest::AgentOpen {
         name: "researcher".into(),
         cwd: fx.proj_dir.to_string_lossy().into_owned(),
-        caller_pane_id: Some(caller),
         response_file: cli_reply.clone(),
-        source: crate::protocol::SpawnSource::InProcess,
     });
     h.run_frames(2);
     let cli = read_json_response(&cli_reply);
@@ -25348,7 +25266,7 @@ fn named_agent_focuses_standby_pane_without_waking_it() {
             "researcher",
             &fx.proj_dir,
             Some(caller),
-            &crate::protocol::SpawnSource::InProcess,
+            &crate::broker::caller::RequestOrigin::HostUi,
         )
         .expect("open");
     h.run_frames(2);
@@ -25368,9 +25286,9 @@ fn named_agent_focuses_standby_pane_without_waking_it() {
 
 /// Start one live `researcher` pane beside `caller`; returns its pane id.
 fn start_researcher(h: &mut HostHarness, fx: &AgentFocusFixture, caller: PaneId) -> PaneId {
-    let req = fx.start(Some(caller));
+    let req = fx.start();
     let reply = agent_spawn_reply(&req);
-    h.inject_ipc(req);
+    h.inject_from_pane(caller, req);
     h.run_frames(2);
     read_json_response(&reply)["pane_id"]
         .as_u64()
@@ -25424,7 +25342,7 @@ fn named_agent_focuses_most_recently_focused_of_several() {
             "researcher",
             &fx.proj_dir,
             Some(caller),
-            &crate::protocol::SpawnSource::InProcess,
+            &crate::broker::caller::RequestOrigin::HostUi,
         )
         .expect("open");
 
@@ -25462,7 +25380,7 @@ fn named_agent_skips_exited_pane() {
             "researcher",
             &fx.proj_dir,
             Some(caller),
-            &crate::protocol::SpawnSource::InProcess,
+            &crate::broker::caller::RequestOrigin::HostUi,
         )
         .expect("open");
 
@@ -25494,7 +25412,7 @@ fn named_agent_resumes_beside_unfocused_caller() {
             "researcher",
             &fx.proj_dir,
             Some(caller),
-            &crate::protocol::SpawnSource::InProcess,
+            &crate::broker::caller::RequestOrigin::HostUi,
         )
         .expect("open");
     h.run_frames(2);
@@ -25541,7 +25459,7 @@ fn named_agent_resume_uses_verified_caller_not_claimed() {
             "researcher",
             &fx.proj_dir,
             Some(claimed),
-            &crate::protocol::SpawnSource::SocketPeer(vec![verified_pid]),
+            &h.app.socket_origin_for_pids(&[verified_pid]),
         )
         .expect("open");
     h.run_frames(2);
@@ -25571,12 +25489,12 @@ fn start_researcher_running(
     caller: PaneId,
     command: &str,
 ) -> PaneId {
-    let mut req = fx.start(Some(caller));
+    let mut req = fx.start();
     if let HostRequest::AgentSpawn { command: c, .. } = &mut req {
         *c = command.to_string();
     }
     let reply = agent_spawn_reply(&req);
-    h.inject_ipc(req);
+    h.inject_from_pane(caller, req);
     h.run_frames(2);
     read_json_response(&reply)["pane_id"]
         .as_u64()
@@ -25754,7 +25672,7 @@ fn named_agent_counts_detected_agent_after_launch_ended() {
                 "researcher",
                 &fx.proj_dir,
                 Some(caller),
-                &crate::protocol::SpawnSource::InProcess
+                &crate::broker::caller::RequestOrigin::HostUi
             )
             .expect("open"),
         crate::app::agent_open::AgentOpenOutcome::Focused { pane_id: shell }
@@ -25923,12 +25841,10 @@ fn assert_agent_mesh_ipc_gate_enabled(route: &str, enabled: bool) {
         "AgentOpen" => HostRequest::AgentOpen {
             name: "researcher".into(),
             cwd: fx.proj_dir.to_string_lossy().into_owned(),
-            caller_pane_id: Some(caller),
             response_file: response.clone(),
-            source: crate::protocol::SpawnSource::InProcess,
         },
         "AgentSpawn" => {
-            let mut request = fx.spawn(Some(caller));
+            let mut request = fx.spawn();
             if let HostRequest::AgentSpawn { response_file, .. } = &mut request {
                 *response_file = response.clone();
             }
@@ -25941,14 +25857,13 @@ fn assert_agent_mesh_ipc_gate_enabled(route: &str, enabled: bool) {
                 query: record.run_id,
                 subcontext: None,
                 response_file: response.clone(),
-                source: crate::protocol::SpawnSource::InProcess,
             }
         }
         _ => panic!("unknown route"),
     };
     let before = pane_total(&h);
     let logs = crate::testing::test_log::capture();
-    h.inject_in_process(request);
+    h.inject_from_pane(caller, request);
     h.run_frames(2);
     let reply = read_json_response(&response);
     assert_eq!(reply["ok"], enabled, "{route} enabled={enabled}: {reply}");
@@ -26052,23 +25967,23 @@ fn agent_mesh_gate_config_enable_without_restart_starts_agent() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
     drop(crate::release::set_test_experiments(&[]));
-    let request = fx.spawn(None);
+    let request = fx.spawn();
     let response = agent_spawn_reply(&request);
-    h.app.handle_pane_ipc_request(request.clone());
+    h.app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, request.clone());
     assert_eq!(read_json_response(&response)["ok"], false);
     std::fs::write(
         fx.profile_dir.join("config.toml"),
         "[experiments]\nagent_mesh = true\n",
     )
     .unwrap();
-    h.app.handle_pane_ipc_request(request.clone());
+    h.app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, request.clone());
     assert_eq!(read_json_response(&response)["ok"], true);
     std::fs::write(
         fx.profile_dir.join("config.toml"),
         "[experiments]\nagent_mesh = false\n",
     )
     .unwrap();
-    h.app.handle_pane_ipc_request(request.clone());
+    h.app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, request.clone());
     assert_eq!(read_json_response(&response)["ok"], false);
 }
 
@@ -26086,9 +26001,7 @@ fn agent_mesh_gate_agent_call_ipc() {
         h.inject_ipc(HostRequest::AgentCall {
             role: "researcher".into(),
             task: "Research".into(),
-            parent_pane_id: None,
             call_credential: None,
-            peer_ancestry: vec![u32::MAX],
             cwd: Some(fx.proj_dir.to_string_lossy().into_owned()),
             worktree: None,
             asynchronous: true,
@@ -26115,6 +26028,7 @@ fn agent_mesh_gate_agent_call_ipc() {
 fn agent_mesh_gate_team_run_ipc() {
     for enabled in [false, true] {
         let mut h = HostHarness::new();
+        let shell = h.add_focused_terminal();
         let _experiments = crate::release::set_test_experiments(if enabled {
             &[crate::release::ReleaseFeature::AgentMesh]
         } else {
@@ -26132,7 +26046,7 @@ fn agent_mesh_gate_team_run_ipc() {
         }
         std::fs::write(dir.join("gate-team.toml"), toml::to_string(&team).unwrap()).unwrap();
         let response = temp_response(&root, "team-gate");
-        h.inject_ipc(HostRequest::AgentsApi {
+        h.inject_from_pane(shell, HostRequest::AgentsApi {
             op: "team_run".into(),
             payload: serde_json::json!({"workspace":root,"name":"gate-team","question":"Choose","out":root.join("out")}),
             response_file: response.clone(),

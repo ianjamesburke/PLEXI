@@ -300,8 +300,8 @@ impl PlexiApp {
                     id,
                     action,
                     &crate::broker::gate::PermissionCaller {
-                        human: false,
                         actor_id: format!("agent:assistant:{origin_pane_id}"),
+                        revoke_scope: crate::broker::gate::RevokeScope::Own,
                     },
                 );
                 log::info!("assistant_host_tool: {name} id={id}");
@@ -867,7 +867,12 @@ impl PlexiApp {
                 egui_tiles::Tile::Pane(id) => Some(*id),
                 _ => None,
             });
-        self.handle_pane_ipc_request(crate::protocol::HostRequest::SpawnPane {
+        // The Assistant is a plugin instance acting in-process, never the
+        // person at the keyboard (stints 1632, 1285).
+        let origin = crate::broker::caller::RequestOrigin::PluginGuest(
+            crate::broker::principal::PluginInstance::in_pane("assistant", origin_pane_id),
+        );
+        self.handle_pane_ipc_request(origin, crate::protocol::HostRequest::SpawnPane {
             type_id: type_id.to_string(),
             layout,
             args,
@@ -886,9 +891,6 @@ impl PlexiApp {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            // The Assistant is a plugin instance acting in-process, never
-            // the person at the keyboard (stint 1632).
-            source: crate::protocol::SpawnSource::PluginInstance(origin_pane_id),
         });
         let result = if let Some(created) = self
             .windows
@@ -1160,16 +1162,42 @@ impl PlexiApp {
         &mut self,
         name: &str,
         input_json: &str,
+        origin: &crate::broker::caller::RequestOrigin,
     ) -> crate::plexi_ai::tool_dispatch::ToolCallResult {
+        use crate::broker::caller::RequestOrigin;
         use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
+        use crate::broker::principal::Principal;
         use crate::broker::{ActorScope, TargetType};
         use crate::plexi_ai::tool_dispatch::ToolCallResult;
 
-        let context_id = self
-            .windows
-            .get(self.active_window)
-            .map(|window| window.context_id)
-            .unwrap_or(0);
+        // A socket caller acts as itself under its own ceiling. It never
+        // borrows the Assistant's grants (stint 1285).
+        let socket = match origin {
+            RequestOrigin::Socket(caller) => Some(caller),
+            _ => None,
+        };
+        let principal = match socket {
+            Some(caller) => match caller.principal() {
+                Some(principal) => principal,
+                None => return ToolCallResult::err("permission_denied: caller unidentified"),
+            },
+            None => Principal::agent("agent:assistant"),
+        };
+        let caller_pane = socket.and_then(|caller| caller.pane());
+        let posture = match caller_pane.map(|pane| self.pane_ceiling(pane.terminal_pane)) {
+            Some(Err(error)) => return ToolCallResult::err(format!("permission_denied: {error}")),
+            Some(Ok(posture)) => posture,
+            None => None,
+        };
+        if socket.is_some() && name.starts_with("host.permissions.") {
+            return socket_permission_tool(name, input_json, &principal);
+        }
+        let context_id = caller_pane.map(|pane| pane.context_id).unwrap_or_else(|| {
+            self.windows
+                .get(self.active_window)
+                .map(|window| window.context_id)
+                .unwrap_or(0)
+        });
         let workspace = self
             .context_root_for(context_id)
             .unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -1180,21 +1208,25 @@ impl PlexiApp {
             Ok(monitor) => monitor,
             Err(error) => return ToolCallResult::err(error.to_string()),
         };
-        let actor = "agent:assistant";
+        let actor = principal.actor_id().to_string();
+        let actor = actor.as_str();
         let call_id = format!("call_{}", uuid::Uuid::new_v4());
-        let admission = monitor.admit(AdmitRequest {
-            call_id: &call_id,
-            tool: name,
-            input_json,
-            principal: &crate::broker::principal::Principal::agent(actor),
-            actor_scope: ActorScope::User,
-            trust_origin: "host",
-            workspace_root: &workspace,
-            context_id,
-            package_id: "host",
-            instance_id: 0,
-            target_type: TargetType::HostTool,
-        });
+        let admission = monitor.admit_with_posture(
+            AdmitRequest {
+                call_id: &call_id,
+                tool: name,
+                input_json,
+                principal: &principal,
+                actor_scope: ActorScope::User,
+                trust_origin: "host",
+                workspace_root: &workspace,
+                context_id,
+                package_id: "host",
+                instance_id: 0,
+                target_type: TargetType::HostTool,
+            },
+            posture.as_ref(),
+        );
         let (grant_id, fingerprint, resource) = match admission {
             Admission::Required { pending_request_id } => {
                 log::info!(
@@ -1222,7 +1254,12 @@ impl PlexiApp {
         }
         log::info!("assistant_host_tool: admitted tool={name} grant={grant_id}");
         let result = self.handle_assistant_host_tool(name, input_json, 0, context_id);
-        if result.error.is_none() && matches!(name, "host.files.edit" | "host.files.write") {
+        // A carried-forward accept is the Assistant's own; a socket caller's
+        // edit is reviewed like any other.
+        if socket.is_none()
+            && result.error.is_none()
+            && matches!(name, "host.files.edit" | "host.files.write")
+        {
             if let Some(output) = result.output_json.as_deref() {
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(output) {
                     if let Some(id) = value.get("change_set_id").and_then(|item| item.as_str()) {
@@ -1234,6 +1271,62 @@ impl PlexiApp {
             }
         }
         result
+    }
+}
+
+/// `host.permissions.*` from a socket caller: it reads and revokes its own
+/// rows, and a widening files a request.
+fn socket_permission_tool(
+    name: &str,
+    input_json: &str,
+    principal: &crate::broker::principal::Principal,
+) -> ToolCallResult {
+    use crate::broker::gate::{PermissionCaller, PermissionMonitor, PermissionMutation, RevokeScope};
+    let monitor = match PermissionMonitor::for_profile(&crate::config::config_dir()) {
+        Ok(monitor) => monitor,
+        Err(error) => return ToolCallResult::err(error.to_string()),
+    };
+    let actor_id = principal.actor_id().to_string();
+    if name == "host.permissions.list" {
+        let actor_type = serde_json::to_value(principal.actor_type())
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let entries: Vec<_> = monitor
+            .list_entries()
+            .into_iter()
+            .filter(|entry| entry.actor_id == actor_id && entry.actor_type == actor_type)
+            .collect();
+        log::info!("assistant_host_tool: {name} actor={actor_id} count={}", entries.len());
+        return ToolCallResult::ok_value(serde_json::json!({"ok": true, "entries": entries}));
+    }
+    let parsed: serde_json::Value = match serde_json::from_str(input_json) {
+        Ok(value) => value,
+        Err(error) => return ToolCallResult::err(format!("invalid_input: {error}")),
+    };
+    let Some(id) = parsed.get("id").and_then(serde_json::Value::as_str) else {
+        return ToolCallResult::err("invalid_input: id is required".to_string());
+    };
+    let action = name.rsplit('.').next().unwrap_or("");
+    let outcome = monitor.mutate_entry(
+        id,
+        action,
+        &PermissionCaller {
+            actor_id: actor_id.clone(),
+            revoke_scope: RevokeScope::Own,
+        },
+    );
+    log::info!("assistant_host_tool: {name} id={id} actor={actor_id}");
+    let body = serde_json::to_value(&outcome).unwrap_or(serde_json::Value::Null);
+    if matches!(
+        outcome,
+        PermissionMutation::NeedsYou { .. }
+            | PermissionMutation::Rejected { .. }
+            | PermissionMutation::Missing { .. }
+    ) {
+        ToolCallResult::err(body.to_string())
+    } else {
+        ToolCallResult::ok_value(body)
     }
 }
 
@@ -2582,11 +2675,11 @@ mod tests {
 
         let listed = harness
             .app
-            .dispatch_assistant_host_tool("host.editors.list", "{}");
+            .dispatch_assistant_host_tool("host.editors.list", "{}", &crate::broker::caller::RequestOrigin::HostSystem);
         approve(&listed);
         let listed = harness
             .app
-            .dispatch_assistant_host_tool("host.editors.list", "{}");
+            .dispatch_assistant_host_tool("host.editors.list", "{}", &crate::broker::caller::RequestOrigin::HostSystem);
         let listed_body = listed.output_json.unwrap();
         assert!(
             listed_body.contains(&file.display().to_string()),
@@ -2647,11 +2740,11 @@ mod tests {
         .to_string();
         let first = harness
             .app
-            .dispatch_assistant_host_tool("host.files.edit", &input);
+            .dispatch_assistant_host_tool("host.files.edit", &input, &crate::broker::caller::RequestOrigin::HostSystem);
         approve(&first);
         let proposed = harness
             .app
-            .dispatch_assistant_host_tool("host.files.edit", &input);
+            .dispatch_assistant_host_tool("host.files.edit", &input, &crate::broker::caller::RequestOrigin::HostSystem);
         assert!(proposed.error.is_none(), "{proposed:?}");
         let proposed_body = proposed.output_json.unwrap();
         assert!(

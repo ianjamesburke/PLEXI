@@ -34,7 +34,7 @@ fn raw_wasm_review_tab_then_space_allows_nothing() {
     assert!(!caps.is_empty());
     h.with_app_mut(|app| {
         app.raw_wasm_review_guard
-            .backdate(crate::app::approval_keyboard::ARM_DELAY)
+            .backdate(crate::broker::consent::ARM_DELAY)
     });
 
     h.harness().key_press(egui::Key::Tab);
@@ -96,7 +96,7 @@ fn screenshot_python_consent_prompt_then_refusal() {
     }
     h.with_app_mut(|app| {
         if let Some(p) = python_pane(app, pane) {
-            p.backdate_capability_guard(crate::app::approval_keyboard::ARM_DELAY);
+            p.backdate_capability_guard(crate::broker::consent::ARM_DELAY);
         }
     });
     // Arming fades the approving buttons in; let the fade finish before
@@ -187,7 +187,7 @@ fn screenshot_raw_wasm_review_arming_then_armed() {
 
     h.with_app_mut(|app| {
         app.raw_wasm_review_guard
-            .backdate(crate::app::approval_keyboard::ARM_DELAY)
+            .backdate(crate::broker::consent::ARM_DELAY)
     });
     h.run_steps(2);
     assert!(!h.harness().get_by_label("Allow and remember").accesskit_node().is_disabled());
@@ -254,7 +254,7 @@ fn raw_wasm_review_button_row_keeps_its_consent_guard() {
 
     h.with_app_mut(|app| {
         app.raw_wasm_review_guard
-            .backdate(crate::app::approval_keyboard::ARM_DELAY)
+            .backdate(crate::broker::consent::ARM_DELAY)
     });
     h.run_steps(2);
     h.harness().key_press(egui::Key::Tab);
@@ -429,7 +429,7 @@ fn wasm_path_launch_queues_review_before_spawning() {
     // A deliberate approval comes after the consent arm delay (stint 1498).
     h.with_app_mut(|app| {
         app.raw_wasm_review_guard
-            .backdate(crate::app::approval_keyboard::ARM_DELAY)
+            .backdate(crate::broker::consent::ARM_DELAY)
     });
     h.harness().key_press(egui::Key::Enter);
     h.step();
@@ -527,7 +527,7 @@ fn raw_wasm_review_buttons_take_no_focus_across_reflow() {
     h.run_steps(3);
     h.with_app_mut(|app| {
         app.raw_wasm_review_guard
-            .backdate(crate::app::approval_keyboard::ARM_DELAY)
+            .backdate(crate::broker::consent::ARM_DELAY)
     });
     h.run_steps(2);
     let labels = ["Allow and remember", "Deny"];

@@ -849,8 +849,8 @@ impl PlexiApp {
                         self.reply_to_fleet_agent(pane_id, from_pane_id, text);
                     }
                 },
-                ViewCommand::ForwardPaneRequest { request } => {
-                    self.handle_pane_ipc_request(request);
+                ViewCommand::ForwardPaneRequest { request, origin } => {
+                    self.handle_pane_ipc_request(origin, request);
                 }
                 ViewCommand::SpawnView {
                     type_id,

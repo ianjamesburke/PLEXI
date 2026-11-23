@@ -1688,13 +1688,12 @@ fn send_line_to_socket(
 
 /// Hold a fire-and-forget connection until the host acks that it read our
 /// peer identity (`PEER_IDENTITY_ACK` in `src/app/mod.rs`). Disconnecting
-/// first leaves the host no pid to attribute the request to. Requests that
-/// ignore identity, or carry a reply token, get no ack and return at once.
+/// first leaves the host no pid to attribute the request to, and every
+/// socket request is admitted by its caller (stint 1285). A request with a
+/// reply token holds its connection until the reply and returns at once.
 /// A missed ack is logged, not fatal: the request was already delivered.
 pub(crate) fn await_peer_identity_ack(stream: &mut crate::platform::ipc::IpcStream, line: &str) {
-    let consumes = serde_json::from_str::<crate::protocol::HostRequest>(line.trim())
-        .is_ok_and(|request| request.consumes_peer_identity());
-    if !consumes || crate::rpc::extract_response_file_token(line).is_some() {
+    if crate::rpc::extract_response_file_token(line).is_some() {
         return;
     }
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
@@ -2052,6 +2051,11 @@ pub(super) fn queue_spawn_and_wait(
     summary: &str,
 ) -> Result<Option<String>, i32> {
     let response_file = crate::rpc::response_file("queued-spawn-response", "json");
+    let mut receipt = queued_spawn::open_receipt(&response_file).map_err(|error| {
+        log::warn!("queued spawn: {error}");
+        eprintln!("error: {error}");
+        1
+    })?;
     let Some(fields) = payload.as_object_mut() else {
         log::error!("queue_spawn_and_wait: '{intent}' payload is not a JSON object");
         eprintln!("error: could not write spawn request: payload is not a JSON object");
@@ -2064,7 +2068,7 @@ pub(super) fn queue_spawn_and_wait(
     let queue_file = queue_spawn(payload, intent, summary)?;
     queued_spawn::wait(
         &queue_file,
-        std::path::Path::new(&response_file),
+        &mut receipt,
         std::time::Duration::from_secs(10),
     )
     .map_err(|error| {

@@ -748,14 +748,25 @@ impl WasmPane {
     }
 
     pub fn decide_next_capability_prompt(&mut self, granted: bool) {
-        self.decide_next_capability_prompt_inner(granted, false);
+        self.decide_next_capability_prompt_inner(granted, None);
     }
 
-    pub fn decide_next_capability_prompt_remembered(&mut self, granted: bool) {
-        self.decide_next_capability_prompt_inner(granted, true);
+    /// Remember the decision: a standing row, so it takes the prompt's
+    /// evidence (stint 1285).
+    pub(crate) fn decide_next_capability_prompt_remembered(
+        &mut self,
+        granted: bool,
+        evidence: crate::broker::consent::DecisionEvidence,
+    ) {
+        self.decide_next_capability_prompt_inner(granted, Some(evidence));
     }
 
-    fn decide_next_capability_prompt_inner(&mut self, granted: bool, remember: bool) {
+    fn decide_next_capability_prompt_inner(
+        &mut self,
+        granted: bool,
+        evidence: Option<crate::broker::consent::DecisionEvidence>,
+    ) {
+        let remember = evidence.is_some();
         let Some(prompt) = self.pending_capability_prompts.pop_front() else {
             return;
         };
@@ -814,13 +825,21 @@ impl WasmPane {
             };
             match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
             {
-                Ok(monitor) => monitor.grant_capability_id(
-                    self.app.plugin_id(),
-                    &self.permission_workspace_root,
-                    &capability_id,
-                    decision,
-                    crate::broker::GrantSource::User,
-                ),
+                Ok(monitor) => {
+                    let choice = if granted { "grant_always" } else { "deny_always" };
+                    if let Some(covered) = evidence
+                        .as_ref()
+                        .and_then(|e| e.admit(&capability_id, choice).ok())
+                    {
+                        monitor.grant_capability_id(
+                            covered,
+                            self.app.plugin_id(),
+                            &self.permission_workspace_root,
+                            &capability_id,
+                            decision,
+                        );
+                    }
+                }
                 Err(error) => {
                     log::error!("wasm capability: decision not remembered: {error}")
                 }
@@ -1447,7 +1466,7 @@ impl WasmPane {
         }
         self.pending_capability_prompts
             .push_back(WasmCapabilityPrompt {
-                request_id: crate::app::approval_keyboard::next_consent_request_id(),
+                request_id: crate::broker::consent::next_consent_request_id(),
                 capability_id,
             });
     }
@@ -1961,7 +1980,7 @@ fn default_live_broker() -> LiveAiBroker {
 pub struct LiveWasmPane {
     inner: WasmPane,
     /// Consent input guard for this pane's capability prompt (stint 1498).
-    capability_guard: crate::app::approval_keyboard::ConsentGuard,
+    capability_guard: crate::broker::consent::ConsentGuard,
     started: Instant,
     spawn_name: String,
     title: Option<String>,
@@ -2644,7 +2663,22 @@ impl LiveWasmPane {
 
         if let Some((granted, remember)) = capability_prompt_decision(&response) {
             if remember {
-                self.inner.decide_next_capability_prompt_remembered(granted);
+                match self.capability_guard.witness(crate::broker::consent::ConsentDecision {
+                    displayed: prompt.request_id(),
+                    target: &capability_id,
+                    choice: if granted { "grant_always" } else { "deny_always" },
+                    refuses: !granted,
+                    now,
+                    synthetic: synthetic_frame,
+                }) {
+                    Ok(evidence) => self
+                        .inner
+                        .decide_next_capability_prompt_remembered(granted, evidence),
+                    Err(error) => {
+                        log::info!("wasm capability: remembered decision refused: {error}");
+                        return;
+                    }
+                }
             } else {
                 self.inner.decide_next_capability_prompt(granted);
             }
@@ -4559,7 +4593,10 @@ mod tests {
             HashSet::new(),
         );
         p.exec(request_capability(cap), 0);
-        p.decide_next_capability_prompt_remembered(true);
+        p.decide_next_capability_prompt_remembered(
+            true,
+            crate::broker::consent::DecisionEvidence::for_test(cap, "grant_always"),
+        );
         assert!(matches!(
             pop_event(&mut p),
             InputEvent::CapabilityGranted(_)
@@ -6018,7 +6055,7 @@ mod tests {
     /// key's repeat and an injected (synthetic-frame) Enter grant nothing.
     #[test]
     fn capability_prompt_takes_only_a_fresh_real_enter_after_the_arm_delay() {
-        use crate::app::approval_keyboard::ARM_DELAY;
+        use crate::broker::consent::ARM_DELAY;
         use crate::host::pane::ViewRuntime;
         let mut h = crate::testing::HostHarness::new();
         let pane_id = h.add_test_pane();
@@ -6117,7 +6154,7 @@ mod tests {
     /// the prompt, so the next Enter does not grant; a real Esc denies at once.
     #[test]
     fn capability_prompt_re_arms_when_its_pane_regains_focus() {
-        use crate::app::approval_keyboard::ARM_DELAY;
+        use crate::broker::consent::ARM_DELAY;
         use crate::host::pane::ViewRuntime;
         let mut h = crate::testing::HostHarness::new();
         let pane_id = h.add_test_pane();
@@ -6234,7 +6271,7 @@ mod tests {
     /// frame grants nothing; the same click made for real still grants.
     #[test]
     fn capability_prompt_ignores_a_click_on_a_synthetic_frame() {
-        use crate::app::approval_keyboard::ARM_DELAY;
+        use crate::broker::consent::ARM_DELAY;
         use crate::app::tests::consent_input_guard_tests::{first_modal_action, pointer};
         use crate::host::pane::ViewRuntime;
         let mut h = crate::testing::HostHarness::new();

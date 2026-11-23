@@ -1686,7 +1686,7 @@ pub struct LivePythonPane {
     pane_owner: Option<(u64, u64)>,
     /// In-pane consent for sensitive capabilities (stint 1489).
     consent: consent::PaneConsent,
-    capability_guard: crate::app::approval_keyboard::ConsentGuard,
+    capability_guard: crate::broker::consent::ConsentGuard,
 }
 
 #[derive(Debug, Clone)]
@@ -3079,12 +3079,14 @@ fn answer_permission_bridge(
         id,
         action,
         &crate::broker::gate::PermissionCaller {
-            human: false,
             actor_id: format!("app:{plugin_id}"),
+            // Reached only past `refuse_unless_bundled`: the bundled
+            // Permissions view the person drives.
+            revoke_scope: crate::broker::gate::RevokeScope::Any,
         },
     );
     log::info!(
-        "plugin::{plugin_id}: permission {} id={} human=false",
+        "plugin::{plugin_id}: permission {} id={}",
         loggable_action(action),
         loggable_ask_id(id)
     );
@@ -4168,7 +4170,7 @@ impl LivePythonPane {
                 self.error = Some(error);
                 self.dropped_after_fatal = Some(0);
             }
-            _ => match plugin_command_from_python_message(&message) {
+            _ => match plugin_command_from_python_message(&self.plugin_id, &message) {
                 Ok(Some(mut command)) => {
                     // An open is admitted before anything can refuse it: it
                     // holds room for its answer, or waits, with everything
@@ -4316,7 +4318,7 @@ impl LivePythonPane {
                 );
                 self.consent.waiting.push(consent::Waiting {
                     pending_id,
-                    prompt_seq: crate::app::approval_keyboard::next_consent_request_id(),
+                    prompt_seq: crate::broker::consent::next_consent_request_id(),
                     capability: capability.to_string(),
                     message: message.clone(),
                     call_id,
@@ -4446,7 +4448,7 @@ impl LivePythonPane {
                         index,
                         consent::Waiting {
                             pending_id: next,
-                            prompt_seq: crate::app::approval_keyboard::next_consent_request_id(),
+                            prompt_seq: crate::broker::consent::next_consent_request_id(),
                             ..entry
                         },
                     );
@@ -4500,13 +4502,14 @@ impl LivePythonPane {
         &mut self,
         view: &crate::broker::gate::PendingView,
         choice: crate::broker::gate::ApprovalChoice,
+        evidence: crate::broker::consent::DecisionEvidence,
     ) {
         let Some(monitor) = self.consent.monitor.clone() else {
             return;
         };
         let pending_id = view.pending_request_id.clone();
         let capability = view.tool.clone();
-        match monitor.approve_pending(&pending_id, choice) {
+        match monitor.decide_pending(&evidence, &pending_id, choice) {
             Ok(()) => {
                 self.consent.last_error = None;
                 let granted = !matches!(
@@ -4590,7 +4593,21 @@ impl LivePythonPane {
                 }
             });
         if let Some(choice) = super::wasm_pane::capability_prompt_choice(&response) {
-            self.decide_capability_prompt(&view, choice);
+            use crate::broker::gate::ApprovalChoice;
+            match self.capability_guard.witness(crate::broker::consent::ConsentDecision {
+                displayed: prompt_seq,
+                target: &view.pending_request_id,
+                choice: &format!("{choice:?}"),
+                refuses: matches!(choice, ApprovalChoice::Deny | ApprovalChoice::DenyAlways),
+                now,
+                synthetic: synthetic_frame,
+            }) {
+                Ok(evidence) => self.decide_capability_prompt(&view, choice, evidence),
+                Err(error) => log::info!(
+                    "plugin::{}: consent decision refused: {error}",
+                    self.plugin_id
+                ),
+            }
             ctx.request_repaint();
         }
     }
@@ -6761,6 +6778,7 @@ fn required_capability_for_python_plugin_command(
         ViewCommand::SpawnPane { .. } => Some(Capability::PanesSpawn.as_str()),
         ViewCommand::ForwardPaneRequest {
             request: crate::protocol::HostRequest::FocusPane { .. },
+            ..
         } => Some(Capability::PanesControl.as_str()),
         // Raw WASM capability string, not a `Capability` variant (same literal as WIT).
         ViewCommand::ShowNotification { .. } => Some("notify"),
@@ -6930,6 +6948,7 @@ fn sanitize_guest_notification(plugin_id: &str, command: &mut crate::app::view_t
 }
 
 fn plugin_command_from_python_message(
+    plugin_id: &str,
     message: &Value,
 ) -> Result<Option<crate::app::view_trait::ViewCommand>, String> {
     use crate::app::view_trait::ViewCommand;
@@ -7173,6 +7192,9 @@ fn plugin_command_from_python_message(
                     .and_then(Value::as_u64)
                     .unwrap_or_default(),
             },
+            origin: crate::broker::caller::RequestOrigin::PluginGuest(
+                crate::broker::principal::PluginInstance::new(plugin_id, None),
+            ),
         }),
         "run_update" => Some(ViewCommand::DeliverRunUpdate {
             originator_type_id: text("originator_type_id"),
@@ -8841,7 +8863,7 @@ mod tests {
     #[test]
     fn python_bridge_protected_commands_require_capabilities() {
         let required = |message: Value| {
-            plugin_command_from_python_message(&message)
+            plugin_command_from_python_message("test-plugin", &message)
                 .ok()
                 .flatten()
                 .and_then(|command| required_capability_for_python_plugin_command(&command))
@@ -8890,7 +8912,7 @@ mod tests {
 
     #[test]
     fn python_bridge_notification_contract_rejects_rich_fields() {
-        let supported = plugin_command_from_python_message(&serde_json::json!({
+        let supported = plugin_command_from_python_message("test-plugin", &serde_json::json!({
             "type": "show_notification", "title": "Saved", "body": "Done"
         }))
         .expect("message-only notification is supported")
@@ -8900,7 +8922,7 @@ mod tests {
             kind: crate::protocol::NotifyKind::Message, options, image_inline: None, ..
         } if options.is_empty())
         );
-        let error = match plugin_command_from_python_message(&serde_json::json!({
+        let error = match plugin_command_from_python_message("test-plugin", &serde_json::json!({
             "type": "show_notification", "title": "Ask", "body": "Continue?",
             "kind": "choice", "options": [{"label": "yes"}]
         })) {
@@ -10968,7 +10990,7 @@ mod tests {
 
     #[test]
     fn python_event_effects_use_shared_host_requests() {
-        let subscribe = plugin_command_from_python_message(&json!({
+        let subscribe = plugin_command_from_python_message("test-plugin", &json!({
             "type": "subscribe_event_streams",
             "request_id": "subscribe-1",
             "plugin_id": "wasm-counter",
@@ -10994,7 +11016,7 @@ mod tests {
                 && event_names == vec!["count.changed".to_string()]
         ));
 
-        let emit = plugin_command_from_python_message(&json!({
+        let emit = plugin_command_from_python_message("test-plugin", &json!({
             "type": "emit_event",
             "event": "note.saved",
             "actor": "plugin",
@@ -12922,7 +12944,7 @@ default = true
     fn python_path_token_and_command_preview_keep_sender_zero_and_no_gate() {
         use crate::app::view_trait::ViewCommand;
 
-        let insert = plugin_command_from_python_message(&json!({
+        let insert = plugin_command_from_python_message("test-plugin", &json!({
             "type": "insert_path_token", "terminal_pane_id": 7, "path": "/tmp/x"
         }))
         .unwrap()
@@ -12936,7 +12958,7 @@ default = true
                 ..
             }
         ));
-        let preview = plugin_command_from_python_message(&json!({
+        let preview = plugin_command_from_python_message("test-plugin", &json!({
             "type": "command_preview", "terminal_pane_id": 7, "request_id": "r", "command": "ls"
         }))
         .unwrap()

@@ -1172,7 +1172,7 @@ impl PlexiApp {
             );
             self.pending_raw_wasm_launches
                 .push_back(crate::app::PendingRawWasmLaunch {
-                    request_id: crate::app::approval_keyboard::next_consent_request_id(),
+                    request_id: crate::broker::consent::next_consent_request_id(),
                     plugin_id: plugin_id.to_string(),
                     wasm_path: wasm_path.to_path_buf(),
                     workspace_root,
@@ -1489,7 +1489,7 @@ impl PlexiApp {
         hint: Option<&str>,
         share: Option<f32>,
     ) {
-        self.open_builtin_view_pane_at(
+        if let Err(reason) = self.open_builtin_view_pane_at(
             BuiltinPlacement {
                 window: self.active_window,
                 hint,
@@ -1499,9 +1499,13 @@ impl PlexiApp {
             permissions,
             workspace_root,
             group,
-        );
+        ) {
+            log::info!("open_builtin_view_pane: not opened: {reason}");
+        }
     }
 
+    /// Place a builtin view and return the pane it landed in, or why it did
+    /// not open (core-only refusal, no pane to cover).
     fn open_builtin_view_pane_at(
         &mut self,
         placement: BuiltinPlacement<'_>,
@@ -1509,10 +1513,8 @@ impl PlexiApp {
         permissions: crate::app::permissions::PluginPermissions,
         workspace_root: PathBuf,
         group: Option<String>,
-    ) {
-        if self.plugin_blocked(app.type_id()) {
-            return;
-        }
+    ) -> Result<PaneId, String> {
+        self.require_plugin(app.type_id())?;
         let BuiltinPlacement {
             window: target_win,
             hint,
@@ -1547,20 +1549,22 @@ impl PlexiApp {
                 }))
             },
         );
-        if let Some(pane_id) = placed {
-            let context_root = self
-                .origin_for_pane(pane_id)
-                .map(|origin| origin.context_root);
-            crate::host::event_log::emit_scoped(
-                crate::host::event_log::HostEvent::ViewOpened {
-                    plugin_id: plugin_type_id.clone(),
-                    type_id: plugin_type_id.clone(),
-                    pane_id,
-                    timestamp: crate::host::event_log::now_timestamp(),
-                },
-                context_root.as_deref(),
-            );
-        }
+        let pane_id = placed.ok_or_else(|| {
+            format!("the {plugin_type_id} view had no pane to open in")
+        })?;
+        let context_root = self
+            .origin_for_pane(pane_id)
+            .map(|origin| origin.context_root);
+        crate::host::event_log::emit_scoped(
+            crate::host::event_log::HostEvent::ViewOpened {
+                plugin_id: plugin_type_id.clone(),
+                type_id: plugin_type_id.clone(),
+                pane_id,
+                timestamp: crate::host::event_log::now_timestamp(),
+            },
+            context_root.as_deref(),
+        );
+        Ok(pane_id)
     }
 
     /// Build a window's worth of terminal panes for a context that is **not**
@@ -1750,9 +1754,11 @@ impl PlexiApp {
     }
 
     /// Derive the unspoofable `spawned_by` provenance string for a parent pane ID.
+    /// A pane created by a process in another pane is that pane's, never the
+    /// person's; with no parent the spawner is not known here (stint 1285).
     pub(crate) fn derive_spawned_by_for_parent(&self, parent_pane_id: Option<u64>) -> String {
         let Some(pid) = parent_pane_id else {
-            return "human".to_string();
+            return "unknown".to_string();
         };
         if let Some(term) = self.terminal_incarnation(pid) {
             if let Some(ref role) = term.agent_role {
@@ -1776,7 +1782,7 @@ impl PlexiApp {
                 }
             }
         }
-        "human".to_string()
+        format!("pane:{pid}")
     }
 
     /// Record a constructed terminal's provenance in the session trace, read
@@ -2172,14 +2178,66 @@ impl PlexiApp {
         conjoined: bool,
         origin_context_id: Option<u64>,
     ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
-        let origin = origin_context_id.map_or(AgentOrigin::Active, AgentOrigin::Context);
-        let placement = self.resolve_agent_spawn_location(
+        self.spawn_agent_worker_attributed(
+            None,
+            None,
+            role,
+            harness,
+            cmd,
+            task,
+            subcontext,
+            ephemeral,
+            from_pane_id,
+            cwd_override,
+            result_schema,
+            run_token,
+            conjoined,
+            origin_context_id,
+        )
+    }
+
+    /// [`Self::spawn_agent_worker_pane`] with the attribution and placement
+    /// anchor its admission already decided. Neither grants anything.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn spawn_agent_worker_attributed(
+        &mut self,
+        spawned_by: Option<String>,
+        anchor_pane: Option<u64>,
+        role: &str,
+        harness: &str,
+        cmd: &str,
+        task: &str,
+        subcontext: Option<&str>,
+        ephemeral: bool,
+        from_pane_id: Option<u64>,
+        cwd_override: Option<std::path::PathBuf>,
+        result_schema: Option<serde_json::Value>,
+        run_token: Option<&str>,
+        conjoined: bool,
+        origin_context_id: Option<u64>,
+    ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
+        let anchor_at = anchor_pane.and_then(|pane| {
+            let (window, _) = self.find_pane_in_any_window(pane)?;
+            Some((pane, window, self.windows[window].context_id))
+        });
+        let origin = origin_context_id
+            .or(anchor_at.map(|(_, _, context_id)| context_id))
+            .map_or(AgentOrigin::Active, AgentOrigin::Context);
+        let mut placement = self.resolve_agent_spawn_location(
             subcontext.map(SubcontextTarget::Named),
             from_pane_id,
             cwd_override,
             conjoined,
             origin,
         )?;
+        if let (Some((pane, anchor_window, anchor_context)), AgentTarget::Window { win_idx, context_id, split_at }) =
+            (anchor_at, &mut placement.target)
+        {
+            if *context_id == anchor_context {
+                *win_idx = anchor_window;
+                *split_at = self.agent_split_at(anchor_window, Some(pane));
+            }
+        }
         // The worker's source is its verified parent's grant, a team run, or
         // an outside caller; a named role must resolve or nothing starts.
         let source = match (run_token, placement.parent_pane_id) {
@@ -2202,7 +2260,7 @@ impl PlexiApp {
                     recorded: None,
                 },
                 pane_id: None,
-                spawned_by: None,
+                spawned_by,
                 role,
                 harness,
                 command: cmd,
@@ -2970,6 +3028,8 @@ impl PlexiApp {
             };
             let hint = layout.unwrap_or_else(|| "overlay".to_string());
             let perms = crate::app::permissions::PluginPermissions::builtin();
+            // A placement failure is the caller's error, never a silent
+            // `Ok(None)` the caller reads as "opened" (stint 1673).
             self.open_builtin_view_pane_at(
                 BuiltinPlacement {
                     window: target_win,
@@ -2980,7 +3040,7 @@ impl PlexiApp {
                 perms,
                 cwd,
                 group,
-            );
+            )?;
             return Ok(None);
         }
 
@@ -3458,8 +3518,7 @@ impl PlexiApp {
             caller_context_id,
         ));
         let perms = crate::app::permissions::PluginPermissions::builtin();
-        let predicted = self.host.next_pane_id();
-        self.open_builtin_view_pane_at(
+        match self.open_builtin_view_pane_at(
             BuiltinPlacement {
                 window: target_win,
                 hint: Some(hint),
@@ -3469,8 +3528,13 @@ impl PlexiApp {
             perms,
             workspace_root,
             None,
-        );
-        Some(predicted)
+        ) {
+            Ok(pane) => Some(pane),
+            Err(reason) => {
+                log::info!("assistant: not opened: {reason}");
+                None
+            }
+        }
     }
 
     /// Reuse an Assistant in `context_id` (or the active window's context), or

@@ -196,24 +196,18 @@ ASK_JSON="$(env PLEXI_CHANNEL="$LIVE_CHANNEL" PLEXI_SOCKET="$SOCKET_PATH" PLEXI_
   --expected-revision "rev-1")"
 echo "Filed structured question: $ASK_JSON"
 QID="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$ASK_JSON")"
-UI_TOKEN="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ui_token"])' "$ASK_JSON")"
 
-# Verify unauthenticated pane caller cannot forge an answer
-if env PLEXI_CHANNEL="$LIVE_CHANNEL" PLEXI_SOCKET="$SOCKET_PATH" PLEXI_PANE_ID="$FIRST_PANE_ID" \
-  "$SHIM_BIN" needs-you answer "$QID" --answer "9:16" >/dev/null 2>&1; then
-  echo "error: unauthenticated pane caller should have been refused" >&2
+# Only the desktop answers a question: the socket is refused and the item stays open.
+if ANS_JSON="$(env PLEXI_CHANNEL="$LIVE_CHANNEL" PLEXI_SOCKET="$SOCKET_PATH" PLEXI_PANE_ID="$FIRST_PANE_ID" \
+  "$SHIM_BIN" needs-you answer "$QID" --answer "9:16")"; then
+  echo "error: a socket caller answered a question: $ANS_JSON" >&2
   exit 1
 fi
-
-# Settle with the UI token and verify reconciliation
-ANS_JSON="$(env PLEXI_CHANNEL="$LIVE_CHANNEL" PLEXI_SOCKET="$SOCKET_PATH" PLEXI_PANE_ID="$FIRST_PANE_ID" \
-  "$SHIM_BIN" needs-you answer "$QID" --answer "9:16" --ui-token "$UI_TOKEN")"
-echo "Answered question: $ANS_JSON"
-python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] is True and d["answer"] == "9:16", d' "$ANS_JSON"
+python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["error_code"] == "approval_required", d' "$ANS_JSON"
 
 REC_JSON="$(plexi_iso needs-you reconcile --session-id "sess-live-pi")"
 echo "Reconciled continuation: $REC_JSON"
-python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] is True and d["continuations"][0]["answer"] == "9:16", d' "$REC_JSON"
+python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["ok"] is True and d["continuations"][0].get("answer") is None, d' "$REC_JSON"
 
 echo "==> [5/6] Launching interactive Pi TUI session inside a real Plexi terminal pane..."
 PI_TUI_CMD="PLEXI_CLI_BIN='$SHIM_BIN' '$PI_BIN' -ne -e '$ROOT_DIR/packages/pi-plexi/extensions/index.ts' --skill '$ROOT_DIR/packages/pi-plexi/skills'"

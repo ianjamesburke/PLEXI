@@ -113,19 +113,27 @@ fn pump_until(h: &mut HostHarness, mut done: impl FnMut(&mut HostHarness) -> boo
     }
 }
 
+/// A terminal pane whose shell calls plugin tools with its own credential,
+/// as an agent in a pane does (stint 1285: a credential is honored only from
+/// its own pane's process).
+fn terminal_caller(h: &mut HostHarness) -> (u64, String, u32) {
+    let caller = h.add_focused_terminal();
+    let credential = monitor().issue_credential(Some(caller), &format!("pane:{caller}"));
+    let pid = h.shell_pid(caller);
+    (caller, credential, pid)
+}
+
 fn socket_call(
     h: &mut HostHarness,
-    caller: Option<u64>,
     credential: Option<&str>,
     ancestry: &[u32],
     input: serde_json::Value,
 ) -> serde_json::Value {
-    socket_call_pane(h, caller, credential, ancestry, None, input)
+    socket_call_pane(h, credential, ancestry, None, input)
 }
 
 fn socket_call_pane(
     h: &mut HostHarness,
-    caller: Option<u64>,
     credential: Option<&str>,
     ancestry: &[u32],
     target_pane: Option<u64>,
@@ -139,9 +147,7 @@ fn socket_call_pane(
         plugin_id: "chess".to_string(),
         tool: "chess.play".to_string(),
         input_json: input.to_string(),
-        caller_pane_id: caller,
         call_credential: credential.map(str::to_string),
-        peer_ancestry: ancestry.to_vec(),
         target_pane_id: target_pane,
         response_file: Some(reply.to_string_lossy().to_string()),
     };
@@ -278,7 +284,7 @@ fn run_ingress(ingress: Ingress) {
     let workspace = h.workspace_root();
     let assistant = h.add_assistant_pane();
     let mon = monitor();
-    let credential = mon.issue_credential(Some(pane), ctx, &workspace, &format!("pane:{pane}"));
+    let (caller, credential, caller_pid) = terminal_caller(&mut h);
     let (mcp_port, mcp_token) = start_mcp(&h, ctx, &workspace);
     let start = event_len();
     let op = format!("gate-{}-e4", uuid::Uuid::new_v4());
@@ -308,7 +314,7 @@ fn run_ingress(ingress: Ingress) {
             assert_eq!(commits_for(start, &op), 0);
         }
         Ingress::Socket => {
-            let body = socket_call(&mut h, Some(pane), Some(&credential), &[], input.clone());
+            let body = socket_call(&mut h, Some(&credential), &[caller_pid], input.clone());
             assert_eq!(body["error_code"], "permission_required", "{body}");
             assert_eq!(commits_for(start, &op), 0);
             let _ = body["pending_request_id"].as_str().unwrap();
@@ -322,12 +328,10 @@ fn run_ingress(ingress: Ingress) {
         ingress,
         assistant,
         mcp_port,
-        &mcp_token,
-        pane,
+        &mcp_token, caller_pid,
         &credential,
         &wrong_game,
-        start,
-    );
+        start);
 
     // Exact approval commits once, with the ingress actor on the receipt.
     let approved = play(0, &op, "e2e4", "game-1");
@@ -336,11 +340,9 @@ fn run_ingress(ingress: Ingress) {
         ingress,
         assistant,
         mcp_port,
-        &mcp_token,
-        pane,
+        &mcp_token, caller_pid,
         &credential,
-        &approved,
-    );
+        &approved);
     let output = committed_output(&committed);
     assert_eq!(output["revision_after"], 1, "{committed}");
     assert_eq!(output["move"], "e2e4", "{committed}");
@@ -352,18 +354,16 @@ fn run_ingress(ingress: Ingress) {
     match ingress {
         Ingress::Assistant => assert_eq!(actor, "agent:default", "{output}"),
         Ingress::Mcp => assert!(actor.starts_with("mcp:pane:"), "{output}"),
-        Ingress::Socket => assert_eq!(actor, format!("pane:{pane}"), "{output}"),
+        Ingress::Socket => assert_eq!(actor, format!("pane:{caller}"), "{output}"),
     }
     expect_commits(&mut h, start, &op, 1);
-    let intruder = h.add_test_pane();
-    let intruder_credential =
-        mon.issue_credential(Some(intruder), ctx, &workspace, &format!("pane:{intruder}"));
+    let (_intruder, intruder_credential, intruder_pid) = terminal_caller(&mut h);
     let wrong_actor = socket_call(
         &mut h,
-        Some(intruder),
         Some(&intruder_credential),
-        &[],
+        &[intruder_pid],
         approved.clone(),
+
     );
     assert_eq!(
         wrong_actor["error_code"], "permission_required",
@@ -384,11 +384,9 @@ fn run_ingress(ingress: Ingress) {
         ingress,
         assistant,
         mcp_port,
-        &mcp_token,
-        pane,
+        &mcp_token, caller_pid,
         &credential,
-        &approved,
-    );
+        &approved);
     let dup_output = committed_output(&duplicate);
     assert_eq!(dup_output["duplicate"], true, "{duplicate}");
     assert_eq!(commits_for(start, &op), 1, "duplicate must not move twice");
@@ -400,12 +398,10 @@ fn run_ingress(ingress: Ingress) {
         ingress,
         assistant,
         mcp_port,
-        &mcp_token,
-        pane,
+        &mcp_token, caller_pid,
         &credential,
         &changed,
-        start,
-    );
+        start);
 
     // Revoke the grant that would have authorized a repeat, then refuse.
     let grant_id = mon
@@ -425,12 +421,10 @@ fn run_ingress(ingress: Ingress) {
         ingress,
         assistant,
         mcp_port,
-        &mcp_token,
-        pane,
+        &mcp_token, caller_pid,
         &credential,
         &changed,
-        start,
-    );
+        start);
 
     // A pending move goes stale when a human plays while approval waits.
     let stale_op = format!("{op}-stale");
@@ -454,10 +448,10 @@ fn run_ingress(ingress: Ingress) {
                 Ingress::Mcp => mcp_call(&mut h, mcp_port, &mcp_token, &stale_input),
                 Ingress::Socket => socket_call(
                     &mut h,
-                    Some(pane),
                     Some(&credential),
-                    &[],
+                    &[caller_pid],
                     stale_input.clone(),
+
                 ),
                 Ingress::Assistant => unreachable!(),
             };
@@ -467,7 +461,7 @@ fn run_ingress(ingress: Ingress) {
             let second = match ingress {
                 Ingress::Mcp => mcp_call(&mut h, mcp_port, &mcp_token, &stale_input),
                 Ingress::Socket => {
-                    socket_call(&mut h, Some(pane), Some(&credential), &[], stale_input)
+                    socket_call(&mut h, Some(&credential), &[caller_pid], stale_input)
                 }
                 Ingress::Assistant => unreachable!(),
             };
@@ -525,7 +519,7 @@ fn refuse_without_commit(
     assistant: u64,
     port: u16,
     token: &str,
-    pane: u64,
+    caller_pid: u32,
     credential: &str,
     input: &serde_json::Value,
     start: usize,
@@ -556,7 +550,7 @@ fn refuse_without_commit(
             );
         }
         Ingress::Socket => {
-            let body = socket_call(h, Some(pane), Some(credential), &[], input.clone());
+            let body = socket_call(h, Some(credential), &[caller_pid], input.clone());
             let code = body["error_code"].as_str().unwrap_or("");
             assert!(
                 code == "permission_required" || code == "permission_denied",
@@ -576,7 +570,7 @@ fn approve_and_commit(
     assistant: u64,
     port: u16,
     token: &str,
-    pane: u64,
+    caller_pid: u32,
     credential: &str,
     input: &serde_json::Value,
 ) -> serde_json::Value {
@@ -625,12 +619,12 @@ fn approve_and_commit(
             }
         }
         Ingress::Socket => {
-            let first = socket_call(h, Some(pane), Some(credential), &[], input.clone());
+            let first = socket_call(h, Some(credential), &[caller_pid], input.clone());
             if let Some(id) = nonempty(&pending_id_of(&first)) {
                 monitor()
                     .approve_pending(&id, ApprovalChoice::Once)
                     .expect("approve socket move");
-                socket_call(h, Some(pane), Some(credential), &[], input.clone())
+                socket_call(h, Some(credential), &[caller_pid], input.clone())
             } else {
                 first
             }
@@ -708,16 +702,16 @@ fn view_call_wait_ends_on_human_denial_without_execution() {
 
 fn assert_waiting_plugin_call(choice: ApprovalChoice) {
     let mut h = HostHarness::new();
-    let caller = h.add_test_pane();
+    let caller = h.add_focused_terminal();
     let target = h.add_test_pane();
     let workspace = h.workspace_root();
     let context_id = h.app.windows[h.app.active_window].context_id;
     let mon = monitor();
     let credential = mon.issue_credential(
         Some(caller),
-        context_id,
-        &workspace,
         &format!("pane:{caller}"),
+
+
     );
     let (tx, rx) = std::sync::mpsc::channel();
     tool_dispatch::register(
@@ -745,12 +739,11 @@ fn assert_waiting_plugin_call(choice: ApprovalChoice) {
     let input = r#"{"text":"Buy groceries"}"#;
     let request: HostRequest = serde_json::from_value(serde_json::json!({
         "type":"call_plugin_tool", "plugin_id":"wait-probe", "tool":"probe.add",
-        "input_json":input, "caller_pane_id":caller, "call_credential":credential,
-        "peer_ancestry":[std::process::id()], "target_pane_id":target,
+        "input_json":input, "call_credential":credential, "target_pane_id":target,
         "wait_approved":true, "response_file":reply,
     }))
     .unwrap();
-    h.inject_ipc(request);
+    h.inject_from_pane(caller, request);
     pump_until(&mut h, |_| !mon.list_pending().is_empty());
     std::thread::sleep(Duration::from_millis(50));
     assert!(
@@ -911,22 +904,14 @@ fn all_dispatchers_require_monitor() {
     );
 
     // A live caller: a credential is never proof its pane still exists.
-    let caller = h.add_test_pane();
-    let credential = monitor().issue_credential(
-        Some(caller),
-        context_id,
-        &workspace,
-        &format!("pane:{caller}"),
-    );
+    let (caller, credential, _) = terminal_caller(&mut h);
     let reply = h.workspace_root().join("app-call-blocked.json");
-    h.inject_ipc(HostRequest::CallPluginTool {
+    h.inject_from_pane(caller, HostRequest::CallPluginTool {
         wait_approved: false,
         plugin_id: "probe".to_string(),
         tool: "probe.ping".to_string(),
         input_json: args.to_string(),
-        caller_pane_id: Some(caller),
         call_credential: Some(credential),
-        peer_ancestry: Vec::new(),
         target_pane_id: None,
         response_file: Some(reply.to_string_lossy().to_string()),
     });
@@ -958,50 +943,50 @@ fn all_dispatchers_require_monitor() {
 fn plugin_call_rejects_forged_or_missing_identity() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_view("plugins/chess", &[]);
-    let ctx = h.app.windows[h.app.active_window].context_id;
-    let workspace = h.workspace_root();
+    let _chess = h.launch_repo_view("plugins/chess", &[]);
     let start = event_len();
     let input = play(0, "forged-op", "e2e4", "game-1");
-    let other = h.add_test_pane();
 
-    let forged = socket_call(&mut h, Some(other), None, &[], input.clone());
+    let forged = socket_call(&mut h, None, &[], input.clone());
     assert_eq!(forged["error_code"], "permission_denied", "{forged}");
 
-    let missing_pane = socket_call(&mut h, Some(9_999_999), None, &[], input.clone());
+    let missing_pane = socket_call(&mut h, None, &[], input.clone());
     assert_eq!(
         missing_pane["error_code"], "permission_denied",
         "{missing_pane}"
     );
 
-    let absent = socket_call(&mut h, None, None, &[], input.clone());
+    let absent = socket_call(&mut h, None, &[], input.clone());
     assert_eq!(absent["error_code"], "permission_denied", "{absent}");
 
     let stale = socket_call(
         &mut h,
-        Some(pane),
         Some("cred_not_issued"),
         &[],
         input.clone(),
+
     );
     assert_eq!(stale["error_code"], "permission_denied", "{stale}");
 
     let term = h.add_focused_terminal();
-    let pid = h.terminal_backend(term).child_pid();
-    let mismatched = socket_call(&mut h, Some(pane), None, &[pid], input.clone());
-    assert_eq!(
-        mismatched["error_code"], "permission_denied",
-        "{mismatched}"
-    );
-
-    let session = monitor().issue_credential(None, ctx, &workspace, "session:client");
-    let asked = socket_call(&mut h, None, Some(&session), &[], input.clone());
+    let pid = h.shell_pid(term);
+    // A pane with no credential acts as itself and is brokered: never the
+    // human, never another pane (stint 1285).
+    let asked = socket_call(&mut h, None, &[pid], input.clone());
     assert_eq!(asked["error_code"], "permission_required", "{asked}");
     let pending = monitor()
         .show_pending(asked["pending_request_id"].as_str().unwrap())
         .unwrap();
-    assert_eq!(pending.actor_id, "session:client");
+    assert_eq!(pending.actor_id, format!("pane:{term}"));
     assert_ne!(pending.actor_id, "user");
+
+    // Another pane's credential from this pane's process is refused.
+    let (_other, foreign, _) = terminal_caller(&mut h);
+    let mismatched = socket_call(&mut h, Some(&foreign), &[pid], input.clone());
+    assert_eq!(
+        mismatched["error_code"], "permission_denied",
+        "{mismatched}"
+    );
     assert_eq!(commits_for(start, "forged-op"), 0);
     log::info!("permission_gate: forged identities denied");
 }
@@ -1010,30 +995,28 @@ fn plugin_call_rejects_forged_or_missing_identity() {
 fn chess_receipt_survives_lost_reply() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_view("plugins/chess", &[]);
-    let ctx = h.app.windows[h.app.active_window].context_id;
-    let workspace = h.workspace_root();
+    let _chess = h.launch_repo_view("plugins/chess", &[]);
     let mon = monitor();
-    let credential = mon.issue_credential(Some(pane), ctx, &workspace, &format!("pane:{pane}"));
+    let (_caller, credential, caller_pid) = terminal_caller(&mut h);
     let start = event_len();
     let op = "lost-reply-op";
     let input = play(0, op, "e2e4", "game-1");
-    let first = socket_call(&mut h, Some(pane), Some(&credential), &[], input.clone());
+    let first = socket_call(&mut h, Some(&credential), &[caller_pid], input.clone());
     assert_eq!(first["error_code"], "permission_required", "{first}");
     mon.approve_pending(
         first["pending_request_id"].as_str().unwrap(),
         ApprovalChoice::Once,
     )
     .unwrap();
-    let committed = socket_call(&mut h, Some(pane), Some(&credential), &[], input.clone());
+    let committed = socket_call(&mut h, Some(&credential), &[caller_pid], input.clone());
     assert_eq!(committed["output"]["revision_after"], 1, "{committed}");
     // The caller drops that reply. The retry is the same operation.
-    let recovered = socket_call(&mut h, Some(pane), Some(&credential), &[], input.clone());
+    let recovered = socket_call(&mut h, Some(&credential), &[caller_pid], input.clone());
     assert_eq!(recovered["output"]["duplicate"], true, "{recovered}");
     expect_commits(&mut h, start, op, 1);
 
     mon.fail_audit(true);
-    let blocked = socket_call(&mut h, Some(pane), Some(&credential), &[], input.clone());
+    let blocked = socket_call(&mut h, Some(&credential), &[caller_pid], input.clone());
     mon.fail_audit(false);
     assert_eq!(
         blocked["error_code"], "permission_denied",
@@ -1070,15 +1053,15 @@ fn chess_receipt_survives_lost_reply() {
 fn plugin_call_and_mcp_are_gated_and_audited() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_view("plugins/chess", &[]);
+    let _chess = h.launch_repo_view("plugins/chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     let workspace = h.workspace_root();
     let mon = monitor();
-    let credential = mon.issue_credential(Some(pane), ctx, &workspace, &format!("pane:{pane}"));
+    let (caller, credential, caller_pid) = terminal_caller(&mut h);
     let start = event_len();
     let input = play(0, "ungated-bc4", "b1c3", "game-1");
 
-    let called = socket_call(&mut h, Some(pane), Some(&credential), &[], input.clone());
+    let called = socket_call(&mut h, Some(&credential), &[caller_pid], input.clone());
     assert_eq!(called["error_code"], "permission_required", "{called}");
     assert!(!called.to_string().contains("holds no seat"), "{called}");
     assert!(!called.to_string().contains("\"user\""), "{called}");
@@ -1086,7 +1069,7 @@ fn plugin_call_and_mcp_are_gated_and_audited() {
     assert!(
         mon.audit_records()
             .iter()
-            .any(|fact| fact.kind == "ask" && fact.actor == format!("pane:{pane}")),
+            .any(|fact| fact.kind == "ask" && fact.actor == format!("pane:{caller}")),
         "plugin call must write an ask audit row: {:?}",
         mon.audit_records()
     );
@@ -1145,13 +1128,11 @@ fn second_chess_pane_routes_by_instance() {
     );
     assert!(panes.contains(&first) && panes.contains(&second));
 
-    let ctx = h.app.windows[h.app.active_window].context_id;
-    let workspace = h.workspace_root();
     let mon = monitor();
-    let credential = mon.issue_credential(Some(first), ctx, &workspace, &format!("pane:{first}"));
+    let (caller, credential, caller_pid) = terminal_caller(&mut h);
     let start = event_len();
     let input = play(0, "route-e4", "e2e4", "game-1");
-    let ambiguous = socket_call(&mut h, Some(first), Some(&credential), &[], input.clone());
+    let ambiguous = socket_call(&mut h, Some(&credential), &[caller_pid], input.clone());
     assert!(
         ambiguous.to_string().contains("ambiguous_instance"),
         "bare chess.play must not guess a pane: {ambiguous}"
@@ -1165,11 +1146,11 @@ fn second_chess_pane_routes_by_instance() {
 
     let asked = socket_call_pane(
         &mut h,
-        Some(first),
         Some(&credential),
-        &[],
+        &[caller_pid],
         Some(first),
         input.clone(),
+
     );
     assert_eq!(asked["error_code"], "permission_required", "{asked}");
     assert!(!asked.to_string().contains("holds no seat"), "{asked}");
@@ -1180,14 +1161,14 @@ fn second_chess_pane_routes_by_instance() {
     .unwrap();
     let committed = socket_call_pane(
         &mut h,
-        Some(first),
         Some(&credential),
-        &[],
+        &[caller_pid],
         Some(first),
         input,
+
     );
     assert_eq!(committed["output"]["revision_after"], 1, "{committed}");
-    assert_eq!(committed["output"]["actor"], format!("pane:{first}"));
+    assert_eq!(committed["output"]["actor"], format!("pane:{caller}"));
     expect_commits(&mut h, start, "route-e4", 1);
     log::info!("permission_gate: second chess pane addressed by instance");
 }
@@ -1222,17 +1203,17 @@ fn gate_denial_reaches_the_host_log() {
     isolate_tool_context(&mut h);
     let pane = h.launch_repo_view("plugins/chess", &[]);
     let start = event_len();
+    // A process outside every pane holds no pane identity to call with.
     let denied = socket_call(
         &mut h,
-        Some(9_999_999),
         None,
-        &[],
+        &[std::process::id()],
         play(0, "ghost-log", "e2e4", "game-1"),
     );
     assert_eq!(denied["error_code"], "permission_denied", "{denied}");
     assert!(!denied.to_string().contains("holds no seat"), "{denied}");
     assert!(
-        gate_log_contains("actor=pane:9999999"),
+        gate_log_contains("actor=outside-process"),
         "a gate denial must be an info log line"
     );
     assert!(
@@ -1387,14 +1368,18 @@ fn list_plugin_tools_snapshots_live_registry_for_context() {
         let req = HostRequest::ListPluginTools {
             plugin_id: plugin_id.map(str::to_string),
             context_id,
-            caller_pane_id: Some(pane),
-            caller_context_id: Some(ctx),
-            peer_ancestry: Vec::new(),
             response_file: reply.to_string_lossy().to_string(),
         };
         let line = serde_json::to_string(&req).unwrap();
         let mut ack = Vec::new();
-        crate::app::handle_socket_line(&line, &h.ipc_tx, None, &mut ack);
+        // An outside process: this test process, walked to the root.
+        crate::app::handle_socket_line_in(
+            &crate::config::config_dir(),
+            &line,
+            &h.ipc_tx,
+            Some(&crate::broker::caller::PeerWitness::capture(std::process::id())),
+            &mut ack,
+        );
         pump_until(h, |_| {
             reply.is_file()
                 && std::fs::metadata(&reply)
@@ -1439,9 +1424,10 @@ fn create_agent_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
     };
     use sha2::{Digest, Sha256};
 
+    let _mesh = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
-    let other_pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
+    let other_pane = h.add_focused_terminal();
     let workspace = h.workspace_root();
     let profile_dir = crate::config::config_dir();
 
@@ -1456,13 +1442,13 @@ fn create_agent_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
                     "workspace": h.workspace_root(),
                     "name": agent_name,
                     "grants": ["agents.ping=allow"],
-                    "caller_pane": caller_pane,
                 }),
                 response_file: reply.to_string_lossy().to_string(),
             };
             let line = serde_json::to_string(&req).unwrap();
             let mut ack = Vec::new();
-            crate::app::handle_socket_line(&line, &h.ipc_tx, None, &mut ack);
+            let peer = [h.shell_pid(caller_pane)];
+            crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&peer), &mut ack);
             pump_until(h, |_| {
                 reply.is_file()
                     && std::fs::metadata(&reply)
@@ -1578,8 +1564,7 @@ fn create_agent_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
                 ..Default::default()
             }),
         )
-        .unwrap()
-        .0;
+        .unwrap();
     let orphan_receipt = reloaded
         .resolve_needs_you_from(&orphan_id, true, ResolveSurface::Desktop)
         .expect("resolve orphan permission_request");
@@ -1592,15 +1577,15 @@ fn create_agent_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
 
 #[test]
 fn human_pane_creates_agent_in_own_context_and_spawned_agent_is_narrowed_by_grants() {
+    let _mesh = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
     let mut h = HostHarness::new();
     let human_pane = h.add_focused_terminal();
     let human_pid = h.terminal_backend(human_pane).child_pid();
     assert!(
-        h.app.is_human_owned_pane(human_pane),
+        h.app.terminal_incarnation(human_pane).is_some_and(|t| t.is_desktop_granted()),
         "host-spawned user terminal must be human-owned"
     );
     let workspace = h.workspace_root();
-    let mon = monitor();
 
     let call_agents_api = |h: &mut HostHarness,
                            op: &str,
@@ -1636,18 +1621,29 @@ fn human_pane_creates_agent_in_own_context_and_spawned_agent_is_narrowed_by_gran
             "workspace": workspace,
             "name": "worker",
             "grants": ["agents.ping=allow"],
-            "caller_pane": human_pane,
+        }),
+        Some(&[human_pid]),
+    );
+    // No pane is the person (stint 1285): widening files a request, a
+    // desktop click grants the pane exactly that, and the retry succeeds.
+    assert_eq!(created["ok"], false, "{created}");
+    let filed = created["needs_you_id"].as_str().expect("a filed request");
+    monitor()
+        .resolve_needs_you_from(filed, true, crate::broker::gate::ResolveSurface::Desktop)
+        .expect("desktop approve");
+    let created = call_agents_api(
+        &mut h,
+        "create_agent",
+        serde_json::json!({
+            "workspace": workspace,
+            "name": "worker",
+            "grants": ["agents.ping=allow"],
         }),
         Some(&[human_pid]),
     );
     assert_eq!(
         created["ok"], true,
-        "human pane create_agent must succeed: {created}"
-    );
-    assert!(
-        mon.list_needs_you().is_empty(),
-        "human pane create_agent must not file needs-you: {:?}",
-        mon.list_needs_you()
+        "create_agent after the desktop approval: {created}"
     );
 
     // 2. Spawn a run on `worker` and verify it only has `agents.ping` (narrowed by grants).
@@ -1673,9 +1669,8 @@ fn human_pane_creates_agent_in_own_context_and_spawned_agent_is_narrowed_by_gran
             "run_id": run_id,
             "tool": "agents.ping",
             "input_json": "{}",
-            "caller_pane": human_pane,
         }),
-        None,
+        Some(&[human_pid]),
     );
     assert_eq!(
         ping_call["ok"], true,
@@ -1690,9 +1685,8 @@ fn human_pane_creates_agent_in_own_context_and_spawned_agent_is_narrowed_by_gran
             "run_id": run_id,
             "tool": "agents.admin",
             "input_json": "{}",
-            "caller_pane": human_pane,
         }),
-        None,
+        Some(&[human_pid]),
     );
     assert_eq!(
         admin_call["ok"], false,
@@ -1712,9 +1706,8 @@ fn human_pane_creates_agent_in_own_context_and_spawned_agent_is_narrowed_by_gran
             "parent_run": run_id,
             "name": "sub-wider",
             "grants": ["agents.admin=allow"],
-            "caller_pane": human_pane,
         }),
-        None,
+        Some(&[human_pid]),
     );
     assert_eq!(wider_delegate["ok"], false, "{wider_delegate}");
     assert_eq!(
@@ -1730,6 +1723,7 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
         manager::{mutate_secret, secret_inventory, Mutation, SecretTarget},
     };
 
+    let _mesh = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
     let mut h = HostHarness::new();
     let human_pane = h.add_focused_terminal();
     let human_pid = h.terminal_backend(human_pane).child_pid();
@@ -1745,7 +1739,10 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
     let cfg_nested = secrets::init_workspace(&nested_b, &channel_dir).unwrap();
 
     let _exp =
-        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        crate::release::set_test_experiments(&[
+            crate::release::ReleaseFeature::AgentMesh,
+            crate::release::ReleaseFeature::FolderSecrets,
+        ]);
     let mon = monitor();
     let sys_store = secrets::system_store();
     let fld_store = secrets::folder_store();
@@ -1826,7 +1823,6 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
                 "workspace": target_ws,
                 "name": "intruder",
                 "grants": ["agents.ping=allow"],
-                "caller_pane": human_pane,
             }),
         );
         assert_eq!(
@@ -1845,7 +1841,6 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
             "list_agents",
             serde_json::json!({
                 "workspace": target_ws,
-                "caller_pane": human_pane,
             }),
         );
         assert_eq!(list_agents_resp["ok"], false, "{list_agents_resp}");
@@ -1859,7 +1854,6 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
             "list_grants",
             serde_json::json!({
                 "workspace": target_ws,
-                "caller_pane": human_pane,
             }),
         );
         assert_eq!(list_grants_resp["ok"], false, "{list_grants_resp}");
@@ -1887,7 +1881,6 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
             name: secret_name.to_string(),
             global: false,
             workspace_root: Some(target_ws.clone()),
-            peer_ancestry: Vec::new(),
             response_file: reply.to_string_lossy().into_owned(),
         };
         let line = serde_json::to_string(&req).unwrap();
@@ -1959,9 +1952,10 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
 fn agent_spawned_pane_does_not_get_human_authority() {
     use crate::broker::gate::{NeedsYouKind, ResolveSurface};
 
+    let _mesh = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
     let mut h = HostHarness::new();
     let human_pane = h.add_focused_terminal();
-    assert!(h.app.is_human_owned_pane(human_pane));
+    assert!(h.app.terminal_incarnation(human_pane).is_some_and(|t| t.is_desktop_granted()));
 
     // 1. Spawn an agent pane (`agent_pane: true`).
     let (_, human_tile) = h.app.find_pane_in_any_window(human_pane).unwrap();
@@ -1986,7 +1980,7 @@ fn agent_spawned_pane_does_not_get_human_authority() {
         )
         .expect("agent pane");
     assert!(
-        !h.app.is_human_owned_pane(agent_pane),
+        !h.app.terminal_incarnation(agent_pane).is_some_and(|t| t.is_desktop_granted()),
         "agent pane must not be human-owned"
     );
 
@@ -2012,7 +2006,7 @@ fn agent_spawned_pane_does_not_get_human_authority() {
         .as_u64()
         .expect("child shell pane_id");
     assert!(
-        !h.app.is_human_owned_pane(child_shell_pane),
+        !h.app.terminal_incarnation(child_shell_pane).is_some_and(|t| t.is_desktop_granted()),
         "plain shell spawned by an agent pane via `pane new` must never qualify as human-owned"
     );
 
@@ -2028,7 +2022,6 @@ fn agent_spawned_pane_does_not_get_human_authority() {
                 "workspace": h.workspace_root(),
                 "name": name,
                 "grants": [grant],
-                "caller_pane": child_shell_pane,
             }),
             response_file: reply.to_string_lossy().to_string(),
         };
@@ -2486,7 +2479,7 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
 
 fn agent_widen(mon: &PermissionMonitor, ask: &str) -> String {
     let caller = crate::broker::gate::PermissionCaller {
-        human: false,
+        revoke_scope: crate::broker::gate::RevokeScope::Own,
         actor_id: "agent:synthetic-probe".to_string(),
     };
     match mon.mutate_entry(ask, "allow", &caller) {
@@ -2568,7 +2561,7 @@ fn a_retired_permission_change_id_cannot_settle_a_repeated_ask() {
     let first = admit_probe(&mon, workspace.path(), "call-reask", "probe.reask");
     let old_widen = agent_widen(&mon, &first);
     let human = PermissionCaller {
-        human: true,
+        revoke_scope: crate::broker::gate::RevokeScope::Any,
         actor_id: "human".to_string(),
     };
     let revoked = mon.mutate_entry(&first, "revoke", &human);
@@ -2623,18 +2616,14 @@ fn launch_plan_credential_of_a_closed_pane_cannot_call_a_plugin() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
     let _chess = h.launch_repo_view("plugins/chess", &[]);
-    let ctx = h.app.windows[h.app.active_window].context_id;
-    let workspace = h.workspace_root();
-    let closed = h.add_test_pane();
-    let credential =
-        monitor().issue_credential(Some(closed), ctx, &workspace, &format!("pane:{closed}"));
+    let (closed, credential, closed_pid) = terminal_caller(&mut h);
     let op = format!("gate-{}-closed", uuid::Uuid::new_v4());
     let live = socket_call(
         &mut h,
-        Some(closed),
         Some(&credential),
-        &[],
+        &[closed_pid],
         play(0, &op, "e2e4", "game-1"),
+
     );
     assert_eq!(
         live["error_code"], "permission_required",
@@ -2642,19 +2631,17 @@ fn launch_plan_credential_of_a_closed_pane_cannot_call_a_plugin() {
     );
     h.app.close_pane_by_id(closed);
     assert!(h.app.find_pane_in_any_window(closed).is_none());
+    // Its process no longer names a pane, so the credential names nobody.
     let body = socket_call(
         &mut h,
-        Some(closed),
         Some(&credential),
-        &[],
+        &[closed_pid],
         play(0, &op, "e2e4", "game-1"),
+
     );
     assert_eq!(body["error_code"], "permission_denied", "{body}");
     assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains(&format!("caller pane {closed} not found")),
+        !body.to_string().contains("output"),
         "refused as a dead pane, not by the broker: {body}"
     );
 }

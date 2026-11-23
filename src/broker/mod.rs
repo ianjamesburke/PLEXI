@@ -11,6 +11,8 @@
 
 pub mod custody;
 pub mod gate;
+pub(crate) mod caller;
+pub(crate) mod consent;
 pub(crate) mod host_key;
 pub mod integrity;
 mod needs_you_store;
@@ -42,6 +44,10 @@ pub enum ActorType {
     ManagedPolicy,
     /// The local user (`principal::LOCAL_USER_ID`). No existing row carries it.
     User,
+    /// Processes outside every pane (`principal::EXTERNAL_ID`, stint 1285).
+    /// No row written before 1285 carries it, so every existing row keeps
+    /// its meaning; an agent named `external` stays `Agent`.
+    External,
 }
 
 /// What kind of thing is being accessed.
@@ -78,6 +84,16 @@ pub enum Decision {
 }
 
 impl Decision {
+    /// The one ordering of decisions by how much they permit: deny < ask <
+    /// allow (stint 1285).
+    pub fn permissiveness(self) -> u8 {
+        match self {
+            Self::Deny => 0,
+            Self::Ask => 1,
+            Self::Allow => 2,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Allow => "allow",
@@ -110,6 +126,46 @@ pub enum GrantDuration {
     Always,
 }
 
+impl GrantDuration {
+    /// The durations a grant held by every process outside Plexi may have:
+    /// an allowlist, so a duration added later is refused until classified
+    /// (stint 1285). What one outside process is granted, all of them hold,
+    /// so it never outlives the session.
+    pub fn allowed_for_external(self) -> bool {
+        match self {
+            Self::Once | Self::Session => true,
+            Self::Workspace
+            | Self::Document
+            | Self::Game
+            | Self::Path
+            | Self::PackageIdentity
+            | Self::Always => false,
+        }
+    }
+}
+
+impl GrantRecord {
+    /// A row that says the person decided it can only be written with the
+    /// evidence of that decision (stint 1285).
+    pub fn needs_decision_evidence(&self) -> bool {
+        self.source == GrantSource::User
+    }
+
+    /// The run a desktop approval bound this row to. A one-shot's operation
+    /// id and a pane session row's pane tag are not runs.
+    pub fn bound_run(&self) -> Option<&str> {
+        self.bound_operation_id
+            .as_deref()
+            .filter(|bound| !self.consumed && !bound.starts_with("pane:"))
+    }
+
+    /// Whether this row may exist for its actor at all: an outside-process
+    /// row only for once or session (stint 1285).
+    pub fn duration_admissible(&self) -> bool {
+        self.actor_type != ActorType::External || self.duration.allowed_for_external()
+    }
+}
+
 /// Whether a grant is permanent (`hard`) or time-limited (`soft`).
 ///
 /// Old `grants.toml` entries without a `kind` field deserialize as `Hard` via
@@ -140,6 +196,9 @@ pub enum GrantSource {
     User,
     Workspace,
     Session,
+    /// Delegated by a caller from grants it holds, never by the person
+    /// (stint 1285).
+    Delegated,
 }
 
 /// Trust origin of the actor itself.
@@ -223,6 +282,10 @@ pub struct GrantRecord {
     /// Operation id that consumed a one-shot, for receipt recovery only.
     #[serde(default)]
     pub bound_operation_id: Option<String>,
+    /// The pane whose refused request a run-bound approval answered: only
+    /// that pane may delegate the tool for that run (stint 1285).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_requester_pane: Option<u64>,
     /// Actor + tool + resource, ignoring the argument fingerprint.
     ///
     /// Exact one-shot and session grants stay fingerprint-bound. An explicit
@@ -327,6 +390,7 @@ impl GrantRecord {
             revocation_epoch: 0,
             consumed: false,
             bound_operation_id: None,
+            run_requester_pane: None,
             tool_scoped: false,
             args_unbound: false,
         }
@@ -368,6 +432,7 @@ impl GrantRecord {
             revocation_epoch: 0,
             consumed: false,
             bound_operation_id: None,
+            run_requester_pane: None,
             tool_scoped: false,
             args_unbound: false,
         }
@@ -1089,6 +1154,37 @@ impl GrantStore {
     /// (actor, target, workspace, source) is replaced so user decisions
     /// update in place instead of accumulating contradictions.
     pub fn record(&mut self, record: GrantRecord) {
+        if !cfg!(test) && record.needs_decision_evidence() {
+            log::error!(
+                "grant_store: refused a user-sourced grant for {} on {} with no desktop evidence",
+                record.actor_id,
+                record.target_id
+            );
+            return;
+        }
+        self.insert_record(record);
+    }
+
+    /// Record a row the person decided, on the evidence the surface showing
+    /// the request issued (stint 1285).
+    pub(crate) fn record_decided(
+        &mut self,
+        record: GrantRecord,
+        _decision: consent::CoveredDecision<'_>,
+    ) {
+        self.insert_record(record);
+    }
+
+    fn insert_record(&mut self, record: GrantRecord) {
+        if !record.duration_admissible() {
+            log::error!(
+                "grant_store: refused {:?} grant for {} on {}: an outside-process grant lasts once or for the session",
+                record.duration,
+                record.actor_id,
+                record.target_id
+            );
+            return;
+        }
         self.file.data.records.retain(|r| {
             !(r.actor_type == record.actor_type
                 && r.actor_id == record.actor_id
@@ -1238,6 +1334,17 @@ impl GrantStore {
             .records
             .iter()
             .filter(|r| r.matches(req, now))
+            .filter(|r| {
+                let admissible = r.duration_admissible();
+                if !admissible {
+                    log::info!(
+                        "broker: ignored {:?} row {} for outside process (once and session only)",
+                        r.duration,
+                        r.grant_id
+                    );
+                }
+                admissible
+            })
             .collect();
 
         let has = |decision: Decision, managed: bool| {

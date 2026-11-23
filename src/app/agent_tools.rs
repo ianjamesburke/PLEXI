@@ -4,18 +4,17 @@ use crate::protocol::AgentState;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
+/// The caller of an agent tool, as the host established it (stint 1285).
 pub(crate) struct AgentCaller<'a> {
-    pub pane_id: Option<u64>,
+    pub origin: &'a crate::broker::caller::RequestOrigin,
     pub credential: Option<&'a str>,
-    pub peer_ancestry: &'a [u32],
 }
 
 pub(crate) struct AgentCallRequest<'a> {
     pub role: &'a str,
     pub task: &'a str,
-    pub parent_pane_id: Option<u64>,
+    pub origin: &'a crate::broker::caller::RequestOrigin,
     pub credential: Option<&'a str>,
-    pub peer_ancestry: &'a [u32],
     pub cwd: Option<&'a str>,
     pub worktree: Option<&'a str>,
     pub asynchronous: bool,
@@ -31,22 +30,30 @@ pub(crate) struct AgentToolWait {
 }
 
 impl PlexiApp {
+    /// The pane an agent tool call acts for. An outside process acts for no
+    /// pane and each use goes through [`Self::admit_outside_use`]; an
+    /// unidentified caller acts for nobody; host code acts unparented
+    /// (stint 1285).
     pub(crate) fn agent_tool_caller(&self, caller: AgentCaller<'_>) -> Result<Option<u64>, String> {
-        let peer = self
-            .resolve_socket_peer_pane(caller.peer_ancestry)
-            .map(|(id, _, _)| id);
-        if peer.is_none() && caller.pane_id.is_none() && caller.credential.is_none() {
-            // A terminal outside this host may start an unparented tool call.
-            if caller.peer_ancestry.is_empty() {
-                return Err("agent call requires an authenticated socket connection".into());
+        use crate::broker::caller::{RequestOrigin, SocketCaller};
+        let socket = match caller.origin {
+            RequestOrigin::Socket(socket) => socket,
+            RequestOrigin::HostUi | RequestOrigin::HostSystem => return Ok(None),
+            other => {
+                return Err(format!(
+                    "permission_denied: agent tools are not served to {}",
+                    other.class()
+                ))
             }
+        };
+        if let SocketCaller::External(_) = socket {
             return Ok(None);
         }
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .map_err(|error| error.to_string())?;
         let verified = monitor
-            .authenticate_call(caller.pane_id, caller.credential, peer)
+            .authenticate_call(socket, caller.credential)
             .map_err(|e| format!("permission_denied: caller identity: {e:?}"))?;
         if let Some(id) = verified.pane_id {
             if self.find_pane_in_any_window(id).is_none() {
@@ -54,6 +61,105 @@ impl PlexiApp {
             }
         }
         Ok(verified.pane_id)
+    }
+
+    /// Admit one use by an outside process through the broker. Its identity
+    /// is shared by every process outside Plexi, so a grant lasts once or for
+    /// the session and an approval names this exact input. Any other origin
+    /// passes: it was admitted as itself.
+    pub(crate) fn admit_outside_use(
+        &self,
+        origin: &crate::broker::caller::RequestOrigin,
+        tool: &str,
+        input: &Value,
+        root: &std::path::Path,
+        context_id: u64,
+    ) -> Result<(), String> {
+        use crate::broker::caller::{RequestOrigin, SocketCaller};
+        if !matches!(origin, RequestOrigin::Socket(SocketCaller::External(_))) {
+            return Ok(());
+        }
+        self.admit_caller_use(origin, tool, input, root, context_id)
+    }
+
+    /// Admit one use by a socket caller through the broker as its own
+    /// principal: a pane under its ceiling, an outside process under the
+    /// shared outside identity (once or session). An unidentified caller is
+    /// refused; host code passes, it was admitted as itself (stint 1285).
+    pub(crate) fn admit_caller_use(
+        &self,
+        origin: &crate::broker::caller::RequestOrigin,
+        tool: &str,
+        input: &Value,
+        root: &std::path::Path,
+        context_id: u64,
+    ) -> Result<(), String> {
+        use crate::broker::caller::{RequestOrigin, SocketCaller};
+        use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
+        use crate::broker::principal::Principal;
+        let (principal, posture) = match origin {
+            RequestOrigin::Socket(SocketCaller::External(_)) => (Principal::External, None),
+            RequestOrigin::Socket(SocketCaller::Pane(pane)) => (
+                Principal::agent(format!("pane:{}", pane.terminal_pane)),
+                self.pane_ceiling(pane.terminal_pane)?,
+            ),
+            RequestOrigin::Socket(SocketCaller::Unidentified(reason)) => {
+                return Err(format!(
+                    "permission_denied: {tool}: caller identity could not be established: {reason}"
+                ))
+            }
+            RequestOrigin::PluginGuest(_) | RequestOrigin::SpawnQueue => {
+                return Err(format!(
+                    "permission_denied: {tool} is not served to {}",
+                    origin.class()
+                ))
+            }
+            RequestOrigin::HostUi | RequestOrigin::HostSystem => return Ok(()),
+        };
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir())
+            .map_err(|error| error.to_string())?;
+        let actor = principal.actor_id().to_string();
+        let call = format!("caller-{tool}-{}", uuid::Uuid::new_v4());
+        let root = crate::platform::path::canonical_or_self(root);
+        match monitor.admit_with_posture(AdmitRequest {
+            call_id: &call,
+            tool,
+            input_json: &input.to_string(),
+            principal: &principal,
+            actor_scope: crate::broker::ActorScope::User,
+            trust_origin: "plexi-cli",
+            workspace_root: &root,
+            context_id,
+            package_id: "",
+            instance_id: 0,
+            target_type: crate::broker::TargetType::HostTool,
+        }, posture.as_ref()) {
+            Admission::Proceed {
+                grant_id,
+                fingerprint,
+                resource_id,
+                ..
+            } => {
+                let resource = resource_id.unwrap_or_default();
+                monitor.note_use(&actor, &call, &grant_id, &fingerprint, &resource, "")?;
+                monitor.note_outcome(
+                    &actor, &call, &grant_id, &fingerprint, &resource, "", "ok", "", "",
+                )?;
+                monitor.consume_once(&grant_id, None);
+                log::info!("caller_use: admitted tool={tool} actor={actor} grant={grant_id}");
+                Ok(())
+            }
+            Admission::Required { pending_request_id } => {
+                log::info!("caller_use: tool={tool} actor={actor} waits on {pending_request_id}");
+                Err(format!(
+                    "permission_denied: {tool} needs approval for {actor}. Approve request {pending_request_id} in Needs you, then rerun this command."
+                ))
+            }
+            Admission::Denied { code } => {
+                log::info!("caller_use: tool={tool} actor={actor} denied code={code}");
+                Err(format!("permission_denied: {tool} for {actor} was denied ({code})"))
+            }
+        }
     }
 
     /// The caller's `can_call`/`can_handoff` grant, read under the admitted
@@ -175,10 +281,22 @@ impl PlexiApp {
         wait: bool,
         response_file: &str,
     ) -> Result<(), String> {
+        let origin = caller.origin.clone();
         let parent = self.agent_tool_caller(caller)?;
         let (win, _) = self
             .find_pane_in_any_window(pane_id)
             .ok_or_else(|| format!("pane {pane_id} not found"))?;
+        if !text.trim().is_empty() {
+            let context_id = self.windows[win].context_id;
+            let root = self.windows[win].path.clone();
+            self.admit_outside_use(
+                &origin,
+                "agent.message",
+                &json!({"pane_id": pane_id, "text": text}),
+                &root,
+                context_id,
+            )?;
+        }
         let terminal = self.windows[win]
             .panes
             .get_mut(&pane_id)
@@ -342,7 +460,7 @@ mod tests {
         use std::os::unix::net::UnixListener;
         use std::process::{Command, Stdio};
         let mut h = HostHarness::new();
-        let parent = h.add_test_pane();
+        let parent = h.add_focused_terminal();
         let (child, _) = h
             .app
             .spawn_agent_worker_pane(
@@ -364,9 +482,9 @@ mod tests {
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let token = monitor.issue_credential(
             Some(parent),
-            h.app.windows[0].context_id,
-            &root,
             "agent:lead",
+
+
         );
         let socket_dir = tempfile::tempdir_in("/tmp").unwrap();
         let socket = socket_dir.path().join("message.sock");
@@ -422,7 +540,8 @@ mod tests {
             let mut wire = String::new();
             reader.read_line(&mut wire).unwrap();
             // This is the production socket decoder, not direct typed IPC injection.
-            crate::app::handle_socket_line(&wire, &h.ipc_tx, Some(&[]), reader.get_mut());
+            let peer = [h.shell_pid(parent)];
+            crate::app::handle_socket_line(&wire, &h.ipc_tx, Some(&peer), reader.get_mut());
             h.hidden_frame();
             let delivered = h
                 .app
@@ -442,7 +561,6 @@ mod tests {
                     "--wait returned before child outcome"
                 );
                 h.inject_ipc(crate::protocol::HostRequest::AgentAsk {
-                    peer_ancestry: None,
                     pane_id: child,
                     question: "Need anything else?".into(),
                     response_file: root.join("ask.json").to_string_lossy().into_owned(),
@@ -513,18 +631,17 @@ mod tests {
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let token = monitor.issue_credential(
             Some(caller),
-            h.app.windows[0].context_id,
-            &root,
             "agent:lead",
+
+
         );
         let response = root.join("handoff.json");
         h.app
             .start_agent_tool_call(AgentCallRequest {
                 role: "writer",
                 task: "Continue",
-                parent_pane_id: Some(caller),
+                origin: &h.origin_from_pane(caller),
                 credential: Some(&token),
-                peer_ancestry: &[],
                 cwd: None,
                 worktree: None,
                 asynchronous: false,
@@ -577,9 +694,9 @@ mod tests {
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let token = monitor.issue_credential(
             Some(parent),
-            h.app.windows[0].context_id,
-            &root,
             "agent:lead",
+
+
         );
         let before = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
         let response = root.join("handoff.json");
@@ -588,9 +705,8 @@ mod tests {
             .start_agent_tool_call(AgentCallRequest {
                 role: "writer",
                 task: "Continue",
-                parent_pane_id: Some(parent),
+                origin: &h.origin_from_pane(parent),
                 credential: Some(&token),
-                peer_ancestry: &[],
                 cwd: None,
                 worktree: None,
                 asynchronous: false,
@@ -610,7 +726,7 @@ mod tests {
     #[test]
     fn agent_tool_message_authenticates_parent_and_waits_for_next_idle() {
         let mut h = HostHarness::new();
-        let parent = h.add_test_pane();
+        let parent = h.add_focused_terminal();
         let (child, _) = h
             .app
             .spawn_agent_worker_pane(
@@ -632,20 +748,21 @@ mod tests {
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let token = monitor.issue_credential(
             Some(parent),
-            h.app.windows[0].context_id,
-            &root,
             "agent:lead",
+
+
         );
         let reply = root.join("message.json");
+        // A credential another pane holds proves nothing about this caller.
+        let foreign = monitor.issue_credential(Some(child), "agent:other");
         assert!(h
             .app
             .send_agent_tool_message(
                 child,
                 "answer",
                 AgentCaller {
-                    pane_id: Some(parent),
-                    credential: None,
-                    peer_ancestry: &[]
+                    origin: &h.origin_from_pane(parent),
+                    credential: Some(&foreign),
                 },
                 true,
                 reply.to_str().unwrap()
@@ -656,9 +773,8 @@ mod tests {
                 child,
                 "answer",
                 AgentCaller {
-                    pane_id: Some(parent),
+                    origin: &h.origin_from_pane(parent),
                     credential: Some(&token),
-                    peer_ancestry: &[],
                 },
                 true,
                 reply.to_str().unwrap(),
@@ -687,13 +803,14 @@ mod tests {
     #[test]
     fn agent_tool_wait_returns_question_then_validated_completion_while_hidden() {
         let mut h = HostHarness::new();
-        let parent = h.add_test_pane();
+        let parent = h.add_focused_terminal();
+        let parent_window_panes = h.app.windows[0].panes.len();
         let (child, _) = h.app.spawn_agent_worker_pane("tester", "pi", "sleep 30", "Verify",
             Some("agent-tools-test"), true, Some(parent), None,
             Some(json!({"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}})), None, true, None).unwrap();
         assert_eq!(
             h.app.windows[0].panes.len(),
-            1,
+            parent_window_panes,
             "call must not split the parent's window"
         );
         assert!(!h
@@ -709,7 +826,6 @@ mod tests {
             .park_agent_tool_wait(child, call_reply.to_str().unwrap());
         let done_reply = root.join("done.json");
         h.inject_ipc(crate::protocol::HostRequest::AgentDone {
-            peer_ancestry: None,
             pane_id: child,
             result: Some("{\"wrong\":1}".into()),
             summary: None,
@@ -719,7 +835,6 @@ mod tests {
         assert_eq!(read(&done_reply)["error_code"], "invalid_result");
         assert!(!call_reply.exists());
         h.inject_ipc(crate::protocol::HostRequest::AgentAsk {
-            peer_ancestry: None,
             pane_id: child,
             question: "Which branch?".into(),
             response_file: root.join("ask.json").to_string_lossy().into_owned(),
@@ -731,7 +846,6 @@ mod tests {
         h.app
             .park_agent_tool_wait(child, completion.to_str().unwrap());
         h.inject_ipc(crate::protocol::HostRequest::AgentDone {
-            peer_ancestry: None,
             pane_id: child,
             result: Some("{\"ok\":true}".into()),
             summary: Some("Verified".into()),

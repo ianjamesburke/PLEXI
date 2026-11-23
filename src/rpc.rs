@@ -331,9 +331,8 @@ fn write_to_registered_stream(mut stream: IpcStream, wire_body: &[u8]) -> std::i
 
 /// Host-side response write: sends `body` over the open `notify.sock` stream
 /// registered in [`ReplyRegistry`] for `response_file` (or its base token when
-/// `response_file` ends with `.err`), falling back to an atomic file write only
-/// when no stream is registered (e.g. unit tests that inject requests without a
-/// socket).
+/// `response_file` ends with `.err`). With no stream there is no reply, except
+/// in unit tests that inject requests without a socket.
 pub(crate) fn write_response(response_file: &str, body: &[u8]) -> bool {
     if let Some(stream) = ReplyRegistry::take(response_file) {
         return match write_to_registered_stream(stream, body) {
@@ -358,6 +357,21 @@ pub(crate) fn write_response(response_file: &str, body: &[u8]) -> bool {
             };
         }
     }
+    write_reply_without_stream(response_file, body)
+}
+
+/// A reply with no live stream has nowhere to go: the host never writes where
+/// a caller points it (stint 1285).
+#[cfg(not(test))]
+fn write_reply_without_stream(response_file: &str, _body: &[u8]) -> bool {
+    log::error!("rpc: no live reply stream for {response_file:?}; reply dropped");
+    false
+}
+
+/// Tests that inject requests with no socket read the reply from a file in
+/// this profile's `rpc/` directory or their own fixture directory.
+#[cfg(test)]
+fn write_reply_without_stream(response_file: &str, body: &[u8]) -> bool {
     match crate::platform::fs::atomic_write(Path::new(response_file), body) {
         Ok(()) => true,
         Err(e) => {
@@ -688,7 +702,8 @@ mod tests {
             BufReader::new(stream)
                 .read_line(&mut line)
                 .expect("read request");
-            crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[]), &mut write_half);
+            let shell = h.shell_pid(pane_id);
+            crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[shell]), &mut write_half);
             drop(write_half);
             h.hidden_frame();
         });
@@ -734,7 +749,7 @@ mod tests {
             response_file: wait_token.clone(),
         };
         let line = serde_json::to_string(&wait_req).expect("serialize");
-        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[]), &mut server_stream);
+        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[h.shell_pid(pane_id)]), &mut server_stream);
         drop(server_stream);
 
         let token_for_client = wait_token.clone();
@@ -764,7 +779,7 @@ mod tests {
             response_file: write_token.clone(),
         };
         let write_line = serde_json::to_string(&write_req).expect("serialize");
-        crate::app::handle_socket_line(&write_line, &h.ipc_tx, Some(&[]), &mut write_srv);
+        crate::app::handle_socket_line(&write_line, &h.ipc_tx, Some(&[h.shell_pid(pane_id)]), &mut write_srv);
         drop(write_srv);
         h.hidden_frame();
 

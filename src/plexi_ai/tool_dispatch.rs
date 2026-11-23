@@ -758,7 +758,27 @@ pub trait PermissionPresenter: Send + Sync {
         summary: &str,
         actor: &str,
         resource: &str,
-    ) -> Result<crate::broker::gate::ApprovalChoice, String>;
+    ) -> Result<PresentedChoice, String>;
+}
+
+/// What a presenter came back with. A presenter that showed the ask itself
+/// carries the evidence of the click; one that watched a decision the
+/// desktop already committed carries none, and the monitor's record is the
+/// fact (stint 1285).
+#[derive(Debug)]
+pub struct PresentedChoice {
+    pub choice: crate::broker::gate::ApprovalChoice,
+    pub evidence: Option<crate::broker::consent::DecisionEvidence>,
+}
+
+impl PresentedChoice {
+    /// A decision already committed, or a plain refusal.
+    pub fn observed(choice: crate::broker::gate::ApprovalChoice) -> Self {
+        Self {
+            choice,
+            evidence: None,
+        }
+    }
 }
 
 pub struct ToolDispatcher {
@@ -1090,14 +1110,14 @@ impl ToolDispatcher {
         if let crate::broker::gate::Admission::Required { pending_request_id } = &admission {
             if let Some(presenter) = &self.presenter {
                 let (_, resource_id) = crate::broker::gate::resource_of(name, &input_json);
-                let choice = match presenter.present(
+                let presented = match presenter.present(
                     pending_request_id,
                     name,
                     &input_json,
                     &self.scope.caller_plugin_id,
                     resource_id.as_deref().unwrap_or(""),
                 ) {
-                    Ok(choice) => choice,
+                    Ok(presented) => presented,
                     Err(message) => {
                         log::error!(
                             "tool_dispatch: permission was not saved caller={} tool={name} call_id={call_id}: {message}",
@@ -1106,6 +1126,7 @@ impl ToolDispatcher {
                         return ToolCallResult::err(message);
                     }
                 };
+                let crate::plexi_ai::tool_dispatch::PresentedChoice { choice, evidence } = presented;
                 // Waiting desktop presenters observe a decision already committed by
                 // the banner. Do not submit it a second time: the monitor rejects
                 // duplicate decisions. Re-admission below still checks revocation.
@@ -1117,10 +1138,7 @@ impl ToolDispatcher {
                         .approval_resolution(pending_request_id)
                         .is_none()
                     {
-                        if let Err(error) = self.monitor.approve_pending(
-                            pending_request_id,
-                            crate::broker::gate::ApprovalChoice::Deny,
-                        ) {
+                        if let Err(error) = self.monitor.cancel_pending(pending_request_id) {
                             // A concurrent decision can win between observation
                             // and cleanup. Only an unresolved cleanup is a fault.
                             if self
@@ -1138,7 +1156,17 @@ impl ToolDispatcher {
                     if self.monitor.approval_resolution(pending_request_id) == Some(choice) {
                         Ok(())
                     } else {
-                        self.monitor.approve_pending(pending_request_id, choice)
+                        match evidence {
+                            Some(evidence) => {
+                                self.monitor.decide_pending(&evidence, pending_request_id, choice)
+                            }
+                            None if choice == crate::broker::gate::ApprovalChoice::Deny => {
+                                self.monitor.cancel_pending(pending_request_id)
+                            }
+                            None => Err(format!(
+                                "permission_denied: {choice:?} on {pending_request_id} carries no desktop decision"
+                            )),
+                        }
                     };
                 if matches!(
                     choice,

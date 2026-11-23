@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::protocol::{HostRequest, SpawnSource};
+use crate::broker::caller::RequestOrigin;
+use crate::protocol::HostRequest;
 
 /// How long a `pane new --agent` spawn waits for the agent's first idle
 /// self-report when the caller does not say. Generous on purpose: a cold agent
@@ -42,8 +43,9 @@ pub(crate) struct PaneLaunchSpec {
     pub(crate) agent: Option<AgentBootSpec>,
     pub(crate) worktree: Option<String>,
     pub(crate) result_schema: Option<serde_json::Value>,
-    /// Host-stamped. See `HostRequest::SpawnPane::source`.
-    pub(crate) source: SpawnSource,
+    /// Where the launch entered the host (stint 1285). Host-only: it is
+    /// never serialized into a request.
+    pub(crate) origin: RequestOrigin,
 }
 
 impl PaneLaunchSpec {
@@ -68,11 +70,14 @@ impl PaneLaunchSpec {
             agent: None,
             worktree: None,
             result_schema: None,
-            source: SpawnSource::InProcess,
+            origin: RequestOrigin::HostSystem,
         })
     }
 
-    pub(crate) fn from_spawn_pane(request: &HostRequest) -> Result<Self, String> {
+    pub(crate) fn from_spawn_pane(
+        request: &HostRequest,
+        origin: RequestOrigin,
+    ) -> Result<Self, String> {
         let HostRequest::SpawnPane {
             type_id,
             layout,
@@ -91,7 +96,6 @@ impl PaneLaunchSpec {
             boot_timeout_secs,
             worktree,
             result_schema,
-            source,
             ..
         } = request
         else {
@@ -196,7 +200,7 @@ impl PaneLaunchSpec {
             agent,
             worktree,
             result_schema,
-            source: source.clone(),
+            origin,
         })
     }
 
@@ -246,7 +250,6 @@ impl PaneLaunchSpec {
             boot_timeout_secs: self.agent.as_ref().map(|agent| agent.timeout.as_secs_f64()),
             worktree: self.worktree.clone(),
             result_schema: self.result_schema.clone(),
-            source: self.source.clone(),
         }
     }
 
@@ -262,6 +265,7 @@ impl PaneLaunchSpec {
 #[cfg(test)]
 mod tests {
     use super::{PaneLaunchSpec, PaneLaunchTarget, DEFAULT_AGENT_BOOT_TIMEOUT};
+    use crate::broker::caller::RequestOrigin;
     use crate::protocol::HostRequest;
 
     fn spawn_pane(type_id: &str, path: Option<&str>, args: &[&str]) -> HostRequest {
@@ -284,7 +288,6 @@ mod tests {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            source: crate::protocol::SpawnSource::InProcess,
         }
     }
 
@@ -304,7 +307,7 @@ mod tests {
 
     #[test]
     fn from_spawn_pane_defaults_agent_boot_timeout() {
-        let spec = PaneLaunchSpec::from_spawn_pane(&agent_spawn("terminal", Some("c-large"), None))
+        let spec = PaneLaunchSpec::from_spawn_pane(&agent_spawn("terminal", Some("c-large"), None), RequestOrigin::HostUi)
             .expect("valid launch spec");
 
         let agent = spec.agent.expect("agent boot spec");
@@ -314,7 +317,7 @@ mod tests {
 
     #[test]
     fn from_spawn_pane_rejects_agent_on_view_target() {
-        let err = PaneLaunchSpec::from_spawn_pane(&agent_spawn("snake", Some("c-large"), None))
+        let err = PaneLaunchSpec::from_spawn_pane(&agent_spawn("snake", Some("c-large"), None), RequestOrigin::HostUi)
             .unwrap_err();
 
         assert_eq!(err, "agent_cmd is only supported for terminal spawns");
@@ -322,7 +325,7 @@ mod tests {
 
     #[test]
     fn from_spawn_pane_rejects_boot_timeout_without_agent() {
-        let err = PaneLaunchSpec::from_spawn_pane(&agent_spawn("terminal", None, Some(30.0)))
+        let err = PaneLaunchSpec::from_spawn_pane(&agent_spawn("terminal", None, Some(30.0)), RequestOrigin::HostUi)
             .unwrap_err();
 
         assert_eq!(err, "boot_timeout_secs requires agent_cmd");
@@ -331,7 +334,7 @@ mod tests {
     #[test]
     fn from_spawn_pane_rejects_non_positive_boot_timeout() {
         let err =
-            PaneLaunchSpec::from_spawn_pane(&agent_spawn("terminal", Some("c-large"), Some(0.0)))
+            PaneLaunchSpec::from_spawn_pane(&agent_spawn("terminal", Some("c-large"), Some(0.0)), RequestOrigin::HostUi)
                 .unwrap_err();
 
         assert!(
@@ -345,7 +348,7 @@ mod tests {
         // Finite values beyond Duration's range would panic in
         // Duration::from_secs_f64 — must be a validation error instead.
         let err =
-            PaneLaunchSpec::from_spawn_pane(&agent_spawn("terminal", Some("c-large"), Some(1e308)))
+            PaneLaunchSpec::from_spawn_pane(&agent_spawn("terminal", Some("c-large"), Some(1e308)), RequestOrigin::HostUi)
                 .unwrap_err();
 
         assert!(err.contains("at most"), "unexpected error: {err}");
@@ -355,7 +358,7 @@ mod tests {
     fn from_spawn_pane_preserves_path_args() {
         let request = spawn_pane("", Some("/tmp/app.wasm"), &["--sample", "96"]);
 
-        let spec = PaneLaunchSpec::from_spawn_pane(&request).expect("valid launch spec");
+        let spec = PaneLaunchSpec::from_spawn_pane(&request, RequestOrigin::HostUi).expect("valid launch spec");
 
         assert_eq!(spec.target, PaneLaunchTarget::Path("/tmp/app.wasm".into()));
         assert_eq!(spec.args, ["--sample", "96"]);
@@ -365,7 +368,7 @@ mod tests {
     fn from_spawn_pane_rejects_empty_target() {
         let request = spawn_pane("", None, &[]);
 
-        let err = PaneLaunchSpec::from_spawn_pane(&request).unwrap_err();
+        let err = PaneLaunchSpec::from_spawn_pane(&request, RequestOrigin::HostUi).unwrap_err();
 
         assert_eq!(err, "spawn_pane target is empty");
     }
@@ -374,7 +377,7 @@ mod tests {
     fn from_spawn_pane_rejects_plugin_id_and_path_conflict() {
         let request = spawn_pane("demo", Some("/tmp/app.wasm"), &[]);
 
-        let err = PaneLaunchSpec::from_spawn_pane(&request).unwrap_err();
+        let err = PaneLaunchSpec::from_spawn_pane(&request, RequestOrigin::HostUi).unwrap_err();
 
         assert_eq!(err, "spawn_pane cannot set both plugin id and path target");
     }
@@ -385,10 +388,10 @@ mod tests {
         if let HostRequest::SpawnPane { worktree, .. } = &mut request {
             *worktree = Some("feature/0668-test".to_string());
         }
-        let spec = PaneLaunchSpec::from_spawn_pane(&request).expect("valid launch spec");
+        let spec = PaneLaunchSpec::from_spawn_pane(&request, RequestOrigin::HostUi).expect("valid launch spec");
         assert_eq!(spec.worktree.as_deref(), Some("feature/0668-test"));
         assert_eq!(
-            PaneLaunchSpec::from_spawn_pane(&spec.to_spawn_pane_request()).expect("round trip"),
+            PaneLaunchSpec::from_spawn_pane(&spec.to_spawn_pane_request(), RequestOrigin::HostUi).expect("round trip"),
             spec
         );
     }
@@ -399,7 +402,7 @@ mod tests {
         if let HostRequest::SpawnPane { worktree, .. } = &mut request {
             *worktree = Some("feature/0668-test".to_string());
         }
-        let err = PaneLaunchSpec::from_spawn_pane(&request).unwrap_err();
+        let err = PaneLaunchSpec::from_spawn_pane(&request, RequestOrigin::HostUi).unwrap_err();
         assert_eq!(err, "worktree is only supported for terminal spawns");
     }
 
@@ -409,7 +412,7 @@ mod tests {
         if let HostRequest::SpawnPane { worktree, .. } = &mut request {
             *worktree = Some("-b".to_string());
         }
-        let err = PaneLaunchSpec::from_spawn_pane(&request).unwrap_err();
+        let err = PaneLaunchSpec::from_spawn_pane(&request, RequestOrigin::HostUi).unwrap_err();
         assert!(err.contains("invalid worktree branch name"));
     }
 
@@ -426,10 +429,10 @@ mod tests {
         if let HostRequest::SpawnPane { result_schema, .. } = &mut request {
             *result_schema = Some(schema.clone());
         }
-        let spec = PaneLaunchSpec::from_spawn_pane(&request).expect("valid launch spec");
+        let spec = PaneLaunchSpec::from_spawn_pane(&request, RequestOrigin::HostUi).expect("valid launch spec");
         assert_eq!(spec.result_schema, Some(schema));
         assert_eq!(
-            PaneLaunchSpec::from_spawn_pane(&spec.to_spawn_pane_request()).expect("round trip"),
+            PaneLaunchSpec::from_spawn_pane(&spec.to_spawn_pane_request(), RequestOrigin::HostUi).expect("round trip"),
             spec
         );
 
@@ -437,7 +440,7 @@ mod tests {
         if let HostRequest::SpawnPane { result_schema, .. } = &mut bad_request {
             *result_schema = Some(serde_json::json!({"type": "not_a_valid_type"}));
         }
-        let err = PaneLaunchSpec::from_spawn_pane(&bad_request).unwrap_err();
+        let err = PaneLaunchSpec::from_spawn_pane(&bad_request, RequestOrigin::HostUi).unwrap_err();
         assert!(
             err.contains("unknown JSON Schema type"),
             "unexpected error: {err}"

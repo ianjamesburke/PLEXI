@@ -346,6 +346,7 @@ fn a_physical_key_in_the_attention_overlay_approves_once_and_the_fixture_runs() 
         e2e.h.app.open_decision_overlay_for_ask(&id),
         "the operation approval is in the attention queue"
     );
+    e2e.h.app.arm_decision_overlay_for_test();
     // Option 1 is "Allow once"; the digit travels the production key path.
     e2e.h.press_key(egui::Key::Num1, egui::Modifiers::NONE);
     e2e.until(pane, false, "the result", |_, t| {

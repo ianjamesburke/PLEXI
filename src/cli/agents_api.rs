@@ -157,7 +157,6 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i
                     "execution_cwd": cwd, "config_root": config_root,
                     "state_dir": crate::config::config_dir(), "name":name, "question":question,
                     "out":out, "options":options, "timeout":timeout,
-                    "caller_pane":std::env::var("PLEXI_PANE_ID").ok().and_then(|p| p.parse::<u64>().ok())
                 }}),
                 json,
                 timeout,

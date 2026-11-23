@@ -426,6 +426,24 @@
       "oneOf": [
         {
           "additionalProperties": false,
+          "description": "Hold this connection open for the reply to a queued spawn. The queue\nentry names the same token; the host answers here, never in a file.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "spawn_receipt",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Reveal and focus the running host window for a second app launch.",
           "properties": {
             "response_file": {
@@ -634,7 +652,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Process-lifetime resource admission. Identity is stamped by the socket listener.",
+          "description": "Process-lifetime resource admission. The holder must be in the\nkernel-witnessed lineage of the caller.",
           "properties": {
             "holder_pid": {
               "format": "uint32",
@@ -1032,24 +1050,6 @@
               ],
               "description": "CLI-only: notification visibility scope. Plugins never set this — their\nscope comes from `manifest.toml::[launch] notification_scope`.\nOmit to take `NotifyScope::default()`."
             },
-            "source_context_id": {
-              "description": "CLI-only: the sender's own context id (`PLEXI_CONTEXT_ID`), stamped\nby the CLI so the host never guesses provenance from whichever\ncontext happens to be active at dispatch time. Absent when the\ncaller runs outside any Plexi pane. A scope the sender cannot\nsupport resolves to the nearest wider one rather than attaching to\na context that never produced it: window scope with a resolvable\ncontext but no live window narrows to context; no resolvable\nsender at all escalates to global.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "source_pane_id": {
-              "description": "CLI-only: the sender's own pane id (`PLEXI_PANE_ID`). When the pane\nis still alive its live location is the ground truth for the\nnotification's window and context — a pane can move between\ncontexts after its env was stamped.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
             "timeout_secs": {
               "default": null,
               "description": "Auto-dismiss after this many seconds. On expiry, host delivers\n`PlexiEvent::NotifyAction` with `value = on_dismiss` (or \"timeout\" if\n`on_dismiss` is None). Omit for notifications that should persist.",
@@ -1084,22 +1084,6 @@
             },
             "response_file": {
               "type": "string"
-            },
-            "source_context_id": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "source_pane_id": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
             },
             "type": {
               "const": "dismiss_notification",
@@ -1835,7 +1819,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Append a structured message to a pane's host-managed FIFO inbox.\n\n`peer_ancestry` is stamped by the host from the socket connection's OS\ncredential (`handle_socket_line`) so the sender pane id is always\nhost-derived, never self-reported. When `submit` is true and the target\npane's agent reports idle (with no submit already in flight), the host\ninjects a short wake notice through the confirmed-submit state machine;\nwhen the target agent is busy, the message queues without interrupting.",
+          "description": "Append a structured message to a pane's host-managed FIFO inbox.\n\nThe sender is the caller's pane as the host classified it, never\nself-reported. When `submit` is true and the target\npane's agent reports idle (with no submit already in flight), the host\ninjects a short wake notice through the confirmed-submit state machine;\nwhen the target agent is busy, the message queues without interrupting.",
           "properties": {
             "pane_id": {
               "format": "uint64",
@@ -1844,17 +1828,6 @@
             },
             "payload": {
               "type": "string"
-            },
-            "peer_ancestry": {
-              "items": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
             },
             "response_file": {
               "type": "string"
@@ -2022,24 +1995,6 @@
               "default": false,
               "type": "boolean"
             },
-            "parent_pane_id": {
-              "default": null,
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "peer_ancestry": {
-              "default": [],
-              "items": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": "array"
-            },
             "response_file": {
               "type": "string"
             },
@@ -2085,24 +2040,6 @@
               "minimum": 0,
               "type": "integer"
             },
-            "parent_pane_id": {
-              "default": null,
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "peer_ancestry": {
-              "default": [],
-              "items": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": "array"
-            },
             "response_file": {
               "type": "string"
             },
@@ -2130,6 +2067,15 @@
           "additionalProperties": false,
           "description": "Spawn a configured agent worker pane, optionally into a created or reused\nchild sub-context with a parent `PortalPane` (`plexi agent spawn`, stint 0802).",
           "properties": {
+            "anchor_pane": {
+              "description": "Place the worker beside this pane. Placement only: the host names\nthe caller, and this never changes whose grants the worker runs under.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "command": {
               "description": "Shell command to launch the agent harness.",
               "type": "string"
@@ -2175,15 +2121,6 @@
               "description": "Optional display name for the spawned pane.",
               "type": [
                 "string",
-                "null"
-              ]
-            },
-            "parent_pane_id": {
-              "description": "Parent master pane ID (`PLEXI_PARENT_PANE`), used for Tier 1 `Blocked` escalation.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
                 "null"
               ]
             },
@@ -2400,15 +2337,6 @@
           "additionalProperties": false,
           "description": "Reopen a closed agent session or run from `~/.plexi-<channel>/agent_history.jsonl`\n(`plexi agent reopen <run-id|session-id>`, stint 0803).\nOpen a named agent (`plexi agent open <name>`, stint 1396): focus it when a\npane is running it, else resume its last chat, else start a new chat.",
           "properties": {
-            "caller_pane_id": {
-              "description": "Calling pane (`PLEXI_PANE_ID`), parent of a resumed or started pane.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
             "cwd": {
               "description": "Working directory for workspace lookup.",
               "type": "string"
@@ -2570,18 +2498,6 @@
               "default": false,
               "description": "Deliver literal text as one paste event to a view pane.",
               "type": "boolean"
-            },
-            "peer_ancestry": {
-              "description": "Host-stamped ancestry of the process that requested the write.",
-              "items": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
             },
             "response_file": {
               "type": [
@@ -3130,6 +3046,13 @@
           "additionalProperties": false,
           "description": "Read or change the permission monitor. `op` is `list`, `reset`,\n`revoke`, or `allow`. No socket caller is human: `reset` and `allow`\nfile a Needs you item that only a click in the Plexi window applies;\n`revoke` and `list` apply directly.",
           "properties": {
+            "duration": {
+              "description": "For `allow`: how long the request asks for (`once`, `session`,\n`always`). The person sees it and approves exactly it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "id": {
               "type": [
                 "string",
@@ -3176,15 +3099,6 @@
           "additionalProperties": false,
           "description": "Open one file or directory in the Plexi surface that handles it\n(`plexi file open`, `plexi open`). The host resolves a relative `path`\nonce against `cwd`, classifies the target, places the handler beside\nthe anchor pane and answers with one receipt.",
           "properties": {
-            "caller_pane_id": {
-              "description": "The pane the caller claims to run in (`PLEXI_PANE_ID`). Checked\nagainst the socket peer; a mismatch is a stale caller.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
             "cwd": {
               "description": "Working directory of the invoking process. Absent when the CLI\ncould not read it; a relative `path` is then an error.",
               "type": [
@@ -3280,20 +3194,12 @@
         },
         {
           "additionalProperties": false,
-          "description": "Rich Needs-you + continuation API: `op` is `ask`, `show`, `answer`,\n`reconcile`, or `complete`. `peer_ancestry` is stamped by the socket\nlistener so the host knows whether the caller lives inside a terminal pane.",
+          "description": "Rich Needs-you + continuation API: `op` is `ask`, `show`, `answer`,\n`reconcile`, or `complete`. The caller is the host-classified socket\ncaller; a socket caller never answers.",
           "properties": {
             "op": {
               "type": "string"
             },
             "payload": true,
-            "peer_ancestry": {
-              "items": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": "array"
-            },
             "response_file": {
               "type": "string"
             },
@@ -3317,14 +3223,6 @@
             "context": {
               "type": "string"
             },
-            "peer_ancestry": {
-              "items": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": "array"
-            },
             "response_file": {
               "type": "string"
             },
@@ -3342,7 +3240,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "`plexi secret get` from a terminal pane. The host admits `secret.get`\nfor the pane named by `peer_ancestry` and answers `status` `value`,\n`permission_required` (with `pending_request_id`), `denied`, or\n`not_found`. Without a grant no value is read; the desktop Allow once\nclick is what grants. A caller that resolves to no pane is denied.",
+          "description": "`plexi secret get` from a terminal pane. The host admits `secret.get`\nfor the caller's pane and answers `status` `value`,\n`permission_required` (with `pending_request_id`), `denied`, or\n`not_found`. Without a grant no value is read; the desktop Allow once\nclick is what grants. A caller that resolves to no pane is denied.",
           "properties": {
             "global": {
               "default": false,
@@ -3350,15 +3248,6 @@
             },
             "name": {
               "type": "string"
-            },
-            "peer_ancestry": {
-              "description": "Host-captured peer ancestry. Socket clients cannot set this; the\nlistener overwrites it before the read is admitted.",
-              "items": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": "array"
             },
             "response_file": {
               "type": "string"
@@ -3417,26 +3306,9 @@
                 "null"
               ]
             },
-            "caller_pane_id": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
             "input_json": {
               "description": "Tool input, a JSON object serialized as a string.",
               "type": "string"
-            },
-            "peer_ancestry": {
-              "description": "Host-captured peer ancestry. Socket clients cannot set this; the\nlistener overwrites it before the call is admitted.",
-              "items": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": "array"
             },
             "plugin_id": {
               "type": "string"
@@ -3481,22 +3353,6 @@
           "additionalProperties": false,
           "description": "Snapshot the live tool registry exposed by running view panes in the\nresolved context. Sent by `plexi plugin tools` and `plexi plugin info`.\nThe host resolves the viewer context from `context_id` when explicitly\nsupplied, otherwise from the verified socket peer pane or\n`caller_pane_id` (falling back to the active context when run outside a\npane), and writes `{\"ok\":true,\"context_id\":<u64>,\"tools\":[...]}` to\n`response_file`.",
           "properties": {
-            "caller_context_id": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "caller_pane_id": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
             "context_id": {
               "format": "uint64",
               "minimum": 0,
@@ -3504,15 +3360,6 @@
                 "integer",
                 "null"
               ]
-            },
-            "peer_ancestry": {
-              "description": "Host-captured peer ancestry. Socket clients cannot set this; the\nlistener overwrites it before resolving the caller pane.",
-              "items": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": "array"
             },
             "plugin_id": {
               "type": [

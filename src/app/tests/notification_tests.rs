@@ -1107,7 +1107,7 @@ fn plain_cli_notify_interrupts_and_focus_mode_mutes() {
     h.app.notifications_enabled = true;
     h.app.notifications_sound = Some("/tmp/cue.wav".to_string());
 
-    h.inject_ipc(cli_notify_request(None, None, None, None));
+    h.inject_ipc(cli_notify_request(None));
     h.run_frames(2);
 
     assert!(
@@ -1123,7 +1123,7 @@ fn plain_cli_notify_interrupts_and_focus_mode_mutes() {
     focused.app.notifications_enabled = true;
     focused.app.notifications_sound = Some("/tmp/cue.wav".to_string());
     focused.app.notifications_focus_mode = true;
-    focused.inject_ipc(cli_notify_request(None, None, None, None));
+    focused.inject_ipc(cli_notify_request(None));
     focused.run_frames(2);
     assert!(
         focused.app.attention_queue.decision_overlay.is_none(),
@@ -1176,15 +1176,10 @@ fn disabled_notifications_never_play_a_cue() {
 /// Build the `HostRequest::Notify` a `plexi notify` invocation produces.
 /// `peer_pid` stands in for the host-established socket-peer identity
 /// (`None` reproduces an unresolvable/outside-pane caller). Internally
-/// expanded to the single-hop ancestry `resolve_socket_peer_pane` expects —
+/// expanded to the single-hop witness `PlexiApp::classify_socket_peer` reads —
 /// callers pass the pid they want matched directly (typically a live pane's
 /// own `child_pid`), same as the pre-0636-fix single-pid API.
-fn cli_notify_request(
-    scope: Option<crate::protocol::NotifyScope>,
-    source_context_id: Option<u64>,
-    source_pane_id: Option<u64>,
-    peer_pid: Option<u32>,
-) -> crate::protocol::HostRequest {
+fn cli_notify_request(scope: Option<crate::protocol::NotifyScope>) -> crate::protocol::HostRequest {
     crate::protocol::HostRequest::Notify {
         title: "CLI notify".into(),
         body: "body".into(),
@@ -1200,9 +1195,6 @@ fn cli_notify_request(
         on_dismiss: None,
         response_file: None,
         scope,
-        source_context_id,
-        source_pane_id,
-        peer_pid: peer_pid.map(|pid| vec![pid]),
     }
 }
 
@@ -1291,12 +1283,12 @@ fn parked_view_window_notification_narrows_without_active_window_provenance() {
 fn cli_notification_timeout_and_sender_scoped_dismissal() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
-    let Some((owner_pane_id, owner_peer_pid, owner_ctx, _)) =
+    let Some((owner_pane_id, owner_peer_pid, _, _)) =
         spawn_real_terminal_pane(&mut h, 92, 92, 503)
     else {
         return; // no PTY in this environment
     };
-    let Some((foreign_pane_id, foreign_peer_pid, _, _)) =
+    let Some((_, foreign_peer_pid, _, _)) =
         spawn_real_terminal_pane(&mut h, 93, 93, 504)
     else {
         return; // no PTY in this environment
@@ -1304,7 +1296,7 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
     let response_dir = tempfile::tempdir().expect("tempdir");
     let response_file = response_dir.path().join("dismiss-response");
 
-    h.inject_ipc(crate::protocol::HostRequest::Notify {
+    h.inject_socket(crate::protocol::HostRequest::Notify {
         title: "sticky".into(),
         body: "body".into(),
         kind: crate::protocol::NotifyKind::Message,
@@ -1319,10 +1311,7 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
         on_dismiss: None,
         response_file: None,
         scope: None,
-        source_context_id: Some(owner_ctx),
-        source_pane_id: Some(owner_pane_id),
-        peer_pid: Some(vec![owner_peer_pid]),
-    });
+    }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[owner_peer_pid])));
     h.run_frames(2);
 
     let posted = &h.app.pending_notifications[0];
@@ -1340,13 +1329,10 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
     // A different real pane (its own genuine socket peer) claims to be the
     // owner via the wire fields — those claims must be ignored; only the
     // resolved `peer_pid` decides ownership, and it names a stranger.
-    h.inject_ipc(crate::protocol::HostRequest::DismissNotification {
+    h.inject_socket(crate::protocol::HostRequest::DismissNotification {
         notify_id: format!("cli:{owner_pane_id}:sticky"),
-        source_context_id: Some(owner_ctx),
-        source_pane_id: Some(owner_pane_id), // forged claim
         response_file: response_file.to_string_lossy().into_owned(),
-        peer_pid: Some(vec![foreign_peer_pid]), // true peer disagrees
-    });
+    }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[foreign_peer_pid])));
     h.run_frames(2);
     assert_eq!(
         h.app.pending_notifications.len(),
@@ -1354,13 +1340,10 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
         "foreign pane must not dismiss, even while claiming to be the owner"
     );
 
-    h.inject_ipc(crate::protocol::HostRequest::DismissNotification {
+    h.inject_socket(crate::protocol::HostRequest::DismissNotification {
         notify_id: format!("cli:{owner_pane_id}:sticky"),
-        source_context_id: Some(owner_ctx),
-        source_pane_id: Some(foreign_pane_id), // forged claim, must be ignored
         response_file: response_file.to_string_lossy().into_owned(),
-        peer_pid: Some(vec![owner_peer_pid]), // true peer is the real owner
-    });
+    }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[owner_peer_pid])));
     h.run_frames(2);
     assert!(
         h.app.pending_notifications.is_empty(),
@@ -1376,14 +1359,13 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
 fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
-    let real_context_id = h.app.router.active().context_id;
 
     // No live terminal pane in this harness has this (or any) pid as an
     // ancestor, so any peer_pid — including our own process — resolves to
     // nothing.
     let unresolvable_peer = std::process::id();
 
-    h.inject_ipc(crate::protocol::HostRequest::Notify {
+    h.inject_socket(crate::protocol::HostRequest::Notify {
         title: "t".into(),
         body: "b".into(),
         kind: crate::protocol::NotifyKind::Message,
@@ -1398,10 +1380,7 @@ fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
         on_dismiss: None,
         response_file: None,
         scope: Some(crate::protocol::NotifyScope::Context),
-        source_context_id: Some(real_context_id),
-        source_pane_id: None,
-        peer_pid: Some(vec![unresolvable_peer]),
-    });
+    }, Some(crate::broker::caller::PeerWitness::capture(unresolvable_peer)));
     h.run_frames(2);
 
     let posted = &h.app.pending_notifications[0];
@@ -1417,13 +1396,10 @@ fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
 
     let response_dir = tempfile::tempdir().expect("tempdir");
     let response_file = response_dir.path().join("dismiss-response");
-    h.inject_ipc(crate::protocol::HostRequest::DismissNotification {
+    h.inject_socket(crate::protocol::HostRequest::DismissNotification {
         notify_id: "unresolvable-peer".into(),
-        source_context_id: Some(real_context_id),
-        source_pane_id: Some(424_242), // forged, irrelevant
         response_file: response_file.to_string_lossy().into_owned(),
-        peer_pid: Some(vec![unresolvable_peer]),
-    });
+    }, Some(crate::broker::caller::PeerWitness::capture(unresolvable_peer)));
     h.run_frames(2);
     assert_eq!(
         h.app.pending_notifications.len(),
@@ -1444,13 +1420,13 @@ fn forged_source_pane_is_ignored_in_favor_of_resolved_peer() {
     else {
         return; // no PTY in this environment
     };
-    let Some((forged_pane_id, _, forged_ctx, _)) = spawn_real_terminal_pane(&mut h, 95, 95, 506)
+    let Some((_, _, forged_ctx, _)) = spawn_real_terminal_pane(&mut h, 95, 95, 506)
     else {
         return; // no PTY in this environment
     };
     assert_ne!(real_ctx, forged_ctx);
 
-    h.inject_ipc(crate::protocol::HostRequest::Notify {
+    h.inject_socket(crate::protocol::HostRequest::Notify {
         title: "t".into(),
         body: "b".into(),
         kind: crate::protocol::NotifyKind::Message,
@@ -1465,10 +1441,7 @@ fn forged_source_pane_is_ignored_in_favor_of_resolved_peer() {
         on_dismiss: None,
         response_file: None,
         scope: Some(crate::protocol::NotifyScope::Context),
-        source_context_id: Some(forged_ctx),
-        source_pane_id: Some(forged_pane_id),
-        peer_pid: Some(vec![real_peer_pid]), // the true sender is the OTHER pane
-    });
+    }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[real_peer_pid])));
     h.run_frames(2);
 
     let posted = &h.app.pending_notifications[0];
@@ -1491,7 +1464,7 @@ fn cli_notify_without_scope_defaults_to_context() {
         return; // no PTY in this environment
     };
 
-    h.inject_ipc(cli_notify_request(None, None, None, Some(peer_pid)));
+    h.inject_socket(cli_notify_request(None), Some(crate::broker::caller::PeerWitness::for_live_pids(&[peer_pid])));
     h.run_frames(2);
 
     assert_eq!(h.app.pending_notifications.len(), 1, "notification queued");
@@ -1512,12 +1485,7 @@ fn cli_notify_explicit_global_scope_survives_the_new_default() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
 
-    h.inject_ipc(cli_notify_request(
-        Some(crate::protocol::NotifyScope::Global),
-        None,
-        None,
-        None,
-    ));
+    h.inject_ipc(cli_notify_request(Some(crate::protocol::NotifyScope::Global)));
     h.run_frames(2);
 
     assert_eq!(h.app.pending_notifications.len(), 1);
@@ -1548,7 +1516,7 @@ fn cli_notify_attaches_to_callers_context_not_active() {
     };
     assert_ne!(real_ctx, active_before);
 
-    h.inject_ipc(cli_notify_request(None, None, None, Some(peer_pid)));
+    h.inject_socket(cli_notify_request(None), Some(crate::broker::caller::PeerWitness::for_live_pids(&[peer_pid])));
     h.run_frames(2);
 
     assert_eq!(h.app.pending_notifications.len(), 1);
@@ -1571,12 +1539,7 @@ fn cli_notify_stale_identity_escalates_to_global() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
 
-    h.inject_ipc(cli_notify_request(
-        None,
-        Some(999_999),
-        Some(888_888),
-        None, // no resolvable socket peer
-    ));
+    h.inject_ipc(cli_notify_request(None));
     h.run_frames(2);
 
     assert_eq!(h.app.pending_notifications.len(), 1);
@@ -1597,7 +1560,7 @@ fn cli_notify_outside_pane_unscoped_escalates_to_global() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
 
-    h.inject_ipc(cli_notify_request(None, None, None, None));
+    h.inject_ipc(cli_notify_request(None));
     h.run_frames(2);
 
     assert_eq!(h.app.pending_notifications.len(), 1);
@@ -1652,7 +1615,7 @@ fn parse_notify_scope_maps_every_named_scope_explicitly() {
 /// notification to the true shell-descendant pane, never the forged claim.
 /// macOS-only: relies on `nc -U` (BSD netcat, always present on the
 /// project's dev/CI platform — see root `AGENTS.md`); the ancestor walk
-/// itself (`resolve_socket_peer_pane`) has an independent Linux path
+/// itself (`PeerWitness::capture`) has an independent Linux path
 /// exercised indirectly by every other test in this module.
 #[cfg(target_os = "macos")]
 #[test]
@@ -1667,7 +1630,7 @@ fn live_socket_peer_resolves_through_real_descendant_process() {
     };
     let real_win_idx = h.app.windows.len() - 1;
 
-    let Some((forged_pane_id, _, forged_ctx, _)) = spawn_real_terminal_pane(&mut h, 97, 97, 508)
+    let Some((_, _, forged_ctx, _)) = spawn_real_terminal_pane(&mut h, 97, 97, 508)
     else {
         return; // no PTY in this environment
     };
@@ -1698,15 +1661,15 @@ fn live_socket_peer_resolves_through_real_descendant_process() {
             // Mirror `spawn_socket_listener`'s production accept loop:
             // resolve the peer identity synchronously, right here, before
             // any further work — never inside a spawned connection thread.
-            let peer_pid = resolve_socket_peer_pid(&stream);
-            let peer_ancestry = peer_pid.map(capture_peer_ancestry);
+            let peer = resolve_socket_peer_pid(&stream)
+                .map(crate::broker::caller::PeerWitness::capture);
             handle_socket_connection(
                 &trace_profile,
                 stream,
                 mailbox.clone(),
                 subscribe_mailbox.clone(),
                 publish_mailbox.clone(),
-                peer_ancestry,
+                peer,
             );
         }
     });
@@ -1723,8 +1686,6 @@ fn live_socket_peer_resolves_through_real_descendant_process() {
         "kind": "message",
         "options": [],
         "scope": "context",
-        "source_context_id": forged_ctx,
-        "source_pane_id": forged_pane_id,
     });
     let payload_path = dir.path().join("payload.json");
     std::fs::write(&payload_path, format!("{payload}\n")).expect("write payload");

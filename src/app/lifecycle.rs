@@ -98,8 +98,8 @@ fn slot_list_entries(
 
 impl PlexiApp {
     pub(super) fn drain_pane_cmd_channel(&mut self) {
-        while let Ok(cmd) = self.pane_ipc_rx.try_recv() {
-            self.handle_pane_ipc_request(cmd);
+        while let Ok(message) = self.pane_ipc_rx.try_recv() {
+            self.service_pane_ipc_message(message);
         }
         self.drain_pending_user_commands();
         self.drain_user_command_runs();
@@ -123,13 +123,23 @@ impl PlexiApp {
     ) {
         if req.context_id_override.is_none() {
             let (verified_pane_id, context_id, workspace_root) =
-                self.resolve_event_bus_caller(req.from_pane_id, req.peer_ancestry.as_deref());
+                self.resolve_event_bus_caller(req.socket_caller.as_ref());
             req.from_pane_id = verified_pane_id;
             req.context_id_override = context_id;
             req.workspace_root_override = workspace_root;
             // A verified pane subscribes under its own grant, at one
             // scope snapshot, exactly as its MCP bearer would (stint 1632).
-            req.subscriber_authority = self.subscriber_authority(verified_pane_id);
+            req.subscriber_authority = Self::subscriber_authority(req.socket_caller.as_ref());
+            // An outside process is authorized as the one external identity;
+            // each connection keeps its own delivery key, so two of its
+            // subscriptions never drain one queue (stint 1285).
+            if let Some(crate::broker::caller::SocketCaller::External(_)) =
+                req.socket_caller.as_ref()
+            {
+                req.subscriber_type_override = Some(crate::broker::ActorType::External);
+                req.broker_actor_override =
+                    Some(crate::broker::principal::EXTERNAL_ID.to_string());
+            }
             if let crate::host::event_subscriptions::SubscriberAuthority::Pane(admitted) =
                 &req.subscriber_authority
             {
@@ -233,7 +243,7 @@ impl PlexiApp {
         for mut req in publish_reqs {
             if req.context_id_override.is_none() {
                 let (verified_pane_id, context_id, workspace_root) =
-                    self.resolve_event_bus_caller(req.from_pane_id, req.peer_ancestry.as_deref());
+                    self.resolve_event_bus_caller(req.socket_caller.as_ref());
                 req.from_pane_id = verified_pane_id;
                 req.context_id_override = context_id;
                 req.workspace_root_override = workspace_root;
@@ -279,45 +289,199 @@ impl PlexiApp {
         }
     }
 
-    /// The pane the kernel-verified socket peer lives in, when that is a pane
-    /// other than `claimed`. A peer outside every pane (the human at a plain
-    /// terminal) or missing capture (in-process callers) yields `None`.
-    fn foreign_peer_pane(
+    /// The agents-API caller for `origin`, from the host's classification
+    /// only (stint 1285). A pane is scoped to its live context root; the
+    /// requested workspace or working directory outside it is denied.
+    /// A placement anchor is authorized apart from who the caller is
+    /// (stint 1285): a pane may place beside a pane of its own context, an
+    /// outside process and host code beside any pane they name, a plugin
+    /// beside none. It never changes whose grants the worker runs under.
+    fn authorize_agent_anchor(
         &self,
-        peer_ancestry: Option<&[u32]>,
-        claimed: crate::spatial::tiling::PaneId,
-    ) -> Option<crate::spatial::tiling::PaneId> {
-        let (caller, _, _) = self.resolve_socket_peer_pane(peer_ancestry?)?;
-        (caller != claimed).then_some(caller)
+        origin: &crate::broker::caller::RequestOrigin,
+        anchor: Option<u64>,
+    ) -> Result<(), String> {
+        use crate::broker::caller::{RequestOrigin, SocketCaller};
+        let Some(anchor) = anchor else {
+            return Ok(());
+        };
+        let (anchor_window, _) = self
+            .find_pane_in_any_window(anchor)
+            .ok_or_else(|| format!("anchor pane {anchor} not found"))?;
+        match origin {
+            RequestOrigin::Socket(SocketCaller::Pane(pane)) => {
+                if self.windows[anchor_window].context_id == pane.context_id {
+                    Ok(())
+                } else {
+                    Err(format!("anchor pane {anchor} is outside the caller's context"))
+                }
+            }
+            RequestOrigin::Socket(SocketCaller::External(_))
+            | RequestOrigin::HostUi
+            | RequestOrigin::HostSystem => Ok(()),
+            RequestOrigin::Socket(SocketCaller::Unidentified(_))
+            | RequestOrigin::SpawnQueue
+            | RequestOrigin::PluginGuest(_) => {
+                Err(format!("this caller cannot place a worker beside pane {anchor}"))
+            }
+        }
     }
 
-    /// The pane a `plexi permissions` call acts as. A socket peer inside any
-    /// pane is that pane's agent whatever the wire claims; a peer outside every
-    /// pane keeps the client's claim (which can only lower authority).
-    pub(crate) fn permissions_caller_pane(
+    pub(crate) fn agents_caller(
         &self,
-        peer_ancestry: Option<&[u32]>,
-    ) -> Option<crate::spatial::tiling::PaneId> {
-        peer_ancestry
-            .and_then(|pids| self.resolve_socket_peer_pane(pids))
-            .map(|(pane, _, _)| pane)
+        origin: &crate::broker::caller::RequestOrigin,
+        payload: &serde_json::Value,
+    ) -> Result<crate::agent::runs::AgentsCaller, String> {
+        use crate::broker::caller::{RequestOrigin, SocketCaller};
+        let socket = match origin {
+            RequestOrigin::Socket(caller) => caller,
+            other => return Err(format!("the agents API is not served to {}", other.class())),
+        };
+        let principal = socket
+            .principal()
+            .ok_or_else(|| "the caller could not be identified".to_string())?;
+        let SocketCaller::Pane(pane) = socket else {
+            return Ok(crate::agent::runs::AgentsCaller::Principal {
+                principal,
+                pane: None,
+                agent: None,
+                context_root: None,
+                context_denied: false,
+            });
+        };
+        let pane_id = pane.terminal_pane;
+        let context_root = self.pane_context_authority_root(pane_id);
+        let path_of = |key: &str| {
+            payload
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(std::path::PathBuf::from)
+        };
+        let context_denied = path_of("execution_cwd")
+            .or_else(|| path_of("workspace"))
+            .is_some_and(|p| {
+                context_root.as_ref() != Some(&crate::platform::path::canonical_or_self(&p))
+                    || !self.pane_may_access_context_root(pane_id, &p)
+            })
+            || path_of("caller_cwd").is_some_and(|p| !self.pane_may_access_context_root(pane_id, &p));
+        let agent = self.team_member_for_pane(pane_id);
+        log::info!(
+            "agents_api: caller pane={pane_id} agent={agent:?} context_root={context_root:?} context_denied={context_denied}"
+        );
+        Ok(crate::agent::runs::AgentsCaller::Principal {
+            principal,
+            pane: Some(pane_id),
+            agent,
+            context_root,
+            context_denied,
+        })
     }
 
-    fn refuse_cross_pane(
+    /// Why `origin` may not report for `target` (stint 1285): a socket
+    /// caller reports only for its own pane, by its terminal or the view
+    /// covering it. Host code reports for any pane.
+    fn foreign_report(
+        origin: &crate::broker::caller::RequestOrigin,
+        target: crate::spatial::tiling::PaneId,
+    ) -> Option<String> {
+        use crate::broker::caller::SocketCaller;
+        match origin.socket_caller()? {
+            SocketCaller::Pane(pane)
+                if pane.visible_pane == target || pane.terminal_pane == target =>
+            {
+                None
+            }
+            SocketCaller::Pane(pane) => Some(format!(
+                "pane {} cannot act as pane {target}",
+                pane.terminal_pane
+            )),
+            caller => Some(format!(
+                "a {} caller cannot act as pane {target}",
+                caller.class()
+            )),
+        }
+    }
+
+    /// Whether `caller` may read the agents dashboard of `workspace`: a pane
+    /// within its own context scope, an outside process once admitted as
+    /// itself. Anything else is refused (stint 1285).
+    pub(crate) fn admit_dashboard_workspace(
         &self,
-        kind: &str,
-        caller: crate::spatial::tiling::PaneId,
-        claimed: crate::spatial::tiling::PaneId,
-        response_file: &str,
-    ) {
-        log::warn!("pane_ipc: kind={kind} refused: caller pane {caller} claimed pane {claimed}");
+        caller: &crate::broker::caller::SocketCaller,
+        workspace: &str,
+    ) -> Result<(), super::socket_policy::Refusal> {
+        use crate::broker::caller::SocketCaller;
+        let refuse = |message: String| {
+            log::info!("command_view: refused workspace={workspace} caller={}: {message}", caller.class());
+            super::socket_policy::Refusal { code: "permission_denied", message }
+        };
+        let path = std::path::Path::new(workspace);
+        match caller {
+            SocketCaller::Pane(pane) => {
+                if self.pane_may_access_context_root(pane.terminal_pane, path) {
+                    Ok(())
+                } else {
+                    Err(refuse(format!(
+                        "{workspace} is outside pane {}'s context",
+                        pane.terminal_pane
+                    )))
+                }
+            }
+            SocketCaller::External(_) => self
+                .admit_caller_use(
+                    &crate::broker::caller::RequestOrigin::Socket(caller.clone()),
+                    "agents.dashboard.follow",
+                    &serde_json::json!({"workspace": workspace}),
+                    path,
+                    0,
+                )
+                .map_err(refuse),
+            SocketCaller::Unidentified(reason) => Err(refuse(format!(
+                "caller identity could not be established: {reason}"
+            ))),
+        }
+    }
+
+    /// The context a `set_context_root` request may name: a pane caller's
+    /// own context (a different `context_id` is refused), an explicit one
+    /// for an outside process, and the named or active one for host code.
+    fn set_root_context_for(
+        &self,
+        origin: &crate::broker::caller::RequestOrigin,
+        requested: Option<u64>,
+    ) -> Result<Option<u64>, String> {
+        use crate::broker::caller::{RequestOrigin, SocketCaller};
+        match origin {
+            RequestOrigin::Socket(SocketCaller::Pane(pane)) => match requested {
+                Some(id) if id != pane.context_id => Err(format!(
+                    "permission_denied: pane {} may set only its own context's root, not context {id}",
+                    pane.terminal_pane
+                )),
+                _ => Ok(Some(pane.context_id)),
+            },
+            RequestOrigin::Socket(SocketCaller::External(_)) => requested.map(Some).ok_or_else(|| {
+                "permission_denied: a process outside Plexi names no context; set the root from a pane in that context or from the Plexi window".to_string()
+            }),
+            RequestOrigin::Socket(SocketCaller::Unidentified(reason)) => Err(format!(
+                "permission_denied: caller identity could not be established: {reason}"
+            )),
+            RequestOrigin::PluginGuest(_) | RequestOrigin::SpawnQueue => Err(format!(
+                "permission_denied: set_context_root is not served to {}",
+                origin.class()
+            )),
+            RequestOrigin::HostUi | RequestOrigin::HostSystem => Ok(requested),
+        }
+    }
+
+    fn refuse_cross_pane(&self, kind: &str, error: &str, claimed: u64, response_file: &str) {
+        log::info!("pane_ipc: kind={kind} refused: {error}");
         write_json_response(
             response_file,
             serde_json::json!({
                 "ok": false,
                 "pane_id": claimed,
                 "error_code": "permission_denied",
-                "error": format!("pane {caller} cannot act as pane {claimed}"),
+                "error": error,
             }),
         );
     }
@@ -327,18 +491,24 @@ impl PlexiApp {
     /// exactly as `plexi agent start` launches it.
     pub(crate) fn agent_spawn_reply(
         &mut self,
+        origin: &crate::broker::caller::RequestOrigin,
         request: &crate::protocol::HostRequest,
     ) -> serde_json::Value {
         match super::agent_open::admit_agent_mesh_route("AgentSpawn") {
-            Ok(admitted) => self.agent_spawn_reply_admitted(request, admitted),
+            Ok(admitted) => self.agent_spawn_reply_admitted(origin, None, request, admitted),
             Err(error) => serde_json::json!({ "ok": false, "error": error }),
         }
     }
 
     /// Continue a spawn owned by an already admitted request. Consuming the
     /// proof avoids a second config read and trace during `AgentOpen`.
+    /// `host_parent` places the worker under a pane host code chose (the
+    /// palette's focused pane); it is honored only for host origins and is
+    /// never a grant (`resolve_launch_source`).
     pub(crate) fn agent_spawn_reply_admitted(
         &mut self,
+        origin: &crate::broker::caller::RequestOrigin,
+        host_parent: Option<crate::spatial::tiling::PaneId>,
         request: &crate::protocol::HostRequest,
         _admitted: super::agent_open::AdmittedAgentMeshRoute,
     ) -> serde_json::Value {
@@ -349,15 +519,14 @@ impl PlexiApp {
             task,
             subcontext,
             ephemeral,
-            parent_pane_id,
             name,
+            anchor_pane,
             cwd,
             worktree: _,
             result_schema,
             initial_slots,
             focus,
             response_file: _,
-            source,
         } = request
         else {
             return serde_json::json!({ "ok": false, "error": "agent_spawn_reply: not an agent_spawn request" });
@@ -366,7 +535,7 @@ impl PlexiApp {
             caller_pane: effective_parent,
             spawned_by,
             ..
-        } = match self.resolve_launch_source(source, *parent_pane_id) {
+        } = match self.resolve_launch_source(origin, host_parent) {
             Ok(resolved) => resolved,
             Err(error) => {
                 log::warn!("pane_ipc: agent_spawn refused: {error}");
@@ -381,7 +550,13 @@ impl PlexiApp {
         log::info!(
             "pane_ipc: kind=agent_spawn role={role} harness={harness} subcontext={subcontext:?} ephemeral={ephemeral} parent_pane_id={effective_parent:?} spawned_by={spawned_by}"
         );
-        let result = self.spawn_agent_worker_pane(
+        if let Err(error) = self.authorize_agent_anchor(origin, *anchor_pane) {
+            log::info!("pane_ipc: agent_spawn anchor={anchor_pane:?} refused: {error}");
+            return serde_json::json!({ "ok": false, "error_code": "permission_denied", "error": error });
+        }
+        let result = self.spawn_agent_worker_attributed(
+            Some(spawned_by.clone()),
+            *anchor_pane,
             role,
             harness,
             command,
@@ -643,7 +818,9 @@ impl PlexiApp {
                 for win in &mut self.windows {
                     if let Some(pane) = win.panes.get_mut(pane_id) {
                         pane_ctx_id = Some(win.context_id);
-                        if let Some(t) = pane.as_terminal_mut() {
+                        // The worker's terminal, under any overlay covering it
+                        // (stint 1673).
+                        if let Some(t) = pane.terminal_incarnation_mut() {
                             parent_pane_id = t.parent_pane_id;
                             t.agent_completed = true;
                             t.fleet_result = Some(committed.clone());
@@ -853,11 +1030,77 @@ impl PlexiApp {
         }
     }
 
-    /// Handle a single pane-IPC `HostRequest`. Shared by the socket drain above
-    /// and the PGAP forwarding path (`ViewCommand::ForwardPaneRequest`, stint
-    /// 0013/0014) so capability-gated plugin requests take the identical host
-    /// code path as CLI requests arriving over PLEXI_SOCKET.
-    pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::HostRequest) {
+    /// The admission entry for one queued message (stint 1285): classify a
+    /// socket peer once, apply the request's policy, and dispatch with the
+    /// typed origin. A refused request never reaches a handler.
+    pub(crate) fn service_pane_ipc_message(
+        &mut self,
+        message: super::socket_caller::PaneIpcMessage,
+    ) {
+        use super::socket_caller::{Ingress, PaneIpcMessage};
+        use super::socket_policy;
+        use crate::broker::caller::RequestOrigin;
+        match message {
+            PaneIpcMessage::Admit {
+                peer,
+                frame,
+                scope,
+                reply,
+            } => {
+                let caller = self.classify_socket_peer(peer.as_ref());
+                let admitted = socket_policy::admit(&caller, frame.policy())
+                    .and_then(|()| match scope {
+                        Some(workspace) => self.admit_dashboard_workspace(&caller, &workspace),
+                        None => Ok(()),
+                    })
+                    .map(|()| caller.clone());
+                if let Err(refusal) = &admitted {
+                    socket_policy::trace_refusal(frame.as_str(), &caller, Some(frame.policy()), refusal);
+                }
+                if reply.send(admitted).is_err() {
+                    log::debug!("socket_policy: {} connection left before admission", frame.as_str());
+                }
+            }
+            PaneIpcMessage::Request {
+                ingress: Ingress::Host,
+                request,
+            } => self.handle_pane_ipc_request(RequestOrigin::HostSystem, *request),
+            PaneIpcMessage::Request {
+                ingress: Ingress::Socket { peer, reply },
+                request,
+            } => {
+                let caller = self.classify_socket_peer(peer.as_ref());
+                let request = *request;
+                let policy = socket_policy::socket_policy(&request);
+                let admitted = policy
+                    .clone()
+                    .and_then(|policy| socket_policy::admit(&caller, policy));
+                match admitted {
+                    Ok(()) => self.handle_pane_ipc_request(RequestOrigin::Socket(caller), request),
+                    Err(refusal) => {
+                        let operation = serde_json::to_value(&request)
+                            .ok()
+                            .and_then(|value| value["type"].as_str().map(str::to_string))
+                            .unwrap_or_else(|| "unknown".to_string());
+                        socket_policy::trace_refusal(&operation, &caller, policy.ok(), &refusal);
+                        if let Some(reply) = reply {
+                            write_json_response(&reply, refusal.reply());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handle one pane-IPC `HostRequest` from `origin`. Socket requests reach
+    /// here only through [`Self::service_pane_ipc_message`]; host code (the
+    /// palette, builtin views, plugin forwarding, the spawn queue) passes its
+    /// own origin.
+    pub(crate) fn handle_pane_ipc_request(
+        &mut self,
+        origin: crate::broker::caller::RequestOrigin,
+        cmd: crate::protocol::HostRequest,
+    ) {
         match &cmd {
             crate::protocol::HostRequest::SubmitAssistantTurn {
                 text,
@@ -945,11 +1188,26 @@ impl PlexiApp {
                             .get("run")
                             .and_then(|value| value.as_str())
                             .unwrap_or("");
-                        log::info!("command_view: cancel run={run}");
-                        crate::agent::runs::handle_request(
-                            "finish_run",
-                            &serde_json::json!({"workspace": workspace, "id": run}),
-                        )
+                        log::info!("command_view: cancel run={run} caller={}", origin.class());
+                        // A socket caller stops only a run it started; the
+                        // desktop dashboard stops any (stint 1285).
+                        let payload = serde_json::json!({"workspace": workspace, "id": run});
+                        let caller = match &origin {
+                            crate::broker::caller::RequestOrigin::Socket(_) => {
+                                self.agents_caller(&origin, &payload)
+                            }
+                            _ => Ok(crate::agent::runs::AgentsCaller::Host { ceiling: Vec::new() }),
+                        };
+                        match caller {
+                            Ok(caller) => crate::agent::runs::handle_request(
+                                "finish_run",
+                                &payload,
+                                &caller,
+                            ),
+                            Err(error) => serde_json::json!({
+                                "ok": false, "error_code": "permission_denied", "error": error,
+                            }),
+                        }
                     }
                     _ => crate::agent::runs::projection(&workspace),
                 };
@@ -961,7 +1219,7 @@ impl PlexiApp {
                 response_file,
             } => {
                 log::info!("assistant_host_tool: ipc name={name}");
-                let result = self.dispatch_assistant_host_tool(name, input_json);
+                let result = self.dispatch_assistant_host_tool(name, input_json, &origin);
                 let body = if let Some(error) = result.error.as_deref() {
                     serde_json::json!({
                         "ok": false,
@@ -984,10 +1242,13 @@ impl PlexiApp {
                 name,
                 max,
                 holder_pid,
-                peer_ancestry,
                 response_file,
             } => {
-                if !peer_ancestry.contains(holder_pid) || *holder_pid <= 1 {
+                let in_lineage = origin
+                    .socket_caller()
+                    .and_then(crate::broker::caller::SocketCaller::peer)
+                    .is_some_and(|peer| peer.has_in_lineage(*holder_pid));
+                if !in_lineage || *holder_pid <= 1 {
                     write_json_response(
                         response_file,
                         serde_json::json!({"error": "holder must be a verified caller ancestor", "error_code": "permission_denied"}),
@@ -1017,13 +1278,13 @@ impl PlexiApp {
                 }
             }
             crate::protocol::HostRequest::ListPermissionRequests { response_file } => {
-                self.observe_permissions("list", None, None, response_file);
+                self.observe_permissions(&origin, "list", None, None, response_file);
             }
             crate::protocol::HostRequest::ShowPermissionRequest {
                 pending_request_id,
                 response_file,
             } => {
-                self.observe_permissions("show", Some(pending_request_id), None, response_file);
+                self.observe_permissions(&origin, "show", Some(pending_request_id), None, response_file);
             }
             crate::protocol::HostRequest::ResolvePermissionRequest {
                 pending_request_id,
@@ -1031,6 +1292,7 @@ impl PlexiApp {
                 response_file,
             } => {
                 self.observe_permissions(
+                    &origin,
                     "resolve",
                     Some(pending_request_id),
                     Some(choice),
@@ -1040,22 +1302,23 @@ impl PlexiApp {
             crate::protocol::HostRequest::Permissions {
                 op,
                 id,
-                peer_ancestry,
+                duration,
                 response_file,
             } => {
-                // The kernel-verified peer names the caller pane for the audit
-                // trail. No socket caller is human, pane or not (stint 1271).
-                let caller_pane = self.permissions_caller_pane(peer_ancestry.as_deref());
-                self.permissions_cli_request(op, id.as_deref(), caller_pane, response_file);
+                // No socket caller is human, pane or not (stints 1271, 1285).
+                self.permissions_cli_request(
+                    &origin,
+                    op,
+                    id.as_deref(),
+                    duration.as_deref(),
+                    response_file,
+                );
             }
-            crate::protocol::HostRequest::CallerContext {
-                peer_ancestry,
-                response_file,
-            } => {
-                let pane = peer_ancestry
-                    .as_deref()
-                    .and_then(|pids| self.resolve_socket_peer_pane(pids))
-                    .map(|(pane, _, _)| pane);
+            crate::protocol::HostRequest::CallerContext { response_file } => {
+                let pane = origin
+                    .socket_caller()
+                    .and_then(crate::broker::caller::SocketCaller::pane)
+                    .map(|pane| pane.visible_pane);
                 let root = pane.and_then(|pane| self.pane_context_authority_root(pane));
                 write_json_response(
                     response_file,
@@ -1069,60 +1332,54 @@ impl PlexiApp {
             crate::protocol::HostRequest::FileOpen {
                 path,
                 cwd,
-                caller_pane_id,
                 from_pane_id,
                 placement,
                 no_focus,
-                peer,
                 response_file,
             } => {
                 let request = super::file_open::FileOpenRequest {
                     path,
                     cwd: cwd.as_deref().map(std::path::Path::new),
-                    caller_pane_id: *caller_pane_id,
                     from_pane_id: *from_pane_id,
                     placement: *placement,
                     no_focus: *no_focus,
                 };
-                self.serve_file_open(&request, peer.as_ref(), response_file);
+                self.serve_file_open(&request, &origin, response_file);
             }
             crate::protocol::HostRequest::ListNeedsYou { response_file } => {
-                self.observe_needs_you("list", None, None, response_file);
+                self.observe_needs_you(&origin, "list", None, None, response_file);
             }
             crate::protocol::HostRequest::ResolveNeedsYou {
                 id,
                 approve,
                 response_file,
             } => {
-                self.observe_needs_you("resolve", Some(id), Some(*approve), response_file);
+                self.observe_needs_you(&origin, "resolve", Some(id), Some(*approve), response_file);
             }
             crate::protocol::HostRequest::NeedsYouApi {
                 op,
                 payload,
-                peer_ancestry,
                 response_file,
             } => {
-                self.handle_needs_you_api(op, payload, peer_ancestry, response_file);
+                self.handle_needs_you_api(op, payload, &origin, response_file);
             }
             crate::protocol::HostRequest::PaneSecretList {
                 context,
-                peer_ancestry,
                 response_file,
             } => {
-                self.serve_secret_list(context, peer_ancestry, response_file);
+                self.serve_secret_list(context, &origin, response_file);
             }
             crate::protocol::HostRequest::PaneSecretGet {
                 name,
                 global,
                 workspace_root,
-                peer_ancestry,
                 response_file,
             } => {
                 self.serve_secret_get(
                     name,
                     *global,
                     workspace_root.as_deref(),
-                    peer_ancestry,
+                    &origin,
                     response_file,
                 );
             }
@@ -1131,67 +1388,29 @@ impl PlexiApp {
                 payload,
                 response_file,
             } => {
-                log::info!("pane_ipc: kind=agents_api op={op}");
-                let mut payload = payload.clone();
-                if let Some(obj) = payload.as_object_mut() {
-                    obj.remove("caller_human_pane");
-                    obj.remove("caller_context_root");
-                    obj.remove("caller_context_denied");
-                    obj.remove("caller_agent");
-                    let peer_ancestry: Vec<u32> = obj
-                        .remove("peer_ancestry")
-                        .and_then(|v| serde_json::from_value(v).ok())
-                        .unwrap_or_default();
-                    let peer_pane = (!peer_ancestry.is_empty())
-                        .then(|| {
-                            self.resolve_socket_peer_pane(&peer_ancestry)
-                                .map(|(pid, _, _)| pid)
-                        })
-                        .flatten();
-                    let resolved_pane = peer_pane
-                        .or_else(|| obj.get("caller_pane").and_then(|value| value.as_u64()));
-                    if let Some(pane_id) = resolved_pane {
-                        let caller_agent = self.team_member_for_pane(pane_id).unwrap_or_default();
-                        let human_pane = self.is_human_owned_pane(pane_id);
-                        let ctx_root = self.pane_context_authority_root(pane_id);
-                        let target_ws = obj
-                            .get("execution_cwd")
-                            .or_else(|| obj.get("workspace"))
-                            .and_then(|v| v.as_str())
-                            .map(std::path::PathBuf::from);
-                        let target_cwd = obj
-                            .get("caller_cwd")
-                            .and_then(|v| v.as_str())
-                            .map(std::path::PathBuf::from);
-                        let context_denied = target_ws.as_deref().is_some_and(|p| {
-                            let p_canon = crate::platform::path::canonical_or_self(p);
-                            ctx_root.as_ref() != Some(&p_canon)
-                                || !self.pane_may_access_context_root(pane_id, p)
-                        }) || target_cwd
-                            .as_deref()
-                            .is_some_and(|p| !self.pane_may_access_context_root(pane_id, p));
-                        log::info!(
-                            "agents_api: op={op} caller_pane={pane_id} caller_agent={caller_agent} human_pane={human_pane} context_root={ctx_root:?} context_denied={context_denied}"
-                        );
-                        obj.insert("caller_pane".to_string(), serde_json::json!(pane_id));
-                        obj.insert("caller_agent".to_string(), serde_json::json!(caller_agent));
-                        obj.insert(
-                            "caller_human_pane".to_string(),
-                            serde_json::json!(human_pane),
-                        );
-                        if let Some(root) = ctx_root {
-                            obj.insert("caller_context_root".to_string(), serde_json::json!(root));
-                        }
-                        if context_denied {
-                            obj.insert(
-                                "caller_context_denied".to_string(),
-                                serde_json::json!(true),
-                            );
-                        }
-                    }
+                log::info!("pane_ipc: kind=agents_api op={op} caller={}", origin.class());
+                // The agent mesh is enforced here, in the host, not only in
+                // the CLI (stint 1285).
+                if let Err(error) = super::agent_open::admit_agent_mesh_route("AgentsApi") {
+                    crate::rpc::write_json_response(
+                        response_file,
+                        serde_json::json!({"ok": false, "error_code": "feature_unavailable", "error": error}),
+                    );
+                    return;
                 }
+                let caller = match self.agents_caller(&origin, payload) {
+                    Ok(caller) => caller,
+                    Err(error) => {
+                        log::info!("agents_api: op={op} refused caller={}: {error}", origin.class());
+                        crate::rpc::write_json_response(
+                            response_file,
+                            serde_json::json!({"ok": false, "error_code": "permission_denied", "error": error}),
+                        );
+                        return;
+                    }
+                };
                 if op == "team_run" {
-                    if let Err(error) = self.start_team(&payload, response_file) {
+                    if let Err(error) = self.start_team(payload, &caller, response_file) {
                         log::error!("agent_team: start failed: {error}");
                         crate::rpc::write_json_response(
                             response_file,
@@ -1200,7 +1419,7 @@ impl PlexiApp {
                     }
                     return;
                 }
-                let mut value = crate::agent::runs::handle_request(op, &payload);
+                let mut value = crate::agent::runs::handle_request(op, payload, &caller);
                 if let Some(port) = crate::app::host_mcp::bound_port() {
                     if let Some(obj) = value.as_object_mut() {
                         obj.insert("mcp_port".to_string(), serde_json::json!(port));
@@ -1772,13 +1991,13 @@ impl PlexiApp {
                 pane_id,
                 payload,
                 submit,
-                peer_ancestry,
                 response_file,
             } => {
-                let from_pane_id = peer_ancestry
-                    .as_deref()
-                    .and_then(|ancestry| self.resolve_socket_peer_pane(ancestry))
-                    .map(|(sender_id, _, _)| sender_id);
+                // The sender is the host-classified caller's pane (stint 1285).
+                let from_pane_id = origin
+                    .socket_caller()
+                    .and_then(crate::broker::caller::SocketCaller::pane)
+                    .map(|pane| pane.visible_pane);
                 log::info!(
                     "pane_ipc: kind=pane_message_send pane_id={pane_id} from_pane_id={from_pane_id:?} submit={submit}"
                 );
@@ -2538,7 +2757,10 @@ impl PlexiApp {
                 }
             }
             crate::protocol::HostRequest::SpawnPane { response_file, .. } => {
-                let spec = match crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(&cmd) {
+                let spec = match crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(
+                    &cmd,
+                    origin.clone(),
+                ) {
                     Ok(spec) => spec,
                     Err(msg) => {
                         log::warn!("pane_ipc: spawn_pane rejected: {msg}");
@@ -2570,7 +2792,7 @@ impl PlexiApp {
                 }
                 // App and path launches pass the same source resolution as a
                 // terminal: an unverified socket peer is refused (stint 1632).
-                if let Err(error) = self.resolve_launch_source(&spec.source, spec.from_pane_id) {
+                if let Err(error) = self.resolve_launch_source(&spec.origin, spec.from_pane_id) {
                     log::warn!("pane_ipc: spawn_pane rejected: {error}");
                     if let Some(rf) = response_file {
                         write_json_response(rf, serde_json::json!({ "error": error }));
@@ -2743,7 +2965,6 @@ impl PlexiApp {
                 submit,
                 paste,
                 response_file,
-                peer_ancestry,
             } => {
                 log::info!(
                     "pane_ipc: kind=send_to_pane pane_id={pane_id} len={} submit={submit} windows={} response_file={response_file:?}",
@@ -2769,16 +2990,24 @@ impl PlexiApp {
                         }
                     })
                 });
-                // Resolve the caller independently of its posture. A non-agent
-                // human-owned pane keeps sending without broker gating. A
-                // non-human-owned caller with no snapshotted posture (an
-                // unconfigured or corrupted agent definition) still enters the
-                // broker with `None`, so the gate falls back to `Ask` instead of
-                // being skipped — missing posture must never mean un-gated.
-                let peer = peer_ancestry.as_deref().and_then(|ancestry| {
-                    self.resolve_socket_peer_pane(ancestry)
-                        .map(|(caller, _, _)| caller)
-                });
+                // Every socket caller is a pane (the entry refused the rest)
+                // and is admitted by the broker under its own ceiling; a
+                // baseline pane enters with no posture, so `pane.send` falls
+                // back to Ask. A pane the person opened is no exception
+                // (stint 1285). Host input (the palette) is not brokered.
+                let peer = origin
+                    .socket_caller()
+                    .and_then(crate::broker::caller::SocketCaller::pane)
+                    .map(|pane| pane.terminal_pane);
+                if matches!(origin, crate::broker::caller::RequestOrigin::Socket(_)) && peer.is_none() {
+                    if let Some(rf) = response_file {
+                        write_json_response(
+                            rf,
+                            serde_json::json!({"error": "pane send requires a caller in a Plexi pane", "error_code": "permission_denied"}),
+                        );
+                    }
+                    return;
+                }
                 // A pane whose authority was never established sends nothing
                 // under it, and is told why (stint 1632).
                 if let Some(Err(error)) = peer.map(|caller| self.pane_ceiling(caller)) {
@@ -2796,7 +3025,6 @@ impl PlexiApp {
                         Ok(Some(posture)) => Some((caller, Some(posture))),
                         // Refused, with its reason, above.
                         Err(_) => None,
-                        Ok(None) if self.is_human_owned_pane(caller) => None,
                         Ok(None) => {
                             log::info!(
                                 "pane_ipc: send_to_pane: caller pane_id={caller} has no posture snapshot — pane.send defaults to broker Ask (target pane_id={pane_id})"
@@ -2980,7 +3208,11 @@ impl PlexiApp {
                                     submit: *submit,
                                     paste: *paste,
                                     response_file: response_file.clone(),
-                                    peer_ancestry: peer_ancestry.clone(),
+                                    origin: origin.clone(),
+                                    scope_revision: origin
+                                        .socket_caller()
+                                        .and_then(crate::broker::caller::SocketCaller::pane)
+                                        .map(|pane| pane.authority.scope().revision),
                                     expires_at: std::time::Instant::now()
                                         + crate::app::pane_wait::SEND_APPROVAL_WAIT_TIMEOUT,
                                 },
@@ -4240,9 +4472,7 @@ impl PlexiApp {
                 plugin_id,
                 tool,
                 input_json,
-                caller_pane_id,
                 call_credential,
-                peer_ancestry,
                 target_pane_id,
                 response_file,
                 wait_approved,
@@ -4251,9 +4481,8 @@ impl PlexiApp {
                     plugin_id.clone(),
                     tool.clone(),
                     input_json.clone(),
-                    *caller_pane_id,
+                    &origin,
                     call_credential.clone(),
-                    peer_ancestry.clone(),
                     *target_pane_id,
                     response_file.clone(),
                     *wait_approved,
@@ -4262,19 +4491,9 @@ impl PlexiApp {
             crate::protocol::HostRequest::ListPluginTools {
                 plugin_id,
                 context_id,
-                caller_pane_id,
-                caller_context_id,
-                peer_ancestry,
                 response_file,
             } => {
-                self.list_plugin_tools(
-                    plugin_id.as_deref(),
-                    *context_id,
-                    *caller_pane_id,
-                    *caller_context_id,
-                    peer_ancestry,
-                    response_file,
-                );
+                self.list_plugin_tools(plugin_id.as_deref(), *context_id, &origin, response_file);
             }
             crate::protocol::HostRequest::SetAgentState {
                 pane_id,
@@ -4284,12 +4503,9 @@ impl PlexiApp {
                 session_id,
                 event,
                 blocked_reason,
-                peer_ancestry,
             } => {
-                if let Some(caller) = self.foreign_peer_pane(peer_ancestry.as_deref(), *pane_id) {
-                    log::warn!(
-                        "pane_ipc: kind=set_agent_state refused: caller pane {caller} is not pane {pane_id}"
-                    );
+                if let Some(error) = Self::foreign_report(&origin, *pane_id) {
+                    log::info!("pane_ipc: kind=set_agent_state refused: {error}");
                     return;
                 }
                 let already_completed = self
@@ -4679,51 +4895,25 @@ impl PlexiApp {
                 on_dismiss,
                 response_file,
                 scope,
-                source_context_id,
-                source_pane_id,
-                peer_pid,
                 ..
             } => {
                 let internal_id = notify_id
                     .clone()
                     .unwrap_or_else(|| format!("__host__:{}", crate::platform::clock::now_nanos()));
+                // The sender is the host-classified caller (stint 1285); no
+                // wire field names one.
+                let resolved = origin
+                    .socket_caller()
+                    .and_then(crate::broker::caller::SocketCaller::pane)
+                    .map(|pane| (pane.visible_pane, pane.context_id, pane.window_id));
                 log::info!(
-                    "pane_ipc: kind=notify title_chars={} choices={} scope={:?} peer_pid={:?} response_file={:?}",
+                    "pane_ipc: kind=notify title_chars={} choices={} scope={:?} caller={} sender={resolved:?} response_file={:?}",
                     title.chars().count(),
                     options.len(),
                     scope,
-                    peer_pid,
+                    origin.class(),
                     response_file
                 );
-                // Caller identity is resolved from the socket peer's OS
-                // credential (`peer_pid`, host-established in
-                // `handle_socket_connection`), never from dispatch-time
-                // active state and never from the client-claimed
-                // `source_context_id`/`source_pane_id` fields — those are
-                // attacker-controlled and, before this fix, let any process
-                // with socket access widen or misattribute a notification's
-                // scope by lying about which pane sent it.
-                let resolved = peer_pid
-                    .as_deref()
-                    .and_then(|ancestry| self.resolve_socket_peer_pane(ancestry));
-                if let Some((resolved_pane_id, resolved_context_id, resolved_window_id)) = resolved
-                {
-                    log::info!(
-                        "pane_ipc: peer identity: notify sender resolved to pane={resolved_pane_id} context={resolved_context_id} window={resolved_window_id} peer_pid={peer_pid:?}"
-                    );
-                }
-                if source_pane_id.is_some() || source_context_id.is_some() {
-                    let claimed_matches = resolved.is_some_and(|(pane_id, context_id, _)| {
-                        source_pane_id.is_none_or(|claimed| claimed == pane_id)
-                            && source_context_id.is_none_or(|claimed| claimed == context_id)
-                    });
-                    if !claimed_matches {
-                        log::warn!(
-                            "pane_ipc: notify: claimed identity (source_context_id={source_context_id:?} source_pane_id={source_pane_id:?}) \
-                             disagrees with host-resolved sender {resolved:?} — using the host-resolved identity only"
-                        );
-                    }
-                }
                 let (caller_context_id, caller_window_id) = match resolved {
                     Some((_, context_id, window_id)) => (Some(context_id), Some(window_id)),
                     None => (None, None),
@@ -4752,9 +4942,9 @@ impl PlexiApp {
                     }
                     unresolvable => {
                         log::warn!(
-                            "pane_ipc: notify: scope {unresolvable:?} needs a caller identity but none resolved \
-                             (source_context_id={source_context_id:?} source_pane_id={source_pane_id:?}) — \
-                             escalating to global so the notification stays reachable"
+                            "pane_ipc: notify: scope {unresolvable:?} needs a pane caller but the caller is {} — \
+                             escalating to global so the notification stays reachable",
+                            origin.class()
                         );
                         crate::protocol::NotifyScope::Global
                     }
@@ -4814,38 +5004,17 @@ impl PlexiApp {
             }
             crate::protocol::HostRequest::DismissNotification {
                 notify_id,
-                source_context_id,
-                source_pane_id,
                 response_file,
-                peer_pid,
             } => {
-                // Same trust boundary as `Notify`: ownership is decided from
-                // the socket peer's host-resolved pane, never from the
-                // client-claimed `source_context_id`/`source_pane_id` — those
-                // are attacker-controlled and, before this fix, were the
-                // entire ownership check (compared against a pane id
-                // re-parsed out of the equally client-generated `notify_id`).
-                let resolved = peer_pid
-                    .as_deref()
-                    .and_then(|ancestry| self.resolve_socket_peer_pane(ancestry));
-                if let Some((resolved_pane_id, resolved_context_id, resolved_window_id)) = resolved
-                {
-                    log::info!(
-                        "pane_ipc: peer identity: dismiss sender resolved to pane={resolved_pane_id} context={resolved_context_id} window={resolved_window_id} peer_pid={peer_pid:?}"
-                    );
-                }
-                if source_pane_id.is_some() || source_context_id.is_some() {
-                    let claimed_matches = resolved.is_some_and(|(pane_id, context_id, _)| {
-                        source_pane_id.is_none_or(|claimed| claimed == pane_id)
-                            && source_context_id.is_none_or(|claimed| claimed == context_id)
-                    });
-                    if !claimed_matches {
-                        log::warn!(
-                            "pane_ipc: notify dismiss: claimed identity (source_context_id={source_context_id:?} source_pane_id={source_pane_id:?}) \
-                             disagrees with host-resolved sender {resolved:?} — using the host-resolved identity only"
-                        );
-                    }
-                }
+                // Ownership is the host-classified caller's pane (stint 1285).
+                let resolved = origin
+                    .socket_caller()
+                    .and_then(crate::broker::caller::SocketCaller::pane)
+                    .map(|pane| (pane.visible_pane, pane.context_id, pane.window_id));
+                log::info!(
+                    "pane_ipc: kind=dismiss_notification caller={} sender={resolved:?}",
+                    origin.class()
+                );
                 let result = match resolved {
                     Some((pane_id, _, _)) => self
                         .dismiss_notification_from_sender(notify_id, pane_id)
@@ -4872,11 +5041,10 @@ impl PlexiApp {
                 portal_direction,
                 anchor_pane,
                 response_file,
-                source,
             } => {
                 // The panes this request creates are admitted from its
                 // verified source; an uncaptured peer creates nothing.
-                let caller = match self.resolve_launch_source(source, None) {
+                let caller = match self.resolve_launch_source(&origin, None) {
                     Ok(caller) => caller,
                     Err(error) => {
                         log::warn!("pane_ipc: create_context refused: {error}");
@@ -5067,9 +5235,8 @@ impl PlexiApp {
                 focus,
                 anchor_pane,
                 response_file,
-                source,
             } => {
-                let caller = match self.resolve_launch_source(source, None) {
+                let caller = match self.resolve_launch_source(&origin, None) {
                     Ok(caller) => caller,
                     Err(error) => {
                         log::warn!("pane_ipc: create_sub_context refused: {error}");
@@ -5202,10 +5369,9 @@ impl PlexiApp {
             crate::protocol::HostRequest::FocusContext {
                 root,
                 response_file,
-                source,
             } => {
                 let reply = match self
-                    .resolve_launch_source(source, None)
+                    .resolve_launch_source(&origin, None)
                     .and_then(|caller| self.open_context_root(root, caller.source))
                 {
                     Ok(context_id) => {
@@ -5226,7 +5392,8 @@ impl PlexiApp {
                 response_file,
             } => {
                 let result = self
-                    .resolve_context_idx(*context_id, "set_context_root")
+                    .set_root_context_for(&origin, *context_id)
+                    .and_then(|target| self.resolve_context_idx(target, "set_context_root"))
                     .and_then(|idx| {
                         if !root.is_dir() {
                             return Err(format!(
@@ -5235,7 +5402,22 @@ impl PlexiApp {
                             ));
                         }
                         let id = self.router.get(idx).context_id;
+                        // Moving a root moves the scope of every pane in
+                        // the context: the caller is admitted for it as
+                        // itself (stint 1285).
+                        let current = self.router.get(idx).root.clone();
+                        self.admit_caller_use(
+                            &origin,
+                            "context.set_root",
+                            &serde_json::json!({"context_id": id, "root": root}),
+                            &current,
+                            id,
+                        )?;
                         self.set_context_root(root.clone(), Some(id));
+                        log::info!(
+                            "set_context_root: context_id={id} caller={} applied",
+                            origin.class()
+                        );
                         Ok(serde_json::json!({"context_id":id, "root":root}))
                     });
                 let reply = result.unwrap_or_else(|error| {
@@ -5316,14 +5498,12 @@ impl PlexiApp {
             }
             crate::protocol::HostRequest::ListPermissions { response_file } => {
                 log::info!("pane_ipc: kind=list_permissions response_file={response_file:?}");
-                self.handle_list_permissions(response_file);
+                self.handle_list_permissions(&origin, response_file);
             }
             crate::protocol::HostRequest::AgentCall {
                 role,
                 task,
-                parent_pane_id,
                 call_credential,
-                peer_ancestry,
                 cwd,
                 worktree,
                 asynchronous,
@@ -5334,9 +5514,8 @@ impl PlexiApp {
                     self.start_agent_tool_call(crate::app::agent_tools::AgentCallRequest {
                         role,
                         task,
-                        parent_pane_id: *parent_pane_id,
+                        origin: &origin,
                         credential: call_credential.as_deref(),
-                        peer_ancestry,
                         cwd: cwd.as_deref(),
                         worktree: worktree.as_deref(),
                         asynchronous: *asynchronous,
@@ -5354,9 +5533,7 @@ impl PlexiApp {
             crate::protocol::HostRequest::AgentMessage {
                 pane_id,
                 text,
-                parent_pane_id,
                 call_credential,
-                peer_ancestry,
                 wait,
                 response_file,
             } => {
@@ -5364,9 +5541,8 @@ impl PlexiApp {
                     *pane_id,
                     text,
                     crate::app::agent_tools::AgentCaller {
-                        pane_id: *parent_pane_id,
+                        origin: &origin,
                         credential: call_credential.as_deref(),
-                        peer_ancestry,
                     },
                     *wait,
                     response_file,
@@ -5380,14 +5556,13 @@ impl PlexiApp {
                 }
             }
             request @ crate::protocol::HostRequest::AgentSpawn { response_file, .. } => {
-                let payload = self.agent_spawn_reply(request);
+                let payload = self.agent_spawn_reply(&origin, request);
                 write_json_response(response_file, payload);
             }
             crate::protocol::HostRequest::AgentWait {
                 pane_ids,
                 timeout_secs,
                 response_file,
-                peer_ancestry: _,
             } => {
                 log::info!(
                     "pane_ipc: kind=agent_wait pane_ids={pane_ids:?} timeout_secs={timeout_secs}"
@@ -5398,11 +5573,10 @@ impl PlexiApp {
                 pane_id,
                 result,
                 summary,
-                peer_ancestry,
                 response_file,
             } => {
-                if let Some(caller) = self.foreign_peer_pane(peer_ancestry.as_deref(), *pane_id) {
-                    self.refuse_cross_pane("agent_done", caller, *pane_id, response_file);
+                if let Some(error) = Self::foreign_report(&origin, *pane_id) {
+                    self.refuse_cross_pane("agent_done", &error, *pane_id, response_file);
                     return;
                 }
                 let payload =
@@ -5457,11 +5631,10 @@ impl PlexiApp {
             crate::protocol::HostRequest::AgentAsk {
                 pane_id,
                 question,
-                peer_ancestry,
                 response_file,
             } => {
-                if let Some(caller) = self.foreign_peer_pane(peer_ancestry.as_deref(), *pane_id) {
-                    self.refuse_cross_pane("agent_ask", caller, *pane_id, response_file);
+                if let Some(error) = Self::foreign_report(&origin, *pane_id) {
+                    self.refuse_cross_pane("agent_ask", &error, *pane_id, response_file);
                     return;
                 }
                 log::info!(
@@ -5567,18 +5740,17 @@ impl PlexiApp {
             crate::protocol::HostRequest::AgentOpen {
                 name,
                 cwd,
-                caller_pane_id,
                 response_file,
-                source,
             } => {
                 log::info!(
-                    "pane_ipc: kind=agent_open name={name} cwd={cwd} caller={caller_pane_id:?}"
+                    "pane_ipc: kind=agent_open name={name} cwd={cwd} caller={}",
+                    origin.class()
                 );
                 let payload = match self.open_named_agent(
                     name,
                     std::path::Path::new(cwd),
-                    *caller_pane_id,
-                    source,
+                    None,
+                    &origin,
                 ) {
                     Ok(outcome) => outcome.to_json(),
                     Err(error) => {
@@ -5590,18 +5762,17 @@ impl PlexiApp {
             crate::protocol::HostRequest::AgentNewChat {
                 name,
                 cwd,
-                caller_pane_id,
                 response_file,
-                source,
             } => {
                 log::info!(
-                    "pane_ipc: kind=agent_new_chat name={name} cwd={cwd} caller={caller_pane_id:?}"
+                    "pane_ipc: kind=agent_new_chat name={name} cwd={cwd} caller={}",
+                    origin.class()
                 );
                 let payload = match self.new_named_agent_chat(
                     name,
                     std::path::Path::new(cwd),
-                    *caller_pane_id,
-                    source,
+                    None,
+                    &origin,
                 ) {
                     Ok(outcome) => outcome.to_json(),
                     Err(error) => serde_json::json!({ "ok": false, "error": error }),
@@ -5612,7 +5783,6 @@ impl PlexiApp {
                 query,
                 subcontext,
                 response_file,
-                source,
             } => {
                 if let Err(error) = super::agent_open::admit_agent_mesh_route("AgentReopen") {
                     write_json_response(
@@ -5637,7 +5807,7 @@ impl PlexiApp {
                     );
                     return;
                 };
-                let payload = match self.resolve_launch_source(source, None) {
+                let payload = match self.resolve_launch_source(&origin, None) {
                     Ok(caller) => self.reopen_agent_record(
                         &record,
                         subcontext.as_deref(),
@@ -5647,6 +5817,10 @@ impl PlexiApp {
                     Err(error) => serde_json::json!({ "ok": false, "error": error }),
                 };
                 write_json_response(response_file, payload);
+            }
+            crate::protocol::HostRequest::SpawnReceipt { response_file } => {
+                // The reply stream is registered; the queue drain answers it.
+                log::info!("spawn-queue: receipt connection held token={response_file:?}");
             }
             crate::protocol::HostRequest::Wake => {
                 // A wake may arrive just after the throttled idle poll. Drain
@@ -5794,9 +5968,24 @@ impl PlexiApp {
     /// one row per stored `permissions.toml` entry (`stored: true`) plus one
     /// row per live granted/blocked capability of a running plugin that has no
     /// stored entry (`stored: false`), and the list of running plugin ids.
-    fn handle_list_permissions(&mut self, response_file: &str) {
+    fn handle_list_permissions(
+        &mut self,
+        origin: &crate::broker::caller::RequestOrigin,
+        response_file: &str,
+    ) {
         use crate::app::permissions::PermissionStore;
         use crate::host::pane::Pane;
+
+        // These rows belong to plugins. A socket caller is no plugin, so it
+        // holds none of them; the full inventory is the desktop's (stint 1285).
+        if matches!(origin, crate::broker::caller::RequestOrigin::Socket(_)) {
+            log::info!("permissions: inventory for a {} caller holds no rows", origin.class());
+            write_json_response(
+                response_file,
+                serde_json::json!({"permissions": [], "running": []}),
+            );
+            return;
+        }
 
         let store = match PermissionStore::load_or_default(&self.permission_store_dir) {
             Ok(store) => store,
@@ -6502,10 +6691,11 @@ impl PlexiApp {
                 boot_timeout_secs: None,
                 worktree: val["worktree"].as_str().map(str::to_string),
                 result_schema: val.get("result_schema").cloned().filter(|v| !v.is_null()),
-                source: crate::protocol::SpawnSource::SpawnQueue,
             };
-            let Ok(spec) = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(&request)
-            else {
+            let Ok(spec) = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(
+                &request,
+                crate::broker::caller::RequestOrigin::SpawnQueue,
+            ) else {
                 log::warn!("spawn-queue: invalid spawn request, skipping");
                 continue;
             };
@@ -6533,7 +6723,7 @@ impl PlexiApp {
                 spec.cwd,
                 spec.workspace_root
             );
-            self.handle_pane_ipc_request(request);
+            self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::SpawnQueue, request);
         }
     }
 

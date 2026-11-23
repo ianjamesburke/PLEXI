@@ -166,7 +166,7 @@ fn needs_you_failed_audit_error_is_visible_in_decision_overlay() {
     let monitor =
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
             .unwrap();
-    let (id, _) = monitor
+    let id = monitor
         .file_needs_you_with_details(
             crate::broker::gate::NeedsYouFile {
                 kind: crate::broker::gate::NeedsYouKind::Question,

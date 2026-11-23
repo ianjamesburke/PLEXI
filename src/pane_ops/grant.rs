@@ -35,19 +35,9 @@ impl PlexiApp {
     /// pane is sealed too.
     pub(crate) fn caller_grant_source(&self, caller: PaneId) -> GrantSource {
         match self.pane_authority(caller) {
-            Some(live) => {
-                let mut grant = live.grant().clone();
-                // A desktop shell running a detected agent acts for that
-                // agent now: what it opens is agent-spawned, never the
-                // person's (stint 1632).
-                if grant.is_desktop() && !self.is_human_owned_pane(caller) {
-                    log::info!(
-                        "pane_grant: caller pane {caller} runs an agent; its children are restricted"
-                    );
-                    grant.ownership = crate::broker::pane_authority::Ownership::Restricted;
-                }
-                GrantSource::VerifiedPane(Box::new(grant))
-            }
+            // What it opens is bounded by its grant and is never desktop
+            // owned (`PaneAuthority::admit`, stint 1285).
+            Some(live) => GrantSource::VerifiedPane(Box::new(live.grant().clone())),
             None => {
                 log::info!(
                     "pane_grant: caller pane {caller} has no grant; its children are sealed"
@@ -72,7 +62,10 @@ impl PlexiApp {
     /// The display provenance of a pane admitted from `source`.
     pub(crate) fn spawned_by_for(&self, source: &GrantSource) -> String {
         match source {
-            GrantSource::DesktopInput | GrantSource::PluginInstance { .. } => "human".into(),
+            // Only input the person gave the host's UI is the person's; a
+            // plugin acting in-process is the plugin (stint 1285).
+            GrantSource::DesktopInput => "human".into(),
+            GrantSource::PluginInstance { pane_id } => format!("plugin:{pane_id}"),
             GrantSource::HostSystem => "system".into(),
             GrantSource::VerifiedPane(caller) => match &caller.role {
                 Some(role) => format!("agent:{role}"),

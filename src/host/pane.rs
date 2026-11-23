@@ -871,6 +871,11 @@ pub struct TerminalPane {
     /// from (posture, provenance), fixed at construction (stint 1632).
     /// `None` only for a credential-free fixture.
     credentials: Option<crate::pane_ops::construct::PaneCredentials>,
+    /// The kernel start time of the shell this pane spawned, read once right
+    /// after the spawn. A socket peer is this pane's process only when its
+    /// ancestor matches both the pid and this start time (stint 1285); `None`
+    /// (the shell was already gone) matches nothing.
+    shell_start: Option<crate::platform::process::ProcStart>,
     /// Latest blocked reason reported by hook or `plexi agent ask`.
     pub last_blocked_reason: Option<crate::protocol::AgentBlockedReason>,
     /// Cached tail preview preserved across Standby / Interrupted restore.
@@ -1124,8 +1129,16 @@ impl TerminalPane {
             }
         };
         let process_group = super::process_cleanup::PaneProcessGroup::record(backend.child_pid());
+        let shell_start =
+            crate::platform::process::process_info(backend.child_pid()).map(|info| info.start);
+        log::info!(
+            "terminal_pane: pane_id={id} shell pid={} start_recorded={}",
+            backend.child_pid(),
+            shell_start.is_some()
+        );
         Ok(Self {
             _process_group: process_group,
+            shell_start,
             id,
             backend,
             exited: false,
@@ -1196,12 +1209,14 @@ impl TerminalPane {
             || self.standby_session.is_some()
     }
 
-    /// True when this terminal pane is a human-owned user session: its grant
-    /// records desktop ownership, fixed at admission from positive evidence
-    /// (stint 1632), and no agent runs in it now. Nothing observed later
-    /// (a session, a role, a badge) can make a restricted pane human-owned.
-    pub fn is_human_owned(&self) -> bool {
-        self.is_desktop_granted() && !self.is_agent_pane()
+    /// Whether `pid` started at `start` is this pane's shell process: the
+    /// same pid AND the same kernel incarnation (stint 1285).
+    pub(crate) fn is_shell_process(
+        &self,
+        pid: u32,
+        start: crate::platform::process::ProcStart,
+    ) -> bool {
+        self.backend.child_pid() == pid && self.shell_start == Some(start)
     }
 
     /// Why this pane's authority could not be established, when it could
@@ -1210,7 +1225,9 @@ impl TerminalPane {
         self.authority().and_then(|a| a.grant().sealed_reason())
     }
 
-    /// The pane's grant records desktop ownership.
+    /// The pane was opened by a desktop action: the one fact "human owned"
+    /// still means. It grants no authority to a socket caller in the pane
+    /// (stint 1285).
     pub(crate) fn is_desktop_granted(&self) -> bool {
         self.authority().is_some_and(|a| a.grant().is_desktop())
     }
@@ -1878,7 +1895,9 @@ pub fn format_spawned_by_badge(raw: Option<&str>) -> Option<String> {
     if s.is_empty() {
         return None;
     }
-    if s == "human" {
+    if crate::broker::pane_authority::Spawner::parse(Some(s))
+        == crate::broker::pane_authority::Spawner::Desktop
+    {
         return Some(SPAWNED_BY_HUMAN_BADGE.to_string());
     }
     if let Some(agent_name) = s.strip_prefix("agent:") {

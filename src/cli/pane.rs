@@ -1003,7 +1003,6 @@ pub fn pane_send_with_operation_cli(
         "paste": paste,
         "operation_id": operation_id,
         "generated_operation_id": generated_operation_id,
-        "peer_ancestry": [],
     });
     if submit {
         // The host settles, presses Enter and confirms before answering, all

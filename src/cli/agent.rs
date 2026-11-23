@@ -2441,7 +2441,6 @@ pub fn resolve_agent_spawn_in_stopping_at(
     task_or_message: Option<&str>,
     subcontext: Option<&str>,
     ephemeral_override: Option<bool>,
-    parent_pane_id: Option<u64>,
     stops: &[PathBuf],
 ) -> Result<serde_json::Value, String> {
     let workspace_root = resolve_agent_workspace_root_for(agent_name, start_cwd, stops);
@@ -2483,9 +2482,6 @@ pub fn resolve_agent_spawn_in_stopping_at(
     if let Some(sub) = subcontext.and_then(non_empty_string) {
         payload["subcontext"] = serde_json::Value::String(sub.to_string());
     }
-    if let Some(pid) = parent_pane_id {
-        payload["parent_pane_id"] = serde_json::json!(pid);
-    }
     if let Some(ref schema) = harness_cfg.result_schema {
         payload["result_schema"] = schema.clone();
     }
@@ -2500,7 +2496,6 @@ pub fn resolve_agent_start_in_stopping_at(
     profile_dir: &Path,
     start_cwd: &Path,
     message: Option<&str>,
-    parent_pane_id: Option<u64>,
     stops: &[PathBuf],
 ) -> Result<serde_json::Value, String> {
     let mut payload = resolve_agent_spawn_in_stopping_at(
@@ -2510,7 +2505,6 @@ pub fn resolve_agent_start_in_stopping_at(
         message,
         None,
         Some(false),
-        parent_pane_id,
         stops,
     )?;
     // Interactive start is the only agent launch that hands focus to the new pane.
@@ -2586,9 +2580,6 @@ pub fn agent_start_cli(
         Ok(d) => d,
         Err(code) => return code,
     };
-    let parent_pane_id = std::env::var("PLEXI_PANE_ID")
-        .ok()
-        .and_then(|v| v.parse().ok());
     let stops = match crate::app::registry::workspace_walk_stops() {
         Ok(stops) => stops,
         Err(error) => {
@@ -2601,7 +2592,6 @@ pub fn agent_start_cli(
         &crate::config::config_dir(),
         &effective_cwd,
         message,
-        parent_pane_id,
         &stops,
     ) {
         Ok(p) => p,
@@ -2620,22 +2610,17 @@ pub fn agent_spawn_cli(
     task: &str,
     subcontext: Option<&str>,
     ephemeral: bool,
-    from_pane_id: Option<u64>,
+    anchor_pane: Option<u64>,
     cwd: Option<&str>,
     json: bool,
 ) -> i32 {
     log::info!(
-        "agent_spawn:cli: name={agent_name} subcontext={subcontext:?} ephemeral={ephemeral}"
+        "agent_spawn:cli: name={agent_name} subcontext={subcontext:?} ephemeral={ephemeral} anchor={anchor_pane:?}"
     );
     let effective_cwd = match resolve_effective_cwd(cwd) {
         Ok(d) => d,
         Err(code) => return code,
     };
-    let parent_pane_id = from_pane_id.or_else(|| {
-        std::env::var("PLEXI_PANE_ID")
-            .ok()
-            .and_then(|v| v.parse().ok())
-    });
     let stops = match crate::app::registry::workspace_walk_stops() {
         Ok(stops) => stops,
         Err(error) => {
@@ -2651,7 +2636,6 @@ pub fn agent_spawn_cli(
         Some(task),
         subcontext,
         ephemeral_override,
-        parent_pane_id,
         &stops,
     ) {
         Ok(p) => p,
@@ -2663,6 +2647,9 @@ pub fn agent_spawn_cli(
     if let Some(raw_cwd) = cwd.and_then(non_empty_string) {
         let _ = raw_cwd;
         payload["cwd"] = serde_json::Value::String(effective_cwd.to_string_lossy().into_owned());
+    }
+    if let Some(anchor) = anchor_pane {
+        payload["anchor_pane"] = serde_json::json!(anchor);
     }
     dispatch_agent_spawn_payload(payload, "agent-spawn-response", "agent spawn", json)
 }
@@ -3052,18 +3039,11 @@ fn named_agent_cli(
         Ok(d) => d,
         Err(code) => return code,
     };
-    let caller_pane_id: Option<u64> = std::env::var("PLEXI_PANE_ID")
-        .ok()
-        .and_then(|v| v.parse().ok());
-    log::info!(
-        "{kind}:cli: name={name} cwd={} caller={caller_pane_id:?}",
-        effective_cwd.display()
-    );
+    log::info!("{kind}:cli: name={name} cwd={}", effective_cwd.display());
     let payload = serde_json::json!({
         "type": kind,
         "name": name,
         "cwd": effective_cwd.to_string_lossy(),
-        "caller_pane_id": caller_pane_id,
     });
     let content = match super::request(
         payload,
@@ -4982,7 +4962,6 @@ mod agent_tests {
             Some("sleep 30"),
             None,
             None,
-            None,
             &[],
         )
         .unwrap();
@@ -4990,11 +4969,8 @@ mod agent_tests {
         let reply_dir = tempfile::tempdir().unwrap();
         let spawn_reply = reply_dir.path().join("spawn.json");
         payload["response_file"] = serde_json::json!(spawn_reply);
-        let mut request: crate::protocol::HostRequest = serde_json::from_value(payload).unwrap();
-        if let crate::protocol::HostRequest::AgentSpawn { source, .. } = &mut request {
-            *source = crate::protocol::SpawnSource::InProcess;
-        }
-        h.inject_ipc(request);
+        let request: crate::protocol::HostRequest = serde_json::from_value(payload).unwrap();
+        h.inject_in_process(request);
         h.hidden_frame();
         let spawned: serde_json::Value =
             serde_json::from_slice(&fs::read(&spawn_reply).unwrap()).unwrap();
@@ -5020,7 +4996,7 @@ mod agent_tests {
             .any(|row| row.pane_id == pane_id && row.role == "worker"));
         let next_reply = reply_dir.path().join("next.json");
         h.app
-            .handle_pane_ipc_request(crate::protocol::HostRequest::AgentNext {
+            .handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::AgentNext {
                 response_file: next_reply.to_string_lossy().into_owned(),
             });
         let next: serde_json::Value =
@@ -5028,8 +5004,7 @@ mod agent_tests {
         assert_eq!(next["pane_id"], pane_id);
         let run = crate::agent::runs::handle_request(
             "spawn_run",
-            &serde_json::json!({"workspace": root, "agent": "worker"}),
-        );
+            &serde_json::json!({"workspace": root, "agent": "worker"}), &crate::agent::runs::AgentsCaller::Host { ceiling: Vec::new() });
         assert_eq!(run["ok"], true, "{run}");
         assert_eq!(run["run"]["agent_id"], "worker");
         assert_eq!(run["run"]["grants"], serde_json::json!([]));
@@ -5365,7 +5340,7 @@ mod agent_tests {
         let stops = vec![fake_home.path().to_path_buf()];
 
         let payload = super::resolve_agent_start_in_stopping_at(
-            "default", &profile, &repo, None, None, &stops,
+            "default", &profile, &repo, None, &stops,
         )
         .expect("default resolves in a fresh checkout");
         assert_eq!(payload["role"], "default");
@@ -5747,7 +5722,6 @@ mod agent_tests {
             &profile,
             &proj,
             Some("First turn"),
-            None,
             &stops,
         )
         .expect("resolve global researcher from ~/temp/proj");
@@ -5790,7 +5764,6 @@ mod agent_tests {
             &profile,
             &nested,
             None,
-            None,
             &stops,
         )
         .expect("resolve workspace researcher from nested dir");
@@ -5808,7 +5781,6 @@ mod agent_tests {
             &profile,
             &proj,
             None,
-            None,
             &stops,
         )
         .unwrap_err();
@@ -5817,7 +5789,7 @@ mod agent_tests {
             "unknown agent error must list available agents (including the launchable built-in `default`, stint 1035): {err}"
         );
         assert!(
-            super::resolve_agent_start_in_stopping_at("decoy", &profile, &proj, None, None, &stops)
+            super::resolve_agent_start_in_stopping_at("decoy", &profile, &proj, None, &stops)
                 .is_err(),
             "$HOME/.plexi/agents must not be treated as a project workspace"
         );
@@ -6448,18 +6420,11 @@ pub fn agent_tool_cli(mut payload: serde_json::Value) -> i32 {
     };
     match &mut request {
         crate::protocol::HostRequest::AgentCall {
-            parent_pane_id,
-            call_credential,
-            ..
+            call_credential, ..
         }
         | crate::protocol::HostRequest::AgentMessage {
-            parent_pane_id,
-            call_credential,
-            ..
+            call_credential, ..
         } => {
-            *parent_pane_id = std::env::var("PLEXI_PANE_ID")
-                .ok()
-                .and_then(|s| s.parse().ok());
             *call_credential = std::env::var("PLEXI_CALL_CREDENTIAL").ok();
         }
         _ => {

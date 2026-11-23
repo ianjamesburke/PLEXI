@@ -595,7 +595,6 @@ fn pane_info_and_list_include_agent_state() {
     let pane_id = h.add_test_pane();
 
     h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
-        peer_ancestry: None,
         pane_id,
         state: crate::protocol::AgentState::Working,
         agent: "claude-code".to_string(),
@@ -653,7 +652,6 @@ fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_f
     let view_pane = h.add_test_pane();
 
     h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
-        peer_ancestry: None,
         pane_id: view_pane,
         state: crate::protocol::AgentState::Blocked,
         agent: "claude-code".to_string(),
@@ -663,7 +661,6 @@ fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_f
         blocked_reason: None,
     });
     h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
-        peer_ancestry: None,
         pane_id: terminal_pane,
         state: crate::protocol::AgentState::Working,
         agent: "pi".to_string(),

@@ -4,110 +4,14 @@ use super::view_trait::KeyDisposition;
 use super::{FocusKind, PlexiApp};
 use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
 use std::collections::HashSet;
+use crate::broker::consent::{consent_request_key, ConsentDecision, ConsentGuard, ARM_DELAY};
 use std::time::{Duration, Instant};
-
-pub(crate) const ARM_DELAY: Duration = Duration::from_secs(1);
-
-/// The one consent input guard (stint 1498), shared by the permission banner
-/// and every consent dialog: a decision input counts only on a real
-/// (non-synthetic) frame, once the surface has been on screen for
-/// [`ARM_DELAY`]. Stint 1283 replaces this function with the human-input
-/// witness.
-pub(crate) fn consent_input_admitted(
-    shown_since: Option<Instant>,
-    now: Instant,
-    synthetic_frame: bool,
-) -> bool {
-    !synthetic_frame
-        && shown_since.is_some_and(|since| now.saturating_duration_since(since) >= ARM_DELAY)
-}
-
-/// A fresh id for one consent request (stint 1498). The guard keys on it, so
-/// a request that repeats an earlier one, field for field, still arms anew.
-pub(crate) fn next_consent_request_id() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
-/// What a consent dialog may take this frame (stint 1498).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ConsentInput {
-    /// The request has been on screen, without a break, for [`ARM_DELAY`].
-    pub armed: bool,
-    /// This frame carries injected input.
-    pub synthetic: bool,
-}
-
-impl ConsentInput {
-    /// The same check with no arm delay (stint 1513): a destructive dialog
-    /// action takes a fresh, real press at once, never an injected one.
-    pub(crate) fn without_arm_delay(synthetic: bool) -> Self {
-        Self {
-            armed: true,
-            synthetic,
-        }
-    }
-
-    /// Whether an action decides this frame: nothing on a synthetic frame;
-    /// a refusal (deny, dismiss) any time; an approval only once armed.
-    pub(crate) fn admits(self, refuses: bool) -> bool {
-        !self.synthetic && (refuses || self.armed)
-    }
-}
-
-/// Arms one consent dialog's current request: the delay starts when the
-/// request is first shown, and again whenever it comes back after a frame in
-/// which it was not shown (hidden, unfocused, covered).
-#[derive(Default, Debug)]
-pub(crate) struct ConsentGuard {
-    request: Option<u64>,
-    since: Option<Instant>,
-    last_shown_pass: Option<u64>,
-}
-
-/// Whether a surface shown on `pass` was also shown on the pass before.
-fn shown_without_break(last_shown_pass: Option<u64>, pass: u64) -> bool {
-    last_shown_pass.is_some_and(|last| pass <= last + 1)
-}
-
-impl ConsentGuard {
-    /// The dialog is showing `request` on egui pass `pass` at `now`.
-    pub(crate) fn present(&mut self, request: u64, pass: u64, now: Instant) {
-        if self.request != Some(request) || !shown_without_break(self.last_shown_pass, pass) {
-            log::info!("consent_guard: arming request {request}");
-            self.request = Some(request);
-            self.since = Some(now);
-        }
-        self.last_shown_pass = Some(pass);
-    }
-
-    pub(crate) fn input(&self, now: Instant, synthetic: bool) -> ConsentInput {
-        ConsentInput {
-            armed: consent_input_admitted(self.since, now, false),
-            synthetic,
-        }
-    }
-
-    /// Time left before approvals count, for scheduling the repaint that arms.
-    pub(crate) fn remaining(&self, now: Instant) -> Duration {
-        self.since
-            .map(|since| ARM_DELAY.saturating_sub(now.saturating_duration_since(since)))
-            .unwrap_or_default()
-    }
-
-    /// Test hook: the request appeared `ago` before now.
-    #[cfg(test)]
-    pub(crate) fn backdate(&mut self, ago: Duration) {
-        if let Some(since) = self.since.as_mut() {
-            *since -= ago;
-        }
-    }
-}
 
 #[derive(Default)]
 pub(super) struct ApprovalKeyboard {
     pub id: Option<String>,
-    since: Option<Instant>,
+    /// Armed for the focused request; issues the evidence for its decision.
+    pub(super) guard: ConsentGuard,
     pub confirm_always: bool,
     /// Last decision failure `(request_id, reason)` so the banner can display
     /// an explicit error message while keeping the ask open and actionable.
@@ -126,25 +30,42 @@ impl ApprovalKeyboard {
         {
             self.last_error = None;
         }
+        self.guard.focus(consent_request_key(&id), now);
         self.id = Some(id);
-        self.since = Some(now);
         self.confirm_always = false;
     }
 
     fn leave_focus(&mut self) {
         self.id = None;
-        self.since = None;
+        self.guard.clear();
         self.confirm_always = false;
     }
     #[allow(dead_code)]
     pub fn remaining(&self, now: Instant) -> Duration {
-        self.since
-            .map(|since| ARM_DELAY.saturating_sub(now.saturating_duration_since(since)))
-            .unwrap_or_default()
+        self.guard.remaining(now)
     }
 
     pub fn armed(&self, now: Instant) -> bool {
-        self.id.is_some() && consent_input_admitted(self.since, now, false)
+        self.id.is_some() && self.guard.input(now, false).armed
+    }
+
+    /// Evidence for one decision on the focused request.
+    fn witness(
+        &self,
+        id: &str,
+        choice: &str,
+        refuses: bool,
+        now: Instant,
+        synthetic: bool,
+    ) -> Result<crate::broker::consent::DecisionEvidence, String> {
+        self.guard.witness(ConsentDecision {
+            displayed: consent_request_key(id),
+            target: id,
+            choice,
+            refuses,
+            now,
+            synthetic,
+        })
     }
 }
 
@@ -300,11 +221,9 @@ impl PlexiApp {
                         self.leave_approval();
                     }
                     Some(egui::Key::D) => {
-                        let _ = monitor.resolve_needs_you_from(
-                            &id,
-                            false,
-                            crate::broker::gate::ResolveSurface::Desktop,
-                        );
+                        if let Err(error) = monitor.dismiss_needs_you_at_desktop(&id) {
+                            log::info!("approval: dismiss {id} failed: {error:?}");
+                        }
                         self.approval_keyboard
                             .held_decision_keys
                             .insert(egui::Key::D);
@@ -341,7 +260,7 @@ impl PlexiApp {
             Some((egui::Key::A, egui::Modifiers::SHIFT)) => {
                 self.approval_keyboard.confirm_always = true;
                 // Require a second deliberate press after another arm interval.
-                self.approval_keyboard.since = Some(now);
+                self.approval_keyboard.guard.rearm(now);
                 self.ctx.request_repaint_after(ARM_DELAY);
                 None
             }
@@ -380,7 +299,17 @@ impl PlexiApp {
                     self.approval_keyboard.held_decision_keys.insert(key);
                 }
             }
-            match monitor.approve_pending(&id, choice) {
+            let decided = self
+                .approval_keyboard
+                .witness(
+                    &id,
+                    &format!("{choice:?}"),
+                    matches!(choice, ApprovalChoice::Deny | ApprovalChoice::DenyAlways),
+                    now,
+                    self.synthetic_input_frame,
+                )
+                .and_then(|evidence| monitor.decide_pending(&evidence, &id, choice));
+            match decided {
                 Ok(()) => {
                     log::info!("approval: decided id={id} decision={choice:?} via=keyboard");
                     self.approval_keyboard.last_error = None;
@@ -431,12 +360,11 @@ impl PlexiApp {
                 self.leave_approval();
                 return;
             }
-            egui::Key::A if !is_question => {
-                self.resolve_from_desktop(id, true, "approval keyboard")
-            }
-            egui::Key::D if !is_question => {
-                self.resolve_from_desktop(id, false, "approval keyboard")
-            }
+            egui::Key::A if !is_question => self
+                .approval_keyboard
+                .witness(id, "approve", false, now, self.synthetic_input_frame)
+                .and_then(|evidence| self.approve_from_desktop(evidence, id, "approval keyboard")),
+            egui::Key::D if !is_question => self.refuse_from_desktop(id, "approval keyboard"),
             egui::Key::Enter if is_question && choices.is_empty() => {
                 let pane = record
                     .details
@@ -465,7 +393,12 @@ impl PlexiApp {
             }
             other if is_question => {
                 match choice_index_for_key(other).and_then(|i| choices.get(i)) {
-                    Some(answer) => self.answer_from_desktop(id, answer, "approval keyboard"),
+                    Some(answer) => self
+                        .approval_keyboard
+                        .witness(id, answer, false, now, self.synthetic_input_frame)
+                        .and_then(|evidence| {
+                            self.answer_from_desktop(evidence, id, answer, "approval keyboard")
+                        }),
                     None => return,
                 }
             }
@@ -549,7 +482,7 @@ mod tests {
         assert_eq!(monitor.list_pending().len(), 2);
         h.app.focus_approval();
         assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&first));
-        h.app.approval_keyboard.since = Some(now);
+        h.app.approval_keyboard.guard.set_since(now);
         h.app.approval_key_at(
             &mut input(egui::Key::A, egui::Modifiers::NONE),
             now + ARM_DELAY - Duration::from_millis(1),
@@ -562,7 +495,7 @@ mod tests {
         assert!(h.app.approval_keyboard.id.is_none());
         assert!(monitor.open_needs_you().iter().any(|row| row.id == first));
         h.app.focus_approval();
-        h.app.approval_keyboard.since = Some(now);
+        h.app.approval_keyboard.guard.set_since(now);
         h.app.approval_key_at(
             &mut input(egui::Key::A, egui::Modifiers::NONE),
             now + ARM_DELAY,
@@ -570,7 +503,7 @@ mod tests {
         assert!(monitor.show_pending(&first).is_none());
         h.app.focus_approval();
         assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&second));
-        h.app.approval_keyboard.since = Some(now);
+        h.app.approval_keyboard.guard.set_since(now);
         h.app.approval_key_at(
             &mut input(egui::Key::D, egui::Modifiers::NONE),
             now + ARM_DELAY,
@@ -585,7 +518,7 @@ mod tests {
         let id = pending(&monitor, "SECRET", root.path());
         h.app.focus_approval();
         let now = Instant::now();
-        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        h.app.approval_keyboard.guard.set_since(now - ARM_DELAY);
         h.app.synthetic_input_frame = true;
         h.app
             .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now);
@@ -620,7 +553,7 @@ mod tests {
         h.run_frames(1);
         assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&id));
         let now = Instant::now();
-        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        h.app.approval_keyboard.guard.set_since(now - ARM_DELAY);
         h.app
             .focus_stack
             .retain(|kind| *kind != FocusKind::ApprovalBanner);
@@ -643,7 +576,7 @@ mod tests {
         let id = pending(&monitor, "SECRET", root.path());
         h.app.focus_approval();
         let now = Instant::now();
-        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        h.app.approval_keyboard.guard.set_since(now - ARM_DELAY);
         h.app
             .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::SHIFT), now);
         assert!(h.app.approval_keyboard.confirm_always);
@@ -665,7 +598,7 @@ mod tests {
         let id = pending(&monitor, "SECRET", root.path());
         h.app.focus_approval();
         let now = Instant::now();
-        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        h.app.approval_keyboard.guard.set_since(now - ARM_DELAY);
         h.app
             .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now);
         assert!(monitor.show_pending(&id).is_none());
@@ -745,7 +678,6 @@ mod tests {
 
         let done_reply = root.join("done.json");
         h.inject_ipc(crate::protocol::HostRequest::AgentDone {
-            peer_ancestry: None,
             pane_id,
             result: Some("{\"answer\":\"42\"}".into()),
             summary: Some("Audit complete".into()),
@@ -804,7 +736,7 @@ mod tests {
         let now = Instant::now();
         h.app.focus_approval();
         assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&done_item.id));
-        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        h.app.approval_keyboard.guard.set_since(now - ARM_DELAY);
         h.app
             .approval_key_at(&mut input(egui::Key::Enter, egui::Modifiers::NONE), now);
         assert!(
@@ -878,7 +810,6 @@ mod tests {
             .unwrap();
         let child_reply = root.join("child_done.json");
         h.inject_ipc(crate::protocol::HostRequest::AgentDone {
-            peer_ancestry: None,
             pane_id: child,
             result: Some("{\"sub\":1}".into()),
             summary: Some("Child done".into()),
@@ -917,7 +848,6 @@ mod tests {
                 }),
             )
             .unwrap()
-            .0
     }
 
     fn is_open(monitor: &PermissionMonitor, id: &str) -> bool {
@@ -933,7 +863,7 @@ mod tests {
         h.app.focus_approval();
         assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&req));
         let now = Instant::now();
-        h.app.approval_keyboard.since = Some(now);
+        h.app.approval_keyboard.guard.set_since(now);
         h.app.approval_key_at(
             &mut input(egui::Key::A, egui::Modifiers::NONE),
             now + ARM_DELAY - Duration::from_millis(1),
@@ -960,7 +890,7 @@ mod tests {
         let change = file_item(&monitor, K::PermissionChange, "run-b", &[]);
         h.app.focus_approval();
         assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&change));
-        h.app.approval_keyboard.since = Some(now);
+        h.app.approval_keyboard.guard.set_since(now);
         h.app.approval_key_at(
             &mut input(egui::Key::D, egui::Modifiers::NONE),
             now + ARM_DELAY,
@@ -977,7 +907,7 @@ mod tests {
         let q = file_item(&monitor, K::Question, "run-q", &["Proceed", "Abort"]);
         h.app.focus_approval();
         assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&q));
-        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        h.app.approval_keyboard.guard.set_since(now - ARM_DELAY);
         // An out-of-range digit does nothing.
         h.app
             .approval_key_at(&mut input(egui::Key::Num3, egui::Modifiers::NONE), now);
@@ -996,7 +926,7 @@ mod tests {
 
         let blocked = file_item(&monitor, K::BlockedRun, "run-blocked", &["Retry"]);
         h.app.focus_approval();
-        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        h.app.approval_keyboard.guard.set_since(now - ARM_DELAY);
         h.app
             .approval_key_at(&mut input(egui::Key::Num1, egui::Modifiers::NONE), now);
         assert!(!is_open(&monitor, &blocked));
@@ -1014,7 +944,7 @@ mod tests {
         let req = file_item(&monitor, K::PermissionRequest, "run-s", &[]);
         h.app.focus_approval();
         let now = Instant::now();
-        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        h.app.approval_keyboard.guard.set_since(now - ARM_DELAY);
         h.app.synthetic_input_frame = true;
         h.app
             .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now);
@@ -1040,7 +970,7 @@ mod tests {
 
         let now = Instant::now();
         h.app.focus_approval();
-        h.app.approval_keyboard.since = Some(now - ARM_DELAY);
+        h.app.approval_keyboard.guard.set_since(now - ARM_DELAY);
         assert_eq!(h.app.approval_keyboard.id.as_deref(), Some(first.as_str()));
 
         monitor.fail_audit(true);
