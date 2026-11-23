@@ -449,6 +449,9 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi agent open`: Open a named agent: focus it if a pane is running it, else resume its last chat, else start a new one
 <!-- /experiment -->
 <!-- experiment: agent_mesh -->
+- `plexi agent new-chat`: Start a new chat with a named agent, archiving its current chat
+<!-- /experiment -->
+<!-- experiment: agent_mesh -->
 - `plexi agent spawn`: Spawn an agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global)
 <!-- /experiment -->
 - `plexi agent done`: Validate a worker's structured result against its schema, write completion slots, and exit cleanly

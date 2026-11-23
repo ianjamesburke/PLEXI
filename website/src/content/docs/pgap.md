@@ -693,6 +693,17 @@ Reopen a closed agent session or run from `~/.plexi-<channel>/agent_history.json
 | `name` | `string` | yes |
 | `response_file` | `string` | yes |
 
+### `agent_new_chat`
+
+New chat for a named agent (`plexi agent new-chat <name>`, stint 1397): archive the chat `agent open` would return to...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `caller_pane_id` | `integer?` | no |
+| `cwd` | `string` | yes |
+| `name` | `string` | yes |
+| `response_file` | `string` | yes |
+
 ### `agent_reopen`
 
 | Field | Type | Required |

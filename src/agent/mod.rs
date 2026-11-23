@@ -33,6 +33,7 @@
 //! the agent said — the Phase D Assistant UI consumes this seam.
 
 pub mod fleet;
+pub mod memory;
 pub mod runs;
 pub(crate) mod team;
 

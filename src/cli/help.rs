@@ -220,7 +220,7 @@ pub fn admission(
     let host_agent_route = surface.path.first().is_some_and(|name| name == "agent")
         && matches!(
             surface.path.get(1).map(String::as_str),
-            Some("start" | "spawn" | "open" | "reopen")
+            Some("start" | "spawn" | "open" | "new-chat" | "reopen")
         );
     blocked_feature(surface, |feature| {
         (host_agent_route && feature == ReleaseFeature::AgentMesh) || enabled(feature)
@@ -621,6 +621,7 @@ mod tests {
             vec!["plexi", "agent", "start", "x"],
             vec!["plexi", "agent", "spawn", "x", "--task", "y"],
             vec!["plexi", "agent", "open", "x"],
+            vec!["plexi", "agent", "new-chat", "x"],
             vec!["plexi", "agent", "reopen", "session"],
         ] {
             assert_eq!(blocked(&args, &[]), None, "{args:?}");

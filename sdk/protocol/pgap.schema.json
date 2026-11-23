@@ -2435,6 +2435,43 @@
         },
         {
           "additionalProperties": false,
+          "description": "New chat for a named agent (`plexi agent new-chat <name>`, stint\n1397): archive the chat `agent open` would return to, then start an\nempty one with the same memory folder.",
+          "properties": {
+            "caller_pane_id": {
+              "description": "Calling pane (`PLEXI_PANE_ID`), parent of the started pane.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cwd": {
+              "description": "Working directory for workspace lookup.",
+              "type": "string"
+            },
+            "name": {
+              "description": "Agent name, resolved through `AgentRegistry` like `agent start`.",
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "agent_new_chat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "cwd",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "properties": {
             "query": {
               "description": "Run ID (`run-...`) or harness session ID to reopen.",

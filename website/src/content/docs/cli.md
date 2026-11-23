@@ -679,6 +679,7 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 | `handoff` | Transfer the current task to a permitted successor role |
 | `start` | Start an interactive agent session in a new pane from the agent registry (`<workspace>/.plexi/agents/<name>/` or global) |
 | `open` | Open a named agent: focus it if a pane is running it, else resume its last chat, else start a new one |
+| `new-chat` | Start a new chat with a named agent, archiving its current chat |
 | `spawn` | Spawn an agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global) |
 | `done` | Validate a worker's structured result against its schema, write completion slots, and exit cleanly |
 | `result` | Read a completed agent's persisted result (`RESULT.md` or `result.json` with `--json`) |
@@ -884,6 +885,19 @@ Open a named agent: focus it if a pane is running it, else resume its last chat,
 "Running" is any pane in any context, restored standby panes included. The last chat is the newest closed, non-ephemeral run of this agent in the same workspace, on the agent's current harness, whose session the harness can still resume. Prints `<outcome> <pane-id>` where outcome is `focused`, `resumed` or `started`.
 
 Example: plexi agent open researcher
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Agent name in `<workspace>/.plexi/agents/<name>/` or `~/.plexi-<channel>/agents/<name>/` |
+| `--cwd` | string | no | Working directory for workspace lookup |
+
+### `plexi agent new-chat`
+
+Start a new chat with a named agent, archiving its current chat.
+
+The current chat is the one `agent open` would return to. A pane holding it is closed; the chat stays in `agent history` and `agent reopen <run-id>` resumes it, but `agent open` no longer does. The new chat shares the agent's memory folder. Prints `new_chat <pane-id> [archived <run-id>]`.
+
+Example: plexi agent new-chat researcher
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|

@@ -144,6 +144,7 @@ impl ReleaseFeature {
                 Sub(&["agent", "flags"]),
                 Sub(&["agent", "fleet"]),
                 Sub(&["agent", "history"]),
+                Sub(&["agent", "new-chat"]),
                 Sub(&["agent", "next"]),
                 Sub(&["agent", "open"]),
                 Sub(&["agent", "reopen"]),

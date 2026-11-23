@@ -1,4 +1,5 @@
-//! `agent open <name>` (stint 1396): the one resolver for opening a named agent.
+//! `agent open <name>` (stint 1396): the one resolver for opening a named agent,
+//! and New chat (stint 1397), which archives the chat it would return to.
 //! Focus a running/standby pane, else resume its newest open exited chat, else resume
 //! its last closed chat, else start a new chat. The CLI reaches it through `HostRequest::AgentOpen`; the palette's
 //! Agents stop calls [`PlexiApp::open_named_agent`] directly.
@@ -48,6 +49,12 @@ pub(crate) enum AgentOpenOutcome {
     Resumed { pane_id: PaneId, session_id: String },
     /// No resumable chat: a new chat was started.
     Started { pane_id: PaneId },
+    /// New chat (stint 1397): the current chat, if any, was archived and an
+    /// empty chat started.
+    NewChat {
+        pane_id: PaneId,
+        archived_run_id: Option<String>,
+    },
 }
 
 impl AgentOpenOutcome {
@@ -56,6 +63,7 @@ impl AgentOpenOutcome {
             Self::Focused { .. } => "focused",
             Self::Resumed { .. } => "resumed",
             Self::Started { .. } => "started",
+            Self::NewChat { .. } => "new_chat",
         }
     }
 
@@ -63,7 +71,8 @@ impl AgentOpenOutcome {
         match self {
             Self::Focused { pane_id }
             | Self::Resumed { pane_id, .. }
-            | Self::Started { pane_id } => *pane_id,
+            | Self::Started { pane_id }
+            | Self::NewChat { pane_id, .. } => *pane_id,
         }
     }
 
@@ -73,8 +82,16 @@ impl AgentOpenOutcome {
             "outcome": self.as_str(),
             "pane_id": self.pane_id(),
         });
-        if let Self::Resumed { session_id, .. } = self {
-            reply["session_id"] = serde_json::Value::String(session_id.clone());
+        match self {
+            Self::Resumed { session_id, .. } => {
+                reply["session_id"] = serde_json::Value::String(session_id.clone());
+            }
+            Self::NewChat {
+                archived_run_id, ..
+            } => {
+                reply["archived_run_id"] = serde_json::json!(archived_run_id);
+            }
+            Self::Focused { .. } | Self::Started { .. } => {}
         }
         reply
     }
@@ -120,25 +137,7 @@ impl PlexiApp {
             return Ok(outcome);
         }
 
-        // The definition decides the harness; unknown agents fail here, before
-        // anything is launched (same resolution as `agent start`).
-        let stops = crate::app::registry::workspace_walk_stops()?;
-        // The start payload names the verified caller only: the spawn it
-        // becomes resolves its own source, and a pane id in it is trusted
-        // only for in-process requests (stint 1632).
-        let payload = crate::cli::agent::resolve_agent_start_in_stopping_at(
-            name,
-            &crate::config::config_dir(),
-            cwd,
-            None,
-            verified_caller,
-            &stops,
-        )?;
-        let harness = payload
-            .get("harness")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| format!("agent open: start payload for '{name}' has no harness"))?
-            .to_string();
+        let (payload, harness) = named_agent_start_payload(name, cwd, verified_caller)?;
 
         let open_chat = self.exited_named_agent_chat(name, &harness, cwd);
         if let Some(record) = open_chat.or_else(|| self.last_named_agent_chat(name, &harness, cwd))
@@ -161,12 +160,118 @@ impl PlexiApp {
             });
         }
 
-        let mut request: crate::protocol::HostRequest = {
-            let mut payload = payload;
-            payload["response_file"] = serde_json::Value::String(String::new());
-            serde_json::from_value(payload)
-                .map_err(|e| format!("agent open: start payload for '{name}' is invalid: {e}"))?
+        let pane_id = self.start_named_agent_chat(name, payload, source, admitted)?;
+        log::info!("agent_open: name={name} outcome=started pane={pane_id}");
+        Ok(AgentOpenOutcome::Started { pane_id })
+    }
+
+    /// New chat for the named agent `name` (stint 1397): archive its current
+    /// chat, then start an empty one. The current chat is the one `agent open`
+    /// would return to: a running pane's, else an exited pane's, else the last
+    /// closed chat. A pane holding it is closed through the normal close path,
+    /// which records it in history; the record is then marked archived, so
+    /// `agent open` never resumes it again and `agent reopen <run-id>` still
+    /// does. Nothing is deleted, and the new chat is given the same memory
+    /// folder (`crate::agent::memory`). Caller and source as for
+    /// [`Self::open_named_agent`].
+    pub(crate) fn new_named_agent_chat(
+        &mut self,
+        name: &str,
+        cwd: &Path,
+        caller: Option<u64>,
+        source: &crate::protocol::SpawnSource,
+    ) -> Result<AgentOpenOutcome, String> {
+        let admitted = admit_agent_mesh_route("AgentNewChat")?;
+        self.new_admitted_named_agent_chat(name, cwd, caller, source, admitted)
+            .inspect_err(|error| log::warn!("agent_new_chat: name={name} failed: {error}"))
+    }
+
+    fn new_admitted_named_agent_chat(
+        &mut self,
+        name: &str,
+        cwd: &Path,
+        caller: Option<u64>,
+        source: &crate::protocol::SpawnSource,
+        admitted: AdmittedAgentMeshRoute,
+    ) -> Result<AgentOpenOutcome, String> {
+        let launch_caller = self.resolve_launch_source(source, caller)?;
+        // Resolved first: an unknown agent fails before anything is archived.
+        let (payload, harness) = named_agent_start_payload(name, cwd, launch_caller.caller_pane)?;
+        let archived_run_id = self.archive_current_named_agent_chat(name, &harness, cwd)?;
+        let pane_id = self.start_named_agent_chat(name, payload, source, admitted)?;
+        log::info!(
+            "agent_new_chat: name={name} archived_run_id={archived_run_id:?} new_pane={pane_id}"
+        );
+        Ok(AgentOpenOutcome::NewChat {
+            pane_id,
+            archived_run_id,
+        })
+    }
+
+    /// Archive `name`'s current chat in this workspace and return its run id,
+    /// or `None` when it has no chat to archive.
+    fn archive_current_named_agent_chat(
+        &mut self,
+        name: &str,
+        harness: &str,
+        cwd: &Path,
+    ) -> Result<Option<String>, String> {
+        let open_pane = self.running_named_agent_pane(name).or_else(|| {
+            self.exited_named_agent_chat(name, harness, cwd)
+                .map(|record| record.pane_id)
+        });
+        let run_id = if let Some(pane_id) = open_pane {
+            self.close_pane_by_id(pane_id);
+            self.fleet_history
+                .borrow()
+                .iter()
+                .rev()
+                .find(|r| r.pane_id == pane_id)
+                .map(|r| r.run_id.clone())
+                .ok_or_else(|| {
+                    format!(
+                        "new chat: closing pane {pane_id} of '{name}' recorded no chat to archive"
+                    )
+                })?
+        } else if let Some(record) = self.last_named_agent_chat(name, harness, cwd) {
+            record.run_id
+        } else {
+            log::info!("agent_new_chat: name={name} has no current chat to archive");
+            return Ok(None);
         };
+        let mut history = self.fleet_history.borrow_mut();
+        let record = history
+            .iter_mut()
+            .rev()
+            .find(|r| r.run_id == run_id)
+            .ok_or_else(|| format!("new chat: run {run_id} of '{name}' is not in history"))?;
+        record.chat_archived = true;
+        if let Err(error) = crate::workspace::append_agent_history(record) {
+            record.chat_archived = false;
+            log::error!("agent_new_chat: name={name} archive run_id={run_id} failed: {error}");
+            return Err(format!(
+                "new chat: could not archive run {run_id} of '{name}' in agent history: {error}"
+            ));
+        }
+        log::info!(
+            "agent_new_chat: name={name} archived run_id={run_id} session_id={:?}",
+            record.session_id
+        );
+        Ok(Some(run_id))
+    }
+
+    /// Start a new chat from a resolved `agent start` payload, stamped with
+    /// the request's `source`.
+    fn start_named_agent_chat(
+        &mut self,
+        name: &str,
+        mut payload: serde_json::Value,
+        source: &crate::protocol::SpawnSource,
+        admitted: AdmittedAgentMeshRoute,
+    ) -> Result<PaneId, String> {
+        payload["response_file"] = serde_json::Value::String(String::new());
+        let mut request: crate::protocol::HostRequest = serde_json::from_value(payload)
+            .map_err(|e| format!("agent open: start payload for '{name}' is invalid: {e}"))?;
         if let crate::protocol::HostRequest::AgentSpawn {
             source: stamped, ..
         } = &mut request
@@ -174,9 +279,7 @@ impl PlexiApp {
             *stamped = source.clone();
         }
         let reply = self.agent_spawn_reply_admitted(&request, admitted);
-        let pane_id = spawned_pane_id(&reply)?;
-        log::info!("agent_open: name={name} outcome=started pane={pane_id}");
-        Ok(AgentOpenOutcome::Started { pane_id })
+        spawned_pane_id(&reply)
     }
 
     /// Owner call 1: which pane counts as running `name`. Any context. Among
@@ -357,6 +460,9 @@ impl PlexiApp {
                     );
                     false
                 };
+                if r.chat_archived {
+                    return skip("a New chat archived it");
+                }
                 if r.harness != harness {
                     return skip(&format!("ran on {}, agent now uses {harness}", r.harness));
                 }
@@ -379,6 +485,33 @@ impl PlexiApp {
         }
         found
     }
+}
+
+/// The `agent start` payload for `name` from `cwd` and its harness. The
+/// definition decides the harness; unknown agents fail here, before anything
+/// is launched. The payload names the verified caller only: the spawn it
+/// becomes resolves its own source, and a pane id in it is trusted only for
+/// in-process requests (stint 1632).
+fn named_agent_start_payload(
+    name: &str,
+    cwd: &Path,
+    verified_caller: Option<u64>,
+) -> Result<(serde_json::Value, String), String> {
+    let stops = crate::app::registry::workspace_walk_stops()?;
+    let payload = crate::cli::agent::resolve_agent_start_in_stopping_at(
+        name,
+        &crate::config::config_dir(),
+        cwd,
+        None,
+        verified_caller,
+        &stops,
+    )?;
+    let harness = payload
+        .get("harness")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("agent open: start payload for '{name}' has no harness"))?
+        .to_string();
+    Ok((payload, harness))
 }
 
 /// The workspace a chat belongs to: the nearest project root (`.plexi` or

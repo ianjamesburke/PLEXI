@@ -38,6 +38,10 @@ const APP_STATES_DIR: &str = "app_states";
 /// `APP_STATES_DIR`: it is a user-data address, not an implementation detail.
 const NOTES_DIR: &str = "notes";
 
+/// The directory holding each agent's memory folder in either tier (stint
+/// 1397). Same no-rename rule: it is a user-data address.
+const AGENT_MEMORY_DIR: &str = "agent_memory";
+
 /// The `.plexi` directory both tiers nest under. Deliberately channel-NEUTRAL —
 /// never `workspace_channel_dir()`/`config_dir()`, which are channel-scoped.
 /// User data must not fork when the user runs a beta or PR build; config may.
@@ -55,6 +59,9 @@ pub enum UserDataKind {
     PluginStates,
     /// Kept notes — a flat directory of Markdown files (stint 0746).
     Notes,
+    /// One memory folder per agent definition, addressed by agent id and
+    /// shared by every chat of that agent (stint 1397).
+    AgentMemory,
 }
 
 impl UserDataKind {
@@ -63,6 +70,7 @@ impl UserDataKind {
         match self {
             Self::PluginStates => APP_STATES_DIR,
             Self::Notes => NOTES_DIR,
+            Self::AgentMemory => AGENT_MEMORY_DIR,
         }
     }
 }

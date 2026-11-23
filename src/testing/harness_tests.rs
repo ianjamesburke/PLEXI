@@ -787,13 +787,13 @@ fn two_test_panes_have_distinct_ids() {
     assert_eq!(snap.open_panes.len(), 2);
 }
 
-fn temp_response(dir: &std::path::Path, name: &str) -> String {
+pub(super) fn temp_response(dir: &std::path::Path, name: &str) -> String {
     dir.join(format!("{name}-{}.json", uuid::Uuid::new_v4()))
         .to_string_lossy()
         .into_owned()
 }
 
-fn read_json_response(path: &str) -> serde_json::Value {
+pub(super) fn read_json_response(path: &str) -> serde_json::Value {
     let content = std::fs::read_to_string(path).expect("response file must exist");
     serde_json::from_str(&content).expect("response must be valid JSON")
 }
@@ -20127,16 +20127,16 @@ fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_an
 /// the real CLI resolver payloads for `agent start` / `agent spawn` from a
 /// given caller pane. The harness command is swapped for `sleep 30` so no
 /// model is ever called; everything else is the production payload.
-struct AgentFocusFixture {
-    home: tempfile::TempDir,
+pub(super) struct AgentFocusFixture {
+    pub(super) home: tempfile::TempDir,
     _profile_guard: crate::config::TestProfileDirGuard,
     _experiments: crate::release::TestExperimentsGuard,
-    profile_dir: std::path::PathBuf,
-    proj_dir: std::path::PathBuf,
+    pub(super) profile_dir: std::path::PathBuf,
+    pub(super) proj_dir: std::path::PathBuf,
 }
 
 impl AgentFocusFixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let home = tempfile::tempdir().expect("fake home");
         let profile_dir = home.path().join(".plexi-alpha");
         std::fs::create_dir_all(&profile_dir).unwrap();
@@ -20162,11 +20162,11 @@ impl AgentFocusFixture {
         }
     }
 
-    fn stops(&self) -> Vec<std::path::PathBuf> {
+    pub(super) fn stops(&self) -> Vec<std::path::PathBuf> {
         vec![self.home.path().to_path_buf()]
     }
 
-    fn request(&self, mut payload: serde_json::Value) -> HostRequest {
+    pub(super) fn request(&self, mut payload: serde_json::Value) -> HostRequest {
         payload["command"] = serde_json::Value::String("sleep 30".into());
         payload["response_file"] =
             serde_json::Value::String(temp_response(self.home.path(), "agent-focus"));
@@ -20180,7 +20180,7 @@ impl AgentFocusFixture {
         request
     }
 
-    fn start(&self, caller: Option<u64>) -> HostRequest {
+    pub(super) fn start(&self, caller: Option<u64>) -> HostRequest {
         self.request(
             crate::cli::agent::resolve_agent_start_in_stopping_at(
                 "researcher",
@@ -20211,7 +20211,7 @@ impl AgentFocusFixture {
     }
 }
 
-fn agent_spawn_reply(req: &HostRequest) -> String {
+pub(super) fn agent_spawn_reply(req: &HostRequest) -> String {
     match req {
         HostRequest::AgentSpawn { response_file, .. } => response_file.clone(),
         _ => panic!("expected AgentSpawn"),
@@ -24816,7 +24816,7 @@ mod zoomed_pane_input_tests {
 /// A closed, resumable chat of `researcher` (the `AgentFocusFixture` agent,
 /// harness `pi`) run in `cwd`, with a saved pi session so the harness can
 /// still resume it.
-fn researcher_history_record(
+pub(super) fn researcher_history_record(
     cwd: &std::path::Path,
     session_id: &str,
     harness: &str,
@@ -24824,6 +24824,7 @@ fn researcher_history_record(
     crate::workspace::AgentHistoryRecord {
         fleet_seen: true,
         fleet_dismissed: false,
+        chat_archived: false,
         run_id: format!("run-1396-{session_id}"),
         pane_id: 900_001,
         context_id: 1,
@@ -24849,7 +24850,7 @@ fn researcher_history_record(
     }
 }
 
-fn seed_pi_session(
+pub(super) fn seed_pi_session(
     dir: &std::path::Path,
     session_id: &str,
 ) -> crate::cli::agent::TestPiSessionsDirGuard {
@@ -24858,7 +24859,7 @@ fn seed_pi_session(
     crate::cli::agent::set_test_pi_sessions_dir(dir.to_path_buf())
 }
 
-fn terminal_role(h: &HostHarness, pane_id: PaneId) -> Option<String> {
+pub(super) fn terminal_role(h: &HostHarness, pane_id: PaneId) -> Option<String> {
     h.app
         .windows
         .iter()
@@ -24867,7 +24868,7 @@ fn terminal_role(h: &HostHarness, pane_id: PaneId) -> Option<String> {
         .and_then(|t| t.agent_role.clone())
 }
 
-fn pane_total(h: &HostHarness) -> usize {
+pub(super) fn pane_total(h: &HostHarness) -> usize {
     h.app.windows.iter().map(|w| w.panes.len()).sum()
 }
 

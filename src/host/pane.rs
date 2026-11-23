@@ -1800,6 +1800,7 @@ impl TerminalPane {
         Some(crate::workspace::AgentHistoryRecord {
             fleet_seen: self.fleet_seen,
             fleet_dismissed: self.fleet_dismissed,
+            chat_archived: false,
             run_id,
             pane_id: self.id,
             context_id,

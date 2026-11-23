@@ -2191,6 +2191,9 @@ impl PlexiApp {
         // definition of it exists, which must then resolve. A team
         // coordinator is no exception: a defined role keeps its ceiling.
         let role_grant = self.admit_defined_worker_role(role, &placement.effective_cwd)?;
+        if !ephemeral && role_grant.is_some() {
+            Self::prepare_agent_memory(role, &placement.effective_cwd)?;
+        }
         self.launch_agent_worker(
             AgentWorkerLaunch {
                 grant: AgentWorkerGrant {
@@ -2230,6 +2233,19 @@ impl PlexiApp {
             return Ok(None);
         }
         self.admit_worker_role(role, lookup_cwd).map(Some)
+    }
+
+    /// Create the memory folder of `role`'s definition visible at
+    /// `lookup_cwd` before a named chat of it launches (stint 1397). Memory is
+    /// not authority: this reads the definition for its location only.
+    pub(crate) fn prepare_agent_memory(role: &str, lookup_cwd: &Path) -> Result<(), String> {
+        let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(lookup_cwd);
+        let (definition, _) = crate::cli::agent::resolve_agent_definition_in(
+            role,
+            &crate::config::config_dir(),
+            lookup_root.as_deref(),
+        )?;
+        crate::agent::memory::ensure_memory_dir(&definition).map(drop)
     }
 
     /// `role`'s definition visible at `lookup_cwd`, admitted for a new named
