@@ -29,6 +29,7 @@ pub mod host_version;
 pub mod http;
 pub mod image_viewer_view;
 pub(crate) mod input_owner;
+pub(crate) mod input_route;
 pub(crate) mod input_router;
 pub(crate) mod install_swap;
 mod launch_notices;
@@ -338,6 +339,12 @@ pub struct PlexiApp {
     /// Keys whose press edge fired a host binding and whose matching release
     /// remains host-owned, even if Command is released first.
     pub(crate) claimed_host_key_releases: HashSet<egui::Key>,
+    /// The host input router: who owns each held key and press, and the
+    /// rest of a delivery waiting for its owner change to commit (stint 1659).
+    pub(crate) input_route: crate::app::input_route::InputRoute,
+    /// Counts palette openings, so input bound to one opening never reaches
+    /// the next.
+    pub(crate) palette_opening: u64,
     pub(crate) context_rename: Option<ContextRenameState>,
     pub(crate) rename_buffer: String,
     /// The pane rename dialog's open session; see `OpenSession`.
@@ -1885,6 +1892,8 @@ impl PlexiApp {
                     key_bindings: key_bindings.clone(),
                     binding_table: crate::host::keys::build_binding_table(&key_bindings),
                     claimed_host_key_releases: HashSet::new(),
+            input_route: Default::default(),
+            palette_opening: 0,
                     pending_close: false,
                     close_confirm_target: None,
                     pending_quit: false,
@@ -2184,6 +2193,8 @@ impl PlexiApp {
             config,
             binding_table: crate::host::keys::build_binding_table(&key_bindings),
             claimed_host_key_releases: HashSet::new(),
+            input_route: Default::default(),
+            palette_opening: 0,
             key_bindings,
             pending_close: false,
             close_confirm_target: None,
@@ -3228,6 +3239,8 @@ impl PlexiApp {
             config,
             binding_table: crate::host::keys::build_binding_table(&key_bindings),
             claimed_host_key_releases: HashSet::new(),
+            input_route: Default::default(),
+            palette_opening: 0,
             key_bindings,
             pending_close: false,
             close_confirm_target: None,
@@ -3708,12 +3721,17 @@ impl eframe::App for PlexiApp {
         }
         self.synthetic_input_frame = false;
         self.fulfill_screenshot_events(ctx, raw_input);
+        // Commit the modal layers the previous pass opened or closed, so this
+        // delivery is routed against the owners that pass left.
+        self.sync_modal_focus_layers();
         // A hidden window (minimized/occluded) gets logic-only passes with no
         // widget pass to receive events — leave queued pane inputs in place so
         // the next visible frame delivers them instead of silently eating them.
         if raw_input.viewport().visible() == Some(false) {
+            self.route_delivery(ctx, raw_input, false);
             return;
         }
+        let mut synthetic = false;
         let focused_pane = self.windows.get(self.active_window).and_then(|window| {
             window
                 .focused_pane
@@ -3746,9 +3764,7 @@ impl eframe::App for PlexiApp {
                     "pane_ipc: deferring text input for pane_id={pane_id} until its text surface receives focus"
                 );
             } else if let Some(batches) = self.pending_pane_inputs.remove(&pane_id) {
-                if !batches.is_empty() {
-                    self.synthetic_input_frame = true;
-                }
+                synthetic |= !batches.is_empty();
                 for batch in batches {
                     raw_input.modifiers = batch.modifiers;
                     raw_input.events.extend(batch.events);
@@ -3759,7 +3775,7 @@ impl eframe::App for PlexiApp {
             // multi-frame trajectory instead of a same-frame click.
             if let Some(frames) = self.pending_pane_pointer_frames.get_mut(&pane_id) {
                 if let Some(batch) = frames.pop_front() {
-                    self.synthetic_input_frame = true;
+                    synthetic = true;
                     raw_input.events.extend(batch.events);
                 }
                 if frames.is_empty() {
@@ -3770,6 +3786,7 @@ impl eframe::App for PlexiApp {
                 }
             }
         }
+        self.route_delivery(ctx, raw_input, synthetic);
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -3780,6 +3797,7 @@ impl eframe::App for PlexiApp {
             &self.ui_phase,
             crate::platform::logging::UiPhase::Logic,
         );
+        self.service_input_route(ctx);
         // Everything that services external clients — pane IPC, spawn queue,
         // PTY events, shutdown, event-bus subscriptions, agent turns — must
         // run here, not in `ui`. eframe skips `ui` entirely while the window
@@ -4217,17 +4235,7 @@ impl eframe::App for PlexiApp {
                 // The overlay may have self-closed (confirm-close confirmed/cancelled,
                 // palette picked an entry, rename committed). Re-sync so the layer is
                 // accurate for the rest of this frame.
-                self.sync_confirm_close_focus();
-                self.sync_context_close_focus();
-                self.sync_command_palette_focus();
-                self.sync_rename_pane_focus();
-                self.sync_shortcuts_focus();
-                self.sync_context_rename_focus();
-                self.sync_text_input_focus();
-                self.sync_capability_modal_focus();
-                self.sync_event_consent_focus();
-                self.sync_raw_wasm_review_focus();
-                self.sync_unsaved_changes_focus();
+                self.sync_modal_focus_layers();
                 disposition
             } // end else (non-preempted path)
         } else {

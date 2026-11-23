@@ -43,6 +43,38 @@ pub fn terminal_widget_id(backend_id: u64) -> Id {
     Id::new(format!("{EGUI_TERM_WIDGET_ID_PREFIX}{backend_id}"))
 }
 
+/// End this terminal's primary-button gesture because the host took the
+/// pointer away mid-gesture (a modal opened, or the window blurred). The drag
+/// stops without a click, and a program that asked for mouse reports hears
+/// the button go up where it was last seen, so it is never left holding it.
+pub fn cancel_pointer_gesture(ctx: &egui::Context, backend: &mut TerminalBackend) {
+    let id = terminal_widget_id(backend.id);
+    let mut state = ctx
+        .data(|d| d.get_temp::<TerminalViewState>(id))
+        .unwrap_or_default();
+    if backend
+        .last_content()
+        .terminal_mode
+        .intersects(TermMode::MOUSE_MODE)
+    {
+        backend.process_command(BackendCommand::MouseReport(
+            MouseButton::LeftButton,
+            Modifiers::NONE,
+            state.current_mouse_position_on_grid,
+            false,
+        ));
+    }
+    state.is_dragged = false;
+    ctx.data_mut(|d| d.insert_temp(id, state));
+}
+
+impl TerminalViewState {
+    /// Whether a primary-button selection drag is in progress.
+    pub fn is_dragging(&self) -> bool {
+        self.is_dragged
+    }
+}
+
 #[derive(Debug, Clone)]
 enum InputAction {
     BackendCall(BackendCommand),

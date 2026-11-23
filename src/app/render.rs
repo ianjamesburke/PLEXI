@@ -206,17 +206,7 @@ impl PlexiApp {
             self.zoom.context_last_pane.insert(active_ctx_id, pid);
         }
         self.sync_attention_queue();
-        self.sync_confirm_close_focus();
-        self.sync_context_close_focus();
-        self.sync_command_palette_focus();
-        self.sync_rename_pane_focus();
-        self.sync_shortcuts_focus();
-        self.sync_context_rename_focus();
-        self.sync_text_input_focus();
-        self.sync_capability_modal_focus();
-        self.sync_event_consent_focus();
-        self.sync_raw_wasm_review_focus();
-        self.sync_unsaved_changes_focus();
+        self.sync_modal_focus_layers();
 
         let _ = ctx; // ctx is unused in the preamble itself; parameter reserved for future use
     }

@@ -1334,7 +1334,25 @@ impl PlexiApp {
     /// Same pattern as the notification modal: boolean visibility flag is the
     /// source of truth, focus stack follows it deterministically each frame.
     pub(crate) fn sync_command_palette_focus(&mut self) {
+        if self.show_command_palette && !self.focus_stack.contains(&FocusKind::CommandPalette) {
+            self.palette_opening += 1;
+        }
         self.reconcile_focus_layer(FocusKind::CommandPalette, self.show_command_palette);
+    }
+
+    /// Reconcile every modal focus layer with its visibility flag.
+    pub(crate) fn sync_modal_focus_layers(&mut self) {
+        self.sync_confirm_close_focus();
+        self.sync_context_close_focus();
+        self.sync_command_palette_focus();
+        self.sync_rename_pane_focus();
+        self.sync_shortcuts_focus();
+        self.sync_context_rename_focus();
+        self.sync_text_input_focus();
+        self.sync_capability_modal_focus();
+        self.sync_event_consent_focus();
+        self.sync_raw_wasm_review_focus();
+        self.sync_unsaved_changes_focus();
     }
 
     /// Every note currently open in an editor pane, across all windows, newest

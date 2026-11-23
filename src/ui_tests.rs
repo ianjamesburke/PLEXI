@@ -31,6 +31,7 @@
 
 #[cfg(test)]
 mod harness_hook;
+mod input_route;
 
 use std::path::Path;
 use std::sync::atomic::AtomicU64;

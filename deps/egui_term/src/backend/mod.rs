@@ -1148,7 +1148,7 @@ impl TerminalBackend {
             c
         );
 
-        self.notifier.notify(msg.as_bytes().to_vec());
+        self.write(msg.into_bytes());
     }
 
     fn normal_mouse_report(&self, point: Point, button: u8, is_utf8: bool) {
@@ -1180,7 +1180,7 @@ impl TerminalBackend {
             msg.push(32 + 1 + line.0 as u8);
         }
 
-        self.notifier.notify(msg);
+        self.write(msg);
     }
 
     fn start_selection(
