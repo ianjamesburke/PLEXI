@@ -393,6 +393,40 @@ else
   echo "PASS rate limit is not retried"
 fi
 
+# curl keeps a received status but exits nonzero when the body then resets
+# (56) or times out (28). The status decides; only a 5xx is retried.
+mkdir -p "$root/fakebin"
+cat >"$root/fakebin/curl" <<'SH'
+#!/bin/sh
+echo call >>"$FAKE_CURL_CALLS"
+headers="" previous=""
+for arg in "$@"; do
+  [ "$previous" = "-D" ] && headers="$arg"
+  previous="$arg"
+done
+{ printf 'HTTP/1.1 %s\r\n' "$FAKE_CURL_STATUS"; [ "$FAKE_CURL_STATUS" = 429 ] && printf 'retry-after: 60\r\n'; printf '\r\n'; } >"$headers"
+printf '%s' "$FAKE_CURL_STATUS"
+exit "$FAKE_CURL_EXIT"
+SH
+chmod +x "$root/fakebin/curl"
+# name status exit expected_calls expected_stderr
+fake_curl_case() {
+  local name="$1" status="$2" code="$3" calls="$4" expected="$5" err
+  : >"$root/calls"
+  if err="$(env -u PLEXI_BOOTSTRAP_TAG PATH="$root/fakebin:$PATH" FAKE_CURL_CALLS="$root/calls" FAKE_CURL_STATUS="$status" FAKE_CURL_EXIT="$code" PLEXI_GITHUB_REPO_API="$base/fixtures/reported" bash "$repo/install.sh" --channel alpha 2>&1)"; then
+    echo "FAIL $name succeeded"
+    fail=1
+  elif [[ "$err" != *"$expected"* || "$(wc -l <"$root/calls" | tr -d ' ')" != "$calls" ]]; then
+    echo "FAIL $name: $(wc -l <"$root/calls" | tr -d ' ') calls, stderr: $err"
+    fail=1
+  else
+    echo "PASS $name"
+  fi
+}
+fake_curl_case "HTTP 429 then reset is a rate limit, not retried" 429 56 1 "GitHub API rate limit reached"
+fake_curl_case "HTTP 404 then timeout is not retried" 404 28 1 "Unable to list Plexi release tags: HTTP 404."
+fake_curl_case "HTTP 504 then reset is retried and bounded" 504 56 3 "GitHub is slow, try again."
+
 if [[ "$fail" -ne 0 ]]; then
   echo "install bootstrap channel selection failed"
   exit 1

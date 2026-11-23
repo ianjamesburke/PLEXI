@@ -421,6 +421,9 @@ time.sleep(600)
                 # The repository API: latest, the tag refs and one release by tag.
                 if self.path in ('/releases/latest', '/releases/tags/' + release['tag_name']):
                     body = json.dumps(release).encode()
+                elif self.path.startswith('/releases?'):
+                    # install-windows.ps1 still pages the release list.
+                    body = json.dumps([release]).encode()
                 elif self.path == '/git/matching-refs/tags/v':
                     body = json.dumps([dict(ref='refs/tags/' + release['tag_name'])]).encode()
                 else:
@@ -429,7 +432,8 @@ time.sleep(600)
         server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         base = f'http://127.0.0.1:{server.server_port}'
-        http_env = env | {'PLEXI_GITHUB_REPO_API': base, 'PLEXI_RELEASE_BASE_URL': base + '/download'}
+        # PLEXI_RELEASES_URL is read only by install-windows.ps1.
+        http_env = env | {'PLEXI_GITHUB_REPO_API': base, 'PLEXI_RELEASES_URL': base + '/releases', 'PLEXI_RELEASE_BASE_URL': base + '/download'}
         try:
             bootstrap = ['powershell', '-NoProfile', '-File', REPO / 'scripts/install-windows.ps1', '-InstallOnly'] if os.name == 'nt' else ['bash', REPO / 'install.sh', '--install-only']
             run(bootstrap, http_env)

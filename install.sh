@@ -119,7 +119,10 @@ github_get() {
     reset="$(awk 'tolower($1) == "x-ratelimit-reset:" {sub(/\r$/, "", $2); print $2}' "$headers" | tail -n 1)"
     retry_after="$(awk 'tolower($1) == "retry-after:" {sub(/\r$/, "", $2); print $2}' "$headers" | tail -n 1)"
     rm -f "$headers"
-    if (( rc == 0 )) && [[ "$status" == 429 || ( "$status" == 403 && ( "$remaining" == 0 || -n "$retry_after" ) ) ]]; then
+    # A received status decides first: a 4xx or rate limit stands even when the
+    # body then resets or times out (curl keeps the status and exits nonzero).
+    [[ "$status" =~ ^[1-9][0-9][0-9]$ ]] || status=""
+    if [[ "$status" == 429 || ( "$status" == 403 && ( "$remaining" == 0 || -n "$retry_after" ) ) ]]; then
       local reset_at=""
       if [[ "$reset" =~ ^[0-9]+$ ]]; then
         reset_at="$(date -d "@$reset" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || date -r "$reset" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || true)"
@@ -131,13 +134,18 @@ github_get() {
       echo "GitHub API rate limit reached (unauthenticated limit is 60 requests/hour per IP). Resets at ${reset_at}. Set GITHUB_TOKEN (or GH_TOKEN) and retry, or retry after the reset." >&2
       return 1
     fi
-    if (( rc == 0 )) && [[ "$status" =~ ^[0-9]+$ ]] && (( status < 500 )); then
+    if [[ -n "$status" ]] && (( status >= 300 && status < 500 )); then
       printf '%s' "$status"
       return 0
     fi
+    if [[ -n "$status" ]] && (( status < 300 )) && (( rc == 0 )); then
+      printf '%s' "$status"
+      return 0
+    fi
+    # Left: a 5xx, or a transport failure before or during the body.
     case "$rc" in
       0) detail="HTTP $status" ;;
-      7|28|35|52|55|56) detail="curl exit $rc" ;;
+      7|28|35|52|55|56) detail="curl exit $rc${status:+ after HTTP $status}" ;;
       *) echo "Unable to reach GitHub at $url (curl exit $rc)." >&2; return 1 ;;
     esac
     if (( attempt >= attempts )); then
