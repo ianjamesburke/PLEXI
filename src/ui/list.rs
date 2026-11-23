@@ -522,7 +522,13 @@ impl<'a> ListRow<'a> {
                     s.id == "meta" && s.presentation != super::bounded::Presentation::Hidden
                 }))
             {
-                let galley = meta_galley(ui, label, readable.text_dim);
+                let galley = crate::ui::text::elided_galley(
+                    ui,
+                    label,
+                    meta_font(),
+                    slot.rect.width(),
+                    crate::ui::text::Side::Trailing,
+                );
                 let pos = Pos2::new(
                     slot.rect.right() - galley.size().x,
                     self.metadata_center_y(primary_rect, metrics) - galley.size().y / 2.0,
@@ -573,7 +579,17 @@ impl<'a> ListRow<'a> {
             slots.push(super::bounded::Slot {
                 id: "meta",
                 width: [label, self.meta_reserve]
-                    .map(|text| meta_galley(ui, text, Color32::PLACEHOLDER).size().x)
+                    .map(|text| {
+                        crate::ui::text::elided_galley(
+                            ui,
+                            text,
+                            meta_font(),
+                            f32::INFINITY,
+                            crate::ui::text::Side::Trailing,
+                        )
+                        .size()
+                        .x
+                    })
                     .into_iter()
                     .fold(0.0, f32::max),
                 compact: None,
@@ -849,14 +865,8 @@ fn trailing_size(ui: &egui::Ui, label: &str) -> Vec2 {
     Vec2::new(galley.size().x.max(24.0), style::LIST_ROW_H)
 }
 
-fn meta_galley(ui: &egui::Ui, label: &str, color: Color32) -> std::sync::Arc<egui::Galley> {
-    ui.fonts_mut(|f| {
-        f.layout_no_wrap(
-            label.to_string(),
-            egui::FontId::proportional(style::TEXT_HINT),
-            color,
-        )
-    })
+fn meta_font() -> egui::FontId {
+    egui::FontId::proportional(style::TEXT_HINT)
 }
 
 // Row chips share the key-chip visual language: borderless bg_active fill,
