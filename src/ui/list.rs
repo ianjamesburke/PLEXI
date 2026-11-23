@@ -226,8 +226,11 @@ pub struct ListRow<'a> {
     secondary: Option<&'a str>,
     chip: Option<&'a str>,
     metadata_chips: &'a [&'a str],
+    metadata_reserve: &'a [&'a str],
     pane_pips: Option<ListRowPips>,
     trailing: Option<&'a str>,
+    meta: Option<&'a str>,
+    meta_reserve: &'a str,
     selected: bool,
     danger_trailing: bool,
     dense: bool,
@@ -241,8 +244,11 @@ impl<'a> ListRow<'a> {
             secondary: None,
             chip: None,
             metadata_chips: &[],
+            metadata_reserve: &[],
             pane_pips: None,
             trailing: None,
+            meta: None,
+            meta_reserve: "",
             selected: false,
             danger_trailing: false,
             dense: false,
@@ -281,6 +287,14 @@ impl<'a> ListRow<'a> {
         self
     }
 
+    /// Reserve the chip lane at least as wide as the widest single chip in
+    /// `labels` (pass each distinct chip label of the list once), so the meta
+    /// text to its left keeps one right edge down the list.
+    pub fn metadata_reserve(mut self, labels: &'a [&'a str]) -> Self {
+        self.metadata_reserve = labels;
+        self
+    }
+
     pub fn pane_pips(mut self, pips: ListRowPips) -> Self {
         self.pane_pips = Some(pips);
         self
@@ -288,6 +302,21 @@ impl<'a> ListRow<'a> {
 
     pub fn trailing_action(mut self, label: &'a str) -> Self {
         self.trailing = Some(label);
+        self
+    }
+
+    /// Short muted text right-aligned just left of the metadata chips (at the
+    /// row's right edge when there are none), such as a relative time. Its
+    /// width is reserved in the lane layout, so the title elides first.
+    pub fn meta(mut self, label: &'a str) -> Self {
+        self.meta = (!label.is_empty()).then_some(label);
+        self
+    }
+
+    /// Reserve the meta slot at least as wide as `sample`, so a list whose
+    /// meta labels vary in width keeps its title column one width.
+    pub fn meta_reserve(mut self, sample: &'a str) -> Self {
+        self.meta_reserve = sample;
         self
     }
 
@@ -488,6 +517,19 @@ impl<'a> ListRow<'a> {
             if let Some(metadata) = lanes.slots.iter().find(|s| s.id == "metadata") {
                 self.draw_metadata(ui, &readable, primary_rect, metadata.rect, metrics);
             }
+            if let Some((label, slot)) =
+                self.meta.zip(lanes.slots.iter().find(|s| {
+                    s.id == "meta" && s.presentation != super::bounded::Presentation::Hidden
+                }))
+            {
+                let galley = meta_galley(ui, label, readable.text_dim);
+                let pos = Pos2::new(
+                    slot.rect.right() - galley.size().x,
+                    self.metadata_center_y(primary_rect, metrics) - galley.size().y / 2.0,
+                );
+                capture.text_slot("meta", &galley, slot.rect);
+                crate::ui::snap::galley_snapped(ui.painter(), pos, galley, readable.text_dim);
+            }
         }
         capture.finish(ui.painter(), rect, colors.bg_sidebar, actions, vec![]);
         ListRowResponse {
@@ -527,6 +569,17 @@ impl<'a> ListRow<'a> {
                 required: false,
             });
         }
+        if let Some(label) = self.meta {
+            slots.push(super::bounded::Slot {
+                id: "meta",
+                width: [label, self.meta_reserve]
+                    .map(|text| meta_galley(ui, text, Color32::PLACEHOLDER).size().x)
+                    .into_iter()
+                    .fold(0.0, f32::max),
+                compact: None,
+                required: false,
+            });
+        }
         super::bounded::allocate(
             bounds,
             style::PANE_HEADER_TITLE_MIN,
@@ -546,13 +599,39 @@ impl<'a> ListRow<'a> {
     }
 
     fn metadata_lane_width(&self, ui: &egui::Ui) -> f32 {
-        let chip_width = metadata_chip_row_width(ui, self.metadata_chips);
+        let chip_width = if self.metadata_chips.is_empty() {
+            0.0
+        } else {
+            self.metadata_reserve
+                .iter()
+                .map(|label| chip_size(ui, label).x)
+                .fold(metadata_chip_row_width(ui, self.metadata_chips), f32::max)
+        };
         let pip_width = self
             .pane_pips
             .as_ref()
             .map(|pips| pane_pips_width(ui, pips.count))
             .unwrap_or(0.0);
         chip_width.max(pip_width)
+    }
+
+    /// Vertical center shared by metadata chips and the meta text, so the
+    /// right-hand annotations of a row sit on one line.
+    fn metadata_center_y(&self, rect: egui::Rect, text_metrics: TextBlockMetrics) -> f32 {
+        let has_compact_pips =
+            self.pane_pips.is_some() && text_metrics.secondary_center_y.is_none();
+        if has_compact_pips {
+            text_metrics.primary_center_y - COMPACT_METADATA_CHIP_OFFSET_Y
+        } else if text_metrics.secondary_center_y.is_some() && self.pane_pips.is_some() {
+            // Two-line row with pips: align chip with the title so pips rendered
+            // at secondary_center_y have clear vertical separation.
+            text_metrics.primary_center_y
+        } else if text_metrics.secondary_center_y.is_some() {
+            // Two-line row (no pips): center on the row for visual balance.
+            rect.center().y
+        } else {
+            text_metrics.primary_center_y
+        }
     }
 
     fn draw_metadata(
@@ -568,21 +647,7 @@ impl<'a> ListRow<'a> {
         }
         let lane_left = lane.left();
         let lane_right = lane.right();
-
-        let has_compact_pips =
-            self.pane_pips.is_some() && text_metrics.secondary_center_y.is_none();
-        let chip_center_y = if has_compact_pips {
-            text_metrics.primary_center_y - COMPACT_METADATA_CHIP_OFFSET_Y
-        } else if text_metrics.secondary_center_y.is_some() && self.pane_pips.is_some() {
-            // Two-line row with pips: align chip with the title so pips rendered
-            // at secondary_center_y have clear vertical separation.
-            text_metrics.primary_center_y
-        } else if text_metrics.secondary_center_y.is_some() {
-            // Two-line row (no pips): center on the row for visual balance.
-            rect.center().y
-        } else {
-            text_metrics.primary_center_y
-        };
+        let chip_center_y = self.metadata_center_y(rect, text_metrics);
 
         if !self.metadata_chips.is_empty() {
             draw_chip_row(
@@ -782,6 +847,16 @@ fn trailing_size(ui: &egui::Ui, label: &str) -> Vec2 {
         )
     });
     Vec2::new(galley.size().x.max(24.0), style::LIST_ROW_H)
+}
+
+fn meta_galley(ui: &egui::Ui, label: &str, color: Color32) -> std::sync::Arc<egui::Galley> {
+    ui.fonts_mut(|f| {
+        f.layout_no_wrap(
+            label.to_string(),
+            egui::FontId::proportional(style::TEXT_HINT),
+            color,
+        )
+    })
 }
 
 // Row chips share the key-chip visual language: borderless bg_active fill,

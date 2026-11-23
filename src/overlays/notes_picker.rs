@@ -39,6 +39,44 @@ pub(crate) fn notes_picker_chip_label<'a>(
     })
 }
 
+/// The widest common `note_age_label`; reserving it keeps the title column
+/// one width down the list.
+const NOTE_AGE_COLUMN_SAMPLE: &str = "Yesterday";
+
+/// Compact age of a note for its picker row: "now" under a minute (and for
+/// timestamps ahead of `now`), then "5m", "3h" inside a day, then by calendar
+/// day in `now`'s zone: "Yesterday", "3d" up to six days, and the date ("Nov
+/// 12", with the year when it differs) from seven days on.
+pub(crate) fn note_age_label<Tz: chrono::TimeZone>(
+    modified: Option<std::time::SystemTime>,
+    now: &chrono::DateTime<Tz>,
+) -> Option<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    use chrono::Datelike;
+    let modified = chrono::DateTime::<chrono::Utc>::from(modified?).with_timezone(&now.timezone());
+    let elapsed = now.clone().signed_duration_since(modified.clone());
+    if elapsed < chrono::TimeDelta::minutes(1) {
+        return Some("now".into());
+    }
+    if elapsed < chrono::TimeDelta::hours(1) {
+        return Some(format!("{}m", elapsed.num_minutes()));
+    }
+    if elapsed < chrono::TimeDelta::days(1) {
+        return Some(format!("{}h", elapsed.num_hours()));
+    }
+    let days = (now.date_naive() - modified.date_naive()).num_days();
+    Some(match days {
+        // A 25-hour DST day can hold 24 hours of elapsed time.
+        ..=0 => format!("{}h", elapsed.num_hours()),
+        1 => "Yesterday".into(),
+        2..=6 => format!("{days}d"),
+        _ if modified.year() == now.year() => modified.format("%b %-d").to_string(),
+        _ => modified.format("%b %-d, %Y").to_string(),
+    })
+}
+
 /// Recoverable destination returned by the platform trash operation. Shared
 /// with the cut worker thread, so implementations are `Send + Sync`.
 pub(crate) trait NotesTrash: Send + Sync {
@@ -1137,6 +1175,7 @@ impl PlexiApp {
     pub(crate) fn draw_notes_picker(&mut self, ctx: &egui::Context) {
         let colors = self.colors;
         let filtered = self.notes_picker_filtered();
+        let now = chrono::Local::now();
         let selected = self.notes_picker_selected;
         let selection_changed = self.notes_picker_last_drawn_selected != Some(selected);
         if self
@@ -1241,6 +1280,22 @@ impl PlexiApp {
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 ui.spacing_mut().item_spacing.y = style::SPACE_SM;
+                                let root = &self.router.active().root;
+                                let global_notes = crate::notes::global_notes_dir();
+                                // Distinct chip labels: the chip lane reserves the
+                                // widest, so every age shares one right edge.
+                                let chip_labels: Vec<&str> = filtered
+                                    .iter()
+                                    .map(|&i| {
+                                        notes_picker_chip_label(
+                                            &self.notes_picker_entries[i],
+                                            root,
+                                            &global_notes,
+                                        )
+                                    })
+                                    .collect::<std::collections::BTreeSet<_>>()
+                                    .into_iter()
+                                    .collect();
                                 for (row, &entry_idx) in filtered.iter().enumerate() {
                                     let entry = &self.notes_picker_entries[entry_idx];
                                     let is_selected = row == selected;
@@ -1249,11 +1304,15 @@ impl PlexiApp {
                                     } else {
                                         entry.preview.chars().take(50).collect()
                                     };
-                                    let chip = notes_picker_chip_label(
-                                        entry, &self.router.active().root, &crate::notes::global_notes_dir(),
-                                    );
+                                    let chip =
+                                        notes_picker_chip_label(entry, root, &global_notes);
+                                    let age =
+                                        note_age_label(entry.modified, &now).unwrap_or_default();
                                     let row_response = ListRow::new(&entry.title)
+                                        .meta(&age)
+                                        .meta_reserve(NOTE_AGE_COLUMN_SAMPLE)
                                         .metadata_chips(std::slice::from_ref(&chip))
+                                        .metadata_reserve(&chip_labels)
                                         .secondary(&secondary)
                                         .selected(is_selected)
                                         .show(ui, &colors);
@@ -1421,6 +1480,55 @@ mod tests {
             tier_label: None,
             modified: None,
         }
+    }
+
+    /// `note_age_label` at `now` for a note changed `ago` earlier (negative:
+    /// later), in a fixed UTC-5 zone so calendar days are deterministic.
+    fn age_at(now: &str, ago: chrono::TimeDelta) -> Option<String> {
+        let now = chrono::DateTime::parse_from_rfc3339(now).expect("now");
+        let modified: std::time::SystemTime = (now - ago).into();
+        note_age_label(Some(modified), &now)
+    }
+
+    #[test]
+    fn note_age_label_boundaries() {
+        use chrono::TimeDelta as D;
+        let noon = "2026-11-20T12:00:00-05:00";
+        let cases = [
+            (noon, D::zero(), "now"),
+            (noon, D::seconds(59), "now"),
+            (noon, D::seconds(60), "1m"),
+            (noon, D::seconds(59 * 60 + 59), "59m"),
+            (noon, D::hours(1), "1h"),
+            (noon, D::hours(24) - D::seconds(1), "23h"),
+            (noon, D::hours(24), "Yesterday"),
+            (noon, D::hours(36), "Yesterday"),
+            (noon, D::hours(36) + D::seconds(1), "2d"),
+            (noon, D::days(6), "6d"),
+            (noon, D::days(7), "Nov 13"),
+            (noon, D::days(200), "May 4"),
+            (noon, D::days(365), "Nov 20, 2025"),
+            (noon, D::seconds(-30), "now"),
+            (noon, D::days(-3), "now"),
+            // Calendar days, not 24-hour blocks: 25 hours before 00:30 is the
+            // day before yesterday.
+            ("2026-11-20T00:30:00-05:00", D::hours(25), "2d"),
+            ("2026-11-20T23:30:00-05:00", D::hours(25), "Yesterday"),
+            (
+                "2026-11-20T00:30:00-05:00",
+                D::days(7) - D::hours(1),
+                "Nov 13",
+            ),
+        ];
+        for (now, ago, expected) in cases {
+            assert_eq!(
+                age_at(now, ago).as_deref(),
+                Some(expected),
+                "{now} minus {ago}"
+            );
+        }
+        let now = chrono::DateTime::parse_from_rfc3339(noon).expect("now");
+        assert_eq!(note_age_label(None, &now), None);
     }
 
     fn replace_with_text_editor(app: &mut PlexiApp, pane_id: u64, path: std::path::PathBuf) {
