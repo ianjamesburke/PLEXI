@@ -714,9 +714,9 @@ impl HostHarness {
             .backend
     }
 
-    /// Run one frame delivering a single key press (with modifiers) through the
-    /// production `RawInput` path — the same route a physical keystroke takes.
-    pub fn press_key(&mut self, key: egui::Key, modifiers: egui::Modifiers) -> &mut Self {
+    /// Run one frame delivering only a key's down edge, for a test that
+    /// releases it in a later delivery.
+    pub fn key_down(&mut self, key: egui::Key, modifiers: egui::Modifiers) -> &mut Self {
         self.frame(RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -730,6 +730,29 @@ impl HostHarness {
                 repeat: false,
                 modifiers,
             }],
+            ..Default::default()
+        })
+    }
+
+    /// Run one frame delivering a single keystroke (with modifiers) through the
+    /// production `RawInput` path — the same route a physical keystroke takes.
+    /// A keystroke is a down and its up: the host input router treats a
+    /// second down with no up between as the held key repeating.
+    pub fn press_key(&mut self, key: egui::Key, modifiers: egui::Modifiers) -> &mut Self {
+        let edge = |pressed| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        };
+        self.frame(RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            modifiers,
+            events: vec![edge(true), edge(false)],
             ..Default::default()
         })
     }

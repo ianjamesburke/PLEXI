@@ -22898,7 +22898,7 @@ fn notes_picker_invocation_shortcut_toggles_and_preserves_notes() {
         let path = dir.path().join("note.md");
         std::fs::write(&path, "original note").expect("seed note");
 
-        h.press_key(key, egui::Modifiers::COMMAND);
+        h.key_down(key, egui::Modifiers::COMMAND);
         assert_eq!(
             h.app
                 .focus_stack
@@ -22922,7 +22922,7 @@ fn notes_picker_invocation_shortcut_toggles_and_preserves_notes() {
             ..Default::default()
         });
         h.app.notes_picker_query = query.into();
-        h.press_key(key, egui::Modifiers::COMMAND);
+        h.key_down(key, egui::Modifiers::COMMAND);
         assert!(
             !h.app.focus_stack.contains(&FocusKind::NotesPicker),
             "second shortcut must close picker for query={query:?}"
@@ -23409,7 +23409,7 @@ fn notes_picker_delete_close_then_plain_v_does_not_paste() {
     let term = h.add_focused_terminal();
     let dir = tempfile::tempdir().unwrap();
     let path = notes_delete_fixture(&mut h, dir.path());
-    h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+    h.key_down(egui::Key::Backspace, egui::Modifiers::COMMAND);
     assert!(!path.exists());
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
     assert!(h
