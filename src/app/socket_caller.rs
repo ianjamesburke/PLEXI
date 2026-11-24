@@ -113,9 +113,7 @@ pub(crate) enum PaneIpcMessage {
         /// The workspace a `command_view_follow` names, checked against the
         /// caller's scope on the host thread.
         scope: Option<String>,
-        reply: std::sync::mpsc::SyncSender<
-            Result<StreamAdmission, super::socket_policy::Refusal>,
-        >,
+        reply: std::sync::mpsc::SyncSender<Result<StreamAdmission, super::socket_policy::Refusal>>,
     },
 }
 
@@ -124,7 +122,8 @@ pub(crate) enum PaneIpcMessage {
 #[derive(Debug)]
 pub(crate) struct StreamAdmission {
     pub(crate) caller: SocketCaller,
-    pub(crate) dashboard: Option<crate::broker::permit::Permit<crate::broker::permit::ReadDashboard>>,
+    pub(crate) dashboard:
+        Option<crate::broker::permit::Permit<crate::broker::permit::ReadDashboard>>,
 }
 
 impl PaneIpcMessage {

@@ -310,7 +310,10 @@ impl UseSubject {
         Permit::contained(scope.clone(), workspace, monitor)
     }
 
-    fn admit_external_dashboard_read(&self, workspace: &Path) -> Result<Permit<ReadDashboard>, String> {
+    fn admit_external_dashboard_read(
+        &self,
+        workspace: &Path,
+    ) -> Result<Permit<ReadDashboard>, String> {
         let tool = ReadDashboard::NAME;
         let target = ReadDashboard::target(workspace);
         let input = json!({"workspace": target});
