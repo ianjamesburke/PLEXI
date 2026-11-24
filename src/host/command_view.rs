@@ -147,6 +147,10 @@ fn end_follow(socket: &mut crate::platform::ipc::IpcStream, workspace: &Path, er
     });
     // The client may already be gone.
     let _ = writeln_line(socket, &reply);
+    // Closing wakes the reader thread, which holds a clone of the socket.
+    if let Err(error) = socket.shutdown(std::net::Shutdown::Both) {
+        log::info!("command_view: follow shutdown failed: {error}");
+    }
 }
 
 fn writeln_line(socket: &mut crate::platform::ipc::IpcStream, value: &Value) -> Result<(), ()> {
