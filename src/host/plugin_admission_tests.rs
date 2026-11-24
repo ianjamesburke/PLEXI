@@ -411,7 +411,7 @@ fn pane_tree(h: &crate::testing::HostHarness, pane: crate::spatial::tiling::Pane
         .and_then(|pane| pane.as_view())
         .and_then(|view| match &view.runtime {
             crate::host::pane::ViewRuntime::Python(runtime) => Some(
-                crate::platform::path::canonical_or_self(runtime.plugin_dir()),
+                crate::platform::path::canonical_or_self(runtime.origin().root()),
             ),
             _ => None,
         })
@@ -679,7 +679,9 @@ fn open_every_maintained_plugin(seed: fn(&str, &Path)) {
         if guests == 1 {
             started += 1;
             assert!(
-                h.app.locate_view_instance(id, None).is_some(),
+                h.app
+                    .locate_view_instance(id, None, crate::pane_ops::create::OriginQuery::Any)
+                    .is_some(),
                 "{id} has a pane"
             );
         } else {
@@ -1250,7 +1252,10 @@ fn a_buried_pane_is_revealed_only_for_its_own_origin() {
         win.panes
             .get(&pane)
             .and_then(|pane| pane.as_view())
-            .and_then(|view| view.runtime.origin_entry())
+            .and_then(|view| match view.runtime.origin() {
+                crate::host::pane::PaneOrigin::Guest(origin) => Some(origin.entry().to_path_buf()),
+                crate::host::pane::PaneOrigin::Builtin => None,
+            })
             .expect("a guest pane")
     };
     let bundled_entry =
@@ -1450,4 +1455,522 @@ fn a_changed_bundled_copy_reports_its_repair_and_can_be_uninstalled() {
     );
     assert_eq!(crate::cli::plugin::plugin_uninstall("todo", true), 0);
     assert!(!todo.exists());
+}
+
+// ── Stint 1733: a live pane carries the owner admission verified ──────────
+
+/// The view pane `pane` names, wherever it is.
+fn view_pane(
+    h: &crate::testing::HostHarness,
+    pane: crate::spatial::tiling::PaneId,
+) -> &crate::host::pane::ViewPane {
+    h.app
+        .windows
+        .iter()
+        .find_map(|window| window.panes.get(&pane))
+        .and_then(|pane| pane.as_view())
+        .expect("a view pane")
+}
+
+/// The guest origin of `pane`; panics for a builtin.
+fn guest_origin(
+    h: &crate::testing::HostHarness,
+    pane: crate::spatial::tiling::PaneId,
+) -> GuestOrigin {
+    match view_pane(h, pane).runtime.origin() {
+        crate::host::pane::PaneOrigin::Guest(origin) => origin.clone(),
+        crate::host::pane::PaneOrigin::Builtin => panic!("pane {pane} is a builtin"),
+    }
+}
+
+/// Run `launch` and return the pane it opened.
+fn opened_by(
+    h: &mut crate::testing::HostHarness,
+    launch: impl FnOnce(&mut crate::testing::HostHarness),
+) -> crate::spatial::tiling::PaneId {
+    let before = h.state().open_panes;
+    launch(h);
+    h.state()
+        .open_panes
+        .into_iter()
+        .find(|id| !before.contains(id))
+        .expect("the launch opens a pane")
+}
+
+/// Path-launch the plugin folder `dir` in the harness workspace.
+fn open_path(h: &mut crate::testing::HostHarness, dir: &Path) -> crate::spatial::tiling::PaneId {
+    let workspace = h.workspace_root();
+    opened_by(h, |h| {
+        h.app
+            .launch_view_by_path_with_layout(&dir.to_string_lossy(), None, Some(workspace), &[])
+            .expect("path launch");
+    })
+}
+
+/// Open `id` by id in the harness workspace, in a split so it gets its own
+/// pane id (an overlay reuses the id of the pane it covers).
+fn open_id(h: &mut crate::testing::HostHarness, id: &str) -> crate::spatial::tiling::PaneId {
+    let workspace = h.workspace_root();
+    opened_by(h, |h| {
+        h.app
+            .launch_view_by_id_with_layout(id, Some("split_h".to_string()), &[], Some(workspace))
+            .expect("id launch");
+    })
+}
+
+/// A harness whose profile plugins folder holds the bundled `ids`, indexed.
+fn harness_with_bundled(ids: &[&str]) -> (crate::testing::HostHarness, PathBuf) {
+    let mut h = crate::testing::HostHarness::new();
+    let plugins = h.profile_dir().join("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    for id in ids {
+        extract_bundled(id, &plugins);
+    }
+    h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(&plugins);
+    (h, plugins)
+}
+
+/// Capability rows stored for plugin `id` (grants, not admissions or asks).
+fn capability_rows(profile: &Path, id: &str) -> usize {
+    PermissionMonitor::for_profile(profile)
+        .unwrap()
+        .list_entries()
+        .into_iter()
+        .filter(|entry| {
+            entry.actor_id.ends_with(id)
+                && entry.kind != "pending"
+                && entry.tool != TRUST_FOLDER_TOOL
+                && entry.tool != LOAD_INSTALLED_TOOL
+        })
+        .count()
+}
+
+/// A Python plugin `id` declaring `fs.read`, with an optional `[launch]`.
+fn write_capable_plugin(parent: &Path, id: &str, launch: &str) -> PathBuf {
+    let dir = parent.join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("manifest.toml"),
+        format!(
+            "schema_version = 2\n\n[plugin]\nid = \"{id}\"\nname = \"{id}\"\nversion = \"0.0.1\"\n\n[plugin.capabilities]\ncapabilities = [\"fs.read\"]\n\n{launch}[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.py"),
+        "from plexi_sdk.ui import Column, Text\n\ndef init(size, args):\n    return []\n\ndef update(event):\n    return []\n\ndef view():\n    return Column([Text('t1733')])\n",
+    )
+    .unwrap();
+    dir
+}
+
+/// Scope 1, on the real route: the Permissions copy at its profile root is
+/// admitted as bundled; a byte-identical copy in a trusted folder is admitted
+/// by folder trust, so its pane carries a development origin.
+#[test]
+fn a_folder_copy_of_permissions_carries_a_development_origin() {
+    let (mut h, plugins) = harness_with_bundled(&["permissions"]);
+    let bundled = open_id(&mut h, "permissions");
+    let origin = guest_origin(&h, bundled);
+    assert!(origin.is_bundled(), "{origin:?}");
+    assert_eq!(
+        origin.root(),
+        crate::platform::path::canonical_or_self(&plugins.join("permissions"))
+    );
+
+    let dev = tempfile::tempdir().unwrap();
+    let copy = extract_bundled("permissions", dev.path());
+    assert!(crate::cli::install_host::matches_bundled_plugin(
+        "permissions",
+        &copy
+    ));
+    h.trust_plugin_folder(dev.path());
+    let dev_pane = open_path(&mut h, &copy);
+    let origin = guest_origin(&h, dev_pane);
+    assert_eq!(origin.basis(), Basis::TrustedFolder);
+    assert!(!origin.is_bundled(), "identical bytes are not provenance");
+    assert_eq!(
+        view_pane(&h, dev_pane).tool_identity(),
+        format!("dev:permissions:{dev_pane}")
+    );
+    assert_eq!(view_pane(&h, bundled).tool_identity(), "permissions");
+}
+
+/// Scope 2: a development pane declaring a bundled id publishes its tools
+/// only under a pane-qualified name; the bundled tool name never resolves to
+/// it, alone or beside the bundled pane.
+#[test]
+fn a_dev_copy_publishes_its_tools_only_under_a_pane_qualified_name() {
+    let (mut h, _plugins) = harness_with_bundled(&["chess"]);
+    let dev = tempfile::tempdir().unwrap();
+    let dev_chess = extract_bundled("chess", dev.path());
+    h.trust_plugin_folder(dev.path());
+    let context = h.app.windows[h.app.active_window].context_id;
+    let names = |h: &crate::testing::HostHarness| {
+        let scope = crate::plexi_ai::tool_dispatch::DispatchScope::new(
+            0,
+            "agent:t1733",
+            h.workspace_root(),
+            context,
+        );
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        crate::plexi_ai::tool_dispatch::ToolDispatcher::namespaced_for(scope, monitor)
+            .all_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>()
+    };
+    let registered_as = |pane| {
+        crate::plexi_ai::tool_dispatch::live_exposed_tools()
+            .into_iter()
+            .filter(|(_, id, _, _)| *id == pane)
+            .map(|(plugin, _, tool, _)| (plugin, tool))
+            .collect::<Vec<_>>()
+    };
+
+    let dev_pane = open_path(&mut h, &dev_chess);
+    h.wait_for_exposed_tools(dev_pane);
+    let dev_tools = registered_as(dev_pane);
+    assert!(!dev_tools.is_empty());
+    assert!(
+        dev_tools
+            .iter()
+            .all(|(plugin, _)| *plugin == format!("dev:chess:{dev_pane}")),
+        "{dev_tools:?}"
+    );
+    let tool = dev_tools[0].1.clone();
+    let alone = names(&h);
+    assert!(
+        alone.contains(&format!("dev:chess:{dev_pane}__{tool}")),
+        "{alone:?}"
+    );
+    assert!(
+        !alone.contains(&format!("chess__{tool}")),
+        "the bundled name never resolves to the dev pane: {alone:?}"
+    );
+
+    let bundled_pane = open_id(&mut h, "chess");
+    h.wait_for_exposed_tools(bundled_pane);
+    assert!(registered_as(bundled_pane)
+        .iter()
+        .all(|(plugin, _)| plugin == "chess"));
+    let both = names(&h);
+    assert!(both.contains(&format!("chess__{tool}")), "{both:?}");
+    assert!(
+        both.contains(&format!("dev:chess:{dev_pane}__{tool}")),
+        "{both:?}"
+    );
+}
+
+/// Scope 3: the origin is frozen when the guest starts. Replacing the dev
+/// folder with a link to the profile install afterwards does not make the
+/// running dev pane the bundled plugin's pane.
+#[test]
+fn a_later_link_change_cannot_change_a_running_guests_origin() {
+    let (mut h, plugins) = harness_with_bundled(&["logs"]);
+    let bundled_entry = crate::app::registry::resolve_plugin_dir(&plugins.join("logs"))
+        .unwrap()
+        .entry;
+    let dev = tempfile::tempdir().unwrap();
+    let a = dev.path().join("a");
+    let dev_logs = extract_bundled("logs", &a);
+    h.trust_plugin_folder(&a);
+    let pane = open_path(&mut h, &dev_logs);
+    let before = guest_origin(&h, pane);
+
+    std::fs::rename(&a, dev.path().join("old")).unwrap();
+    std::os::unix::fs::symlink(&plugins, &a).unwrap();
+    assert_eq!(
+        crate::platform::path::canonical_or_self(before.entry()),
+        bundled_entry,
+        "the old entry path now resolves to the bundled install"
+    );
+    assert_eq!(guest_origin(&h, pane), before, "the origin did not move");
+    assert!(
+        h.app
+            .locate_view_instance(
+                "logs",
+                None,
+                crate::pane_ops::create::OriginQuery::Entry(&bundled_entry),
+            )
+            .is_none(),
+        "the dev pane never stands in for the bundled one"
+    );
+}
+
+/// Scope 3: a builtin open never consults registry metadata first. A
+/// personal plugin named `text-editor` declaring `focus_existing` cannot
+/// satisfy the Text Editor open with its own pane.
+#[test]
+fn opening_text_editor_never_matches_a_colliding_registry_singleton() {
+    let mut h = crate::testing::HostHarness::new();
+    let plugins = h.profile_dir().join("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    let impostor = write_capable_plugin(
+        &plugins,
+        "text-editor",
+        "[launch]\non_launch = \"focus_existing\"\n\n",
+    );
+    PluginAdmission::current().allow_copy_for_test("text-editor", &impostor);
+    h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(&plugins);
+    let guest = open_path(&mut h, &impostor);
+    assert_eq!(guest_origin(&h, guest).owner(), "text-editor");
+
+    let editor = open_id(&mut h, "text-editor");
+    assert_ne!(editor, guest);
+    assert_eq!(
+        view_pane(&h, editor).runtime.origin(),
+        crate::host::pane::PaneOrigin::Builtin
+    );
+}
+
+/// Scope 4: a bundled plugin's contributed view names are reserved like its
+/// id. A personal plugin whose id is `todo.main` does not capture the open
+/// of the bundled Todo view.
+#[test]
+fn a_personal_plugin_named_after_a_bundled_view_does_not_capture_its_open() {
+    let (mut h, plugins) = harness_with_bundled(&["todo"]);
+    let personal = write_plugin(&plugins, "todo.main");
+    PluginAdmission::current().allow_copy_for_test("todo.main", &personal);
+    h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(&plugins);
+    let pane = open_id(&mut h, "todo.main");
+    let origin = guest_origin(&h, pane);
+    assert_eq!(origin.owner(), "todo");
+    assert!(origin.is_bundled());
+}
+
+/// Scopes 5 and 6: an open the admission refuses leaves no capability rows,
+/// by path or by id; an id open whose folder now holds another plugin is
+/// refused before anything is granted under either id.
+#[test]
+fn a_refused_plugin_keeps_no_capability_rows() {
+    let mut h = crate::testing::HostHarness::new();
+    let untrusted = tempfile::tempdir().unwrap();
+    let dir = write_capable_plugin(untrusted.path(), "t1733-refused", "");
+    let starts = guest_starts_for_test();
+    let error = h
+        .app
+        .launch_view_by_path_with_layout(&dir.to_string_lossy(), None, None, &[])
+        .unwrap_err();
+    assert!(error.contains("are not trusted"), "{error}");
+    assert_eq!(capability_rows(h.profile_dir(), "t1733-refused"), 0);
+
+    let plugins = h.profile_dir().join("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    write_capable_plugin(&plugins, "t1733-unallowed", "");
+    let moved = write_capable_plugin(&plugins, "t1733-moved", "");
+    PluginAdmission::current().allow_copy_for_test("t1733-moved", &moved);
+    h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(&plugins);
+    let workspace = h.workspace_root();
+    let error = h
+        .app
+        .launch_view_by_id_with_layout("t1733-unallowed", None, &[], Some(workspace.clone()))
+        .unwrap_err();
+    assert!(error.contains("has not been allowed"), "{error}");
+    assert_eq!(capability_rows(h.profile_dir(), "t1733-unallowed"), 0);
+
+    let manifest = moved.join("manifest.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replace("\"t1733-moved\"", "\"t1733-other\""),
+    )
+    .unwrap();
+    let error = h
+        .app
+        .launch_view_by_id_with_layout("t1733-moved", None, &[], Some(workspace))
+        .unwrap_err();
+    assert!(error.contains("t1733-other"), "{error}");
+    assert_eq!(capability_rows(h.profile_dir(), "t1733-moved"), 0);
+    assert_eq!(capability_rows(h.profile_dir(), "t1733-other"), 0);
+    assert_eq!(guest_starts_for_test(), starts, "no guest");
+}
+
+/// Scope 5: the launch config comes from the manifest the resolver parsed;
+/// the file is not read a second time.
+#[test]
+fn the_launch_config_comes_from_the_resolved_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    let plugin = write_capable_plugin(dir.path(), "t1733-parse", "");
+    let resolved = crate::app::registry::resolve_plugin_dir(&plugin).unwrap();
+    std::fs::write(plugin.join("manifest.toml"), "not a manifest").unwrap();
+    let config = crate::host::wasm_python::PythonLaunchConfig::from_resolved(&resolved)
+        .expect("no second read")
+        .expect("a Python plugin");
+    assert_eq!(config.plugin_id, "t1733-parse");
+    assert_eq!(config.declared_capabilities, vec!["fs.read".to_string()]);
+    assert_eq!(config.entry, resolved.entry);
+}
+
+/// Scope 7: when a reviewed raw component fails to instantiate, the imports
+/// the review allowed are not recorded in either store.
+#[test]
+fn a_failed_instantiation_after_review_leaves_no_import_grants() {
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+    let mut h = crate::testing::HostHarness::new();
+    let folder = tempfile::tempdir().unwrap();
+    let component = folder.path().join("unlinkable.wasm");
+    // Imports host state with a shape the host does not provide: inspection
+    // asks for the state import, linking then fails. Wasmtime reads the text
+    // format from a file.
+    std::fs::write(
+        &component,
+        "(component (import \"plexi:platform/host-state@9.9.9\" (instance (export \"t1733\" (func)))))",
+    )
+    .unwrap();
+    h.trust_plugin_folder(folder.path());
+    h.app
+        .launch_view_by_path_with_layout(&component.to_string_lossy(), None, None, &[])
+        .expect("queues the review");
+    let review = h
+        .app
+        .pending_raw_wasm_launches
+        .pop_front()
+        .expect("an import review waits");
+    assert!(!review.missing_capabilities.is_empty());
+    let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+    let granted = |monitor: &PermissionMonitor| {
+        monitor
+            .list_entries()
+            .into_iter()
+            .filter(|entry| review.missing_capabilities.contains(&entry.tool))
+            .count()
+    };
+    let store_file = h.profile_dir().join("permissions.toml");
+    let store_before = std::fs::read(&store_file).ok();
+    let evidence = crate::broker::consent::DecisionEvidence::for_test(&review.plugin_id, "allow");
+    let error = h
+        .app
+        .open_wasm_view_pane(
+            &review.plugin_id,
+            &review.wasm_path,
+            review.workspace_root.clone(),
+            review.launch_args.clone(),
+            Some((
+                &review.missing_capabilities,
+                evidence.admit(&review.plugin_id, "allow").unwrap(),
+            )),
+        )
+        .unwrap_err();
+    assert!(error.contains("load"), "{error}");
+    assert_eq!(granted(&monitor), 0, "no reviewed import granted");
+    assert_eq!(
+        std::fs::read(&store_file).ok(),
+        store_before,
+        "no legacy grant"
+    );
+}
+
+/// The pane holding window focus.
+fn focused_pane(h: &crate::testing::HostHarness) -> crate::spatial::tiling::PaneId {
+    let window = &h.app.windows[h.app.active_window];
+    window
+        .focused_pane
+        .and_then(|tile| window.tree.tiles.get_pane(&tile).copied())
+        .expect("a focused pane")
+}
+
+/// Codex 3309 round 1: bundled-id reuse needs a bundled origin, never a path
+/// match. After the profile install of Logs is swapped for a link to a
+/// running dev copy, the registry's cached entry resolves to the dev pane's
+/// entry; opening Logs by id still focuses the bundled pane.
+#[test]
+fn bundled_id_reuse_never_focuses_a_dev_pane_through_a_swapped_install() {
+    let (mut h, plugins) = harness_with_bundled(&["logs"]);
+    let bundled = open_id(&mut h, "logs");
+    let dev = tempfile::tempdir().unwrap();
+    let dev_logs = extract_bundled("logs", dev.path());
+    h.trust_plugin_folder(dev.path());
+    let dev_pane = open_path(&mut h, &dev_logs);
+    assert_eq!(focused_pane(&h), dev_pane);
+
+    let install = plugins.join("logs");
+    std::fs::rename(&install, plugins.join("logs.moved")).unwrap();
+    std::os::unix::fs::symlink(&dev_logs, &install).unwrap();
+    let cached = h
+        .app
+        .registries
+        .view_for_root(&h.workspace_root())
+        .get("logs")
+        .expect("the cached bundled entry")
+        .bin_path
+        .clone();
+    assert_eq!(
+        crate::platform::path::canonical_or_self(&cached),
+        guest_origin(&h, dev_pane).entry(),
+        "the cached entry now resolves to the dev pane's entry"
+    );
+
+    let workspace = h.workspace_root();
+    let focused = h
+        .app
+        .launch_view_by_id_with_layout("logs", None, &[], Some(workspace))
+        .expect("logs by id");
+    assert_eq!(
+        focused,
+        Some(bundled),
+        "the bundled pane, never the dev one"
+    );
+    assert_eq!(focused_pane(&h), bundled);
+}
+
+/// Codex 3309 round 1: a fresh id open of a bundled id starts only the
+/// verified bundled copy. A link at its install root to a trusted dev tree
+/// is refused, not admitted by folder trust under the bundled name.
+#[test]
+fn a_fresh_id_open_of_a_bundled_id_never_starts_a_linked_dev_tree() {
+    let (mut h, plugins) = harness_with_bundled(&["logs"]);
+    let dev = tempfile::tempdir().unwrap();
+    let dev_logs = extract_bundled("logs", dev.path());
+    h.trust_plugin_folder(dev.path());
+    // The registry indexed the verified install before the swap.
+    let context = h.app.windows[h.app.active_window].context_id;
+    assert!(h
+        .app
+        .registries
+        .view_for_context(context, &h.app.router)
+        .get("logs")
+        .is_some());
+    let install = plugins.join("logs");
+    std::fs::rename(&install, plugins.join("logs.moved")).unwrap();
+    std::os::unix::fs::symlink(&dev_logs, &install).unwrap();
+    let starts = guest_starts_for_test();
+    let workspace = h.workspace_root();
+    let error = h
+        .app
+        .launch_view_by_id_with_layout("logs", Some("split_h".to_string()), &[], Some(workspace))
+        .unwrap_err();
+    assert!(error.contains("bundled with Plexi"), "{error}");
+    assert_eq!(guest_starts_for_test(), starts, "no guest");
+}
+
+/// Codex 3309 round 1: a manifest-backed WASM plugin admitted by folder
+/// trust that fails to instantiate leaves none of its manifest capability
+/// rows behind.
+#[test]
+fn a_manifest_wasm_plugin_that_fails_to_start_keeps_no_capability_rows() {
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+    let mut h = crate::testing::HostHarness::new();
+    let folder = tempfile::tempdir().unwrap();
+    let dir = folder.path().join("t1733-unlinkable");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("component.wasm"),
+        "(component (import \"plexi:platform/host-state@9.9.9\" (instance (export \"t1733\" (func)))))",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("manifest.toml"),
+        "schema_version = 2\n\n[plugin]\nid = \"t1733-unlinkable\"\nname = \"t\"\nversion = \"0.0.1\"\n\n[plugin.capabilities]\ncapabilities = [\"timer\"]\n\n[runtime]\nkind = \"wasm\"\nentry = \"component.wasm\"\n\n[[contributes.views]]\nid = \"t1733-unlinkable.main\"\ndefault = true\n",
+    )
+    .unwrap();
+    h.trust_plugin_folder(folder.path());
+    let error = h
+        .app
+        .launch_view_by_path_with_layout(&dir.to_string_lossy(), None, None, &[])
+        .unwrap_err();
+    assert!(error.contains("load"), "{error}");
+    assert_eq!(capability_rows(h.profile_dir(), "t1733-unlinkable"), 0);
 }

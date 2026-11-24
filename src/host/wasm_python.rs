@@ -30,7 +30,7 @@ use wasmtime_wasi::cli::{IsTerminal, StdinStream, StdoutStream};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
 
-use crate::app::registry::{PluginManifest, RuntimeExecution};
+use crate::app::registry::RuntimeExecution;
 
 use super::wasm_frame::repaint_delay_until;
 use super::wasm_view::bindings::plexi::platform::types::{
@@ -749,16 +749,6 @@ pub enum WasmPythonError {
     /// report, headline first (`fatal_error::GuestFatalError::report`).
     #[error("{0}")]
     PluginRaised(String),
-    #[error("read manifest at {path}: {source}")]
-    ReadManifest {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-    #[error("parse manifest at {path}: {source}")]
-    ParseManifest {
-        path: PathBuf,
-        source: Box<toml::de::Error>,
-    },
     #[error("runtime.python_compat requires a .py or .pyc entry, got '{entry}'")]
     InvalidEntry { entry: String },
     /// The manifest entry is missing or resolves outside the plugin folder,
@@ -822,8 +812,6 @@ pub enum WasmPythonError {
     #[error("persisted plugin state at {path} must be a JSON object, got {found}")]
     #[cfg(test)]
     StateNotObject { path: PathBuf, found: &'static str },
-    #[error("invalid [state] declaration: {0}")]
-    StateScopes(String),
     #[error("invalid seed state: {0}")]
     HeadlessSeed(String),
     #[error("bridge JSON error: {0}")]
@@ -876,65 +864,51 @@ impl PythonLaunchConfig {
         Self::from_resolved(&resolved)
     }
 
-    /// The launch config for a resolved plugin: its canonical root and the
-    /// exact entry the resolver checked (stint 1398).
+    /// The launch config for a resolved plugin: its canonical root, the exact
+    /// entry the resolver checked (stint 1398), and the manifest the resolver
+    /// parsed. The manifest is never read a second time (stint 1733). `None`
+    /// for a standalone component, which has no manifest.
     pub(crate) fn from_resolved(
         resolved: &crate::app::registry::ResolvedPlugin,
     ) -> Result<Option<Self>, WasmPythonError> {
-        let plugin_dir = resolved.root.as_path();
-        let manifest_path = plugin_dir.join("manifest.toml");
-        let raw = std::fs::read_to_string(&manifest_path).map_err(|source| {
-            WasmPythonError::ReadManifest {
-                path: manifest_path.clone(),
-                source,
-            }
-        })?;
-        let manifest: PluginManifest =
-            toml::from_str(&raw).map_err(|source| WasmPythonError::ParseManifest {
-                path: manifest_path,
-                source: Box::new(source),
-            })?;
-
-        if manifest.runtime.execution != RuntimeExecution::Local {
+        let Some(installed) = resolved.installed.as_ref() else {
+            return Ok(None);
+        };
+        if installed.runtime.execution != RuntimeExecution::Local {
             return Err(WasmPythonError::UnsupportedExecution {
-                execution: manifest.runtime.execution.as_str(),
+                execution: installed.runtime.execution.as_str(),
             });
         }
-
-        let state_scopes = manifest
-            .state_scopes()
-            .map_err(WasmPythonError::StateScopes)?;
-        let state_format = manifest
-            .state_format()
-            .map_err(WasmPythonError::StateScopes)?;
-
-        let entry = manifest.plugin.entry;
+        let entry = &installed.manifest.entry;
         if !(entry.ends_with(".py") || entry.ends_with(".pyc")) {
-            return Err(WasmPythonError::InvalidEntry { entry });
+            return Err(WasmPythonError::InvalidEntry {
+                entry: entry.clone(),
+            });
         }
-        let entry_path = resolved.entry.clone();
-        let module_name = entry_path
+        let plugin_dir = resolved.root.as_path();
+        let module_name = resolved
+            .entry
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or("main")
             .to_string();
-
+        let capabilities = &installed.manifest.capabilities;
         Ok(Some(Self {
-            plugin_id: manifest.plugin.id,
+            plugin_id: resolved.owner.clone(),
             plugin_dir: plugin_dir.to_path_buf(),
-            entry: entry_path,
+            entry: resolved.entry.clone(),
             module_name,
             launch_args: Vec::new(),
             workspace_root: plugin_dir.to_path_buf(),
-            declared_capabilities: manifest.plugin.capabilities.capabilities.clone(),
-            capabilities: manifest.plugin.capabilities.capabilities,
-            allowed_hosts: manifest.plugin.capabilities.allowed_hosts,
+            declared_capabilities: capabilities.capabilities.clone(),
+            capabilities: capabilities.capabilities.clone(),
+            allowed_hosts: capabilities.allowed_hosts.clone(),
             theme: crate::ui::theme::colors_from_config(
                 &crate::config::PlexiConfig::load_with_workspace(Some(plugin_dir)),
             )
             .to_theme_map(),
-            state_scopes,
-            state_format,
+            state_scopes: installed.state_scopes.clone(),
+            state_format: installed.state_format,
             context_root: plugin_dir.to_path_buf(),
         }))
     }
@@ -1691,9 +1665,10 @@ pub struct LivePythonPane {
     announced_permission_read: bool,
     /// Last launch-set decision traced at info per (principal, capability).
     launch_admissions: LaunchAdmissionMemo,
-    /// Host-derived authority over the permission bridge, set at launch and
-    /// re-derived on relaunch because a hot reload can change the files.
-    permission_ui: PermissionUiTrust,
+    /// Who this guest is, as admission verified it when it started (stint
+    /// 1733). Replaced only by a relaunch's own permit, never re-read from
+    /// disk. Bridge trust, tool identity and pane reuse read it.
+    origin: crate::host::plugin_admission::GuestOrigin,
     /// Per-pane typed-pipe registry (stint 0742) tracking directed JSON pipes
     /// opened by or targeting this Python runtime.
     pipes: crate::host::typed_pipes::TypedPipeRegistry,
@@ -2916,17 +2891,13 @@ fn permission_bridge_kind(message_type: Option<&str>) -> Option<PermissionBridge
 const PERMISSIONS_UI_BUNDLE: &str = "permissions";
 
 /// A pane's authority over the permission bridge (stint 1264). Derived from
-/// what the host itself shipped, never from a plugin id or manifest claim.
-/// Interim: stint 1238 replaces it with a broker-admitted capability
-/// (`permissions.manage`).
+/// the origin the host verified when the guest started, never from a plugin
+/// id, manifest claim or the files as they are now. Interim: stint 1238
+/// replaces it with a broker-admitted capability (`permissions.manage`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PermissionUiTrust {
-    /// The plugin folder is byte-identical to this binary's embedded
-    /// Permissions plugin.
+    /// The bundled Permissions plugin, admitted as bundled at its profile root.
     BundledPermissionsUi,
-    /// Uses the id `permissions` but differs from this build's copy, for
-    /// example after an upgrade. Refused like any other plugin, but told why.
-    MismatchedPermissionsCopy,
     Untrusted,
 }
 
@@ -2938,45 +2909,18 @@ const PERMISSION_BRIDGE_REFUSED_NOTICE: &str = "not permitted";
 const PERMISSION_BRIDGE_NOT_HOST_NOTICE: &str =
     "permission decisions are held by the Plexi host and are not available in this process";
 
-/// Refusal notice for a plugin with the id `permissions` that differs from
-/// this build. Names the cause and the fix with the running channel's command
-/// (`plugin uninstall` then `plugin install local:<name>`, see `PluginCmd` in
-/// `src/cli/args.rs`).
-fn permissions_copy_mismatch_notice() -> String {
-    format!(
-        "This Permissions plugin differs from the copy built into this Plexi version, so it cannot read or change permissions. Reinstall it: {}",
-        permissions_reinstall_command()
-    )
-}
-
-fn permissions_reinstall_command() -> String {
-    let cli = crate::cli::setup::cli_name();
-    format!(
-        "{cli} plugin uninstall {PERMISSIONS_UI_BUNDLE} --yes, then {cli} plugin install local:{PERMISSIONS_UI_BUNDLE} --yes"
-    )
-}
-
 /// The one trust predicate for `read_permission_decisions` and
-/// `permission_decision`. The id is a necessary condition only, because the
-/// bundled manifest declares it; any installed plugin may reuse it, so the
-/// content check decides.
-///
-/// What is verified: every file under the plugin folder (`/app` in the guest).
-/// What is not: the SDK root (`/sdk`) and the CPython stdlib the guest also
-/// imports from; those come from the host's own distribution, not the plugin.
-fn permission_ui_trust(plugin_id: &str, plugin_dir: &Path) -> PermissionUiTrust {
-    if plugin_id != PERMISSIONS_UI_BUNDLE {
-        return PermissionUiTrust::Untrusted;
-    }
-    if crate::cli::install_host::matches_bundled_plugin(PERMISSIONS_UI_BUNDLE, plugin_dir) {
+/// `permission_decision` (stint 1733): the guest must carry the Permissions
+/// id and have been admitted as the bundled copy at its designated profile
+/// root. A byte-identical copy admitted by folder trust is a development
+/// copy and gets no bridge. Admission checked the files (every file under the
+/// plugin folder; not the SDK or stdlib, which ship with the host). Stint 1279
+/// swaps this predicate for a binding to the bytes the guest runs.
+fn permission_ui_trust(origin: &crate::host::plugin_admission::GuestOrigin) -> PermissionUiTrust {
+    if origin.owner() == PERMISSIONS_UI_BUNDLE && origin.is_bundled() {
         return PermissionUiTrust::BundledPermissionsUi;
     }
-    log::warn!(
-        "plugin::{plugin_id}: installed copy at {} differs from the Permissions plugin built into this Plexi version; the permission bridge is disabled for it. Fix: {}",
-        plugin_dir.display(),
-        permissions_reinstall_command()
-    );
-    PermissionUiTrust::MismatchedPermissionsCopy
+    PermissionUiTrust::Untrusted
 }
 
 /// A refused bridge message: names only, never the payload. Both fields are
@@ -3128,8 +3072,7 @@ fn answer_permission_bridge(
 }
 
 /// The refusal for every guest that is not the bundled Permissions copy:
-/// one constant reply (or the reinstall notice for a mismatched copy) and a
-/// refusal record. Runs before any permission state is opened.
+/// one constant reply and a refusal record. Runs before any permission state is opened.
 fn refuse_unless_bundled(
     trust: PermissionUiTrust,
     kind: PermissionBridgeKind,
@@ -3138,13 +3081,8 @@ fn refuse_unless_bundled(
     if trust == PermissionUiTrust::BundledPermissionsUi {
         return None;
     }
-    let notice = if trust == PermissionUiTrust::MismatchedPermissionsCopy {
-        permissions_copy_mismatch_notice()
-    } else {
-        PERMISSION_BRIDGE_REFUSED_NOTICE.to_string()
-    };
     Some((
-        rejected_permission_inventory(&notice),
+        rejected_permission_inventory(PERMISSION_BRIDGE_REFUSED_NOTICE),
         bridge_refusal(kind, message, PermissionBridgeRefusalReason::NotPermitted),
     ))
 }
@@ -3242,11 +3180,24 @@ impl LivePythonPane {
     /// the runtime rather than admission. Compiled out of non-test builds.
     #[cfg(test)]
     pub(crate) fn launch_for_test(config: PythonLaunchConfig) -> Result<Self, WasmPythonError> {
-        let admitted = crate::host::plugin_admission::AdmittedPlugin::for_test(
+        Self::launch_with_basis_for_test(
+            config,
+            crate::host::plugin_admission::Basis::TrustedFolder,
+        )
+    }
+
+    /// [`Self::launch_for_test`] admitted on `basis`.
+    #[cfg(test)]
+    pub(crate) fn launch_with_basis_for_test(
+        config: PythonLaunchConfig,
+        basis: crate::host::plugin_admission::Basis,
+    ) -> Result<Self, WasmPythonError> {
+        let admitted = crate::host::plugin_admission::AdmittedPlugin::with_basis_for_test(
             &config.plugin_id,
             crate::app::registry::ManifestType::Python,
             &config.plugin_dir,
             &config.entry,
+            basis,
         );
         Self::launch(admitted, config)
     }
@@ -3264,11 +3215,11 @@ impl LivePythonPane {
             )));
         }
         let start = admitted.commit();
-        config.plugin_id = start.owner.clone();
-        config.plugin_dir = start.root.clone();
-        config.entry = start.entry.clone();
+        let origin = start.origin.clone();
+        config.plugin_id = origin.owner().to_string();
+        config.plugin_dir = origin.root().to_path_buf();
+        config.entry = origin.entry().to_path_buf();
         let plugin_id = config.plugin_id.clone();
-        let permission_ui = permission_ui_trust(&plugin_id, &config.plugin_dir);
         let persisted_states = load_python_states(&config);
         let context_root = config.context_root.clone();
         let (http_tx, http_rx) = std::sync::mpsc::channel();
@@ -3373,7 +3324,7 @@ impl LivePythonPane {
             unhandled_warned_at: HashMap::new(),
             announced_permission_read: false,
             launch_admissions: LaunchAdmissionMemo::default(),
-            permission_ui,
+            origin,
             pipes: crate::host::typed_pipes::TypedPipeRegistry::new(
                 crate::config::config_dir().join("pipes"),
             ),
@@ -4911,7 +4862,7 @@ impl LivePythonPane {
 
     fn handle_permission_bridge(&mut self, kind: PermissionBridgeKind, message: &Value) {
         if kind == PermissionBridgeKind::Read
-            && self.permission_ui == PermissionUiTrust::BundledPermissionsUi
+            && self.permission_ui() == PermissionUiTrust::BundledPermissionsUi
             && !self.announced_permission_read
         {
             self.announced_permission_read = true;
@@ -4921,7 +4872,7 @@ impl LivePythonPane {
             );
         }
         let (reply, refusal) =
-            serve_permission_bridge(self.permission_ui, kind, message, &self.plugin_id);
+            serve_permission_bridge(self.permission_ui(), kind, message, &self.plugin_id);
         if let Some(refusal) = refusal {
             self.warn_refused_permission_bridge(&refusal);
         }
@@ -5397,7 +5348,7 @@ impl LivePythonPane {
                 })
                 .collect(),
         );
-        if self.permission_ui == PermissionUiTrust::BundledPermissionsUi {
+        if self.permission_ui() == PermissionUiTrust::BundledPermissionsUi {
             let entries = Self::permission_entries();
             log::info!(
                 "plugin::{}: seeded permission inventory count={}",
@@ -6168,25 +6119,26 @@ impl LivePythonPane {
             .unwrap_or_else(|e| e.into_inner())
             .suppressed
     }
-    /// The plugin tree this pane runs; a relaunch reads it again.
-    pub(crate) fn plugin_dir(&self) -> &Path {
-        &self.config.plugin_dir
+    /// Who this guest is, as admission verified it when it started.
+    pub(crate) fn origin(&self) -> &crate::host::plugin_admission::GuestOrigin {
+        &self.origin
     }
 
-    /// The canonical entry this pane runs: the pane's host-owned origin.
-    pub(crate) fn entry(&self) -> &Path {
-        &self.config.entry
+    /// This pane's authority over the permission bridge, from its origin.
+    fn permission_ui(&self) -> PermissionUiTrust {
+        permission_ui_trust(&self.origin)
     }
 
     /// [`Self::relaunch`] with a permit for this pane's own tree, for tests
     /// of the runtime. Compiled out of non-test builds.
     #[cfg(test)]
     pub(crate) fn relaunch_for_test(&mut self) -> Result<(), WasmPythonError> {
-        let admitted = crate::host::plugin_admission::AdmittedPlugin::for_test(
+        let admitted = crate::host::plugin_admission::AdmittedPlugin::with_basis_for_test(
             &self.plugin_id,
             crate::app::registry::ManifestType::Python,
             &self.config.plugin_dir,
             &self.config.entry,
+            self.origin.basis(),
         );
         self.relaunch(admitted)
     }
@@ -6199,8 +6151,8 @@ impl LivePythonPane {
         admitted: crate::host::plugin_admission::AdmittedPlugin<'_>,
     ) -> Result<(), WasmPythonError> {
         if admitted.kind() != crate::app::registry::ManifestType::Python
-            || admitted.owner() != self.plugin_id
-            || admitted.root() != self.config.plugin_dir
+            || admitted.owner() != self.origin.owner()
+            || admitted.root() != self.origin.root()
         {
             return Err(WasmPythonError::Entry(format!(
                 "reload of '{}' was admitted for another plugin ({} at {})",
@@ -6210,17 +6162,14 @@ impl LivePythonPane {
             )));
         }
         let start = admitted.commit();
-        self.config.module_name = start
-            .entry
+        let origin = start.origin.clone();
+        self.config.module_name = origin
+            .entry()
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or("main")
             .to_string();
-        self.config.entry = start.entry.clone();
-        // Check the files before the new guest can run, and drop the old
-        // trust first so a failed launch leaves the pane untrusted.
-        let permission_ui = permission_ui_trust(&self.plugin_id, &self.config.plugin_dir);
-        self.permission_ui = PermissionUiTrust::Untrusted;
+        self.config.entry = origin.entry().to_path_buf();
         // Drop the old decoder (closes its stdout, joins the thread) before the
         // old runtime is replaced, then bind a fresh decoder to the new
         // runtime's stdout. The shared repaint hook carries over so the new
@@ -6296,7 +6245,8 @@ impl LivePythonPane {
         self.unhandled_warned_at.clear();
         self.announced_permission_read = false;
         self.launch_admissions = LaunchAdmissionMemo::default();
-        self.permission_ui = permission_ui;
+        // The new guest is who its own permit says it is.
+        self.origin = origin;
         // A new guest gets a new epoch: every ref read from the old tree is
         // stale from here on, and a pending focus request with it.
         self.epoch = uuid::Uuid::new_v4().as_u128();
@@ -12791,43 +12741,47 @@ default = true
         }
     }
 
+    /// Stint 1733: bridge trust comes from the basis admission recorded when
+    /// the guest started, never from the id or from the files as they are.
+    /// A byte-identical copy extracted outside the profile and admitted by
+    /// folder trust is a development copy: no bridge.
     #[test]
-    fn permission_bridge_trust_comes_from_bundled_content_not_the_id() {
+    fn permission_bridge_trust_comes_from_the_admitted_origin_not_the_id_or_bytes() {
+        use crate::host::plugin_admission::{Basis, GuestOrigin};
         let root = tempdir().expect("root");
         let bundled =
             crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
+        let origin = |id: &str, basis| {
+            GuestOrigin::for_test(
+                id,
+                crate::app::registry::ManifestType::Python,
+                &bundled,
+                &bundled.join("main.py"),
+                basis,
+            )
+        };
         assert_eq!(
-            permission_ui_trust("permissions", &bundled),
+            permission_ui_trust(&origin("permissions", Basis::Bundled)),
             PermissionUiTrust::BundledPermissionsUi
         );
         assert_eq!(
-            permission_ui_trust("other", &bundled),
+            permission_ui_trust(&origin("other", Basis::Bundled)),
             PermissionUiTrust::Untrusted,
             "the bundled copy is trusted only under its own id"
         );
-
-        let spoof = tempdir().expect("spoof");
-        std::fs::write(
-            spoof.path().join("manifest.toml"),
-            std::fs::read_to_string(bundled.join("manifest.toml")).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(
-            spoof.path().join("main.py"),
-            "def init(size, args):\n    return []\n",
-        )
-        .unwrap();
+        assert!(crate::cli::install_host::matches_bundled_plugin(
+            "permissions",
+            &bundled
+        ));
         assert_eq!(
-            permission_ui_trust("permissions", spoof.path()),
-            PermissionUiTrust::MismatchedPermissionsCopy,
-            "declaring id = \"permissions\" is not provenance"
+            permission_ui_trust(&origin("permissions", Basis::TrustedFolder)),
+            PermissionUiTrust::Untrusted,
+            "identical bytes admitted by folder trust are a development copy"
         );
-
-        std::fs::write(bundled.join("typing.pyc"), b"\x00").unwrap();
         assert_eq!(
-            permission_ui_trust("permissions", &bundled),
-            PermissionUiTrust::MismatchedPermissionsCopy,
-            "bundled source plus a planted module is not the bundled plugin"
+            permission_ui_trust(&origin("permissions", Basis::ProfileAllow)),
+            PermissionUiTrust::Untrusted,
+            "an allowed profile plugin is not the bundled one"
         );
     }
 
@@ -13139,57 +13093,6 @@ default = true
         )));
     }
 
-    #[test]
-    fn a_mismatched_permissions_copy_is_told_the_cause_and_fix_others_are_not() {
-        let fx = bridge_fixture();
-        let before = rows(&fx.monitor);
-        let read = json!({"type": "read_permission_decisions"});
-        let answer = |trust, kind, message: &Value, plugin| {
-            answer_permission_bridge(trust, kind, message, &fx.monitor, plugin).0
-        };
-        for (kind, message) in [
-            (PermissionBridgeKind::Read, read.clone()),
-            (PermissionBridgeKind::Decide, decide(&fx.pending, "allow")),
-        ] {
-            let stale = answer(
-                PermissionUiTrust::MismatchedPermissionsCopy,
-                kind,
-                &message,
-                "permissions",
-            );
-            assert_eq!(stale["status"], "rejected");
-            assert_eq!(stale["entries"], json!([]));
-            let notice = stale["notice"].as_str().unwrap();
-            assert!(notice.contains("differs from the copy built into this Plexi version"));
-            assert!(
-                notice.contains(&format!(
-                    "{} plugin install local:permissions --yes",
-                    crate::cli::setup::cli_name()
-                )),
-                "{notice}"
-            );
-
-            let other = answer(PermissionUiTrust::Untrusted, kind, &message, "evil");
-            assert_eq!(
-                other,
-                json!({
-                    "type": "permission_inventory",
-                    "entries": [],
-                    "notice": "not permitted",
-                    "status": "rejected",
-                }),
-                "other plugins get one constant reply"
-            );
-        }
-        assert_eq!(rows(&fx.monitor), before);
-        let root = tempdir().expect("root");
-        assert_eq!(
-            permission_ui_trust("evil", root.path()),
-            PermissionUiTrust::Untrusted,
-            "only the id permissions gets the reinstall notice"
-        );
-    }
-
     /// Stint 1291: outside the host, an untrusted guest still gets #3062's
     /// one constant refusal and a refusal record (the trust check runs before
     /// the monitor is opened); the bundled guest gets a constant not-the-host
@@ -13341,26 +13244,19 @@ default = true
             .collect()
     }
 
-    #[test]
-    fn live_pane_refuses_a_spoofed_permissions_plugin_end_to_end() {
+    /// Launch the Permissions copy at `dir` admitted by folder trust and drive
+    /// list, approve and revoke through the bridge: each is refused and the
+    /// monitor is unchanged.
+    fn assert_folder_copy_gets_no_bridge(dir: &Path, pending_call: &str) {
         let monitor_profile = bridge_profile();
         let monitor = monitor_profile.monitor();
-        let pending = bridge_admit(&monitor, "call-live-spoof", "bridge.live");
-        let root = tempdir().expect("root");
-        let spoof =
-            crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
-        let mut main = std::fs::read(spoof.join("main.py")).unwrap();
-        main.extend_from_slice(b"\n# not the bundled code\n");
-        std::fs::write(spoof.join("main.py"), main).unwrap();
+        let pending = bridge_admit(&monitor, pending_call, "bridge.live");
         let ctx = tempdir().expect("context");
 
-        let mut pane = LivePythonPane::launch_for_test(bridge_pane_config(&spoof, ctx.path()))
-            .expect("launch spoof");
-        assert_eq!(pane.plugin_id, "permissions", "the spoof claims the id");
-        assert_eq!(
-            pane.permission_ui,
-            PermissionUiTrust::MismatchedPermissionsCopy
-        );
+        let mut pane = LivePythonPane::launch_for_test(bridge_pane_config(dir, ctx.path()))
+            .expect("launch folder copy");
+        assert_eq!(pane.plugin_id, "permissions", "the copy claims the id");
+        assert_eq!(pane.permission_ui(), PermissionUiTrust::Untrusted);
         assert!(seeded_entry_ids(&pane).is_empty(), "no inventory at open");
 
         let before = rows(&monitor);
@@ -13383,46 +13279,89 @@ default = true
     }
 
     #[test]
-    fn relaunch_rederives_bridge_trust_before_the_new_guest_runs() {
+    fn live_pane_refuses_a_spoofed_permissions_plugin_end_to_end() {
+        let root = tempdir().expect("root");
+        let spoof =
+            crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
+        let mut main = std::fs::read(spoof.join("main.py")).unwrap();
+        main.extend_from_slice(b"\n# not the bundled code\n");
+        std::fs::write(spoof.join("main.py"), main).unwrap();
+        assert_folder_copy_gets_no_bridge(&spoof, "call-live-spoof");
+    }
+
+    /// Stint 1733: identical bytes are not provenance. A byte-for-byte copy
+    /// of the bundled Permissions plugin admitted by folder trust cannot
+    /// list, approve or revoke.
+    #[test]
+    fn a_byte_identical_folder_copy_of_permissions_cannot_list_approve_or_revoke() {
+        let root = tempdir().expect("root");
+        let copy =
+            crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
+        assert!(crate::cli::install_host::matches_bundled_plugin(
+            "permissions",
+            &copy
+        ));
+        assert_folder_copy_gets_no_bridge(&copy, "call-live-identical");
+    }
+
+    /// A relaunch is a new start: bridge trust comes from the permit that
+    /// starts the new guest, not from the one before (stints 1264, 1733).
+    #[test]
+    fn relaunch_takes_bridge_trust_from_the_new_guests_permit() {
+        use crate::host::plugin_admission::{AdmittedPlugin, Basis};
         let monitor_profile = bridge_profile();
         let monitor = monitor_profile.monitor();
         let pending = bridge_admit(&monitor, "call-live-reload", "bridge.reload");
         let root = tempdir().expect("root");
         let dir =
-            crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
+            crate::cli::install_host::test_support::extract_bundled("permissions", root.path())
+                .canonicalize()
+                .unwrap();
         let ctx = tempdir().expect("context");
-        let original = std::fs::read(dir.join("main.py")).unwrap();
+        let permit = |basis| {
+            AdmittedPlugin::with_basis_for_test(
+                "permissions",
+                crate::app::registry::ManifestType::Python,
+                &dir,
+                &dir.join("main.py"),
+                basis,
+            )
+        };
 
-        let mut pane = LivePythonPane::launch_for_test(bridge_pane_config(&dir, ctx.path()))
-            .expect("launch bundled");
-        assert_eq!(pane.permission_ui, PermissionUiTrust::BundledPermissionsUi);
+        let mut pane = LivePythonPane::launch_with_basis_for_test(
+            bridge_pane_config(&dir, ctx.path()),
+            Basis::Bundled,
+        )
+        .expect("launch bundled");
+        assert_eq!(
+            pane.permission_ui(),
+            PermissionUiTrust::BundledPermissionsUi
+        );
         assert!(
             seeded_entry_ids(&pane).contains(&pending),
             "bundled copy is seeded"
         );
 
-        // Hot reload onto changed files: trust does not survive.
-        let mut swapped = original.clone();
-        swapped.extend_from_slice(b"\n# swapped in\n");
-        std::fs::write(dir.join("main.py"), &swapped).unwrap();
-        pane.relaunch_for_test().expect("relaunch swapped");
-        assert_eq!(
-            pane.permission_ui,
-            PermissionUiTrust::MismatchedPermissionsCopy
-        );
+        // Re-admitted as a folder copy: trust does not survive the reload.
+        pane.relaunch(permit(Basis::TrustedFolder))
+            .expect("relaunch as a folder copy");
+        assert_eq!(pane.permission_ui(), PermissionUiTrust::Untrusted);
         assert!(seeded_entry_ids(&pane).is_empty());
         let before = rows(&monitor);
         pane.handle_message(decide(&pending, "revoke"));
-        assert_eq!(rows(&monitor), before, "swapped code cannot decide");
+        assert_eq!(rows(&monitor), before, "a folder copy cannot decide");
 
-        // Restoring the shipped bytes restores trust on the next reload.
-        std::fs::write(dir.join("main.py"), &original).unwrap();
-        pane.relaunch_for_test().expect("relaunch restored");
-        assert_eq!(pane.permission_ui, PermissionUiTrust::BundledPermissionsUi);
+        // Re-admitted as the bundled copy: trust returns with the new guest.
+        pane.relaunch(permit(Basis::Bundled))
+            .expect("relaunch bundled");
+        assert_eq!(
+            pane.permission_ui(),
+            PermissionUiTrust::BundledPermissionsUi
+        );
         pane.handle_message(decide(&pending, "revoke"));
         assert!(
             !rows(&monitor).iter().any(|(id, _)| id == &pending),
-            "restored bundled code may revoke"
+            "the bundled guest may revoke"
         );
         assert!(Arc::ptr_eq(&monitor, &monitor_profile.monitor()));
     }

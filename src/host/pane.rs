@@ -2275,6 +2275,30 @@ pub(crate) enum NotAdmitted {
     Full,
 }
 
+/// Prefix of a development pane's tool identity: see
+/// [`ViewPane::tool_identity`].
+pub(crate) const DEVELOPMENT_TOOL_IDENTITY: &str = "dev:";
+
+/// Who a live view pane is: see [`ViewRuntime::origin`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaneOrigin<'a> {
+    /// Compiled into this binary.
+    Builtin,
+    /// A plugin guest, as admission verified it.
+    Guest(&'a crate::host::plugin_admission::GuestOrigin),
+}
+
+impl PaneOrigin<'_> {
+    /// Whether this pane may act under its declared plugin id: every builtin,
+    /// and a guest that owns its declared id.
+    pub(crate) fn owns_declared_id(self) -> bool {
+        match self {
+            Self::Builtin => true,
+            Self::Guest(origin) => origin.owns_declared_id(),
+        }
+    }
+}
+
 pub enum ViewRuntime {
     Builtin(Box<dyn View>),
     Python(Box<crate::host::wasm_python::LivePythonPane>),
@@ -2285,17 +2309,16 @@ pub enum ViewRuntime {
 }
 
 impl ViewRuntime {
-    /// The canonical entry file this pane's guest runs, set by the host when
-    /// it started the guest (stint 1398). Rust builtins run no plugin file.
-    /// Two panes with one plugin id but different origins are different
-    /// plugins: a development copy never stands in for the bundled one.
-    pub(crate) fn origin_entry(&self) -> Option<std::path::PathBuf> {
+    /// Who this pane is (stint 1733): a Rust builtin, or a guest with the
+    /// origin admission verified when it started. Fixed at construction;
+    /// never re-resolved from the filesystem. Two panes with one plugin id
+    /// but different origins are different plugins: a development copy never
+    /// stands in for the bundled one.
+    pub(crate) fn origin(&self) -> PaneOrigin<'_> {
         match self {
-            Self::Python(runtime) => {
-                Some(crate::platform::path::canonical_or_self(runtime.entry()))
-            }
-            Self::Wasm(live) => Some(crate::platform::path::canonical_or_self(live.wasm_path())),
-            Self::Builtin(_) => None,
+            Self::Python(runtime) => PaneOrigin::Guest(runtime.origin()),
+            Self::Wasm(live) => PaneOrigin::Guest(live.origin()),
+            Self::Builtin(_) => PaneOrigin::Builtin,
         }
     }
 
@@ -2945,6 +2968,23 @@ impl Default for ViewIncarnation {
 }
 
 impl ViewPane {
+    /// The plugin identity this pane's tools are registered, named and
+    /// granted under (stint 1733): the broker package of every call to them.
+    /// A pane that owns its declared id uses that id. A development copy
+    /// declaring a bundled plugin's id is `dev:<id>:<pane>`: `:` never appears
+    /// in a plugin id (`validate_plugin_id`), and a bundled instance's
+    /// qualified name `<id>:<pane>` has one colon, so the two never match,
+    /// even for an overlay that reuses the covered pane's id.
+    pub(crate) fn tool_identity(&self) -> String {
+        if self.runtime.origin().owns_declared_id() {
+            return self.manifest_id.clone();
+        }
+        format!(
+            "{DEVELOPMENT_TOOL_IDENTITY}{}:{}",
+            self.manifest_id, self.id
+        )
+    }
+
     pub(crate) fn semantic_state(&self) -> SemanticPaneState {
         match &self.runtime {
             ViewRuntime::Builtin(_) => self.semantic_state.clone(),

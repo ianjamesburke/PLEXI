@@ -543,7 +543,7 @@ impl PlexiApp {
                                     pane.as_view().and_then(|app| {
                                         app.runtime.tool_event_sender(ctx.clone()).map(|sender| {
                                             (
-                                                app.manifest_id.clone(),
+                                                app.tool_identity(),
                                                 sender,
                                                 crate::plexi_ai::tool_dispatch::ViewInstanceKey::of(
                                                     app,
@@ -597,7 +597,7 @@ impl PlexiApp {
                             pane.as_view().and_then(|app| {
                                 app.runtime.tool_event_sender(ctx.clone()).map(|sender| {
                                     (
-                                        app.manifest_id.clone(),
+                                        app.tool_identity(),
                                         sender,
                                         crate::plexi_ai::tool_dispatch::ViewInstanceKey::of(app),
                                     )

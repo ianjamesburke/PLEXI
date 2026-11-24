@@ -979,8 +979,8 @@ impl PluginRegistry {
         // An invalid `[state]` declaration (scopes or format) fails install
         // loudly, same discipline as capabilities and on_launch above: a typo
         // silently creating an unreachable scope would orphan the plugin's data.
-        // The launch path re-reads the manifest and re-validates in
-        // `PythonLaunchConfig::from_manifest_file`.
+        // The launch path reuses these validated values from the resolver's
+        // parse (`PythonLaunchConfig::from_resolved`, stint 1733).
         let state_scopes = manifest.state_scopes()?;
         let state_format = manifest.state_format()?;
         let state_declared = manifest.state.is_some();

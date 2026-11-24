@@ -584,6 +584,10 @@ impl WasmPane {
         self.pane_id = pane_id;
     }
 
+    /// Who this component is, as admission verified it when it started.
+    pub(crate) fn origin(&self) -> &crate::host::plugin_admission::GuestOrigin {
+        self.app.origin()
+    }
     /// Stamp the host-established context this instance lives in — called
     /// alongside `set_pane_id` at pane placement (stint 0724 Phase D).
     /// Always called AFTER `set_pane_id` (see the placement closure in
@@ -2029,16 +2033,13 @@ pub struct LiveWasmPane {
     /// Launch arguments (`plexi view open <path> -- <args>`), forwarded to the
     /// guest's `init` as its argv. Empty for palette/registry launches.
     launch_args: Vec<String>,
-    /// Path to the `.wasm` component this pane was loaded from — kept for
-    /// `launch_spec()` so a workspace restore (stint 0680) can relaunch the
-    /// exact same binary without going back through plugin-id registry lookup.
-    wasm_path: PathBuf,
 }
 
 impl LiveWasmPane {
-    /// The component file this pane runs: the pane's host-owned origin.
-    pub(crate) fn wasm_path(&self) -> &std::path::Path {
-        &self.wasm_path
+    /// Who this pane's component is, as admission verified it when it
+    /// started (stint 1733).
+    pub(crate) fn origin(&self) -> &crate::host::plugin_admission::GuestOrigin {
+        self.inner.origin()
     }
 
     /// Build a live pane. `init` is deferred to the first `ui` call, when the
@@ -2048,7 +2049,6 @@ impl LiveWasmPane {
         spawn_name: impl Into<String>,
         snapshot: StateSnapshot,
         launch_args: Vec<String>,
-        wasm_path: PathBuf,
     ) -> Self {
         LiveWasmPane {
             inner,
@@ -2072,15 +2072,15 @@ impl LiveWasmPane {
             last_present: None,
             sim_ns: None,
             launch_args,
-            wasm_path,
         }
     }
 
     /// Enough launch context to relaunch this exact WASM component through
-    /// the normal open path on a workspace restore (stint 0680).
+    /// the normal open path on a workspace restore (stint 0680): the entry
+    /// its origin names.
     pub(crate) fn launch_spec(&self) -> crate::workspace::SavedViewLaunch {
         crate::workspace::SavedViewLaunch::Wasm {
-            wasm_path: self.wasm_path.clone(),
+            wasm_path: self.origin().entry().to_path_buf(),
             args: self.launch_args.clone(),
         }
     }
@@ -3289,7 +3289,6 @@ mod tests {
             "counter",
             StateSnapshot { entries: vec![] },
             Vec::new(),
-            PathBuf::from("/tmp/counter.wasm"),
         );
         live.inner.register_directed_pipe("p", 7).expect("register");
         let handle = live.inner.directed_pipe_handle(7).expect("handle");
@@ -3330,7 +3329,6 @@ mod tests {
             "counter",
             StateSnapshot { entries: vec![] },
             Vec::new(),
-            PathBuf::from("/tmp/counter.wasm"),
         );
         let snapshot = live.pending_init.take().expect("deferred init");
         live.inner
@@ -3382,7 +3380,6 @@ mod tests {
             "counter",
             StateSnapshot { entries: vec![] },
             Vec::new(),
-            PathBuf::from("/tmp/counter.wasm"),
         );
         let snapshot = live.pending_init.take().expect("deferred init");
         live.inner
@@ -4696,7 +4693,6 @@ mod tests {
             "sysmon",
             StateSnapshot { entries: vec![] },
             Vec::new(),
-            PathBuf::from("/tmp/test.wasm"),
         );
         live.inner
             .init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])
@@ -4839,7 +4835,6 @@ mod tests {
             "wasm-test",
             StateSnapshot { entries: vec![] },
             Vec::new(),
-            PathBuf::from("/tmp/test.wasm"),
         );
         assert!(!live.has_pending_capability_prompt());
         live.inner.exec(request_capability("fs:read:/tmp"), 0);
@@ -5083,7 +5078,6 @@ mod tests {
             "sysmon",
             StateSnapshot { entries: vec![] },
             vec![],
-            PathBuf::from("/tmp/test.wasm"),
         );
         live.queue_outbound_event(crate::protocol::PlexiEvent::PluginEvent {
             subscription_id: "sub-1".to_string(),
@@ -5585,7 +5579,6 @@ mod tests {
             "wasm-test",
             StateSnapshot { entries: vec![] },
             Vec::new(),
-            PathBuf::from("/tmp/test.wasm"),
         );
 
         assert_eq!(
@@ -6069,7 +6062,6 @@ mod tests {
             "wasm-test",
             StateSnapshot { entries: vec![] },
             Vec::new(),
-            PathBuf::from("/tmp/test.wasm"),
         );
         live.set_pane_id(pane_id);
         live.inner.exec(request_capability("fs:read:/tmp"), 0);
@@ -6168,7 +6160,6 @@ mod tests {
             "wasm-test",
             StateSnapshot { entries: vec![] },
             Vec::new(),
-            PathBuf::from("/tmp/test.wasm"),
         );
         live.set_pane_id(pane_id);
         live.inner.exec(request_capability("fs:read:/tmp"), 0);
@@ -6244,7 +6235,6 @@ mod tests {
             "wasm-test",
             StateSnapshot { entries: vec![] },
             Vec::new(),
-            PathBuf::from("/tmp/test.wasm"),
         );
         live.set_pane_id(pane_id);
         live.inner.exec(request_capability("fs:read:/tmp"), 0);
@@ -6286,7 +6276,6 @@ mod tests {
             "wasm-test",
             StateSnapshot { entries: vec![] },
             Vec::new(),
-            PathBuf::from("/tmp/test.wasm"),
         );
         live.set_pane_id(pane_id);
         live.inner.exec(request_capability("fs:read:/tmp"), 0);
