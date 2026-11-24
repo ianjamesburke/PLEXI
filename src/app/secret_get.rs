@@ -2472,7 +2472,7 @@ mod cli_tests {
 
         fn command(&self, op: &str) -> Command {
             let mut command = cli(op, self.h.profile_dir());
-            command.env("SECRET_TEST_NAME", &self.name);
+            command.env("SECRET_TEST_NAME", &self.name).env("PATH", "/usr/bin:/bin");
             if let Some(socket) = &self.socket {
                 command.env("SECRET_TEST_SOCKET", socket);
             }
