@@ -8,6 +8,10 @@
 # value is generated at runtime and is not written into this script.
 set -uo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PLEXI="${PLEXI_BIN:-${1:-$REPO_ROOT/target/release/plexi}}"
+PLEXI="$(python3 "$REPO_ROOT/scripts/require_test_hook_binary.py" --installed -- "$PLEXI")" || exit $?
+
 # The permission MAC is stored in Secret Service on Linux. A private session
 # bus keeps that key off the login keyring. Folder values still use the
 # encrypted-file backend below.
@@ -15,8 +19,6 @@ if [[ "$(uname -s)" == "Linux" && -z "${FOLDER_SECRETS_E2E_INNER:-}" ]] && comma
   exec dbus-run-session -- env FOLDER_SECRETS_E2E_INNER=1 "$0" "$@"
 fi
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PLEXI="${PLEXI_BIN:-${1:-$REPO_ROOT/target/release/plexi}}"
 WORK="$(mktemp -d -t plexi-folder-secrets-XXXXXX)"
 HOME_DIR="$WORK/home"
 DIR_A="$WORK/A"
@@ -162,11 +164,6 @@ contains_secret() {
   { [[ -n "$SECRET" && "$text" == *"$SECRET"* ]] ; } \
     || { [[ -n "$SECRET_B" && "$text" == *"$SECRET_B"* ]] ; }
 }
-
-if [[ ! -x "$PLEXI" ]]; then
-  echo "FAIL: no executable at $PLEXI — run 'just build' first" >&2
-  exit 1
-fi
 
 SECRET="$(openssl rand -hex 24)"
 SECRET="fs9-${SECRET}"

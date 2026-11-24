@@ -57,7 +57,7 @@ impl StartupErrorView {
                     .then(|| "Nothing was moved or changed.".to_owned()),
                 log_path,
             },
-            ProfileInitError::Other(message) => Self {
+            ProfileInitError::UnsafeProfile(message) | ProfileInitError::Other(message) => Self {
                 title: "Plexi could not prepare its profile".into(),
                 plugin: None,
                 file: None,
@@ -236,14 +236,17 @@ pub(crate) fn show(view: StartupErrorView, colors: Colors) -> eframe::Result {
 /// this brings it up, replays the buffered failure into `plexi.log`, then
 /// prints the CLI line and, for a GUI launch, opens the window.
 pub(crate) fn exit_on_profile_init_failure(error: &ProfileInitError, show_window: bool) -> ! {
-    let config = crate::config::PlexiConfig::load();
-    let log_config = config.log.clone().unwrap_or_default();
-    crate::platform::logging::init(
-        log_config.level_filter().unwrap_or(log::LevelFilter::Info),
-        log_config.retention_days.unwrap_or(30),
-        !show_window,
-    );
-    crate::app::plugin_migration::replay_early_traces();
+    // The profile log and configuration may themselves be behind the link.
+    if !matches!(error, ProfileInitError::UnsafeProfile(_)) {
+        let config = crate::config::PlexiConfig::load();
+        let log_config = config.log.clone().unwrap_or_default();
+        crate::platform::logging::init(
+            log_config.level_filter().unwrap_or(log::LevelFilter::Info),
+            log_config.retention_days.unwrap_or(30),
+            !show_window,
+        );
+        crate::app::plugin_migration::replay_early_traces();
+    }
     report_profile_init_failure(error, show_window)
 }
 
@@ -276,10 +279,22 @@ fn report_profile_init_failure(error: &ProfileInitError, show_window: bool) -> !
         "startup: profile initialization failed, exiting with status 1 (window={show_window})"
     );
     log::logger().flush();
-    eprintln!("profile initialization: {error}");
+    if matches!(error, ProfileInitError::UnsafeProfile(_)) {
+        eprintln!("WARN host: {error}");
+    } else {
+        eprintln!("profile initialization: {error}");
+    }
     if show_window {
-        let view = StartupErrorView::from_error(error, &crate::platform::logging::log_path());
-        let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::load());
+        let (view, colors) = match error {
+            ProfileInitError::UnsafeProfile(_) => (
+                StartupErrorView::from_error(error, Path::new("standard error")),
+                Colors::from_config(&Default::default()),
+            ),
+            _ => (
+                StartupErrorView::from_error(error, &crate::platform::logging::log_path()),
+                crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::load()),
+            ),
+        };
         if let Err(window_error) = show(view, colors) {
             log::error!("startup_error: cannot open the error window: {window_error}");
             log::logger().flush();

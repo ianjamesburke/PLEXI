@@ -134,6 +134,14 @@ check-sysinfo-features:
 check-ui-layout:
     python3 scripts/check-ui-layout.py --test
 
+# Check a release artifact before packaging it.
+check-release-hook-names $binary:
+    bash scripts/check-release-hook-names.sh "$binary"
+
+# Exercise keychain entry-point preflights with inert fixture binaries.
+check-keychain-binary-guard:
+    bash scripts/test-keychain-binary-guard.sh
+
 build:
     bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py build --release
 

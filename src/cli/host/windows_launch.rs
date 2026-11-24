@@ -1,6 +1,7 @@
 //! Detached GUI launch with no inherited handles, including anonymous capture
 //! pipes inherited by the CLI itself. `Command`'s NUL stdio redirection alone
 //! does not prevent those extra handles keeping a caller's ReadToEnd alive.
+use std::ffi::OsString;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
@@ -10,7 +11,11 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_INFORMATION, STARTUPINFOW,
 };
 
-pub(super) fn spawn(binary: &Path, args: &[String], env: &[(String, String)]) -> io::Result<u32> {
+pub(super) fn spawn(
+    binary: &Path,
+    args: &[String],
+    env: &[(OsString, OsString)],
+) -> io::Result<u32> {
     let mut application: Vec<u16> = binary.as_os_str().encode_wide().collect();
     if application.contains(&0) {
         return Err(io::Error::new(
@@ -34,21 +39,29 @@ pub(super) fn spawn(binary: &Path, args: &[String], env: &[(String, String)]) ->
     application.push(0);
     // CreateProcess requires a sorted, double-NUL-terminated Unicode block.
     let mut entries = env.to_vec();
-    entries.sort_by_key(|(key, _)| key.to_uppercase());
+    entries.sort_by_key(|(key, _)| key.to_string_lossy().to_uppercase());
     let mut environment = Vec::new();
     for (key, value) in entries {
         // Windows also exports hidden drive-current-directory keys (=C:).
+        let key: Vec<_> = key.encode_wide().collect();
+        let value: Vec<_> = value.encode_wide().collect();
+        let equals = u16::from(b'=');
         if key.is_empty()
-            || key.contains('\0')
-            || key.strip_prefix('=').unwrap_or(&key).contains('=')
-            || value.contains('\0')
+            || key.contains(&0)
+            || key
+                .strip_prefix(&[equals])
+                .unwrap_or(&key)
+                .contains(&equals)
+            || value.contains(&0)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid host environment",
             ));
         }
-        environment.extend(format!("{key}={value}").encode_utf16());
+        environment.extend(key);
+        environment.push(equals);
+        environment.extend(value);
         environment.push(0);
     }
     environment.push(0);

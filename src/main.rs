@@ -130,7 +130,7 @@ fn main() -> eframe::Result {
             match cli::host::host_target() {
                 Ok(target) => Some(target.socket()),
                 Err(error) => {
-                    eprintln!("error: {error}");
+                    eprintln!("WARN host: {error}");
                     cli::trace::exit(1);
                 }
             }
@@ -161,6 +161,35 @@ fn main() -> eframe::Result {
     };
     let is_plugin_prune_command = surface_path.starts_with(&["plugin".into(), "prune".into()]);
 
+    let cli_mode = !host_startup;
+    // Classify the launch before the profile is touched. A CLI command
+    // initializes the profile only when no host of another build runs on it
+    // (stint 1609). A host launch takes the initialization lock here and
+    // claims the profile under it below, before it initializes anything.
+    let profile_init_failed = |error: crate::config::ProfileInitError| -> ! {
+        let show_window = app::startup_error::shows_window(!cli_mode, boot_state.is_background());
+        app::startup_error::exit_on_profile_init_failure(&error, show_window)
+    };
+    let host_lock = match app::host_instance::host_launch(
+        cli_mode,
+        std::env::var("PLEXI_RUNNING").ok().as_deref(),
+    ) {
+        app::host_instance::HostLaunch::Cli => None,
+        // Plexi-in-Plexi: a bare launch typed in a Plexi pane shows help
+        // rather than starting a second GUI, and never touches the profile.
+        app::host_instance::HostLaunch::InsidePlexi => cli::trace::exit(cli::front::emit_help(
+            &bin,
+            &cli::front::Help {
+                path: Vec::new(),
+                long: false,
+                selection: crate::config::ProfileSelection::Default,
+            },
+        )),
+        app::host_instance::HostLaunch::Host => Some(
+            crate::config::lock_profile_for_host_launch()
+                .unwrap_or_else(|error| profile_init_failed(error)),
+        ),
+    };
     // A bad [experiments] table fails every command except the ones needed to
     // fix it, so the user is never locked out of repairing the config.
     if let Some(error) = crate::release::experiments_error() {
@@ -172,35 +201,10 @@ fn main() -> eframe::Result {
             cli::trace::exit(1);
         }
     }
-    let cli_mode = !host_startup;
-    // Classify the launch before the profile is touched. A CLI command
-    // initializes the profile only when no host of another build runs on it
-    // (stint 1609). A host launch takes the initialization lock here and
-    // claims the profile under it below, before it initializes anything.
-    let profile_init_failed = |error: crate::config::ProfileInitError| -> ! {
-        let show_window = app::startup_error::shows_window(!cli_mode, boot_state.is_background());
-        app::startup_error::exit_on_profile_init_failure(&error, show_window)
-    };
-    let launch_profile = match app::host_instance::host_launch(
-        cli_mode,
-        std::env::var("PLEXI_RUNNING").ok().as_deref(),
-    ) {
-        app::host_instance::HostLaunch::Cli => LaunchProfile::Cli(
+    let launch_profile = match host_lock {
+        Some(lock) => LaunchProfile::Host(lock),
+        None => LaunchProfile::Cli(
             crate::config::lock_profile_initialization()
-                .unwrap_or_else(|error| profile_init_failed(error)),
-        ),
-        // Plexi-in-Plexi: a bare launch typed in a Plexi pane shows help
-        // rather than starting a second GUI, and never touches the profile.
-        app::host_instance::HostLaunch::InsidePlexi => cli::trace::exit(cli::front::emit_help(
-            &bin,
-            &cli::front::Help {
-                path: Vec::new(),
-                long: false,
-                selection: crate::config::ProfileSelection::Default,
-            },
-        )),
-        app::host_instance::HostLaunch::Host => LaunchProfile::Host(
-            crate::config::lock_profile_for_host_launch()
                 .unwrap_or_else(|error| profile_init_failed(error)),
         ),
     };
@@ -239,6 +243,8 @@ fn main() -> eframe::Result {
     let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
     let retention_days = log_config.retention_days.unwrap_or(30);
     crate::platform::logging::init(log_level, retention_days, cli_mode);
+    #[cfg(not(test))]
+    config::test_hooks::report_ignored();
     log::info!(
         "startup: logger ready {}ms after main entry",
         process_start.elapsed().as_millis()

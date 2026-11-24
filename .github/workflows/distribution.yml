@@ -112,11 +112,16 @@ jobs:
             fi
           done
           if [[ '${{ runner.os }}' == macOS && '${{ inputs.tag }}' == *-alpha.* ]]; then
-            # Change compiled build identity so B has a different code hash.
-            # Packaging identical bytes twice would not test an actual upgrade.
-            PLEXI_BUILD_TAG="${PLEXI_BUILD_TAG}-continuity-b" RUSTFLAGS="-D warnings" cargo build --release --bin plexi
-            uv run --no-project python scripts/package.py --binary "target/release/plexi" --installer "target/release/plexi-installer" --platform '${{ matrix.platform }}' --channel alpha --output continuity-b ${signing_args[@]+"${signing_args[@]}"}
-            uv run --no-project python scripts/test-macos-keychain-continuity.py --package-a "dist/package-${{ matrix.platform }}-alpha" --package-b "continuity-b/package-${{ matrix.platform }}-alpha"
+            # Release channels compile the test keychain override out, so the
+            # isolated-keychain continuity check runs on two signed builds of
+            # one PR test channel. B changes the compiled build identity so it
+            # has a different code hash; identical bytes would not test an upgrade.
+            continuity_channel="pr-${GITHUB_RUN_NUMBER}"
+            for side in a b; do
+              PLEXI_BUILD_TEST_CHANNEL="$continuity_channel" PLEXI_BUILD_TAG="${PLEXI_BUILD_TAG}-continuity-$side" RUSTFLAGS="-D warnings" cargo build --release --bin plexi
+              uv run --no-project python scripts/package.py --binary "target/release/plexi" --installer "target/release/plexi-installer" --platform '${{ matrix.platform }}' --channel "$continuity_channel" --output "continuity-$side" ${signing_args[@]+"${signing_args[@]}"}
+            done
+            uv run --no-project python scripts/test-macos-keychain-continuity.py --package-a "continuity-a/package-${{ matrix.platform }}-$continuity_channel" --package-b "continuity-b/package-${{ matrix.platform }}-$continuity_channel"
           fi
           cp "target/release/plexi-installer$suffix" "dist/plexi-installer-${{ matrix.platform }}$suffix"
           uv run --no-project python -c 'from pathlib import Path; from scripts.package import digest; [p.with_name(p.name+".sha256").write_text(digest(p)+"  "+p.name+"\n") for p in Path("dist").glob("plexi-installer-*") if not p.name.endswith(".sha256")]'

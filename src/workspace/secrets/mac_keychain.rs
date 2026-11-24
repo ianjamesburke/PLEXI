@@ -390,9 +390,14 @@ mod production {
 
     fn test_password() -> Result<Zeroizing<String>, SecretError> {
         Ok(Zeroizing::new(
-            explicit_keychain_password(std::env::var("PLEXI_KEYCHAIN_PASSWORD").ok().as_deref())
-                .map_err(|error| SecretError::Backend(error.to_string()))?
-                .to_string(),
+            explicit_keychain_password(
+                crate::config::test_hooks::KEYCHAIN_PASSWORD
+                    .value()
+                    .as_deref()
+                    .and_then(std::ffi::OsStr::to_str),
+            )
+            .map_err(|error| SecretError::Backend(error.to_string()))?
+            .to_string(),
         ))
     }
 

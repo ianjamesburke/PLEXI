@@ -298,7 +298,7 @@ pub(crate) fn block_on_dialog<F: std::future::Future>(f: F) -> F::Output {
 }
 
 /// Scripted impl — resolves each request from a queued list of outcomes, in
-/// order, without showing any dialog. Selected in a live host via
+/// order, without showing any dialog. Selected in a numbered PR host via
 /// `PLEXI_PICKER_SCRIPT` (a JSON file of outcomes, read per pane at launch)
 /// and injected directly in harness tests and scenes.
 pub struct ScriptedPickerService {
@@ -367,13 +367,13 @@ pub fn default_picker_service() -> std::sync::Arc<dyn PickerService> {
     if let Some(service) = picker_override() {
         return service;
     }
-    match std::env::var_os("PLEXI_PICKER_SCRIPT") {
+    match crate::config::test_hooks::PICKER_SCRIPT.value() {
         Some(script_path) => {
             let script_path = std::path::PathBuf::from(script_path);
             match ScriptedPickerService::from_script_file(&script_path) {
                 Ok(service) => {
                     log::info!(
-                        "picker: using scripted backend from PLEXI_PICKER_SCRIPT={}",
+                        "picker: using scripted backend from {}",
                         script_path.display()
                     );
                     std::sync::Arc::new(service)
@@ -394,7 +394,7 @@ pub fn default_picker_service() -> std::sync::Arc<dyn PickerService> {
 /// In-process picker override, installed by the scene runner (and tests) so
 /// headless suites never mutate process env. `None` clears it. The scene
 /// runner is `#[cfg(test)]`, so the whole override plumbing is too — a
-/// production host scripts its picker only via `PLEXI_PICKER_SCRIPT`.
+/// numbered PR host can also read a script at launch.
 #[cfg(test)]
 pub fn set_picker_override(service: Option<std::sync::Arc<dyn PickerService>>) {
     *picker_override_slot().lock().unwrap() = service;

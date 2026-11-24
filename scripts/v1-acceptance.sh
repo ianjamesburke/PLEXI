@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
 # V1 acceptance suite — one line per V1-CONTRACT item.
 #
-# The acceptance target is the alpha channel binary built from this tree.
-# `just build` produces target/release/plexi; the harness copies that file to
-# a real binary named plexi-alpha and drives that. A channel-named binary
-# ignores PLEXI_CHANNEL. The profile is ~/.plexi-alpha. This is not an
-# integration branch and not a plexi-pr-N install. --bin and --pr are
-# explicit overrides for a re-run, not the default.
+# This suite uses a numbered PR executable built for the same channel.
+# The keychain override must be available before private HOME setup.
 #
 # Feature scripts already in this tree are invoked by path. A script or
 # command that is not on the build is NOT-LANDED. An approval that did not
@@ -16,8 +12,8 @@
 # names a refused command is not an approval. No contract item permits a
 # bypass. See scripts/e2e/plexi-bin.md.
 #
-#   scripts/v1-acceptance.sh
-#   scripts/v1-acceptance.sh --bin ~/.local/bin/plexi-alpha
+#   scripts/v1-acceptance.sh --pr 3317
+#   scripts/v1-acceptance.sh --bin /path/to/plexi-pr-3317
 #
 # Item scripts take the channel binary from PLEXI_BIN. The harness exports
 # that and PLEXI_E2E_SHIM (scripts/e2e/plexi-bin.sh). Scripts that still
@@ -48,7 +44,6 @@ HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HARNESS_DIR/.." && pwd)"
 SHIM="$HARNESS_DIR/e2e/plexi-bin.sh"
 EVID="${V1_ACCEPTANCE_EVID:-/tmp/plexi-v1-acceptance-$(date -u +%Y%m%dT%H%M%SZ)}"
-mkdir -p "$EVID"
 
 PR_NUM=""
 BIN_ARG=""
@@ -59,10 +54,9 @@ usage() {
   cat <<'EOF'
 usage: scripts/v1-acceptance.sh [--bin PATH] [--pr N] [--tree PATH]
 
-  Default      this tree's target/release/plexi, copied to plexi-alpha.
-               That is the alpha channel build. Not an integration branch.
-  --bin PATH   channel binary override (a bare plexi is copied to plexi-alpha)
-  --pr N       use plexi-pr-N from PATH (after just pr-install N)
+  Default      check this tree's target/release/plexi
+  --bin PATH   actual plexi-pr-N executable built with PLEXI_BUILD_TEST_CHANNEL=pr-N
+  --pr N       use the plexi-pr-N executable on PATH
   --tree PATH  tree whose item scripts and default-config.toml are used
                (default: the repo that contains this harness)
 
@@ -115,6 +109,27 @@ unset PLEXI_SOCKET PLEXI_PANE_ID PLEXI_CONTEXT_ID PLEXI_CONTEXT_ROOT \
   PLEXI_CONTEXT_NAME PLEXI_RUNNING PLEXI_CALL_CREDENTIAL || true
 
 REAL_HOME="${HOME}"
+if [[ -n "$BIN_ARG" ]]; then
+  candidate="$BIN_ARG"
+elif [[ -n "$PR_NUM" ]]; then
+  candidate="$(command -v "plexi-pr-$PR_NUM" || true)"
+  candidate="${candidate:-$REAL_HOME/.local/bin/plexi-pr-$PR_NUM}"
+else
+  candidate="${PLEXI_BIN:-$REPO/target/release/plexi}"
+fi
+if [[ "$candidate" != */* ]]; then
+  candidate="$(command -v "$candidate" || printf '%s' "$candidate")"
+fi
+BIN="$(python3 "$HARNESS_DIR/require_test_hook_binary.py" --installed -- "$candidate")" || exit $?
+BIN_BASE="${BIN##*/}"
+BIN_BASE="${BIN_BASE%.exe}"
+BIN_BASE="${BIN_BASE%.EXE}"
+unset PLEXI_CHANNEL
+export CHANNEL="${BIN_BASE#plexi-}"
+export PATH="$(dirname "$BIN"):$PATH"
+export PLEXI_BIN="$BIN" BIN
+
+mkdir -p "$EVID" || exit 1
 WORK_HOME="$(mktemp -d "${TMPDIR:-/tmp}/plexi-v1-home.XXXXXX")"
 export HOME="$WORK_HOME"
 mkdir -p "$HOME/.plexi"
@@ -491,94 +506,6 @@ run_preflight() {
     PREFLIGHT_TESSERACT_ERR="tesseract is not installed (log $EVID/preflight-apt.log)"
   fi
 }
-
-# A real file whose basename is the channel. current_exe() follows symlinks,
-# so a symlink named plexi-alpha still reports the bare binary and writes
-# ~/.plexi. A bare `plexi` adopts PLEXI_CHANNEL; acceptance copies it to
-# plexi-alpha instead of setting that variable.
-materialize_channel_bin() {
-  local candidate="$1" base copy
-  if [[ "$candidate" != /* ]]; then
-    candidate="$(command -v "$candidate" 2>/dev/null || true)"
-  fi
-  if [[ -z "$candidate" || ! -x "$candidate" ]]; then
-    printf ''
-    return
-  fi
-  base="$(basename "$candidate")"
-  base="${base%.exe}"
-  mkdir -p "$EVID/bin"
-  if [[ "$base" == "plexi" && -z "$PR_NUM" ]]; then
-    copy="$EVID/bin/plexi-alpha"
-    cp -f "$(readlink -f "$candidate")" "$copy"
-    chmod +x "$copy"
-    printf '%s' "$copy"
-    return
-  fi
-  if [[ -L "$candidate" && "$base" == plexi-* ]]; then
-    copy="$EVID/bin/$base"
-    cp -f "$(readlink -f "$candidate")" "$copy"
-    chmod +x "$copy"
-    printf '%s' "$copy"
-    return
-  fi
-  printf '%s' "$candidate"
-}
-
-resolve_bin() {
-  local candidate=""
-  if [[ -n "$BIN_ARG" ]]; then
-    candidate="$BIN_ARG"
-  elif [[ -n "$PR_NUM" ]]; then
-    candidate="$(command -v "plexi-pr-${PR_NUM}" 2>/dev/null || true)"
-    if [[ -z "$candidate" && -x "$REAL_HOME/.local/bin/plexi-pr-${PR_NUM}" ]]; then
-      candidate="$REAL_HOME/.local/bin/plexi-pr-${PR_NUM}"
-    fi
-  elif [[ -n "${PLEXI_BIN:-}" ]]; then
-    candidate="$PLEXI_BIN"
-  elif [[ -x "$REPO/target/release/plexi" ]]; then
-    # This tree's release build, named plexi-alpha. A plexi-alpha already on
-    # PATH can be an older install or a copy of some other checkout.
-    candidate="$REPO/target/release/plexi"
-  elif command -v plexi-alpha >/dev/null 2>&1; then
-    candidate="$(command -v plexi-alpha)"
-  fi
-  if [[ -z "$candidate" ]]; then
-    printf ''
-    return
-  fi
-  materialize_channel_bin "$candidate"
-}
-
-BIN="$(resolve_bin)"
-BIN_BASE=""
-if [[ -n "$BIN" ]]; then
-  BIN_BASE="$(basename "$BIN")"
-  case "$BIN_BASE" in
-    plexi-pr-*)
-      PR_NUM="${PR_NUM:-${BIN_BASE#plexi-pr-}}"
-      unset PLEXI_CHANNEL || true
-      ;;
-    plexi-alpha)
-      unset PLEXI_CHANNEL || true
-      # Item scripts derive PROFILE from CHANNEL. The alpha binary writes
-      # ~/.plexi-alpha and ignores PLEXI_CHANNEL, so CHANNEL must be alpha.
-      export CHANNEL=alpha
-      ;;
-    plexi-*)
-      unset PLEXI_CHANNEL || true
-      ;;
-    plexi)
-      if [[ -z "${PLEXI_CHANNEL:-}" ]]; then
-        export PLEXI_CHANNEL="alpha"
-      fi
-      export CHANNEL="${CHANNEL:-alpha}"
-      ;;
-  esac
-  export PATH="$(dirname "$BIN"):$PATH"
-  export PLEXI_BIN="$BIN"
-  export BIN
-fi
 
 # [ai] backend = "openrouter" from the tree's default config. Item scripts
 # that point the broker at a local mock rewrite this file. Restoring the
@@ -1092,7 +1019,7 @@ item_v1_01() {
     return
   fi
   if [[ -z "$BIN" || ! -x "$BIN" ]]; then
-    note_row "$id" "FAIL" "no installed binary (just pr-install <N> or install plexi-alpha)"
+    note_row "$id" "FAIL" "verified PR executable is no longer available: $BIN"
     return
   fi
   local log="$EVID/V1-01.log"
@@ -1138,7 +1065,7 @@ item_v1_01() {
     return
   fi
   if [[ "$channel_dir" == ".plexi" ]]; then
-    note_row "$id" "FAIL" "binary $BIN_BASE has no legacy channel agents dir; use plexi-alpha or plexi-pr-N"
+    note_row "$id" "FAIL" "binary $BIN_BASE has no legacy channel agents dir"
     return
   fi
   local legacy="$ws/$channel_dir/agents/writer"

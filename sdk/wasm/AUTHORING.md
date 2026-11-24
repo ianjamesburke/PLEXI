@@ -88,9 +88,8 @@ The `effects` module constructs every effect in the standard plugin world:
   scoped fs grants for this pane, so pass them verbatim to `file_read` /
   `file_write` (a folder grant covers the subtree) — or `FilePickCancelled`
   (dismissed or capability denied; no grant is created). Grants last for the
-  pane's lifetime. Headless drivers script the dialog by launching the host
-  with `PLEXI_PICKER_SCRIPT` (JSON array of `{"paths": [...]}` /
-  `{"cancel": true}` outcomes, consumed in order per pane).
+  pane's lifetime. In headless tests, the scene's `picker_script` lists
+  `{"paths": [...]}` or `{"cancel": true}` outcomes in order per pane.
 
 Effect results arrive later through `App::update` as `InputEvent` variants. The SDK re-exports the generated WIT records when a helper needs the full payload, such as `AiQueryEffect` or `EmitEventEffect`.
 

@@ -1,5 +1,6 @@
 pub mod edit;
 mod profile_name;
+pub(crate) mod test_hooks;
 pub mod watcher;
 
 pub use profile_name::{ProfileName, ProfileSelection};
@@ -1651,6 +1652,7 @@ fn profile_initialization_needed() -> Result<bool, String> {
 /// package and the fix instead of a flattened string.
 #[derive(Debug)]
 pub enum ProfileInitError {
+    UnsafeProfile(String),
     Migration(Box<crate::app::plugin_migration::MigrationFailure>),
     Other(String),
 }
@@ -1659,7 +1661,7 @@ impl std::fmt::Display for ProfileInitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Migration(failure) => failure.fmt(f),
-            Self::Other(message) => f.write_str(message),
+            Self::UnsafeProfile(message) | Self::Other(message) => f.write_str(message),
         }
     }
 }
@@ -1766,11 +1768,11 @@ fn lock_profile_initialization_with_timeout(
     if !profile_initialization_needed()? {
         return Ok(ProfileInit::Current);
     }
-    let lock = open_initialization_lock(timeout)?;
+    let dir = config_dir();
+    let lock = open_initialization_lock(&dir, timeout)?;
     if !profile_initialization_needed()? {
         return Ok(ProfileInit::Current);
     }
-    let dir = config_dir();
     if profile_build_is_stale(&dir) {
         if let Some(host) = foreign_host(&dir) {
             return Ok(ProfileInit::Deferred(host));
@@ -1783,7 +1785,9 @@ fn lock_profile_initialization_with_timeout(
 /// Host launches: always take the lock, before claiming `host.lock`, even on
 /// a current profile; a CLI of another build may be about to check for a host.
 pub fn lock_profile_for_host_launch() -> Result<ProfileInitLock, ProfileInitError> {
-    open_initialization_lock(PROFILE_INITIALIZATION_LOCK_TIMEOUT)
+    let dir = config_dir();
+    crate::cli::host::ensure_real_profile_dir(&dir).map_err(ProfileInitError::UnsafeProfile)?;
+    open_initialization_lock(&dir, PROFILE_INITIALIZATION_LOCK_TIMEOUT)
 }
 
 /// Migrate the profile for this build if it needs it. Only the claimed host
@@ -1818,10 +1822,10 @@ fn foreign_host(dir: &Path) -> Option<ForeignHost> {
 }
 
 fn open_initialization_lock(
+    dir: &Path,
     timeout: std::time::Duration,
 ) -> Result<ProfileInitLock, ProfileInitError> {
-    let dir = config_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let path = dir.join("initialization.lock");
     let lock = std::fs::OpenOptions::new()
         .read(true)
@@ -4557,6 +4561,48 @@ mod test_isolation_tests {
 
 #[cfg(test)]
 mod distribution_profile_tests {
+    #[cfg(unix)]
+    fn expect_link_refusal(profile: &std::path::Path, link: &std::path::Path) {
+        let _guard = super::set_test_profile_dir(profile.to_owned());
+        let error = super::lock_profile_for_host_launch()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&link.display().to_string()), "{error}");
+        assert!(
+            error.contains("symlink") && error.contains("replace"),
+            "{error}"
+        );
+        assert!(!profile.join("initialization.lock").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn anchors_host_launch_refuses_symlinked_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        std::os::unix::fs::symlink(dir.path(), &profile).unwrap();
+        expect_link_refusal(&profile, &profile);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn anchors_host_launch_refuses_symlinked_host_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = dir.path().join("host");
+        std::os::unix::fs::symlink(dir.path().join("missing"), &host).unwrap();
+        expect_link_refusal(dir.path(), &host);
+    }
+
+    #[test]
+    fn anchors_host_launch_locks_plain_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        std::fs::create_dir_all(profile.join("host")).unwrap();
+        let _guard = super::set_test_profile_dir(profile.clone());
+        let _lock = super::lock_profile_for_host_launch().unwrap();
+        assert!(profile.join("initialization.lock").is_file());
+    }
+
     #[test]
     fn initialization_lock_times_out_with_path_and_retry() {
         use std::time::{Duration, Instant};

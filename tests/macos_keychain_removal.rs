@@ -2,9 +2,9 @@
 //! file (stint 1635). `MacKeychain` is compiled out of test builds, so only
 //! the binary exercises the production selector and delete.
 //!
-//! Every run points the shipped `PLEXI_KEYCHAIN_PATH` hook at one file inside
-//! this test's temp dir, with a fixture password, an isolated `HOME` and
-//! profile, and every inherited `PLEXI_*` variable removed. The binary opens
+//! The test points a verified PR build's `PLEXI_KEYCHAIN_PATH` at a file
+//! in its temp dir, with a fixture password, an isolated `HOME` and profile,
+//! and every inherited `PLEXI_*` variable removed. The binary opens
 //! that file by path; the user's search list and default keychain are never
 //! read or changed. Ordered multi-file scope and duplicates are covered by
 //! the fake-native tests in `src/workspace/secrets/mac_keychain.rs`. This
@@ -19,7 +19,7 @@
 #![cfg(target_os = "macos")]
 
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -34,6 +34,103 @@ const UI_ALLOWED: &str = "SecKeychainSetUserInteractionAllowed(true)";
 const DELETE_CALL: &str = "SecKeychainItemDelete status=";
 const DATA_CALL: &str = "SecKeychainItemCopyContent status=";
 const KEYCHAIN: &str = "a.keychain-db";
+const CARGO_BINARY: &str = env!("CARGO_BIN_EXE_plexi");
+const BUILD_HINT: &str =
+    "build a PLEXI_BUILD_TEST_CHANNEL=pr-<N> release build and install it as plexi-pr-<N>";
+const HOOK_NAMES: [&str; 4] = [
+    "PLEXI_KEYCHAIN_PATH",
+    "PLEXI_KEYCHAIN_PASSWORD",
+    "PLEXI_OPENROUTER_BASE_URL",
+    "PLEXI_PICKER_SCRIPT",
+];
+
+fn check_test_hook_binary(path: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    for name in HOOK_NAMES {
+        // Mach-O images contain arbitrary bytes around these ASCII literals.
+        let pattern = regex::bytes::Regex::new(name).expect("literal hook name");
+        if !pattern.is_match(&bytes) {
+            return Err(format!("missing {name}"));
+        }
+    }
+    Ok(())
+}
+
+/// The channel compiled into `binary`, read from its own `--build-info` with
+/// every inherited `PLEXI_*` variable removed. Hooks are enabled only when
+/// this equals the executable's basename, so a copy of another PR's build
+/// named for this one is refused before any keychain step.
+fn check_compiled_channel(binary: &Path, channel: &str) -> Result<(), String> {
+    let output = Command::new(binary)
+        .arg("--build-info")
+        .env_clear()
+        .output()
+        .map_err(|error| format!("could not run --build-info: {error}"))?;
+    let info: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("could not read --build-info: {error}"))?;
+    match info["test_channel"].as_str() {
+        Some(compiled) if compiled == channel => Ok(()),
+        other => Err(format!(
+            "compiled test channel {other:?} does not match {channel}"
+        )),
+    }
+}
+
+fn verified_cargo_channel() -> &'static str {
+    // The integration cases run in parallel against the same Cargo artifact.
+    static CHECK: std::sync::OnceLock<Result<&str, String>> = std::sync::OnceLock::new();
+    CHECK.get_or_init(|| {
+        check_test_hook_binary(Path::new(CARGO_BINARY))?;
+        option_env!("PLEXI_BUILD_TEST_CHANNEL")
+            .filter(|_| cfg!(plexi_test_channel))
+            .ok_or_else(|| "missing compiled PR channel".to_string())
+    })
+    .as_ref()
+    .unwrap_or_else(|reason| panic!("Refused {CARGO_BINARY}: {reason}; {BUILD_HINT}."))
+}
+
+#[test]
+fn mismatched_channel_copy_is_refused_before_any_keychain_step() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let binary = temp.path().join("plexi-pr-1");
+    std::fs::write(
+        &binary,
+        "#!/bin/sh\necho '{\"test_channel\":\"pr-2\"}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let error = check_compiled_channel(&binary, "pr-1").unwrap_err();
+    assert!(error.contains("pr-2") && error.contains("pr-1"), "{error}");
+    std::fs::write(
+        &binary,
+        "#!/bin/sh\necho '{\"test_channel\":\"pr-1\"}'\n",
+    )
+    .unwrap();
+    assert_eq!(check_compiled_channel(&binary, "pr-1"), Ok(()));
+}
+
+#[test]
+fn binary_check_requires_every_hook_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let binary = temp.path().join("plexi");
+    assert!(check_test_hook_binary(&binary).is_err());
+    for missing in HOOK_NAMES {
+        let names: Vec<_> = HOOK_NAMES
+            .into_iter()
+            .filter(|name| *name != missing)
+            .collect();
+        std::fs::write(&binary, names.join("\0")).unwrap();
+        assert_eq!(
+            check_test_hook_binary(&binary),
+            Err(format!("missing {missing}"))
+        );
+    }
+    let mut bytes = vec![0xff, 0];
+    bytes.extend(HOOK_NAMES.join("\0").bytes());
+    std::fs::write(&binary, bytes).unwrap();
+    assert_eq!(check_test_hook_binary(&binary), Ok(()));
+}
 
 /// Interaction stays off for this whole test process.
 fn interaction_off() {
@@ -46,16 +143,30 @@ fn interaction_off() {
 
 struct Sandbox {
     root: tempfile::TempDir,
+    binary: PathBuf,
     folder: PathBuf,
 }
 
 impl Sandbox {
     fn new() -> Self {
-        interaction_off();
+        let channel = verified_cargo_channel();
         let root = tempfile::tempdir().unwrap();
+        // Cargo names its output "plexi". The runtime enables hooks only
+        // under the matching compiled PR basename, even with --profile.
+        let binary = root.path().join(format!("plexi-{channel}"));
+        std::fs::copy(CARGO_BINARY, &binary).unwrap();
+        // Before any keychain step: judge the copy, not the test runner.
+        if let Err(reason) = check_compiled_channel(&binary, channel) {
+            panic!("Refused {}: {reason}; {BUILD_HINT}.", binary.display());
+        }
+        interaction_off();
         let folder = root.path().join("folder");
         std::fs::create_dir_all(&folder).unwrap();
-        let sandbox = Self { root, folder };
+        let sandbox = Self {
+            root,
+            binary,
+            folder,
+        };
         let (enable, _) = sandbox.run(KEYCHAIN, &["experiments", "enable", "folder_secrets"]);
         assert!(enable.status.success(), "{}", text(&enable.stderr));
         sandbox
@@ -160,7 +271,7 @@ impl Sandbox {
             path.starts_with(self.root.path()),
             "{path:?} escapes the sandbox"
         );
-        let mut command = Command::new(env!("CARGO_BIN_EXE_plexi"));
+        let mut command = Command::new(&self.binary);
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("PLEXI_") {
                 command.env_remove(key);
@@ -255,6 +366,7 @@ fn removed(output: &Output) -> bool {
 /// entry is needed, no data copy happens and UI is never allowed. A repeat
 /// removal reports the no-match and fails.
 #[test]
+#[ignore = "needs a PLEXI_BUILD_TEST_CHANNEL=pr-<N> build; run with --ignored"]
 fn unindexed_item_is_removed_without_a_password_request() {
     let sandbox = Sandbox::new();
     let account = sandbox.account();
@@ -275,6 +387,7 @@ fn unindexed_item_is_removed_without_a_password_request() {
 
 /// A stale index entry over an already-created empty file is never success.
 #[test]
+#[ignore = "needs a PLEXI_BUILD_TEST_CHANNEL=pr-<N> build; run with --ignored"]
 fn stale_cached_name_in_an_empty_file_is_a_reported_no_match() {
     let sandbox = Sandbox::new();
     let account = sandbox.account();
@@ -290,6 +403,7 @@ fn stale_cached_name_in_an_empty_file_is_a_reported_no_match() {
 /// A damaged file fails at its own stage, never as a no-match, and no other
 /// keychain is consulted.
 #[test]
+#[ignore = "needs a PLEXI_BUILD_TEST_CHANNEL=pr-<N> build; run with --ignored"]
 fn damaged_keychain_is_an_open_error_not_a_no_match() {
     let sandbox = Sandbox::new();
     std::fs::write(sandbox.file("damaged.keychain-db"), b"not a keychain").unwrap();
@@ -306,6 +420,7 @@ fn damaged_keychain_is_an_open_error_not_a_no_match() {
 /// binary wrote itself is traced with status 0; and a write that allows UI
 /// leaves the UI trace. Removal must leave none of these.
 #[test]
+#[ignore = "needs a PLEXI_BUILD_TEST_CHANNEL=pr-<N> build; run with --ignored"]
 fn controls_show_each_detector_fire() {
     let sandbox = Sandbox::new();
     // Alias migration reads the legacy value in the background.
@@ -365,6 +480,7 @@ fn controls_show_each_detector_fire() {
 /// in a read-only directory, so selection succeeds and
 /// `SecKeychainItemDelete` cannot write the change.
 #[test]
+#[ignore = "needs a PLEXI_BUILD_TEST_CHANNEL=pr-<N> build; run with --ignored"]
 fn native_delete_refusal_fails_with_its_status_and_keeps_the_item() {
     use std::os::unix::fs::PermissionsExt;
     let sandbox = Sandbox::new();

@@ -18,9 +18,9 @@
 //! cost the ledger records. `X-Generation-Id` is only a fallback when that
 //! field is missing.
 //!
-//! **Base URL:** `PLEXI_OPENROUTER_BASE_URL` replaces `https://openrouter.ai/api/v1`
-//! for chat completions and the generation lookup (no trailing slash). Unset,
-//! the canonical host is used. A non-streaming `application/json` completion
+//! Test builds and matching numbered PR binaries can override the API root
+//! for chat completions and generation lookup with `PLEXI_OPENROUTER_BASE_URL`.
+//! Otherwise both use `https://openrouter.ai/api/v1`. A non-streaming `application/json` completion
 //! is accepted on the same worker as SSE.
 
 use std::collections::HashMap;
@@ -155,20 +155,14 @@ impl AiBackend for OpenRouterBackend {
         request: AiBackendRequest,
         tx: mpsc::Sender<StreamEvent>,
     ) -> Result<(), AiBackendError> {
+        let endpoint = openrouter_endpoint("chat/completions").map_err(AiBackendError::Io)?;
         let api_key = self.api_key.clone();
         let model = self.model.clone();
 
         thread::Builder::new()
             .name("plexi-ai-openrouter".to_string())
             .spawn(move || {
-                stream_openai_compatible(
-                    &openrouter_chat_endpoint(),
-                    Some(api_key),
-                    model,
-                    true,
-                    request,
-                    tx,
-                );
+                stream_openai_compatible(&endpoint, Some(api_key), model, true, request, tx);
             })
             .map_err(|e| {
                 AiBackendError::Io(format!("failed to spawn OpenRouter stream thread: {e}"))
@@ -244,33 +238,28 @@ fn openrouter_url(root: &str, path: &str) -> String {
     )
 }
 
-/// API root for this process. `PLEXI_OPENROUTER_BASE_URL` points chat
-/// completions and the generation lookup at another OpenAI-compatible host
-/// (a local mock, a proxy). The value replaces `https://openrouter.ai/api/v1`.
-pub(crate) fn openrouter_api_root() -> String {
-    match std::env::var("PLEXI_OPENROUTER_BASE_URL") {
-        Ok(value) => {
-            let root = normalize_openrouter_root(&value);
-            if root.is_empty() {
-                return DEFAULT_OPENROUTER_ROOT.to_string();
-            }
-            if root != DEFAULT_OPENROUTER_ROOT {
-                log::info!("openrouter: base url override configured");
-            }
-            root
-        }
-        Err(_) => DEFAULT_OPENROUTER_ROOT.to_string(),
+/// Both requests use the same endpoint selection. An unusable test override
+/// fails before a request can be sent with the provider key.
+pub(crate) fn openrouter_endpoint(path: &str) -> Result<String, String> {
+    let raw = crate::config::test_hooks::OPENROUTER_BASE_URL.value();
+    let root = openrouter_api_root(raw.as_deref())
+        .inspect_err(|error| log::info!("openrouter: {error}"))?;
+    Ok(openrouter_url(&root, path))
+}
+
+fn openrouter_api_root(raw: Option<&std::ffi::OsStr>) -> Result<String, String> {
+    let Some(raw) = raw else {
+        return Ok(DEFAULT_OPENROUTER_ROOT.to_owned());
+    };
+    let root = raw
+        .to_str()
+        .map(normalize_openrouter_root)
+        .filter(|root| !root.is_empty())
+        .ok_or_else(|| "test API root must be a non-empty UTF-8 URL".to_string())?;
+    if root != DEFAULT_OPENROUTER_ROOT {
+        log::info!("openrouter: base url override configured");
     }
-}
-
-/// Chat-completions URL for the OpenRouter backend.
-pub(crate) fn openrouter_chat_endpoint() -> String {
-    openrouter_url(&openrouter_api_root(), "chat/completions")
-}
-
-/// Generation-metrics URL for one id, on the same API root as chat.
-pub(crate) fn openrouter_generation_endpoint(gen_id: &str) -> String {
-    openrouter_url(&openrouter_api_root(), &format!("generation?id={gen_id}"))
+    Ok(root)
 }
 
 /// True when the response is a single JSON chat completion rather than SSE.
@@ -1139,6 +1128,12 @@ mod tests {
             local.get("usage").is_none(),
             "local servers must not see the OpenRouter usage flag"
         );
+    }
+
+    #[test]
+    fn anchors_empty_openrouter_override_is_an_error() {
+        assert!(openrouter_api_root(Some(std::ffi::OsStr::new("  "))).is_err());
+        assert_eq!(openrouter_api_root(None).unwrap(), DEFAULT_OPENROUTER_ROOT);
     }
 
     #[test]

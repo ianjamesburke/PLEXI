@@ -2692,7 +2692,10 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
             std::env::var("PLEXI_SCENE_CHANNEL").ok(),
             SceneError::new(
                 "unsupported_live_verb",
-                "picker_script is headless-only; script a live host's picker by launching it with PLEXI_PICKER_SCRIPT",
+                format!(
+                    "picker_script is headless-only. Launch a numbered PR host with {} to script live picks.",
+                    crate::config::test_hooks::PICKER_SCRIPT
+                ),
             ),
         );
     }
