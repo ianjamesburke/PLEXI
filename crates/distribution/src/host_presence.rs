@@ -24,6 +24,51 @@ pub fn profile_dir_name(channel: &str) -> String {
     }
 }
 
+/// Account home independent of the process environment.
+#[cfg(unix)]
+pub fn account_home() -> Option<PathBuf> {
+    use std::ffi::{CStr, OsStr};
+    use std::os::unix::ffi::OsStrExt;
+    let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut buf = vec![0u8; 16 * 1024];
+    let mut result = std::ptr::null_mut();
+    loop {
+        // SAFETY: getpwuid_r initializes pwd on success; pw_dir points into
+        // buf and we copy it before the buffer is dropped.
+        unsafe {
+            let rc = libc::getpwuid_r(
+                libc::getuid(),
+                pwd.as_mut_ptr(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &mut result,
+            );
+            if rc == libc::ERANGE {
+                buf.resize(buf.len().checked_mul(2)?, 0);
+                continue;
+            }
+            if rc != 0 || result.is_null() || (*result).pw_dir.is_null() {
+                return None;
+            }
+            let path = PathBuf::from(OsStr::from_bytes(
+                CStr::from_ptr((*result).pw_dir).to_bytes(),
+            ));
+            return path.is_absolute().then_some(path);
+        }
+    }
+}
+
+#[cfg(unix)]
+pub const ACCOUNT_HOME_ERROR: &str = "cannot resolve Plexi profile home: getpwuid_r for the current uid returned no absolute home directory";
+#[cfg(windows)]
+pub const ACCOUNT_HOME_ERROR: &str = "cannot resolve Plexi profile home: the account profile directory lookup returned no home directory";
+
+#[cfg(windows)]
+pub fn account_home() -> Option<PathBuf> {
+    // dirs uses the current account's FOLDERID_Profile on Windows.
+    dirs::home_dir()
+}
+
 /// The endpoint belonging to a specific channel, named by its profile
 /// directory (`~/.plexi`, `~/.plexi-alpha`, `~/.plexi-pr-1604`, ...).
 ///

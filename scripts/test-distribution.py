@@ -112,6 +112,10 @@ fn main() {
 
 
 def main(args):
+    # Release-channel installs record their tag in the account profile, which
+    # HOME no longer redirects. Only a disposable account may run this.
+    if os.environ.get('GITHUB_ACTIONS') != 'true' and os.environ.get('PLEXI_PACKAGE_TEST_DISPOSABLE_ACCOUNT') != '1':
+        raise SystemExit('test-distribution.py writes installed_tag under the account profile; run it only on a disposable account (PLEXI_PACKAGE_TEST_DISPOSABLE_ACCOUNT=1).')
     with tempfile.TemporaryDirectory(prefix='plexi distribution tests ') as directory, ExitStack() as cleanup:
         root = Path(directory)
         home = root / 'home with spaces'
@@ -290,13 +294,13 @@ def main(args):
             # host holds the profile, never stops that host, and the next
             # launch after it exits runs the staged build. A short HOME keeps
             # the endpoint inside the Unix socket path limit.
-            beta_old = package(root, installer, args.platform, 'beta', 'old')
-            beta_new = package(root, installer, args.platform, 'beta', 'new')
+            pr_old = package(root, installer, args.platform, 'pr-1605', 'old')
+            pr_new = package(root, installer, args.platform, 'pr-1605', 'new')
             short_home = Path(tempfile.mkdtemp(prefix='p1605-', dir='/tmp'))
             cleanup.callback(shutil.rmtree, short_home, True)
-            profile = short_home / '.plexi-beta'
+            profile = short_home / '.plexi-pr-1605'
             profile.mkdir()
-            calls, started = root / 'beta-calls', root / 'beta-started'
+            calls, started = root / 'pr-calls', root / 'pr-started'
             launch_env = env | {'HOME': str(short_home), 'DISTRIBUTION_TEST_CALLS': str(calls), 'DISTRIBUTION_TEST_STARTED': str(started)}
             stand_in_source = '''
 import fcntl, os, socket, sys, time
@@ -327,7 +331,7 @@ time.sleep(600)
             def launch_install(path, host=None):
                 for marker in (calls, started):
                     marker.unlink(missing_ok=True)
-                result = run([installer, '--package', path, '--channel', 'beta', '--applications-dir', apps], launch_env)
+                result = run([installer, '--package', path, '--channel', 'pr-1605', '--applications-dir', apps], launch_env)
                 if host is not None:
                     assert host.poll() is None, 'the installer stopped the running host'
                 recorded = calls.read_text().splitlines() if calls.exists() else []
@@ -335,39 +339,39 @@ time.sleep(600)
                 return recorded, result.stdout
             ready_build = lambda build: [f'{build} host start --timeout-secs 90', f'{build} host status --json']
             host = stand_in('lock')
-            recorded, out = launch_install(beta_old, host)
+            recorded, out = launch_install(pr_old, host)
             assert recorded == [], recorded
-            assert f'Plexi Beta is running (pid {host.pid}). Quit Plexi Beta, then reopen it to run v1.0.0.' in out, out
+            assert f'Plexi PR1605 is running (pid {host.pid}). Quit Plexi PR1605, then reopen it to run v1.0.0.' in out, out
             assert 'Plexi is ready.' not in out, out
             print('PASS: first install over a lock-holding host runs no build and defers')
             stop(host)
-            recorded, out = launch_install(beta_old)
+            recorded, out = launch_install(pr_old)
             assert recorded == ready_build('old'), recorded
             assert 'Plexi is ready.' in out, out
             print('PASS: first install with no running host starts it and reports ready')
             host = stand_in('lock')
-            recorded, out = launch_install(beta_new, host)
+            recorded, out = launch_install(pr_new, host)
             assert recorded == [], recorded
-            assert 'Quit Plexi Beta, then reopen it to run v1.1.0.' in out, out
+            assert 'Quit Plexi PR1605, then reopen it to run v1.1.0.' in out, out
             print('PASS: upgrade over a running host runs no build, old or new, and defers')
             stop(host)
             calls.unlink(missing_ok=True)
-            run([root / 'command bin/plexi-beta', 'host', 'start'], launch_env)
+            run([root / 'command bin/plexi-pr-1605', 'host', 'start'], launch_env)
             assert calls.read_text().splitlines() == ['new host start'], calls.read_text()
             assert started.read_text() == 'new'
             print('PASS: the next launch after the host exits runs the staged build')
             host = stand_in('listen')
-            recorded, out = launch_install(beta_new, host)
+            recorded, out = launch_install(pr_new, host)
             assert recorded == [], recorded
-            assert 'Plexi Beta is running. Quit Plexi Beta, then reopen it to run v1.1.0.' in out, out
+            assert 'Plexi PR1605 is running. Quit Plexi PR1605, then reopen it to run v1.1.0.' in out, out
             print('PASS: a pre-lock host found only on its endpoint defers the launch')
             stop(host)
-            recorded, out = launch_install(beta_new)
+            recorded, out = launch_install(pr_new)
             assert recorded == ready_build('new'), recorded
             assert 'Plexi is ready.' in out, out
             assert (profile / 'notify.sock').exists(), 'the installer removed the stale endpoint'
             print('PASS: a stale endpoint reads as no host, is kept, and the new build starts')
-            run([installer, 'remove', '--receipt', root / 'custom install/beta'], env)
+            run([installer, 'remove', '--receipt', root / 'custom install/pr-1605'], env)
         # Exercise real HTTP, archive and checksum handling from the public bootstrap.
         server_root = root / 'server'
         tag_dir = server_root / 'download/v1.1.0'

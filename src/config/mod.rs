@@ -4,7 +4,7 @@ mod profile_name;
 pub(crate) mod test_hooks;
 pub mod watcher;
 
-pub(crate) use profile_home::profile_home;
+pub(crate) use profile_home::{profile_home, profile_home_or_exit};
 pub use profile_name::{ProfileName, ProfileSelection};
 
 use serde::{Deserialize, Serialize};
@@ -2279,9 +2279,7 @@ pub fn config_dir() -> PathBuf {
     }
     #[cfg(not(test))]
     {
-        profile_home()
-            .expect("channel profile directory unavailable")
-            .join(config_dir_name())
+        profile_home_or_exit().join(config_dir_name())
     }
 }
 
@@ -2315,9 +2313,7 @@ pub fn shared_dir() -> PathBuf {
 
 /// Also locates the pre-fetched, read-only development bundle cache in tests.
 pub(crate) fn shared_dir_on_disk() -> PathBuf {
-    profile_home()
-        .expect("shared profile directory unavailable")
-        .join(SHARED_DIR_NAME)
+    profile_home_or_exit().join(SHARED_DIR_NAME)
 }
 
 const SHARED_DIR_NAME: &str = ".plexi";

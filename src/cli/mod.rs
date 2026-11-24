@@ -1295,7 +1295,7 @@ fn command_binary_channel() -> Option<String> {
 }
 
 fn command_profile_home() -> std::path::PathBuf {
-    crate::config::profile_home().expect("command socket profile unavailable")
+    crate::config::profile_home_or_exit()
 }
 
 pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {

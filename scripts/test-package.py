@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,55 @@ import threading
 from package import macos_deployment_target
 
 REPO = Path(__file__).resolve().parent.parent
+
+
+def profile_home_for(channel, temp_home, account_home):
+    if channel.startswith('pr-'):
+        return temp_home
+    if account_home is None or not account_home.is_absolute():
+        raise SystemExit('getpwuid for the current uid returned no absolute home directory')
+    return account_home
+
+
+def check_disposable(profile_home, environ):
+    if (environ.get('GITHUB_ACTIONS') != 'true'
+            and environ.get('PLEXI_PACKAGE_TEST_DISPOSABLE_ACCOUNT') != '1'):
+        raise SystemExit(f'Package GUI test requires a disposable account for {profile_home}. '
+                         'On a disposable account set PLEXI_PACKAGE_TEST_DISPOSABLE_ACCOUNT=1.')
+    try:
+        for profile in profile_home.iterdir():
+            if profile.name.startswith('.plexi'):
+                path = profile / 'notify.sock'
+                if host_listening(path) or host_lock_held(profile / 'host.lock'):
+                    raise SystemExit(f'Refusing to run the package test: a live host is using {profile}')
+    except OSError as error:
+        raise SystemExit(f'Cannot check {profile_home} for an existing host: {error}') from error
+
+
+def host_listening(path):
+    """A stale socket file left by a stopped host refuses connections."""
+    with socket.socket(socket.AF_UNIX) as probe:
+        probe.settimeout(1)
+        try:
+            probe.connect(str(path))
+        except (FileNotFoundError, NotADirectoryError, ConnectionRefusedError):
+            return False
+        except OSError:
+            return True
+    return True
+
+
+def host_lock_held(path):
+    """The host holds an exclusive lock on host.lock for its whole life; the file persists after exit."""
+    if os.name == 'nt' or not path.exists():
+        return False
+    import fcntl
+    with path.open('rb') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    return False
 
 
 def verify_macos_minimum(binary, target):
@@ -56,12 +106,31 @@ def main(args):
             if result.returncode:
                 raise RuntimeError(f'{command}: {result.stderr[-4000:]}')
             return result.stdout
-        # Windows Known Folders do not follow HOME/USERPROFILE overrides; native
-        # Windows runs use the disposable runner account's real profile.
-        profile_home = Path(run(['powershell', '-NoProfile', '-Command', "[Environment]::GetFolderPath('UserProfile')"]).strip()) if os.name == 'nt' else home
+        tag, channel = manifest['tag'], manifest['channel']
+        if os.name == 'nt':
+            # Windows uses the known folder even on PR channels.
+            profile_home = Path(run(['powershell', '-NoProfile', '-Command', "[Environment]::GetFolderPath('UserProfile')"]).strip())
+            if not profile_home.is_absolute():
+                raise SystemExit('Windows UserProfile known folder lookup returned no absolute path')
+        else:
+            import pwd
+            try:
+                account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+            except (KeyError, OSError):
+                account_home = None
+            profile_home = profile_home_for(channel, home, account_home)
+        if profile_home != home:
+            check_disposable(profile_home, os.environ)
+        elif os.name != 'nt' and channel.startswith('pr-'):
+            # Packaging can rename a release executable. Only a matching
+            # compiled PR build will actually use the temporary HOME.
+            binary = (package / manifest['executable']).resolve()
+            info = json.loads(run([binary, '--build-info']))
+            if (not re.fullmatch(r'pr-[0-9]+', channel) or binary.name != f'plexi-{channel}'
+                    or info.get('test_channel') != channel):
+                raise SystemExit(f'{binary} must be built for {channel} to honor the temporary HOME')
         installer = package / ('plexi-installer.exe' if os.name == 'nt' else 'plexi-installer')
         auto_started = False
-        tag, channel = manifest['tag'], manifest['channel']
         accepted = channel == 'alpha' or (channel == 'beta' and '-alpha.' not in tag) or (channel == 'stable' and '-' not in tag)
         if accepted:
             # Serve the actual release archive, then execute the public bootstrap.
