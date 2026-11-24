@@ -1500,19 +1500,12 @@ pub enum SecretCmd {
         #[arg(long)]
         folder: Option<std::path::PathBuf>,
     },
-    /// Read a folder secret as an agent or plugin. Without a grant this prints
-    /// `permission_required` and writes an audit row that names the secret
-    /// but not its value.
+    /// Read a folder secret after approval in the Plexi window.
     Read {
         /// Environment variable name
         name: String,
-        /// Agent id. Stored as `agent:<id>`.
-        #[arg(long, conflicts_with = "plugin")]
-        agent: Option<String>,
-        /// Plugin id. Stored as `plugin:<id>`.
-        #[arg(long, conflicts_with = "agent")]
-        plugin: Option<String>,
-        /// Directory the secret was bound to. Required when the name exists in more than one folder.
+        /// Directory holding the secret. Defaults to the nearest enclosing match,
+        /// or the only matching folder available to the caller.
         #[arg(long)]
         folder: Option<std::path::PathBuf>,
     },

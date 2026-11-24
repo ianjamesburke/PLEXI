@@ -386,7 +386,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi secret grant`: Ask for an allow on a folder secret
 <!-- /experiment -->
 <!-- experiment: folder_secrets -->
-- `plexi secret read`: Read a folder secret as an agent or plugin
+- `plexi secret read`: Read a folder secret after approval in the Plexi window
 <!-- /experiment -->
 <!-- experiment: folder_secrets -->
 - `plexi secret exec`: Run a command with the environment a new terminal pane in `--cwd` receives, including folder secrets for that directory

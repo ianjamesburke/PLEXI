@@ -696,7 +696,7 @@ impl PlexiApp {
                 crate::host::plugin_admission::LOAD_INSTALLED_TOOL
                     | crate::host::plugin_admission::TRUST_FOLDER_TOOL
             );
-            let is_secret = crate::broker::workspace_secret_tool(&pending.tool)
+            let is_secret = crate::broker::command_secret_tool(&pending.tool)
                 && pending.actor_id == crate::broker::principal::EXTERNAL_ID;
             let cmd_text = if is_cli_operation || is_plugin_admission || is_secret {
                 // The summary is already a full sentence naming plugin, workspace,

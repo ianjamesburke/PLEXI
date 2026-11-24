@@ -174,8 +174,104 @@ KEYCHAIN_BEFORE="$(user_keychain_snapshot)"
 
 "$PLEXI" experiments enable folder_secrets >"$WORK/experiment.out" 2>"$WORK/experiment.err" || exit 1
 
+# Pane checks always run. PLEXI_E2E_SKIP_PANES is not a skip. macOS does not
+# need X. On Linux with no display, start Xvfb so the refusals and the human
+# click still run.
+pane_gui=0
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  if pgrep -q WindowServer; then
+    pane_gui=1
+  else
+    printf 'SKIP: pane checks (no WindowServer)\n'
+  fi
+elif [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+  pane_gui=1
+elif command -v Xvfb >/dev/null 2>&1; then
+  xvfb_display=":47"
+  Xvfb "$xvfb_display" -screen 0 1280x800x24 >"$WORK/xvfb.log" 2>&1 &
+  XVFB_PID=$!
+  export DISPLAY="$xvfb_display"
+  export LIBGL_ALWAYS_SOFTWARE=1
+  export WINIT_UNIX_BACKEND=x11
+  export WGPU_BACKEND=vulkan
+  for icd in \
+    /usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+    /usr/share/vulkan/icd.d/lvp_icd.json
+  do
+    if [[ -f "$icd" ]]; then
+      export VK_ICD_FILENAMES="$icd"
+      export VK_DRIVER_FILES="$icd"
+      break
+    fi
+  done
+  sleep 0.5
+  if kill -0 "$XVFB_PID" 2>/dev/null; then
+    pane_gui=1
+  else
+    printf 'SKIP: pane checks (Xvfb exited)\n'
+    XVFB_PID=""
+  fi
+else
+  printf 'SKIP: pane checks (no display)\n'
+fi
+if [[ "$pane_gui" != 1 ]]; then
+  fail "folder calls require a running host window"
+  exit 1
+fi
+start_out="$("$PLEXI" host start --ephemeral --timeout-secs 90 2>&1)" || true
+printf '%s\n' "$start_out" >"$WORK/host-start.txt"
+status_out="$("$PLEXI" host status --json 2>&1 || true)"
+if [[ "$status_out" != *'"ready":true'* && "$status_out" != *'"ready": true'* ]]; then
+  fail "private host did not become ready"
+  exit 1
+fi
+HOST_STARTED=1
+export PLEXI_SOCKET
+PLEXI_SOCKET="$(sed -n 's/.*"socket"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$status_out")"
+export BIN="$PLEXI"
+source "$REPO_ROOT/scripts/e2e/human.sh"
+"$PLEXI" view open assistant --right >"$WORK/open-assistant.out" 2>"$WORK/open-assistant.err" || true
+
+# Match the card to this call before clicking. Preserve piped set input
+# on fd 3 while the CLI waits in the background for its final reply.
+folder_call() {
+  local choice="$1" op="$2" name="$3" folder="$4"
+  local client pending resource attempt tool="secret.$2"
+  [[ "$op" != rm ]] || tool="secret.delete"
+  resource="$name@$(cd "$folder" && pwd -P)" || return 125
+  [[ "$op" == read ]] || resource="$name@folder:$(cd "$folder" && pwd -P)"
+  "$PLEXI" secret "$op" "$name" --folder "$folder" <&3 &
+  client=$!
+  for attempt in {1..60}; do
+    if ! kill -0 "$client" 2>/dev/null; then
+      wait "$client"
+      return 125
+    fi
+    pending="$("$PLEXI" assistant permission list 2>/dev/null | python3 -c '
+import json, sys
+rows = json.load(sys.stdin).get("pending", [])
+matches = [r["pending_request_id"] for r in rows
+           if r.get("tool") == sys.argv[1] and r.get("resource_id") == sys.argv[2]]
+if len(matches) == 1:
+    print(matches[0])
+' "$tool" "$resource" 2>/dev/null)" || pending=""
+    if [[ -n "$pending" ]]; then
+      if [[ "$choice" == "deny" ]]; then
+        HUMAN_DENY "$pending" >&2 && { wait "$client"; return $?; }
+      else
+        HUMAN_APPROVE "$pending" once >&2 && { wait "$client"; return $?; }
+      fi
+      break
+    fi
+    sleep 0.2
+  done
+  kill "$client" 2>/dev/null || true
+  wait "$client" 2>/dev/null || true
+  return 125
+} 3<&0
+
 # ── set ──────────────────────────────────────────────────────────────────────
-set_out="$(printf '%s\n' "$SECRET" | "$PLEXI" secret set FOLDER_E2E_SECRET --folder "$DIR_A" 2>"$WORK/set.err")"
+set_out="$(printf '%s\n' "$SECRET" | folder_call once set FOLDER_E2E_SECRET "$DIR_A" 2>"$WORK/set.err")"
 set_code=$?
 set_err="$(cat "$WORK/set.err" 2>/dev/null || true)"
 if [[ "$set_code" -eq 0 ]] && ! contains_secret "$set_out" && ! contains_secret "$set_err"; then
@@ -185,7 +281,7 @@ else
 fi
 
 # ── list: names and folders only ─────────────────────────────────────────────
-list_out="$("$PLEXI" secret list 2>"$WORK/list.err")"
+list_out="$(cd "$DIR_A" && "$PLEXI" secret list 2>"$WORK/list.err")"
 list_code=$?
 list_err="$(cat "$WORK/list.err" 2>/dev/null || true)"
 if [[ "$list_code" -eq 0 ]] \
@@ -203,7 +299,7 @@ else
   fail "secret list names the backend"
 fi
 
-set_b_out="$(printf '%s\n' "$SECRET_B" | "$PLEXI" secret set FOLDER_B_SECRET --folder "$DIR_B" 2>"$WORK/set-b.err")"
+set_b_out="$(printf '%s\n' "$SECRET_B" | folder_call once set FOLDER_B_SECRET "$DIR_B" 2>"$WORK/set-b.err")"
 set_b_code=$?
 set_b_err="$(cat "$WORK/set-b.err" 2>/dev/null || true)"
 if [[ "$set_b_code" -eq 0 ]] && ! contains_secret "$set_b_out" && ! contains_secret "$set_b_err"; then
@@ -265,54 +361,7 @@ pane_marker() {
   fi
 }
 
-# Pane checks always run. PLEXI_E2E_SKIP_PANES is not a skip. macOS does not
-# need X. On Linux with no display, start Xvfb so the refusals and the human
-# click still run.
-pane_gui=0
-if [[ "$(uname -s)" == "Darwin" ]]; then
-  if pgrep -q WindowServer; then
-    pane_gui=1
-  else
-    printf 'SKIP: pane checks (no WindowServer)\n'
-  fi
-elif [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
-  pane_gui=1
-elif command -v Xvfb >/dev/null 2>&1; then
-  xvfb_display=":47"
-  Xvfb "$xvfb_display" -screen 0 1280x800x24 >"$WORK/xvfb.log" 2>&1 &
-  XVFB_PID=$!
-  export DISPLAY="$xvfb_display"
-  export LIBGL_ALWAYS_SOFTWARE=1
-  export WINIT_UNIX_BACKEND=x11
-  export WGPU_BACKEND=vulkan
-  for icd in \
-    /usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
-    /usr/share/vulkan/icd.d/lvp_icd.json
-  do
-    if [[ -f "$icd" ]]; then
-      export VK_ICD_FILENAMES="$icd"
-      export VK_DRIVER_FILES="$icd"
-      break
-    fi
-  done
-  sleep 0.5
-  if kill -0 "$XVFB_PID" 2>/dev/null; then
-    pane_gui=1
-  else
-    printf 'SKIP: pane checks (Xvfb exited)\n'
-    XVFB_PID=""
-  fi
-else
-  printf 'SKIP: pane checks (no display)\n'
-fi
-if [[ "$pane_gui" == 1 ]]; then
-  start_out="$("$PLEXI" host start --ephemeral --timeout-secs 90 2>&1)" || true
-  printf '%s\n' "$start_out" >"$WORK/host-start.txt"
-  status_out="$("$PLEXI" host status --json 2>&1 || true)"
-  if [[ "$status_out" == *'"ready":true'* || "$status_out" == *'"ready": true'* ]]; then
-    HOST_STARTED=1
-    export PLEXI_SOCKET
-    PLEXI_SOCKET="$(sed -n 's/.*"socket"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<<"$status_out")"
+if [[ "$HOST_STARTED" == 1 ]]; then
     mark_a="$(pane_marker "$DIR_A")"
     mark_b="$(pane_marker "$DIR_B")"
     if [[ "$mark_a" == "present" ]]; then
@@ -354,7 +403,7 @@ esac
 if ! grep -q '^grant_code:' "\$meta"; then
   echo "grant_code:0" >>"\$meta"
 fi
-"\$PLEXI" secret read FOLDER_B_SECRET --agent me --folder "\$DIR_B" >"\$meta.read" 2>"\$meta.read.err" || echo "read_code:\$?" >>"\$meta"
+"\$PLEXI" secret read FOLDER_B_SECRET --folder "\$DIR_B" >"\$meta.read" 2>"\$meta.read.err" || echo "read_code:\$?" >>"\$meta"
 if ! grep -q '^read_code:' "\$meta"; then
   echo "read_code:0" >>"\$meta"
 fi
@@ -435,8 +484,8 @@ EOF
       fail "pane in folder A: secret grant --folder B is permission_denied"
     fi
     if [[ "$leaked" -eq 0 ]] \
-      && [[ "$read_body" == *"permission_denied"* ]] \
-      && [[ "$read_body" != *"pending_request_id="* ]] \
+      && [[ -z "$read_body" && "$read_err_body" == *"permission_denied"* ]] \
+      && [[ "$read_err_body" != *"pending_request_id="* ]] \
       && grep -q '^read_code:1$' <<<"$agent_body"; then
       pass "pane in folder A: secret read of B is permission_denied"
     else
@@ -463,27 +512,16 @@ EOF
         fail "pane in folder A: secret exec survives clearing PLEXI_PANE_ID and PLEXI_SOCKET"
       fi
     fi
-    "$PLEXI" view open assistant --right >"$WORK/open-assistant.out" 2>"$WORK/open-assistant.err" || true
-    unset PLEXI_SOCKET
-  else
-    fail "pane in folder A sees the env var (host did not become ready)"
-    fail "pane in folder B does not see the env var (host did not become ready)"
-  fi
-else
-  fail "pane checks did not start"
 fi
 
-# ── agent read without a grant ───────────────────────────────────────────────
-read_out="$("$PLEXI" secret read FOLDER_E2E_SECRET --agent reader --folder "$DIR_A" 2>"$WORK/read.err")" || read_code=$?
-read_code="${read_code:-0}"
-if [[ "$read_code" -eq 2 ]] \
-  && [[ "$read_out" == *"permission_required"* ]] \
-  && [[ "$read_out" == *"pending_request_id="* ]] \
-  && ! contains_secret "$read_out"; then
-  pass "agent without a grant gets permission_required"
+# A click answers the command already waiting on this connection.
+read_out="$(folder_call once read FOLDER_E2E_SECRET "$DIR_A" 2>"$WORK/read.err")"
+if [[ "$?" -eq 0 && "$read_out" == "$SECRET" ]]; then
+  pass "human click allows exactly one read"
 else
-  fail "agent without a grant gets permission_required (exit ${read_code})"
+  fail "approved folder read did not return its value"
 fi
+unset read_out
 
 audit="$PROFILE/permission-audit.jsonl"
 audit_pat="$(mktemp)"
@@ -533,107 +571,6 @@ else
 fi
 rm -f "$audit_pat"
 
-# ── one human click, one read ────────────────────────────────────────────────
-# `view open assistant` is release-gated. A private HOME still isolates the
-# profile, but the binary name has to be an alpha, beta, or pr channel or
-# the Allow once button never appears.
-channel_base="$(basename "$PLEXI")"
-channel_base="${channel_base%.exe}"
-case "$channel_base" in
-  plexi-alpha|plexi-beta|plexi-pr-*) ;;
-  *)
-    fail "human click allows exactly one read (binary must be plexi-alpha, plexi-beta, or plexi-pr-N so the assistant can open)"
-    channel_base=""
-    ;;
-esac
-if [[ -z "$channel_base" ]]; then
-  :
-elif [[ ! -f "$REPO_ROOT/scripts/e2e/human.sh" ]]; then
-  fail "human click allows exactly one read (scripts/e2e/human.sh missing)"
-elif ! command -v xdotool >/dev/null 2>&1; then
-  fail "human click allows exactly one read (xdotool missing)"
-elif [[ "$HOST_STARTED" != 1 ]]; then
-  fail "human click allows exactly one read (host is not running)"
-elif [[ "$read_code" -ne 2 || "$read_out" != *"pending_request_id="* ]]; then
-  fail "human click allows exactly one read (no pending)"
-else
-  pending_id="${read_out#*pending_request_id=}"
-  pending_id="${pending_id%%$'\n'*}"
-  assist=""
-  for _i in $(seq 1 20); do
-    "$PLEXI" pane list >"$WORK/panes.json" 2>/dev/null || true
-    assist="$(python3 - "$WORK/panes.json" <<'PY'
-import json, sys
-try:
-    rows = json.load(open(sys.argv[1]))
-except Exception:
-    print("")
-    raise SystemExit
-for row in rows:
-    title = str(row.get("title") or "")
-    manifest = str(row.get("manifest_id") or "")
-    if row.get("type") == "view" and (
-        title.lower() == "assistant" or manifest.lower() == "assistant"
-    ):
-        print(row.get("id", ""))
-        raise SystemExit
-print("")
-PY
-)"
-    [[ -n "$assist" ]] && break
-    sleep 0.3
-  done
-  if [[ -n "$assist" ]]; then
-    "$PLEXI" pane focus "$assist" >/dev/null 2>&1 || true
-  fi
-  export BIN="$PLEXI"
-  # shellcheck disable=SC1091
-  source "$REPO_ROOT/scripts/e2e/human.sh"
-  if HUMAN_APPROVE "$pending_id" once; then
-    once_file="$WORK/once-read.out"
-    : >"$once_file"
-    chmod 600 "$once_file"
-    "$PLEXI" secret read FOLDER_E2E_SECRET --agent reader --folder "$DIR_A" >"$once_file" 2>"$WORK/once-read.err" || once_code=$?
-    once_code="${once_code:-0}"
-    once_ok=0
-    if [[ "$once_code" -eq 0 ]] && python3 - "$once_file" <<PY
-import pathlib, sys
-got = pathlib.Path(sys.argv[1]).read_text().strip("\n")
-want = """$SECRET"""
-raise SystemExit(0 if got == want else 1)
-PY
-    then
-      once_ok=1
-    fi
-    : >"$once_file"
-    rm -f "$once_file" "$WORK/once-read.err"
-    again_file="$WORK/again-read.out"
-    : >"$again_file"
-    chmod 600 "$again_file"
-    "$PLEXI" secret read FOLDER_E2E_SECRET --agent reader --folder "$DIR_A" >"$again_file" 2>"$WORK/again-read.err" || again_code=$?
-    again_code="${again_code:-0}"
-    again_ok=0
-    if [[ "$again_code" -ne 0 ]] && python3 - "$again_file" <<PY
-import pathlib, sys
-got = pathlib.Path(sys.argv[1]).read_text()
-want = """$SECRET"""
-raise SystemExit(0 if want not in got else 1)
-PY
-    then
-      again_ok=1
-    fi
-    : >"$again_file"
-    rm -f "$again_file" "$WORK/again-read.err"
-    if [[ "$once_ok" -eq 1 && "$again_ok" -eq 1 ]]; then
-      pass "human click allows exactly one read"
-    else
-      fail "human click allows exactly one read"
-    fi
-  else
-    fail "human click allows exactly one read"
-  fi
-fi
-
 # ── grant, then read ─────────────────────────────────────────────────────────
 grant_out="$("$PLEXI" secret grant FOLDER_E2E_SECRET --agent reader --folder "$DIR_A" 2>"$WORK/grant.err")" || grant_code=$?
 grant_code="${grant_code:-0}"
@@ -647,14 +584,23 @@ else
   fail "secret grant does not record an allow (exit ${grant_code})"
 fi
 
-got="$("$PLEXI" secret read FOLDER_E2E_SECRET --agent reader --folder "$DIR_A" 2>"$WORK/read2.err")" || got_code=$?
-got_code="${got_code:-0}"
-if [[ "$got_code" -ne 0 ]] && ! contains_secret "$got" && [[ "$got" != "$SECRET" ]]; then
-  pass "a refused grant does not let the next read return the value"
+got="$(
+  folder_call deny read FOLDER_E2E_SECRET "$DIR_A" 2>"$WORK/read2.err"
+)"
+got_code=$?
+if [[ "$got_code" -eq 1 && -z "$got" ]] && grep -q 'Request denied' "$WORK/read2.err"; then
+  pass "a second read needs a fresh click and a refused grant supplies no value"
 else
-  fail "a refused grant does not let the next read return the value (exit ${got_code})"
+  fail "second folder read after a refused grant (exit $got_code)"
 fi
-got=""
+
+if folder_call once rm FOLDER_E2E_SECRET "$DIR_A" >"$WORK/rm.out" 2>"$WORK/rm.err" &&
+    (cd "$DIR_A" && "$PLEXI" secret list >"$WORK/list-after-rm.out") &&
+    ! grep -q FOLDER_E2E_SECRET "$WORK/list-after-rm.out"; then
+  pass "approved rm removed the folder binding"
+else
+  fail "approved rm removed the folder binding"
+fi
 
 # ── plaintext search ─────────────────────────────────────────────────────────
 pat="$(mktemp)"

@@ -1268,6 +1268,26 @@ pub enum HostRequest {
         workspace_root: Option<std::path::PathBuf>,
         response_file: String,
     },
+    /// Read one folder account on the original connection after host admission.
+    FolderSecretRead {
+        name: String,
+        folder: Option<std::path::PathBuf>,
+        cwd: std::path::PathBuf,
+        response_file: String,
+    },
+    /// Set a folder account after admission for the host-stamped caller.
+    FolderSecretSet {
+        name: String,
+        folder: std::path::PathBuf,
+        value: SecretInput,
+        response_file: String,
+    },
+    /// Remove a folder account after admission for the host-stamped caller.
+    FolderSecretRm {
+        name: String,
+        folder: std::path::PathBuf,
+        response_file: String,
+    },
     /// Agents API: agent registry, runs, delegation, and gated tool calls.
     /// `op` is `create_agent`, `list_agents`, `list_grants`, `spawn_run`,
     /// `list_runs`, `show_run`, `finish_run`, or `delegate`. `payload` carries

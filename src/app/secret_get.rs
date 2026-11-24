@@ -121,17 +121,34 @@ impl PlexiApp {
         origin: &crate::broker::caller::RequestOrigin,
         response_file: &str,
     ) {
+        self.serve_secret_read(
+            name,
+            SecretAsk::workspace(global, workspace_root),
+            origin,
+            response_file,
+        );
+    }
+
+    pub(super) fn serve_secret_read(
+        &self,
+        name: &str,
+        ask: SecretAsk,
+        origin: &RequestOrigin,
+        response_file: &str,
+    ) {
+        let tool = if ask.is_folder() {
+            crate::workspace::secrets::SECRET_READ_TOOL
+        } else {
+            "secret.get"
+        };
         self.run_secret_request(
-            "secret.get",
-            SecretAsk {
-                name,
-                global,
-                workspace_root,
-            },
+            tool,
+            name,
+            ask,
             origin,
             response_file,
             |request, monitor| {
-                request.read_and_release(&monitor, crate::workspace::secrets::system_store());
+                request.read_and_release(&monitor, request.scope.store());
             },
         );
     }
@@ -139,16 +156,12 @@ impl PlexiApp {
     fn run_secret_request(
         &self,
         tool: &'static str,
-        ask: SecretAsk<'_>,
+        name: &str,
+        mut ask: SecretAsk,
         origin: &RequestOrigin,
         response_file: &str,
         work: impl FnOnce(SecretRequest, Arc<PermissionMonitor>) + Send + 'static,
     ) {
-        let SecretAsk {
-            name,
-            global,
-            workspace_root,
-        } = ask;
         let reply_path = PathBuf::from(response_file);
         let profile = crate::config::config_dir();
         if reply_path.parent() != Some(profile.join("rpc").as_path()) {
@@ -156,9 +169,16 @@ impl PlexiApp {
             return;
         }
         log::info!(
-            "{tool}: caller={} name={name} global={global} workspace={workspace_root:?}",
+            "{tool}: caller={} name={name} scope={ask:?}",
             origin.class()
         );
+        if let Err(error) = ask.validate(name) {
+            stream_reply(
+                &reply_path,
+                serde_json::json!({"status":"error","error":error}),
+            );
+            return;
+        }
         let monitor = match PermissionMonitor::for_profile(&profile) {
             Ok(monitor) => monitor,
             Err(error) => {
@@ -167,31 +187,41 @@ impl PlexiApp {
                 return;
             }
         };
-        let (subject, posture) = match origin.socket_caller() {
+        let (subject, posture, discovery_root) = match origin.socket_caller() {
             Some(SocketCaller::Pane(pane)) => {
                 let id = pane.terminal_pane;
                 let scope = AdmittedScope::of(&pane.authority);
-                if let Some(root) = workspace_root.filter(|_| !global) {
-                    let root = crate::platform::path::canonical_or_self(root);
-                    if self.pane_context_authority_root(id).as_ref() != Some(&root)
-                        || !self.pane_may_access_context_root(id, &root)
-                    {
-                        monitor.note_denial(
-                            &format!("pane:{id}"),
-                            tool,
-                            &format!("{name}@{}", root.display()),
-                            "",
-                            "context_scope_violation",
-                        );
-                        stream_reply(
-                            &reply_path,
-                            serde_json::json!({"status":"denied","error_code":"permission_denied"}),
-                        );
-                        return;
-                    }
+                let authority = self.pane_context_authority_root(id);
+                let target = match &ask {
+                    SecretAsk::Folder(path) | SecretAsk::Workspace(Some(path)) => Some(path),
+                    SecretAsk::DiscoverFolder(_) => authority.as_ref(),
+                    SecretAsk::Global | SecretAsk::Workspace(None) => None,
+                };
+                if target.is_some_and(|root| {
+                    authority.as_ref() != Some(root) || !self.pane_may_access_context_root(id, root)
+                }) || (matches!(ask, SecretAsk::DiscoverFolder(_)) && authority.is_none())
+                {
+                    let prefix = if ask.is_folder() && tool != crate::workspace::secrets::SECRET_READ_TOOL {
+                        "folder:"
+                    } else {
+                        ""
+                    };
+                    let path = target.map(|p| p.display().to_string()).unwrap_or_default();
+                    monitor.note_denial(
+                        &format!("pane:{id}"),
+                        tool,
+                        &format!("{name}@{prefix}{path}"),
+                        "",
+                        "context_scope_violation",
+                    );
+                    stream_reply(
+                        &reply_path,
+                        serde_json::json!({"status":"denied","error_code":"permission_denied"}),
+                    );
+                    return;
                 }
                 match self.pane_ceiling(id) {
-                    Ok(posture) => (Subject::Pane(scope), posture),
+                    Ok(posture) => (Subject::Pane(scope), posture, authority),
                     Err(error) => {
                         stream_reply(
                             &reply_path,
@@ -201,57 +231,53 @@ impl PlexiApp {
                     }
                 }
             }
-            Some(SocketCaller::External(_)) => (Subject::Outside("a terminal outside Plexi"), None),
-            Some(SocketCaller::Unidentified(_)) => {
-                (Subject::Outside("a detached caller (unidentified)"), None)
+            Some(SocketCaller::External(_)) => {
+                (Subject::Outside("a terminal outside Plexi"), None, None)
             }
+            Some(SocketCaller::Unidentified(_)) => (
+                Subject::Outside("a detached caller (unidentified)"),
+                None,
+                None,
+            ),
             None => {
                 stream_reply(&reply_path, serde_json::json!({"status":"denied"}));
                 return;
             }
         };
-        let scope = match scope_for(global, workspace_root) {
-            Ok(scope) => scope,
-            Err(error) => {
-                log::warn!("{tool}: workspace config unreadable: {error}");
-                stream_reply(
-                    &reply_path,
-                    serde_json::json!({"status": "error", "error": error}),
-                );
-                return;
-            }
-        };
-        if tool != "secret.get" && !global && matches!(scope, SecretScope::Global) {
-            stream_reply(
-                &reply_path,
-                serde_json::json!({"status":"error","error":"No workspace found. Run plexi workspace init or use --global."}),
-            );
-            return;
-        }
-        let request = SecretRequest {
-            subject,
-            peer: origin
-                .socket_caller()
-                .and_then(SocketCaller::peer)
-                .and_then(|peer| peer.hops.first())
-                .copied(),
-            repaint: self.ctx.clone(),
-            name: name.into(),
-            scope,
-            profile,
-            posture,
-            reply_path: reply_path.clone(),
-        };
+        let name = name.to_owned();
+        let peer = origin
+            .socket_caller()
+            .and_then(SocketCaller::peer)
+            .and_then(|peer| peer.hops.first())
+            .copied();
         let repaint = self.ctx.clone();
+        let reply = reply_path.clone();
         let run = move || {
-            match request.subject.current() {
-                Ok(()) => work(request, monitor),
-                Err(error) => {
-                    log::info!("{tool}: withheld before admission: {error}");
-                    stream_reply(
-                        &request.reply_path,
-                        serde_json::json!({"status":"denied","reason":"revoked"}),
-                    );
+            if let Err(error) = subject.current() {
+                log::info!("{tool}: withheld before admission: {error}");
+                stream_reply(
+                    &reply,
+                    serde_json::json!({"status":"denied","reason":"revoked"}),
+                );
+            } else {
+                match ask.scope_for(tool, &name, discovery_root.as_deref()) {
+                    Ok(scope) => work(
+                        SecretRequest {
+                            subject,
+                            peer,
+                            repaint: repaint.clone(),
+                            name,
+                            scope,
+                            profile,
+                            posture,
+                            reply_path: reply,
+                        },
+                        monitor,
+                    ),
+                    Err(error) => {
+                        log::info!("{tool}: scope unavailable: {error}");
+                        stream_reply(&reply, serde_json::json!({"status":"error","error":error}));
+                    }
                 }
             }
             repaint.request_repaint();
@@ -270,11 +296,103 @@ impl PlexiApp {
     }
 }
 
-/// The secret a socket request names, as the CLI sent it.
-pub(super) struct SecretAsk<'a> {
-    pub(super) name: &'a str,
-    pub(super) global: bool,
-    pub(super) workspace_root: Option<&'a Path>,
+/// Scope requested on the wire. Folder discovery runs on the secret worker.
+#[derive(Debug)]
+pub(super) enum SecretAsk {
+    Global,
+    Workspace(Option<PathBuf>),
+    Folder(PathBuf),
+    DiscoverFolder(PathBuf),
+}
+
+impl SecretAsk {
+    pub(super) fn workspace(global: bool, root: Option<&Path>) -> Self {
+        if global {
+            Self::Global
+        } else {
+            Self::Workspace(root.map(crate::platform::path::canonical_or_self))
+        }
+    }
+
+    fn is_folder(&self) -> bool {
+        matches!(self, Self::Folder(_) | Self::DiscoverFolder(_))
+    }
+
+    fn validate(&mut self, name: &str) -> Result<(), String> {
+        if self.is_folder() {
+            let feature = crate::release::ReleaseFeature::FolderSecrets;
+            if !crate::release::feature_enabled(feature) {
+                return Err(crate::release::feature_unavailable_message(feature));
+            }
+            if !crate::workspace::secrets::manager::valid_env_name(name) {
+                return Err(format!(
+                    "secret name '{name}' is not an environment variable name"
+                ));
+            }
+            if let Self::Folder(path) = self {
+                *path = crate::workspace::secrets::canonical_folder(path)?;
+                if path.to_str().is_none() {
+                    return Err("The canonical folder path must be valid UTF-8.".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn scope_for(
+        self,
+        tool: &str,
+        name: &str,
+        discovery_root: Option<&Path>,
+    ) -> Result<SecretScope, String> {
+        match self {
+            Self::Global => Ok(SecretScope::Global),
+            Self::Workspace(root) => {
+                if let Some(root) = root {
+                    if let Some(cfg) = crate::workspace::secrets::WorkspaceConfig::load(&root)? {
+                        return Ok(SecretScope::Workspace { id: cfg.id, root });
+                    }
+                }
+                if tool == "secret.get" {
+                    Ok(SecretScope::Global)
+                } else {
+                    Err("No workspace found. Run plexi workspace init or use --global.".into())
+                }
+            }
+            Self::Folder(path) => Ok(SecretScope::Folder { path }),
+            Self::DiscoverFolder(cwd) => {
+                let cwd = crate::workspace::secrets::canonical_folder(&cwd)?;
+                let folders: Vec<_> = crate::workspace::secrets::list_folder_secrets(
+                    crate::workspace::secrets::folder_store(),
+                )
+                .into_iter()
+                .filter(|meta| {
+                    meta.name == name && discovery_root.is_none_or(|root| root == meta.folder)
+                })
+                .map(|meta| meta.folder)
+                .collect();
+                let nearest = folders
+                    .iter()
+                    .filter(|path| cwd.starts_with(path))
+                    .max_by_key(|path| path.components().count());
+                let path = match (nearest, folders.as_slice()) {
+                    (Some(path), _) | (None, [path]) => path.clone(),
+                    (_, []) => return Err(format!("secret '{name}' not found")),
+                    _ => {
+                        return Err(format!(
+                            "secret '{name}' is set on more than one folder; pass --folder"
+                        ))
+                    }
+                };
+                if path.to_str().is_none()
+                    || crate::workspace::secrets::canonical_folder(&path)? != path
+                {
+                    return Err("The stored folder no longer has a canonical UTF-8 path.".into());
+                }
+                Ok(SecretScope::Folder { path })
+            }
+        }
+    }
 }
 
 enum Subject {
@@ -482,23 +600,6 @@ fn release_secret(permit: Permit<SecretRelease>, target: &str, reply_path: &Path
     }
 }
 
-/// The workspace whose `workspace.toml` sits at `root`, else global only, the
-/// same order `plexi secret get` uses outside a pane.
-fn scope_for(global: bool, workspace_root: Option<&Path>) -> Result<SecretScope, String> {
-    let Some(root) = workspace_root.filter(|_| !global) else {
-        return Ok(SecretScope::Global);
-    };
-    Ok(
-        match crate::workspace::secrets::WorkspaceConfig::load(root)? {
-            Some(cfg) => SecretScope::Workspace {
-                id: cfg.id,
-                root: crate::platform::path::canonical_or_self(root),
-            },
-            None => SecretScope::Global,
-        },
-    )
-}
-
 fn stream_reply(path: &Path, body: serde_json::Value) {
     let token = path.to_string_lossy();
     #[cfg(test)]
@@ -530,6 +631,7 @@ mod worker_test {
         Deadline(Arc<Mutex<Instant>>),
         ExpireAtClaim,
         PauseAfterAsk(std::sync::mpsc::Receiver<()>),
+        ObserveStoreBeforeClick(std::sync::mpsc::Sender<usize>),
         DropReply,
     }
     thread_local! {
@@ -539,6 +641,12 @@ mod worker_test {
 
     pub(super) fn deadline(real: Instant, claim: bool) -> Instant {
         TIMING.with_borrow_mut(|mode| match mode {
+            Timing::ObserveStoreBeforeClick(tx) if !claim => {
+                tx.send(crate::workspace::secrets::take_test_store_calls())
+                    .unwrap();
+                *mode = Timing::Normal;
+                real
+            }
             Timing::PauseAfterAsk(resume) if !claim => {
                 resume
                     .recv_timeout(std::time::Duration::from_secs(10))
@@ -558,10 +666,16 @@ mod worker_test {
         run: impl FnOnce() + Send + 'static,
     ) -> std::io::Result<()> {
         let timing = TIMING.take();
+        let feature = crate::release::ReleaseFeature::FolderSecrets;
+        let features: Vec<_> = crate::release::feature_enabled(feature)
+            .then_some(feature)
+            .into_iter()
+            .collect();
         let worker = std::thread::Builder::new()
             .name(tool.into())
             .spawn(move || {
                 let _profile = crate::config::set_test_profile_dir(profile);
+                let _experiments = crate::release::set_test_experiments(&features);
                 TIMING.replace(timing);
                 let logs = crate::testing::test_log::capture_with_debug();
                 run();
@@ -677,6 +791,134 @@ mod list_tests {
             "permission_denied"
         );
         secrets::system_store().delete(&account).unwrap();
+    }
+
+    #[test]
+    fn folder_requests_check_feature_and_arguments_before_a_card() {
+        let mut h = HostHarness::new();
+        let root = h.workspace_root();
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let feature = crate::release::ReleaseFeature::FolderSecrets;
+        for op in ["read", "set", "rm"] {
+            let mut request = serde_json::json!({"type": format!("folder_secret_{op}"), "name":"VALID", "folder":root});
+            if op == "set" {
+                request["value"] = "fixture".into();
+            }
+            if op == "read" {
+                request["cwd"] = serde_json::json!(root);
+            }
+            let _off = crate::release::set_test_experiments(&[]);
+            let reply = send(&mut h, request.clone(), None);
+            assert_eq!(
+                reply,
+                serde_json::json!({"status":"error","error":crate::release::feature_unavailable_message(feature)})
+            );
+            let _on = crate::release::set_test_experiments(&[feature]);
+            for (field, value, expected) in [
+                (
+                    "name",
+                    serde_json::json!("bad=name"),
+                    "environment variable name",
+                ),
+                ("folder", serde_json::json!(root.join("missing")), "missing"),
+            ] {
+                let mut bad = request.clone();
+                bad[field] = value;
+                let reply = send(&mut h, bad, None);
+                assert_eq!(reply["status"], "error");
+                assert!(
+                    reply["error"].as_str().unwrap().contains(expected),
+                    "{reply}"
+                );
+            }
+            if op == "set" {
+                request["value"] = "".into();
+                let reply = send(&mut h, request, None);
+                assert_eq!(reply["status"], "error");
+                assert!(reply["error"].as_str().unwrap().contains("empty"));
+            }
+            assert!(monitor.list_needs_you().is_empty());
+        }
+    }
+
+    #[test]
+    fn exact_pane_folder_verbs_wait_for_their_own_decision() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let peer = PeerWitness::for_live_pids(&[h.shell_pid(pane)]);
+        let _on =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        let root = h.workspace_root().canonicalize().unwrap();
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let name = format!("PANE_{}", uuid::Uuid::new_v4().simple());
+        let other = tempfile::tempdir().unwrap();
+        secrets::set_folder_secret(secrets::folder_store(), &name, other.path(), "outside-root")
+            .unwrap();
+        for op in ["set", "read", "rm"] {
+            let mut request = serde_json::json!({"type": format!("folder_secret_{op}"), "name":name, "folder":root});
+            if op == "set" {
+                request["value"] = "pane-folder-canary".into();
+            }
+            if op == "read" {
+                request["folder"] = serde_json::Value::Null;
+                request["cwd"] = serde_json::json!(other.path());
+            }
+            for choice in [ApprovalChoice::Deny, ApprovalChoice::Once] {
+                let (client, ask) = live_secret(&mut h, request.clone(), &peer);
+                assert_eq!(ask.actor_id, format!("pane:{pane}"));
+                assert_eq!(monitor.open_needs_you().len(), 1);
+                monitor
+                    .approve_pending(&ask.pending_request_id, choice)
+                    .unwrap();
+                let reply = read_client(client, op);
+                if choice == ApprovalChoice::Deny {
+                    assert_eq!(reply["status"], "denied");
+                } else if op == "read" {
+                    assert_eq!(reply["value"], "pane-folder-canary");
+                } else {
+                    assert_eq!(reply["status"], "ok");
+                }
+                let discovery = usize::from(op == "read");
+                assert_eq!(
+                    super::worker_test::join().0,
+                    discovery + usize::from(choice == ApprovalChoice::Once)
+                );
+                assert!(monitor.open_needs_you().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn folder_discovery_selects_only_visible_bindings() {
+        let base = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let root = base.path().canonicalize().unwrap();
+        let nested = root.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let name = format!("DISCOVERY_{}", uuid::Uuid::new_v4().simple());
+        let discover = |cwd: &std::path::Path, authority: Option<&std::path::Path>| {
+            super::SecretAsk::DiscoverFolder(cwd.into())
+                .scope_for("secret.read", &name, authority)
+                .map(|scope| scope.label())
+        };
+        let missing = format!("secret '{name}' not found");
+        assert_eq!(discover(&root, None), Err(missing.clone()));
+        secrets::set_folder_secret(secrets::folder_store(), &name, &nested, "nested").unwrap();
+        let nested_label = format!("folder:{}", nested.display());
+        assert_eq!(discover(other.path(), None), Ok(nested_label.clone()));
+        assert_eq!(discover(&nested, Some(&root)), Err(missing));
+        secrets::set_folder_secret(secrets::folder_store(), &name, &root, "root").unwrap();
+        assert_eq!(discover(&nested, None), Ok(nested_label));
+        assert_eq!(
+            discover(&nested, Some(&root)),
+            Ok(format!("folder:{}", root.display()))
+        );
+        assert_eq!(
+            discover(other.path(), None),
+            Err(format!(
+                "secret '{name}' is set on more than one folder; pass --folder"
+            ))
+        );
     }
 
     fn write_agent_role(workspace: &std::path::Path, role: &str, permissions_toml: &str) {
@@ -1684,7 +1926,20 @@ mod cli_tests {
         unsafe { libc::signal(libc::SIGINT, libc::SIG_DFL) };
         let name = &std::env::var("SECRET_TEST_NAME").unwrap_or_else(|_| "SOCKET_1280".into());
         secrets::take_test_store_calls();
+        let _folders =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        let folder = std::path::Path::new(".");
         let code = match op.as_str() {
+            "folder-read" => crate::cli::workspace::folder_secret_read(name, Some(folder)),
+            "folder-discover" => crate::cli::workspace::folder_secret_read(name, None),
+            "folder-set" => crate::cli::workspace::folder_secret_set(
+                name,
+                std::env::var_os("SECRET_PROMPT").is_none(),
+                false,
+                None,
+                folder,
+            ),
+            "folder-rm" => crate::cli::workspace::folder_secret_rm(name, folder),
             "get" => crate::cli::workspace::workspace_secret_get(name, true),
             "set" => crate::cli::workspace::workspace_secret_set(
                 name,
@@ -1733,15 +1988,23 @@ mod cli_tests {
     }
 
     #[test]
-    fn workspace_secret_cli_fails_closed_without_a_host() {
+    fn secret_cli_fails_closed_without_a_host() {
         let home = tempfile::tempdir().unwrap();
         let endpoint = clean_shell_endpoint(home.path());
         let profile = endpoint.parent().unwrap().to_path_buf();
         fs::create_dir(&profile).unwrap();
-        for op in ["get", "set", "delete"] {
+        for op in [
+            "get",
+            "set",
+            "delete",
+            "folder-read",
+            "folder-discover",
+            "folder-set",
+            "folder-rm",
+        ] {
             let mut command = cli(op, &profile);
             command.env("HOME", home.path());
-            let output = if op == "set" {
+            let output = if matches!(op, "set" | "folder-set") {
                 finish(prompt_on_tty(command), 1)
             } else {
                 command.output().unwrap()
@@ -1752,7 +2015,7 @@ mod cli_tests {
                 "running 1 test"
             );
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if op == "set" {
+            if matches!(op, "set" | "folder-set") {
                 assert_eq!(stderr.matches("Enter value for").count(), 1);
             }
             let attempted = format!("Plexi host did not answer at {}", endpoint.display());
@@ -1895,8 +2158,8 @@ mod cli_tests {
             self.monitor.approve_pending(ask, choice).unwrap();
         }
 
-        fn set(&mut self, value: &str) -> (Child, String) {
-            let child = self.command("set").env(&self.name, value).spawn().unwrap();
+        fn set(&mut self, op: &str, value: &str) -> (Child, String) {
+            let child = self.command(op).env(&self.name, value).spawn().unwrap();
             (child, self.accept(Some(value)))
         }
     }
@@ -1927,6 +2190,73 @@ mod cli_tests {
         );
     }
 
+    #[test]
+    fn outside_folder_verbs_finish_on_their_own_click() {
+        let mut f = Fixture::new(None);
+        let _folders =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        let folder = f.h.profile_dir().canonicalize().unwrap();
+        for op in ["folder-set", "folder-read", "folder-rm"] {
+            for choice in [ApprovalChoice::Deny, ApprovalChoice::Once] {
+                let allow = choice == ApprovalChoice::Once;
+                let path = folder.join("folder-cli-stdout");
+                let mut command = f.command(op);
+                command.stdout(File::create(&path).unwrap());
+                let (tx, rx) = std::sync::mpsc::channel();
+                TIMING.replace(Timing::ObserveStoreBeforeClick(tx));
+                let child = if op == "folder-set" {
+                    prompt_on_tty(command)
+                } else {
+                    command.spawn().unwrap()
+                };
+                let ask = f.accept((op == "folder-set").then_some("tty-canary"));
+                assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
+                let cards = f.monitor.open_needs_you();
+                assert_eq!(cards.len(), 1);
+                assert_eq!(
+                    cards[0].resource,
+                    if op == "folder-read" {
+                        format!("{}@{}", f.name, folder.display())
+                    } else {
+                        format!("{}@folder:{}", f.name, folder.display())
+                    }
+                );
+                assert_eq!(fs::read_to_string(&path).unwrap().trim(), "running 1 test");
+                f.decide(&ask, choice);
+                let result = finish(child, if allow { 0 } else { 1 });
+                let stderr = String::from_utf8(result.stderr).unwrap();
+                let stdout = fs::read_to_string(&path).unwrap();
+                if op == "folder-set" {
+                    assert_eq!(stderr.matches("Enter value for").count(), 1);
+                    if allow {
+                        assert!(stdout.contains(&format!(
+                            "Stored '{}' for {} (in-memory)",
+                            f.name,
+                            folder.display()
+                        )));
+                    }
+                }
+                if !allow {
+                    assert!(stderr.contains("Request denied"), "{stderr}");
+                }
+                assert_eq!(
+                    stdout.lines().last() == Some("tty-canary"),
+                    allow && op == "folder-read"
+                );
+                assert!(!stderr.contains("tty-canary"));
+                assert_eq!(join().0, usize::from(allow));
+                assert!(f.monitor.open_needs_you().is_empty());
+                assert_eq!(
+                    f.listener.accept().unwrap_err().kind(),
+                    ErrorKind::WouldBlock
+                );
+            }
+        }
+        assert!(!secrets::list_folder_secrets(secrets::folder_store())
+            .iter()
+            .any(|m| m.name == f.name));
+    }
+
     fn prompt_on_tty(mut command: Command) -> Child {
         use std::ptr::null_mut;
         let (mut master, mut slave) = (-1, -1);
@@ -1955,17 +2285,27 @@ mod cli_tests {
 
     #[test]
     fn simultaneous_sets_keep_values_private_and_each_click_owns_one_write() {
+        check_simultaneous_sets("set");
+    }
+
+    #[test]
+    fn concurrent_folder_sets_store_only_the_clicked_value() {
+        check_simultaneous_sets("folder-set");
+    }
+
+    fn check_simultaneous_sets(op: &str) {
         let mut f = Fixture::new(None);
+        let _folders =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
         let logs = crate::testing::test_log::capture_with_debug();
-        let (first, a) = f.set("first-1280-canary");
-        let (second, b) = f.set("other-1280-canary");
+        let (first, a) = f.set(op, "first-1280-canary");
+        let (second, b) = f.set(op, "other-1280-canary");
         assert_ne!(a, b);
         f.h.app.sync_attention_queue();
         let mut evidence = format!("{:?}", f.h.app.attention_queue.items);
         assert_eq!(f.monitor.open_needs_you().len(), 2);
         f.decide(&a, ApprovalChoice::Once);
         finish(first, 0);
-        assert_eq!(f.stored().as_str(), "first-1280-canary");
         let open = f.monitor.open_needs_you();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].id, b);
@@ -1977,6 +2317,19 @@ mod cli_tests {
             assert_eq!(actual, calls);
             evidence.push_str(&lines.join("\n"));
         }
+        if op == "folder-set" {
+            let child = f.command("folder-discover").spawn().unwrap();
+            let ask = f.accept(None);
+            f.decide(&ask, ApprovalChoice::Once);
+            let stdout = String::from_utf8(finish(child, 0).stdout).unwrap();
+            assert_eq!(stdout.lines().last(), Some("first-1280-canary"));
+            let (calls, lines) = join();
+            assert_eq!(calls, 2); // Names-only discovery, then the approved fetch.
+            evidence.push_str(&lines.join("\n"));
+        } else {
+            assert_eq!(f.stored().as_str(), "first-1280-canary");
+        }
+        assert!(f.monitor.open_needs_you().is_empty());
         evidence.push_str(&logs.lines().join("\n"));
         let audit = f.h.profile_dir().join("permission-audit.jsonl");
         evidence.push_str(&fs::read_to_string(audit).unwrap());
@@ -2006,7 +2359,7 @@ mod cli_tests {
             Instant::now() + crate::workspace::secrets::APPROVAL_TIMEOUT,
         ));
         TIMING.replace(Timing::Deadline(deadline.clone()));
-        let (child, a) = f.set("expired-canary");
+        let (child, a) = f.set("set", "expired-canary");
         *deadline.lock().unwrap() = Instant::now();
         // Cancellation can already have closed the card before this late click.
         let _late_click = f.monitor.approve_pending(&a, ApprovalChoice::Once);
@@ -2016,7 +2369,7 @@ mod cli_tests {
         assert_eq!(join().0, 0);
         assert_no_secret_grant(&f.monitor);
         TIMING.replace(Timing::DropReply);
-        let (child, b) = f.set("written-canary");
+        let (child, b) = f.set("set", "written-canary");
         f.decide(&b, ApprovalChoice::Once);
         assert!(String::from_utf8(finish(child, 1).stderr)
             .unwrap()
@@ -2080,7 +2433,7 @@ mod cli_tests {
                 assert_no_secret_grant(&f.monitor);
             }
         }
-        let (child, ask) = f.set("fresh-canary");
+        let (child, ask) = f.set("set", "fresh-canary");
         f.decide(&ask, ApprovalChoice::Deny);
         finish(child, 1);
     }

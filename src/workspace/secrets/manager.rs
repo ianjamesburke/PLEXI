@@ -8,7 +8,11 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SecretTarget {
     Global,
-    Workspace { id: String, root: PathBuf },
+    Workspace {
+        id: String,
+        root: PathBuf,
+    },
+    /// The canonical directory selected before admission.
     Folder(PathBuf),
 }
 
@@ -27,11 +31,18 @@ impl SecretTarget {
             Self::Workspace { root, .. } => crate::platform::path::canonical_or_self(root)
                 .display()
                 .to_string(),
-            Self::Folder(folder) => crate::platform::path::canonical_or_self(folder)
-                .display()
-                .to_string(),
+            Self::Folder(folder) => format!("folder:{}", folder.display()),
         };
         format!("{name}@{scope}")
+    }
+
+    /// The key reads are granted and audited under. A folder read keeps the
+    /// bare path (the key saved decisions already use); set and delete prefix it.
+    fn read_resource(&self, name: &str) -> String {
+        match self {
+            Self::Folder(folder) => format!("{name}@{}", folder.display()),
+            _ => self.resource(name),
+        }
     }
 
     fn account(&self, name: &str) -> Result<String, String> {
@@ -50,10 +61,10 @@ impl SecretTarget {
                 if !crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets) {
                     return Err("Folder secrets experiment is off.".into());
                 }
-                Ok(super::folder::account_name(
-                    &super::canonical_folder(folder)?,
-                    name,
-                ))
+                if super::canonical_folder(folder)? != *folder {
+                    return Err("The selected folder changed. Refresh before retrying.".into());
+                }
+                Ok(super::folder::account_name(folder, name))
             }
         }
     }
@@ -115,7 +126,7 @@ pub fn secret_inventory(cwd: &Path, global_only: bool) -> Result<Vec<SecretEntry
 pub fn secret_inventory_report(cwd: &Path, global_only: bool) -> Result<SecretInventory, String> {
     let mut skipped = Vec::new();
     let allowed = global_only
-        || crate::cli::workspace::enforce_pane_context_scope(cwd, false, "secret.list").is_ok();
+        || crate::cli::workspace::enforce_pane_context_scope(cwd, "secret.list").is_ok();
     let pane_root = crate::cli::workspace::active_pane_context_root();
     if !allowed {
         if let Some(root) = &pane_root {
@@ -187,7 +198,7 @@ fn inventory_for_scope(
             }
         };
     let mut add = |name: String, target: SecretTarget| {
-        let resource = target.resource(&name);
+        let resource = target.read_resource(&name);
         let grant = permissions
             .iter()
             .filter(|row| {
@@ -298,15 +309,17 @@ pub fn mutate_secret(
     monitor.note_secret_mutation(&call_id, &resource, operation, "requested")?;
     let result = match value {
         Some(value) => match target {
-            SecretTarget::Folder(folder) => {
-                super::set_folder_secret(store, name, folder, value).map(|_| ())
+            SecretTarget::Folder(_) => {
+                super::folder::set_folder_account(store, &account, name, value)
             }
             _ => store
                 .set(&account, value)
                 .map_err(|_| "Secret store write failed; value was not saved.".to_string()),
         },
         None => match target {
-            SecretTarget::Folder(folder) => super::remove_folder_secret(store, name, folder),
+            SecretTarget::Folder(folder) => {
+                super::folder::remove_folder_account(store, &account, name, folder)
+            }
             _ => match store.delete(&account) {
                 Ok(super::DeleteOutcome::Deleted) => Ok(()),
                 Ok(super::DeleteOutcome::NoMatchReported) => Err(format!(
@@ -593,6 +606,61 @@ mod tests {
 #[cfg(test)]
 mod inventory_tests {
     use super::*;
+
+    #[test]
+    fn folder_inventory_shows_read_grants_and_last_use() {
+        use crate::broker::gate::ApprovalChoice;
+        use crate::workspace::secrets::{read_folder_secret, ReadResult, SecretActor};
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().into());
+        let _experiment =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        let root = tempfile::tempdir().unwrap();
+        let path = crate::platform::path::canonical_or_self(root.path());
+        let name = format!("FOLDER_INV_{}", uuid::Uuid::new_v4().simple());
+        let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
+        let store = super::super::folder_store();
+        mutate_secret(
+            store,
+            &monitor,
+            &SecretTarget::Folder(path.clone()),
+            &name,
+            Mutation::Set("folder-inventory-canary"),
+        )
+        .unwrap();
+        let actor = SecretActor::agent("folder-reader");
+        monitor.set_now_for_test(1_800_000_000);
+        let ReadResult::PermissionRequired { pending_id } =
+            read_folder_secret(&monitor, store, &actor, &name, &path).unwrap()
+        else {
+            panic!("read must ask")
+        };
+        monitor
+            .approve_pending(&pending_id, ApprovalChoice::Session)
+            .unwrap();
+        assert!(matches!(
+            read_folder_secret(&monitor, store, &actor, &name, &path).unwrap(),
+            ReadResult::Value(_)
+        ));
+        let entries = secret_inventory(&path, false).unwrap();
+        let entry = entries
+            .iter()
+            .find(|e| e.name == name && matches!(e.target, SecretTarget::Folder(_)))
+            .unwrap();
+        assert_eq!(entry.last_used, Some(1_800_000_000));
+        assert!(entry
+            .grant
+            .iter()
+            .any(|grant| grant.contains("folder-reader") && grant.contains("allow")));
+        mutate_secret(
+            store,
+            &monitor,
+            &SecretTarget::Folder(path),
+            &name,
+            Mutation::Delete,
+        )
+        .unwrap();
+    }
 
     #[test]
     fn scopes_json_usage_and_grants_share_the_inventory() {

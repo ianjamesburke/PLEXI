@@ -670,7 +670,9 @@ impl Approved {
         self.request.actor_type == ActorType::External
             && self.request.actor_id == super::principal::EXTERNAL_ID
             && self.request.target_type == TargetType::Secret
-            && self.request.target_id == "secret.get"
+            && (self.request.target_id == "secret.get"
+                || (self.request.target_id == "secret.read"
+                    && self.request.trust_origin == super::SECRET_SOCKET_ORIGIN))
             && !self.request.operation_id.is_empty()
     }
 }
@@ -1309,7 +1311,9 @@ impl PermissionMonitor {
             .map(|mut request| {
                 // Spend this secret call's reserved click even if a sibling acquired
                 // a standing grant while the call was waiting.
-                let claim_once = request.target_type.is_workspace_secret(&request.target_id)
+                let claim_once = request
+                    .target_type
+                    .is_live_secret(&request.target_id, &request.trust_origin)
                     || store.decide_at_commit(&request, posture, now) != Decision::Allow;
                 let claim = claim_once
                     .then(|| store.claim_once(&request, now, &use_id))
@@ -1475,7 +1479,7 @@ impl PermissionMonitor {
         // the card before another worker files one or a click resolves it.
         let _filing = binding
             .target_type
-            .is_workspace_secret(req.tool)
+            .is_live_secret(req.tool, req.trust_origin)
             .then(|| self.decision_lock.lock().unwrap_or_else(|e| e.into_inner()));
         self.expire_soft_grants();
         let now = self.now_secs();
@@ -1518,7 +1522,7 @@ impl PermissionMonitor {
             Decision::Ask => {
                 let outside_secret = (req.target_type == TargetType::Secret
                     && req.principal.actor_type() == ActorType::External
-                    && super::workspace_secret_tool(req.tool))
+                    && super::command_secret_tool(req.tool))
                 .then(|| {
                     let input: serde_json::Value =
                         serde_json::from_str(req.input_json).unwrap_or_default();
@@ -1728,7 +1732,7 @@ impl PermissionMonitor {
         }
         if pending.binding.actor_type == ActorType::External
             && pending.binding.target_type == TargetType::Secret
-            && super::workspace_secret_tool(&pending.tool)
+            && super::command_secret_tool(&pending.tool)
             && choice == ApprovalChoice::Session
         {
             return Err("An outside terminal needs a one-use approval for this secret.".into());
@@ -2995,7 +2999,7 @@ impl PermissionMonitor {
             resource: resource.clone(),
             summary: if pending.binding.target_type == TargetType::Secret
                 && pending.binding.actor_type == ActorType::External
-                && super::workspace_secret_tool(&pending.tool)
+                && super::command_secret_tool(&pending.tool)
             {
                 pending.input_summary.clone()
             } else {
@@ -4958,7 +4962,9 @@ impl PermissionMonitor {
         let store = self.store();
         let record = store.records().iter().find(|row| row.grant_id == id)?;
         (record.decision == Decision::Deny
-            && record.target_type.is_workspace_secret(&record.target_id))
+            && record
+                .target_type
+                .is_live_secret(&record.target_id, &record.trust_origin))
         .then(|| {
             "once is not allowed for a stored secret denial: a one-time allow belongs to the call that asked, and a stored denial has none. Allowed durations: session, always"
                 .to_string()
@@ -5894,7 +5900,9 @@ fn is_plugin_capability(binding: &ExactBinding) -> bool {
 }
 
 fn same_pending(row: &Pending, binding: &ExactBinding) -> bool {
-    if binding.target_type.is_workspace_secret(&binding.target_id)
+    if binding
+        .target_type
+        .is_live_secret(&binding.target_id, &binding.trust_origin)
         && row.binding.call_id != binding.call_id
     {
         return false;
@@ -5981,7 +5989,7 @@ pub(crate) fn resource_of(tool: &str, input_json: &str) -> (ResourceScope, Optio
     }
     let place_key = match tool {
         "secret.read" => Some("folder"),
-        tool if super::workspace_secret_tool(tool) => Some("scope"),
+        tool if super::command_secret_tool(tool) => Some("scope"),
         _ => None,
     };
     if let Some(place_key) = place_key {

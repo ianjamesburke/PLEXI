@@ -1905,28 +1905,45 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
             .all(|entry| entry.scope == "global"),
         "listing nested context B must retain only global names"
     );
-    assert_eq!(
-        crate::cli::workspace::folder_secret_read(
-            "FOLDER_SECRET_B",
-            Some("worker"),
-            None,
-            Some(&root_b)
-        ),
-        1
-    );
-    assert_eq!(
-        crate::cli::workspace::folder_secret_read(
-            "FOLDER_SECRET_NESTED",
-            Some("worker"),
-            None,
-            Some(&nested_b)
-        ),
-        1
-    );
-    assert_eq!(
-        crate::cli::workspace::folder_secret_rm("FOLDER_SECRET_NESTED", &nested_b),
-        1
-    );
+    for target in [&root_b, &nested_b] {
+        for (op, tool) in [
+            ("read", "secret.read"),
+            ("set", "secret.set"),
+            ("rm", "secret.delete"),
+        ] {
+            let name = "FOLDER_SCOPE_PROBE";
+            let mut frame = serde_json::json!({"type":format!("folder_secret_{op}"),"folder":target,"name":name});
+            match op {
+                "read" => frame["cwd"] = serde_json::json!(target),
+                "set" => frame["value"] = "must-not-write".into(),
+                _ => {}
+            }
+            secrets::take_test_store_calls();
+            let body = super::socket_policy_tests::send(
+                &mut h,
+                frame,
+                Some(crate::broker::caller::PeerWitness::for_live_pids(&[
+                    human_pid,
+                ])),
+            );
+            assert_eq!(
+                body,
+                serde_json::json!({"status":"denied","error_code":"permission_denied"})
+            );
+            assert_eq!(secrets::take_test_store_calls(), 0);
+            assert!(mon.open_needs_you().is_empty());
+            assert!(mon.audit_records().iter().any(|row| row.kind == "deny"
+                && row.actor == format!("pane:{human_pane}")
+                && row.call_id == tool
+                && row.resource_id
+                    == format!(
+                        "{name}@{}{}",
+                        if op == "read" { "" } else { "folder:" },
+                        target.display()
+                    )
+                && row.decision == "context_scope_violation"));
+        }
+    }
 }
 
 #[test]

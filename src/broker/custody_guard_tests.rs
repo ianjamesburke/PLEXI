@@ -368,6 +368,9 @@ fn workspace_secret_commands_never_open_a_store() {
         "workspace_secret_get",
         "workspace_secret_set",
         "workspace_secret_delete",
+        "folder_secret_read",
+        "folder_secret_set",
+        "folder_secret_rm",
     ] {
         let function = file
             .items

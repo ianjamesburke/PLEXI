@@ -1395,7 +1395,7 @@ impl PlexiApp {
                 let root = pane.and_then(|pane| self.pane_context_authority_root(pane));
                 let workspace_error = match (&root, workspace_cwd) {
                     (Some(root), Some(cwd)) => {
-                        check_pane_context_scope(root.clone(), cwd, false, None).err()
+                        check_pane_context_scope(root.clone(), cwd, None).err()
                     }
                     _ => None,
                 };
@@ -1473,8 +1473,7 @@ impl PlexiApp {
             } => {
                 self.serve_secret_mutation(
                     name,
-                    *global,
-                    workspace_root.as_deref(),
+                    super::secret_get::SecretAsk::workspace(*global, workspace_root.as_deref()),
                     &origin,
                     response_file,
                     Some((value.clone(), route_name.clone())),
@@ -1488,8 +1487,47 @@ impl PlexiApp {
             } => {
                 self.serve_secret_mutation(
                     name,
-                    *global,
-                    workspace_root.as_deref(),
+                    super::secret_get::SecretAsk::workspace(*global, workspace_root.as_deref()),
+                    &origin,
+                    response_file,
+                    None,
+                );
+            }
+            crate::protocol::HostRequest::FolderSecretRead {
+                name,
+                folder,
+                cwd,
+                response_file,
+            } => {
+                use super::secret_get::SecretAsk;
+                let ask = match folder {
+                    Some(path) => SecretAsk::Folder(path.clone()),
+                    None => SecretAsk::DiscoverFolder(cwd.clone()),
+                };
+                self.serve_secret_read(name, ask, &origin, response_file);
+            }
+            crate::protocol::HostRequest::FolderSecretSet {
+                name,
+                folder,
+                value,
+                response_file,
+            } => {
+                self.serve_secret_mutation(
+                    name,
+                    super::secret_get::SecretAsk::Folder(folder.clone()),
+                    &origin,
+                    response_file,
+                    Some((value.clone(), None)),
+                );
+            }
+            crate::protocol::HostRequest::FolderSecretRm {
+                name,
+                folder,
+                response_file,
+            } => {
+                self.serve_secret_mutation(
+                    name,
+                    super::secret_get::SecretAsk::Folder(folder.clone()),
                     &origin,
                     response_file,
                     None,

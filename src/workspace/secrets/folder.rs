@@ -1,13 +1,12 @@
 //! Folder-scoped secrets.
 //!
-//! A secret is bound to a canonical directory. A terminal pane whose cwd is
-//! that directory or a descendant receives the value as an environment
-//! variable at spawn. A pane outside the directory does not. Changing cwd
-//! later does not change the environment.
+//! A secret is bound to a canonical directory. Eligible human terminals can
+//! receive it at spawn in that directory or a descendant. Changing cwd later
+//! leaves the spawned environment intact.
 //!
-//! Agents and plugin tools do not receive the value unless a permission-gate
-//! grant covers that actor, the secret name, and the folder. The audit record
-//! carries the name and the folder, never the value.
+//! The CLI sends folder reads and mutations to the host command socket.
+//! The host checks the peer's authority and admits the exact folder account.
+//! The independent folder sheet serves the Unix gate listener.
 
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -90,12 +89,24 @@ pub fn canonical_folder(path: &Path) -> Result<PathBuf, String> {
     Ok(canon)
 }
 
+#[cfg(test)]
 pub fn set_folder_secret(
     store: &dyn SecretStore,
     name: &str,
     folder: &Path,
     value: &str,
 ) -> Result<PathBuf, String> {
+    let folder = canonical_folder(folder)?;
+    set_folder_account(store, &account_name(&folder, name), name, value)?;
+    Ok(folder)
+}
+
+pub(super) fn set_folder_account(
+    store: &dyn SecretStore,
+    account: &str,
+    name: &str,
+    value: &str,
+) -> Result<(), String> {
     if !valid_env_name(name) {
         return Err(format!(
             "secret name '{name}' is not an environment variable name"
@@ -104,30 +115,30 @@ pub fn set_folder_secret(
     if value.is_empty() {
         return Err("empty value, nothing stored".to_string());
     }
-    let folder = canonical_folder(folder)?;
-    let account = account_name(&folder, name);
     store
-        .set(&account, value)
-        .map_err(|err| format!("folder secret store failed: {err}"))?;
-    log::info!(
-        "folder_secrets: set name={name} folder={} backend={}",
-        folder.display(),
-        super::folder_store::backend_label()
-    );
-    Ok(folder)
+        .set(account, value)
+        .map_err(|err| format!("folder secret store failed: {err}"))
 }
 
-/// One delete, forwarded. Only a confirmed deletion is success; a reported
-/// no-match and every store error are failures, and nothing is asked first.
+#[cfg(test)]
 pub fn remove_folder_secret(
     store: &dyn SecretStore,
     name: &str,
     folder: &Path,
 ) -> Result<(), String> {
     let folder = canonical_folder(folder)?;
-    let account = account_name(&folder, name);
+    remove_folder_account(store, &account_name(&folder, name), name, &folder)
+}
+
+/// Forward one deletion for the selected account. A no-match is a failure.
+pub(super) fn remove_folder_account(
+    store: &dyn SecretStore,
+    account: &str,
+    name: &str,
+    folder: &Path,
+) -> Result<(), String> {
     let outcome = store
-        .delete(&account)
+        .delete(account)
         .map_err(|err| format!("folder secret delete failed for '{name}': {err}"))?;
     log::info!(
         "folder_secrets: rm name={name} folder={} outcome={outcome:?}",
@@ -221,7 +232,11 @@ pub fn read_folder_secret(
 ) -> Result<ReadResult, String> {
     let folder = canonical_folder(folder)?;
     let folder_str = folder.to_string_lossy().into_owned();
-    let input = read_input_json(name, &folder_str);
+    let input = super::SecretScope::Folder {
+        path: folder.clone(),
+    }
+    .input(SECRET_READ_TOOL, name, None)
+    .to_string();
     let account = account_name(&folder, name);
     admitted_read(
         monitor,
@@ -449,26 +464,6 @@ pub fn deliver_folder_secret_choice(
             .is_ok();
     log::info!("folder_secrets: human click choice={choice} delivered={sent} granted={granted}");
     granted
-}
-
-/// Ask the host process's permission monitor when its gate socket is up.
-/// `None` means no host gate was reached (no host listening, or a non-unix
-/// build, where this always returns `None`). The caller then fails with the
-/// not-the-host error; it never admits locally (stint 1291).
-pub fn read_through_host_gate(
-    actor: &SecretActor,
-    name: &str,
-    folder: &Path,
-) -> Option<Result<ReadResult, String>> {
-    #[cfg(all(unix, not(test)))]
-    {
-        proxy_read(actor, name, folder)
-    }
-    #[cfg(not(all(unix, not(test))))]
-    {
-        let _ = (actor, name, folder);
-        None
-    }
 }
 
 struct SheetTicket {
@@ -825,86 +820,7 @@ fn encode_read_result(result: &ReadResult) -> String {
     }
 }
 
-#[cfg(all(unix, not(test)))]
-fn proxy_read(
-    actor: &SecretActor,
-    name: &str,
-    folder: &Path,
-) -> Option<Result<ReadResult, String>> {
-    use std::io::{BufRead, BufReader, Write};
-    let path = crate::config::config_dir().join("folder-secret-gate.sock");
-    if !path.exists() {
-        return None;
-    }
-    let kind = match actor.kind {
-        ActorType::Agent => "agent",
-        ActorType::Plugin => "app",
-        ActorType::System => "system",
-        ActorType::ManagedPolicy => "policy",
-        ActorType::User => "user",
-        ActorType::External => "external",
-    };
-    let request = serde_json::json!({
-        "kind": kind,
-        "actor_id": actor.id,
-        "name": name,
-        "folder": folder,
-    });
-    let mut stream = match std::os::unix::net::UnixStream::connect(&path) {
-        Ok(stream) => stream,
-        Err(err) => return Some(Err(format!("folder secret gate: {err}"))),
-    };
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
-    if writeln!(stream, "{request}").is_err() {
-        return Some(Err("folder secret gate write failed".to_string()));
-    }
-    let mut line = String::new();
-    if BufReader::new(stream).read_line(&mut line).is_err() {
-        return Some(Err("folder secret gate read failed".to_string()));
-    }
-    Some(decode_read_result(&line))
-}
-
-#[cfg(all(unix, not(test)))]
-fn decode_read_result(line: &str) -> Result<ReadResult, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(line).map_err(|err| format!("folder secret gate: {err}"))?;
-    match value.get("status").and_then(|item| item.as_str()) {
-        Some("value") => {
-            let text = value
-                .get("value")
-                .and_then(|item| item.as_str())
-                .unwrap_or("")
-                .to_string();
-            Ok(ReadResult::Value(Zeroizing::new(text)))
-        }
-        Some("permission_required") => Ok(ReadResult::PermissionRequired {
-            pending_id: value
-                .get("pending_id")
-                .and_then(|item| item.as_str())
-                .unwrap_or("")
-                .to_string(),
-        }),
-        Some("denied") => Ok(ReadResult::Denied),
-        Some("not_found") => Ok(ReadResult::NotFound),
-        Some("error") => Err(value
-            .get("error")
-            .and_then(|item| item.as_str())
-            .unwrap_or("folder secret gate")
-            .to_string()),
-        _ => Err("folder secret gate: bad response".to_string()),
-    }
-}
-
-fn read_input_json(name: &str, folder: &str) -> String {
-    serde_json::json!({
-        "name": name,
-        "folder": folder,
-    })
-    .to_string()
-}
-
+/// Storage identity uses the bytes of the canonical folder selected by the host.
 pub(super) fn account_name(folder: &Path, name: &str) -> String {
     format!("{ACCOUNT_PREFIX}{}:{name}", hex_encode(&path_bytes(folder)))
 }

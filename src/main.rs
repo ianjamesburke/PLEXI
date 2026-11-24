@@ -1004,17 +1004,9 @@ fn main() -> eframe::Result {
                             plugin.as_deref(),
                             folder.as_deref(),
                         )),
-                        SecretCmd::Read {
-                            name,
-                            agent,
-                            plugin,
-                            folder,
-                        } => cli::trace::exit(cli::folder_secret_read(
-                            &name,
-                            agent.as_deref(),
-                            plugin.as_deref(),
-                            folder.as_deref(),
-                        )),
+                        SecretCmd::Read { name, folder } => {
+                            cli::trace::exit(cli::folder_secret_read(&name, folder.as_deref()))
+                        }
                         SecretCmd::Exec { cwd, command } => {
                             cli::trace::exit(cli::folder_secret_exec(&cwd, &command))
                         }

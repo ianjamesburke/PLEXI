@@ -1003,6 +1003,38 @@ Delete a secret after admission for its exact name and scope.
 | `response_file` | `string` | yes |
 | `workspace_root` | `string?` | no |
 
+### `folder_secret_read`
+
+Read one folder account on the original connection after host admission.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `cwd` | `string` | yes |
+| `folder` | `string?` | no |
+| `name` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `folder_secret_set`
+
+Set a folder account after admission for the host-stamped caller.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `folder` | `string` | yes |
+| `name` | `string` | yes |
+| `response_file` | `string` | yes |
+| `value` | `SecretInput` | yes |
+
+### `folder_secret_rm`
+
+Remove a folder account after admission for the host-stamped caller.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `folder` | `string` | yes |
+| `name` | `string` | yes |
+| `response_file` | `string` | yes |
+
 ### `agents_api`
 
 Agents API: agent registry, runs, delegation, and gated tool calls. `op` is `create_agent`, `list_agents`, `list_gran...
