@@ -374,7 +374,7 @@ impl SecretAsk {
     ) -> Result<SecretTarget, String> {
         let scope: Result<SecretScope, String> = match self {
             Self::Bundle { cwd, command } => {
-                return Bundle::discover(cwd, command, discovery_root).map(SecretTarget::Bundle);
+                return Bundle::discover(cwd, command, discovery_root).map(|bundle| SecretTarget::Bundle(Box::new(bundle)));
             }
             Self::Global => Ok(SecretScope::Global),
             Self::Workspace(root) => {
@@ -434,7 +434,7 @@ impl SecretAsk {
 
 enum SecretTarget {
     One { name: String, scope: SecretScope },
-    Bundle(Bundle),
+    Bundle(Box<Bundle>),
 }
 
 enum Subject {
