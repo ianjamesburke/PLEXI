@@ -718,6 +718,10 @@ pub struct AssistantView {
     /// (see `restore_assistant_pane`/`open_assistant_pane_with_hint`), not
     /// re-derived later.
     context_id: u64,
+    /// Source of the open-pane snapshot. The host's process-global snapshot
+    /// in production; tests inject their own so parallel host frames cannot
+    /// overwrite what they read (stint 1736).
+    pane_snapshot: fn() -> Arc<Vec<crate::plexi_ai::broker::PaneContext>>,
     profile_dir: PathBuf,
     agent_registry: AgentRegistry,
     skill_registry: SkillRegistry,
@@ -1015,6 +1019,7 @@ impl AssistantView {
             broker,
             workspace_root,
             context_id,
+            pane_snapshot: crate::plexi_ai::broker::get_pane_snapshot,
             profile_dir: profile_dir.to_path_buf(),
             agent_registry,
             skill_registry,
@@ -2290,7 +2295,7 @@ impl AssistantView {
             messages: messages.unwrap_or_else(|| self.history_messages()),
             tools: Vec::new(),
             workspace_root: Some(self.workspace_root.clone()),
-            open_panes: crate::plexi_ai::broker::get_pane_snapshot(),
+            open_panes: (self.pane_snapshot)(),
             tool_dispatcher: Some(Arc::new(dispatcher)),
             cancel,
             max_tool_iterations: is_plugin_build_turn.then_some(APP_BUILD_MAX_TOOL_ITERATIONS),
@@ -4238,7 +4243,7 @@ impl AssistantView {
                     .count()
             })
             .unwrap_or(0);
-        let panes = crate::plexi_ai::broker::get_pane_snapshot();
+        let panes = (self.pane_snapshot)();
         let pane_context = if panes.is_empty() {
             "none reported yet".to_string()
         } else {
@@ -7833,11 +7838,16 @@ enabled = ["allowed.tool"]
     #[test]
     fn context_command_reports_open_pane_context() {
         let ws = tempfile::tempdir().unwrap();
-        crate::plexi_ai::broker::update_pane_snapshot(vec![crate::plexi_ai::broker::PaneContext {
-            type_id: "text-editor".to_string(),
-            pane_id: 42,
-        }]);
         let mut app = test_app(ws.path());
+        app.pane_snapshot = || {
+            Arc::new(vec![crate::plexi_ai::broker::PaneContext {
+                type_id: "text-editor".to_string(),
+                pane_id: 42,
+            }])
+        };
+        // What a parallel host-frame test does through `app::sync`: the
+        // injected snapshot must win over the process-global one (stint 1736).
+        crate::plexi_ai::broker::update_pane_snapshot(Vec::new());
         app.model.composer = "/context".to_string();
         let effects = app.model.submit();
         app.execute_effects(effects);
