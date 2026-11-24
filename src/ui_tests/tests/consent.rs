@@ -389,6 +389,93 @@ fn screenshot_keychain_recovery_banner_is_actionable() {
         .expect("render keychain recovery");
 }
 
+fn open_damaged_seal_dialog() -> (PlexiUiHarness, std::sync::Arc<crate::broker::gate::PermissionMonitor>, String) {
+    use crate::broker::gate::{NeedsYouKind, PermissionMonitor};
+    let mut h = PlexiUiHarness::new_sized(850.0, 480.0);
+    let dir = crate::config::config_dir();
+    let audit = dir.join("permission-audit.jsonl");
+    let monitor = PermissionMonitor::for_profile(&dir).unwrap();
+    monitor.note_denial("editor", "seed", "notes", "edit", "denied");
+    std::fs::write(&audit, b"damaged audit").unwrap();
+    let monitor = PermissionMonitor::reload_for_test(&dir);
+    let item = monitor.open_needs_you().into_iter().find(|row| row.kind == NeedsYouKind::SealReset)
+        .expect("disk damage files a reset ask");
+    assert!(h.with_app_mut(|app| app.open_decision_overlay_for_ask(&item.id)));
+    h.run_steps(2);
+    (h, monitor, item.id)
+}
+
+#[test]
+fn screenshot_damaged_seal_reset_dialog() {
+    let (mut h, _, _) = open_damaged_seal_dialog();
+    h.harness().get_by_label("Permission seal damaged");
+    h.harness().get_by_label("Reset and re-seal");
+    h.harness().get_by_label("Not now");
+    h.save_screenshot(&evidence_png!()).expect("render damaged seal reset");
+}
+
+#[test]
+fn damaged_seal_reset_requires_a_real_decision_and_shows_the_quarantine() {
+    let (mut h, monitor, id) = open_damaged_seal_dialog();
+    let audit = crate::config::config_dir().join("permission-audit.jsonl");
+    h.with_app_mut(|app| {
+        app.arm_decision_overlay_for_test();
+        app.synthetic_input_frame = true;
+        assert!(!app.pick_decision_overlay_option(0));
+        app.synthetic_input_frame = false;
+        assert!(app.pick_decision_overlay_option(1));
+    });
+    assert!(monitor.get_needs_you(&id).unwrap().resolution.is_none());
+    assert_eq!(std::fs::read(&audit).unwrap(), b"damaged audit");
+    assert!(h.with_app_mut(|app| app.open_decision_overlay_for_ask(&id)));
+    h.run_steps(2);
+    h.with_app_mut(|app| app.arm_decision_overlay_for_test());
+    h.run_steps(2);
+    let reset = h.harness().get_by_label("Reset and re-seal").rect();
+    click_at(&mut h, reset.center());
+    h.run_steps(2);
+    h.harness().get_by_label("Permission seal reset");
+    let kept = std::fs::read_dir(crate::config::config_dir()).unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.file_name().unwrap().to_string_lossy().starts_with("permission-audit.jsonl.untrusted-"))
+        .expect("original audit in quarantine");
+    let receipt = format!("Quarantined files:\n{}", kept.display());
+    h.harness().get_by_label(receipt.as_str());
+}
+
+#[test]
+fn damaged_seal_shows_the_durable_refusal_and_keeps_the_ask_actionable() {
+    use crate::broker::gate::{Admission, AdmitRequest};
+    use crate::broker::{ActorScope, TargetType};
+    let (mut h, monitor, _) = open_damaged_seal_dialog();
+    h.with_app_mut(|app| assert!(app.pick_decision_overlay_option(1)));
+    let Admission::Required { pending_request_id } = monitor.admit(AdmitRequest {
+        call_id: "edit-note",
+        tool: "note.edit",
+        input_json: "{}",
+        principal: &crate::broker::principal::Principal::agent("agent:editor"),
+        actor_scope: ActorScope::User,
+        trust_origin: "host",
+        workspace_root: &crate::config::config_dir(),
+        context_id: 1,
+        package_id: "notes",
+        instance_id: 1,
+        target_type: TargetType::PluginConnector,
+    }) else {
+        panic!("expected an approval request");
+    };
+    assert!(h.with_app_mut(|app| app.open_decision_overlay_for_ask(&pending_request_id)));
+    h.run_steps(2);
+    h.with_app_mut(|app| {
+        app.arm_decision_overlay_for_test();
+        assert!(!app.pick_decision_overlay_option(1));
+    });
+    h.run_steps(2);
+    h.harness().get_by_label("Decision failed: permission seal damaged: reset it in Plexi to save this");
+    h.with_app_mut(|app| assert!(app.pick_decision_overlay_option(0)));
+    assert!(monitor.approval_granted(&pending_request_id));
+}
+
 /// Raw `.wasm` paths queue a host pre-launch review before spawning. The
 /// underlying launch path still fails closed until the modal persists the
 /// required link-time import grants.

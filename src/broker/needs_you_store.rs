@@ -186,6 +186,7 @@ pub(crate) fn save(
     profile: &Path,
     items: &[RestoredItem],
 ) -> Result<(), String> {
+    super::seal::check_profile(host, profile).map_err(|error| error.to_string())?;
     let host_dir = ensure_host_dir(profile)?;
     let key = super::seal::mac_key_bytes(host, profile)?;
     log::info!("needs_you: sealing journal with the host seal key");
@@ -296,6 +297,7 @@ fn validate(items: &[DiskItem]) -> Result<Vec<RestoredItem>, String> {
             | NeedsYouKind::PermissionRequest
             | NeedsYouKind::Integrity
             | NeedsYouKind::Keychain
+            | NeedsYouKind::SealReset
             | NeedsYouKind::AgentDone => {
                 if item.pending.is_some() {
                     return Err(format!(
@@ -353,6 +355,10 @@ pub(crate) fn save_continuations(
     profile: &Path,
     records: &[ContinuationRecord],
 ) -> Result<(), String> {
+    super::seal::check_profile(host, profile).map_err(|error| match error {
+        super::seal::SealError::Untrusted(_) => super::seal::RESET_TO_SAVE.into(),
+        super::seal::SealError::Io(reason) => reason,
+    })?;
     ensure_host_dir(profile)?;
     let key = super::seal::mac_key_bytes(host, profile)?;
     let body = serde_json::to_vec(&DiskContinuations {

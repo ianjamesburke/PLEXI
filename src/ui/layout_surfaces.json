@@ -14,6 +14,15 @@
       "gap": "Unresolved: attention_queue has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
+      "id": "src/app/attention_queue.rs::draw_seal_reset_dialog",
+      "fixture": {
+        "file": "src/ui_tests/tests/consent.rs",
+        "test": "screenshot_damaged_seal_reset_dialog"
+      },
+      "states": "Damaged audit awaiting a desktop reset",
+      "minimum": "ActionModal wraps the quarantine explanation and keeps both actions available."
+    },
+    {
       "id": "src/app/card_gallery.rs::draw_card_gallery",
       "gap": "Unresolved: card_gallery has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },

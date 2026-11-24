@@ -68,6 +68,8 @@ pub enum NeedsYouKind {
     /// rotates the key and reseals grants when the old secret stays unreadable.
     /// It does not mint a grant.
     Keychain,
+    /// The authenticated state or audit needs an explicit desktop reset.
+    SealReset,
     /// A human-started agent finished via `plexi agent done`. Opening or
     /// dismissing the result settles the item and never mints a grant.
     AgentDone,
@@ -85,6 +87,7 @@ impl NeedsYouKind {
             | Self::BlockedRun
             | Self::Integrity
             | Self::Keychain
+            | Self::SealReset
             | Self::AgentDone => false,
         }
     }
@@ -110,6 +113,7 @@ impl NeedsYouKind {
             Self::PermissionRequest => "permission_request",
             Self::Integrity => "integrity",
             Self::Keychain => "keychain",
+            Self::SealReset => "seal_reset",
             Self::AgentDone => "agent_done",
         }
     }
@@ -128,7 +132,7 @@ impl NeedsYouKind {
     pub fn surface_may_resolve(self, surface: ResolveSurface, approve: bool) -> bool {
         match surface {
             ResolveSurface::Desktop => true,
-            ResolveSurface::Socket => !approve && !matches!(self, Self::Integrity | Self::Keychain),
+            ResolveSurface::Socket => !approve && !matches!(self, Self::Integrity | Self::Keychain | Self::SealReset),
         }
     }
 }
@@ -377,6 +381,7 @@ pub struct NeedsYouReceipt {
     pub resolution: NeedsYouResolution,
     pub already: bool,
     pub run_outcome: RunOutcome,
+    pub quarantined: Option<Vec<PathBuf>>,
 }
 
 #[derive(Debug, Clone)]
@@ -835,20 +840,7 @@ impl PermissionMonitor {
             }
         }
         let audit = dir.join("permission-audit.jsonl");
-        let mut rejected_audit_reason = None;
-        if let Err(reason) = super::seal::verify_audit(host, &audit) {
-            if super::host_key::is_key_unreadable(&reason) {
-                log::info!(
-                    "permission_monitor: audit could not be checked because the seal key is unreadable ({reason})"
-                );
-            } else {
-                faults.push(super::seal::IntegrityFault {
-                    file: "permission-audit.jsonl".to_string(),
-                    reason: reason.clone(),
-                });
-                rejected_audit_reason = Some(reason);
-            }
-        }
+        let seal = super::seal::check_profile(host, dir);
         log::info!(
             "permission_monitor: opened profile {} audit {} integrity_faults={}",
             dir.display(),
@@ -861,26 +853,68 @@ impl PermissionMonitor {
             Some(dir.to_path_buf()),
             Some(*host),
         );
-        // Restore before filing new seal faults or clearing an untrusted seal
-        // state so a persist of those faults cannot replace a queue left by the
-        // previous process.
+        let trusted = faults.is_empty() && seal.is_ok();
+        monitor.retire_trusted.store(trusted, Ordering::SeqCst);
         monitor.restore_queue();
-        // Only against stores that loaded and verified: an empty or
-        // quarantined grant store would make every item look stale.
-        monitor
-            .retire_trusted
-            .store(faults.is_empty(), Ordering::SeqCst);
         monitor.retire_after_load("load");
-        if let Some(reason) = rejected_audit_reason {
-            super::seal::reject_untrusted_audit(host, &audit, &reason);
-        }
-        for fault in &faults {
-            monitor.raise_integrity(fault);
-        }
+        monitor.report_loaded_faults(&faults, seal);
         monitor.file_integrity_finding(finding);
         // A kill skips exit_host, so the next start sees clean_shutdown = false.
         super::integrity::mark_running(dir);
         monitor
+    }
+
+    fn report_loaded_faults(
+        &self,
+        faults: &[super::seal::IntegrityFault],
+        seal: Result<(), super::seal::SealError>,
+    ) {
+        let damage = match seal {
+            Err(super::seal::SealError::Untrusted(damage)) => {
+                self.file_seal_reset(&damage);
+                Some(damage)
+            }
+            Err(super::seal::SealError::Io(error)) => {
+                if !super::host_key::is_key_unreadable(&error) {
+                    self.raise_integrity(&super::seal::IntegrityFault {
+                        file: "permission-audit.jsonl".into(),
+                        reason: error,
+                    });
+                }
+                None
+            }
+            Ok(()) => None,
+        };
+        for fault in faults {
+            if damage.as_ref().is_none_or(|d| d.file != fault.file) {
+                self.raise_integrity(fault);
+            }
+        }
+    }
+
+    fn file_seal_reset(&self, damage: &super::seal::SealDamage) {
+        let Some(dir) = self.profile_dir() else {
+            return;
+        };
+        self.retire_trusted.store(false, Ordering::SeqCst);
+        let summary = damage.summary(dir);
+        if let Err(error) = self.file_needs_you(NeedsYouFile {
+            kind: NeedsYouKind::SealReset,
+            actor: "host".into(),
+            resource: damage.file.into(),
+            summary,
+            expires_at: None,
+            run_tag: Some("permission-seal-reset".into()),
+        }) {
+            log::error!("permission_seal: could not file reset request: {error}");
+        }
+    }
+
+    fn damaged_seal(&self) -> Option<super::seal::SealDamage> {
+        match super::seal::check_profile(self.custody.as_ref()?, self.profile_dir()?) {
+            Err(super::seal::SealError::Untrusted(damage)) => Some(damage),
+            _ => None,
+        }
     }
 
     fn file_integrity_finding(&self, finding: Option<super::integrity::IntegrityFinding>) {
@@ -964,22 +998,12 @@ impl PermissionMonitor {
                 let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
                 *self.store() = loaded;
             }
-            for fault in &faults {
-                self.raise_integrity(fault);
+            let seal = super::seal::check_profile(&host, &dir);
+            let trusted = faults.is_empty() && seal.is_ok();
+            if let Err(super::seal::SealError::Io(error)) = &seal {
+                return Err(error.clone());
             }
-            let audit = dir.join("permission-audit.jsonl");
-            let mut trusted = faults.is_empty();
-            if let Err(reason) = super::seal::verify_audit(&host, &audit) {
-                if super::host_key::is_key_unreadable(&reason) {
-                    return Err(reason);
-                }
-                trusted = false;
-                super::seal::reject_untrusted_audit(&host, &audit, &reason);
-                self.raise_integrity(&super::seal::IntegrityFault {
-                    file: "permission-audit.jsonl".to_string(),
-                    reason,
-                });
-            }
+            self.report_loaded_faults(&faults, seal);
             // The queue was restored before the grants loaded; retire only
             // now that the grant store is the real, verified one. This runs
             // inside the Keychain item's resolution, which holds
@@ -1767,6 +1791,9 @@ impl PermissionMonitor {
                     .to_string(),
             );
         }
+        if matches!(choice, ApprovalChoice::Always | ApprovalChoice::DenyAlways) {
+            self.require_durable_decision()?;
+        }
         if matches!(choice, ApprovalChoice::Deny | ApprovalChoice::DenyAlways) {
             let grant_id = if choice == ApprovalChoice::DenyAlways {
                 let evidence = evidence.ok_or("deny always needs the person's decision")?;
@@ -1889,7 +1916,7 @@ impl PermissionMonitor {
         if choice == ApprovalChoice::Always {
             // Drop the store guard before locking it again on failure. A
             // temporary in `if let` lives for the whole block.
-            let save_error = self.store().try_save().err();
+            let save_error = self.save_durable().err();
             if let Some(error) = save_error {
                 self.store()
                     .records_mut()
@@ -1936,7 +1963,7 @@ impl PermissionMonitor {
                 .records_mut()
                 .retain(|row| row.grant_id != grant_id);
             if choice == ApprovalChoice::Always {
-                let _ = self.store().try_save();
+                let _ = self.save_durable();
             }
             return Err(error);
         }
@@ -2151,7 +2178,7 @@ impl PermissionMonitor {
                 updated_at: now,
             });
         }
-        if record.kind != NeedsYouKind::Keychain {
+        if !matches!(record.kind, NeedsYouKind::Keychain | NeedsYouKind::SealReset) {
             self.persist_queue();
         }
         Ok(id)
@@ -2214,6 +2241,7 @@ impl PermissionMonitor {
                     resolution,
                     already: true,
                     run_outcome: self.stored_outcome(id),
+                    quarantined: None,
                 });
             }
         }
@@ -2661,6 +2689,7 @@ impl PermissionMonitor {
                 resolution,
                 already: true,
                 run_outcome: self.stored_outcome(id),
+                quarantined: None,
             });
         }
         let final_resolution = if approve {
@@ -2671,6 +2700,7 @@ impl PermissionMonitor {
             NeedsYouResolution::Denied
         };
         let mut outcome = self.decision_run_outcome(id, final_resolution);
+        let mut quarantined = None;
         match row.kind {
             NeedsYouKind::ApprovalClick => {
                 let choice = if approve {
@@ -2838,6 +2868,12 @@ impl PermissionMonitor {
                     return Err(format!("needs-you item {id} could not be audited"));
                 }
             }
+            NeedsYouKind::SealReset => {
+                if !approve {
+                    return Err("Permission seal reset deferred.".into());
+                }
+                quarantined = Some(self.reset_permission_seal(&row)?);
+            }
             NeedsYouKind::Keychain => {
                 if approve {
                     if let Err(error) = self.reload_after_keychain_prompt() {
@@ -2885,8 +2921,54 @@ impl PermissionMonitor {
             .unwrap_or(final_resolution);
         self.update_continuation_on_needs_you(id, settled, None, outcome);
         log::info!("needs_you: resolve {id} run_outcome={}", outcome.as_str());
-        self.resolved_receipt(id, false)
-            .ok_or_else(|| format!("needs-you item {id} was not resolved"))
+        let mut receipt = self.resolved_receipt(id, false)
+            .ok_or_else(|| format!("needs-you item {id} was not resolved"))?;
+        receipt.quarantined = quarantined;
+        Ok(receipt)
+    }
+
+    /// Called under needs_resolve after the person's evidence has been checked.
+    fn reset_permission_seal(&self, row: &NeedsYouRecord) -> Result<Vec<PathBuf>, String> {
+        let dir = self.profile_dir().ok_or("missing permission profile")?;
+        let host = self.custody()?;
+        let (paths, faults) = {
+            let _decision = self.decision_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(damage) = self.damaged_seal() {
+                if row.summary != damage.summary(dir) {
+                    self.dismiss_without_audit(&row.id, NeedsYouResolution::Retired);
+                    self.file_seal_reset(&damage);
+                    return Err("The damaged files changed. Review the new reset request in Needs you.".into());
+                }
+            }
+            let paths = super::seal::reset_damaged_seal(&host, dir)?;
+            // Reverify durable decisions, preserving this session's approvals.
+            let mut loaded = GrantStore::load_sealed(&host, dir);
+            let faults = loaded.integrity_faults().to_vec();
+            let mut store = self.store();
+            loaded.records_mut().extend(
+                store.records().iter().filter(|r| !record_is_durable(r)).cloned(),
+            );
+            *store = loaded;
+            (paths, faults)
+        };
+        self.retire_after_reload(faults.is_empty());
+        if row.resource == "seal-state.json" {
+            self.restore_queue();
+        }
+        // The first fact in the new chain is already the audited resolution.
+        if let Some(item) = self.needs_you.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(&row.id)
+        {
+            item.resolution = Some(NeedsYouResolution::Approved);
+        }
+        self.persist_queue();
+        self.persist_continuations();
+        for fault in &faults {
+            self.raise_integrity(fault);
+        }
+        Ok(paths)
     }
 
     fn resolved_receipt(&self, id: &str, already: bool) -> Option<NeedsYouReceipt> {
@@ -2897,6 +2979,7 @@ impl PermissionMonitor {
                 resolution,
                 already,
                 run_outcome: self.stored_outcome(id),
+                quarantined: None,
             })
     }
 
@@ -3633,6 +3716,10 @@ impl PermissionMonitor {
     }
 
     fn persist_continuations(&self) {
+        if let Some(damage) = self.damaged_seal() {
+            self.file_seal_reset(&damage);
+            return;
+        }
         let Some(profile) = self.profile_dir.clone() else {
             return;
         };
@@ -3665,6 +3752,10 @@ impl PermissionMonitor {
                 return;
             }
         };
+        if self.damaged_seal().is_some_and(|damage| damage.file == "seal-state.json") {
+            // The journal itself may still verify after reset. Keep it in place.
+            return;
+        }
         let mut restored = InstalledQueue::default();
         match super::needs_you_store::load(&host, &profile) {
             super::needs_you_store::LoadedQueue::Empty => {
@@ -3736,6 +3827,11 @@ impl PermissionMonitor {
         let mut dirty = false;
         let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
         for mut record in loaded {
+            // A reset can restore an older journal after this host has already
+            // made progress in memory. Keep the live continuation in that case.
+            if map.contains_key(&record.run_id) {
+                continue;
+            }
             if record.origin_session != self.session_id && record.receipt.is_none() {
                 let waiting_on_restored_open = record
                     .needs_you_id
@@ -3893,6 +3989,10 @@ impl PermissionMonitor {
     }
 
     fn persist_queue(&self) {
+        if let Some(damage) = self.damaged_seal() {
+            self.file_seal_reset(&damage);
+            return;
+        }
         let Some(profile) = self.profile_dir.clone() else {
             return;
         };
@@ -3913,7 +4013,7 @@ impl PermissionMonitor {
             .clone();
         let mut items = Vec::new();
         for record in needs.values() {
-            if record.resolution.is_some() || record.kind == NeedsYouKind::Keychain {
+            if record.resolution.is_some() || matches!(record.kind, NeedsYouKind::Keychain | NeedsYouKind::SealReset) {
                 continue;
             }
             let origin = origins
@@ -4133,6 +4233,7 @@ impl PermissionMonitor {
         pane_id: u64,
         tool: &str,
     ) -> Result<String, String> {
+        self.require_durable_decision()?;
         let pane_tag = format!("pane:{pane_id}");
         let binding = ExactBinding {
             actor_type: ActorType::Agent,
@@ -5146,8 +5247,18 @@ impl PermissionMonitor {
         Ok(grant_id)
     }
 
+    fn require_durable_decision(&self) -> Result<(), String> {
+        if let Some(damage) = self.damaged_seal() {
+            self.file_seal_reset(&damage);
+            log::info!("permission_seal: refused durable decision while {} is damaged", damage.file);
+            return Err(super::seal::RESET_TO_SAVE.into());
+        }
+        Ok(())
+    }
+
     /// Write durable rows and leave session and one-shot rows in memory only.
     fn save_durable(&self) -> Result<(), String> {
+        self.require_durable_decision()?;
         let mut store = self.store();
         let ephemeral: Vec<GrantRecord> = store
             .records()
@@ -5632,12 +5743,22 @@ impl PermissionMonitor {
             };
             match appended {
                 Ok(()) => super::integrity::note_saved_file(path),
-                Err(super::seal::SealError::Untrusted(reason)) => {
-                    self.raise_integrity(&super::seal::IntegrityFault {
-                        file: "permission-audit.jsonl".to_string(),
-                        reason,
-                    });
-                    return Err("audit integrity check failed".to_string());
+                Err(super::seal::SealError::Untrusted(damage)) => {
+                    self.file_seal_reset(&damage);
+                    // A person may decide and exercise transient grants. Other
+                    // effects that require a durable audit still fail closed.
+                    let transient = match fact.kind.as_str() {
+                        "ask" | "deny" | "needs_you" => true,
+                        "grant" | "use" | "outcome" => self.store().records().iter().any(|row| {
+                            row.grant_id == fact.grant_id && !record_is_durable(row)
+                        }),
+                        _ => false,
+                    };
+                    if !transient {
+                        return Err(damage.refusal());
+                    }
+                    log::info!("permission_seal: {} decision recorded in memory during seal fault", fact.kind);
+                    return Ok(());
                 }
                 Err(super::seal::SealError::Io(reason)) => {
                     log::error!(
@@ -6509,6 +6630,7 @@ mod tests {
             K::PermissionChange,
             K::Integrity,
             K::Keychain,
+            K::SealReset,
         ];
         for kind in all {
             assert!(
@@ -6524,7 +6646,7 @@ mod tests {
                     !kind.surface_may_resolve(surface, true),
                     "{surface:?} must never approve {kind:?}"
                 );
-                let seal = matches!(kind, K::Integrity | K::Keychain);
+                let seal = matches!(kind, K::Integrity | K::Keychain | K::SealReset);
                 assert_eq!(
                     kind.surface_may_resolve(surface, false),
                     !seal,
@@ -8594,6 +8716,95 @@ mod tests {
         );
     }
 
+    fn decide_with_deleted_audit(choice: ApprovalChoice) {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = dir.path().join("permission-audit.jsonl");
+        let journal = dir.path().join("host/needs-you.json");
+        let initial = PermissionMonitor::open_profile(dir.path()).unwrap();
+        initial.note_denial("actor", "seed", "res", "op", "denied");
+        std::fs::remove_file(&audit).unwrap();
+        drop(initial);
+
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let reset = monitor.open_needs_you().into_iter()
+            .find(|row| row.kind == NeedsYouKind::SealReset).expect("reset ask on restart");
+        assert!(reset.summary.contains("1 fact unverifiable"), "{}", reset.summary);
+        for approve in [true, false] {
+            assert_eq!(monitor.resolve_needs_you_from_socket(&reset.id, approve), Err(NeedsYouResolveError::Refused));
+        }
+        let args = r#"{"game_id":"game-1","move":"e2e4"}"#;
+        let row = binding("ignored");
+        let previous_queue = std::fs::read(&journal).ok();
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &row, args) else {
+            panic!("the faulted host must still file a pending ask");
+        };
+        let decision = monitor.approve_pending(&pending_request_id, choice);
+        if matches!(choice, ApprovalChoice::Once | ApprovalChoice::Session) {
+            decision.unwrap();
+            let Admission::Proceed { grant_id, fingerprint, .. } = admit_of(&monitor, &row, args) else {
+                panic!("the in-memory grant must admit its call");
+            };
+            monitor.note_use("actor", "call", &grant_id, &fingerprint, "res", "op").unwrap();
+            assert!(monitor.needs_you_of(&pending_request_id).unwrap().resolution.is_some());
+        } else {
+            assert_eq!(decision.unwrap_err(), "permission seal damaged: reset it in Plexi to save this");
+            assert!(monitor.show_pending(&pending_request_id).is_some());
+            assert!(monitor.store().records().is_empty());
+        }
+        assert_eq!(std::fs::read(&journal).ok(), previous_queue);
+        assert!(!audit.exists());
+        assert!(!dir.path().join("grants.toml").exists());
+        let reopened = PermissionMonitor::open_profile(dir.path()).unwrap();
+        assert!(reopened.store().records().is_empty());
+        assert!(reopened.open_needs_you().iter().any(|r| r.kind == NeedsYouKind::SealReset));
+    }
+
+    #[test]
+    fn missing_seal_state_with_only_grants_survives_repeated_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        seal_one_grant(dir.path());
+        let grants = dir.path().join("grants.toml");
+        let signed = std::fs::read(&grants).unwrap();
+        let state = dir.path().join("host/seal-state.json");
+        std::fs::remove_file(&state).unwrap();
+        for _ in 0..2 {
+            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+            assert!(monitor.store().records().is_empty());
+            let reset = monitor.open_needs_you().into_iter().find(|r| r.kind == NeedsYouKind::SealReset)
+                .expect("the missing state must still be detectable after loading grants");
+            assert_eq!(reset.resource, "seal-state.json");
+            assert!(!state.exists());
+            assert_eq!(std::fs::read(&grants).unwrap(), signed);
+        }
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let reset = monitor.open_needs_you().into_iter().find(|r| r.kind == NeedsYouKind::SealReset).unwrap();
+        let receipt = monitor.resolve_needs_you_for_test(&reset.id, true).unwrap();
+        assert_eq!(receipt.quarantined, Some(Vec::new()));
+        assert!(!monitor.store().records().is_empty());
+        monitor.save_grants().unwrap();
+        assert!(monitor.open_needs_you().iter().all(|r| r.kind != NeedsYouKind::SealReset));
+    }
+
+    #[test]
+    fn allow_once_works_with_a_damaged_seal() {
+        decide_with_deleted_audit(ApprovalChoice::Once);
+    }
+
+    #[test]
+    fn session_approval_works_with_a_damaged_seal() {
+        decide_with_deleted_audit(ApprovalChoice::Session);
+    }
+
+    #[test]
+    fn always_requires_a_seal_reset_to_save() {
+        decide_with_deleted_audit(ApprovalChoice::Always);
+    }
+
+    #[test]
+    fn saved_denial_requires_a_seal_reset_to_save() {
+        decide_with_deleted_audit(ApprovalChoice::DenyAlways);
+    }
+
     #[test]
     fn edited_and_deleted_audit_lines_are_detected() {
         let edited = tempfile::tempdir().unwrap();
@@ -8615,7 +8826,7 @@ mod tests {
             monitor
                 .open_needs_you()
                 .iter()
-                .any(|row| row.kind == NeedsYouKind::Integrity),
+                .any(|row| row.kind == NeedsYouKind::SealReset),
             "an edited audit line files needs you"
         );
 
@@ -8641,7 +8852,7 @@ mod tests {
             monitor
                 .open_needs_you()
                 .iter()
-                .any(|row| row.kind == NeedsYouKind::Integrity),
+                .any(|row| row.kind == NeedsYouKind::SealReset),
             "a deleted audit log files needs you"
         );
     }
@@ -8885,22 +9096,20 @@ mod tests {
     }
 
     #[test]
-    fn anchors_unsigned_audit_is_quarantined_on_first_open() {
+    fn anchors_unsigned_audit_is_preserved_until_desktop_reset() {
         crate::broker::host_key::without_mac_key(|| {
             let dir = tempfile::tempdir().unwrap();
             let file = "permission-audit.jsonl";
             let original = b"{\"kind\":\"grant\",\"decision\":\"allow\"}\n";
             std::fs::write(dir.path().join(file), original).unwrap();
             let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
-            assert!(integrity_resources(&monitor).contains(&file.to_owned()));
-            let quarantine = dir_names(dir.path())
-                .into_iter()
-                .find(|name| name.starts_with("permission-audit.jsonl.untrusted-"))
-                .unwrap();
-            assert_eq!(
-                std::fs::read(dir.path().join(quarantine)).unwrap(),
-                original
-            );
+            let item = monitor.open_needs_you().into_iter().find(|r| r.kind == NeedsYouKind::SealReset).unwrap();
+            assert_eq!(item.resource, file);
+            assert_eq!(std::fs::read(dir.path().join(file)).unwrap(), original);
+            monitor.resolve_needs_you_for_test(&item.id, true).unwrap();
+            let quarantine = dir_names(dir.path()).into_iter()
+                .find(|name| name.starts_with("permission-audit.jsonl.untrusted-")).unwrap();
+            assert_eq!(std::fs::read(dir.path().join(quarantine)).unwrap(), original);
         });
     }
 
@@ -9008,6 +9217,10 @@ mod tests {
                 monitor.store().records().is_empty(),
                 "a mac line is not a pre-seal file"
             );
+            let reset = monitor.open_needs_you().into_iter()
+                .find(|row| row.kind == NeedsYouKind::SealReset).expect("missing state");
+            assert!(dir.path().join("grants.toml").exists());
+            monitor.resolve_needs_you_for_test(&reset.id, true).unwrap();
             assert_grants_quarantined(dir.path(), &monitor);
         });
     }

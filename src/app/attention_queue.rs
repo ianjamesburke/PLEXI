@@ -87,6 +87,7 @@ pub enum QueueSource {
     NeedsYou {
         request_id: String,
         is_question: bool,
+        kind: NeedsYouKind,
     },
     AgentState {
         pane_id: u64,
@@ -251,6 +252,7 @@ fn cli_operation_ask_options() -> Vec<QueueOption> {
 pub struct AttentionQueueState {
     /// True when the queue bar list (`Cmd+I`) is expanded.
     pub open: bool,
+    pub(super) seal_reset_result: Option<String>,
     /// Selected bar index in `items` when `open` is true.
     pub selected_idx: usize,
     /// Computed ordered list of bars (index 0 is locked when focused pane has an unresolved ask).
@@ -837,6 +839,11 @@ impl PlexiApp {
                         }
                     })
                     .collect()
+            } else if item.kind == NeedsYouKind::SealReset {
+                vec![
+                    QueueOption { key: "reset".into(), label: "Reset and re-seal".into(), recommended: false },
+                    QueueOption { key: "not_now".into(), label: "Not now".into(), recommended: false },
+                ]
             } else if matches!(
                 item.kind,
                 NeedsYouKind::ApprovalClick
@@ -873,7 +880,7 @@ impl PlexiApp {
                 context_id,
                 context_path,
                 summary: item.summary.clone(),
-                command_text: if item.resource.is_empty() {
+                command_text: if item.resource.is_empty() || item.kind == NeedsYouKind::SealReset {
                     item.summary.clone()
                 } else {
                     format!("{} — {}", item.resource, item.summary)
@@ -883,6 +890,7 @@ impl PlexiApp {
                 locked: false,
                 source: QueueSource::NeedsYou {
                     request_id: item.id,
+                    kind: item.kind,
                     is_question: is_question
                         && item.details.as_ref().is_some_and(|d| !d.choices.is_empty()),
                 },
@@ -1850,7 +1858,18 @@ impl PlexiApp {
             QueueSource::NeedsYou {
                 request_id,
                 is_question,
+                kind,
             } => {
+                if *kind == NeedsYouKind::SealReset && option.key == "not_now" {
+                    self.attention_queue.answered_ask_ids.remove(&overlay.ask_id);
+                    if self.synthetic_input_frame {
+                        return false;
+                    }
+                    self.attention_queue.decision_overlay = None;
+                    self.sync_attention_queue_layer();
+                    log::info!("permission_seal: person deferred reset {request_id}");
+                    return true;
+                }
                 if option.key == "acknowledge" {
                     self.acknowledge_notice(request_id);
                 } else {
@@ -2065,6 +2084,22 @@ impl PlexiApp {
         let ctrl_alt = egui::Modifiers::CTRL | egui::Modifiers::ALT;
         if input.consume_key(cmd_alt, Key::B) || input.consume_key(ctrl_alt, Key::B) {
             self.summon_decision_overlay();
+            input.clear();
+            return KeyDisposition::Consumed;
+        }
+
+        // The reset dialog shows two fixed actions. Enter always addresses
+        // the visible reset button, regardless of earlier arrow or digit keys.
+        if self.attention_queue.decision_overlay.as_ref().is_some_and(|overlay| {
+            matches!(overlay.source, QueueSource::NeedsYou { kind: NeedsYouKind::SealReset, .. })
+        }) {
+            if input.events().iter().any(|event| matches!(
+                event,
+                egui::Event::Key { key: Key::Enter, pressed: true, repeat: false, modifiers, .. }
+                    if *modifiers == egui::Modifiers::NONE
+            )) {
+                self.request_decision_overlay_option(0);
+            }
             input.clear();
             return KeyDisposition::Consumed;
         }
@@ -2329,6 +2364,20 @@ impl PlexiApp {
     /// Draw the pulled-up Attention Queue list (`Cmd+I`) and/or the Decision Overlay.
     pub(crate) fn draw_attention_queue_and_decision_overlay(&mut self, ctx: &egui::Context) {
         self.sync_attention_queue();
+        if let Some(result) = self.attention_queue.seal_reset_result.as_deref() {
+            use crate::ui::button::ButtonKind;
+            use crate::ui::dialog::{ActionModal, DialogAction};
+            let actions = [DialogAction::new("done", "Done", ButtonKind::Primary)];
+            if ActionModal::new("seal_reset_result", "Permission seal reset", &actions)
+                .banner()
+                .show(ctx, &self.colors, |ui| {
+                    crate::ui::typography::body(ui, result, &self.colors);
+                })
+                .selected.is_some()
+            {
+                self.attention_queue.seal_reset_result = None;
+            }
+        }
         // Only the top surface draws and takes hits: a queue covered by the
         // palette or an approval waits beneath it (stint 1391).
         if self.focus_stack.top() != Some(crate::app::FocusKind::AttentionQueue) {
@@ -2526,10 +2575,52 @@ impl PlexiApp {
         }
     }
 
+    fn draw_seal_reset_dialog(&mut self, ctx: &egui::Context, overlay: &DecisionOverlayState) {
+        use crate::ui::button::ButtonKind;
+        use crate::ui::dialog::{ActionModal, DialogAction, DialogShortcut};
+
+        let now = Instant::now();
+        let guard = &mut self.attention_queue.decision_guard;
+        guard.present(
+            crate::broker::consent::consent_request_key(&overlay.ask_id),
+            ctx.cumulative_pass_nr(),
+            now,
+        );
+        let input = guard.input(now, self.synthetic_input_frame);
+        if !input.armed {
+            let frame = Duration::from_secs_f32(ctx.input(|i| i.predicted_dt));
+            ctx.request_repaint_after(guard.remaining(now) + frame);
+        }
+        let actions = [
+            DialogAction::new("reset", "Reset and re-seal", ButtonKind::Primary)
+                .shortcut(DialogShortcut::new(&["Enter"], egui::Modifiers::NONE, Key::Enter)),
+            DialogAction::new("not_now", "Not now", ButtonKind::Secondary)
+                .refuses()
+                .shortcut(DialogShortcut::new(&["Esc"], egui::Modifiers::NONE, Key::Escape)),
+        ];
+        let response = ActionModal::new("seal_reset", "Permission seal damaged", &actions)
+            .consent_input(input)
+            .show(ctx, &self.colors, |ui| {
+                crate::ui::typography::body(ui, &overlay.command_text, &self.colors);
+                if let Some((id, error)) = &self.approval_keyboard.last_error {
+                    if id == &overlay.ask_id {
+                        ui.colored_label(self.colors.danger, error.to_string());
+                    }
+                }
+            });
+        if let Some(index) = overlay.options.iter().position(|o| Some(o.key.as_str()) == response.selected) {
+            self.request_decision_overlay_option(index);
+        }
+    }
+
     fn draw_decision_overlay_modal(&mut self, ctx: &egui::Context) {
         let Some(overlay) = self.attention_queue.decision_overlay.clone() else {
             return;
         };
+        if matches!(overlay.source, QueueSource::NeedsYou { kind: NeedsYouKind::SealReset, .. }) {
+            self.draw_seal_reset_dialog(ctx, &overlay);
+            return;
+        }
         let colors = self.colors;
         let screen = ctx.Viewport_rect_fallback();
 

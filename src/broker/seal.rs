@@ -2,7 +2,7 @@
 //!
 //! The per-profile host key authenticates grants, permissions and the audit
 //! chain tip in `host/seal-state.json`. An unsigned decision file or an
-//! audit with no authenticated tip is quarantined, including on first launch.
+//! audit with no authenticated tip is refused, including on first launch.
 //!
 //! If an existing key is unreadable, recovery rotates it and resets the
 //! decisions that cannot be verified.
@@ -52,6 +52,48 @@ enum SealStateStatus {
 pub struct IntegrityFault {
     pub file: String,
     pub reason: String,
+}
+
+const AUDIT_FILE: &str = "permission-audit.jsonl";
+const STATE_FILE: &str = "seal-state.json";
+pub(crate) const RESET_TO_SAVE: &str = "permission seal damaged: reset it in Plexi to save this";
+
+#[derive(Debug)]
+pub(crate) struct SealDamage {
+    pub file: &'static str,
+    pub reason: String,
+}
+
+impl SealDamage {
+    pub(super) fn refusal(&self) -> String {
+        format!(
+            "permission seal damaged ({}): a person must reset it in Plexi ({})",
+            self.file, self.reason
+        )
+    }
+
+    fn affected_paths(&self, dir: &Path) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        if self.file == STATE_FILE {
+            paths.push(seal_state_path(dir));
+        }
+        paths.push(dir.join(AUDIT_FILE));
+        paths
+    }
+
+    pub(crate) fn summary(&self, dir: &Path) -> String {
+        let paths: Vec<_> = self.affected_paths(dir).into_iter()
+            .filter(|path| std::fs::symlink_metadata(path).is_ok())
+            .map(|path| path.display().to_string())
+            .collect();
+        let action = if paths.is_empty() {
+            "There are no files to quarantine.".to_string()
+        } else {
+            format!("Reset will quarantine: {}.", paths.join(", "))
+        };
+        let reason = self.reason.strip_prefix("seal-state.json: ").unwrap_or(&self.reason);
+        format!("{} ({reason}). {action} A new audit chain will start.", self.file)
+    }
 }
 
 /// Faults seen by a loader that ran before [`crate::broker::gate::PermissionMonitor`]
@@ -107,14 +149,15 @@ pub enum SealStatus {
 
 #[derive(Debug)]
 pub enum SealError {
-    Untrusted(String),
+    Untrusted(SealDamage),
     Io(String),
 }
 
 impl std::fmt::Display for SealError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Untrusted(message) | Self::Io(message) => f.write_str(message),
+            Self::Untrusted(damage) => f.write_str(&damage.refusal()),
+            Self::Io(message) => f.write_str(message),
         }
     }
 }
@@ -190,6 +233,16 @@ pub fn load_toml<T: DeserializeOwned + Default>(host: &HostProcess, path: &Path)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
+    let dir = profile_dir_for_path(path);
+    if let Err(SealError::Untrusted(damage)) = check_profile(host, &dir) {
+        log::info!("permission_seal: ignoring {file_name} until reset ({})", damage.reason);
+        return LoadedToml {
+            data: T::default(),
+            fault: Some(IntegrityFault { file: damage.file.into(), reason: damage.reason }),
+            trusted: false,
+            key_unreadable: false,
+        };
+    }
     match read_sealed(host, path) {
         SealStatus::Absent => LoadedToml {
             data: T::default(),
@@ -223,7 +276,6 @@ pub fn load_toml<T: DeserializeOwned + Default>(host: &HostProcess, path: &Path)
                         }
                         SealStateStatus::Untrusted(reason) => {
                             log::info!("permission_seal: rejected {file_name} ({reason})");
-                            quarantine(path);
                             return LoadedToml {
                                 data: T::default(),
                                 fault: Some(IntegrityFault {
@@ -235,7 +287,7 @@ pub fn load_toml<T: DeserializeOwned + Default>(host: &HostProcess, path: &Path)
                             };
                         }
                         SealStateStatus::Trusted(_) | SealStateStatus::Absent => {
-                            if let Err(error) = mark_profile_sealed(host, dir) {
+                            if let Err(error) = require_sealed_profile(host, dir) {
                                 log::error!(
                                     "permission_seal: could not record seal marker for {}: {error}",
                                     dir.display()
@@ -296,18 +348,9 @@ pub fn write_toml<T: Serialize>(
 
 pub fn write_sealed(host: &HostProcess, path: &Path, body: &[u8]) -> Result<(), String> {
     let dir = profile_dir_for_path(path);
-    // A fresh or healthy profile gets its state before the file exists. A
-    // faulted state is left exactly as found until the write succeeds, so a
-    // failed save never turns a detectable fault into a clean-looking state.
-    let faulted = matches!(read_seal_state(host, &dir), SealStateStatus::Untrusted(_));
-    if !faulted {
-        require_sealed_profile(host, &dir)?;
-    }
-    write_sealed_with_dir(host, path, &dir, body)?;
-    if faulted {
-        mark_profile_sealed(host, &dir)?;
-    }
-    Ok(())
+    check_profile(host, &dir).map_err(|error| error.to_string())?;
+    require_sealed_profile(host, &dir)?;
+    write_sealed_with_dir(host, path, &dir, body)
 }
 
 fn write_sealed_with_dir(
@@ -326,8 +369,7 @@ fn write_sealed_with_dir(
     crate::platform::fs::atomic_write_with_mode(path, &bytes, 0o600)
 }
 
-/// Append one fact. Verifies the chain first. A bad chain is quarantined and
-/// the tip is cleared before this returns [`SealError::Untrusted`].
+/// Append only to a verified chain. Leave both log and tip intact on refusal.
 pub fn append_audit(
     host: &HostProcess,
     path: &Path,
@@ -335,34 +377,16 @@ pub fn append_audit(
 ) -> Result<(), SealError> {
     // The append writes the log line and then the authenticated tip. A
     // concurrent verifier (or appender) between those two writes would see a
-    // tip that trails the log and quarantine a healthy chain.
+    // tip that trails the log and refuse a healthy chain.
     let audit_lock = audit_lock_for(path);
     let _audit_guard = audit_lock
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Err(reason) = verify_audit_unlocked(host, path) {
-        if super::host_key::is_key_unreadable(&reason) {
-            return Err(SealError::Io(reason));
-        }
-        reject_untrusted_audit(host, path, &reason);
-        return Err(SealError::Untrusted(reason));
-    }
     let dir = profile_dir_for_path(path);
+    check_audit_unlocked(host, path)?;
     let key = key_bytes(host, &dir).map_err(SealError::Io)?;
     let (seq, prev) = next_link(path).map_err(SealError::Io)?;
-    let fact_json =
-        serde_json::to_string(fact).map_err(|error| SealError::Io(error.to_string()))?;
-    let mac = hex_encode(&hmac_sha256(
-        key.as_slice(),
-        &payload(seq, &prev, &fact_json),
-    ));
-    let line = serde_json::to_string(&AuditEnvelope {
-        seq,
-        prev,
-        fact: fact_json,
-        mac,
-    })
-    .map_err(|error| SealError::Io(error.to_string()))?;
+    let line = signed_audit_line(&key, seq, prev, fact).map_err(SealError::Io)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| SealError::Io(error.to_string()))?;
     }
@@ -380,13 +404,61 @@ pub fn append_audit(
     store_tip(host, path, &tip).map_err(SealError::Io)
 }
 
+fn signed_audit_line(
+    key: &[u8],
+    seq: u64,
+    prev: String,
+    fact: &impl Serialize,
+) -> Result<String, String> {
+    let fact_json = serde_json::to_string(fact).map_err(|error| error.to_string())?;
+    let mac = hex_encode(&hmac_sha256(
+        key,
+        &payload(seq, &prev, &fact_json),
+    ));
+    serde_json::to_string(&AuditEnvelope {
+        seq,
+        prev,
+        fact: fact_json,
+        mac,
+    })
+    .map_err(|error| error.to_string())
+}
+
 /// Walk the chain and compare the authenticated tip. Does not move the file.
 pub fn verify_audit(host: &HostProcess, path: &Path) -> Result<(), String> {
-    let audit_lock = audit_lock_for(path);
-    let _audit_guard = audit_lock
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    verify_audit_unlocked(host, path)
+    check_audit(host, path).map_err(|error| error.to_string())
+}
+
+pub(crate) fn check_profile(host: &HostProcess, dir: &Path) -> Result<(), SealError> {
+    check_audit(host, &dir.join(AUDIT_FILE))
+}
+
+fn check_audit(host: &HostProcess, path: &Path) -> Result<(), SealError> {
+    let lock = audit_lock_for(path);
+    let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+    check_audit_unlocked(host, path)
+}
+
+fn check_audit_unlocked(host: &HostProcess, path: &Path) -> Result<(), SealError> {
+    let dir = profile_dir_for_path(path);
+    let tip = match read_seal_state(host, &dir) {
+        SealStateStatus::Absent => None,
+        SealStateStatus::Trusted(state) => state.audit_tip,
+        SealStateStatus::KeyUnreadable(error) => return Err(SealError::Io(error)),
+        SealStateStatus::Untrusted(reason) => {
+            // A key-store outage prevents verification of otherwise intact files.
+            existing_mac_key(host, &dir).map_err(SealError::Io)?;
+            return Err(SealError::Untrusted(SealDamage { file: STATE_FILE, reason }));
+        }
+    };
+    if !path.try_exists().map_err(|error| SealError::Io(error.to_string()))? && tip.is_none() {
+        return Ok(());
+    }
+    existing_mac_key(host, &dir).map_err(SealError::Io)?;
+    verify_chain(host, path, tip).map_err(|reason| {
+        log::info!("permission_seal: audit rejected {} ({reason})", path.display());
+        SealError::Untrusted(SealDamage { file: AUDIT_FILE, reason })
+    })
 }
 
 /// One lock per audit log, so appends and verifications of the same log are
@@ -403,25 +475,16 @@ fn audit_lock_for(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
     locks.entry(path.to_path_buf()).or_default().clone()
 }
 
-fn verify_audit_unlocked(host: &HostProcess, path: &Path) -> Result<(), String> {
+fn verify_chain(host: &HostProcess, path: &Path, tip: Option<String>) -> Result<(), String> {
     let dir = profile_dir_for_path(path);
-    let tip = match tip_lookup(host, path) {
-        Ok(value) => value,
-        Err(error) if super::host_key::is_key_unreadable(&error) => return Err(error),
-        Err(error) => {
-            log::error!("permission_seal: could not read audit tip: {error}");
-            return Err(error);
-        }
-    };
     if !path.exists() {
-        return if tip.is_some() {
-            existing_mac_key(host, &dir)?;
-            Err("audit log deleted".to_string())
-        } else {
-            Ok(())
-        };
+        let count = tip.as_deref()
+            .and_then(|tip| tip.split_once(':'))
+            .map(|(seq, _)| seq)
+            .unwrap_or("unknown");
+        let noun = if count == "1" { "fact" } else { "facts" };
+        return Err(format!("audit log deleted, {count} {noun} unverifiable"));
     }
-    existing_mac_key(host, &dir)?;
     let raw = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
     let lines = content_lines(&raw);
     if lines.is_empty() {
@@ -472,17 +535,6 @@ fn verify_audit_unlocked(host: &HostProcess, path: &Path) -> Result<(), String> 
         return Err("audit tip mismatch".to_string());
     }
     Ok(())
-}
-
-pub fn reject_untrusted_audit(host: &HostProcess, path: &Path, reason: &str) {
-    log::info!(
-        "permission_seal: audit rejected {} ({reason})",
-        path.display()
-    );
-    if path.exists() {
-        quarantine(path);
-    }
-    clear_audit_tip(host, path);
 }
 
 /// Drop the MAC key from every pane. Agent panes also lose any value that
@@ -699,8 +751,9 @@ pub(crate) fn has_any_profile_seal_files(dir: &Path) -> bool {
 }
 
 fn has_sealed_files_on_disk(dir: &Path) -> bool {
-    let grants = dir.join("grants.toml");
-    if std::fs::read_to_string(&grants).is_ok_and(|text| text.rfind(MAC_PREFIX).is_some()) {
+    if ["grants.toml", "permissions.toml"].iter().any(|file| {
+        std::fs::read_to_string(dir.join(file)).is_ok_and(|text| text.contains(MAC_PREFIX))
+    }) {
         return true;
     }
     let audit = dir.join("permission-audit.jsonl");
@@ -762,29 +815,9 @@ fn read_seal_state(host: &HostProcess, dir: &Path) -> SealStateStatus {
     }
 }
 
-/// How an update treats a seal state that is missing or untrusted while sealed
-/// files exist. Private: ordinary writers reach only [`require_sealed_profile`].
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum UntrustedState {
-    /// Return the fault and change nothing, so the next verification still sees it.
-    Refuse,
-    /// Quarantine it and start a fresh state (recovery paths that already
-    /// surfaced the fault, and key rotation).
-    Replace,
-}
-
 fn update_seal_state(
     host: &HostProcess,
     dir: &Path,
-    mutate: impl FnOnce(&mut SealState),
-) -> Result<(), String> {
-    update_seal_state_with(host, dir, UntrustedState::Replace, mutate)
-}
-
-fn update_seal_state_with(
-    host: &HostProcess,
-    dir: &Path,
-    untrusted: UntrustedState,
     mutate: impl FnOnce(&mut SealState),
 ) -> Result<(), String> {
     if dir.as_os_str().is_empty() {
@@ -805,24 +838,8 @@ fn update_seal_state_with(
             needs_you_tip: None,
         },
         SealStateStatus::KeyUnreadable(error) => return Err(error),
-        SealStateStatus::Untrusted(reason) if untrusted == UntrustedState::Refuse => {
-            return Err(reason);
-        }
         SealStateStatus::Untrusted(reason) => {
-            let path = seal_state_path(dir);
-            if path.exists() {
-                quarantine(&path);
-            }
-            log::warn!(
-                "permission_seal: replacing untrusted {} ({reason})",
-                path.display()
-            );
-            SealState {
-                schema: SEAL_STATE_SCHEMA,
-                sealed: false,
-                audit_tip: None,
-                needs_you_tip: None,
-            }
+            return Err(SealDamage { file: STATE_FILE, reason }.refusal());
         }
     };
     let before = state.clone();
@@ -842,15 +859,6 @@ fn seal_state_lock_for(dir: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     locks.entry(dir.to_path_buf()).or_default().clone()
-}
-
-fn tip_lookup(host: &HostProcess, path: &Path) -> Result<Option<String>, String> {
-    let dir = profile_dir_for_path(path);
-    match read_seal_state(host, &dir) {
-        SealStateStatus::Absent => Ok(None),
-        SealStateStatus::Trusted(state) => Ok(state.audit_tip),
-        SealStateStatus::KeyUnreadable(error) | SealStateStatus::Untrusted(error) => Err(error),
-    }
 }
 
 pub(crate) fn needs_you_tip_lookup(
@@ -879,12 +887,6 @@ pub(crate) fn store_needs_you_tip(
 /// profile gets one; a profile whose state is missing or untrusted while
 /// sealed files exist is an integrity fault and is returned unchanged.
 pub(crate) fn require_sealed_profile(host: &HostProcess, dir: &Path) -> Result<(), String> {
-    update_seal_state_with(host, dir, UntrustedState::Refuse, |state| {
-        state.sealed = true;
-    })
-}
-
-fn mark_profile_sealed(host: &HostProcess, dir: &Path) -> Result<(), String> {
     update_seal_state(host, dir, |state| {
         state.sealed = true;
     })
@@ -896,20 +898,6 @@ fn store_tip(host: &HostProcess, path: &Path, tip: &str) -> Result<(), String> {
         state.sealed = true;
         state.audit_tip = Some(tip.to_string());
     })
-}
-
-fn clear_audit_tip(host: &HostProcess, path: &Path) {
-    let dir = profile_dir_for_path(path);
-    if let Err(error) = update_seal_state(host, &dir, |state| {
-        state.audit_tip = None;
-    }) {
-        log::error!(
-            "permission_seal: could not clear audit tip for {}: {error}",
-            path.display()
-        );
-    } else {
-        log::info!("permission_seal: cleared audit tip for {}", path.display());
-    }
 }
 
 fn quarantine(path: &Path) -> Option<PathBuf> {
@@ -1039,6 +1027,72 @@ pub(crate) fn ensure_readable_mac_key(
     }
 }
 
+/// Start a new authenticated audit chain after the desktop witnessed a reset.
+pub(super) fn reset_damaged_seal(host: &HostProcess, dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let audit = dir.join(AUDIT_FILE);
+    let audit_lock = audit_lock_for(&audit);
+    let _audit = audit_lock.lock().unwrap_or_else(|e| e.into_inner());
+    let state_lock = seal_state_lock_for(dir);
+    let _state = state_lock.lock().unwrap_or_else(|e| e.into_inner());
+    let damage = match check_audit_unlocked(host, &audit) {
+        Ok(()) => return Err("The permission seal is healthy.".into()),
+        Err(SealError::Io(error)) => return Err(error),
+        Err(SealError::Untrusted(damage)) => damage,
+    };
+    let host_dir = ensure_host_state_dir(dir)?;
+    let key = key_bytes(host, dir)?;
+    let mut state = match read_seal_state(host, dir) {
+        SealStateStatus::Trusted(state) => state, // Preserve the verified queue tip.
+        SealStateStatus::KeyUnreadable(error) => return Err(error),
+        _ => SealState::default(),
+    };
+    // Preserve the original directory entries before either atomic replacement.
+    // A failed backup leaves both live files untouched, including a bad symlink.
+    let mut quarantined = Vec::new();
+    let mut previous_audit = None;
+    for path in damage.affected_paths(dir) {
+        let name = path.file_name().ok_or("missing quarantine filename")?.to_string_lossy();
+        let backup = path.with_file_name(format!("{name}.untrusted-{}", uuid::Uuid::new_v4()));
+        match std::fs::hard_link(&path, &backup) {
+            Ok(()) => {
+                if path == audit {
+                    previous_audit = Some(backup.clone());
+                }
+                quarantined.push(backup);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("quarantine {}: {error}", path.display())),
+        }
+    }
+    let fact = serde_json::json!({
+        "kind": "seal_reset", "actor": "person", "quarantined": quarantined,
+        "reason": damage.reason, "timestamp": crate::platform::clock::now_secs(),
+    });
+    let line = signed_audit_line(&key, 1, GENESIS.into(), &fact)?;
+    state.schema = SEAL_STATE_SCHEMA;
+    state.sealed = true;
+    state.audit_tip = Some(format!("1:{}", sha256_hex(line.as_bytes())));
+    // Stage and sign the state before publishing the first fact. Until the
+    // final rename the old state still rejects the replacement chain.
+    let staged = tempfile::NamedTempFile::new_in(&host_dir).map_err(|error| error.to_string())?;
+    let body = serde_json::to_vec_pretty(&state).map_err(|error| error.to_string())?;
+    write_sealed_with_dir(host, staged.path(), dir, &body)?;
+    crate::platform::fs::atomic_write_with_mode(&audit, format!("{line}\n").as_bytes(), 0o600)?;
+    if let Err(error) = std::fs::rename(staged.path(), seal_state_path(dir)) {
+        let rollback = match previous_audit {
+            Some(backup) => std::fs::rename(backup, &audit),
+            None => std::fs::remove_file(&audit),
+        };
+        if let Err(rollback_error) = rollback {
+            return Err(format!("publish reset seal state: {error}; restore {}: {rollback_error}", audit.display()));
+        }
+        return Err(format!("publish reset seal state: {error}"));
+    }
+    super::integrity::note_saved_file(&audit);
+    log::info!("permission_seal: person reset {} and quarantined {:?}", dir.display(), quarantined);
+    Ok(quarantined)
+}
+
 /// Replace grant, audit, and needs-you files that were sealed with a key we could not read.
 ///
 /// The previous bytes are copied aside. The new files are sealed with the
@@ -1050,17 +1104,17 @@ pub(crate) fn reset_unverified_profile(host: &HostProcess, dir: &Path) -> Result
         std::fs::remove_file(&seal_state).map_err(|error| error.to_string())?;
     }
 
+    write_seal_state(host, dir, &SealState { sealed: true, ..Default::default() })?;
     let grants = dir.join("grants.toml");
     if grants.is_file() {
         copy_aside(&grants, "grants.toml.before-key-rotation");
     }
-    write_sealed(host, &grants, b"records = []\n")?;
+    write_sealed_with_dir(host, &grants, dir, b"records = []\n")?;
     let audit = dir.join("permission-audit.jsonl");
     if audit.is_file() {
         copy_aside(&audit, "permission-audit.jsonl.before-key-rotation");
         std::fs::remove_file(&audit).map_err(|error| error.to_string())?;
     }
-    clear_audit_tip(host, &audit);
     let fact = serde_json::json!({
         "kind": "key_rotation",
         "actor": "host",
@@ -1334,7 +1388,7 @@ mod tests {
                         ready.wait();
                         loop {
                             needs_you_tip_lookup(TEST_HOST, profile)?;
-                            tip_lookup(TEST_HOST, &audit)?;
+                            verify_audit(TEST_HOST, &audit)?;
                             if finished.load(Ordering::Acquire) {
                                 return Ok::<(), String>(());
                             }
@@ -1382,6 +1436,64 @@ mod tests {
     }
 
     #[test]
+    fn deleted_audit_refuses_repeated_appends() {
+        let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let audit = dir.path().join("permission-audit.jsonl");
+        let fact = serde_json::json!({"kind": "seed"});
+        append_audit(TEST_HOST, &audit, &fact).unwrap();
+        std::fs::remove_file(&audit).unwrap();
+        for _ in 0..2 {
+            assert!(matches!(append_audit(TEST_HOST, &audit, &fact), Err(SealError::Untrusted(_))));
+            assert!(!audit.exists());
+        }
+        assert!(reset_damaged_seal(TEST_HOST, dir.path()).unwrap().is_empty());
+        append_audit(TEST_HOST, &audit, &fact).unwrap();
+    }
+
+    #[test]
+    fn emptied_or_mismatched_audit_stays_in_place_until_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = dir.path().join(AUDIT_FILE);
+        let seed = serde_json::json!({"kind": "seed"});
+        for empty in [true, false] {
+            append_audit(TEST_HOST, &audit, &seed).unwrap();
+            let before = std::fs::read(&audit).unwrap();
+            append_audit(TEST_HOST, &audit, &seed).unwrap();
+            let damaged = if empty { &[][..] } else { &before };
+            std::fs::write(&audit, damaged).unwrap();
+            for _ in 0..2 {
+                assert!(matches!(append_audit(TEST_HOST, &audit, &seed), Err(SealError::Untrusted(_))));
+                assert_eq!(std::fs::read(&audit).unwrap(), damaged);
+            }
+            let paths = reset_damaged_seal(TEST_HOST, dir.path()).unwrap();
+            assert_eq!(paths.len(), 1);
+            assert_eq!(std::fs::read(&paths[0]).unwrap(), damaged);
+        }
+    }
+
+    #[test]
+    fn reset_quarantines_the_damaged_files_and_authenticates_the_receipt() {
+        let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let audit = dir.path().join(AUDIT_FILE);
+        append_audit(TEST_HOST, &audit, &serde_json::json!({"kind":"seed"})).unwrap();
+        let original = std::fs::read(&audit).unwrap();
+        std::fs::write(seal_state_path(dir.path()), b"bad state").unwrap();
+        let paths = reset_damaged_seal(TEST_HOST, dir.path()).unwrap();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(std::fs::read(&paths[0]).unwrap(), b"bad state");
+        assert_eq!(std::fs::read(&paths[1]).unwrap(), original);
+        assert!(paths.iter().all(|path| path.to_string_lossy().contains(".untrusted-")));
+        verify_audit(TEST_HOST, &audit).unwrap();
+        let entry: AuditEnvelope = serde_json::from_slice(&std::fs::read(audit).unwrap()).unwrap();
+        let fact: serde_json::Value = serde_json::from_str(&entry.fact).unwrap();
+        assert_eq!(fact["kind"], "seal_reset");
+        assert_eq!(fact["actor"], "person");
+        assert_eq!(fact["quarantined"], serde_json::json!(paths));
+    }
+
+    #[test]
     fn a_save_never_erases_a_missing_seal_state_fault() {
         let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
         let dir = tempfile::tempdir().unwrap();
@@ -1402,12 +1514,16 @@ mod tests {
             !seal_state_path(dir.path()).exists(),
             "the fault was erased"
         );
+        let grants = dir.path().join("grants.toml");
+        assert!(write_sealed(TEST_HOST, &grants, b"changed").unwrap_err().contains("a person must reset it in Plexi"));
         assert!(needs_you_tip_lookup(TEST_HOST, dir.path()).is_err());
         assert!(append_audit(TEST_HOST, &audit, &serde_json::json!({"kind": "x"})).is_err());
         assert!(
             !audit.exists(),
             "a deleted audit log must not restart quietly"
         );
+        reset_damaged_seal(TEST_HOST, dir.path()).unwrap();
+        write_sealed(TEST_HOST, &grants, b"records = []").unwrap();
     }
 
     #[test]
@@ -1426,7 +1542,7 @@ mod tests {
         std::fs::write(target.join("keep"), b"occupied").unwrap();
 
         let error = write_sealed(TEST_HOST, &target, b"records = []\n").unwrap_err();
-        assert!(error.contains("rename"), "{error}");
+        assert!(error.contains("a person must reset it in Plexi"), "{error}");
         assert!(
             !seal_state_path(dir.path()).exists(),
             "the fault was erased"
@@ -1567,7 +1683,7 @@ mod tests {
         let state_file = seal_state_path(dir.path());
         assert!(state_file.is_file());
 
-        // Tamper with seal-state.json -> load_toml rejects and quarantines grants.toml.
+        // Loading refuses the grants and leaves the evidence in place.
         std::fs::write(
             &state_file,
             b"{\"schema\":1,\"sealed\":false}\n# plexi-mac:00\n",
@@ -1580,7 +1696,11 @@ mod tests {
             .as_ref()
             .is_some_and(|fault| fault.reason.contains("seal-state.json")));
 
-        // Rewrite clean state, then delete seal-state.json -> missing state is rejected.
+        let original = std::fs::read(&grants).unwrap();
+        assert!(write_sealed(TEST_HOST, &grants, b"changed").is_err());
+        assert_eq!(std::fs::read(&grants).unwrap(), original);
+        reset_damaged_seal(TEST_HOST, dir.path()).unwrap();
+        // Delete the fresh state; a second read still sees the fault.
         write_sealed(TEST_HOST, &grants, b"records = []\n").unwrap();
         std::fs::remove_file(&state_file).unwrap();
         let loaded_missing: LoadedToml<toml::Table> = load_toml(TEST_HOST, &grants);

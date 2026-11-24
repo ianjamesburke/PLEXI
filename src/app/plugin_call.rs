@@ -1148,6 +1148,14 @@ impl PlexiApp {
                         receipt.run_outcome.as_str()
                     );
                 }
+                if let Some(paths) = receipt.quarantined {
+                    self.attention_queue.seal_reset_result = Some(if paths.is_empty() {
+                        "No files were present to quarantine.".into()
+                    } else {
+                        let names: Vec<_> = paths.iter().map(|p| p.display().to_string()).collect();
+                        format!("Quarantined files:\n{}", names.join("\n"))
+                    });
+                }
                 Ok(())
             }
             Err(crate::broker::gate::NeedsYouResolveError::Refused) => {
