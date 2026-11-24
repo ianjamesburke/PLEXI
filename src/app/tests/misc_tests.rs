@@ -1966,6 +1966,9 @@ fn dashboard_follow_stream_serves_only_the_callers_workspace() {
     let root = h.workspace_root();
     h.app.set_context_root(root.clone(), None);
     let elsewhere = tempfile::tempdir().unwrap();
+    // A pane's dashboard shows its own pending requests (stint 1743), so the
+    // asks are the pane's own: one in its workspace, one elsewhere.
+    let caller = h.app.pane_principal(pane).unwrap();
     let monitor =
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
     for (workspace, marker) in [(root.clone(), "own-1285"), (elsewhere.path().to_path_buf(), "foreign-1285")] {
@@ -1973,8 +1976,7 @@ fn dashboard_follow_stream_serves_only_the_callers_workspace() {
             call_id: &format!("follow-{marker}"),
             tool: "agents.review",
             input_json: &serde_json::json!({"marker": marker}).to_string(),
-            principal: &crate::broker::principal::Principal::agent("agent:worker")
-                .expect("named agent"),
+            principal: &crate::broker::principal::Principal::Pane(caller.clone()),
             actor_scope: crate::broker::ActorScope::Workspace,
             trust_origin: "host",
             workspace_root: &crate::platform::path::canonical_or_self(&workspace),

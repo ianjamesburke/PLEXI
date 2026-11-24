@@ -3508,10 +3508,52 @@ impl HeadlessBackend {
                 let profile = crate::config::config_dir();
                 let monitor =
                     crate::broker::gate::PermissionMonitor::for_profile(&profile).unwrap();
-                let owner = self
-                    .h
-                    .with_app(|app| app.pane_principal(pane_id))
-                    .ok_or_else(|| SceneError::new("seed_failed", "terminal has no authority"))?;
+                // The sender is a live terminal holding its own authority; the
+                // focused pane of a bare scene is a view with none.
+                let cwd = self.h.workspace_root().to_path_buf();
+                let owner = self.h.with_app_mut(|app| {
+                    if let Some(owner) = app.pane_principal(pane_id) {
+                        return Ok(owner);
+                    }
+                    let sender = app.host.alloc_pane_id();
+                    let mut terminal = crate::host::pane::TerminalPane::fixture(
+                        sender,
+                        app.ctx.clone(),
+                        app.pty_event_tx.clone(),
+                        egui_term::BackendSettings {
+                            shell: "/bin/sh".into(),
+                            args: vec!["-c".into(), "sleep 300".into()],
+                            working_directory: Some(cwd.clone()),
+                            ..Default::default()
+                        },
+                        14.0,
+                    )
+                    .map_err(|error| {
+                        SceneError::new(
+                            "seed_failed",
+                            format!("could not create the sending terminal: {error}"),
+                        )
+                    })?;
+                    terminal.replace_grant_for_test(
+                        crate::broker::pane_authority::PaneAuthority::for_test(
+                            sender,
+                            crate::broker::pane_authority::Ceiling::Baseline,
+                            context_id,
+                            cwd,
+                        ),
+                    );
+                    app.windows[app.active_window]
+                        .panes
+                        .insert(sender, crate::host::pane::Pane::Terminal(Box::new(terminal)))
+                        .map_err(|_| {
+                            SceneError::new("pane_id_taken", format!("scene pane {sender} id is taken"))
+                        })?;
+                    // A tile outside the layout keeps the screenshot as it was
+                    // while the host can still find the sender.
+                    let _outside_layout = app.windows[app.active_window].tree.tiles.insert_pane(sender);
+                    app.pane_principal(sender)
+                        .ok_or_else(|| SceneError::new("seed_failed", "terminal has no authority"))
+                })?;
                 let admitted = monitor.admit(crate::broker::gate::AdmitRequest {
                     call_id: "pane-send",
                     tool: "pane.send",
