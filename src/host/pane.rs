@@ -2285,6 +2285,20 @@ pub enum ViewRuntime {
 }
 
 impl ViewRuntime {
+    /// The canonical entry file this pane's guest runs, set by the host when
+    /// it started the guest (stint 1398). Rust builtins run no plugin file.
+    /// Two panes with one plugin id but different origins are different
+    /// plugins: a development copy never stands in for the bundled one.
+    pub(crate) fn origin_entry(&self) -> Option<std::path::PathBuf> {
+        match self {
+            Self::Python(runtime) => {
+                Some(crate::platform::path::canonical_or_self(runtime.entry()))
+            }
+            Self::Wasm(live) => Some(crate::platform::path::canonical_or_self(live.wasm_path())),
+            Self::Builtin(_) => None,
+        }
+    }
+
     pub fn submit_external_turn(
         &mut self,
         text: String,

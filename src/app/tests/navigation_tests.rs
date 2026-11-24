@@ -1241,6 +1241,19 @@ fn registry_with_on_launch(
     (tmp, registry)
 }
 
+/// The on-launch decision for a planted test pane. These panes have no guest
+/// and so no host-owned origin, so the policy runs by manifest id alone; origin
+/// matching is pinned in `plugin_admission_tests` with real guests (stint 1398).
+fn focus_planted(h: &mut HostHarness, id: &str, context: u64) -> Option<PaneId> {
+    let policy = h
+        .app
+        .registries
+        .view_for_context(context, &h.app.router)
+        .on_launch_for(id);
+    h.app
+        .focus_for_on_launch(policy, id, None, context, &[], None)
+}
+
 /// `focus_existing`: relaunching a plugin that is already open in a *different*
 /// context focuses the existing pane and jumps to its context instead of
 /// spawning a second instance.
@@ -1259,9 +1272,7 @@ fn on_launch_focus_existing_focuses_cross_context_instead_of_spawning() {
 
     assert_eq!(h.app.active_window, 0);
     let caller_ctx = h.app.windows[0].context_id;
-    let focused = h
-        .app
-        .resolve_on_launch_policy("singleton", caller_ctx, &[], None);
+    let focused = focus_planted(&mut h, "singleton", caller_ctx);
 
     assert_eq!(
         focused,
@@ -1305,9 +1316,7 @@ fn on_launch_focus_existing_in_context_is_per_context() {
 
     let ctx1 = h.app.windows[0].context_id;
     assert!(
-        h.app
-            .resolve_on_launch_policy("percontext", ctx1, &[], None)
-            .is_none(),
+        focus_planted(&mut h, "percontext", ctx1).is_none(),
         "an instance in another context must not satisfy focus_existing_in_context — caller spawns"
     );
     assert_eq!(h.app.active_window, 0, "no cross-context jump should occur");
@@ -1315,8 +1324,7 @@ fn on_launch_focus_existing_in_context_is_per_context() {
     // Now plant an instance in context 1 (window 0); the relaunch must focus it.
     let (_tile, same_ctx_pane) = h.app.add_view_pane_in_window(0, "percontext");
     assert_eq!(
-        h.app
-            .resolve_on_launch_policy("percontext", ctx1, &[], None),
+        focus_planted(&mut h, "percontext", ctx1),
         Some(same_ctx_pane),
         "an instance in the caller's context must be focused and its real id returned"
     );
@@ -1359,8 +1367,7 @@ fn on_launch_matches_by_manifest_id_not_runtime_type_id() {
     );
     let ctx1 = h.app.windows[0].context_id;
     assert_eq!(
-        h.app
-            .resolve_on_launch_policy("wasm_singleton", ctx1, &[], None),
+        focus_planted(&mut h, "wasm_singleton", ctx1),
         Some(wasm_pane),
         "focus_existing must focus the existing WASM instance (by real id) instead of spawning"
     );

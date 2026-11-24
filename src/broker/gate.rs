@@ -629,6 +629,16 @@ pub struct AdmitRequest<'a> {
     pub target_type: TargetType,
 }
 
+/// The broker's answer to a live plugin start ([`PermissionMonitor::begin_plugin_start`]).
+pub enum PluginStartDecision<'m> {
+    /// Allowed now; the admission lock is held until the guard drops.
+    Allowed(std::sync::MutexGuard<'m, ()>),
+    /// An ask waits in the Plexi window.
+    Required { pending_request_id: String },
+    /// A stored denial, or a request that cannot be decided.
+    Denied,
+}
+
 pub enum Admission {
     Proceed {
         grant_id: String,
@@ -1112,27 +1122,60 @@ impl PermissionMonitor {
         self.admit_inner(req, None, Some(disclosure))
     }
 
-    /// Admit loading one plugin tree that is not bundled with Plexi (stint
-    /// 1398). `disclosure` is the approval text: the plugin, the folder and
-    /// what allowing it means. Display only.
-    pub fn admit_plugin_code(&self, req: AdmitRequest<'_>, disclosure: &str) -> Admission {
+    /// Decide a live plugin start (stint 1398). When the stored decision
+    /// allows it, the admission lock is returned held: every revoke takes the
+    /// same lock, so none lands between this evaluation and the start the
+    /// caller commits while holding the guard. Otherwise the lock is released
+    /// before the ask is filed (filing audits and must not run under it).
+    pub fn begin_plugin_start(
+        &self,
+        req: AdmitRequest<'_>,
+        disclosure: &str,
+    ) -> PluginStartDecision<'_> {
         debug_assert!(req.target_type == TargetType::Package);
-        self.admit_inner(req, None, Some(disclosure))
-    }
-
-    /// The stored decision for `req`, without filing an ask, an audit row or
-    /// a trace. A registry scan reads admission this way: a scan never asks.
-    pub fn stored_decision(&self, req: &AdmitRequest<'_>) -> Decision {
         let Ok(fingerprint) = fingerprint_args(req.input_json) else {
-            return Decision::Deny;
+            return PluginStartDecision::Denied;
         };
         if req.workspace_root.as_os_str().is_empty() {
-            return Decision::Deny;
+            return PluginStartDecision::Denied;
         }
-        let binding = self.exact_binding(req, fingerprint);
-        let now = self.now_secs();
-        self.store()
-            .evaluate_at(&PermissionRequest::exact(&binding), None, now)
+        let binding = self.exact_binding(&req, fingerprint);
+        let request = PermissionRequest::exact(&binding);
+        // Two rounds at most: an allow can land between releasing the lock
+        // and filing the ask, and then the second round finds it.
+        for _ in 0..2 {
+            let guard = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+            let now = self.now_secs();
+            match self.store().evaluate_at(&request, None, now) {
+                Decision::Allow => return PluginStartDecision::Allowed(guard),
+                Decision::Deny => return PluginStartDecision::Denied,
+                Decision::Ask => drop(guard),
+            }
+            match self.admit_inner(
+                AdmitRequest {
+                    call_id: req.call_id,
+                    tool: req.tool,
+                    input_json: req.input_json,
+                    principal: req.principal,
+                    actor_scope: req.actor_scope,
+                    trust_origin: req.trust_origin,
+                    workspace_root: req.workspace_root,
+                    context_id: req.context_id,
+                    package_id: req.package_id,
+                    instance_id: req.instance_id,
+                    target_type: req.target_type,
+                },
+                None,
+                Some(disclosure),
+            ) {
+                Admission::Required { pending_request_id } => {
+                    return PluginStartDecision::Required { pending_request_id }
+                }
+                Admission::Denied { .. } => return PluginStartDecision::Denied,
+                Admission::Proceed { .. } => continue,
+            }
+        }
+        PluginStartDecision::Denied
     }
 
     /// The exact binding a request is decided on.

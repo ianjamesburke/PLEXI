@@ -10,8 +10,8 @@
 //! contains a `.plexi/` directory; if none is found, only global plugins are loaded.
 //! When ids collide, the local entry wins and the shadow is logged at info level,
 //! except that a local entry never takes the id of a plugin bundled with Plexi
-//! (stint 1398). The host loads through [`PluginRegistry::load_admitted`], which
-//! also skips every entry `host::plugin_admission` refuses.
+//! (stint 1398). Discovery decides nothing about whether a plugin may run:
+//! `host::plugin_admission` decides that when a live guest starts.
 //!
 //! # App directory layout
 //!
@@ -665,9 +665,6 @@ pub struct SkippedPlugin {
     pub dir: PathBuf,
     pub source: RegistrySource,
     pub error: String,
-    /// Set when plugin admission refused the entry (stint 1398); the host
-    /// files an ask for refusals a click can lift.
-    pub refusal: Option<crate::host::plugin_admission::Refusal>,
 }
 
 impl SkippedPlugin {
@@ -730,29 +727,10 @@ impl PluginRegistry {
     /// tests so they can stage a fake `~/.plexi-<channel>/plugins/` without
     /// touching the real one.
     ///
-    /// This is the inventory of what is on disk, for the CLI and tests: it
-    /// does not check plugin admission. The host loads through
-    /// [`Self::load_admitted`].
+    /// Discovery metadata only (stint 1398): an untrusted or not-yet-allowed
+    /// plugin is listed with its views, and whether it may run is decided when
+    /// a live guest starts (`host::plugin_admission`).
     pub fn load_with_global(cwd: &Path, global_dir: &Path) -> Self {
-        Self::load_gated(cwd, global_dir, None)
-    }
-
-    /// What the host may load: every entry passes
-    /// [`crate::host::plugin_admission::PluginAdmission::decide`] before it is
-    /// inserted, so a refused workspace entry never displaces a global one.
-    pub(crate) fn load_admitted(
-        cwd: &Path,
-        global_dir: &Path,
-        admission: &crate::host::plugin_admission::PluginAdmission,
-    ) -> Self {
-        Self::load_gated(cwd, global_dir, Some(admission))
-    }
-
-    fn load_gated(
-        cwd: &Path,
-        global_dir: &Path,
-        gate: Option<&crate::host::plugin_admission::PluginAdmission>,
-    ) -> Self {
         let channel_dir = registry_config_dir();
         let mut registry = Self {
             plugins: HashMap::new(),
@@ -771,7 +749,7 @@ impl PluginRegistry {
         }
 
         if global_dir.is_dir() {
-            registry.scan_dir(global_dir, RegistrySource::Global, None, gate);
+            registry.scan_dir(global_dir, RegistrySource::Global, None);
         }
 
         // Local plugins + agents — only scanned when a workspace root exists.
@@ -786,16 +764,11 @@ impl PluginRegistry {
             }
             let local_apps = root.join(&channel_dir).join("plugins");
             if local_apps.is_dir() {
-                registry.scan_dir(
-                    &local_apps,
-                    RegistrySource::LocalPlugin,
-                    Some(root.clone()),
-                    gate,
-                );
+                registry.scan_dir(&local_apps, RegistrySource::LocalPlugin, Some(root.clone()));
             }
             let local_agents = root.join(&channel_dir).join("agents");
             if local_agents.is_dir() {
-                registry.scan_dir(&local_agents, RegistrySource::LocalAgent, Some(root), gate);
+                registry.scan_dir(&local_agents, RegistrySource::LocalAgent, Some(root));
             }
         }
 
@@ -822,32 +795,10 @@ impl PluginRegistry {
         self.plugins.get(id)
     }
 
-    /// Return the manifest identity for a registered WASM entry at `wasm_path`.
-    ///
-    /// Raw WASM launches still need the manifest's identity when they point at
-    /// a registered component: release gates, consent state, and pane identity
-    /// are all keyed by that canonical id rather than by a filesystem filename.
-    pub(crate) fn manifest_id_for_wasm_path(&self, wasm_path: &Path) -> Option<&str> {
-        let canonical_path = std::fs::canonicalize(wasm_path).ok()?;
-        self.plugins.values().find_map(|installed| {
-            (installed.manifest.manifest_type == ManifestType::Wasm
-                && std::fs::canonicalize(&installed.bin_path)
-                    .ok()
-                    .is_some_and(|entry| entry == canonical_path))
-            .then_some(installed.manifest.id.as_str())
-        })
-    }
-
     /// Scan one directory of manifest-bearing subdirs, inserting discovered
     /// entries. Calls made later in `load()` shadow earlier ones; on shadow
     /// the displaced entry's source is logged so users can debug discovery.
-    fn scan_dir(
-        &mut self,
-        dir: &Path,
-        source: RegistrySource,
-        workspace_root: Option<PathBuf>,
-        gate: Option<&crate::host::plugin_admission::PluginAdmission>,
-    ) {
+    fn scan_dir(&mut self, dir: &Path, source: RegistrySource, workspace_root: Option<PathBuf>) {
         let read_dir = match std::fs::read_dir(dir) {
             Ok(d) => d,
             Err(e) => {
@@ -877,23 +828,12 @@ impl PluginRegistry {
                     let reserved = (source != RegistrySource::Global)
                         .then(|| crate::host::plugin_admission::reserved_id(&id, &entry_dir).err())
                         .flatten();
-                    let refusal = reserved.or_else(|| {
-                        gate.and_then(|gate| {
-                            gate.decide(
-                                &id,
-                                &entry_dir,
-                                crate::host::plugin_admission::Launch::Discovery,
-                            )
-                            .err()
-                        })
-                    });
-                    if let Some(refusal) = refusal {
+                    if let Some(refusal) = reserved {
                         skipped.push(SkippedPlugin {
                             id: Some(id),
                             dir: entry_dir,
                             source,
                             error: refusal.to_string(),
-                            refusal: Some(refusal),
                         });
                         continue;
                     }
@@ -948,7 +888,6 @@ impl PluginRegistry {
                             dir: entry_dir,
                             source,
                             error: error.to_string(),
-                            refusal: None,
                         });
                         continue;
                     }
@@ -982,7 +921,6 @@ impl PluginRegistry {
                             dir: entry_dir,
                             source,
                             error: e,
-                            refusal: None,
                         });
                     }
                 }
@@ -1584,8 +1522,12 @@ impl ResolvedPlugin {
 /// Resolve the manifest-backed plugin at `dir`: parse its manifest now and
 /// return its owner, runtime, canonical root and contained entry.
 pub(crate) fn resolve_plugin_dir(dir: &Path) -> Result<ResolvedPlugin, String> {
-    let root = std::fs::canonicalize(dir)
-        .map_err(|error| format!("plugin folder {} cannot be resolved: {error}", dir.display()))?;
+    let root = std::fs::canonicalize(dir).map_err(|error| {
+        format!(
+            "plugin folder {} cannot be resolved: {error}",
+            dir.display()
+        )
+    })?;
     let installed = PluginRegistry::empty().load_plugin(&root)?;
     Ok(ResolvedPlugin {
         owner: installed.manifest.id.clone(),
@@ -1610,10 +1552,7 @@ pub(crate) fn resolve_component(component: &Path) -> Result<ResolvedPlugin, Stri
         )
     })?;
     if !entry.is_file() {
-        return Err(format!(
-            "WASM component {} is not a file",
-            entry.display()
-        ));
+        return Err(format!("WASM component {} is not a file", entry.display()));
     }
     let manifest_root = entry
         .ancestors()

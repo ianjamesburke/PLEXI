@@ -3238,7 +3238,35 @@ impl LivePythonPane {
         }
     }
 
-    pub fn launch(config: PythonLaunchConfig) -> Result<Self, WasmPythonError> {
+    /// A live guest straight from a fixture config, for tests that exercise
+    /// the runtime rather than admission. Compiled out of non-test builds.
+    #[cfg(test)]
+    pub(crate) fn launch_for_test(config: PythonLaunchConfig) -> Result<Self, WasmPythonError> {
+        let admitted = crate::host::plugin_admission::AdmittedPlugin::for_test(
+            &config.plugin_id,
+            crate::app::registry::ManifestType::Python,
+            &config.plugin_dir,
+            &config.entry,
+        );
+        Self::launch(admitted, config)
+    }
+
+    /// Start a live CPython guest. Only an [`AdmittedPlugin`] starts one, and
+    /// the plugin id, root and entry come from it alone (stint 1398).
+    pub(crate) fn launch(
+        admitted: crate::host::plugin_admission::AdmittedPlugin<'_>,
+        mut config: PythonLaunchConfig,
+    ) -> Result<Self, WasmPythonError> {
+        if admitted.kind() != crate::app::registry::ManifestType::Python {
+            return Err(WasmPythonError::Entry(format!(
+                "plugin '{}' was admitted as a WASM component, not a Python plugin",
+                admitted.owner()
+            )));
+        }
+        let start = admitted.commit();
+        config.plugin_id = start.owner.clone();
+        config.plugin_dir = start.root.clone();
+        config.entry = start.entry.clone();
         let plugin_id = config.plugin_id.clone();
         let permission_ui = permission_ui_trust(&plugin_id, &config.plugin_dir);
         let persisted_states = load_python_states(&config);
@@ -3247,6 +3275,7 @@ impl LivePythonPane {
         let (mcp_tx, mcp_rx) = crate::host::mcp_client::inbound_channel();
         let (picker_tx, picker_rx) = std::sync::mpsc::channel();
         let runtime = WasmPythonRuntime::launch(&config)?;
+        drop(start);
         let repaint: RepaintHook = Arc::new(Mutex::new(None));
         let wake_schedule: WakeSchedule = Arc::new(Mutex::new(WakeScheduleState::default()));
         let decoder = PythonOutputDecoder::spawn(
@@ -6144,7 +6173,50 @@ impl LivePythonPane {
         &self.config.plugin_dir
     }
 
-    pub fn relaunch(&mut self) -> Result<(), WasmPythonError> {
+    /// The canonical entry this pane runs: the pane's host-owned origin.
+    pub(crate) fn entry(&self) -> &Path {
+        &self.config.entry
+    }
+
+    /// [`Self::relaunch`] with a permit for this pane's own tree, for tests
+    /// of the runtime. Compiled out of non-test builds.
+    #[cfg(test)]
+    pub(crate) fn relaunch_for_test(&mut self) -> Result<(), WasmPythonError> {
+        let admitted = crate::host::plugin_admission::AdmittedPlugin::for_test(
+            &self.plugin_id,
+            crate::app::registry::ManifestType::Python,
+            &self.config.plugin_dir,
+            &self.config.entry,
+        );
+        self.relaunch(admitted)
+    }
+
+    /// Restart this pane's guest from its files. The permit must name this
+    /// pane's own plugin and root; the entry comes from it, so an edited
+    /// manifest entry runs the file that was just resolved.
+    pub(crate) fn relaunch(
+        &mut self,
+        admitted: crate::host::plugin_admission::AdmittedPlugin<'_>,
+    ) -> Result<(), WasmPythonError> {
+        if admitted.kind() != crate::app::registry::ManifestType::Python
+            || admitted.owner() != self.plugin_id
+            || admitted.root() != self.config.plugin_dir
+        {
+            return Err(WasmPythonError::Entry(format!(
+                "reload of '{}' was admitted for another plugin ({} at {})",
+                self.plugin_id,
+                admitted.owner(),
+                admitted.entry().display()
+            )));
+        }
+        let start = admitted.commit();
+        self.config.module_name = start
+            .entry
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("main")
+            .to_string();
+        self.config.entry = start.entry.clone();
         // Check the files before the new guest can run, and drop the old
         // trust first so a failed launch leaves the pane untrusted.
         let permission_ui = permission_ui_trust(&self.plugin_id, &self.config.plugin_dir);
@@ -6156,6 +6228,7 @@ impl LivePythonPane {
         // schedule is cleared with the frame scheduler it describes, so the
         // fresh decoder wakes for the relaunched plugin's first frames.
         let runtime = WasmPythonRuntime::launch(&self.config)?;
+        drop(start);
         *self.wake_schedule.lock().unwrap_or_else(|e| e.into_inner()) =
             WakeScheduleState::default();
         self.decoder = PythonOutputDecoder::spawn(
@@ -7410,7 +7483,7 @@ pub fn probe_cpython_shim_component(path: &Path) -> Result<(), WasmPythonError> 
 fn probe_lifecycle_component(path: &Path, expected_view_text: &str) -> Result<(), WasmPythonError> {
     let grants = WasmView::inspect_required_grants(path)
         .map_err(|source| classify_component_load_error(path, source))?;
-    let mut app = WasmView::load_with_grants(
+    let mut app = WasmView::load_with_grants_for_test(
         "python-shim-probe",
         path,
         StateStore::ephemeral(),
@@ -9679,9 +9752,11 @@ mod tests {
             "def init(size, args): return []\ndef update(event): return []\ndef view(): return None\n",
         )
         .expect("write plugin");
-        let mut pane =
-            LivePythonPane::launch(state_test_config(app.path(), "test.mcp-relaunch-held-line"))
-                .expect("launch pane");
+        let mut pane = LivePythonPane::launch_for_test(state_test_config(
+            app.path(),
+            "test.mcp-relaunch-held-line",
+        ))
+        .expect("launch pane");
 
         // Replace the live runtime with a controlled old stdin. Dropping the
         // real runtime first preserves its normal shutdown/join contract.
@@ -9718,7 +9793,7 @@ mod tests {
             arm_token: Some(old_token),
         });
 
-        pane.relaunch().expect("relaunch pane");
+        pane.relaunch_for_test().expect("relaunch pane");
 
         assert_eq!(
             old_wakes.load(std::sync::atomic::Ordering::SeqCst),
@@ -11296,7 +11371,7 @@ mod tests {
         )
         .expect("write plugin");
         let logs = crate::testing::test_log::capture();
-        let mut pane = LivePythonPane::launch(state_test_config(app.path(), "test.timer"))
+        let mut pane = LivePythonPane::launch_for_test(state_test_config(app.path(), "test.timer"))
             .expect("launch pane");
         pane.handle_message(json!({"type": "set_timer", "timer_id": "tick", "after_ms": 1}));
         assert!(pane.timers.is_empty(), "undeclared timer must not be armed");
@@ -11318,7 +11393,7 @@ mod tests {
         .expect("write plugin");
         let mut config = state_test_config(app.path(), "test.timer");
         config.capabilities = vec!["timer".to_string()];
-        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+        let mut pane = LivePythonPane::launch_for_test(config).expect("launch pane");
         pane.handle_message(
             json!({"type": "set_timer", "timer_id": "tick", "after_ms": 1, "repeat": true}),
         );
@@ -11345,7 +11420,7 @@ mod tests {
         .expect("write plugin");
         let mut config = state_test_config(app.path(), "test.timer");
         config.capabilities = vec!["timer".to_string()];
-        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+        let mut pane = LivePythonPane::launch_for_test(config).expect("launch pane");
         pane.handle_message(json!({"type": "set_timer", "timer_id": "tick", "after_ms": 1}));
         pane.config.capabilities.clear();
         let logs = crate::testing::test_log::capture();
@@ -11373,8 +11448,9 @@ mod tests {
             "def init(size, args): return []\n",
         )
         .expect("write plugin");
-        let mut pane = LivePythonPane::launch(state_test_config(app.path(), "test.hidden-wake"))
-            .expect("launch pane");
+        let mut pane =
+            LivePythonPane::launch_for_test(state_test_config(app.path(), "test.hidden-wake"))
+                .expect("launch pane");
         pane.service_external_io(&egui::Context::default());
         assert!(
             pane.repaint.lock().expect("repaint lock").is_some(),
@@ -11477,7 +11553,7 @@ mod tests {
             state_format: crate::host::state_scope::StateFormat::Json,
             context_root: root_a.path().to_path_buf(),
         };
-        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+        let mut pane = LivePythonPane::launch_for_test(config).expect("launch pane");
 
         // Context-scoped persist lands inside the launching context root and
         // ensures the plugin_states gitignore so the state cannot be committed.
@@ -11535,7 +11611,8 @@ mod tests {
             state_format: crate::host::state_scope::StateFormat::Json,
             context_root: undeclared_root.path().to_path_buf(),
         };
-        let mut global_pane = LivePythonPane::launch(global_only).expect("launch global-only");
+        let mut global_pane =
+            LivePythonPane::launch_for_test(global_only).expect("launch global-only");
         global_pane.save_state(Some(&json!("context")), Some(&json!({"k": 3})));
         assert!(
             !undeclared_root
@@ -11597,7 +11674,7 @@ mod tests {
             root.path(),
             crate::host::state_scope::StateFormat::Json,
         );
-        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+        let mut pane = LivePythonPane::launch_for_test(config).expect("launch pane");
 
         // External writer lands after load.
         std::fs::write(
@@ -11651,8 +11728,8 @@ mod tests {
                 crate::host::state_scope::StateFormat::Json,
             )
         };
-        let mut first = LivePythonPane::launch(config()).expect("launch first");
-        let mut second = LivePythonPane::launch(config()).expect("launch second");
+        let mut first = LivePythonPane::launch_for_test(config()).expect("launch first");
+        let mut second = LivePythonPane::launch_for_test(config()).expect("launch second");
 
         first.save_state(
             Some(&json!("context")),
@@ -11702,7 +11779,7 @@ mod tests {
             root.path(),
             crate::host::state_scope::StateFormat::Json,
         );
-        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+        let mut pane = LivePythonPane::launch_for_test(config).expect("launch pane");
 
         let mtime = std::fs::metadata(&file)
             .and_then(|m| m.modified())
@@ -11732,7 +11809,7 @@ mod tests {
             root.path(),
             crate::host::state_scope::StateFormat::Json,
         );
-        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+        let mut pane = LivePythonPane::launch_for_test(config).expect("launch pane");
         pane.save_state(Some(&json!("context")), Some(&json!({"k": 1})));
 
         let file = context_state_file(root.path(), "test.atomic", "json");
@@ -11762,7 +11839,7 @@ mod tests {
             root.path(),
             crate::host::state_scope::StateFormat::Json,
         );
-        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+        let mut pane = LivePythonPane::launch_for_test(config).expect("launch pane");
         let scope = crate::host::state_scope::StateScope::Context;
         assert!(
             pane.persisted_states
@@ -11825,7 +11902,7 @@ mod tests {
             root.path(),
             crate::host::state_scope::StateFormat::Json,
         );
-        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+        let mut pane = LivePythonPane::launch_for_test(config).expect("launch pane");
         let scope = crate::host::state_scope::StateScope::Context;
 
         // External write drops key "b"; longer content keeps (mtime, len)
@@ -11855,7 +11932,7 @@ mod tests {
             root.path(),
             crate::host::state_scope::StateFormat::Markdown,
         );
-        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+        let mut pane = LivePythonPane::launch_for_test(config).expect("launch pane");
 
         let document = "# Checklist\n\n- [ ] first\n- [x] second\n";
         pane.save_state(
@@ -11895,7 +11972,7 @@ mod tests {
             root.path(),
             crate::host::state_scope::StateFormat::Markdown,
         );
-        let mut pane = LivePythonPane::launch(config).expect("launch pane");
+        let mut pane = LivePythonPane::launch_for_test(config).expect("launch pane");
 
         pane.save_state(Some(&json!("context")), Some(&json!({"document": 42})));
         pane.save_state(Some(&json!("context")), Some(&json!({"not_document": "x"})));
@@ -11929,7 +12006,7 @@ mod tests {
         );
 
         let config = file_state_config(app.path(), "test.trace", root.path(), format);
-        let mut pane = LivePythonPane::launch(config.clone()).expect("launch pane");
+        let mut pane = LivePythonPane::launch_for_test(config.clone()).expect("launch pane");
         assert!(
             pane.persisted_states
                 .get(&scope)
@@ -12165,7 +12242,7 @@ mod tests {
         };
         let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
         let mut runtime = crate::host::pane::ViewRuntime::Python(Box::new(
-            LivePythonPane::launch(config).expect("launch CPython WASM"),
+            LivePythonPane::launch_for_test(config).expect("launch CPython WASM"),
         ));
 
         // The pane was on screen once: render until the plugin has declared its
@@ -12271,7 +12348,7 @@ mod tests {
         };
         let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
         let mut runtime = crate::host::pane::ViewRuntime::Python(Box::new(
-            LivePythonPane::launch(config).expect("launch CPython WASM"),
+            LivePythonPane::launch_for_test(config).expect("launch CPython WASM"),
         ));
         let file = root.path().join(".plexi/app_states/test.sdk-persist.json");
         let deadline = std::time::Instant::now()
@@ -13023,7 +13100,7 @@ default = true
         .expect("write plugin");
         let mut config = state_test_config(app.path(), &plugin_id);
         config.capabilities = vec!["fs.read".to_string()];
-        let pane = LivePythonPane::launch(config).expect("launch pane");
+        let pane = LivePythonPane::launch_for_test(config).expect("launch pane");
         assert!(pane.has_capability("fs.read"));
         assert!(!pane.has_capability("net.http"));
         assert!(gate_log_contains(&format!(
@@ -13277,8 +13354,8 @@ default = true
         std::fs::write(spoof.join("main.py"), main).unwrap();
         let ctx = tempdir().expect("context");
 
-        let mut pane =
-            LivePythonPane::launch(bridge_pane_config(&spoof, ctx.path())).expect("launch spoof");
+        let mut pane = LivePythonPane::launch_for_test(bridge_pane_config(&spoof, ctx.path()))
+            .expect("launch spoof");
         assert_eq!(pane.plugin_id, "permissions", "the spoof claims the id");
         assert_eq!(
             pane.permission_ui,
@@ -13316,8 +13393,8 @@ default = true
         let ctx = tempdir().expect("context");
         let original = std::fs::read(dir.join("main.py")).unwrap();
 
-        let mut pane =
-            LivePythonPane::launch(bridge_pane_config(&dir, ctx.path())).expect("launch bundled");
+        let mut pane = LivePythonPane::launch_for_test(bridge_pane_config(&dir, ctx.path()))
+            .expect("launch bundled");
         assert_eq!(pane.permission_ui, PermissionUiTrust::BundledPermissionsUi);
         assert!(
             seeded_entry_ids(&pane).contains(&pending),
@@ -13328,7 +13405,7 @@ default = true
         let mut swapped = original.clone();
         swapped.extend_from_slice(b"\n# swapped in\n");
         std::fs::write(dir.join("main.py"), &swapped).unwrap();
-        pane.relaunch().expect("relaunch swapped");
+        pane.relaunch_for_test().expect("relaunch swapped");
         assert_eq!(
             pane.permission_ui,
             PermissionUiTrust::MismatchedPermissionsCopy
@@ -13340,7 +13417,7 @@ default = true
 
         // Restoring the shipped bytes restores trust on the next reload.
         std::fs::write(dir.join("main.py"), &original).unwrap();
-        pane.relaunch().expect("relaunch restored");
+        pane.relaunch_for_test().expect("relaunch restored");
         assert_eq!(pane.permission_ui, PermissionUiTrust::BundledPermissionsUi);
         pane.handle_message(decide(&pending, "revoke"));
         assert!(
@@ -13504,7 +13581,7 @@ default = true
 
     #[test]
     fn python_shim_fixture_executes_lifecycle_json_bridge() {
-        let mut app = WasmView::load_with_grants(
+        let mut app = WasmView::load_with_grants_for_test(
             "python-shim-test",
             &python_shim_fixture(),
             StateStore::ephemeral(),

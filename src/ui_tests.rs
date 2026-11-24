@@ -557,6 +557,7 @@ impl PlexiUiHarness {
         });
         let path = plugin_dir.to_string_lossy().into_owned();
         self.with_app_mut(|app| {
+            app.trust_plugin_path_for_test(&path);
             app.launch_view_by_path_with_layout(&path, Some("split_v".to_string()), None, args)
                 .map(|_| ())
         })?;
@@ -583,7 +584,10 @@ impl PlexiUiHarness {
             .unwrap_or("wasm")
             .to_string();
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        self.with_app_mut(|app| app.open_wasm_view_pane(&plugin_id, wasm_path, cwd, args))
+        self.with_app_mut(|app| {
+            app.trust_plugin_path_for_test(wasm_path.to_string_lossy());
+            app.open_wasm_view_pane(&plugin_id, wasm_path, cwd, args, None)
+        })
     }
 
     /// Step frames until the real plugin process behind `pane_id` commits its

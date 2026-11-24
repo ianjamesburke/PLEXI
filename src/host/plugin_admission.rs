@@ -1,41 +1,37 @@
-//! Which plugin code the host loads, and which install sources are accepted
+//! Which plugin code the host starts, and which install sources are accepted
 //! (stint 1398).
 //!
 //! Until third-party installs open, Plexi runs only plugins bundled with it
-//! and the person's own plugins. Every plugin tree the host would load passes
-//! [`PluginAdmission::decide`]:
+//! and the person's own plugins. Discovery decides nothing: the registry lists
+//! every structurally valid plugin. Whether one may run is decided once, when
+//! a live guest starts, by [`PluginAdmission::start_live_plugin`]. It resolves
+//! the decision against the profile's current grants and hands the start an
+//! [`AdmittedPlugin`]: the only value the live Python and WASM constructors
+//! accept, and the only source of the id, root and entry they run.
 //!
-//! - In the profile plugins folder: admitted when it is bundled or when the
-//!   person allowed that plugin id once in the Plexi window. "Bundled" is a
-//!   scan-time byte comparison with the copy built into this binary; it says
-//!   nothing about the files a guest reads later.
-//! - Anywhere else (a workspace's `<channel_dir>/plugins` or `agents`, an
-//!   explicit path launch): admitted when the person trusted the folder that
-//!   holds it.
-//! - Discovery never lets a workspace plugin own a bundled plugin's id. An
-//!   explicit path launch from a trusted folder may run such a plugin, for that
-//!   pane only; it never enters the registry (bundled-plugin development).
+//! - A profile install root holding a bundled id runs when its files match the
+//!   copy built into this binary (the packager's file selection); otherwise it
+//!   is refused with a reinstall hint. Other profile installs need one Allow
+//!   in the Plexi window, keyed to the plugin id in this profile.
+//! - Anything else runs when the person trusted the folder holding the plugin
+//!   (a standalone component's own folder). An explicit path launch from a
+//!   trusted folder may run a plugin with a bundled id, in its own pane only:
+//!   discovery never lets a workspace own a bundled id (`reserved_id`).
 //!
-//! The allow for a profile copy is NOT content binding: it is keyed to the
-//! plugin id in this profile, so a later edit or reinstall under the same id is
-//! still allowed. Binding an allow to the bytes a guest executes needs an
+//! The allow is NOT content binding: later edits, reinstalls, `.pyc` files and
+//! lazy imports run under it. Binding to the bytes a guest executes needs an
 //! immutable execution tree; stints 1279 and 1293 own that.
 //!
 //! Every install source passes [`admit_install_source`]: bundled (`local:`)
 //! sources and local folders install; git, marketplace and package-file
-//! sources are refused before anything is fetched. Nothing turns them on in
-//! this release: a config key would let any process that can edit a file
-//! change it, and the rule is that only a click allows code.
-//!
-//! The only way to allow is a desktop click. Admission is a sealed broker
-//! grant (`TargetType::Package`) that only `PermissionMonitor::approve_pending`
-//! mints; the registry scan reads it with `stored_decision` and never asks.
+//! sources are refused before anything is fetched. No setting turns them on.
 
 use std::path::{Path, PathBuf};
 
-use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
+use crate::app::registry::{ManifestType, ResolvedPlugin};
+use crate::broker::gate::{AdmitRequest, PermissionMonitor, PluginStartDecision};
 use crate::broker::principal::Principal;
-use crate::broker::{ActorScope, Decision, TargetType};
+use crate::broker::{ActorScope, TargetType};
 use crate::host::guest_text::shown;
 
 /// Broker tool for loading one installed copy from the profile.
@@ -124,24 +120,6 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-impl Refusal {
-    /// True when a click in the Plexi window can admit the plugin.
-    pub(crate) fn can_ask(&self) -> bool {
-        matches!(self, Self::NotAllowed { .. } | Self::UntrustedFolder { .. })
-    }
-}
-
-/// Why a plugin was admitted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Admitted {
-    /// Identical to the copy built into this binary.
-    Bundled,
-    /// The person allowed this plugin id in the profile.
-    AllowedCopy,
-    /// The person trusted the folder that holds it.
-    TrustedFolder,
-}
-
 /// Where an install would come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InstallSource<'a> {
@@ -183,236 +161,104 @@ pub(crate) fn reserved_id(id: &str, plugin_dir: &Path) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// How the host came to load a plugin tree.
+/// Why a live start was admitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Launch {
-    /// A registry scan: the tree would be addressable by id (Cmd+P, plugin
-    /// calls, file handlers) in every pane of that workspace.
-    Discovery,
-    /// A person or agent opened this folder path (or restored or reloaded such
-    /// a pane). The tree runs in that pane only and never enters the registry.
-    ExplicitPath,
+pub(crate) enum Basis {
+    /// A profile install root identical to the copy built into this binary.
+    Bundled,
+    /// The person allowed this plugin id in the profile.
+    ProfileAllow,
+    /// The person trusted the folder holding the plugin.
+    TrustedFolder,
 }
 
-/// The admission check for one profile. The host builds one per registry
-/// view; the permission monitor is opened only when a non-bundled plugin is
-/// decided.
-#[derive(Debug, Clone)]
-pub(crate) struct PluginAdmission {
-    profile_dir: PathBuf,
-    profile_plugins: PathBuf,
+/// Permission to start one live guest, minted only by
+/// [`PluginAdmission::start_live_plugin`] and consumed by the live Python and
+/// WASM constructors, which take the plugin's id, root and entry only from it.
+/// Private fields, no `Clone`, no deserialisation; its lifetime ends with the
+/// synchronous start. While it lives the broker's admission lock is held for a
+/// granted start, so a revoke cannot land between the decision and the start.
+pub(crate) struct AdmittedPlugin<'start> {
+    owner: String,
+    kind: ManifestType,
+    root: PathBuf,
+    entry: PathBuf,
+    basis: Basis,
+    _commit: Option<std::sync::MutexGuard<'start, ()>>,
 }
 
-impl PluginAdmission {
-    /// `profile_dir` holds the grant store; `profile_plugins` is the folder
-    /// whose entries are installs rather than trusted folders.
-    pub(crate) fn new(profile_dir: &Path, profile_plugins: &Path) -> Self {
-        Self {
-            profile_dir: profile_dir.to_path_buf(),
-            profile_plugins: profile_plugins.to_path_buf(),
-        }
+impl AdmittedPlugin<'_> {
+    pub(crate) fn owner(&self) -> &str {
+        &self.owner
+    }
+    pub(crate) fn kind(&self) -> ManifestType {
+        self.kind
+    }
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+    pub(crate) fn entry(&self) -> &Path {
+        &self.entry
+    }
+    /// Why this start was admitted, for tests that assert the basis.
+    #[cfg(test)]
+    pub(crate) fn basis(&self) -> Basis {
+        self.basis
     }
 
-    /// The profile plugins folder, resolved now: it may not have existed
-    /// when this check was built, and paths compare in canonical form.
-    fn plugins_folder(&self) -> PathBuf {
-        crate::platform::path::canonical_or_self(&self.profile_plugins)
-    }
-
-    /// Decide whether the host may load plugin `id` from `plugin_dir`. Reads
-    /// stored decisions only; never asks. Traces every refusal and every
-    /// admitted non-bundled plugin at info.
-    pub(crate) fn decide(
-        &self,
-        id: &str,
-        plugin_dir: &Path,
-        launch: Launch,
-    ) -> Result<Admitted, Refusal> {
-        let verdict = self.decide_inner(id, plugin_dir, launch);
-        match &verdict {
-            Ok(Admitted::Bundled) => {}
-            Ok(how) => log::info!(
-                "plugin_admission: admitted {} at {} ({how:?}, {launch:?})",
-                shown(id),
-                plugin_dir.display()
-            ),
-            Err(refusal) => log::info!("plugin_admission: refused: {refusal}"),
-        }
-        verdict
-    }
-
-    fn decide_inner(
-        &self,
-        id: &str,
-        plugin_dir: &Path,
-        launch: Launch,
-    ) -> Result<Admitted, Refusal> {
-        let Some(request) = self.request_for(id, plugin_dir, launch)? else {
-            return Ok(Admitted::Bundled);
-        };
-        let Ok(monitor) = PermissionMonitor::for_profile(&self.profile_dir) else {
-            return Err(Refusal::NotHost {
-                id: id.to_string(),
-                dir: plugin_dir.to_path_buf(),
-            });
-        };
-        let principal = request.principal();
-        let plugins = self.plugins_folder();
-        match monitor.stored_decision(&request.admit_request(&plugins, &principal)) {
-            Decision::Allow => Ok(match request {
-                Request::Copy { .. } => Admitted::AllowedCopy,
-                Request::Folder { .. } => Admitted::TrustedFolder,
-            }),
-            Decision::Deny => Err(Refusal::Denied {
-                id: id.to_string(),
-                dir: plugin_dir.to_path_buf(),
-            }),
-            Decision::Ask => Err(match request {
-                Request::Copy { id, dir } => Refusal::NotAllowed { id, dir },
-                Request::Folder { id, folder } => Refusal::UntrustedFolder { id, folder },
-            }),
-        }
-    }
-
-    /// What `plugin_dir` needs: nothing (`None`: bundled), an allowed copy
-    /// (anything inside the profile plugins folder, decided for the install
-    /// folder that holds it) or a trusted folder (anywhere else: the folder
-    /// that holds `plugin_dir`).
-    fn request_for(
-        &self,
-        id: &str,
-        plugin_dir: &Path,
-        launch: Launch,
-    ) -> Result<Option<Request>, Refusal> {
-        let path = crate::platform::path::canonical_or_self(plugin_dir);
-        let plugins = self.plugins_folder();
-        let Ok(inside) = path.strip_prefix(&plugins) else {
-            if launch == Launch::Discovery {
-                reserved_id(id, &path)?;
-            }
-            let folder = path.parent().map(Path::to_path_buf).unwrap_or(path);
-            return Ok(Some(Request::Folder {
-                id: id.to_string(),
-                folder,
-            }));
-        };
-        let Some(install) = inside.components().next() else {
-            return Err(Refusal::NotAPlugin {
-                id: id.to_string(),
-                dir: path.clone(),
-                error: "the profile plugins folder itself is not a plugin".to_string(),
-            });
-        };
-        let dir = plugins.join(install);
-        // Scan-time only: the files match the embedded copy now. Nothing here
-        // watches what the guest reads afterwards (stint 1279).
-        if crate::cli::install_host::is_bundled_plugin_id(id)
-            && crate::cli::install_host::matches_bundled_plugin(id, &dir)
-        {
-            return Ok(None);
-        }
-        Ok(Some(Request::Copy {
-            id: id.to_string(),
-            dir,
-        }))
-    }
-
-    /// Decide a launch, and when a click can lift the refusal, file the ask
-    /// so the Plexi window shows it. `Err` is the message the launch fails with.
-    pub(crate) fn admit_or_ask(
-        &self,
-        id: &str,
-        plugin_dir: &Path,
-        launch: Launch,
-    ) -> Result<Admitted, String> {
-        self.decide(id, plugin_dir, launch)
-            .map_err(|refusal| self.refusal_message(&refusal))
-    }
-
-    /// The launch error for `refusal`, after filing its ask when it has one.
-    pub(crate) fn refusal_message(&self, refusal: &Refusal) -> String {
-        if !refusal.can_ask() {
-            return refusal.to_string();
-        }
-        match self.ask(refusal) {
-            Ok(pending) => format!("{refusal} The request is waiting there ({pending})."),
-            Err(error) => {
-                log::error!("plugin_admission: could not file the ask: {error}");
-                format!("{refusal} The request could not be filed: {error}")
-            }
-        }
-    }
-
-    /// File the ask that admits what `refusal` refused, or reuse the one
-    /// already waiting. Returns the pending request id the Plexi window
-    /// shows. Only a desktop click on that ask mints the grant.
-    pub(crate) fn ask(&self, refusal: &Refusal) -> Result<String, String> {
-        let (request, disclosure) = match refusal {
-            Refusal::NotAllowed { id, dir } => (
-                Request::Copy {
-                    id: id.clone(),
-                    dir: dir.clone(),
-                },
-                format!(
-                    "Load plugin {} from {}? It is not bundled with Plexi. Allow only a plugin \
-                     you wrote or trust. Allowing covers this plugin id in this profile, \
-                     including later edits or reinstalls of it.",
-                    shown(id),
-                    dir.display()
-                ),
-            ),
-            Refusal::UntrustedFolder { id, folder } => (
-                Request::Folder {
-                    id: id.clone(),
-                    folder: folder.clone(),
-                },
-                format!(
-                    "Trust plugins in {}? {} asked to load from there. Trusting the folder lets \
-                     Plexi load any plugin in it, including later changes. Trust only a folder \
-                     you control.",
-                    folder.display(),
-                    shown(id)
-                ),
-            ),
-            other => return Err(other.to_string()),
-        };
-        let monitor = PermissionMonitor::for_profile(&self.profile_dir)
-            .map_err(|error| format!("plugin admission cannot ask: {error}"))?;
-        let principal = request.principal();
-        let plugins = self.plugins_folder();
-        match monitor.admit_plugin_code(request.admit_request(&plugins, &principal), &disclosure) {
-            Admission::Required { pending_request_id } => {
-                log::info!(
-                    "plugin_admission: asked {pending_request_id} for {}",
-                    request.label()
-                );
-                Ok(pending_request_id)
-            }
-            Admission::Proceed { .. } => Err(format!(
-                "{} was allowed meanwhile; open it again",
-                request.label()
-            )),
-            Admission::Denied { code } => Err(format!("{refusal} ({code})")),
+    /// Spend the permit at the start it was minted for. Every live guest start
+    /// passes through here, so tests count starts by it. The returned value
+    /// keeps the admission lock until the caller has started the guest.
+    pub(crate) fn commit<'s>(self) -> CommittedStart<'s>
+    where
+        Self: 's,
+    {
+        log::info!(
+            "plugin_admission: starting {} from {} ({:?})",
+            shown(&self.owner),
+            self.entry.display(),
+            self.basis
+        );
+        #[cfg(test)]
+        GUEST_STARTS.with(|starts| starts.set(starts.get() + 1));
+        CommittedStart {
+            owner: self.owner,
+            root: self.root,
+            entry: self.entry,
+            _commit: self._commit,
         }
     }
 }
 
-/// The broker request behind one admission.
-enum Request {
+/// What a spent permit names: the id, root and entry the guest runs. Drop it
+/// once the guest has started; that ends the start's hold on the admission lock.
+pub(crate) struct CommittedStart<'start> {
+    pub owner: String,
+    pub root: PathBuf,
+    pub entry: PathBuf,
+    _commit: Option<std::sync::MutexGuard<'start, ()>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static GUEST_STARTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Live guest starts committed on this test thread.
+#[cfg(test)]
+pub(crate) fn guest_starts_for_test() -> usize {
+    GUEST_STARTS.with(std::cell::Cell::get)
+}
+
+/// The grant subject a start needs.
+enum Subject {
+    /// A profile install root: the plugin id in this profile.
     Copy { id: String, dir: PathBuf },
+    /// Any other tree: the folder holding it.
     Folder { id: String, folder: PathBuf },
 }
 
-impl Request {
-    fn label(&self) -> String {
-        match self {
-            Self::Copy { id, .. } => format!("plugin {}", shown(id)),
-            Self::Folder { folder, .. } => format!("plugin folder {}", folder.display()),
-        }
-    }
-
-    /// Who the decision is recorded for: a copy is the plugin's own (its id
-    /// in this profile, not its content); a folder is the local user's.
+impl Subject {
     fn principal(&self) -> Principal {
         match self {
             Self::Copy { id, .. } => Principal::plugin(id.clone(), None),
@@ -443,48 +289,250 @@ impl Request {
             target_type: TargetType::Package,
         }
     }
+
+    fn disclosure(&self) -> String {
+        match self {
+            Self::Copy { id, dir } => format!(
+                "Load plugin {} from {}? It is not bundled with Plexi. Allow only a plugin you \
+                 wrote or trust. Allowing covers this plugin id in this profile, including later \
+                 edits or reinstalls of it.",
+                shown(id),
+                dir.display()
+            ),
+            Self::Folder { id, folder } => format!(
+                "Trust plugins in {}? {} asked to load from there. Trusting the folder lets Plexi \
+                 load any plugin in it, including later changes. Trust only a folder you control.",
+                folder.display(),
+                shown(id)
+            ),
+        }
+    }
+
+    fn waiting(&self) -> Refusal {
+        match self {
+            Self::Copy { id, dir } => Refusal::NotAllowed {
+                id: id.clone(),
+                dir: dir.clone(),
+            },
+            Self::Folder { id, folder } => Refusal::UntrustedFolder {
+                id: id.clone(),
+                folder: folder.clone(),
+            },
+        }
+    }
+
+    fn denied(&self) -> Refusal {
+        let (id, dir) = match self {
+            Self::Copy { id, dir } => (id, dir),
+            Self::Folder { id, folder } => (id, folder),
+        };
+        Refusal::Denied {
+            id: id.clone(),
+            dir: dir.clone(),
+        }
+    }
+}
+
+/// Mint the permit for a decided start. Private to this module: no other code
+/// can produce an [`AdmittedPlugin`].
+fn mint<'start>(
+    plugin: &ResolvedPlugin,
+    basis: Basis,
+    commit: Option<std::sync::MutexGuard<'start, ()>>,
+) -> AdmittedPlugin<'start> {
+    AdmittedPlugin {
+        owner: plugin.owner.clone(),
+        kind: plugin.kind,
+        root: plugin.root.clone(),
+        entry: plugin.entry.clone(),
+        basis,
+        _commit: commit,
+    }
+}
+
+/// The admission check for one profile.
+#[derive(Debug, Clone)]
+pub(crate) struct PluginAdmission {
+    profile_dir: PathBuf,
+    profile_plugins: PathBuf,
+}
+
+impl PluginAdmission {
+    /// `profile_dir` holds the grant store; `profile_plugins` is the folder
+    /// whose entries are installs rather than trusted folders.
+    pub(crate) fn new(profile_dir: &Path, profile_plugins: &Path) -> Self {
+        Self {
+            profile_dir: profile_dir.to_path_buf(),
+            profile_plugins: profile_plugins.to_path_buf(),
+        }
+    }
+
+    /// The running profile's admission.
+    pub(crate) fn current() -> Self {
+        Self::new(
+            &crate::config::config_dir(),
+            &crate::app::registry::plugins_dir(),
+        )
+    }
+
+    /// The profile plugins folder, resolved now: it may not have existed
+    /// when this check was built, and paths compare in canonical form.
+    fn plugins_folder(&self) -> PathBuf {
+        crate::platform::path::canonical_or_self(&self.profile_plugins)
+    }
+
+    /// The one live start operation. Decides `plugin` against the profile's
+    /// current grants and, when it may run, calls `start` with the permit. A
+    /// refusal a click can lift files (or reuses) the ask the Plexi window
+    /// shows; the error names what was refused and where to change it.
+    pub(crate) fn start_live_plugin<T>(
+        &self,
+        plugin: &ResolvedPlugin,
+        start: impl FnOnce(AdmittedPlugin<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let subject = match self.subject_for(plugin) {
+            Ok(Some(subject)) => subject,
+            Ok(None) => return start(mint(plugin, Basis::Bundled, None)),
+            Err(refusal) => {
+                log::info!("plugin_admission: refused: {refusal}");
+                return Err(refusal.to_string());
+            }
+        };
+        let Ok(monitor) = PermissionMonitor::for_profile(&self.profile_dir) else {
+            let refusal = Refusal::NotHost {
+                id: plugin.owner.clone(),
+                dir: plugin.root.clone(),
+            };
+            log::info!("plugin_admission: refused: {refusal}");
+            return Err(refusal.to_string());
+        };
+        let principal = subject.principal();
+        let plugins = self.plugins_folder();
+        let disclosure = subject.disclosure();
+        let basis = match subject {
+            Subject::Copy { .. } => Basis::ProfileAllow,
+            Subject::Folder { .. } => Basis::TrustedFolder,
+        };
+        let decision =
+            monitor.begin_plugin_start(subject.admit_request(&plugins, &principal), &disclosure);
+        match decision {
+            PluginStartDecision::Allowed(guard) => start(mint(plugin, basis, Some(guard))),
+            PluginStartDecision::Required { pending_request_id } => {
+                let refusal = subject.waiting();
+                log::info!("plugin_admission: refused, asked {pending_request_id}: {refusal}");
+                Err(format!(
+                    "{refusal} The request is waiting there ({pending_request_id})."
+                ))
+            }
+            PluginStartDecision::Denied => {
+                let refusal = subject.denied();
+                log::info!("plugin_admission: refused: {refusal}");
+                Err(refusal.to_string())
+            }
+        }
+    }
+
+    /// What `plugin` needs: nothing (`None`: a verified bundle), the profile
+    /// Allow for its id (a profile install root), or trust for the folder
+    /// holding it (anywhere else).
+    fn subject_for(&self, plugin: &ResolvedPlugin) -> Result<Option<Subject>, Refusal> {
+        let plugins = self.plugins_folder();
+        if !plugin.root.starts_with(&plugins) {
+            return Ok(Some(Subject::Folder {
+                id: plugin.owner.clone(),
+                folder: plugin.trust_folder(),
+            }));
+        }
+        if plugin.standalone || plugin.root.parent() != Some(plugins.as_path()) {
+            return Err(Refusal::NotAPlugin {
+                id: plugin.owner.clone(),
+                dir: plugin.root.clone(),
+                error: format!(
+                    "only a plugin installed directly in {} runs from the profile",
+                    plugins.display()
+                ),
+            });
+        }
+        if crate::cli::install_host::is_bundled_plugin_id(&plugin.owner) {
+            let at_its_root = plugin.root.file_name() == Some(std::ffi::OsStr::new(&plugin.owner));
+            if at_its_root
+                && crate::cli::install_host::matches_bundled_plugin(&plugin.owner, &plugin.root)
+            {
+                return Ok(None);
+            }
+            return Err(Refusal::NotAPlugin {
+                id: plugin.owner.clone(),
+                dir: plugin.root.clone(),
+                error: format!(
+                    "it uses the id of a plugin bundled with Plexi but differs from the copy \
+                     shipped with this version; reinstall it with `plexi plugin install local:{}`",
+                    plugin.owner
+                ),
+            });
+        }
+        Ok(Some(Subject::Copy {
+            id: plugin.owner.clone(),
+            dir: plugin.root.clone(),
+        }))
+    }
+}
+
+#[cfg(test)]
+impl AdmittedPlugin<'static> {
+    /// A permit for tests that build a live guest directly from a fixture,
+    /// outside any route. Compiled out of every non-test build.
+    pub(crate) fn for_test(owner: &str, kind: ManifestType, root: &Path, entry: &Path) -> Self {
+        Self {
+            owner: owner.to_string(),
+            kind,
+            root: root.to_path_buf(),
+            entry: entry.to_path_buf(),
+            basis: Basis::TrustedFolder,
+            _commit: None,
+        }
+    }
 }
 
 #[cfg(test)]
 impl PluginAdmission {
-    /// Allow the profile copy at `plugin_dir` the way a desktop click does.
-    /// For tests that install fixture plugins into a profile folder.
-    pub(crate) fn allow_copy_for_test(&self, id: &str, plugin_dir: &Path) {
-        let refusal = match self.decide(id, plugin_dir, Launch::Discovery) {
-            Ok(_) => return,
-            Err(refusal @ Refusal::NotAllowed { .. }) => refusal,
-            Err(other) => panic!("{id} is not a profile copy: {other}"),
-        };
-        let pending = self.ask(&refusal).expect("allow ask filed");
-        PermissionMonitor::for_profile(&self.profile_dir)
-            .expect("tests run as the host")
-            .approve_pending(&pending, crate::broker::gate::ApprovalChoice::Always)
-            .expect("allow recorded");
-    }
-
-    /// Trust `folder` the way a desktop click does: file the ask and settle it
-    /// with Allow. For tests that launch fixture plugins from a folder.
-    pub(crate) fn trust_folder_for_test(&self, folder: &Path) {
-        let refusal = Refusal::UntrustedFolder {
-            id: "test-fixture".to_string(),
-            folder: crate::platform::path::canonical_or_self(folder),
-        };
+    /// Settle the plugin-code ask for `subject` with Allow, as a desktop click
+    /// does. Nothing happens when it is already allowed.
+    fn allow_for_test(&self, subject: Subject) {
         let monitor =
             PermissionMonitor::for_profile(&self.profile_dir).expect("tests run as the host");
-        let principal = Principal::LocalUser;
-        let request = Request::Folder {
+        let principal = subject.principal();
+        let plugins = self.plugins_folder();
+        let decision = monitor.begin_plugin_start(
+            subject.admit_request(&plugins, &principal),
+            &subject.disclosure(),
+        );
+        match decision {
+            PluginStartDecision::Allowed(_) => {}
+            PluginStartDecision::Required { pending_request_id } => monitor
+                .approve_pending(
+                    &pending_request_id,
+                    crate::broker::gate::ApprovalChoice::Always,
+                )
+                .expect("allow recorded"),
+            PluginStartDecision::Denied => panic!("a stored denial blocks this test allow"),
+        };
+    }
+
+    /// Allow profile plugin `id` the way a desktop click does.
+    pub(crate) fn allow_copy_for_test(&self, id: &str, plugin_dir: &Path) {
+        self.allow_for_test(Subject::Copy {
+            id: id.to_string(),
+            dir: crate::platform::path::canonical_or_self(plugin_dir),
+        });
+    }
+
+    /// Trust `folder` the way a desktop click does. For tests that launch
+    /// fixture plugins from a folder.
+    pub(crate) fn trust_folder_for_test(&self, folder: &Path) {
+        self.allow_for_test(Subject::Folder {
             id: "test-fixture".to_string(),
             folder: crate::platform::path::canonical_or_self(folder),
-        };
-        let plugins = self.plugins_folder();
-        if monitor.stored_decision(&request.admit_request(&plugins, &principal)) == Decision::Allow
-        {
-            return;
-        }
-        let pending = self.ask(&refusal).expect("trust ask filed");
-        monitor
-            .approve_pending(&pending, crate::broker::gate::ApprovalChoice::Always)
-            .expect("trust recorded");
+        });
     }
 }
 
@@ -494,11 +542,7 @@ impl PluginAdmission {
 pub(crate) fn trust_workspace_plugins_for_test(root: &Path) {
     let plugins = crate::app::registry::workspace_plugins_dir(root);
     std::fs::create_dir_all(&plugins).expect("create workspace plugins folder");
-    PluginAdmission::new(
-        &crate::config::config_dir(),
-        &crate::app::registry::plugins_dir(),
-    )
-    .trust_folder_for_test(&plugins);
+    PluginAdmission::current().trust_folder_for_test(&plugins);
 }
 
 #[cfg(test)]

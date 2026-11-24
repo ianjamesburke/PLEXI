@@ -11,6 +11,7 @@ fn raw_wasm_review_tab_then_space_allows_nothing() {
         .join("tests/wasm-fixtures/sysmon.wasm");
     let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
     h.with_app_mut(|app| {
+        app.trust_plugin_path_for_test(&fixture.to_string_lossy());
         app.launch_view_by_path_with_layout(
             &fixture.to_string_lossy(),
             Some("split_v".to_string()),
@@ -172,6 +173,7 @@ fn screenshot_raw_wasm_review_arming_then_armed() {
     let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
     apply_fixture_theme(&mut h, "plexi-dusk");
     h.with_app_mut(|app| {
+        app.trust_plugin_path_for_test(&fixture.to_string_lossy());
         app.launch_view_by_path_with_layout(
             &fixture.to_string_lossy(),
             Some("split_v".to_string()),
@@ -222,6 +224,7 @@ fn raw_wasm_review_button_row_keeps_its_consent_guard() {
     use egui_kittest::kittest::NodeT;
     let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
     h.with_app_mut(|app| {
+        app.trust_plugin_path_for_test(&fixture.to_string_lossy());
         app.launch_view_by_path_with_layout(
             &fixture.to_string_lossy(),
             Some("split_v".to_string()),
@@ -400,6 +403,7 @@ fn wasm_path_launch_queues_review_before_spawning() {
     let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
 
     let result = h.with_app_mut(|app| {
+        app.trust_plugin_path_for_test(&fixture.to_string_lossy());
         app.launch_view_by_path_with_layout(
             &fixture.to_string_lossy(),
             Some("split_v".to_string()),
@@ -479,6 +483,7 @@ fn wasm_path_launch_opens_wasm_pane_after_review() {
 
     let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
     h.with_app_mut(|app| {
+        app.trust_plugin_path_for_test(&fixture.to_string_lossy());
         app.launch_view_by_path_with_layout(
             &fixture.to_string_lossy(),
             Some("split_v".to_string()),
@@ -516,6 +521,7 @@ fn raw_wasm_review_buttons_take_no_focus_across_reflow() {
     .unwrap();
     let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
     h.with_app_mut(|app| {
+        app.trust_plugin_path_for_test(&fixture.to_string_lossy());
         app.launch_view_by_path_with_layout(
             &fixture.to_string_lossy(),
             Some("split_v".to_string()),

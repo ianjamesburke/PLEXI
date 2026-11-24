@@ -454,18 +454,6 @@ impl PlexiApp {
             let Some(review) = self.pending_raw_wasm_launches.pop_front() else {
                 return;
             };
-            let (mut store, monitor) = match (
-                crate::app::permissions::PermissionStore::load_or_default(
-                    &crate::config::config_dir(),
-                ),
-                crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()),
-            ) {
-                (Ok(store), Ok(monitor)) => (store, monitor),
-                (Err(error), _) | (_, Err(error)) => {
-                    log::error!("raw_wasm_review: approval not recorded: {error}");
-                    return;
-                }
-            };
             let Ok(decision) = evidence.admit(&review.plugin_id, "allow") else {
                 log::info!(
                     "raw_wasm_review: allow not applied: evidence is not for {}",
@@ -473,26 +461,11 @@ impl PlexiApp {
                 );
                 return;
             };
-            for capability in &review.missing_capabilities {
-                store.set_wasm(
-                    &review.plugin_id,
-                    &review.workspace_root,
-                    capability,
-                    crate::app::permissions::PermissionState::Green,
-                );
-            }
-            store.save();
-            for capability in &review.missing_capabilities {
-                monitor.grant_capability_id(
-                    decision,
-                    &review.plugin_id,
-                    &review.workspace_root,
-                    capability,
-                    crate::broker::Decision::Allow,
-                );
-            }
+            // The choice goes to the same start operation as every launch:
+            // it re-resolves the owner and checks current admission before
+            // recording any import grant (stint 1398).
             log::info!(
-                "raw_wasm_review: approved {} imports for plugin_id={} path={}",
+                "raw_wasm_review: allowed {} imports for plugin_id={} path={}",
                 review.missing_capabilities.len(),
                 review.plugin_id,
                 review.wasm_path.display()
@@ -502,6 +475,7 @@ impl PlexiApp {
                 &review.wasm_path,
                 review.workspace_root,
                 review.launch_args,
+                Some((&review.missing_capabilities, decision)),
             ) {
                 log::warn!(
                     "raw_wasm_review: approved launch failed for plugin_id={} path={}: {err}",

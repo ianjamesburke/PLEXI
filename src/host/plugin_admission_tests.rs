@@ -1,5 +1,7 @@
-//! Stint 1398: the host loads only bundled plugins, allowed profile copies and
-//! trusted folders; remote install sources are refused before any fetch.
+//! Stint 1398: a live guest starts only for a bundled plugin, an allowed
+//! profile plugin or a trusted folder, decided at the start; discovery lists
+//! every valid plugin and asks nothing; remote install sources are refused
+//! before any fetch.
 
 use super::*;
 use crate::app::registry::{PluginRegistry, RegistrySource};
@@ -49,163 +51,132 @@ impl Rig {
     fn admission(&self) -> PluginAdmission {
         PluginAdmission::new(self.profile.path(), &self.plugins())
     }
+    /// The discovery inventory: metadata only, it decides nothing.
     fn load(&self) -> PluginRegistry {
-        PluginRegistry::load_admitted(self.repo.path(), &self.plugins(), &self.admission())
+        PluginRegistry::load_with_global(self.repo.path(), &self.plugins())
     }
     fn monitor(&self) -> std::sync::Arc<PermissionMonitor> {
         PermissionMonitor::for_profile(self.profile.path()).unwrap()
     }
-    /// The refusal the scan recorded for `id`.
-    fn refusal(&self, registry: &PluginRegistry, id: &str) -> Refusal {
-        registry
-            .skipped_reason(id)
-            .and_then(|skipped| skipped.refusal.clone())
-            .unwrap_or_else(|| panic!("{id} should be refused: {:?}", registry.skipped()))
+    /// Start the plugin at `dir` through the one start operation; on success
+    /// return why it was admitted.
+    fn start(&self, dir: &Path) -> Result<Basis, String> {
+        let resolved = crate::app::registry::resolve_plugin_dir(dir)?;
+        self.admission()
+            .start_live_plugin(&resolved, |admitted| Ok(admitted.basis()))
     }
-    /// What a desktop click does: settle the filed ask.
-    fn click(&self, refusal: &Refusal, choice: ApprovalChoice) -> Result<(), String> {
-        let pending = self.admission().ask(refusal).expect("ask filed");
+    /// The plugin-code ask waiting in the Plexi window, if one is.
+    fn pending_ask(&self) -> Option<String> {
+        self.monitor()
+            .list_pending()
+            .into_iter()
+            .find(|pending| {
+                pending.tool == LOAD_INSTALLED_TOOL || pending.tool == TRUST_FOLDER_TOOL
+            })
+            .map(|pending| pending.pending_request_id)
+    }
+    /// What a desktop click does: settle the waiting ask.
+    fn click(&self, choice: ApprovalChoice) -> Result<(), String> {
+        let pending = self.pending_ask().expect("an ask is waiting");
         self.monitor().approve_pending(&pending, choice)
     }
 }
 
 /// (a) A cloned repo's `<channel_dir>/plugins/<bundled id>` took the bundled
-/// plugin's place with no install step. The inventory the CLI lists from
-/// refuses it too.
+/// plugin's place with no install step. Discovery keeps the bundled owner.
 #[test]
 fn workspace_plugin_with_a_bundled_id_never_shadows_the_bundled_one() {
     let rig = Rig::new();
     extract_bundled("todo", &rig.plugins());
-    let planted = write_plugin(&rig.repo_plugins(), "todo");
-
-    let inventory = PluginRegistry::load_with_global(rig.repo.path(), &rig.plugins());
-    let todo = inventory.get("todo").expect("bundled todo listed");
+    write_plugin(&rig.repo_plugins(), "todo");
+    let registry = rig.load();
+    let todo = registry.get("todo").expect("bundled todo listed");
     assert_eq!(todo.source, RegistrySource::Global, "bundled copy wins");
-    assert_eq!(
-        rig.refusal(&inventory, "todo"),
-        Refusal::ShadowsBundled {
-            id: "todo".into(),
-            dir: planted.clone()
-        }
-    );
-
-    let host = rig.load();
-    assert_eq!(host.get("todo").unwrap().source, RegistrySource::Global);
-    let refusal = rig.refusal(&host, "todo");
+    let skipped = registry
+        .skipped_reason("todo")
+        .expect("workspace copy skipped");
     assert!(
-        matches!(refusal, Refusal::ShadowsBundled { .. }),
-        "{refusal:?}"
-    );
-    assert!(
-        !refusal.can_ask(),
-        "no click lets a workspace take a bundled id"
-    );
-    assert!(
-        refusal.to_string().contains("Change [plugin] id"),
-        "{refusal}"
+        skipped.error.contains("Change [plugin] id"),
+        "{}",
+        skipped.error
     );
 }
 
-/// A cloned repo's own plugin folder is not loaded until the person trusts
-/// that folder; once trusted, an edit does not ask again.
+/// A cloned repo's plugin is discovered with zero asks; starting it asks for
+/// its folder; Deny refuses; Allow starts it; an edit needs no new click.
 #[test]
-fn cloned_repo_plugin_loads_only_after_its_folder_is_trusted() {
+fn cloned_repo_plugin_starts_only_after_its_folder_is_trusted() {
     let rig = Rig::new();
     let dir = write_plugin(&rig.repo_plugins(), "repo-tool");
+    assert!(rig.load().get("repo-tool").is_some(), "discovered");
+    assert!(rig.pending_ask().is_none(), "a scan asks nothing");
 
-    let registry = rig.load();
-    assert!(registry.get("repo-tool").is_none(), "untrusted folder");
-    let refusal = rig.refusal(&registry, "repo-tool");
-    assert_eq!(
-        refusal,
-        Refusal::UntrustedFolder {
-            id: "repo-tool".into(),
-            folder: crate::platform::path::canonical_or_self(&rig.repo_plugins()),
-        }
-    );
-    assert!(refusal.to_string().contains("Cmd+I"), "{refusal}");
+    let error = rig.start(&dir).unwrap_err();
+    assert!(error.contains("are not trusted"), "{error}");
+    assert!(error.contains("Cmd+I"), "{error}");
+    rig.click(ApprovalChoice::Deny).unwrap();
+    assert!(rig.start(&dir).is_err(), "deny admits nothing");
 
-    rig.click(&refusal, ApprovalChoice::Deny).unwrap();
-    assert!(rig.load().get("repo-tool").is_none(), "deny admits nothing");
-
-    let refusal = rig.refusal(&rig.load(), "repo-tool");
-    rig.click(&refusal, ApprovalChoice::Always).unwrap();
-    assert!(
-        rig.load().get("repo-tool").is_some(),
-        "trusted folder loads"
-    );
-
+    rig.click(ApprovalChoice::Always).unwrap();
+    assert_eq!(rig.start(&dir), Ok(Basis::TrustedFolder));
     std::fs::write(dir.join("main.py"), "print('edited')\n").unwrap();
-    assert!(
-        rig.load().get("repo-tool").is_some(),
-        "folder trust covers edits"
+    assert_eq!(
+        rig.start(&dir),
+        Ok(Basis::TrustedFolder),
+        "trust covers edits"
     );
 }
 
 /// The CLI cannot bypass the host: a tree written straight into the profile
-/// plugins folder (as a git clone would) is not loaded until its id is allowed
-/// by a click. The allow is keyed to the id in this profile, not to content
-/// (stint 1279 owns content binding).
+/// plugins folder (as a git clone would) does not start until its id is
+/// allowed by a click. The allow is keyed to the id, not content (stint 1279).
 #[test]
-fn planted_profile_plugin_loads_only_after_it_is_allowed() {
+fn planted_profile_plugin_starts_only_after_it_is_allowed() {
     let rig = Rig::new();
-    write_plugin(&rig.plugins(), "cloned");
-
-    let refusal = rig.refusal(&rig.load(), "cloned");
+    let dir = write_plugin(&rig.plugins(), "cloned");
+    let error = rig.start(&dir).unwrap_err();
+    assert!(error.contains("has not been allowed"), "{error}");
     assert!(
-        matches!(&refusal, Refusal::NotAllowed { id, .. } if id == "cloned"),
-        "{refusal:?}"
-    );
-    assert!(
-        rig.click(&refusal, ApprovalChoice::Once).is_err(),
+        rig.click(ApprovalChoice::Once).is_err(),
         "a plugin load is allowed or denied, never once"
     );
-    rig.click(&refusal, ApprovalChoice::Always).unwrap();
-    let loaded = rig.load();
-    assert_eq!(
-        loaded.get("cloned").map(|p| p.source),
-        Some(RegistrySource::Global)
-    );
+    rig.click(ApprovalChoice::Always).unwrap();
+    assert_eq!(rig.start(&dir), Ok(Basis::ProfileAllow));
     PermissionMonitor::reload_for_test(rig.profile.path());
-    assert!(
-        rig.load().get("cloned").is_some(),
+    assert_eq!(
+        rig.start(&dir),
+        Ok(Basis::ProfileAllow),
         "the allow is sealed on disk and survives a restart"
     );
 }
 
-/// Bundled plugins need no click. "Bundled" is decided by comparing bytes at
-/// scan time: a profile copy of a bundled id whose files differ at that scan is
-/// treated as any other profile copy. This is not a guarantee about what a
-/// guest reads later (stint 1279).
+/// A bundled plugin at its install root starts with no click. A profile copy
+/// of a bundled id whose files differ from the shipped copy is refused with a
+/// reinstall hint: no click makes a changed copy the bundled plugin.
 #[test]
-fn bundled_is_a_scan_time_comparison_with_the_embedded_copy() {
+fn a_bundled_id_in_the_profile_runs_only_as_the_shipped_copy() {
     let rig = Rig::new();
     let todo = extract_bundled("todo", &rig.plugins());
-    assert!(rig.load().get("todo").is_some());
-    assert!(
-        rig.monitor().list_pending().is_empty(),
-        "no ask for bundled"
-    );
+    assert_eq!(rig.start(&todo), Ok(Basis::Bundled));
+    assert!(rig.pending_ask().is_none(), "no ask for bundled");
 
     std::fs::write(todo.join("main.py"), "print('not bundled')\n").unwrap();
-    let refusal = rig.refusal(&rig.load(), "todo");
-    assert!(matches!(refusal, Refusal::NotAllowed { .. }), "{refusal:?}");
+    let error = rig.start(&todo).unwrap_err();
+    assert!(error.contains("plexi plugin install local:todo"), "{error}");
+    assert!(rig.pending_ask().is_none(), "no click can lift it");
 }
 
-/// A path under the profile plugins folder is decided as that install, never
-/// as a trustable folder: a folder trust there would cover every install.
+/// Only a plugin installed directly in the profile plugins folder runs from
+/// the profile; a manifest nested inside an install is neither an install nor
+/// a trustable folder.
 #[test]
-fn a_path_inside_a_profile_install_is_decided_as_that_install() {
+fn a_plugin_nested_inside_a_profile_install_is_refused() {
     let rig = Rig::new();
-    let dir = write_plugin(&rig.plugins(), "mine");
-    let refusal = rig
-        .admission()
-        .decide("mine", &dir.join("main.py"), Launch::ExplicitPath)
-        .unwrap_err();
-    assert!(
-        matches!(&refusal, Refusal::NotAllowed { dir: d, .. } if *d == crate::platform::path::canonical_or_self(&dir)),
-        "{refusal:?}"
-    );
+    let outer = rig.plugins().join("outer");
+    let inner = write_plugin(&outer, "inner");
+    let error = rig.start(&inner).unwrap_err();
+    assert!(error.contains("installed directly in"), "{error}");
+    assert!(rig.pending_ask().is_none());
 }
 
 /// (b) `plugin install github:...` was admitted. The decision refuses every
@@ -314,18 +285,15 @@ fn strip_bytecode(dir: &Path) {
 
 /// Stint 1497: an unsigned update rotates the seal key and resets grants.
 /// Every plugin allow and folder trust goes with them, and the plugins are
-/// refused and asked again; nothing loads silently.
+/// refused and asked about again; nothing starts silently.
 #[test]
 fn a_seal_key_reset_drops_admissions_and_fails_closed() {
     let rig = Rig::new();
-    write_plugin(&rig.plugins(), "mine");
-    write_plugin(&rig.repo_plugins(), "repo-tool");
-    let copy = rig.refusal(&rig.load(), "mine");
-    rig.click(&copy, ApprovalChoice::Always).unwrap();
-    let folder = rig.refusal(&rig.load(), "repo-tool");
-    rig.click(&folder, ApprovalChoice::Always).unwrap();
-    let loaded = rig.load();
-    assert!(loaded.get("mine").is_some() && loaded.get("repo-tool").is_some());
+    let mine = write_plugin(&rig.plugins(), "mine");
+    let repo_tool = write_plugin(&rig.repo_plugins(), "repo-tool");
+    rig.admission().allow_copy_for_test("mine", &mine);
+    rig.admission().trust_folder_for_test(&rig.repo_plugins());
+    assert!(rig.start(&mine).is_ok() && rig.start(&repo_tool).is_ok());
 
     crate::broker::seal::reset_unverified_profile(
         &crate::broker::custody::HostProcess::for_test(),
@@ -334,15 +302,14 @@ fn a_seal_key_reset_drops_admissions_and_fails_closed() {
     .unwrap();
     PermissionMonitor::reload_for_test(rig.profile.path());
 
-    let after = rig.load();
-    assert!(matches!(
-        rig.refusal(&after, "mine"),
-        Refusal::NotAllowed { .. }
-    ));
-    assert!(matches!(
-        rig.refusal(&after, "repo-tool"),
-        Refusal::UntrustedFolder { .. }
-    ));
+    assert!(rig
+        .start(&mine)
+        .unwrap_err()
+        .contains("has not been allowed"));
+    assert!(rig
+        .start(&repo_tool)
+        .unwrap_err()
+        .contains("are not trusted"));
 }
 
 /// (a) The shared install boundary refuses a git source before the cloner
@@ -405,45 +372,34 @@ fn an_identical_workspace_copy_never_owns_a_bundled_id() {
     extract_bundled("todo", &rig.plugins());
     extract_bundled("todo", &rig.repo_plugins());
     rig.admission().trust_folder_for_test(&rig.repo_plugins());
-    for registry in [
-        PluginRegistry::load_with_global(rig.repo.path(), &rig.plugins()),
-        rig.load(),
-    ] {
-        let todo = registry.get("todo").expect("bundled todo");
-        assert_eq!(todo.source, RegistrySource::Global);
-        assert_eq!(
-            crate::platform::path::canonical_or_self(&todo.plugin_dir),
-            crate::platform::path::canonical_or_self(&rig.plugins().join("todo"))
-        );
-        assert!(matches!(
-            rig.refusal(&registry, "todo"),
-            Refusal::ShadowsBundled { .. }
-        ));
-    }
+    let registry = rig.load();
+    let todo = registry.get("todo").expect("bundled todo");
+    assert_eq!(todo.source, RegistrySource::Global);
+    assert_eq!(
+        crate::platform::path::canonical_or_self(&todo.plugin_dir),
+        crate::platform::path::canonical_or_self(&rig.plugins().join("todo"))
+    );
+    assert!(registry.skipped_reason("todo").is_some());
 }
 
-/// (e) Bundled-plugin development: an explicit path launch from a trusted
-/// folder may run a tree with a bundled id; discovery of that same tree is
-/// still refused, and an untrusted folder still asks.
+/// (e) Bundled-plugin development: a tree with a bundled id outside the
+/// profile starts from a trusted folder (an explicit path launch); discovery of
+/// that same tree is refused, and an untrusted folder still asks.
 #[test]
 fn an_explicit_path_launch_of_a_bundled_id_needs_only_folder_trust() {
     let rig = Rig::new();
     let dev = tempfile::tempdir().unwrap();
     let checkout = write_plugin(dev.path(), "todo");
-    let admission = rig.admission();
-    assert!(matches!(
-        admission.decide("todo", &checkout, Launch::ExplicitPath),
-        Err(Refusal::UntrustedFolder { .. })
-    ));
-    admission.trust_folder_for_test(dev.path());
-    assert_eq!(
-        admission.decide("todo", &checkout, Launch::ExplicitPath),
-        Ok(Admitted::TrustedFolder)
+    assert!(rig
+        .start(&checkout)
+        .unwrap_err()
+        .contains("are not trusted"));
+    rig.admission().trust_folder_for_test(dev.path());
+    assert_eq!(rig.start(&checkout), Ok(Basis::TrustedFolder));
+    assert!(
+        reserved_id("todo", &checkout).is_err(),
+        "discovery refuses it"
     );
-    assert!(matches!(
-        admission.decide("todo", &checkout, Launch::Discovery),
-        Err(Refusal::ShadowsBundled { .. })
-    ));
 }
 
 /// The plugin tree a Python pane runs, canonical.
@@ -558,10 +514,7 @@ fn a_workspace_link_to_the_bundled_install_never_owns_its_id() {
     let todo = registry.get("todo").expect("bundled todo");
     assert_eq!(todo.source, RegistrySource::Global);
     assert!(todo.workspace_root.is_none());
-    assert!(matches!(
-        rig.refusal(&registry, "todo"),
-        Refusal::ShadowsBundled { .. }
-    ));
+    assert!(registry.skipped_reason("todo").is_some());
 }
 
 /// (g) Python restore resolves the entry with the same resolver as discovery:
@@ -575,10 +528,7 @@ fn python_restore_refuses_an_entry_outside_the_plugin_folder() {
     std::fs::write(&foreign, "print('outside')\n").unwrap();
     let parent = tempfile::tempdir().unwrap();
     std::fs::write(parent.path().join("foreign.py"), "print('outside')\n").unwrap();
-    h.app
-        .registries
-        .admission()
-        .trust_folder_for_test(parent.path());
+    PluginAdmission::current().trust_folder_for_test(parent.path());
     let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
     for (name, entry) in [
         ("absolute", foreign.display().to_string()),
@@ -634,12 +584,8 @@ fn stray_finder_metadata_does_not_unbundle_a_plugin() {
     std::fs::create_dir_all(&nested).unwrap();
     std::fs::write(nested.join(".DS_Store"), b"finder").unwrap();
     std::fs::create_dir_all(nested.join(".venv/bin")).unwrap();
-    assert!(
-        rig.load().get("todo").is_some(),
-        "{:?}",
-        rig.load().skipped_reason("todo")
-    );
-    assert!(rig.monitor().list_pending().is_empty());
+    assert_eq!(rig.start(&todo), Ok(Basis::Bundled));
+    assert!(rig.pending_ask().is_none());
 }
 
 /// (h) The comparison skips exactly what `scripts/package.py` leaves out, so a
@@ -663,17 +609,19 @@ fn the_bundled_comparison_uses_the_packager_file_selection() {
 }
 
 /// Bytecode is code, so it is not treated like Finder metadata: a planted
-/// `.pyc` the binary does not embed makes a bundled plugin an ordinary copy.
+/// `.pyc` the binary does not embed means the copy is not the shipped one.
 /// The Permissions bridge depends on this (`permission_ui_trust`).
 #[test]
-fn a_planted_pyc_in_a_bundled_plugin_asks() {
+fn a_planted_pyc_in_a_bundled_plugin_is_not_the_shipped_copy() {
     let rig = Rig::new();
     let todo = extract_bundled("todo", &rig.plugins());
     let cache = todo.join("__pycache__");
     std::fs::create_dir_all(&cache).unwrap();
     std::fs::write(cache.join("planted.cpython-312.pyc"), b"not bundled").unwrap();
-    let refusal = rig.refusal(&rig.load(), "todo");
-    assert!(matches!(refusal, Refusal::NotAllowed { .. }), "{refusal:?}");
+    assert!(rig
+        .start(&todo)
+        .unwrap_err()
+        .contains("differs from the copy"));
 }
 
 /// Copy `src` to `dst` as `scripts/package.py` does (its ignore patterns).
@@ -717,22 +665,35 @@ fn open_every_maintained_plugin(seed: fn(&str, &Path)) {
     assert!(ids.len() >= 10, "maintained plugins: {ids:?}");
     h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(&plugins);
     let workspace = h.workspace_root();
+    let mut started = 0;
     for id in &ids {
         let before = h.state().open_panes;
+        let starts = guest_starts_for_test();
         h.app
             .launch_view_by_id_with_layout_forced(id, None, &[], Some(workspace.clone()))
             .unwrap_or_else(|error| panic!("{id} did not open on a fresh profile: {error}"));
-        // An overlay placement replaces the focused pane, so look for the
-        // plugin's own pane; a launch-failed pane (missing config) is new.
-        assert!(
-            h.app.locate_view_instance(id, None).is_some()
-                || h.state()
+        // A plugin whose config is missing opens its launch-failed pane and
+        // starts no guest; every other one starts exactly one guest. An
+        // overlay placement replaces the focused pane, so look for its pane.
+        let guests = guest_starts_for_test() - starts;
+        if guests == 1 {
+            started += 1;
+            assert!(
+                h.app.locate_view_instance(id, None).is_some(),
+                "{id} has a pane"
+            );
+        } else {
+            assert_eq!(guests, 0, "{id}");
+            assert!(
+                h.state()
                     .open_panes
                     .iter()
                     .any(|pane| !before.contains(pane)),
-            "{id} opened no pane"
-        );
+                "{id} opened neither a guest nor a launch-failed pane"
+            );
+        }
     }
+    assert_eq!(started, ids.len(), "every maintained guest starts: {ids:?}");
     let asks: Vec<_> = PermissionMonitor::for_profile(h.profile_dir())
         .unwrap()
         .list_pending()
@@ -844,7 +805,11 @@ fn restore_with_a_saved_id_that_does_not_own_the_component_is_refused() {
     );
     let error = restored.err().expect("identity mismatch refuses");
     assert!(error.contains("belongs to 'beta'"), "{error}");
-    assert_eq!(monitor.list_entries().len(), grants_before, "no grant touched");
+    assert_eq!(
+        monitor.list_entries().len(),
+        grants_before,
+        "no grant touched"
+    );
     assert!(
         !profile.join("wasm-state").join("alpha").exists(),
         "no state opened under alpha"
@@ -902,4 +867,434 @@ fn a_nested_python_entry_runs_the_exact_resolved_file() {
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
+}
+
+/// The admission row for a folder trust in `profile`, to revoke it.
+fn trust_row(profile: &Path) -> String {
+    PermissionMonitor::for_profile(profile)
+        .unwrap()
+        .list_entries()
+        .into_iter()
+        .find(|entry| entry.tool == TRUST_FOLDER_TOOL && entry.kind == "allow")
+        .expect("a folder trust row")
+        .id
+}
+
+/// The plugin-code ask waiting in `profile`'s Plexi window.
+fn waiting_ask(profile: &Path) -> Vec<String> {
+    PermissionMonitor::for_profile(profile)
+        .unwrap()
+        .list_pending()
+        .into_iter()
+        .filter(|pending| pending.tool == TRUST_FOLDER_TOOL || pending.tool == LOAD_INSTALLED_TOOL)
+        .map(|pending| pending.pending_request_id)
+        .collect()
+}
+
+/// Step 2: a cold scan finds an untrusted workspace plugin and its view with
+/// zero asks. Opening it by id or by view id files the same folder ask. After
+/// one Allow the open succeeds and starts exactly one guest.
+#[test]
+fn an_untrusted_plugin_is_discovered_and_opens_by_id_or_view_after_one_allow() {
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.workspace_root();
+    let plugins = root
+        .join(crate::config::workspace_channel_dir())
+        .join("plugins");
+    write_plugin(&plugins, "repo-tool");
+    let registry = h.app.registries.rescan_root(&root);
+    assert!(registry.get("repo-tool").is_some(), "discovered");
+    assert!(
+        waiting_ask(h.profile_dir()).is_empty(),
+        "a scan asks nothing"
+    );
+
+    let starts = guest_starts_for_test();
+    let by_view = h
+        .app
+        .launch_view_by_id_with_layout("repo-tool.main", None, &[], None)
+        .unwrap_err();
+    assert!(by_view.contains("are not trusted"), "{by_view}");
+    let by_id = h
+        .app
+        .launch_view_by_id_with_layout("repo-tool", None, &[], None)
+        .unwrap_err();
+    assert!(by_id.contains("are not trusted"), "{by_id}");
+    let asks = waiting_ask(h.profile_dir());
+    assert_eq!(asks.len(), 1, "one ask for the folder: {asks:?}");
+    assert!(by_view.contains(&asks[0]) && by_id.contains(&asks[0]));
+    assert_eq!(guest_starts_for_test(), starts, "no guest before the Allow");
+
+    PermissionMonitor::for_profile(h.profile_dir())
+        .unwrap()
+        .approve_pending(&asks[0], ApprovalChoice::Always)
+        .unwrap();
+    h.app
+        .launch_view_by_id_with_layout("repo-tool.main", None, &[], None)
+        .expect("opens after the Allow");
+    assert_eq!(guest_starts_for_test(), starts + 1);
+}
+
+/// Step 3: revoke, then open on a warm registry. A guest started once; its
+/// folder trust is revoked; the registry still lists it; a forced fresh pane
+/// starts no guest. Python by id, WASM by id and the registered component by
+/// path. Re-allowing restores the positive path.
+#[test]
+fn a_revoked_plugin_starts_no_guest_from_a_warm_registry() {
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.workspace_root();
+    let plugins = root
+        .join(crate::config::workspace_channel_dir())
+        .join("plugins");
+    write_plugin(&plugins, "py-tool");
+    let wasm = write_wasm_plugin(&plugins, "wasm-tool");
+    h.trust_plugin_folder(&plugins);
+    h.app.registries.rescan_root(&root);
+    for id in ["py-tool", "wasm-tool"] {
+        let starts = guest_starts_for_test();
+        h.app
+            .launch_view_by_id_with_layout_forced(id, None, &[], None)
+            .unwrap_or_else(|error| panic!("{id} opens while trusted: {error}"));
+        assert_eq!(guest_starts_for_test(), starts + 1, "{id}");
+    }
+
+    let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+    assert!(monitor
+        .revoke_grant_id(&trust_row(h.profile_dir()))
+        .unwrap());
+    let starts = guest_starts_for_test();
+    for id in ["py-tool", "wasm-tool"] {
+        assert!(
+            h.app.registries.view_for_root(&root).get(id).is_some(),
+            "warm"
+        );
+        let error = h
+            .app
+            .launch_view_by_id_with_layout_forced(id, None, &[], None)
+            .unwrap_err();
+        assert!(error.contains("are not trusted"), "{id}: {error}");
+    }
+    let component = wasm.join("component.wasm");
+    let error = h
+        .app
+        .launch_view_by_path_with_layout(&component.to_string_lossy(), None, None, &[])
+        .unwrap_err();
+    assert!(error.contains("are not trusted"), "{error}");
+    assert_eq!(guest_starts_for_test(), starts, "no guest after the revoke");
+
+    h.trust_plugin_folder(&plugins);
+    h.app
+        .launch_view_by_id_with_layout_forced("py-tool", None, &[], None)
+        .expect("re-allowed");
+    assert_eq!(guest_starts_for_test(), starts + 1);
+}
+
+/// Step 3: the live constructors take a permit and nothing else names a plugin
+/// for them; no code outside the admission module can build one. (A binary
+/// crate has no compile-fail harness, so this pins the signatures and the
+/// single construction site in source.)
+#[test]
+fn only_the_admission_module_builds_a_permit_and_constructors_require_one() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders = Vec::new();
+    let mut stack = vec![src.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs")
+                && !path.ends_with("host/plugin_admission.rs")
+                && !path.ends_with("host/plugin_admission_tests.rs")
+                && std::fs::read_to_string(&path)
+                    .unwrap()
+                    .contains("AdmittedPlugin {")
+            {
+                offenders.push(path);
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "{offenders:?}");
+    let python = std::fs::read_to_string(src.join("host/wasm_python.rs")).unwrap();
+    assert!(python.contains(
+        "pub(crate) fn launch(\n        admitted: crate::host::plugin_admission::AdmittedPlugin<'_>,"
+    ));
+    assert!(python.contains(
+        "pub(crate) fn relaunch(\n        &mut self,\n        admitted: crate::host::plugin_admission::AdmittedPlugin<'_>,"
+    ));
+    let wasm = std::fs::read_to_string(src.join("host/wasm_view.rs")).unwrap();
+    assert!(wasm.contains(
+        "pub(crate) fn load_with_grants(\n        admitted: crate::host::plugin_admission::AdmittedPlugin<'_>,"
+    ));
+}
+
+/// Step 4: revoke while the import review dialog waits, then accept it. The
+/// accept goes to the same start: no guest starts and no import is granted.
+/// With trust standing, the same accept starts exactly one guest with the
+/// reviewed imports recorded.
+#[test]
+fn accepting_a_review_after_a_revoke_starts_nothing_and_grants_nothing() {
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+    let mut h = crate::testing::HostHarness::new();
+    let folder = tempfile::tempdir().unwrap();
+    let component = folder.path().join("sysmon.wasm");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/sysmon.wasm"),
+        &component,
+    )
+    .unwrap();
+    h.trust_plugin_folder(folder.path());
+    let launch = |h: &mut crate::testing::HostHarness| {
+        h.app
+            .launch_view_by_path_with_layout(&component.to_string_lossy(), None, None, &[])
+            .expect("queues the review");
+        h.app
+            .pending_raw_wasm_launches
+            .pop_front()
+            .expect("an import review waits")
+    };
+    let review = launch(&mut h);
+    assert!(!review.missing_capabilities.is_empty());
+
+    let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+    assert!(monitor
+        .revoke_grant_id(&trust_row(h.profile_dir()))
+        .unwrap());
+    let grant_rows = |monitor: &PermissionMonitor| {
+        monitor
+            .list_entries()
+            .into_iter()
+            .filter(|entry| entry.tool != TRUST_FOLDER_TOOL && entry.kind != "pending")
+            .count()
+    };
+    let rows = grant_rows(&monitor);
+    let store_file = h.profile_dir().join("permissions.toml");
+    let store_before = std::fs::read(&store_file).ok();
+    let starts = guest_starts_for_test();
+    let evidence = crate::broker::consent::DecisionEvidence::for_test(&review.plugin_id, "allow");
+    let error = h
+        .app
+        .open_wasm_view_pane(
+            &review.plugin_id,
+            &review.wasm_path,
+            review.workspace_root.clone(),
+            review.launch_args.clone(),
+            Some((
+                &review.missing_capabilities,
+                evidence.admit(&review.plugin_id, "allow").unwrap(),
+            )),
+        )
+        .unwrap_err();
+    assert!(error.contains("are not trusted"), "{error}");
+    assert_eq!(guest_starts_for_test(), starts, "no guest");
+    assert_eq!(grant_rows(&monitor), rows, "no grant row added");
+    assert!(
+        monitor
+            .list_entries()
+            .iter()
+            .all(|entry| !review.missing_capabilities.contains(&entry.tool)),
+        "no reviewed import granted in the broker"
+    );
+    assert_eq!(
+        std::fs::read(&store_file).ok(),
+        store_before,
+        "no legacy grant"
+    );
+
+    h.trust_plugin_folder(folder.path());
+    let review = launch(&mut h);
+    h.app
+        .open_wasm_view_pane(
+            &review.plugin_id,
+            &review.wasm_path,
+            review.workspace_root.clone(),
+            review.launch_args.clone(),
+            Some((
+                &review.missing_capabilities,
+                evidence.admit(&review.plugin_id, "allow").unwrap(),
+            )),
+        )
+        .expect("starts with the reviewed imports");
+    assert_eq!(guest_starts_for_test(), starts + 1);
+    assert!(monitor
+        .list_entries()
+        .iter()
+        .any(|entry| review.missing_capabilities.contains(&entry.tool)));
+}
+
+/// Step 5: a WASM development copy sharing the bundled singleton id `chess`
+/// runs in its own pane. Opening `chess` by id starts (then focuses) the
+/// bundled Python pane, never the dev pane, and opening the dev path again
+/// focuses the dev pane, never the bundled one.
+#[test]
+fn a_wasm_dev_copy_and_the_bundled_singleton_keep_their_own_panes() {
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+    let mut h = crate::testing::HostHarness::new();
+    let profile_plugins = h.profile_dir().join("plugins");
+    let bundled = extract_bundled("chess", &profile_plugins);
+    h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(&profile_plugins);
+    let dev = tempfile::tempdir().unwrap();
+    let dev_chess = write_wasm_plugin(dev.path(), "chess");
+    let manifest = std::fs::read_to_string(dev_chess.join("manifest.toml")).unwrap();
+    std::fs::write(
+        dev_chess.join("manifest.toml"),
+        manifest.replace(
+            "[runtime]",
+            "[launch]\non_launch = \"focus_existing_in_context\"\n\n[runtime]",
+        ),
+    )
+    .unwrap();
+    h.trust_plugin_folder(dev.path());
+    let workspace = h.workspace_root();
+    let focused = |h: &crate::testing::HostHarness| {
+        let win = &h.app.windows[h.app.active_window];
+        win.focused_pane
+            .and_then(|tile| win.tree.tiles.get_pane(&tile).copied())
+    };
+    let new_pane = |h: &mut crate::testing::HostHarness,
+                    before: &[crate::spatial::tiling::PaneId]| {
+        h.state()
+            .open_panes
+            .into_iter()
+            .find(|pane| !before.contains(pane))
+    };
+
+    let before = h.state().open_panes;
+    h.app
+        .launch_view_by_id_with_layout("chess", None, &[], Some(workspace.clone()))
+        .expect("bundled chess");
+    let bundled_pane = new_pane(&mut h, &before).expect("bundled pane");
+    assert_eq!(
+        pane_tree(&h, bundled_pane),
+        crate::platform::path::canonical_or_self(&bundled)
+    );
+
+    let before = h.state().open_panes;
+    let dev_pane = h
+        .app
+        .launch_view_by_path_with_layout(
+            &dev_chess.to_string_lossy(),
+            None,
+            Some(workspace.clone()),
+            &[],
+        )
+        .expect("dev chess from a trusted folder")
+        .expect("dev pane id");
+    assert_eq!(
+        new_pane(&mut h, &before),
+        Some(dev_pane),
+        "a new pane, not the bundled one"
+    );
+
+    let before = h.state().open_panes;
+    let again = h
+        .app
+        .launch_view_by_path_with_layout(
+            &dev_chess.to_string_lossy(),
+            None,
+            Some(workspace.clone()),
+            &[],
+        )
+        .expect("dev again")
+        .expect("pane id");
+    assert_eq!(again, dev_pane, "the dev path focuses its own pane");
+    assert_eq!(h.state().open_panes, before);
+
+    h.app
+        .launch_view_by_id_with_layout("chess", None, &[], Some(workspace))
+        .expect("chess by id again");
+    assert_eq!(
+        h.state().open_panes,
+        before,
+        "by id focuses an existing pane"
+    );
+    assert_eq!(focused(&h), Some(bundled_pane), "never the dev copy");
+}
+
+/// Step 5: origin matching walks the overlay chain. With the bundled singleton
+/// buried under a WASM dev overlay, opening it by id reveals the bundled pane;
+/// with the dev pane buried under the bundled overlay, opening the dev path
+/// reveals the dev pane. Neither open starts a guest.
+#[test]
+fn a_buried_pane_is_revealed_only_for_its_own_origin() {
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+    let mut h = crate::testing::HostHarness::new();
+    let profile_plugins = h.profile_dir().join("plugins");
+    extract_bundled("chess", &profile_plugins);
+    h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(&profile_plugins);
+    let dev = tempfile::tempdir().unwrap();
+    let dev_chess = write_wasm_plugin(dev.path(), "chess");
+    let manifest = std::fs::read_to_string(dev_chess.join("manifest.toml")).unwrap();
+    std::fs::write(
+        dev_chess.join("manifest.toml"),
+        manifest.replace(
+            "[runtime]",
+            "[launch]\non_launch = \"focus_existing_in_context\"\n\n[runtime]",
+        ),
+    )
+    .unwrap();
+    h.trust_plugin_folder(dev.path());
+    let workspace = h.workspace_root();
+    let dev_path = dev_chess.to_string_lossy().into_owned();
+    let top_origin = |h: &crate::testing::HostHarness| {
+        let win = &h.app.windows[h.app.active_window];
+        let pane = win
+            .focused_pane
+            .and_then(|tile| win.tree.tiles.get_pane(&tile).copied())
+            .expect("a focused pane");
+        win.panes
+            .get(&pane)
+            .and_then(|pane| pane.as_view())
+            .and_then(|view| view.runtime.origin_entry())
+            .expect("a guest pane")
+    };
+    let bundled_entry =
+        crate::platform::path::canonical_or_self(&profile_plugins.join("chess").join("chess.py"));
+    let dev_entry = crate::platform::path::canonical_or_self(&dev_chess.join("component.wasm"));
+
+    // Bundled below, dev overlay on top: by id reveals the bundled pane.
+    h.app
+        .launch_view_by_id_with_layout("chess", None, &[], Some(workspace.clone()))
+        .expect("bundled chess");
+    h.app
+        .launch_view_by_path_with_layout(
+            &dev_path,
+            Some("overlay".to_string()),
+            Some(workspace.clone()),
+            &[],
+        )
+        .expect("dev overlay");
+    assert_eq!(top_origin(&h), dev_entry, "the dev overlay is on top");
+    let starts = guest_starts_for_test();
+    h.app
+        .launch_view_by_id_with_layout("chess", None, &[], Some(workspace.clone()))
+        .expect("reveal bundled");
+    assert_eq!(top_origin(&h), bundled_entry);
+    assert_eq!(guest_starts_for_test(), starts, "revealing starts no guest");
+
+    // Dev below, bundled overlay on top: the dev path reveals the dev pane.
+    h.app
+        .launch_view_by_path_with_layout(&dev_path, None, Some(workspace.clone()), &[])
+        .expect("dev pane");
+    assert_eq!(top_origin(&h), dev_entry);
+    h.app
+        .launch_view_by_id_with_layout_forced(
+            "chess",
+            Some("overlay".to_string()),
+            &[],
+            Some(workspace.clone()),
+        )
+        .expect("bundled overlay over the dev pane");
+    assert_eq!(top_origin(&h), bundled_entry);
+    let starts = guest_starts_for_test();
+    h.app
+        .launch_view_by_path_with_layout(&dev_path, None, Some(workspace), &[])
+        .expect("reveal dev");
+    assert_eq!(top_origin(&h), dev_entry);
+    assert_eq!(guest_starts_for_test(), starts, "revealing starts no guest");
 }

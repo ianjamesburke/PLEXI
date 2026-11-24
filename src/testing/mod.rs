@@ -840,10 +840,7 @@ impl HostHarness {
     pub fn trust_plugin_folder(&mut self, folder: &std::path::Path) {
         // Canonical paths must match the scan's, so the folder must exist.
         std::fs::create_dir_all(folder).expect("create plugin folder");
-        self.app
-            .registries
-            .admission()
-            .trust_folder_for_test(folder);
+        crate::host::plugin_admission::PluginAdmission::current().trust_folder_for_test(folder);
     }
 
     /// Launch the real process plugin at `<repo>/<rel_dir>` with launch `args`,

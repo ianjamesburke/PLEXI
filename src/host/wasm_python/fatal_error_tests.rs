@@ -191,7 +191,8 @@ fn live_pane_failure_leads_with_the_plugin_exception() {
          def view():\n    return Text(\"ok\")\n"
     );
     std::fs::write(app.path().join("main.py"), &source).expect("write entry");
-    let mut pane = LivePythonPane::launch(launch_config(app.path())).expect("launch CPython WASM");
+    let mut pane =
+        LivePythonPane::launch_for_test(launch_config(app.path())).expect("launch CPython WASM");
     let deadline = std::time::Instant::now()
         + crate::testing::load_aware_timeout(std::time::Duration::from_secs(60));
     while pane.error().is_none() && std::time::Instant::now() < deadline {
@@ -216,7 +217,8 @@ fn live_pane_ignores_everything_after_the_first_fatal_error() {
         format!("{PRELUDE}{GOOD_INIT}def view():\n    return Text(\"ok\")\n"),
     )
     .expect("write entry");
-    let mut pane = LivePythonPane::launch(launch_config(app.path())).expect("launch CPython WASM");
+    let mut pane =
+        LivePythonPane::launch_for_test(launch_config(app.path())).expect("launch CPython WASM");
     let fatal = |message: &str| {
         json!({
             "type": "fatal_error",
@@ -261,7 +263,8 @@ fn relaunch_after_a_fatal_error_services_the_new_guest() {
         format!("{PRELUDE}{GOOD_INIT}def view():\n    return Text(\"ok\")\n"),
     )
     .expect("write entry");
-    let mut pane = LivePythonPane::launch(launch_config(app.path())).expect("launch CPython WASM");
+    let mut pane =
+        LivePythonPane::launch_for_test(launch_config(app.path())).expect("launch CPython WASM");
     pane.handle_message(json!({
         "type": "fatal_error",
         "phase": "view",
@@ -276,7 +279,7 @@ fn relaunch_after_a_fatal_error_services_the_new_guest() {
     assert_eq!(pane.dropped_after_fatal, Some(1));
     assert_eq!(pane.display_name(), "test.fatal-error");
 
-    pane.relaunch().expect("relaunch");
+    pane.relaunch_for_test().expect("relaunch");
 
     assert_eq!(pane.error(), None);
     assert_eq!(pane.dropped_after_fatal, None);

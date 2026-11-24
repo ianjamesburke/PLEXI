@@ -4727,10 +4727,7 @@ fn context_targets_background_id_open_uses_owning_root() {
     )).unwrap();
     std::fs::copy(counter_wasm_fixture(), plugin_dir.join("counter.wasm")).unwrap();
     h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(global.path());
-    h.app
-        .registries
-        .admission()
-        .allow_copy_for_test(id, &plugin_dir);
+    crate::host::plugin_admission::PluginAdmission::current().trust_folder_for_test(global.path());
     for (owner, visible, caller, expected, wrong) in [
         (0, 1, caller_a, a.as_path(), b.path()),
         (1, 0, caller_b, b.path(), a.as_path()),

@@ -1565,7 +1565,11 @@ fn saved_python_view_pane_restores_as_that_view() {
     else {
         panic!("expected a Python launch spec, got {launch:?}");
     };
-    assert_eq!(recorded_dir, &plugin_dir);
+    // The launch records the resolved (canonical) plugin root.
+    assert_eq!(
+        recorded_dir,
+        &crate::platform::path::canonical_or_self(&plugin_dir)
+    );
     assert!(args.is_empty());
 
     let restored_harness = HostHarness::from_profile_dir(&saved_profile);
@@ -19247,7 +19251,7 @@ fn insert_wasm_fixture_pane(h: &mut HostHarness, win_idx: usize, pane_id: u64, f
     use crate::host::wasm_view::{Grants, StateStore, WasmView};
     let wasm_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(format!("tests/wasm-fixtures/{fixture}.wasm"));
-    let app = WasmView::load_with_grants(
+    let app = WasmView::load_with_grants_for_test(
         fixture,
         &wasm_path,
         StateStore::ephemeral(),
