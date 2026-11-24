@@ -535,6 +535,7 @@ const SOCKET_OPERATIONS: &[(Op, VerbPolicy)] = {
         (Request("get_build_info"), Open),
         (Request("wake"), Open),
         (Request("file_open"), Open),
+        (Request("shutdown"), Open),
         (Request("show_host"), Operator),
         (Request("spawn_receipt"), Operator),
         (Request("context_rename"), Operator),
@@ -599,7 +600,6 @@ const SOCKET_OPERATIONS: &[(Op, VerbPolicy)] = {
         (Request("zoom_into_context"), Operator),
         (Request("zoom_out_of_context"), Operator),
         (Request("push_pane_to_subcontext"), Operator),
-        (Request("shutdown"), Operator),
         (Request("pane_secret_list"), Protected),
         (Request("pane_secret_get"), Protected),
         (Request("call_plugin_tool"), Protected),
@@ -1775,4 +1775,60 @@ fn a_pane_shell_without_a_recorded_start_is_still_its_pane() {
         incomplete,
     );
     assert_eq!(secret["error_code"], "permission_denied", "{secret}");
+}
+
+/// Codex 3290 r3 B5: `host stop` in alpha's exact frame, from a caller the
+/// host cannot identify, and with a legacy identity claim, is served: an
+/// older client must never read a policy refusal (it would kill the host).
+#[test]
+fn an_older_host_stop_is_served_to_any_same_user_caller() {
+    // Alpha's `host stop` frame names its reply token (`request_on_stream`).
+    for frame in [
+        serde_json::json!({"type": "shutdown",
+            "response_file": crate::rpc::response_file("host-stop", "json")}),
+        serde_json::json!({"type": "shutdown", "peer_ancestry": [],
+            "response_file": crate::rpc::response_file("host-stop", "json")}),
+    ] {
+        let mut h = HostHarness::new();
+        let mut ack = Vec::new();
+        crate::app::handle_socket_line_in(
+            &crate::config::config_dir(),
+            &frame.to_string(),
+            &h.ipc_tx,
+            None,
+            &mut ack,
+        );
+        h.run_frames(1);
+        assert!(
+            !String::from_utf8_lossy(&ack).contains("error_code"),
+            "{frame}: {}",
+            String::from_utf8_lossy(&ack)
+        );
+        assert!(
+            h.app.quit_coordinator.stop_reply.is_some(),
+            "{frame}: stop was not served"
+        );
+    }
+}
+
+/// Codex 3290 r3 B6: an older short-lived client (here `pane rename`) that
+/// exits before its credential is read reaches the host with no witness. Its
+/// identity-independent request is still applied, as on alpha; only
+/// protected requests need an identified caller.
+#[test]
+fn a_short_lived_clients_identity_independent_request_is_applied() {
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let mut ack = Vec::new();
+    crate::app::handle_socket_line_in(
+        &crate::config::config_dir(),
+        &serde_json::json!({"type": "set_pane_title", "pane_id": pane, "name": "renamed-1285"})
+            .to_string(),
+        &h.ipc_tx,
+        None,
+        &mut ack,
+    );
+    h.run_frames(2);
+    let name = h.app.terminal_incarnation(pane).and_then(|t| t.name.clone());
+    assert_eq!(name.as_deref(), Some("renamed-1285"));
 }

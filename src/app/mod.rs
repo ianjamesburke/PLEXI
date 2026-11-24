@@ -910,17 +910,26 @@ pub(crate) fn handle_socket_line_in(
     // the ack byte, so a refusal would print success with nothing posted.
     // Its claims are dropped unread; the sender is the kernel-named peer
     // (Codex 3290 r1).
+    // `host stop` likewise: an older client treats any refusal as zero
+    // grace and kills the host, so its claims are dropped too and stop is
+    // served to every same-user caller (Codex 3290 r3).
     let legacy_notify = serde_json::from_str::<serde_json::Value>(line)
         .ok()
-        .filter(|frame| frame["type"] == "notify")
         .and_then(|mut frame| {
+            let claims: &[&str] = match frame["type"].as_str() {
+                Some("notify") => &["source_pane_id", "source_context_id"],
+                Some("shutdown") => crate::protocol::REMOVED_IDENTITY_FIELDS,
+                _ => return None,
+            };
+            let kind = frame["type"].as_str().unwrap_or_default().to_string();
             let object = frame.as_object_mut()?;
-            let dropped: Vec<&str> = ["source_pane_id", "source_context_id"]
-                .into_iter()
+            let dropped: Vec<&str> = claims
+                .iter()
+                .copied()
                 .filter(|field| object.remove(*field).is_some())
                 .collect();
             (!dropped.is_empty()).then(|| {
-                log::info!("pane_ipc: notify from an older CLI; dropped unread claims {dropped:?}");
+                log::info!("pane_ipc: {kind} from an older CLI; dropped unread claims {dropped:?}");
                 frame.to_string()
             })
         });

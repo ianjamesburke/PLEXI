@@ -257,7 +257,11 @@ fn invalid_op(kind: &str, op: &str) -> Refusal {
 pub(crate) fn socket_policy(request: &HostRequest) -> Result<VerbPolicy, Refusal> {
     use VerbPolicy::*;
     Ok(match request {
-        HostRequest::GetBuildInfo { .. } | HostRequest::Wake => Open,
+        // Stop is served to every same-user caller: an older client reads
+        // any refusal as zero grace and kills the host (Codex 3290 r3).
+        HostRequest::GetBuildInfo { .. } | HostRequest::Wake | HostRequest::Shutdown { .. } => {
+            Open
+        }
         // Its handler answers every caller class with a typed receipt
         // (`caller_unidentified`, `no_anchor`, `outside_authority`).
         HostRequest::FileOpen { .. } => Open,
@@ -325,8 +329,7 @@ pub(crate) fn socket_policy(request: &HostRequest) -> Result<VerbPolicy, Refusal
         | HostRequest::SetContextDescription { .. }
         | HostRequest::ZoomIntoContext { .. }
         | HostRequest::ZoomOutOfContext
-        | HostRequest::PushPaneToSubcontext { .. }
-        | HostRequest::Shutdown { .. } => Operator,
+        | HostRequest::PushPaneToSubcontext { .. } => Operator,
 
         HostRequest::PaneSecretList { .. }
         | HostRequest::PaneSecretGet { .. }

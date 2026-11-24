@@ -139,7 +139,7 @@ pub fn removed_host_request(kind: &str) -> Option<&'static str> {
 
 /// Identity claims older clients put on a request. The kernel names the
 /// caller now (stint 1285), so each is refused by name.
-const REMOVED_IDENTITY_FIELDS: &[&str] = &[
+pub const REMOVED_IDENTITY_FIELDS: &[&str] = &[
     "peer_ancestry",
     "peer_pid",
     "peer",
