@@ -398,8 +398,14 @@
         "file": "src/ui_tests/tests/palette.rs",
         "test": "palette_commands_stop"
       },
-      "states": "Commands stop on an empty query (group headers, first row selected) and on a typed query; Dusk",
-      "minimum": "Field over a scroll body of ListRows; rows elide through ListRow; the list keeps a minimum scroll height"
+      "states": "Commands stop on an empty query (group headers, first row selected) and on a typed query; Files stop with a text preview, an image preview, the empty state and a narrow window; Dusk",
+      "minimum": "Field over a scroll body of ListRows; rows elide through ListRow; the list keeps a minimum scroll height; the preview half drops below MODAL_WIDTH_MD",
+      "additional_fixtures": [
+        {
+          "file": "src/ui_tests/tests/palette.rs",
+          "test": "palette_files_stop_with_preview"
+        }
+      ]
     },
     {
       "id": "src/ui/provenance.rs",
