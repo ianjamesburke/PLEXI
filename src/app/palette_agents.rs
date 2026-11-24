@@ -38,6 +38,8 @@ pub(crate) struct PaletteAgents {
     snapshot: Option<AgentSnapshot>,
     loading: Option<Receiver<Result<LoadedAgentSource, String>>>,
     #[cfg(test)]
+    load_gate: Option<Receiver<Result<(), String>>>,
+    #[cfg(test)]
     loads: usize,
 }
 
@@ -247,11 +249,19 @@ impl PlexiApp {
         let profile = crate::config::config_dir();
         let wake = Arc::clone(&self.ui_wake);
         let (done, loading) = mpsc::channel();
+        #[cfg(test)]
+        let gate = self.palette_agents.load_gate.take();
         let spawned = std::thread::Builder::new()
             .name("plexi-palette-agents".to_owned())
             .spawn(move || {
-                let result = std::panic::catch_unwind(|| LoadedAgentSource::load(&profile, &cwd))
-                    .unwrap_or_else(|_| Err("The Agents loader stopped unexpectedly".into()));
+                let result = std::panic::catch_unwind(|| {
+                    #[cfg(test)]
+                    if let Some(gate) = gate {
+                        gate.recv().map_err(|error| error.to_string())??;
+                    }
+                    LoadedAgentSource::load(&profile, &cwd)
+                })
+                .unwrap_or_else(|_| Err("The Agents loader stopped unexpectedly".into()));
                 // A closed palette drops the receiver for this session.
                 if done.send(result).is_ok() {
                     wake.wake("palette_agents");
@@ -259,11 +269,15 @@ impl PlexiApp {
             });
         match spawned {
             Ok(_) => {
-                log::info!("palette agents: started loading definitions and needs-you");
+                log::info!("palette agents: publishing partial answers while loading definitions and needs-you");
                 self.palette_agents.loading = Some(loading);
             }
             Err(error) => self.report_palette_agents_load_failure(&error.to_string()),
         }
+    }
+
+    pub(crate) fn palette_agents_load_pending(&self) -> bool {
+        self.palette_agents.loading.is_some()
     }
 
     pub(crate) fn drain_palette_agents_load(&mut self) {
@@ -490,6 +504,13 @@ impl PlexiApp {
             _ => return Err(format!("The selected agent does not support '{action}'")),
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_palette_agents_load(&mut self) -> mpsc::Sender<Result<(), String>> {
+        let (release, gate) = mpsc::channel();
+        self.palette_agents.load_gate = Some(gate);
+        release
     }
 
     #[cfg(test)]

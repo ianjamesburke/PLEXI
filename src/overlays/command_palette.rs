@@ -1612,6 +1612,8 @@ impl PlexiApp {
                             .and_then(|answer| answer.agent_targets.get(&row))
                             .cloned()
                         {
+                            #[cfg(test)]
+                            palette_test_log::activated(row.clone());
                             self.palette_sources.usage.record(row.as_str());
                             self.queue_palette_agent_activation(target, action);
                         } else {
@@ -1854,7 +1856,7 @@ impl PlexiApp {
             self.answer_scripted(generation, scripted);
             return;
         }
-        let rows = match source {
+        let (rows, done) = match source {
             COMMANDS_SOURCE => {
                 let (rows, pips, targets) = self.palette_command_rows(&query);
                 // Installed with its rows: an Enter this answer completes
@@ -1865,7 +1867,7 @@ impl PlexiApp {
                     targets: command_targets(targets),
                     agent_targets: Default::default(),
                 });
-                rows
+                (rows, true)
             }
             FILES_SOURCE => {
                 self.answer_palette_files(generation, &query);
@@ -1880,17 +1882,17 @@ impl PlexiApp {
                     targets: Default::default(),
                     agent_targets,
                 });
-                rows
+                (rows, !self.palette_agents_load_pending())
             }
             other => {
                 log::warn!("palette: no source '{other}'");
-                Vec::new()
+                (Vec::new(), true)
             }
         };
         self.apply_palette_command(PickerCommand::Rows {
             generation,
             rows,
-            done: true,
+            done,
         });
     }
 
@@ -5205,6 +5207,174 @@ mod tests {
             assert!(Instant::now() < deadline, "reset never reached disk");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    const DEFERRED_AGENT: &str = "agents:definition/deferred-reviewer";
+
+    fn hold_first_agents_visit(
+        h: &mut crate::testing::HostHarness,
+        query: &str,
+    ) -> std::sync::mpsc::Sender<Result<(), String>> {
+        let definition = h.profile_dir().join("agents/deferred-reviewer");
+        std::fs::create_dir_all(&definition).expect("create test agent directory");
+        std::fs::write(definition.join("AGENT.md"), "Review the release.")
+            .expect("write test agent prompt");
+        std::fs::write(
+            definition.join("settings.toml"),
+            "[agent]\nid = 'deferred-reviewer'\ndisplay_name = 'Deferred Reviewer'\n[harness]\ncli = 'pi'\n",
+        )
+        .expect("write test agent settings");
+        h.app.open_command_palette("");
+        let release = h.app.hold_palette_agents_load();
+        h.app
+            .apply_palette_command(PickerCommand::SetStop(AGENTS_SOURCE));
+        h.app.set_palette_query(query);
+        h.run_frames(2);
+        palette_test_log::take_activations();
+        release
+    }
+
+    fn run_agents_logic_until(
+        h: &mut crate::testing::HostHarness,
+        finished: impl Fn(&PlexiApp) -> bool,
+    ) {
+        use std::time::{Duration, Instant};
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !finished(&h.app) {
+            assert!(
+                Instant::now() < deadline,
+                "the Agents worker did not finish"
+            );
+            h.hidden_frame();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        h.run_hidden_frames(3);
+    }
+
+    #[test]
+    fn palette_agents_enter_waits_for_definition() {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        let release = hold_first_agents_visit(&mut h, "deferred-reviewer");
+
+        h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+        h.run_hidden_frames(3);
+        assert!(h.app.command_palette_open());
+        assert!(h.app.palette_agent_activation.is_none());
+        assert!(palette_test_log::take_activations().is_empty());
+
+        release.send(Ok(())).expect("release the Agents loader");
+        run_agents_logic_until(&mut h, |app| {
+            !app.command_palette_open() || app.palette_agents_load_thread().is_some()
+        });
+        assert_eq!(
+            palette_test_log::take_activations(),
+            [DEFERRED_AGENT],
+            "deferred Enter must activate the definition exactly once after loading"
+        );
+        assert!(!h.app.command_palette_open());
+        assert!(h.app.palette_agent_activation.is_none());
+    }
+
+    #[test]
+    fn palette_agents_cmd_enter_waits_for_definition_actions() {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        let release = hold_first_agents_visit(&mut h, "deferred-reviewer");
+
+        h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+        h.run_hidden_frames(3);
+        let picker = h.app.host.picker(PickerId::Palette).expect("palette");
+        assert_eq!(picker.actions_opening(), None);
+        assert!(h.app.palette_agent_activation.is_none());
+        assert!(palette_test_log::take_activations().is_empty());
+
+        release.send(Ok(())).expect("release the Agents loader");
+        run_agents_logic_until(&mut h, |app| app.palette_agents_load_thread().is_some());
+        let picker = h.app.host.picker(PickerId::Palette).expect("palette");
+        let opening = picker
+            .actions_opening()
+            .expect("deferred Cmd+Enter must open Actions after loading");
+        assert_eq!(picker.selected().map(RowKey::as_str), Some(DEFERRED_AGENT));
+        assert_eq!(picker.rows()[0].chips, ["not running"]);
+        assert_eq!(
+            picker.visible_actions(),
+            [&RowAction {
+                id: "focus",
+                label: "Focus",
+                chord: Some("Enter"),
+            }]
+        );
+        assert!(palette_test_log::take_activations().is_empty());
+        h.run_hidden_frames(3);
+        assert_eq!(
+            h.app
+                .host
+                .picker(PickerId::Palette)
+                .expect("palette")
+                .actions_opening(),
+            Some(opening),
+        );
+
+        h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+        h.run_hidden_frames(3);
+        assert_eq!(palette_test_log::take_activations(), [DEFERRED_AGENT]);
+        assert!(!h.app.command_palette_open());
+        assert!(h.app.palette_agent_activation.is_none());
+    }
+
+    #[test]
+    fn palette_agents_failed_load_finishes_with_live_rows() {
+        let mut h = crate::testing::HostHarness::new();
+        h.app.notifications_enabled = true;
+        let id = h.app.host.alloc_pane_id();
+        let mut terminal = crate::host::pane::TerminalPane::fixture(
+            id,
+            h.app.ctx.clone(),
+            h.app.pty_event_tx.clone(),
+            egui_term::BackendSettings {
+                shell: "/bin/sh".into(),
+                ..Default::default()
+            },
+            14.0,
+        )
+        .expect("live agent fixture");
+        terminal.agent_role = Some("live reviewer".into());
+        terminal.agent_harness = Some("pi".into());
+        let win = &mut h.app.windows[0];
+        win.panes
+            .insert(id, Pane::Terminal(Box::new(terminal)))
+            .expect("insert live agent fixture");
+        win.tree.root = Some(win.tree.tiles.insert_pane(id));
+        let release = hold_first_agents_visit(&mut h, "");
+        let picker = h.app.host.picker(PickerId::Palette).expect("palette");
+        assert!(picker.is_partial(), "live rows are partial during the load");
+        assert_eq!(picker.rows().len(), 1);
+
+        release
+            .send(Err("test load failure".into()))
+            .expect("fail the Agents loader");
+        run_agents_logic_until(&mut h, |app| {
+            app.host
+                .picker(PickerId::Palette)
+                .is_some_and(|picker| !picker.is_loading())
+        });
+        let picker = h.app.host.picker(PickerId::Palette).expect("palette");
+        assert_eq!(picker.rows().len(), 1);
+        assert_eq!(
+            picker.rows()[0].key,
+            RowKey::new(AGENTS_SOURCE, &format!("pane/{id}"))
+        );
+        assert_eq!(
+            h.app
+                .pending_notifications
+                .iter()
+                .filter(|notice| notice.body == "test load failure")
+                .count(),
+            1,
+            "the load failure is reported once"
+        );
     }
 
     /// Sources run in \`App::logic\`: an edit only starts a new generation,
