@@ -170,7 +170,7 @@ Command templates for dispatching coding agents. `{cmd}` is replaced with the pr
 | `os_notifications` | bool | — | Raise silent macOS attention notifications while Plexi is unfocused (default true). Uses provisional authorization without a permission dialog; enable banners in macOS notification settings if desired. Disabled in tests; other platforms log only. |
 | `stalled_after_secs` | integer | — | Idle ephemeral worker stall threshold in seconds (default 120). |
 | `stale_failure_hours` | integer | — | Age threshold in hours after which failed runs collapse into the older fleet group (default 12). |
-| `low` | string | claude haiku with --dangerously-skip-permissions | Fast/cheap tasks. Default: claude haiku with --dangerously-skip-permissions. |
+| `low` | string | claude haiku with --dangerously-skip-permissions | Show agent jump rows in the command palette (default false). Fast/cheap tasks. Default: claude haiku with --dangerously-skip-permissions. |
 | `medium` | string | claude sonnet with --dangerously-skip-permissions | Standard work. Default: claude sonnet with --dangerously-skip-permissions. |
 | `high` | string | claude with --dangerously-skip-permissions | Complex/autonomous tasks. Default: claude with --dangerously-skip-permissions. |
 | `restore_mode` | AgentRestoreMode | — | Startup restoration mode for saved agent sessions: `"lazy"` (default), `"eager"`, or `"off"`. |
