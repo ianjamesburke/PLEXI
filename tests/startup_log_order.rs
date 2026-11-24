@@ -2,6 +2,8 @@
 //! takes seconds; the logger must be up before it starts so a slow first
 //! launch leaves a trace instead of a silent gap (stint 1567).
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -24,7 +26,7 @@ fn find_log(dir: &Path) -> Option<PathBuf> {
 fn fresh_profile_seeding_is_logged_after_logger_start() {
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_plexi"));
+    let mut command = Command::new(common::plexi_binary());
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("PLEXI_") {
             command.env_remove(key);
