@@ -296,8 +296,18 @@ pub fn write_toml<T: Serialize>(
 
 pub fn write_sealed(host: &HostProcess, path: &Path, body: &[u8]) -> Result<(), String> {
     let dir = profile_dir_for_path(path);
-    mark_profile_sealed(host, &dir)?;
-    write_sealed_with_dir(host, path, &dir, body)
+    // A fresh or healthy profile gets its state before the file exists. A
+    // faulted state is left exactly as found until the write succeeds, so a
+    // failed save never turns a detectable fault into a clean-looking state.
+    let faulted = matches!(read_seal_state(host, &dir), SealStateStatus::Untrusted(_));
+    if !faulted {
+        require_sealed_profile(host, &dir)?;
+    }
+    write_sealed_with_dir(host, path, &dir, body)?;
+    if faulted {
+        mark_profile_sealed(host, &dir)?;
+    }
+    Ok(())
 }
 
 fn write_sealed_with_dir(
@@ -752,21 +762,29 @@ fn read_seal_state(host: &HostProcess, dir: &Path) -> SealStateStatus {
     }
 }
 
+/// How an update treats a seal state that is missing or untrusted while sealed
+/// files exist. Private: ordinary writers reach only [`require_sealed_profile`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UntrustedState {
+    /// Return the fault and change nothing, so the next verification still sees it.
+    Refuse,
+    /// Quarantine it and start a fresh state (recovery paths that already
+    /// surfaced the fault, and key rotation).
+    Replace,
+}
+
 fn update_seal_state(
     host: &HostProcess,
     dir: &Path,
     mutate: impl FnOnce(&mut SealState),
 ) -> Result<(), String> {
-    update_seal_state_with(host, dir, true, mutate)
+    update_seal_state_with(host, dir, UntrustedState::Replace, mutate)
 }
 
-/// With `replace_untrusted` false, an untrusted or missing-with-sealed-files
-/// state is returned as an error and left exactly as found, so the fault
-/// stays visible to the next verification.
 fn update_seal_state_with(
     host: &HostProcess,
     dir: &Path,
-    replace_untrusted: bool,
+    untrusted: UntrustedState,
     mutate: impl FnOnce(&mut SealState),
 ) -> Result<(), String> {
     if dir.as_os_str().is_empty() {
@@ -787,7 +805,9 @@ fn update_seal_state_with(
             needs_you_tip: None,
         },
         SealStateStatus::KeyUnreadable(error) => return Err(error),
-        SealStateStatus::Untrusted(reason) if !replace_untrusted => return Err(reason),
+        SealStateStatus::Untrusted(reason) if untrusted == UntrustedState::Refuse => {
+            return Err(reason);
+        }
         SealStateStatus::Untrusted(reason) => {
             let path = seal_state_path(dir);
             if path.exists() {
@@ -859,7 +879,7 @@ pub(crate) fn store_needs_you_tip(
 /// profile gets one; a profile whose state is missing or untrusted while
 /// sealed files exist is an integrity fault and is returned unchanged.
 pub(crate) fn require_sealed_profile(host: &HostProcess, dir: &Path) -> Result<(), String> {
-    update_seal_state_with(host, dir, false, |state| {
+    update_seal_state_with(host, dir, UntrustedState::Refuse, |state| {
         state.sealed = true;
     })
 }
@@ -1029,6 +1049,7 @@ pub(crate) fn reset_unverified_profile(host: &HostProcess, dir: &Path) -> Result
         copy_aside(&seal_state, "seal-state.json.before-key-rotation");
         std::fs::remove_file(&seal_state).map_err(|error| error.to_string())?;
     }
+
     let grants = dir.join("grants.toml");
     if grants.is_file() {
         copy_aside(&grants, "grants.toml.before-key-rotation");
@@ -1387,6 +1408,50 @@ mod tests {
             !audit.exists(),
             "a deleted audit log must not restart quietly"
         );
+    }
+
+    #[test]
+    fn a_failed_grants_save_never_erases_a_missing_seal_state_fault() {
+        let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let audit = dir.path().join("permission-audit.jsonl");
+        let grants = dir.path().join("grants.toml");
+        write_sealed(TEST_HOST, &grants, b"records = []\n").unwrap();
+        append_audit(TEST_HOST, &audit, &serde_json::json!({"kind": "seed"})).unwrap();
+        std::fs::remove_file(&audit).unwrap();
+        std::fs::remove_file(seal_state_path(dir.path())).unwrap();
+        // The next save cannot land: its target is now an occupied directory.
+        let target = dir.path().join("other.toml");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("keep"), b"occupied").unwrap();
+
+        let error = write_sealed(TEST_HOST, &target, b"records = []\n").unwrap_err();
+        assert!(error.contains("rename"), "{error}");
+        assert!(
+            !seal_state_path(dir.path()).exists(),
+            "the fault was erased"
+        );
+        assert!(verify_audit(TEST_HOST, &audit).is_err());
+    }
+
+    #[test]
+    fn key_rotation_reset_still_recovers_a_missing_seal_state() {
+        let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let audit = dir.path().join("permission-audit.jsonl");
+        write_sealed(
+            TEST_HOST,
+            &dir.path().join("grants.toml"),
+            b"records = []\n",
+        )
+        .unwrap();
+        append_audit(TEST_HOST, &audit, &serde_json::json!({"kind": "seed"})).unwrap();
+        std::fs::remove_file(seal_state_path(dir.path())).unwrap();
+
+        reset_unverified_profile(TEST_HOST, dir.path()).unwrap();
+        verify_audit(TEST_HOST, &audit).unwrap();
+        assert!(needs_you_tip_lookup(TEST_HOST, dir.path()).is_ok());
+        append_audit(TEST_HOST, &audit, &serde_json::json!({"kind": "after"})).unwrap();
     }
 
     #[test]
