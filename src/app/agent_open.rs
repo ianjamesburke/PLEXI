@@ -199,6 +199,13 @@ impl PlexiApp {
         // Resolved first: an unknown agent fails before anything is archived.
         let (payload, harness) = named_agent_start_payload(name, cwd)?;
         let archived_run_id = self.archive_current_named_agent_chat(name, &harness, cwd)?;
+        // Archiving may have closed the caller's own pane (a new chat asked
+        // for from inside the chat it replaces). The launch then resolves its
+        // caller again from the same kernel witness, as alpha resolved live
+        // ancestry after the close: never a retired pane as parent.
+        let reresolved = self.origin_after_close(origin);
+        let origin = reresolved.as_ref().unwrap_or(origin);
+        let caller = if reresolved.is_some() { None } else { caller };
         let pane_id = self.start_named_agent_chat(name, payload, origin, caller, admitted)?;
         log::info!(
             "agent_new_chat: name={name} archived_run_id={archived_run_id:?} new_pane={pane_id}"
@@ -207,6 +214,31 @@ impl PlexiApp {
             pane_id,
             archived_run_id,
         })
+    }
+
+    /// `origin` classified again when its pane caller's terminal is gone.
+    fn origin_after_close(
+        &self,
+        origin: &crate::broker::caller::RequestOrigin,
+    ) -> Option<crate::broker::caller::RequestOrigin> {
+        use crate::broker::caller::{RequestOrigin, SocketCaller};
+        let RequestOrigin::Socket(SocketCaller::Pane(pane)) = origin else {
+            return None;
+        };
+        let live = self
+            .terminal_incarnation(pane.terminal_pane)
+            .and_then(|terminal| terminal.authority().cloned())
+            .is_some_and(|live| std::sync::Arc::ptr_eq(&live, &pane.authority));
+        if live {
+            return None;
+        }
+        let reclassified = self.classify_socket_peer(Some(&pane.peer));
+        log::info!(
+            "agent_new_chat: caller pane {} closed by the archive; launching as {}",
+            pane.terminal_pane,
+            reclassified.class()
+        );
+        Some(RequestOrigin::Socket(reclassified))
     }
 
     /// Archive `name`'s current chat in this workspace and return its run id,

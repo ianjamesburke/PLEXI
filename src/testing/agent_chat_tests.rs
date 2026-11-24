@@ -384,3 +384,43 @@ fn agent_open_after_restart_returns_the_new_chat_never_the_archived_one() {
         }
     }
 }
+
+/// Codex 3290 r3 B4: a new chat asked for from inside the chat it replaces.
+/// The archive closes the caller's own pane; the replacement is launched
+/// for the caller as classified again after that close (as alpha resolved
+/// live ancestry), never with the retired pane as its parent.
+#[test]
+fn new_chat_from_the_pane_it_replaces_names_no_retired_parent() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let launcher = h.add_focused_terminal();
+    let _other = h.add_focused_terminal();
+    let sessions = fx.home.path().join("pi-sessions");
+    let _pi = seed_pi_session(&sessions, "sess-self");
+    let current = start_agent(&mut h, &fx, "researcher", launcher);
+    terminal_mut(&mut h, current).agent_session_id = Some("sess-self".into());
+    let witness = crate::broker::caller::PeerWitness::for_live_pids(&[h.shell_pid(current)]);
+    let origin = crate::broker::caller::RequestOrigin::Socket(
+        h.app.classify_socket_peer(Some(&witness)),
+    );
+    assert!(matches!(
+        origin,
+        crate::broker::caller::RequestOrigin::Socket(crate::broker::caller::SocketCaller::Pane(ref p))
+            if p.terminal_pane == current
+    ));
+    let outcome = h
+        .app
+        .new_named_agent_chat("researcher", &fx.proj_dir, None, &origin)
+        .expect("new chat");
+    h.run_frames(2);
+    let AgentOpenOutcome::NewChat { pane_id, .. } = outcome else {
+        panic!("expected new_chat, got {outcome:?}");
+    };
+    assert!(!pane_exists(&h, current), "the caller's chat was archived");
+    let replacement = terminal(&h, pane_id);
+    assert_ne!(replacement.parent_pane_id, Some(current), "a retired pane is the parent");
+    assert!(
+        h.app.pane_authority(pane_id).is_some_and(|a| a.grant().sealed_reason().is_none()),
+        "the replacement launched with a usable grant"
+    );
+}
