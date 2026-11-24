@@ -315,10 +315,9 @@ impl UseSubject {
         workspace: &Path,
     ) -> Result<Permit<ReadDashboard>, String> {
         let tool = ReadDashboard::NAME;
-        let target = ReadDashboard::target(workspace);
-        let input = json!({"workspace": target});
+        let input = json!({"workspace": workspace});
         let decide = PermissionMonitor::admit_for_use;
-        let (caller, answer) = self.decide(tool, &input, Path::new(&target), 0, decide)?;
+        let (caller, answer) = self.decide(tool, &input, workspace, 0, decide)?;
         let (approved, grant, fingerprint, resource) = match answer {
             UseDecision::Allowed {
                 approved,
@@ -336,9 +335,10 @@ impl UseSubject {
                 ))
             }
         };
+        let permit = Permit::external(workspace, caller.monitor.clone(), approved)?;
         caller.note_use(&grant, &fingerprint, &resource)?;
         caller.outcome(&grant, &fingerprint, &resource, "ok")?;
-        Ok(Permit::external(workspace, caller.monitor, approved))
+        Ok(permit)
     }
 }
 

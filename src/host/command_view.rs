@@ -50,9 +50,9 @@ pub fn publish(workspace: &Path, summary: &str) {
 /// The projection of `workspace` for the permit's holder: staged first, then
 /// handed over only while the permit still covers the workspace, so a revoke,
 /// a scope move or a closed pane stops the next read.
-pub(crate) fn read(permit: &Permit<ReadDashboard>, workspace: &Path) -> Result<Value, String> {
-    let body = crate::agent::runs::projection(workspace);
-    permit.recheck(workspace)?;
+pub(crate) fn read(permit: &Permit<ReadDashboard>) -> Result<Value, String> {
+    let body = crate::agent::runs::projection(&permit.workspace());
+    permit.recheck()?;
     Ok(body)
 }
 
@@ -60,14 +60,9 @@ pub(crate) fn read(permit: &Permit<ReadDashboard>, workspace: &Path) -> Result<V
 /// covering the workspace, which ends the stream with an error line.
 pub(crate) fn serve_follow(
     mut socket: crate::platform::ipc::IpcStream,
-    workspace: String,
     permit: &Permit<ReadDashboard>,
 ) {
-    if workspace.is_empty() {
-        log::warn!("command_view: follow missing workspace");
-        return;
-    }
-    let workspace = std::path::PathBuf::from(workspace);
+    let workspace = permit.workspace();
     log::info!(
         "command_view: follow open workspace={}",
         workspace.display()
@@ -102,7 +97,7 @@ pub(crate) fn serve_follow(
     while !stop.load(Ordering::Acquire) {
         // An idle stream notices a revoke or a moved scope at each wake. The
         // wake lock is not held: the broker's admission lock is taken here.
-        if let Err(error) = permit.recheck(&workspace) {
+        if let Err(error) = permit.recheck() {
             return end_follow(&mut socket, &workspace, &error);
         }
         let (lock, cond) = wake();
@@ -111,7 +106,7 @@ pub(crate) fn serve_follow(
         if revision != seen {
             drop(guard);
             seen = revision;
-            let mut event = match read(permit, &workspace) {
+            let mut event = match read(permit) {
                 Ok(event) => event,
                 Err(error) => return end_follow(&mut socket, &workspace, &error),
             };
@@ -188,8 +183,7 @@ mod tests {
         )
         .unwrap();
         let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
-        let workspace = dir.path().to_string_lossy().to_string();
-        let worker = std::thread::spawn(move || serve_follow(server, workspace, &permit));
+        let worker = std::thread::spawn(move || serve_follow(server, &permit));
         let mut lines = std::io::BufReader::new(client);
         let mut next = || {
             let mut line = String::new();
@@ -202,7 +196,14 @@ mod tests {
         assert_eq!(next()["type"], "event");
         live.publish_scope(dir.path().join("elsewhere"));
         publish(dir.path(), "after the scope moved");
-        let ended = next();
+        // Other tests publish on the shared wake, so an event staged before
+        // the move may still arrive first; none follows the refusal.
+        let ended = loop {
+            let line = next();
+            if line["type"] != "event" {
+                break line;
+            }
+        };
         assert_eq!(ended["type"], "error", "{ended}");
         assert_eq!(ended["error_code"], "permission_denied", "{ended}");
         worker.join().unwrap();

@@ -2030,8 +2030,9 @@ fn dashboard_list_and_open_are_bound_to_the_requested_workspace() {
 }
 
 /// Stint 1716 slice 2b: a dashboard permit asks again at each read. A pane's
-/// stops covering when its context moves or it closes; an outside process's
-/// stops when the grant it rests on is revoked.
+/// stops covering when its scope moves; an outside process's one-use claim
+/// stops when its grant is revoked, and a Session approval is never accepted
+/// (another process sharing the external principal could reuse it).
 #[test]
 fn a_dashboard_permit_stops_covering_after_a_scope_move_or_a_revoke() {
     let _on =
@@ -2043,35 +2044,90 @@ fn a_dashboard_permit_stops_covering_after_a_scope_move_or_a_revoke() {
     let text = root.to_string_lossy().to_string();
     let caller = h.app.classify_socket_peer(Some(&pane_witness(&h, pane)));
     let permit = h.app.admit_dashboard_workspace(&caller, &text).unwrap();
-    assert_eq!(crate::host::command_view::read(&permit, &root).unwrap()["ok"], true);
-    assert!(
-        permit.recheck(std::path::Path::new("/")).is_err(),
-        "a permit covers the workspace it was admitted for and no other"
-    );
+    assert_eq!(crate::host::command_view::read(&permit).unwrap()["ok"], true);
     let live = h.app.pane_authority(pane).unwrap();
     live.publish_scope(root.join("moved"));
-    let moved = crate::host::command_view::read(&permit, &root).unwrap_err();
+    let moved = crate::host::command_view::read(&permit).unwrap_err();
     assert!(moved.contains("scope changed"), "{moved}");
 
     let outside_caller = h.app.classify_socket_peer(Some(&outside()));
-    let refused = h.app.admit_dashboard_workspace(&outside_caller, &text).unwrap_err();
-    assert_eq!(refused.code, "permission_denied");
     let monitor =
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
-    let ask = monitor
-        .list_pending()
-        .into_iter()
-        .find(|p| p.actor_id == crate::broker::principal::EXTERNAL_ID)
-        .expect("the outside read is filed for approval");
-    monitor
-        .approve_pending(&ask.pending_request_id, crate::broker::gate::ApprovalChoice::Session)
-        .unwrap();
+    let approve = |choice| {
+        let ask = monitor
+            .list_pending()
+            .into_iter()
+            .find(|p| p.actor_id == crate::broker::principal::EXTERNAL_ID)
+            .expect("the outside read is filed for approval");
+        monitor.approve_pending(&ask.pending_request_id, choice).unwrap();
+    };
+    let refused = h.app.admit_dashboard_workspace(&outside_caller, &text).unwrap_err();
+    assert_eq!(refused.code, "permission_denied");
+    approve(crate::broker::gate::ApprovalChoice::Session);
+    let session = h.app.admit_dashboard_workspace(&outside_caller, &text).unwrap_err();
+    assert!(session.message.contains("one-use"), "{}", session.message);
+    let rows = monitor.store().records().to_vec();
+    for row in rows {
+        monitor.revoke_grant_id(&row.grant_id).unwrap();
+    }
+    let _ = h.app.admit_dashboard_workspace(&outside_caller, &text);
+    approve(crate::broker::gate::ApprovalChoice::Once);
     let permit = h.app.admit_dashboard_workspace(&outside_caller, &text).unwrap();
-    assert!(permit.recheck(&root).is_ok());
-    let grant = monitor.store().records()[0].grant_id.clone();
-    assert!(monitor.revoke_grant_id(&grant).unwrap());
-    let revoked = crate::host::command_view::read(&permit, &root).unwrap_err();
+    assert!(permit.recheck().is_ok(), "the claimed once row covers its own use");
+    let claimed = monitor.store().records().to_vec();
+    assert_eq!(claimed.len(), 1, "{claimed:?}");
+    assert!(monitor.revoke_grant_id(&claimed[0].grant_id).unwrap());
+    let revoked = crate::host::command_view::read(&permit).unwrap_err();
     assert!(revoked.contains("no longer allowed"), "{revoked}");
+}
+
+/// Codex 3331 r1: the workspace is resolved once at admission. A symlink
+/// retargeted after admission does not change what the permit serves.
+#[test]
+fn a_dashboard_permit_serves_the_workspace_resolved_at_admission() {
+    let _on =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentsDashboard]);
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let root = h.workspace_root();
+    h.app.set_context_root(root.clone(), None);
+    let elsewhere = tempfile::tempdir().unwrap();
+    let links = tempfile::tempdir().unwrap();
+    let link = links.path().join("ws");
+    std::os::unix::fs::symlink(&root, &link).unwrap();
+    let caller = h.app.classify_socket_peer(Some(&pane_witness(&h, pane)));
+    let permit = h
+        .app
+        .admit_dashboard_workspace(&caller, &link.to_string_lossy())
+        .unwrap();
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(elsewhere.path(), &link).unwrap();
+    assert_eq!(permit.workspace(), root.canonicalize().unwrap());
+    assert!(h
+        .app
+        .admit_dashboard_workspace(&caller, &link.to_string_lossy())
+        .is_err());
+}
+
+/// Codex 3331 r1: `open` reuses only a dashboard already showing the
+/// requested workspace.
+#[test]
+fn opening_a_dashboard_never_returns_another_workspaces_pane() {
+    let _on = crate::release::set_test_experiments(&[
+        crate::release::ReleaseFeature::AgentsDashboard,
+        crate::release::ReleaseFeature::Assistant,
+    ]);
+    let mut h = HostHarness::new();
+    h.add_focused_terminal();
+    let a = h.workspace_root();
+    let b = tempfile::tempdir().unwrap();
+    let first = h.app.open_command_view(b.path()).unwrap();
+    h.run_frames(2);
+    let second = h.app.open_command_view(&a).unwrap();
+    h.run_frames(2);
+    assert_ne!(first, second, "B's pane was returned for A");
+    let again = h.app.open_command_view(&a).unwrap();
+    assert_eq!(again, second, "A's own pane is reused");
 }
 
 /// Design 1285 section 4, condition 3: with the dashboard experiment off,

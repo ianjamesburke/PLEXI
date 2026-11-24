@@ -472,7 +472,10 @@ impl PlexiApp {
                 ..refusal
             });
         }
-        let path = std::path::Path::new(workspace);
+        // Resolved once: containment, approval and every read use this path.
+        let canonical =
+            crate::broker::permit::ReadDashboard::canonical(std::path::Path::new(workspace));
+        let path = canonical.as_path();
         if let SocketCaller::Pane(pane) = caller {
             if !self.pane_may_access_context_root(pane.terminal_pane, path) {
                 return Err(refuse(format!(
@@ -1272,19 +1275,23 @@ impl PlexiApp {
                     "open" | "list" => match self.dashboard_read_permit(&origin, &workspace) {
                         Err(refusal) => refusal.reply(),
                         Ok(permit) if op == "list" => match permit {
-                            Some(permit) => crate::host::command_view::read(&permit, &workspace)
-                                .unwrap_or_else(|error| {
+                            Some(permit) => crate::host::command_view::read(&permit).unwrap_or_else(
+                                |error| {
                                     serde_json::json!({"ok": false, "error_code": "permission_denied", "error": error})
-                                }),
+                                },
+                            ),
                             None => crate::agent::runs::projection(&workspace),
                         },
-                        Ok(permit) => match permit
-                            .map_or(Ok(()), |permit| permit.recheck(&workspace))
-                            .and_then(|()| self.open_command_view(&workspace))
-                        {
-                            Ok(pane_id) => serde_json::json!({"ok": true, "pane_id": pane_id}),
-                            Err(error) => serde_json::json!({"ok": false, "error": error}),
-                        },
+                        Ok(permit) => {
+                            let served = match &permit {
+                                Some(permit) => permit.recheck().map(|()| permit.workspace()),
+                                None => Ok(workspace.clone()),
+                            };
+                            match served.and_then(|served| self.open_command_view(&served)) {
+                                Ok(pane_id) => serde_json::json!({"ok": true, "pane_id": pane_id}),
+                                Err(error) => serde_json::json!({"ok": false, "error": error}),
+                            }
+                        }
                     },
                     "cancel" => {
                         let run = payload

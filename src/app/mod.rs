@@ -1309,16 +1309,9 @@ fn handle_socket_connection(
                 ),
                 StreamFrame::EventsList => handle_events_list(write_half, &val),
                 StreamFrame::CommandViewFollow => {
-                    let workspace = val
-                        .get("workspace")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("")
-                        .to_string();
                     log::info!("command_view: follow connected caller={}", caller.class());
                     match dashboard {
-                        Some(permit) => {
-                            crate::host::command_view::serve_follow(write_half, workspace, &permit)
-                        }
+                        Some(permit) => crate::host::command_view::serve_follow(write_half, &permit),
                         None => log::error!("command_view: follow admitted without a permit"),
                     }
                 }

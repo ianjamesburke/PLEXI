@@ -119,11 +119,10 @@ impl ReadDashboard {
     /// The one admitted member of an outside process's approval.
     const MEMBER: &'static str = "workspace";
 
-    /// The canonical target: the workspace the caller named.
-    pub(crate) fn target(workspace: &std::path::Path) -> String {
+    /// The workspace the caller named, resolved once. Admission carries this
+    /// path through containment, approval and every read.
+    pub(crate) fn canonical(workspace: &std::path::Path) -> std::path::PathBuf {
         crate::platform::path::canonical_or_self(workspace)
-            .display()
-            .to_string()
     }
 }
 
@@ -271,24 +270,22 @@ impl<Op: Operation> Permit<Op> {
 }
 
 impl Permit<ReadDashboard> {
-    /// Ask again, at the read, whether `workspace` may still be served. A
+    /// The workspace this permit was admitted for, canonical as of admission.
+    /// Every read serves this path, never the one the caller named again.
+    pub(crate) fn workspace(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from(&self.target)
+    }
+
+    /// Ask again, at the read, whether the workspace may still be served. A
     /// pane holds no broker row: its containment was checked at admission
     /// against the scope it held then, so it stands while the incarnation is
     /// unrevoked at that revision. An outside process holds one approved
     /// question, asked again in the live store. Call it after the payload is
     /// staged and before it is handed over, and never hold a lock across the
     /// handoff.
-    pub(crate) fn recheck(&self, workspace: &std::path::Path) -> Result<(), String> {
-        let target = ReadDashboard::target(workspace);
+    pub(crate) fn recheck(&self) -> Result<(), String> {
         if !self.coverage.members.is_empty() {
-            return self.commit(&target, ReadDashboard::MEMBER).map(drop);
-        }
-        if target != self.target {
-            return Err(format!(
-                "{} permit is for {}, not {target}",
-                ReadDashboard::NAME,
-                self.target
-            ));
+            return self.commit(&self.target, ReadDashboard::MEMBER).map(drop);
         }
         match &self.subject {
             PermitSubject::Pane(scope) => scope.current().map(drop),
@@ -299,20 +296,26 @@ impl Permit<ReadDashboard> {
         }
     }
 
-    /// A permit for an outside process's one approved read of `workspace`.
+    /// A permit for an outside process's one approved read of `workspace`,
+    /// which the caller has already canonicalized.
     pub(crate) fn external(
         workspace: &std::path::Path,
         monitor: Arc<PermissionMonitor>,
         approved: Approved,
-    ) -> Self {
-        let target = ReadDashboard::target(workspace);
+    ) -> Result<Self, String> {
+        if !approved.is_external_once_use(ReadDashboard::NAME) {
+            return Err(format!(
+                "permission_denied: {} for an outside process needs a one-use approval; choose Once",
+                ReadDashboard::NAME
+            ));
+        }
         let coverage = Coverage::new(monitor, vec![(ReadDashboard::MEMBER.to_string(), approved)]);
-        mint_unbound("external", target, coverage)
+        Ok(mint_unbound("external", workspace.display().to_string(), coverage))
     }
 
-    /// A permit for a pane reading a workspace its own scope contains. The
-    /// caller has checked containment; the permit pins the incarnation and
-    /// scope revision it was checked under.
+    /// A permit for a pane reading `workspace` (already canonical), which its
+    /// own scope contains. The caller has checked containment; the permit
+    /// pins the incarnation and scope revision it was checked under.
     pub(crate) fn contained(
         scope: AdmittedScope,
         workspace: &std::path::Path,
@@ -320,7 +323,7 @@ impl Permit<ReadDashboard> {
     ) -> Result<Self, String> {
         mint_pane(
             scope,
-            ReadDashboard::target(workspace),
+            workspace.display().to_string(),
             Coverage::new(monitor, Vec::new()),
         )
     }

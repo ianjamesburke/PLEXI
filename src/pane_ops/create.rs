@@ -3818,11 +3818,26 @@ impl PlexiApp {
             ));
         }
         let context_id = self.windows[self.active_window].context_id;
+        let workspace = crate::platform::path::canonical_or_self(workspace);
+        // Only a dashboard already showing this workspace is reused: another
+        // one's pane would serve that workspace's projection.
+        let showing_workspace = |app: &Self, win_idx: usize, slot: PaneId, depth: usize| {
+            depth == 0
+                && app.windows[win_idx]
+                    .panes
+                    .get(&slot)
+                    .and_then(|pane| pane.as_view())
+                    .is_some_and(|view| {
+                        crate::platform::path::canonical_or_self(&view.workspace_root) == workspace
+                    })
+        };
         if let Some((win_idx, slot, depth)) =
             self.locate_view_instance("agents-dashboard", Some(context_id), OriginQuery::Builtin)
         {
-            self.reveal_and_focus_instance(win_idx, slot, depth);
-            return Ok(slot);
+            if showing_workspace(self, win_idx, slot, depth) {
+                self.reveal_and_focus_instance(win_idx, slot, depth);
+                return Ok(slot);
+            }
         }
         let app = Box::new(crate::app::agents_dashboard_view::AgentsDashboardView::new(
             workspace.to_path_buf(),
