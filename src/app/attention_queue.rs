@@ -3200,15 +3200,7 @@ mod tests {
                 id: "ws".into(),
                 root: root.path().to_owned(),
             };
-            let first = crate::workspace::secrets::read_pane_secret(
-                &monitor,
-                &store,
-                &actor,
-                "CANARY",
-                &scope,
-                root.path(),
-            )
-            .unwrap();
+            let first = Self::read(&monitor, &store, &actor, &scope, root.path(), false);
             let ReadResult::PermissionRequired { pending_id, .. } = first else {
                 panic!("expected a pending approval, got {first:?}");
             };
@@ -3234,15 +3226,52 @@ mod tests {
 
         /// The protected operation, retried exactly as the requester would.
         fn retry_read(&self) -> ReadResult {
-            crate::workspace::secrets::read_pane_secret(
+            Self::read(
                 &self.monitor,
                 &self.store,
                 &self.actor,
-                "CANARY",
                 &self.scope,
                 self.root.path(),
+                true,
+            )
+        }
+
+        /// One protected read. A secret approval belongs to the call that
+        /// filed it, so the first read and its retry share one call id.
+        fn read(
+            monitor: &PermissionMonitor,
+            store: &InMemoryKeychain,
+            actor: &SecretActor,
+            scope: &SecretScope,
+            root: &std::path::Path,
+            claim: bool,
+        ) -> ReadResult {
+            use crate::broker::gate::{AdmitRequest, UseDecision};
+            crate::workspace::secrets::read_pane_secret_with(
+                monitor,
+                store,
+                actor,
+                crate::workspace::secrets::ReadTarget {
+                    name: "CANARY",
+                    scope,
+                    global_root: root,
+                },
+                None,
+                |req| {
+                    let req = AdmitRequest {
+                        call_id: "overlay-call",
+                        ..req
+                    };
+                    Some(if claim {
+                        monitor.admit_for_use_if(req, None, Some(&|| true))
+                    } else {
+                        monitor.admit_for_use(req, None)
+                    })
+                },
             )
             .unwrap()
+            .unwrap()
+            .result
         }
 
         /// Zero decision, zero grant, zero execution, overlay still open.
@@ -3275,8 +3304,16 @@ mod tests {
                 self.h.app.attention_queue.decision_overlay.is_some(),
                 "{origin}: overlay closed"
             );
+            let again = Self::read(
+                &self.monitor,
+                &self.store,
+                &self.actor,
+                &self.scope,
+                self.root.path(),
+                false,
+            );
             assert!(
-                matches!(self.retry_read(), ReadResult::PermissionRequired { .. }),
+                matches!(again, ReadResult::PermissionRequired { .. }),
                 "{origin}: the protected operation executed or changed state"
             );
         }
