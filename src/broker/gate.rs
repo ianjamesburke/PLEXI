@@ -526,7 +526,7 @@ pub struct PermissionMonitor {
     pending: Mutex<Vec<Pending>>,
     /// Choices already applied, so a sheet and a dispatcher can both approve once.
     decision_lock: Mutex<()>,
-    resolutions: Mutex<std::collections::HashMap<String, ApprovalChoice>>,
+    resolutions: Mutex<std::collections::HashMap<String, (ApprovalChoice, String)>>,
     session_id: String,
     credentials: Mutex<std::collections::HashMap<String, SessionCredential>>,
     admission: Mutex<()>,
@@ -663,6 +663,16 @@ pub struct AdmitRequest<'a> {
 pub(crate) struct Approved {
     request: PermissionRequest,
     posture: Option<crate::broker::PermissionPosture>,
+}
+
+impl Approved {
+    pub(super) fn is_external_secret_read(&self) -> bool {
+        self.request.actor_type == ActorType::External
+            && self.request.actor_id == super::principal::EXTERNAL_ID
+            && self.request.target_type == TargetType::Secret
+            && self.request.target_id == "secret.get"
+            && !self.request.operation_id.is_empty()
+    }
 }
 
 /// The broker's answer to one use ([`PermissionMonitor::admit_for_use`]).
@@ -1178,6 +1188,17 @@ impl PermissionMonitor {
         req: AdmitRequest<'_>,
         posture: Option<&crate::broker::PermissionPosture>,
     ) -> UseDecision {
+        self.admit_for_use_if(req, posture, None)
+    }
+
+    /// A continuation rechecks the exact request under the claim lock. It
+    /// never files a replacement card if the witnessed grant was revoked.
+    pub(crate) fn admit_for_use_if(
+        &self,
+        req: AdmitRequest<'_>,
+        posture: Option<&crate::broker::PermissionPosture>,
+        before_claim: Option<&dyn Fn() -> bool>,
+    ) -> UseDecision {
         let Ok(fingerprint) = fingerprint_args(req.input_json) else {
             return UseDecision::Denied;
         };
@@ -1190,7 +1211,9 @@ impl PermissionMonitor {
         for _ in 0..2 {
             // A deny or an ask goes through the ordinary admission below,
             // which records the denial or files the ask.
-            if let Ok(mut claimed) = self.admit_questions(vec![request.clone()], posture) {
+            if let Ok(mut claimed) =
+                self.admit_locked(vec![request.clone()], posture, None, before_claim)
+            {
                 let (approved, grant_id) = claimed.remove(0);
                 return UseDecision::Allowed {
                     fingerprint: approved.request.args_fingerprint.clone(),
@@ -1199,7 +1222,10 @@ impl PermissionMonitor {
                     grant_id,
                 };
             }
-            match self.admit_inner(req, posture, None) {
+            if before_claim.is_some() {
+                return UseDecision::Denied;
+            }
+            match self.admit_with_posture(req, posture) {
                 Admission::Required { pending_request_id } => {
                     return UseDecision::Required { pending_request_id }
                 }
@@ -1219,7 +1245,7 @@ impl PermissionMonitor {
         requests: Vec<PermissionRequest>,
         posture: Option<&crate::broker::PermissionPosture>,
     ) -> Result<Vec<(Approved, String)>, Decision> {
-        self.admit_locked(requests, posture, None)
+        self.admit_locked(requests, posture, None, None)
     }
 
     /// [`Self::admit_questions`] after a person allowed this one use: under
@@ -1232,7 +1258,7 @@ impl PermissionMonitor {
         posture: Option<&crate::broker::PermissionPosture>,
         once_row: &dyn Fn(&PermissionRequest) -> GrantRecord,
     ) -> Result<Vec<(Approved, String)>, Decision> {
-        self.admit_locked(requests, posture, Some(once_row))
+        self.admit_locked(requests, posture, Some(once_row), None)
     }
 
     fn admit_locked(
@@ -1240,6 +1266,7 @@ impl PermissionMonitor {
         mut requests: Vec<PermissionRequest>,
         posture: Option<&crate::broker::PermissionPosture>,
         once_row: Option<&dyn Fn(&PermissionRequest) -> GrantRecord>,
+        before_claim: Option<&dyn Fn() -> bool>,
     ) -> Result<Vec<(Approved, String)>, Decision> {
         let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
         let now = self.now_secs();
@@ -1271,21 +1298,32 @@ impl PermissionMonitor {
         if strictest != Decision::Allow {
             return Err(strictest);
         }
+        // Both the admission and store locks are held. A live invocation's
+        // successful owner/deadline check here linearizes effect start with
+        // the Once claim below. No revoke or competing claim can interleave.
+        if before_claim.is_some_and(|current| !current()) {
+            return Err(Decision::Deny);
+        }
         Ok(requests
             .into_iter()
             .map(|mut request| {
-                let standing = store.decide_at_commit(&request, posture, now) == Decision::Allow;
-                let grant_id = if standing {
+                // Spend this secret call's reserved click even if a sibling acquired
+                // a standing grant while the call was waiting.
+                let claim_once = request.target_type.is_workspace_secret(&request.target_id)
+                    || store.decide_at_commit(&request, posture, now) != Decision::Allow;
+                let claim = claim_once
+                    .then(|| store.claim_once(&request, now, &use_id))
+                    .flatten();
+                let grant_id = if let Some(id) = claim {
+                    request.operation_id = use_id.clone();
+                    id
+                } else {
                     store
                         .records()
                         .iter()
                         .find(|r| r.decision == Decision::Allow && r.matches(&request, now))
                         .map(|r| r.grant_id.clone())
                         .unwrap_or_default()
-                } else {
-                    let claimed = store.claim_once(&request, now, &use_id).unwrap_or_default();
-                    request.operation_id = use_id.clone();
-                    claimed
                 };
                 let approved = Approved {
                     request,
@@ -1433,6 +1471,12 @@ impl PermissionMonitor {
         }
         let binding = self.exact_binding(&req, fingerprint);
         let request = PermissionRequest::exact(&binding);
+        // Secret workers may file simultaneously. Finish publishing and auditing
+        // the card before another worker files one or a click resolves it.
+        let _filing = binding
+            .target_type
+            .is_workspace_secret(req.tool)
+            .then(|| self.decision_lock.lock().unwrap_or_else(|e| e.into_inner()));
         self.expire_soft_grants();
         let now = self.now_secs();
         let decision = self.store().evaluate_at(&request, posture, now);
@@ -1472,6 +1516,22 @@ impl PermissionMonitor {
                 }
             }
             Decision::Ask => {
+                let outside_secret = (req.target_type == TargetType::Secret
+                    && req.principal.actor_type() == ActorType::External
+                    && super::workspace_secret_tool(req.tool))
+                .then(|| {
+                    let input: serde_json::Value =
+                        serde_json::from_str(req.input_json).unwrap_or_default();
+                    let caller = input["caller"].as_str().unwrap_or(req.principal.actor_id());
+                    let resource = binding.resource_id.as_deref().unwrap_or(req.tool);
+                    let mut summary =
+                        format!("Allow {caller} to use {} once on {resource}", req.tool);
+                    if let Some(route) = input["route_name"].as_str() {
+                        summary.push_str(&format!(" for environment variable {route}"));
+                    }
+                    summary
+                });
+                let disclosure = disclosure.or(outside_secret.as_deref());
                 let id = self.persist_pending(&binding, req.tool, req.input_json, disclosure);
                 trace("ask", mechanism, &format!("pending={id}"));
                 let _ = self.audit_with(
@@ -1556,18 +1616,14 @@ impl PermissionMonitor {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(pending_id)
-            .copied()
+            .map(|(choice, _)| *choice)
     }
 
     /// True when a desktop click already allowed this pending id.
     #[cfg(test)]
     pub fn approval_granted(&self, pending_id: &str) -> bool {
         matches!(
-            self.resolutions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(pending_id)
-                .copied(),
+            self.approval_resolution(pending_id),
             Some(
                 ApprovalChoice::Once
                     | ApprovalChoice::Session
@@ -1607,6 +1663,37 @@ impl PermissionMonitor {
         result
     }
 
+    /// Cancel this invocation's card or retire its Once if a click won the race.
+    pub(crate) fn withdraw_live_ask(&self, pending: &str) -> Result<(), String> {
+        if let Err(error) = self.cancel_pending(pending) {
+            let resolution = self
+                .resolutions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(pending)
+                .cloned();
+            match resolution {
+                Some((ApprovalChoice::Once, id)) => {
+                    let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+                    {
+                        let mut store = self.store();
+                        let Some(row) = store.records_mut().iter_mut().find(|r| r.grant_id == id)
+                        else {
+                            return Ok(());
+                        };
+                        // Leave it spent even if saving the revocation fails.
+                        row.consumed = true;
+                        row.bound_operation_id = None;
+                    }
+                    self.revoke_locked(&id)?;
+                }
+                Some(_) => (),
+                None => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
     fn approve_pending_inner(
         &self,
         pending_id: &str,
@@ -1638,6 +1725,13 @@ impl PermissionMonitor {
             && pending.binding.target_type != TargetType::PluginConnector
         {
             return Err("tool allowance is only available for plugin tools".to_string());
+        }
+        if pending.binding.actor_type == ActorType::External
+            && pending.binding.target_type == TargetType::Secret
+            && super::workspace_secret_tool(&pending.tool)
+            && choice == ApprovalChoice::Session
+        {
+            return Err("An outside terminal needs a one-use approval for this secret.".into());
         }
         if pending.binding.actor_type == ActorType::External
             && matches!(
@@ -1674,10 +1768,6 @@ impl PermissionMonitor {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .retain(|row| row.id != pending_id);
-            self.resolutions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(pending_id.to_string(), choice);
             let decision = if choice == ApprovalChoice::DenyAlways {
                 "deny_always"
             } else {
@@ -1714,6 +1804,11 @@ impl PermissionMonitor {
                 close_decision,
                 &grant_id,
             );
+            // Publish the verdict after settling the card on the desktop.
+            self.resolutions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(pending_id.to_string(), (choice, grant_id.clone()));
             if choice == ApprovalChoice::DenyAlways && is_plugin_capability(&pending.binding) {
                 self.settle_covered_pendings(&grant_id, choice);
             }
@@ -1764,6 +1859,10 @@ impl PermissionMonitor {
         );
         record.session_id = session_id;
         record.expires_at = expires_at;
+        if record.is_secret_once() {
+            // The host mints the call ID for the read or mutation on this connection.
+            record.bound_operation_id = Some(binding.call_id.clone());
+        }
         // A remembered CLI operation grant ignores argument bytes but never the
         // operation binding: values stay constrained by the definition's types.
         // A plugin's "Grant once" covers the one request it was shown for.
@@ -1835,10 +1934,6 @@ impl PermissionMonitor {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|row| row.id != pending_id);
-        self.resolutions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(pending_id.to_string(), choice);
         log::info!("permission_monitor: approved pending {pending_id} as {grant_id}");
         let _ = self.close_needs_you(
             pending_id,
@@ -1846,6 +1941,11 @@ impl PermissionMonitor {
             "approved",
             &grant_id,
         );
+        // Publish the verdict after settling the card on the desktop.
+        self.resolutions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(pending_id.to_string(), (choice, grant_id.clone()));
         if plugin_capability && choice != ApprovalChoice::Once {
             self.settle_covered_pendings(&grant_id, choice);
         }
@@ -1894,7 +1994,7 @@ impl PermissionMonitor {
             self.resolutions
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(row.id.clone(), settled);
+                .insert(row.id.clone(), (settled, grant_id.to_owned()));
             let (kind, label, resolution) = if decision == Decision::Deny {
                 ("deny", "deny_always", NeedsYouResolution::Denied)
             } else {
@@ -2277,7 +2377,7 @@ impl PermissionMonitor {
             self.resolutions
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(id.clone(), ApprovalChoice::Deny);
+                .insert(id.clone(), (ApprovalChoice::Deny, String::new()));
             self.run_outcomes
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -2893,7 +2993,14 @@ impl PermissionMonitor {
             kind: NeedsYouKind::ApprovalClick,
             actor: pending.binding.actor_id.clone(),
             resource: resource.clone(),
-            summary: format!("Allow {}", pending.tool),
+            summary: if pending.binding.target_type == TargetType::Secret
+                && pending.binding.actor_type == ActorType::External
+                && super::workspace_secret_tool(&pending.tool)
+            {
+                pending.input_summary.clone()
+            } else {
+                format!("Allow {}", pending.tool)
+            },
             created_at: now,
             expires_at: None,
             run_tag: Some(pending.binding.call_id.clone()),
@@ -5757,6 +5864,11 @@ fn is_plugin_capability(binding: &ExactBinding) -> bool {
 }
 
 fn same_pending(row: &Pending, binding: &ExactBinding) -> bool {
+    if binding.target_type.is_workspace_secret(&binding.target_id)
+        && row.binding.call_id != binding.call_id
+    {
+        return false;
+    }
     row.binding.actor_id == binding.actor_id
         && row.binding.actor_type == binding.actor_type
         && row.binding.actor_scope == binding.actor_scope
@@ -5839,7 +5951,7 @@ pub(crate) fn resource_of(tool: &str, input_json: &str) -> (ResourceScope, Optio
     }
     let place_key = match tool {
         "secret.read" => Some("folder"),
-        "secret.get" => Some("scope"),
+        tool if super::workspace_secret_tool(tool) => Some("scope"),
         _ => None,
     };
     if let Some(place_key) = place_key {
@@ -6193,6 +6305,92 @@ mod tests {
     const TEST_HOST: &crate::broker::custody::HostProcess =
         &crate::broker::custody::HostProcess::for_test();
     use std::time::Duration;
+
+    #[test]
+    fn a_secret_click_reserves_one_claim_for_the_call_that_filed_it() {
+        let monitor = PermissionMonitor::ephemeral();
+        let principal = crate::broker::principal::Principal::agent("pane:7");
+        let req = AdmitRequest {
+            call_id: "first",
+            tool: "secret.get",
+            input_json: r#"{"name":"KEY","scope":"global"}"#,
+            principal: &principal,
+            actor_scope: ActorScope::User,
+            trust_origin: "host",
+            workspace_root: Path::new("/ws"),
+            context_id: 0,
+            package_id: "",
+            instance_id: 0,
+            target_type: TargetType::Secret,
+        };
+        let UseDecision::Required { pending_request_id } = monitor.admit_for_use(req, None) else {
+            panic!("expected a card");
+        };
+        let second = AdmitRequest {
+            call_id: "second",
+            ..req
+        };
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::Once)
+            .unwrap();
+        let UseDecision::Required {
+            pending_request_id: other_id,
+        } = monitor.admit_for_use(second, None)
+        else {
+            panic!("the second invocation spent the first click");
+        };
+        assert_ne!(other_id, pending_request_id);
+        monitor
+            .approve_pending(&other_id, ApprovalChoice::Once)
+            .unwrap();
+        monitor.withdraw_live_ask(&other_id).unwrap();
+        assert_eq!(monitor.store().records().len(), 1);
+        let UseDecision::Allowed { approved, .. } =
+            monitor.admit_for_use_if(req, None, Some(&|| true))
+        else {
+            panic!("first use must claim Once");
+        };
+        assert!(matches!(
+            monitor.admit_for_use_if(req, None, Some(&|| true)),
+            UseDecision::Denied
+        ));
+        assert!(monitor.commit(&approved).is_ok());
+        assert!(monitor.open_needs_you().is_empty());
+
+        // A sibling card can also acquire a standing grant before this call claims its Once.
+        let ask = |call_id| match monitor.admit(AdmitRequest { call_id, ..req }) {
+            Admission::Required { pending_request_id } => pending_request_id,
+            _ => panic!("expected a new card"),
+        };
+        let one = ask("one");
+        let session = ask("session");
+        monitor
+            .approve_pending(&session, ApprovalChoice::Session)
+            .unwrap();
+        monitor.approve_pending(&one, ApprovalChoice::Once).unwrap();
+        let UseDecision::Allowed { grant_id, .. } = monitor.admit_for_use_if(
+            AdmitRequest {
+                call_id: "one",
+                ..req
+            },
+            None,
+            Some(&|| true),
+        ) else {
+            panic!("the original invocation must finish");
+        };
+        assert!(monitor
+            .store()
+            .records()
+            .iter()
+            .any(|row| row.grant_id == grant_id && row.consumed));
+        assert!(matches!(
+            monitor.admit(AdmitRequest {
+                call_id: "next",
+                ..req
+            }),
+            Admission::Proceed { .. }
+        ));
+    }
 
     #[test]
     fn only_the_desktop_approves_and_seal_items_need_the_desktop_to_deny() {

@@ -346,3 +346,37 @@ fn guard_fails_for_default_or_unsafe_in_custody() {
         "{with_unsafe:?}"
     );
 }
+
+#[test]
+fn workspace_secret_commands_never_open_a_store() {
+    struct StoreGuard;
+    impl<'ast> Visit<'ast> for StoreGuard {
+        fn visit_path(&mut self, path: &'ast syn::Path) {
+            assert!(!matches!(
+                last_ident(path).as_deref(),
+                Some("system_store" | "folder_store")
+            ));
+            syn::visit::visit_path(self, path);
+        }
+    }
+    let (_, source, _) = crate_sources()
+        .into_iter()
+        .find(|(p, _, _)| p == "cli/workspace.rs")
+        .unwrap();
+    let file = syn::parse_file(&source).unwrap();
+    for name in [
+        "workspace_secret_get",
+        "workspace_secret_set",
+        "workspace_secret_delete",
+    ] {
+        let function = file
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Fn(f) if f.sig.ident == name => Some(f),
+                _ => None,
+            })
+            .unwrap();
+        StoreGuard.visit_block(&function.block);
+    }
+}

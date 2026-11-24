@@ -246,17 +246,17 @@ pub(super) fn admitted_read(
     label: &str,
     fetch: impl FnOnce() -> Result<Option<Zeroizing<String>>, super::store::SecretError>,
 ) -> Result<ReadResult, String> {
-    admitted_read_with_posture(
+    admitted_read_with(
         monitor,
         actor,
         tool,
         input,
         workspace_root,
         label,
-        None,
+        |req| Some(monitor.admit_for_use(req, None)),
         fetch,
     )
-    .map(|read| read.result)
+    .map(|read| read.expect("synchronous admission").result)
 }
 
 /// A read and the broker's approval of it, when one admitted it. The value
@@ -276,20 +276,19 @@ impl From<ReadResult> for GrantedRead {
     }
 }
 
-/// As [`admitted_read`], using a posture snapshotted at agent spawn. The
-/// broker claims a once grant for this read before the fetch, under the lock
-/// every revoke takes, so two readers cannot share one approval.
+/// Admit before fetching. A live caller that already received its terminal
+/// verdict returns None and never opens the store.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn admitted_read_with_posture(
+pub(super) fn admitted_read_with(
     monitor: &PermissionMonitor,
     actor: &SecretActor,
     tool: &str,
     input: &str,
     workspace_root: &Path,
     label: &str,
-    posture: Option<&crate::broker::PermissionPosture>,
+    admit: impl FnOnce(AdmitRequest) -> Option<UseDecision>,
     fetch: impl FnOnce() -> Result<Option<Zeroizing<String>>, super::store::SecretError>,
-) -> Result<GrantedRead, String> {
+) -> Result<Option<GrantedRead>, String> {
     let Some(principal) =
         crate::broker::principal::Principal::from_actor(actor.kind, &actor.id, None)
     else {
@@ -297,26 +296,25 @@ pub(super) fn admitted_read_with_posture(
             "secrets: {tool} denied {label} actor={}: not a requesting principal",
             actor.id
         );
-        return Ok(ReadResult::Denied.into());
+        return Ok(Some(ReadResult::Denied.into()));
     };
     let call_id = format!("secret-read-{}", uuid::Uuid::new_v4());
-    let admission = monitor.admit_for_use(
-        AdmitRequest {
-            call_id: &call_id,
-            tool,
-            input_json: input,
-            principal: &principal,
-            actor_scope: ActorScope::User,
-            trust_origin: TRUST_ORIGIN,
-            workspace_root,
-            context_id: 0,
-            package_id: "",
-            instance_id: 0,
-            target_type: TargetType::Secret,
-        },
-        posture,
-    );
-    Ok(match admission {
+    let Some(admission) = admit(AdmitRequest {
+        call_id: &call_id,
+        tool,
+        input_json: input,
+        principal: &principal,
+        actor_scope: ActorScope::User,
+        trust_origin: TRUST_ORIGIN,
+        workspace_root,
+        context_id: 0,
+        package_id: "",
+        instance_id: 0,
+        target_type: TargetType::Secret,
+    }) else {
+        return Ok(None);
+    };
+    Ok(Some(match admission {
         UseDecision::Required { pending_request_id } => GrantedRead::from({
             log::info!(
                 "secrets: {tool} permission_required {label} actor={} pending={pending_request_id}",
@@ -344,7 +342,7 @@ pub(super) fn admitted_read_with_posture(
                     "secrets: {tool} blocked before fetch {label} actor={}",
                     actor.id
                 );
-                return Ok(ReadResult::Denied.into());
+                return Ok(Some(ReadResult::Denied.into()));
             }
             // A once grant was claimed by the admission: a missing or failed
             // read still spends it. No lock is held across the fetch.
@@ -369,7 +367,7 @@ pub(super) fn admitted_read_with_posture(
                 .is_err()
             {
                 log::info!("secrets: {tool} audit failed after fetch; withholding {label}");
-                return Ok(ReadResult::Denied.into());
+                return Ok(Some(ReadResult::Denied.into()));
             }
             log::info!(
                 "secrets: {tool} allowed {label} actor={} grant={grant_id} outcome={outcome}",
@@ -387,7 +385,7 @@ pub(super) fn admitted_read_with_posture(
                 approved: Some(*approved),
             }
         }
-    })
+    }))
 }
 
 /// One folder-secret ask the Assistant sheet can show. The value is not here.
@@ -1360,7 +1358,7 @@ mod approval_retry_tests {
         let first = admitted_read(
             &monitor,
             &actor,
-            "secret.get",
+            SECRET_READ_TOOL,
             INPUT,
             root.path(),
             "FOO",
@@ -1382,7 +1380,7 @@ mod approval_retry_tests {
                 admitted_read(
                     target.0,
                     target.1,
-                    "secret.get",
+                    SECRET_READ_TOOL,
                     INPUT,
                     target.2,
                     "FOO",
@@ -1399,7 +1397,7 @@ mod approval_retry_tests {
             let second = admitted_read(
                 &monitor,
                 &actor,
-                "secret.get",
+                SECRET_READ_TOOL,
                 INPUT,
                 root.path(),
                 "FOO",
@@ -1425,7 +1423,7 @@ mod approval_retry_tests {
                 admitted_read(
                     &monitor,
                     &actor,
-                    "secret.get",
+                    SECRET_READ_TOOL,
                     r#"{"name":"FOO","scope":"global"}"#,
                     root.path(),
                     "FOO",

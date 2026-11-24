@@ -1337,6 +1337,24 @@ pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {
     socket
 }
 
+/// The host a secret command talks to: the usual routing, else this binary's
+/// own channel host, so a clean shell with no `PLEXI_SOCKET` still finds it.
+pub(crate) fn resolve_secret_socket() -> std::path::PathBuf {
+    secret_socket_from(
+        resolve_command_socket(),
+        crate::config::build_channel(),
+        command_profile_home,
+    )
+}
+
+fn secret_socket_from(
+    routed: Option<std::path::PathBuf>,
+    channel: Option<String>,
+    home: impl FnOnce() -> std::path::PathBuf,
+) -> std::path::PathBuf {
+    routed.unwrap_or_else(|| host::HostTarget::resolve(channel, None, &home()).socket())
+}
+
 const SOCKET_TRANSPORT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Debug)]
@@ -1650,7 +1668,7 @@ const IDENTITY_ACK_VERBS: &[&str] = &[
     "agent_reopen", "agent_spawn", "agent_wait", "agents_api", "call_plugin_tool",
     "caller_context", "create_context", "create_sub_context", "dismiss_notification",
     "file_open", "focus_context", "list_plugin_tools", "needs_you_api", "notify",
-    "pane_message_send", "pane_secret_get", "pane_secret_list", "permissions", "resource_lease",
+    "pane_message_send", "secret_get", "secret_set", "secret_delete", "pane_secret_list", "permissions", "resource_lease",
     "send_to_pane", "set_agent_state", "spawn_pane",
 ];
 
@@ -1699,12 +1717,12 @@ pub(super) fn try_send_to_socket_quiet(payload: serde_json::Value) {
 fn send_to_socket_connected(
     payload: serde_json::Value,
 ) -> Result<crate::platform::ipc::IpcStream, i32> {
-    let socket_path = match resolve_command_socket() {
-        Some(path) => path,
-        None => {
+    let socket_path = match payload["type"].as_str() {
+        Some("secret_get" | "secret_set" | "secret_delete") => resolve_secret_socket(),
+        _ => resolve_command_socket().ok_or_else(|| {
             eprintln!("{NO_COMMAND_SOCKET}");
-            return Err(1);
-        }
+            1
+        })?,
     };
     let line = format!("{}\n", payload);
     let started = std::time::Instant::now();
@@ -2408,3 +2426,24 @@ pub fn host_action_cli(
 
 #[cfg(test)]
 mod parity_tests;
+
+#[cfg(test)]
+mod secret_socket_tests {
+    use super::secret_socket_from;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn a_clean_stable_shell_finds_the_stable_host_and_routing_still_wins() {
+        let home = Path::new("/home/someone");
+        let fallback = secret_socket_from(None, None, || home.to_path_buf());
+        assert_eq!(
+            fallback,
+            plexi_distribution::host_presence::endpoint_in(&home.join(".plexi"))
+        );
+        let routed = PathBuf::from("/elsewhere/notify.sock");
+        assert_eq!(
+            secret_socket_from(Some(routed.clone()), None, || unreachable!("routed")),
+            routed
+        );
+    }
+}

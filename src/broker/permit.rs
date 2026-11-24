@@ -189,6 +189,20 @@ pub(crate) fn mint_pane<Op: Operation>(
     Ok(minted(PermitSubject::Pane(admitted), target, coverage))
 }
 
+/// A pane approval cannot mint a secret permit without its incarnation.
+pub(crate) fn mint_external_secret(
+    class: &'static str,
+    target: String,
+    monitor: Arc<PermissionMonitor>,
+    approved: Approved,
+) -> Result<Permit<SecretRelease>, String> {
+    if !approved.is_external_secret_read() {
+        return Err("outside secret release requires an external one-use approval".into());
+    }
+    let coverage = Coverage::new(monitor, vec![(target.clone(), approved)]);
+    Ok(minted(PermitSubject::Unbound { class }, target, coverage))
+}
+
 /// Mint for a principal with no pane incarnation.
 pub(crate) fn mint_unbound<Op: UnboundOperation>(
     class: &'static str,

@@ -45,6 +45,8 @@ mod reconcile;
 mod resolver;
 mod store;
 
+pub(crate) const APPROVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 #[cfg(all(target_os = "macos", not(test)))]
 mod index;
 
@@ -77,7 +79,7 @@ pub use folder_store::backend_label;
 pub use pane_read::read_pane_secret;
 #[cfg(test)]
 pub use pane_read::SECRET_GET_TOOL;
-pub use pane_read::{read_pane_secret_with_posture, SecretScope};
+pub use pane_read::{read_pane_secret_with, ReadTarget, SecretScope};
 pub use resolver::{
     resolve, resolve_terminal_env, resolve_with_source, ResolveOutcome, ResolveWithSourceOutcome,
     WorkspaceConfig, WorkspaceSecrets,

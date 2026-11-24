@@ -1,5 +1,6 @@
 //! Shared names-only inventory and user-initiated secret mutations.
 //! Read admission and click-only approvals remain owned by the permission monitor.
+pub(crate) use super::folder::valid_env_name;
 use super::{SecretStore, WorkspaceConfig};
 use crate::broker::gate::PermissionMonitor;
 use std::path::{Path, PathBuf};
@@ -34,18 +35,16 @@ impl SecretTarget {
     }
 
     fn account(&self, name: &str) -> Result<String, String> {
-        if !super::folder::valid_env_name(name) {
-            return Err(
-                "Use an environment variable name (letters, digits and underscores).".into(),
-            );
-        }
         match self {
             Self::Global => Ok(super::keychain_user_name(name)),
             Self::Workspace { id, .. } => {
-                if super::workspace_id_is_reserved(id) {
+                let account = super::keychain_workspace_name(id, name);
+                if super::workspace_id_is_reserved(id)
+                    || super::secret_account_is_reserved(&account)
+                {
                     return Err(super::reserved_secret_error(id));
                 }
-                Ok(super::keychain_workspace_name(id, name))
+                Ok(account)
             }
             Self::Folder(folder) => {
                 if !crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets) {
@@ -265,6 +264,7 @@ fn inventory_for_scope(
 
 pub enum Mutation<'a> {
     Set(&'a str),
+    SetRouted { canonical: &'a str, value: &'a str },
     Delete,
 }
 
@@ -278,19 +278,26 @@ pub fn mutate_secret(
     name: &str,
     mutation: Mutation<'_>,
 ) -> Result<(), String> {
+    let (canonical, value) = match mutation {
+        Mutation::Set(value) => (name, Some(value)),
+        Mutation::SetRouted { canonical, value } => {
+            if !matches!(target, SecretTarget::Workspace { .. }) {
+                return Err("An alias requires a workspace.".into());
+            }
+            (canonical, Some(value))
+        }
+        Mutation::Delete => (name, None),
+    };
     let account = target.account(name)?;
-    if matches!(mutation, Mutation::Set(value) if value.is_empty()) {
+    if value == Some("") {
         return Err("Value cannot be empty.".into());
     }
-    let operation = match mutation {
-        Mutation::Set(_) => "set",
-        Mutation::Delete => "delete",
-    };
+    let operation = if value.is_some() { "set" } else { "delete" };
     let resource = target.resource(name);
     let call_id = format!("secret-mutation-{}", uuid::Uuid::new_v4());
     monitor.note_secret_mutation(&call_id, &resource, operation, "requested")?;
-    let result = match mutation {
-        Mutation::Set(value) => match target {
+    let result = match value {
+        Some(value) => match target {
             SecretTarget::Folder(folder) => {
                 super::set_folder_secret(store, name, folder, value).map(|_| ())
             }
@@ -298,7 +305,7 @@ pub fn mutate_secret(
                 .set(&account, value)
                 .map_err(|_| "Secret store write failed; value was not saved.".to_string()),
         },
-        Mutation::Delete => match target {
+        None => match target {
             SecretTarget::Folder(folder) => super::remove_folder_secret(store, name, folder),
             _ => match store.delete(&account) {
                 Ok(super::DeleteOutcome::Deleted) => Ok(()),
@@ -324,8 +331,8 @@ pub fn mutate_secret(
                 .to_string()
         })?;
     result?;
-    if let (SecretTarget::Workspace { root, .. }, Mutation::Set(_)) = (target, mutation) {
-        super::write_default_route(root, name, name).map_err(|error| {
+    if let (SecretTarget::Workspace { root, .. }, Some(_)) = (target, value) {
+        super::write_default_route(root, canonical, name).map_err(|error| {
             log::warn!("secrets_manager: saved {name}, default route failed: {error}");
             "Secret saved, but its workspace route could not be saved. Refresh before retrying."
                 .to_string()
@@ -380,7 +387,7 @@ fn parse_env(text: &str) -> Result<Vec<(String, zeroize::Zeroizing<String>)>, St
         let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
         let (name, raw) = line.split_once('=').ok_or_else(invalid)?;
         let name = name.trim();
-        if !super::folder::valid_env_name(name) {
+        if !valid_env_name(name) {
             return Err(invalid());
         }
         let raw = raw.trim();

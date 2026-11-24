@@ -696,7 +696,9 @@ impl PlexiApp {
                 crate::host::plugin_admission::LOAD_INSTALLED_TOOL
                     | crate::host::plugin_admission::TRUST_FOLDER_TOOL
             );
-            let cmd_text = if is_cli_operation || is_plugin_admission {
+            let is_secret = crate::broker::workspace_secret_tool(&pending.tool)
+                && pending.actor_id == crate::broker::principal::EXTERNAL_ID;
+            let cmd_text = if is_cli_operation || is_plugin_admission || is_secret {
                 // The summary is already a full sentence naming plugin, workspace,
                 // program and ambient authority; a tool-name prefix adds nothing.
                 pending.input_summary.clone()
@@ -722,6 +724,8 @@ impl PlexiApp {
                         self.approval_actor_label(&pending.actor_id),
                         pending.tool.replace("__", " / ")
                     )
+                } else if is_secret {
+                    pending.input_summary.clone()
                 } else if is_cli_operation {
                     format!(
                         "{} wants to run a program on this computer",
@@ -742,7 +746,12 @@ impl PlexiApp {
                     )
                 },
                 command_text: cmd_text,
-                options: if pending.tool == "pane.send" {
+                options: if is_secret {
+                    default_ask_options()
+                        .into_iter()
+                        .filter(|o| o.key != "allow_always")
+                        .collect()
+                } else if pending.tool == "pane.send" {
                     pane_send_ask_options()
                 } else if is_cli_operation {
                     cli_operation_ask_options()
@@ -3191,15 +3200,7 @@ mod tests {
                 id: "ws".into(),
                 root: root.path().to_owned(),
             };
-            let first = crate::workspace::secrets::read_pane_secret(
-                &monitor,
-                &store,
-                &actor,
-                "CANARY",
-                &scope,
-                root.path(),
-            )
-            .unwrap();
+            let first = Self::read(&monitor, &store, &actor, &scope, root.path(), false);
             let ReadResult::PermissionRequired { pending_id, .. } = first else {
                 panic!("expected a pending approval, got {first:?}");
             };
@@ -3225,15 +3226,52 @@ mod tests {
 
         /// The protected operation, retried exactly as the requester would.
         fn retry_read(&self) -> ReadResult {
-            crate::workspace::secrets::read_pane_secret(
+            Self::read(
                 &self.monitor,
                 &self.store,
                 &self.actor,
-                "CANARY",
                 &self.scope,
                 self.root.path(),
+                true,
+            )
+        }
+
+        /// One protected read. A secret approval belongs to the call that
+        /// filed it, so the first read and its retry share one call id.
+        fn read(
+            monitor: &PermissionMonitor,
+            store: &InMemoryKeychain,
+            actor: &SecretActor,
+            scope: &SecretScope,
+            root: &std::path::Path,
+            claim: bool,
+        ) -> ReadResult {
+            use crate::broker::gate::AdmitRequest;
+            crate::workspace::secrets::read_pane_secret_with(
+                monitor,
+                store,
+                actor,
+                crate::workspace::secrets::ReadTarget {
+                    name: "CANARY",
+                    scope,
+                    global_root: root,
+                },
+                None,
+                |req| {
+                    let req = AdmitRequest {
+                        call_id: "overlay-call",
+                        ..req
+                    };
+                    Some(if claim {
+                        monitor.admit_for_use_if(req, None, Some(&|| true))
+                    } else {
+                        monitor.admit_for_use(req, None)
+                    })
+                },
             )
             .unwrap()
+            .unwrap()
+            .result
         }
 
         /// Zero decision, zero grant, zero execution, overlay still open.
@@ -3266,8 +3304,16 @@ mod tests {
                 self.h.app.attention_queue.decision_overlay.is_some(),
                 "{origin}: overlay closed"
             );
+            let again = Self::read(
+                &self.monitor,
+                &self.store,
+                &self.actor,
+                &self.scope,
+                self.root.path(),
+                false,
+            );
             assert!(
-                matches!(self.retry_read(), ReadResult::PermissionRequired { .. }),
+                matches!(again, ReadResult::PermissionRequired { .. }),
                 "{origin}: the protected operation executed or changed state"
             );
         }

@@ -930,12 +930,37 @@ pub(crate) fn handle_socket_line_in(
         });
     let line = legacy_notify.as_deref().unwrap_or(line);
     match serde_json::from_str::<crate::protocol::HostRequest>(line) {
-        Ok(cmd) => {
+        Ok(mut cmd) => {
             if let Some(field) = crate::protocol::removed_payload_identity_field(&cmd) {
                 refuse_removed_field(ack_writer, field);
                 return;
             }
-            let reply_token = crate::rpc::extract_response_file_token(line);
+            let mut reply_token = crate::rpc::extract_response_file_token(line);
+            // Only the host assigns these registry keys. The client continues
+            // reading its original socket, even if two callers used the same label.
+            const SECRET_STREAM: &str = "host-secret-stream";
+            if reply_token
+                .as_deref()
+                .and_then(|s| std::path::Path::new(s).file_name())
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.starts_with(SECRET_STREAM))
+            {
+                log::warn!("pane_ipc: refused a reserved reply token");
+                return;
+            }
+            let secret_token = match &mut cmd {
+                crate::protocol::HostRequest::SecretGet { response_file, .. }
+                | crate::protocol::HostRequest::SecretSet { response_file, .. }
+                | crate::protocol::HostRequest::SecretDelete { response_file, .. } => {
+                    Some(response_file)
+                }
+                _ => None,
+            };
+            let secret_stream = secret_token.is_some();
+            if let Some(token) = secret_token.filter(|_| ack_writer.requires_reply_stream()) {
+                *token = crate::rpc::response_file_in(profile, SECRET_STREAM, "json");
+                reply_token = Some(token.clone());
+            }
             if peer.is_none() {
                 log::warn!("pane_ipc: request arrived without a kernel peer credential");
             }
@@ -961,10 +986,11 @@ pub(crate) fn handle_socket_line_in(
                 if let Some(reply_stream) = ack_writer.clone_reply_stream() {
                     crate::rpc::ReplyRegistry::register(token.clone(), reply_stream);
                 } else if ack_writer.requires_reply_stream()
-                    && matches!(cmd, crate::protocol::HostRequest::SendToPane { .. })
+                    && (secret_stream
+                        || matches!(cmd, crate::protocol::HostRequest::SendToPane { .. }))
                 {
-                    log::warn!("pane_ipc: refusing pane send without a retained reply stream");
-                    if let Err(error) = ack_writer.write_all(br#"{"error":"could not retain the reply connection; pane send was not dispatched","error_code":"reply_connection_unavailable"}"#) {
+                    log::warn!("pane_ipc: refusing request without a retained reply stream");
+                    if let Err(error) = ack_writer.write_all(br#"{"error":"could not retain the reply connection; request was not dispatched","error_code":"reply_connection_unavailable"}"#) {
                         log::warn!("pane_ipc: could not report missing reply connection: {error}");
                     }
                     return;

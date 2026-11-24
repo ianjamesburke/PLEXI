@@ -1859,28 +1859,18 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
         mon.list_needs_you()
     );
 
-    // 2. Human pane in context A cannot read context B's or nested context B's secrets via PaneSecretGet.
+    // 2. Human pane in context A cannot read context B's or nested context B's secrets via SecretGet.
     for (target_ws, secret_name, canary) in [
         (&root_b, "SECRET_B", "canary-b-0888"),
         (&nested_b, "SECRET_NESTED", "canary-nested-0888"),
     ] {
-        let reply = std::path::PathBuf::from(crate::rpc::response_file(
-            &format!("secret-get-0888-{}", uuid::Uuid::new_v4()),
-            "json",
-        ));
-        let req = HostRequest::PaneSecretGet {
-            name: secret_name.to_string(),
-            global: false,
-            workspace_root: Some(target_ws.clone()),
-            response_file: reply.to_string_lossy().into_owned(),
-        };
-        let line = serde_json::to_string(&req).unwrap();
-        let mut ack = Vec::new();
-        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[human_pid]), &mut ack);
-        pump_until(&mut h, |_| reply.is_file());
-        let body: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&reply).unwrap()).unwrap();
-        let _ = std::fs::remove_file(&reply);
+        let body = super::socket_policy_tests::send(
+            &mut h,
+            serde_json::json!({"type":"secret_get","name":secret_name,"workspace_root":target_ws}),
+            Some(crate::broker::caller::PeerWitness::for_live_pids(&[
+                human_pid,
+            ])),
+        );
         assert_eq!(
             body["status"], "denied",
             "must deny cross-context secret_get: {body}"

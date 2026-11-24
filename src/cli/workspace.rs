@@ -1,7 +1,10 @@
 use super::open::read_secret_from_stdin;
 use super::print_tip;
 use super::reply::OutputMode;
+use serde_json::Value;
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub fn workspace_init() -> i32 {
     let cwd = match std::env::current_dir() {
@@ -185,6 +188,16 @@ pub(crate) fn enforce_pane_context_scope(
     let Some(ctx_root) = active_pane_context_root() else {
         return Ok(());
     };
+    check_pane_context_scope(ctx_root, target_dir, explicit_folder, Some(op))
+}
+
+/// A host preflight supplies the verified root without performing CLI denial logging.
+pub(crate) fn check_pane_context_scope(
+    ctx_root: PathBuf,
+    target_dir: &Path,
+    explicit_folder: bool,
+    cli_op: Option<&str>,
+) -> Result<(), String> {
     let target_canon = crate::platform::path::canonical_or_self(target_dir);
     let denied = if explicit_folder {
         target_canon != ctx_root
@@ -210,6 +223,12 @@ pub(crate) fn enforce_pane_context_scope(
         false
     };
     if denied {
+        let reason = format!(
+            "permission_denied: pane has no authority over context '{}' (authority is scoped to '{}')",
+            target_canon.display(),
+            ctx_root.display()
+        );
+        let Some(op) = cli_op else { return Err(reason) };
         let actor = std::env::var("PLEXI_PANE_ID")
             .ok()
             .filter(|id| !id.is_empty())
@@ -223,11 +242,7 @@ pub(crate) fn enforce_pane_context_scope(
             target_canon.display(),
             ctx_root.display()
         );
-        return Err(format!(
-            "permission_denied: pane has no authority over context '{}' (authority is scoped to '{}')",
-            target_canon.display(),
-            ctx_root.display()
-        ));
+        return Err(reason);
     }
     Ok(())
 }
@@ -260,231 +275,215 @@ fn secret_not_set(name: &str) -> String {
     format!("{name} not set; run `{binary} secret set {name}`")
 }
 
-/// Resolve the current workspace and config. Errors out with a helpful
-/// message if the user has not run `plexi workspace init`.
-fn require_workspace() -> Result<
-    (
-        std::path::PathBuf,
-        crate::workspace::secrets::WorkspaceConfig,
-    ),
-    String,
-> {
-    let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
-    enforce_pane_context_scope(&cwd, false, "secret.workspace")?;
-    let channel_dir = crate::config::workspace_channel_dir();
-    let root = match secret_workspace_root(&cwd, active_pane_context_root().as_deref()) {
-        Some(r) => r,
-        None => {
-            return Err(format!(
-                "no {channel_dir}/ workspace found at or above {}.\n\
-                 Run `plexi workspace init` first.",
-                cwd.display()
-            ));
-        }
-    };
-    enforce_pane_context_scope(&root, true, "secret.workspace")?;
-    let cfg = match crate::workspace::secrets::WorkspaceConfig::load(&root)
-        .map_err(|e| format!("read {channel_dir}/workspace.toml: {e}"))?
-    {
-        Some(c) => c,
-        None => {
-            return Err(format!(
-                "{channel_dir}/ exists at {} but workspace.toml is missing.\n\
-                 Run `plexi workspace init` to create it.",
-                root.display()
-            ));
-        }
-    };
-    Ok((root, cfg))
+/// The host checks the cwd against its verified pane (including nested folder
+/// secrets). Only workspace metadata is read in the CLI.
+fn workspace_caller_context(cwd: &Path, op: &str) -> Result<Value, i32> {
+    let socket = super::resolve_secret_socket();
+    let request = serde_json::json!({"type":"caller_context", "workspace_cwd":cwd});
+    let reply =
+        crate::rpc::request_json(&socket, request, Duration::from_secs(3)).map_err(|error| {
+            log::warn!("secret {op}: caller context at {socket:?}: {error}");
+            no_secret_reply(&format!("secret {op}"))
+        })?;
+    if !super::reply::acknowledged(&reply) || reply.get("workspace_error").is_none() {
+        eprintln!("error: secret {op}: host could not confirm the caller's workspace scope");
+        return Err(1);
+    }
+    Ok(reply)
 }
 
-/// `plexi secret set <friendly-name>` — store a secret in Keychain.
-///
-/// Value source (in priority order):
-///   --from-env   reads from env var named FRIENDLY_NAME
-///   default      hidden stdin prompt
-///
-/// Scope:
-///   --global     store under `plexi:user:<name>` (cross-workspace)
-///   default      walk up to nearest .plexi/ workspace, store workspace-scoped
+fn require_workspace(cwd: &Path, scope: &Value) -> Result<PathBuf, String> {
+    let context = scope["context_root"].as_str().map(Path::new);
+    if let Some(error) = scope["workspace_error"].as_str() {
+        return Err(error.into());
+    }
+    let directory = crate::config::workspace_channel_dir();
+    let root = secret_workspace_root(cwd, context).ok_or_else(|| {
+        format!(
+            "no {directory}/ workspace found at or above {}.\nRun `plexi workspace init` first.",
+            cwd.display()
+        )
+    })?;
+    if context.is_some_and(|context| root != context) {
+        return Err(format!(
+            "permission_denied: pane has no authority over context '{}'",
+            root.display()
+        ));
+    }
+    crate::workspace::secrets::WorkspaceConfig::load(&root)?
+        .ok_or_else(|| format!("{directory}/ exists at {} but workspace.toml is missing.\nRun `plexi workspace init` to create it.", root.display()))?;
+    Ok(root)
+}
+
+/// Send the workspace path only. The host resolves its id and authorizes the operation.
+fn secret_request(op: &str, name: &str, global: bool) -> Result<Value, i32> {
+    let workspace = if global {
+        None
+    } else {
+        Some(match std::env::current_dir() {
+            Ok(cwd) => require_workspace(&cwd, &workspace_caller_context(&cwd, op)?),
+            Err(error) => Err(format!("cwd: {error}")),
+        })
+    };
+    secret_request_for_workspace(op, name, workspace)
+}
+
+fn secret_request_for_workspace(
+    op: &str,
+    name: &str,
+    workspace: Option<Result<PathBuf, String>>,
+) -> Result<Value, i32> {
+    let global = workspace.is_none();
+    let root = match workspace {
+        None => None,
+        Some(Ok(root)) => Some(root),
+        Some(Err(error)) if op == "get" && error.starts_with("permission_denied") => {
+            eprintln!("error: {error}");
+            println!("permission_denied");
+            return Err(1);
+        }
+        Some(Err(_)) if op == "get" => None,
+        Some(Err(error)) => {
+            if op == "set" {
+                log::warn!("secret_set:cli: no workspace found: {error}");
+                eprintln!("error: no .plexi/ workspace found in this directory tree.");
+                eprintln!("  → plexi workspace init        (initialize one here, then retry)");
+                eprintln!("  → plexi secret set --global {name}   (set globally — requires explicit flag)");
+            } else {
+                eprintln!("error: {error}");
+            }
+            return Err(1);
+        }
+    };
+    log::info!("secret_{op}:cli: asking host name={name} global={global} workspace={root:?}");
+    Ok(
+        serde_json::json!({"type":format!("secret_{op}"), "name":name, "global":global, "workspace_root":root}),
+    )
+}
+
+const WAIT_NOTICE_DELAY: Duration = Duration::from_millis(700);
+
+fn no_secret_reply(label: &str) -> i32 {
+    eprintln!(
+        "error: {label}: the Plexi host did not answer at {}; start Plexi and try again.",
+        super::resolve_secret_socket().display()
+    );
+    1
+}
+
+fn send_secret(op: &str, name: &str, payload: Value) -> Result<Value, i32> {
+    use super::reply::HostReply;
+    let label = format!("secret {op}");
+    let (token, stream) = super::send_request_connected(payload, "secret-response", &label)
+        .map_err(|_| no_secret_reply(&label))?;
+    let timeout = crate::workspace::secrets::APPROVAL_TIMEOUT + Duration::from_secs(10);
+    let reply = std::thread::scope(|scope| {
+        let (done, timer) = std::sync::mpsc::channel::<()>();
+        scope.spawn(move || {
+            if timer.recv_timeout(WAIT_NOTICE_DELAY)
+                == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            {
+                eprintln!("Waiting for approval in the Plexi window (Needs you)...");
+            }
+        });
+        let body = crate::rpc::read_secret_reply(&token, stream, timeout);
+        drop(done);
+        HostReply::decode(body)
+    });
+    let unconfirmed = || {
+        if op == "get" {
+            eprintln!("No value was received from Plexi");
+        } else {
+            eprintln!("Plexi did not confirm the outcome");
+        }
+        1
+    };
+    match reply {
+        HostReply::Transport(_) => Err(unconfirmed()),
+        HostReply::Refused(refusal) if refusal.fields["status"] == "denied" => {
+            match refusal.fields["reason"].as_str() {
+                Some("denied") => eprintln!("Request denied"),
+                Some("expired") => eprintln!("Approval expired"),
+                Some("revoked") => eprintln!("Caller revoked"),
+                _ => return Err(refusal.report(OutputMode::Text)),
+            }
+            Err(1)
+        }
+        reply => {
+            let body = reply.payload_or_report(&label, OutputMode::Text)?;
+            let json = serde_json::from_str(&body).map_err(|_| unconfirmed())?;
+            secret_result(op, name, json)
+        }
+    }
+}
+
+fn secret_result(op: &str, name: &str, reply: Value) -> Result<Value, i32> {
+    match (reply["status"].as_str(), op) {
+        (Some("value"), "get") if reply["value"].is_string() => Ok(reply),
+        (Some("ok"), "set" | "delete") => Ok(reply),
+        (Some("not_found"), _) => {
+            eprintln!("error: {}", secret_not_set(name));
+            Err(1)
+        }
+        _ => {
+            eprintln!("error: unexpected secret {op} response");
+            Err(1)
+        }
+    }
+}
+
 pub fn workspace_secret_set(
     friendly: &str,
     from_env: bool,
     global: bool,
     alias: Option<&str>,
 ) -> i32 {
-    // `--alias` is incompatible with `--global`: global secrets are resolved via
-    // `plexi:user:<canonical>` and there is no secrets.toml to hold an alias route.
     if global && alias.is_some() {
         eprintln!("error: --alias cannot be combined with --global.");
-        eprintln!("  Global secrets are always stored under their canonical name.");
         return 1;
     }
-    // `friendly` is the canonical name (env var name used in plugin code).
-    // `alias` overrides the Keychain entry name when the user wants a different friendly name.
-    let effective_friendly = alias.unwrap_or(friendly);
-    log::info!(
-        "secret_set:cli: canonical={friendly} effective_friendly={effective_friendly} from_env={from_env} global={global}"
-    );
-    // Resolve value
-    let value: String = if from_env {
-        match std::env::var(friendly) {
-            Ok(v) => v,
-            Err(_) => {
-                log::warn!("secret_set:cli: env var {friendly} not set");
-                eprintln!("error: env var {friendly} is not set");
-                return 1;
-            }
-        }
-    } else {
-        eprint!("Enter value for {friendly}: ");
-        let _ = io::stderr().flush();
-        match read_secret_from_stdin() {
-            Ok(v) => v,
-            Err(e) => {
-                log::warn!("secret_set:cli: stdin read failed: {e}");
-                eprintln!("\nerror: failed to read secret: {e}");
-                return 1;
-            }
-        }
+    let mut request = match secret_request("set", friendly, global) {
+        Ok(request) => request,
+        Err(code) => return code,
     };
-    if value.is_empty() {
-        log::warn!("secret_set:cli: empty value rejected for {friendly}");
-        eprintln!("error: empty value, nothing stored");
-        return 1;
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    {
-        use crate::workspace::secrets::{
-            keychain_user_name, keychain_workspace_name, system_store,
-        };
-        let store = system_store();
-
-        if global {
-            let account = keychain_user_name(effective_friendly);
-            return match store.set(&account, &value) {
-                Ok(()) => {
-                    log::info!("secret_set:cli: stored globally account={account}");
-                    println!("Stored '{friendly}' globally (plexi:user:{effective_friendly})");
-                    print_tip(&format!(
-                        "reference '{friendly}' in {}/commands.toml (or {}) under `[secrets] required = [\"{friendly}\"]`.",
-                        crate::config::workspace_channel_dir(),
-                        super::global_commands_path().display()
-                    ));
-                    0
-                }
-                Err(e) => {
-                    log::warn!("secret_set:cli: keychain write failed for {account}: {e}");
-                    eprintln!("error: keychain write failed: {e}");
-                    1
-                }
-            };
-        }
-
-        // Workspace-scoped: walk up to nearest .plexi/
-        let (root, cfg) = match require_workspace() {
-            Ok(v) => v,
-            Err(e) => {
-                log::warn!("secret_set:cli: no workspace found: {e}");
-                eprintln!("error: no .plexi/ workspace found in this directory tree.");
-                eprintln!("  → plexi workspace init        (initialize one here, then retry)");
-                eprintln!("  → plexi secret set --global {friendly}   (set globally — requires explicit flag)");
-                return 1;
-            }
-        };
-        if crate::workspace::secrets::workspace_id_is_reserved(&cfg.id)
-            || crate::workspace::secrets::secret_account_is_reserved(&keychain_workspace_name(
-                &cfg.id,
-                effective_friendly,
-            ))
-        {
-            log::info!(
-                "secret_set:cli: refused reserved namespace workspace_id={} friendly={effective_friendly}",
-                cfg.id
-            );
-            eprintln!(
-                "error: {}",
-                crate::workspace::secrets::reserved_secret_error(&cfg.id)
-            );
+    request["name"] = alias.unwrap_or(friendly).into();
+    request["route_name"] = alias.map(|_| friendly).into();
+    request["value"] = match read_secret_value(friendly, from_env) {
+        Ok(value) => value.as_str().into(),
+        Err(code) => return code,
+    };
+    let reply = match send_secret("set", friendly, request) {
+        Ok(reply) => reply,
+        Err(code) => return code,
+    };
+    let channel_dir = crate::config::workspace_channel_dir();
+    if global {
+        println!("Stored '{friendly}' globally (plexi:user:{friendly})");
+        print_tip(&format!(
+            "reference '{friendly}' in {channel_dir}/commands.toml (or {}) under `[secrets] required = [\"{friendly}\"]`.",
+            super::global_commands_path().display()
+        ));
+    } else {
+        let Some(root) = reply["target"]["Workspace"]["root"].as_str() else {
+            eprintln!("error: secret set reply is missing the workspace root");
             return 1;
-        }
-        match store_workspace_secret(store, &root, &cfg.id, friendly, effective_friendly, &value) {
-            Ok(injected) => {
-                eprintln!(
-                    "Stored '{friendly}' for workspace {} ({})",
-                    root.display(),
-                    cfg.id
-                );
-                let channel_dir = crate::config::workspace_channel_dir();
-                print_tip(&format!(
-                    "Route written to {channel_dir}/secrets.toml — use in {channel_dir}/commands.toml: [secrets] required = [\"{friendly}\"]"
-                ));
-                print_tip(&format!(
-                    "'{friendly}' is not added to terminal environments. Agent panes never receive workspace secrets; a pane reads it with plexi secret get after you click Allow."
-                ));
-                if !injected.is_empty() {
-                    eprintln!(
-                        "Still injected into human terminal panes by {channel_dir}/secrets.toml: {}. Turn injection off in Secrets (Cmd+Shift+S).",
-                        injected.join(", ")
-                    );
-                }
-                0
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                1
-            }
+        };
+        let id = reply["target"]["Workspace"]["id"]
+            .as_str()
+            .unwrap_or_default();
+        eprintln!("Stored '{friendly}' for workspace {root} ({id})");
+        print_tip(&format!("Route written to {channel_dir}/secrets.toml — use in {channel_dir}/commands.toml: [secrets] required = [\"{friendly}\"]"));
+        print_tip(&format!("'{friendly}' is not added to terminal environments. Agent panes never receive workspace secrets; a pane reads it with plexi secret get after you click Allow."));
+        match crate::workspace::secrets::WorkspaceSecrets::load(Path::new(root)) {
+            Ok(Some(config)) if !config.terminal.env.inject.is_empty() => eprintln!(
+                "Still injected into human terminal panes by {channel_dir}/secrets.toml: {}. Turn injection off in Secrets (Cmd+Shift+S).",
+                config.terminal.env.inject.join(", ")
+            ),
+            Err(error) => eprintln!("warning: could not read terminal injection settings: {error}"),
+            _ => {}
         }
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        let _ = (friendly, effective_friendly, value, global);
-        eprintln!("error: keychain not available on this platform");
-        1
-    }
-}
-
-/// Store a workspace secret and its default route. Terminal injection is not
-/// turned on: a secret reaches a terminal environment only by an explicit
-/// toggle in the Secrets manager. Returns the names `secrets.toml` already
-/// injects, so the caller can show them.
-pub(crate) fn store_workspace_secret(
-    store: &dyn crate::workspace::secrets::SecretStore,
-    root: &std::path::Path,
-    workspace_id: &str,
-    friendly: &str,
-    effective_friendly: &str,
-    value: &str,
-) -> Result<Vec<String>, String> {
-    let account =
-        crate::workspace::secrets::keychain_workspace_name(workspace_id, effective_friendly);
-    store.set(&account, value).map_err(|e| {
-        log::warn!("secret_set:cli: keychain write failed for {account}: {e}");
-        format!("keychain write failed: {e}")
-    })?;
-    log::info!(
-        "secret_set:cli: stored workspace_id={workspace_id} account={account} root={} terminal_inject=off",
-        root.display()
-    );
-    // Non-fatal: the value is stored; only the convenience route is missing.
-    match crate::workspace::secrets::write_default_route(root, friendly, effective_friendly) {
-        Ok(()) => log::info!(
-            "secret_set:cli: wrote default route {friendly} → {effective_friendly} in secrets.toml"
-        ),
-        Err(e) => log::warn!("secret_set:cli: write_default_route failed: {e}"),
-    }
-    let injected = crate::workspace::secrets::WorkspaceSecrets::load(root)?
-        .map(|router| router.terminal.env.inject)
-        .unwrap_or_default();
-    if !injected.is_empty() {
-        log::info!(
-            "secret_set:cli: secrets.toml still injects {} name(s) into human terminal panes: {}",
-            injected.len(),
-            injected.join(",")
-        );
-    }
-    Ok(injected)
+    0
 }
 
 /// Reconcile the secrets index against a real keychain scan before a CLI
@@ -649,281 +648,34 @@ fn write_secret_inventory(
     Ok(())
 }
 
-/// `plexi secret get` from a terminal pane. The host admits the read for the
-/// pane it identifies from the socket peer, so this process never opens the
-/// store. Exit 2 means a desktop click is pending; rerun after Allow.
-fn pane_secret_get(friendly: &str, global: bool) -> i32 {
-    let workspace_root = if global {
-        None
-    } else {
-        match require_workspace() {
-            Ok((root, _)) => Some(root),
-            Err(err) if err.starts_with("permission_denied") => {
-                eprintln!("error: {err}");
-                println!("permission_denied");
-                return 1;
-            }
-            Err(_) => None,
-        }
-    };
-    log::info!(
-        "secret_get:cli: pane caller, asking the host gate friendly={friendly} global={global} workspace={workspace_root:?}"
-    );
-    let payload = serde_json::json!({
-        "type": "pane_secret_get",
-        "name": friendly,
-        "global": global,
-        "workspace_root": workspace_root,
-    });
-    let reply = match super::request_reply(
-        payload,
-        "secret-get-response",
-        "secret get",
-        std::time::Duration::from_secs(120),
-    ) {
-        Ok(reply) => reply,
-        Err(code) => {
-            log::info!("secret_get:cli: host gate unreachable from a pane; refusing");
-            eprintln!(
-                "error: a pane reads secrets through the Plexi host, and the host did not answer"
-            );
-            println!("permission_denied");
-            return code.max(1);
-        }
-    };
-    let reply = match reply.payload_or_report("secret get", OutputMode::Text) {
-        Ok(reply) => reply,
-        Err(code) => return code,
-    };
-    let reply: serde_json::Value = match serde_json::from_str(&reply) {
-        Ok(value) => value,
-        Err(e) => {
-            eprintln!("error: secret get reply did not parse: {e}");
-            return 1;
-        }
-    };
-    match reply.get("status").and_then(|status| status.as_str()) {
-        Some("value") => {
-            println!(
-                "{}",
-                reply
-                    .get("value")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-            );
+fn request_secret_once(op: &str, name: &str, global: bool) -> Result<serde_json::Value, i32> {
+    send_secret(op, name, secret_request(op, name, global)?)
+}
+
+pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
+    match request_secret_once("get", friendly, global) {
+        Ok(reply) => {
+            println!("{}", reply["value"].as_str().expect("validated get reply"));
             0
         }
-        Some("permission_required") => {
-            println!("permission_required");
-            println!(
-                "pending_request_id={}",
-                reply
-                    .get("pending_request_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-            );
-            eprintln!("Click Allow on the Plexi window, then run this again.");
-            2
-        }
-        Some("not_found") => {
-            eprintln!("error: {}", secret_not_set(friendly));
-            1
-        }
-        _ => {
-            eprintln!("error: unrecognized secret get response status");
-            1
-        }
+        Err(code) => code,
     }
 }
 
-/// `plexi secret get <friendly-name>` — print the resolved secret value to stdout.
-///
-/// Resolution order (unless --global):
-///   1. Workspace-scoped Keychain entry (nearest .plexi/ workspace)
-///   2. Global user-scoped Keychain entry (fallback)
-///
-/// `--global` skips the workspace lookup entirely.
-pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
-    log::info!("secret_get:cli: friendly={friendly} global={global}");
-    if super::pane_caller::caller_is_pane_agent() {
-        return pane_secret_get(friendly, global);
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    {
-        use crate::workspace::secrets::{
-            keychain_user_name, keychain_workspace_name, system_store,
-        };
-        let store = system_store();
-
-        if global {
-            let account = keychain_user_name(friendly);
-            return match store.get_interactive(&account) {
-                Ok(Some(value)) => {
-                    log::info!("secret_get:cli: found globally account={account}");
-                    println!("{}", value.as_str());
-                    0
-                }
-                Ok(None) => {
-                    log::warn!("secret_get:cli: not found friendly={friendly}");
-                    eprintln!("error: {}", secret_not_set(friendly));
-                    1
-                }
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    1
-                }
-            };
-        }
-
-        // Try workspace-scoped first, then global fallback.
-        match require_workspace() {
-            Ok((root, cfg)) => {
-                if crate::workspace::secrets::workspace_id_is_reserved(&cfg.id)
-                    || crate::workspace::secrets::secret_account_is_reserved(
-                        &keychain_workspace_name(&cfg.id, friendly),
-                    )
-                {
-                    log::info!(
-                        "secret_get:cli: refused reserved namespace workspace_id={} friendly={friendly}",
-                        cfg.id
-                    );
-                    eprintln!(
-                        "error: {}",
-                        crate::workspace::secrets::reserved_secret_error(&cfg.id)
-                    );
-                    return 1;
-                }
-                let account = keychain_workspace_name(&cfg.id, friendly);
-                let value = match store.get_interactive(&account) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        eprintln!("error: {error}");
-                        return 1;
-                    }
-                };
-                if let Some(value) = value {
-                    log::info!(
-                        "secret_get:cli: found workspace_id={} account={account} root={}",
-                        cfg.id,
-                        root.display()
-                    );
-                    println!("{}", value.as_str());
-                    return 0;
-                }
-            }
-            Err(err) if err.starts_with("permission_denied") => {
-                eprintln!("error: {err}");
-                println!("permission_denied");
-                return 1;
-            }
-            Err(_) => {}
-        }
-
-        // Global fallback.
-        let user_account = keychain_user_name(friendly);
-        match store.get_interactive(&user_account) {
-            Ok(Some(value)) => {
-                log::info!("secret_get:cli: found globally account={user_account}");
-                println!("{}", value.as_str());
-                0
-            }
-            Ok(None) => {
-                log::warn!("secret_get:cli: not found friendly={friendly}");
-                eprintln!("error: {}", secret_not_set(friendly));
-                1
-            }
-            Err(error) => {
-                eprintln!("error: {error}");
-                1
-            }
-        }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        let _ = (friendly, global);
-        eprintln!("error: keychain not available on this platform");
-        1
-    }
-}
-
-/// One delete at the exact scope selected by the caller. Only a confirmed
-/// deletion is success; nothing reads the value or asks first.
-fn delete_existing_secret(
-    store: &dyn crate::workspace::secrets::SecretStore,
-    account: &str,
-    friendly: &str,
-) -> Result<(), String> {
-    match store
-        .delete(account)
-        .map_err(|error| format!("secret store delete failed for '{friendly}': {error}"))?
-    {
-        crate::workspace::secrets::DeleteOutcome::Deleted => Ok(()),
-        crate::workspace::secrets::DeleteOutcome::NoMatchReported => Err(format!(
-            "the secret store returned no match for '{friendly}'"
-        )),
-    }
-}
-
-/// `plexi secret delete <friendly-name>` — remove the Keychain entry.
-///
-/// When `global` is true, deletes the user-scoped entry (`plexi:user:<name>`)
-/// without requiring a workspace. When false, requires a workspace and deletes
-/// the workspace-scoped entry.
 pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
-    log::info!("secret_delete:cli: friendly={friendly} global={global}");
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    {
-        use crate::workspace::secrets::{
-            keychain_user_name, keychain_workspace_name, system_store,
-        };
-        let store = system_store();
-
-        if global {
-            let account = keychain_user_name(friendly);
-            return match delete_existing_secret(store, &account, friendly) {
-                Ok(()) => {
-                    log::info!("secret_delete:cli: deleted globally account={account}");
-                    println!("Deleted global secret '{friendly}'");
-                    0
-                }
-                Err(error) => {
-                    log::warn!("secret_delete:cli: rejected friendly={friendly} err={error}");
-                    eprintln!("error: {error}");
-                    1
-                }
-            };
-        }
-
-        let (_root, cfg) = match require_workspace() {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("error: {e}");
+    match request_secret_once("delete", friendly, global) {
+        Ok(reply) => {
+            if global {
+                println!("Deleted global secret '{friendly}'");
+            } else if let Some(id) = reply["target"]["Workspace"]["id"].as_str() {
+                println!("Deleted '{friendly}' from workspace {id}");
+            } else {
+                eprintln!("error: secret delete reply is missing the workspace id");
                 return 1;
             }
-        };
-        let account = keychain_workspace_name(&cfg.id, friendly);
-        match delete_existing_secret(store, &account, friendly) {
-            Ok(()) => {
-                log::info!(
-                    "secret_delete:cli: deleted workspace_id={} account={account}",
-                    cfg.id
-                );
-                println!("Deleted '{friendly}' from workspace {}", cfg.id);
-                0
-            }
-            Err(error) => {
-                log::warn!("secret_delete:cli: rejected account={account} err={error}");
-                eprintln!("error: {error}");
-                1
-            }
+            0
         }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        let _ = (friendly, global);
-        eprintln!("error: keychain not available on this platform");
-        1
+        Err(code) => code,
     }
 }
 
@@ -1292,31 +1044,21 @@ pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
 
 #[cfg(test)]
 mod secret_set_tests {
-    use super::{delete_existing_secret, folder_secret_grant};
-    use crate::workspace::secrets::InMemoryKeychain;
+    use super::folder_secret_grant;
     use std::fs;
     use tempfile::TempDir;
 
     #[test]
-    fn secret_delete_missing_key_reports_no_match() {
-        let store = InMemoryKeychain::new();
-
-        let error = delete_existing_secret(&store, "plexi:user:missing", "missing")
-            .expect_err("an absent secret must not report a successful delete");
-
-        assert_eq!(error, "the secret store returned no match for 'missing'");
-    }
-
-    /// Stint 1635: `secret delete` issues one delete and reads nothing first.
-    #[test]
-    fn secret_delete_forwards_one_delete_outcome() {
-        use crate::workspace::secrets::{DeleteOnlyStore, DeleteOutcome};
-        let deleted = DeleteOnlyStore::answering(|| Ok(DeleteOutcome::Deleted));
-        delete_existing_secret(&deleted, "plexi:user:X", "X").unwrap();
-        assert_eq!(deleted.deletes(), 1);
-        let none = DeleteOnlyStore::answering(|| Ok(DeleteOutcome::NoMatchReported));
-        assert!(delete_existing_secret(&none, "plexi:user:X", "X").is_err());
-        assert_eq!(none.deletes(), 1);
+    fn secret_commands_require_a_final_reply() {
+        let pending =
+            serde_json::json!({"status":"permission_required","pending_request_id":"old"});
+        for op in ["get", "set", "delete"] {
+            assert_eq!(
+                super::secret_result(op, "KEY", pending.clone()),
+                Err(1),
+                "{op}"
+            );
+        }
     }
 
     /// Stint 1635: the CLI refuses a grant without touching any store, with
@@ -1641,15 +1383,28 @@ mod secret_root_tests {
     #[test]
     fn secret_workspace_walk_cannot_escape_pane_context() {
         let dir = tempfile::tempdir().unwrap();
-        let context = dir.path().join("context");
+        let context = dir.path().canonicalize().unwrap().join("context");
         let cwd = context.join("child");
         std::fs::create_dir_all(&cwd).unwrap();
         let channel = crate::config::workspace_channel_dir();
-        std::fs::create_dir_all(dir.path().join(&channel)).unwrap();
+        crate::workspace::secrets::init_workspace(dir.path(), &channel).unwrap();
+        let scope = serde_json::json!({"context_root":context,"workspace_error":null});
+        let request =
+            |op| secret_request_for_workspace(op, "TOKEN", Some(require_workspace(&cwd, &scope)));
+        assert!(request("get").unwrap()["workspace_root"].is_null());
+        for op in ["set", "delete"] {
+            assert_eq!(request(op), Err(1));
+        }
         assert_eq!(secret_workspace_root(&cwd, Some(&context)), None);
         let _pane = set_test_pane_context_root(&context);
         assert!(enforce_pane_context_scope(&cwd, false, "secret.workspace").is_ok());
-        std::fs::create_dir_all(context.join(&channel)).unwrap();
+        crate::workspace::secrets::init_workspace(&context, &channel).unwrap();
+        for op in ["get", "set", "delete"] {
+            assert_eq!(
+                request(op).unwrap()["workspace_root"],
+                serde_json::json!(context)
+            );
+        }
         assert_eq!(
             secret_workspace_root(&cwd, Some(&context)),
             Some(context.canonicalize().unwrap())

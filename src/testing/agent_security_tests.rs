@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::socket_policy_tests::{live_secret, read_client};
 use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
 use crate::protocol::HostRequest;
 use crate::testing::HostHarness;
@@ -32,31 +33,6 @@ fn write_workspace(root: &Path, workspace_id: &str, inject: &[&str]) {
     .unwrap();
 }
 
-/// One `secret_get` over the socket, stamped with `ancestry` the way the
-/// listener stamps a real peer.
-fn secret_get(h: &mut HostHarness, name: &str, root: &Path, ancestry: &[u32]) -> serde_json::Value {
-    let reply = PathBuf::from(crate::rpc::response_file("secret-get-test", "json"));
-    let request = HostRequest::PaneSecretGet {
-        name: name.to_string(),
-        global: false,
-        workspace_root: Some(root.to_path_buf()),
-        response_file: reply.to_string_lossy().into_owned(),
-    };
-    let line = serde_json::to_string(&request).unwrap();
-    let (mut server_stream, client_stream) = std::os::unix::net::UnixStream::pair().unwrap();
-    let token = reply.to_string_lossy().into_owned();
-    crate::rpc::register_client_stream(token.clone(), client_stream);
-    crate::app::handle_socket_line(&line, &h.ipc_tx, Some(ancestry), &mut server_stream);
-    drop(server_stream);
-    h.run_frames(1);
-    let body = crate::rpc::poll_string(&token, Some(std::time::Duration::from_secs(2))).unwrap();
-    assert!(
-        !reply.exists(),
-        "secret_get must not write a response file to disk"
-    );
-    serde_json::from_str(&body).unwrap()
-}
-
 #[test]
 fn secret_get_from_a_pane_files_a_click_approval_not_a_value() {
     let mut h = HostHarness::new();
@@ -69,36 +45,31 @@ fn secret_get_from_a_pane_files_a_click_approval_not_a_value() {
         .set("plexi:ws-0788-get:API_KEY_0788", canary)
         .unwrap();
 
-    let first = secret_get(&mut h, "API_KEY_0788", &root, &[pid]);
-    assert_eq!(first["status"], "permission_required", "{first}");
-    assert!(!first.to_string().contains(canary), "{first}");
-    let pending_id = first["pending_request_id"]
-        .as_str()
-        .expect("pending id")
-        .to_string();
-    let pending = monitor()
-        .show_pending(&pending_id)
-        .expect("banner sees the pending");
+    let get = serde_json::json!({"type":"secret_get","name":"API_KEY_0788","workspace_root":root});
+    let peer = crate::broker::caller::PeerWitness::for_live_pids(&[pid]);
+    let (client, pending) = live_secret(&mut h, get.clone(), &peer);
+    assert!(!pending.input_summary.contains(canary));
     assert_eq!(pending.actor_id, format!("pane:{term}"));
     assert_eq!(pending.tool, crate::workspace::secrets::SECRET_GET_TOOL);
 
     // The desktop banner's Allow once is `approve_pending(Once)`.
     monitor()
-        .approve_pending(&pending_id, ApprovalChoice::Once)
+        .approve_pending(&pending.pending_request_id, ApprovalChoice::Once)
         .unwrap();
-    let granted = secret_get(&mut h, "API_KEY_0788", &root, &[pid]);
+    let granted = read_client(client, "approved pane get");
     assert_eq!(granted["status"], "value", "{granted}");
     assert_eq!(granted["value"], canary);
 
-    let again = secret_get(&mut h, "API_KEY_0788", &root, &[pid]);
-    assert_eq!(
-        again["status"], "permission_required",
-        "Allow once is spent: {again}"
-    );
+    let (next, ask) = live_secret(&mut h, get, &peer);
+    assert_ne!(ask.pending_request_id, pending.pending_request_id);
+    monitor()
+        .approve_pending(&ask.pending_request_id, ApprovalChoice::Deny)
+        .unwrap();
+    assert_eq!(read_client(next, "spent Once")["reason"], "denied");
 }
 
 #[test]
-fn secret_get_without_a_host_stamped_pane_is_refused() {
+fn secret_get_without_pane_ancestry_asks_as_external() {
     let mut h = HostHarness::new();
     let root = h.workspace_root();
     write_workspace(&root, "ws-0788-nopane", &[]);
@@ -106,16 +77,16 @@ fn secret_get_without_a_host_stamped_pane_is_refused() {
     crate::workspace::secrets::system_store()
         .set("plexi:ws-0788-nopane:API_KEY_0788", canary)
         .unwrap();
-    let before = monitor().list_pending().len();
-
-    let reply = secret_get(&mut h, "API_KEY_0788", &root, &[]);
-    assert_eq!(reply["status"], "denied", "{reply}");
+    let get = serde_json::json!({"type":"secret_get","name":"API_KEY_0788","workspace_root":root});
+    let peer = crate::broker::caller::PeerWitness::for_live_pids(&[]);
+    let (client, ask) = super::socket_policy_tests::live_secret(&mut h, get, &peer);
+    monitor()
+        .approve_pending(&ask.pending_request_id, ApprovalChoice::Deny)
+        .unwrap();
+    let reply = super::socket_policy_tests::read_client(client, "detached get");
+    assert_eq!(reply["reason"], "denied");
     assert!(!reply.to_string().contains(canary));
-    assert_eq!(
-        monitor().list_pending().len(),
-        before,
-        "no pending without an identity"
-    );
+    assert!(monitor().list_pending().is_empty());
 }
 
 #[test]
@@ -180,26 +151,32 @@ fn agent_pane_env_carries_no_workspace_or_folder_secrets() {
 }
 
 #[test]
-fn cli_secret_set_does_not_enable_terminal_injection() {
+fn workspace_secret_set_preserves_alias_and_terminal_injection() {
     let dir = tempfile::tempdir().unwrap();
     let _profile = crate::config::set_test_profile_dir(dir.path().join("profile"));
     let root = dir.path().join("ws");
     write_workspace(&root, "ws-0788-set", &["ALREADY_0788"]);
     let store = crate::workspace::secrets::InMemoryKeychain::new();
 
-    let injected = crate::cli::workspace::store_workspace_secret(
+    use crate::workspace::secrets::manager::{mutate_secret, Mutation, SecretTarget};
+    mutate_secret(
         &store,
-        &root,
-        "ws-0788-set",
-        "NEW_0788",
-        "NEW_0788",
-        "set-canary-0788",
+        &monitor(),
+        &SecretTarget::Workspace {
+            id: "ws-0788-set".into(),
+            root: root.clone(),
+        },
+        "friendly-0788",
+        Mutation::SetRouted {
+            canonical: "NEW_0788",
+            value: "set-canary-0788",
+        },
     )
     .unwrap();
 
     assert_eq!(
         store
-            .get("plexi:ws-0788-set:NEW_0788")
+            .get("plexi:ws-0788-set:friendly-0788")
             .as_deref()
             .map(String::as_str),
         Some("set-canary-0788")
@@ -207,12 +184,8 @@ fn cli_secret_set_does_not_enable_terminal_injection() {
     let router = crate::workspace::secrets::WorkspaceSecrets::load(&root)
         .unwrap()
         .unwrap();
+    assert_eq!(router.default["NEW_0788"], "friendly-0788");
     assert_eq!(router.terminal.env.inject, vec!["ALREADY_0788".to_string()]);
-    assert_eq!(
-        injected,
-        vec!["ALREADY_0788".to_string()],
-        "existing injected names are surfaced"
-    );
 }
 
 fn spawn_second_terminal(h: &mut HostHarness, beside: u64) -> u64 {
@@ -387,6 +360,7 @@ fn caller_context_is_answered_from_the_verified_peer() {
     let ask = |h: &mut HostHarness, ancestry: &[u32], name: &str| {
         let token = root.join(name);
         let req = HostRequest::CallerContext {
+            workspace_cwd: root.parent().map(Path::to_owned),
             response_file: token.to_string_lossy().into_owned(),
         };
         socket_request(h, &req, ancestry, &token)
@@ -394,11 +368,16 @@ fn caller_context_is_answered_from_the_verified_peer() {
     let inside = ask(&mut h, &[pid], "ctx-in.json");
     assert_eq!(inside["ok"], true, "{inside}");
     assert_eq!(inside["pane_id"], pane, "{inside}");
+    assert!(inside["workspace_error"]
+        .as_str()
+        .unwrap()
+        .starts_with("permission_denied"));
     assert!(
         inside["context_root"].is_string(),
         "pane has a live context root: {inside}"
     );
     let outside = ask(&mut h, &[999_999], "ctx-out.json");
+    assert!(outside["workspace_error"].is_null());
     assert_eq!(outside["ok"], true, "{outside}");
     assert!(
         outside["pane_id"].is_null() && outside["context_root"].is_null(),
@@ -516,9 +495,10 @@ fn socket_caller_with_no_pane_is_not_human() {
     let pid = h.terminal_backend(term).child_pid();
     let root = h.workspace_root();
     write_workspace(&root, "ws-1271", &[]);
-    let asked = secret_get(&mut h, "API_KEY_1271", &root, &[pid]);
-    assert_eq!(asked["status"], "permission_required", "{asked}");
-    let pending = asked["pending_request_id"].as_str().unwrap().to_string();
+    let get = serde_json::json!({"type":"secret_get","name":"API_KEY_1271","workspace_root":root});
+    let peer = crate::broker::caller::PeerWitness::for_live_pids(&[pid]);
+    let (client, ask) = live_secret(&mut h, get, &peer);
+    let pending = ask.pending_request_id;
 
     // With no peer capture at all, nothing is filed for nobody.
     let unidentified = permissions_socket(&mut h, "allow", Some(&pending), None);
@@ -538,6 +518,7 @@ fn socket_caller_with_no_pane_is_not_human() {
     monitor()
         .approve_pending(&pending, ApprovalChoice::DenyAlways)
         .unwrap();
+    assert_eq!(read_client(client, "pane get denied")["reason"], "denied");
     let deny = monitor()
         .list_entries()
         .into_iter()

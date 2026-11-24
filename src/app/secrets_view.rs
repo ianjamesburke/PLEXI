@@ -130,8 +130,21 @@ impl SecretsView {
         }
     }
 
+    fn validate_name(&mut self, name: &str) -> bool {
+        let valid = manager::valid_env_name(name);
+        if !valid {
+            self.report_error(
+                "Use an environment variable name (letters, digits and underscores).".into(),
+            );
+        }
+        valid
+    }
+
     fn commit_add(&mut self) {
         let name = self.new_key.trim().to_string();
+        if !self.validate_name(&name) {
+            return;
+        }
         let monitor =
             match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
             {
@@ -168,6 +181,9 @@ impl SecretsView {
         let Some(entry) = self.entries.get(self.selected).cloned() else {
             return;
         };
+        if !self.validate_name(&entry.name) {
+            return;
+        }
         let monitor =
             match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
             {
@@ -778,6 +794,13 @@ mod tests {
         )
         .unwrap();
         let mut app = SecretsView::new(cwd.path().into());
+        for invalid in ["vendor.prod", "vendor-prod"] {
+            app.begin_add();
+            app.new_key = invalid.into();
+            *app.new_value = "fixture".into();
+            app.commit_add();
+            assert!(app.form_open && app.status_msg.contains("environment variable name"));
+        }
         app.begin_add();
         app.new_key = "APP_TEST_TOKEN".into();
         *app.new_value = "canary-app-first".into();

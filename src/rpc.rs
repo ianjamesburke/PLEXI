@@ -261,6 +261,17 @@ fn read_stream_to_end(
     }
 }
 
+/// A secret invocation has exactly one reply on its original connection.
+pub(crate) fn read_secret_reply(
+    token: &str,
+    stream: IpcStream,
+    timeout: Duration,
+) -> Result<String, PollError> {
+    drop(take_client_stream(token));
+    let bytes = read_stream_to_end(stream, Some(timeout))?.unwrap_or_default();
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// Wait for the host's reply on the registered `notify.sock` stream (or poll
 /// the fallback `response_file` in unit tests). `None` timeout waits forever
 /// (`plexi notify --timeout 0`).

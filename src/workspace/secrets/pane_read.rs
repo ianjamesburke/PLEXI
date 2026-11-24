@@ -3,15 +3,14 @@
 //! Any process in a pane may be an agent, so `plexi secret get` from a pane
 //! does not read the store itself. It asks the host, which admits tool
 //! `secret.get` for the host-stamped pane identity. Without a grant the read
-//! files a click approval and returns its pending id; the store is read only
-//! after a desktop click. Logs and audit rows carry the name and scope, never
-//! the value.
+//! waits for a desktop decision on the original connection. Logs and audit
+//! rows carry the name and scope.
 
 use std::path::{Path, PathBuf};
 
 use super::folder::SecretActor;
 use super::store::NonDestructiveStore;
-use crate::broker::{gate::PermissionMonitor, PermissionPosture};
+use crate::broker::gate::{AdmitRequest, PermissionMonitor, UseDecision};
 
 /// Tool name the permission monitor admits for a pane's workspace or global read.
 pub const SECRET_GET_TOOL: &str = "secret.get";
@@ -24,13 +23,31 @@ pub enum SecretScope {
 }
 
 impl SecretScope {
+    /// Arguments covered by a standing grant. The broker binds Once to the call ID.
+    pub(crate) fn input(&self, name: &str, outside: Option<&str>) -> serde_json::Value {
+        let mut input = serde_json::json!({"name": name, "scope": self.label()});
+        if let Some(caller) = outside {
+            input["caller"] = caller.into();
+        }
+        input
+    }
+
     /// The resource label in the grant binding: the workspace root, or `global`.
-    fn label(&self) -> String {
+    pub(crate) fn label(&self) -> String {
         match self {
             Self::Workspace { root, .. } => root.to_string_lossy().into_owned(),
             Self::Global => "global".to_string(),
         }
     }
+}
+
+/// The secret a read names: its name, scope, and the profile root used when
+/// the scope is global.
+#[derive(Clone, Copy)]
+pub struct ReadTarget<'a> {
+    pub name: &'a str,
+    pub scope: &'a SecretScope,
+    pub global_root: &'a Path,
 }
 
 /// Admit `secret.get` for `actor`, then read `name` the way `plexi secret get`
@@ -44,21 +61,36 @@ pub fn read_pane_secret(
     scope: &SecretScope,
     global_root: &Path,
 ) -> Result<super::folder::ReadResult, String> {
-    read_pane_secret_with_posture(monitor, store, actor, name, scope, global_root, None)
-        .map(|read| read.result)
+    read_pane_secret_with(
+        monitor,
+        store,
+        actor,
+        ReadTarget {
+            name,
+            scope,
+            global_root,
+        },
+        None,
+        |req| Some(monitor.admit_for_use(req, None)),
+    )
+    .map(|read| read.expect("synchronous admission").result)
 }
 
 /// As [`read_pane_secret`], evaluating the immutable posture carried by the
 /// requesting worker pane, and returning the grant that admitted the read.
-pub fn read_pane_secret_with_posture(
+pub fn read_pane_secret_with(
     monitor: &PermissionMonitor,
     store: &dyn NonDestructiveStore,
     actor: &SecretActor,
-    name: &str,
-    scope: &SecretScope,
-    global_root: &Path,
-    posture: Option<&PermissionPosture>,
-) -> Result<super::folder::GrantedRead, String> {
+    target: ReadTarget<'_>,
+    outside: Option<&str>,
+    admit: impl FnOnce(AdmitRequest) -> Option<UseDecision>,
+) -> Result<Option<super::folder::GrantedRead>, String> {
+    let ReadTarget {
+        name,
+        scope,
+        global_root,
+    } = target;
     let accounts = match scope {
         SecretScope::Workspace { id, .. } => {
             let account = super::keychain_workspace_name(id, name);
@@ -70,19 +102,19 @@ pub fn read_pane_secret_with_posture(
         SecretScope::Global => vec![super::keychain_user_name(name)],
     };
     let label = scope.label();
-    let input = serde_json::json!({"name": name, "scope": label}).to_string();
+    let input = scope.input(name, outside);
     let workspace_root = match scope {
         SecretScope::Workspace { root, .. } => root.as_path(),
         SecretScope::Global => global_root,
     };
-    super::folder::admitted_read_with_posture(
+    super::folder::admitted_read_with(
         monitor,
         actor,
         SECRET_GET_TOOL,
-        &input,
+        &input.to_string(),
         workspace_root,
         &format!("name={name} scope={label}"),
-        posture,
+        admit,
         || {
             for account in &accounts {
                 if let Some(value) = store.get_interactive(account)? {
@@ -114,15 +146,32 @@ mod tests {
             id: "ws-0788".to_string(),
             root: root.path().to_path_buf(),
         };
-        let first = read_pane_secret(&monitor, &store, &actor, "SHARED_0788", &scope, root.path())
-            .unwrap();
-        let ReadResult::PermissionRequired { pending_id } = first else {
-            panic!("expected a pending approval, got {first:?}");
-        };
-        monitor.approve_pending(&pending_id, ApprovalChoice::Once).unwrap();
-        let read = read_pane_secret(&monitor, &store, &actor, "SHARED_0788", &scope, root.path())
-            .unwrap();
-        assert!(matches!(read, ReadResult::Value(ref value) if value.as_str() == "global-canary-0788"));
+        let read = read_pane_secret_with(
+            &monitor,
+            &store,
+            &actor,
+            ReadTarget {
+                name: "SHARED_0788",
+                scope: &scope,
+                global_root: root.path(),
+            },
+            None,
+            |req| {
+                let UseDecision::Required { pending_request_id } = monitor.admit_for_use(req, None)
+                else {
+                    panic!("expected a pending approval")
+                };
+                monitor
+                    .approve_pending(&pending_request_id, ApprovalChoice::Once)
+                    .unwrap();
+                Some(monitor.admit_for_use_if(req, None, Some(&|| true)))
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            matches!(read.result, ReadResult::Value(ref value) if value.as_str() == "global-canary-0788")
+        );
     }
 
     #[test]
