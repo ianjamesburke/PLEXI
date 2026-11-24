@@ -194,19 +194,18 @@ impl PlexiApp {
         origin: &crate::broker::caller::RequestOrigin,
         admitted: AdmittedAgentMeshRoute,
     ) -> Result<AgentOpenOutcome, String> {
-        // The caller is resolved first: an unidentified one archives nothing.
-        self.resolve_launch_source(origin, caller)?;
-        // Resolved first: an unknown agent fails before anything is archived.
+        // Everything the replacement launch needs is decided before anything
+        // is closed (Codex 3290 r4): the agent, the chat to archive, and the
+        // caller as it will be once that chat's pane is gone (a new chat
+        // asked for from inside the chat it replaces). A launch that could
+        // not proceed is refused here, with the current chat untouched.
         let (payload, harness) = named_agent_start_payload(name, cwd)?;
-        let archived_run_id = self.archive_current_named_agent_chat(name, &harness, cwd)?;
-        // Archiving may have closed the caller's own pane (a new chat asked
-        // for from inside the chat it replaces). The launch then resolves its
-        // caller again from the same kernel witness, as alpha resolved live
-        // ancestry after the close: never a retired pane as parent.
-        let reresolved = self.origin_after_close(origin);
-        let origin = reresolved.as_ref().unwrap_or(origin);
-        let caller = if reresolved.is_some() { None } else { caller };
-        let pane_id = self.start_named_agent_chat(name, payload, origin, caller, admitted)?;
+        let chat_pane = self.chat_pane_to_archive(name, &harness, cwd);
+        let (launch_origin, launch_caller) = self.origin_without_pane(origin, caller, chat_pane);
+        self.resolve_launch_source(&launch_origin, launch_caller)?;
+        let archived_run_id = self.archive_named_agent_chat(name, &harness, cwd, chat_pane)?;
+        let pane_id =
+            self.start_named_agent_chat(name, payload, &launch_origin, launch_caller, admitted)?;
         log::info!(
             "agent_new_chat: name={name} archived_run_id={archived_run_id:?} new_pane={pane_id}"
         );
@@ -216,43 +215,49 @@ impl PlexiApp {
         })
     }
 
-    /// `origin` classified again when its pane caller's terminal is gone.
-    fn origin_after_close(
+    /// `origin` as it will be once pane `closing` is gone: unchanged unless
+    /// the caller is that pane, then classified again from its kernel
+    /// witness without it (no parent pane is named for it).
+    fn origin_without_pane(
         &self,
         origin: &crate::broker::caller::RequestOrigin,
-    ) -> Option<crate::broker::caller::RequestOrigin> {
+        caller: Option<u64>,
+        closing: Option<PaneId>,
+    ) -> (crate::broker::caller::RequestOrigin, Option<u64>) {
         use crate::broker::caller::{RequestOrigin, SocketCaller};
-        let RequestOrigin::Socket(SocketCaller::Pane(pane)) = origin else {
-            return None;
-        };
-        let live = self
-            .terminal_incarnation(pane.terminal_pane)
-            .and_then(|terminal| terminal.authority().cloned())
-            .is_some_and(|live| std::sync::Arc::ptr_eq(&live, &pane.authority));
-        if live {
-            return None;
+        match (origin, closing) {
+            (RequestOrigin::Socket(SocketCaller::Pane(pane)), Some(closing))
+                if pane.visible_pane == closing || pane.terminal_pane == closing =>
+            {
+                let after = self.classify_socket_peer_excluding(Some(&pane.peer), Some(closing));
+                log::info!(
+                    "agent_new_chat: caller pane {closing} is the chat it replaces; launching as {}",
+                    after.class()
+                );
+                (RequestOrigin::Socket(after), None)
+            }
+            _ => (origin.clone(), caller),
         }
-        let reclassified = self.classify_socket_peer(Some(&pane.peer));
-        log::info!(
-            "agent_new_chat: caller pane {} closed by the archive; launching as {}",
-            pane.terminal_pane,
-            reclassified.class()
-        );
-        Some(RequestOrigin::Socket(reclassified))
     }
 
-    /// Archive `name`'s current chat in this workspace and return its run id,
+    /// The pane holding `name`'s current chat, the one a new chat archives.
+    fn chat_pane_to_archive(&self, name: &str, harness: &str, cwd: &Path) -> Option<PaneId> {
+        self.running_named_agent_pane(name).or_else(|| {
+            self.exited_named_agent_chat(name, harness, cwd)
+                .map(|record| record.pane_id)
+        })
+    }
+
+    /// Archive `name`'s current chat (in `open_pane`, else its last closed
+    /// chat) in this workspace and return its run id,
     /// or `None` when it has no chat to archive.
-    fn archive_current_named_agent_chat(
+    fn archive_named_agent_chat(
         &mut self,
         name: &str,
         harness: &str,
         cwd: &Path,
+        open_pane: Option<PaneId>,
     ) -> Result<Option<String>, String> {
-        let open_pane = self.running_named_agent_pane(name).or_else(|| {
-            self.exited_named_agent_chat(name, harness, cwd)
-                .map(|record| record.pane_id)
-        });
         let run_id = if let Some(pane_id) = open_pane {
             self.close_pane_by_id(pane_id);
             self.fleet_history

@@ -14,6 +14,17 @@ impl PlexiApp {
     /// walk that reached the OS root names an external caller. Everything
     /// else is unidentified.
     pub(crate) fn classify_socket_peer(&self, peer: Option<&PeerWitness>) -> SocketCaller {
+        self.classify_socket_peer_excluding(peer, None)
+    }
+
+    /// [`Self::classify_socket_peer`] as it will be once pane `excluded` is
+    /// gone: the classification a request launches under when its own work
+    /// first closes that pane (stint 1285, Codex 3290 r4).
+    pub(crate) fn classify_socket_peer_excluding(
+        &self,
+        peer: Option<&PeerWitness>,
+        excluded: Option<crate::spatial::tiling::PaneId>,
+    ) -> SocketCaller {
         let Some(peer) = peer else {
             return SocketCaller::Unidentified(UnidentifiedReason::NoPeerCredential);
         };
@@ -24,6 +35,9 @@ impl PlexiApp {
         for hop in &peer.hops {
             let mut matches = self.windows.iter().flat_map(|window| {
                 window.panes.iter().filter_map(move |(visible_pane, pane)| {
+                    if excluded == Some(*visible_pane) {
+                        return None;
+                    }
                     pane.terminal_incarnation()
                         .filter(|terminal| terminal.is_shell_process(hop.pid, hop.start))
                         .map(|terminal| (window, *visible_pane, terminal))
