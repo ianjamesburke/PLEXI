@@ -238,19 +238,13 @@ fn probe_ollama() -> (bool, Vec<String>) {
 fn check_openrouter_configured() -> bool {
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
-        match crate::workspace::secrets::manager::secret_inventory(std::path::Path::new("."), true)
-        {
-            Ok(entries) => {
-                let configured = entries
-                    .iter()
-                    .any(|entry| entry.name == "OPENROUTER_API_KEY" && entry.scope == "global");
-                log::info!(
-                    "ai:doctor: OPENROUTER_API_KEY global inventory configured={configured}"
-                );
+        match crate::workspace::secrets::manager::global_secret_stored("OPENROUTER_API_KEY") {
+            Ok(configured) => {
+                log::info!("ai:doctor: OPENROUTER_API_KEY stored={configured}");
                 configured
             }
             Err(error) => {
-                log::warn!("ai:doctor: OPENROUTER_API_KEY global inventory failed: {error}");
+                log::warn!("ai:doctor: OPENROUTER_API_KEY name scan failed: {error}");
                 false
             }
         }
@@ -528,6 +522,22 @@ mod tests {
             take_test_value_reads();
             assert!(super::check_openrouter_configured());
             assert_eq!(take_test_value_reads(), 0);
+        });
+    }
+
+    #[test]
+    fn ai_doctor_sees_the_legacy_spelling_without_migrating_it() {
+        use crate::workspace::secrets::{keychain_user_name, system_store, take_test_value_reads};
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().into());
+        crate::cli::workspace::secret_set_tests::with_stored_account("openrouter-api-key", || {
+            take_test_value_reads();
+            assert!(super::check_openrouter_configured());
+            assert_eq!(take_test_value_reads(), 0);
+            assert!(system_store()
+                .scan_accounts()
+                .unwrap()
+                .contains(&keychain_user_name("openrouter-api-key")));
         });
     }
 

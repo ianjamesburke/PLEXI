@@ -20,6 +20,9 @@ struct OpenRouterReport {
     /// Human-readable status string for non-JSON output.
     #[serde(skip)]
     status: String,
+    /// The host confirmed the key is not stored (not merely unreadable).
+    #[serde(skip)]
+    missing: bool,
 }
 
 #[derive(Serialize)]
@@ -54,6 +57,7 @@ fn check_openrouter() -> OpenRouterReport {
             configured: false,
             model_count: None,
             status: "not configured (keychain unavailable)".to_string(),
+            missing: false,
         }
     }
 }
@@ -80,17 +84,20 @@ fn openrouter_report(
                 configured: true,
                 model_count,
                 status,
+                missing: false,
             }
         }
         GlobalSecret::NotSet => OpenRouterReport {
             configured: false,
             model_count: None,
             status: "not configured".into(),
+            missing: true,
         },
         GlobalSecret::Unavailable(reason) => OpenRouterReport {
             configured: false,
             model_count: None,
             status: format!("not checked ({reason})"),
+            missing: false,
         },
     }
 }
@@ -336,7 +343,7 @@ pub fn doctor_cli(json: bool) -> i32 {
 fn print_openrouter_section(report: &OpenRouterReport) {
     println!("\nOpenRouter:");
     println!("  {}", report.status);
-    if !report.configured {
+    if report.missing {
         println!("  --> run: plexi secret set OPENROUTER_API_KEY --global");
     }
 }

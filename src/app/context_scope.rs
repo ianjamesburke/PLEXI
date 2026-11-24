@@ -34,3 +34,38 @@ pub(crate) fn check_context_scope(ctx_root: PathBuf, target_dir: &Path) -> Resul
     }
     Ok(())
 }
+
+/// The scope error for a `caller_context` request. A pane caller whose root
+/// cannot be resolved is refused, never approved without a root.
+pub(crate) fn caller_scope_error(
+    is_pane: bool,
+    root: Option<&Path>,
+    workspace_cwd: Option<&Path>,
+) -> Option<String> {
+    let cwd = workspace_cwd?;
+    match root {
+        Some(root) => check_context_scope(root.to_path_buf(), cwd).err(),
+        None if is_pane => {
+            log::warn!("caller_context: pane caller has no resolvable context root; refusing scope");
+            Some(format!(
+                "permission_denied: host could not resolve this pane's context root for {}",
+                cwd.display()
+            ))
+        }
+        None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pane_without_a_root_is_refused_and_a_plain_caller_is_not() {
+        let cwd = Path::new("/tmp");
+        let refused = caller_scope_error(true, None, Some(cwd)).unwrap();
+        assert!(refused.starts_with("permission_denied:"), "{refused}");
+        assert_eq!(caller_scope_error(false, None, Some(cwd)), None);
+        assert_eq!(caller_scope_error(true, None, None), None);
+    }
+}

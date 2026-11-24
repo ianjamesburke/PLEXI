@@ -1036,10 +1036,14 @@ pub(super) mod secret_set_tests {
     }
 
     pub(crate) fn with_stored_openrouter_key(check: impl FnOnce()) {
+        with_stored_account("OPENROUTER_API_KEY", check);
+    }
+
+    pub(crate) fn with_stored_account(name: &str, check: impl FnOnce()) {
         use crate::workspace::secrets::{keychain_user_name, system_store};
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _lock = LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        let account = keychain_user_name("OPENROUTER_API_KEY");
+        let account = keychain_user_name(name);
         system_store().set(&account, "fixture").unwrap();
         check();
         system_store().delete(&account).unwrap();

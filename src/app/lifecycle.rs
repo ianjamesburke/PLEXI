@@ -1435,12 +1435,11 @@ impl PlexiApp {
                     .and_then(crate::broker::caller::SocketCaller::pane)
                     .map(|pane| pane.visible_pane);
                 let root = pane.and_then(|pane| self.pane_context_authority_root(pane));
-                let workspace_error = match (&root, workspace_cwd) {
-                    (Some(root), Some(cwd)) => {
-                        super::context_scope::check_context_scope(root.clone(), cwd).err()
-                    }
-                    _ => None,
-                };
+                let workspace_error = super::context_scope::caller_scope_error(
+                    pane.is_some(),
+                    root.as_deref(),
+                    workspace_cwd.as_deref(),
+                );
                 write_json_response(
                     response_file,
                     serde_json::json!({
