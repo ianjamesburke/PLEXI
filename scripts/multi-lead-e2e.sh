@@ -83,6 +83,9 @@ cli() {
   "$BIN" "$@"
 }
 
+# shellcheck disable=SC1091
+source "$ROOT/scripts/e2e/dashboard.sh"
+
 echo "STEP create leads"
 A="$(cli agent head create lead-a --display-name 'Lead A' --grant assistant.turn=allow --grant leads.conversation.read=allow --json)"
 must_ok "create lead-a" "$A"
@@ -142,7 +145,7 @@ print("transcripts are separate files")
 PY
 
 echo "STEP command view lists both heads"
-VIEW="$(cli agents-dashboard --json)"
+VIEW="$(dashboard --json)"
 python3 - "$VIEW" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
@@ -150,7 +153,7 @@ ids = [head.get("id") for head in body.get("heads", [])]
 assert "lead-a" in ids and "lead-b" in ids, body
 print("command view heads", ids)
 PY
-OPEN_VIEW="$(cli agents-dashboard open)"
+OPEN_VIEW="$(dashboard open)"
 must_ok "open command view" "$OPEN_VIEW"
 VIEW_ID="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["pane_id"])' "$OPEN_VIEW")"
 STATE="$(cli pane state "$VIEW_ID")"

@@ -32,13 +32,12 @@ WORKDIR="$(mktemp -d)"
 HOST_STARTED=0
 MOCK_PID=""
 SEND_PID=""
-FOLLOW_PID=""
+DASHBOARD_FOLLOW_PANE=""
 
 cleanup() {
   local status=$?
-  if [[ -n "$FOLLOW_PID" ]]; then
-    kill "$FOLLOW_PID" >/dev/null 2>&1 || true
-    wait "$FOLLOW_PID" 2>/dev/null || true
+  if [[ -n "$DASHBOARD_FOLLOW_PANE" ]]; then
+    "$BIN" pane close "$DASHBOARD_FOLLOW_PANE" >/dev/null 2>&1 || true
   fi
   if [[ -n "$SEND_PID" ]]; then
     kill "$SEND_PID" >/dev/null 2>&1 || true
@@ -145,6 +144,7 @@ test ! -e "$WORKDIR/.plexi/agents/not-a-lead"
 echo "ungranted send exited $MISSING_CODE and created no lead"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/e2e/human.sh"
+source "$ROOT/scripts/e2e/dashboard.sh"
 export BIN
 MISSING_PENDING="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pending_request_id") or "")' "$WORKDIR/missing.json")"
 if [[ -z "$MISSING_PENDING" ]]; then
@@ -174,7 +174,7 @@ python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body.get("stat
 echo "pending send exited $PENDING_CODE"
 
 echo "STEP command view pane shows both leads and the pending approval"
-OPEN="$(cli agents-dashboard open)"
+OPEN="$(dashboard open)"
 python3 -c 'import json,sys; assert json.loads(sys.argv[1]).get("ok") is True' "$OPEN"
 PANE="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["pane_id"])' "$OPEN")"
 STATE="$(cli pane state "$PANE")"
@@ -203,7 +203,7 @@ QUEUED="$(cli agent assign --head lead-b --input "$WORKDIR/queue-task.json" --js
 python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body.get("ok") is True, body' "$QUEUED"
 QTASK="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["task"]["id"])' "$QUEUED")"
 for _ in $(seq 1 40); do
-  if python3 - "$(cli agents-dashboard --json)" "$QTASK" <<'PY'
+  if python3 - "$(dashboard --json)" "$QTASK" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
 task = next((item for item in body.get("tasks", []) if item.get("id") == sys.argv[2]), None)
@@ -214,7 +214,7 @@ PY
   fi
   sleep 0.25
 done
-python3 - "$(cli agents-dashboard --json)" "$QTASK" <<'PY'
+python3 - "$(dashboard --json)" "$QTASK" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
 task = next((item for item in body.get("tasks", []) if item.get("id") == sys.argv[2]), None)
@@ -358,7 +358,7 @@ cli agents-dashboard send lead-b "long-task" >"$WORKDIR/long.out" 2>"$WORKDIR/lo
 SEND_PID=$!
 RUN=""
 for _ in $(seq 1 40); do
-  VIEW="$(cli agents-dashboard --json)"
+  VIEW="$(dashboard --json)"
   RUN="$(python3 - "$VIEW" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
@@ -379,7 +379,7 @@ if [[ -z "$RUN" ]]; then
   exit 1
 fi
 echo "cancelling $RUN"
-cli agents-dashboard cancel "$RUN"
+dashboard cancel "$RUN"
 wait "$SEND_PID" || true
 SEND_PID=""
 sleep 1
@@ -399,7 +399,7 @@ python3 -c 'import json,sys; text=json.dumps(json.loads(sys.argv[1])); assert "l
 echo "cancel stopped run $RUN; lead.step rows stayed $STEPS"
 
 echo "STEP restart shows the same leads and runs"
-BEFORE="$(cli agents-dashboard --json)"
+BEFORE="$(dashboard --json)"
 "$BIN" host stop >/dev/null 2>&1 || true
 HOST_STARTED=0
 if ! "$BIN" host start --background --ephemeral --timeout-secs 45; then
@@ -407,7 +407,7 @@ if ! "$BIN" host start --background --ephemeral --timeout-secs 45; then
   exit 1
 fi
 HOST_STARTED=1
-AFTER="$(cli agents-dashboard --json)"
+AFTER="$(dashboard --json)"
 python3 - "$BEFORE" "$AFTER" <<'PY'
 import json, sys
 before = json.loads(sys.argv[1])
@@ -456,8 +456,7 @@ echo "agent pane refused resolve and allow"
 
 echo "STEP follow streams command.view without another list"
 : >"$WORKDIR/follow.ndjson"
-cli agents-dashboard --follow >"$WORKDIR/follow.ndjson" 2>"$WORKDIR/follow.err" &
-FOLLOW_PID=$!
+dashboard_follow "$WORKDIR/follow.ndjson" "$WORKDIR/follow.err"
 SUBSCRIBED=0
 for _ in $(seq 1 40); do
   if python3 - "$WORKDIR/follow.ndjson" <<'PY'
@@ -508,9 +507,8 @@ PY
   fi
   sleep 0.25
 done
-kill "$FOLLOW_PID" >/dev/null 2>&1 || true
-wait "$FOLLOW_PID" 2>/dev/null || true
-FOLLOW_PID=""
+"$BIN" pane close "$DASHBOARD_FOLLOW_PANE" >/dev/null 2>&1 || true
+DASHBOARD_FOLLOW_PANE=""
 if [[ "$SEEN" != 1 ]]; then
   echo "FAIL: follow did not stream command.view for the new lead"
   cat "$WORKDIR/follow.ndjson" "$WORKDIR/follow.err" >&2 || true
