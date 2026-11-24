@@ -2029,6 +2029,51 @@ fn dashboard_list_and_open_are_bound_to_the_requested_workspace() {
     assert_eq!(again["error_code"], "permission_denied", "one approval is one read: {again}");
 }
 
+/// Stint 1716 slice 2b: a dashboard permit asks again at each read. A pane's
+/// stops covering when its context moves or it closes; an outside process's
+/// stops when the grant it rests on is revoked.
+#[test]
+fn a_dashboard_permit_stops_covering_after_a_scope_move_or_a_revoke() {
+    let _on =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentsDashboard]);
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let root = h.workspace_root();
+    h.app.set_context_root(root.clone(), None);
+    let text = root.to_string_lossy().to_string();
+    let caller = h.app.classify_socket_peer(Some(&pane_witness(&h, pane)));
+    let permit = h.app.admit_dashboard_workspace(&caller, &text).unwrap();
+    assert_eq!(crate::host::command_view::read(&permit, &root).unwrap()["ok"], true);
+    assert!(
+        permit.recheck(std::path::Path::new("/")).is_err(),
+        "a permit covers the workspace it was admitted for and no other"
+    );
+    let live = h.app.pane_authority(pane).unwrap();
+    live.publish_scope(root.join("moved"));
+    let moved = crate::host::command_view::read(&permit, &root).unwrap_err();
+    assert!(moved.contains("scope changed"), "{moved}");
+
+    let outside_caller = h.app.classify_socket_peer(Some(&outside()));
+    let refused = h.app.admit_dashboard_workspace(&outside_caller, &text).unwrap_err();
+    assert_eq!(refused.code, "permission_denied");
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    let ask = monitor
+        .list_pending()
+        .into_iter()
+        .find(|p| p.actor_id == crate::broker::principal::EXTERNAL_ID)
+        .expect("the outside read is filed for approval");
+    monitor
+        .approve_pending(&ask.pending_request_id, crate::broker::gate::ApprovalChoice::Session)
+        .unwrap();
+    let permit = h.app.admit_dashboard_workspace(&outside_caller, &text).unwrap();
+    assert!(permit.recheck(&root).is_ok());
+    let grant = monitor.store().records()[0].grant_id.clone();
+    assert!(monitor.revoke_grant_id(&grant).unwrap());
+    let revoked = crate::host::command_view::read(&permit, &root).unwrap_err();
+    assert!(revoked.contains("no longer allowed"), "{revoked}");
+}
+
 /// Design 1285 section 4, condition 3: with the dashboard experiment off,
 /// both raw host entries refuse: the list request and the follow stream.
 #[test]

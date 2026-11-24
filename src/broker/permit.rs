@@ -106,6 +106,27 @@ impl DeliverEvents {
     }
 }
 
+/// Read one workspace's agents dashboard: list, open or follow.
+pub(crate) enum ReadDashboard {}
+
+impl Operation for ReadDashboard {
+    const NAME: &'static str = "agents.dashboard.read";
+}
+
+impl UnboundOperation for ReadDashboard {}
+
+impl ReadDashboard {
+    /// The one admitted member of an outside process's approval.
+    const MEMBER: &'static str = "workspace";
+
+    /// The canonical target: the workspace the caller named.
+    pub(crate) fn target(workspace: &std::path::Path) -> String {
+        crate::platform::path::canonical_or_self(workspace)
+            .display()
+            .to_string()
+    }
+}
+
 /// Who a permit is minted for, as the host classified it.
 #[derive(Clone, Debug)]
 enum PermitSubject {
@@ -246,6 +267,62 @@ impl<Op: Operation> Permit<Op> {
             PermitSubject::Pane(scope) => scope.current().map(|_| guard),
             PermitSubject::Unbound { .. } => Ok(guard),
         }
+    }
+}
+
+impl Permit<ReadDashboard> {
+    /// Ask again, at the read, whether `workspace` may still be served. A
+    /// pane holds no broker row: its containment was checked at admission
+    /// against the scope it held then, so it stands while the incarnation is
+    /// unrevoked at that revision. An outside process holds one approved
+    /// question, asked again in the live store. Call it after the payload is
+    /// staged and before it is handed over, and never hold a lock across the
+    /// handoff.
+    pub(crate) fn recheck(&self, workspace: &std::path::Path) -> Result<(), String> {
+        let target = ReadDashboard::target(workspace);
+        if !self.coverage.members.is_empty() {
+            return self.commit(&target, ReadDashboard::MEMBER).map(drop);
+        }
+        if target != self.target {
+            return Err(format!(
+                "{} permit is for {}, not {target}",
+                ReadDashboard::NAME,
+                self.target
+            ));
+        }
+        match &self.subject {
+            PermitSubject::Pane(scope) => scope.current().map(drop),
+            PermitSubject::Unbound { class } => Err(format!(
+                "{} permit for {class} covers nothing",
+                ReadDashboard::NAME
+            )),
+        }
+    }
+
+    /// A permit for an outside process's one approved read of `workspace`.
+    pub(crate) fn external(
+        workspace: &std::path::Path,
+        monitor: Arc<PermissionMonitor>,
+        approved: Approved,
+    ) -> Self {
+        let target = ReadDashboard::target(workspace);
+        let coverage = Coverage::new(monitor, vec![(ReadDashboard::MEMBER.to_string(), approved)]);
+        mint_unbound("external", target, coverage)
+    }
+
+    /// A permit for a pane reading a workspace its own scope contains. The
+    /// caller has checked containment; the permit pins the incarnation and
+    /// scope revision it was checked under.
+    pub(crate) fn contained(
+        scope: AdmittedScope,
+        workspace: &std::path::Path,
+        monitor: Arc<PermissionMonitor>,
+    ) -> Result<Self, String> {
+        mint_pane(
+            scope,
+            ReadDashboard::target(workspace),
+            Coverage::new(monitor, Vec::new()),
+        )
     }
 }
 

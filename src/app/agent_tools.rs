@@ -2,7 +2,9 @@
 use super::PlexiApp;
 use crate::broker::caller::{RequestOrigin, SocketCaller};
 use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor, UseDecision};
-use crate::broker::permit::{self, ContextRootProof, Coverage, Operation, Permit, SetContextRoot};
+use crate::broker::permit::{
+    self, ContextRootProof, Coverage, Operation, Permit, ReadDashboard, SetContextRoot,
+};
 use crate::broker::principal::Principal;
 use crate::broker::PermissionPosture;
 use crate::host::context::PaneCwd;
@@ -287,6 +289,53 @@ impl UseSubject {
             }
         };
         Ok((permit, record_outcome))
+    }
+}
+
+impl UseSubject {
+    /// Admit this subject to read `workspace`'s dashboard. A pane's
+    /// containment is the caller's check and the permit pins the incarnation
+    /// it was checked under; an outside process needs an approved use of its
+    /// own for exactly this workspace.
+    pub(super) fn admit_dashboard_read(
+        &self,
+        workspace: &Path,
+    ) -> Result<Permit<ReadDashboard>, String> {
+        let Self::Pane(scope) = self else {
+            return self.admit_external_dashboard_read(workspace);
+        };
+        scope.current()?;
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir())
+            .map_err(|e| e.to_string())?;
+        Permit::contained(scope.clone(), workspace, monitor)
+    }
+
+    fn admit_external_dashboard_read(&self, workspace: &Path) -> Result<Permit<ReadDashboard>, String> {
+        let tool = ReadDashboard::NAME;
+        let target = ReadDashboard::target(workspace);
+        let input = json!({"workspace": target});
+        let decide = PermissionMonitor::admit_for_use;
+        let (caller, answer) = self.decide(tool, &input, Path::new(&target), 0, decide)?;
+        let (approved, grant, fingerprint, resource) = match answer {
+            UseDecision::Allowed {
+                approved,
+                grant_id,
+                fingerprint,
+                resource_id,
+            } => (*approved, grant_id, fingerprint, resource_id),
+            UseDecision::Required { pending_request_id } => {
+                return Err(needs_approval(tool, &caller.actor, &pending_request_id))
+            }
+            UseDecision::Denied => {
+                return Err(format!(
+                    "permission_denied: {tool} for {} was denied",
+                    caller.actor
+                ))
+            }
+        };
+        caller.note_use(&grant, &fingerprint, &resource)?;
+        caller.outcome(&grant, &fingerprint, &resource, "ok")?;
+        Ok(Permit::external(workspace, caller.monitor, approved))
     }
 }
 
