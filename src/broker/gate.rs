@@ -3570,6 +3570,9 @@ impl PermissionMonitor {
             }
             super::needs_you_store::LoadedQueue::Items(items) => {
                 let count = items.len();
+                for item in &items {
+                    log::info!("needs_you: restored open item {}", item.id);
+                }
                 restored = self.install_restored(items);
                 log::info!(
                     "needs_you: restored {count} open items from {}",

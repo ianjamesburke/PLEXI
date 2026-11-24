@@ -149,11 +149,12 @@ def main(args):
         installed_b = install(args.package_b.resolve(), channel, root, env)
         if installed_a == installed_b:
             raise AssertionError("installer did not activate a different generation")
-        # B's pane is a new incarnation and may not read A's question. It asks
-        # the identical question instead: the host reuses A's open record,
-        # by id, only if that record survived the upgrade under its seal.
-        filed = re.compile(rf"needs_you: pane \d+ filed question as {re.escape(original['id'])}$", re.M)
-        run_host(installed_b, env, lambda _listed: filed.search(first_log.read_text(errors="replace")[before:]))
+        # B's pane is a new incarnation and may not read A's question, and its
+        # own ask files a new record. The host's restore log names every open
+        # item it loaded from the sealed journal, so A's exact id there proves
+        # the record survived the upgrade under its seal.
+        restored = re.compile(rf"needs_you: restored open item {re.escape(original['id'])}$", re.M)
+        run_host(installed_b, env, lambda _listed: restored.search(first_log.read_text(errors="replace")[before:]))
         second_log = first_log.read_text(errors="replace")[before:]
         forbidden = ("key unreadable", "rotated unreadable permission mac key", "unverified grants", "created host permission mac key")
         if any(marker in second_log for marker in forbidden):

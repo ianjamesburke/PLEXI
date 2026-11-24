@@ -21697,7 +21697,9 @@ ask = ["pane.send"]
         &forged_reply,
     );
     let forged = read_json_response(&forged_reply);
-    assert_eq!(forged["error_code"], "host_owned_operation", "{forged}");
+    // The send's continuation is host-journaled with no pane incarnation, so
+    // no pane may complete it (stint 1743); the host records its outcome.
+    assert_eq!(forged["error_code"], "permission_denied", "{forged}");
     assert_eq!(
         monitor.get_continuation("op-pane-send-1").unwrap().state,
         crate::broker::gate::ContinuationState::Completed

@@ -4516,7 +4516,13 @@ mod tests {
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let mut permission_id = None;
         if with_choices {
-            // Rich asks use the answer branch; agent reports reuse the same run tag.
+            // Rich asks use the answer branch; agent reports reuse the same run
+            // tag, within the pane's own incarnation (stint 1743).
+            let pane_incarnation = h
+                .origin_from_pane(pane_id)
+                .socket_caller()
+                .and_then(|caller| caller.pane())
+                .map(|pane| pane.authority.durable_key().to_string());
             monitor
                 .file_needs_you_with_details(
                     NeedsYouFile {
@@ -4530,6 +4536,7 @@ mod tests {
                     Some(crate::broker::gate::NeedsYouDetails {
                         choices: vec!["Alpha".into(), "Beta".into()],
                         pane_id: Some(pane_id),
+                        pane_incarnation,
                         ..Default::default()
                     }),
                 )
