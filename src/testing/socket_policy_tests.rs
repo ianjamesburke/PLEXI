@@ -24,7 +24,10 @@ fn outside() -> PeerWitness {
 /// Read the client half of a reply connection to its end, as the CLI does:
 /// the host's ack byte is dropped and the JSON body returned. There is no
 /// file fallback on this path, so a reply that took one is never seen.
-fn read_client(mut client: std::os::unix::net::UnixStream, line: &str) -> serde_json::Value {
+pub(super) fn read_client(
+    mut client: std::os::unix::net::UnixStream,
+    line: &str,
+) -> serde_json::Value {
     use std::io::Read as _;
     // macOS refuses a timeout (EINVAL) once the host half is closed; the
     // read then ends at once anyway.
@@ -1163,6 +1166,46 @@ fn secret_ask(
         .unwrap()
 }
 
+// Keep the original reply stream while the worker waits for the desktop.
+pub(super) fn live_secret(
+    h: &mut HostHarness,
+    mut request: serde_json::Value,
+    peer: &PeerWitness,
+) -> (
+    std::os::unix::net::UnixStream,
+    crate::broker::gate::PendingView,
+) {
+    if request["response_file"].is_null() {
+        request["response_file"] = crate::rpc::response_file("live-secret", "json").into();
+    }
+    let (mut server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+    let ask = h.dispatch_live_secret(&request.to_string(), peer, &mut server);
+    (client, ask)
+}
+
+impl HostHarness {
+    pub(crate) fn dispatch_live_secret(
+        &mut self,
+        line: &str,
+        peer: &PeerWitness,
+        server: &mut std::os::unix::net::UnixStream,
+    ) -> crate::broker::gate::PendingView {
+        let profile = crate::config::config_dir();
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile).unwrap();
+        let index = monitor.list_pending().len();
+        crate::app::handle_socket_line_in(&profile, line, &self.ipc_tx, Some(peer), server);
+        self.hidden_frame();
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(ask) = monitor.list_pending().into_iter().nth(index) {
+                return ask;
+            }
+            assert!(start.elapsed().as_secs() < 5, "no independent approval");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+}
+
 #[test]
 fn external_secret_get_asks_and_returns_no_value() {
     use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
@@ -1170,18 +1213,21 @@ fn external_secret_get_asks_and_returns_no_value() {
     let root = workspace_secret(&h, "ws-1280-get", "READ_1280", "test-read-value");
     let get = serde_json::json!({"type":"secret_get","name":"READ_1280","workspace_root":root});
     let peer = witness(std::process::id(), AncestryEnd::ReachedRoot);
-    let ask = secret_ask(&mut h, &get, &peer);
+    let (client, ask) = live_secret(&mut h, get.clone(), &peer);
     assert_eq!(ask.actor_id, crate::broker::principal::EXTERNAL_ID);
     assert!(ask.input_summary.contains("terminal outside Plexi"));
-    PermissionMonitor::for_profile(&crate::config::config_dir())
-        .unwrap()
+    let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    monitor
         .approve_pending(&ask.pending_request_id, ApprovalChoice::Once)
         .unwrap();
     assert_eq!(
-        send(&mut h, get.clone(), Some(peer.clone()))["value"],
+        read_client(client, "allowed get")["value"],
         "test-read-value"
     );
-    secret_ask(&mut h, &get, &peer);
+    assert!(!monitor
+        .open_needs_you()
+        .iter()
+        .any(|item| item.id == ask.pending_request_id));
 }
 
 #[test]
@@ -1189,7 +1235,7 @@ fn detached_secret_get_asks() {
     let mut h = HostHarness::new();
     let peer = witness(std::process::id(), AncestryEnd::LookupFailed);
     let get = serde_json::json!({"type":"secret_get","name":"DETACHED_1280","global":true});
-    let ask = secret_ask(&mut h, &get, &peer);
+    let (client, ask) = live_secret(&mut h, get.clone(), &peer);
     assert_eq!(ask.actor_id, crate::broker::principal::EXTERNAL_ID);
     h.app.sync_attention_queue();
     let card = h
@@ -1207,6 +1253,15 @@ fn detached_secret_get_asks() {
             .collect::<Vec<_>>(),
         ["allow_once", "deny"]
     );
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    monitor
+        .approve_pending(
+            &ask.pending_request_id,
+            crate::broker::gate::ApprovalChoice::Deny,
+        )
+        .unwrap();
+    assert_eq!(read_client(client, "detached deny")["reason"], "denied");
     assert!(ask.input_summary.contains("detached"));
 }
 
@@ -1216,16 +1271,19 @@ fn external_caller_is_not_admitted_by_a_session_grant() {
     let mut h = HostHarness::new();
     let peer = witness(std::process::id(), AncestryEnd::ReachedRoot);
     let get = serde_json::json!({"type":"secret_get","name":"SESSION_1280","global":true});
-    let ask = secret_ask(&mut h, &get, &peer);
+    let (client, ask) = live_secret(&mut h, get.clone(), &peer);
     let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
     assert!(monitor
         .approve_pending(&ask.pending_request_id, ApprovalChoice::Session)
         .is_err());
-    // Simulate a valid session row inherited from an earlier host. Rejection
-    // at the click alone cannot prove that admission ignores standing rows.
     monitor
         .approve_pending(&ask.pending_request_id, ApprovalChoice::Once)
         .unwrap();
+    assert_eq!(
+        read_client(client, "approved missing get")["status"],
+        "not_found"
+    );
+    // Even a legacy row that allows arbitrary arguments cannot admit the next call.
     {
         let mut store = monitor.store();
         let row = store
@@ -1235,8 +1293,14 @@ fn external_caller_is_not_admitted_by_a_session_grant() {
             .unwrap();
         row.duration = crate::broker::GrantDuration::Session;
         row.session_id = Some(monitor.session_id().into());
+        row.args_unbound = true;
+        row.consumed = false;
     }
-    secret_ask(&mut h, &get, &peer);
+    let (next, ask) = live_secret(&mut h, get, &peer);
+    monitor
+        .approve_pending(&ask.pending_request_id, ApprovalChoice::Deny)
+        .unwrap();
+    assert_eq!(read_client(next, "fresh ask")["reason"], "denied");
 }
 
 #[test]
@@ -1255,33 +1319,22 @@ fn external_secret_set_and_delete_ask_then_apply_once() {
         if op == "set" {
             request["value"] = "mutation-canary-before-click".into();
         }
-        let ask = secret_ask(&mut h, &request, &peer);
+        let (client, ask) = live_secret(&mut h, request.clone(), &peer);
         assert_eq!(ask.tool, format!("secret.{op}"));
         assert_eq!(ask.resource_id.unwrap(), format!("{name}@global"));
-        assert!(!ask.input_summary.contains("mutation-canary"));
-        let pending_count = monitor.list_pending().len();
-        let needs_you_count = monitor.list_needs_you().len();
-        let repeated = secret_ask(&mut h, &request, &peer);
-        assert_eq!(ask.pending_request_id, repeated.pending_request_id);
-        assert_eq!(monitor.list_pending().len(), pending_count);
-        assert_eq!(monitor.list_needs_you().len(), needs_you_count);
+        assert_eq!(
+            ask.input_summary,
+            format!("Allow a terminal outside Plexi to use secret.{op} once on {name}@global")
+        );
         assert_eq!(system_store().get(&account).is_some(), op == "delete");
         monitor
             .approve_pending(&ask.pending_request_id, ApprovalChoice::Once)
             .unwrap();
-        if op == "set" {
-            // Only the name and scope are approved. The retry supplies the value.
-            request["value"] = "mutation-canary".into();
-        }
-        assert_eq!(
-            secret_metadata(&mut h, request.clone(), &peer)["status"],
-            "ok"
-        );
+        assert_eq!(read_client(client, op)["status"], "ok");
         assert_eq!(
             system_store().get(&account).as_deref().map(String::as_str),
-            (op == "set").then_some("mutation-canary")
+            (op == "set").then_some("mutation-canary-before-click")
         );
-        secret_ask(&mut h, &request, &peer);
         assert!(monitor
             .audit_records()
             .iter()
@@ -1520,17 +1573,15 @@ fn a_covered_worker_deny_beats_an_exact_stored_allow() {
         root: crate::platform::path::canonical_or_self(&root),
     };
     let read = || {
-        crate::workspace::secrets::read_pane_secret_with_posture(
+        crate::workspace::secrets::read_pane_secret(
             &monitor,
             crate::workspace::secrets::system_store(),
             &actor,
             "KEY_1673",
             &scope,
             &crate::config::config_dir(),
-            crate::workspace::secrets::ReadOrigin::default(),
         )
         .unwrap()
-        .result
     };
     let crate::workspace::secrets::ReadResult::PermissionRequired { pending_id } = read() else {
         panic!("expected a pending request");

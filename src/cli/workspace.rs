@@ -4,7 +4,7 @@ use super::reply::OutputMode;
 use serde_json::Value;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub fn workspace_init() -> i32 {
     let cwd = match std::env::current_dir() {
@@ -361,7 +361,7 @@ fn secret_request_for_workspace(
     )
 }
 
-const SECRET_TIMEOUT: Duration = Duration::from_secs(120);
+const WAIT_NOTICE_DELAY: Duration = Duration::from_millis(700);
 
 fn no_secret_reply(label: &str) -> i32 {
     eprintln!(
@@ -371,18 +371,49 @@ fn no_secret_reply(label: &str) -> i32 {
     1
 }
 
-fn send_secret(payload: Value, timeout: Duration) -> Result<Option<Value>, i32> {
-    let verb = payload["type"].as_str().expect("secret request type");
-    let label = verb.replace('_', " ");
-    let response = match super::request_reply(payload, "secret-response", &label, timeout) {
-        Ok(super::reply::HostReply::Transport(crate::rpc::PollError::TimedOut)) => return Ok(None),
-        Ok(super::reply::HostReply::Transport(_)) | Err(_) => return Err(no_secret_reply(&label)),
-        Ok(reply) => reply.payload_or_report(&label, OutputMode::Text)?,
-    };
-    serde_json::from_str(&response).map(Some).map_err(|_| {
-        eprintln!("error: invalid {label} reply");
+fn send_secret(op: &str, name: &str, payload: Value) -> Result<Value, i32> {
+    use super::reply::HostReply;
+    let label = format!("secret {op}");
+    let (token, stream) = super::send_request_connected(payload, "secret-response", &label)
+        .map_err(|_| no_secret_reply(&label))?;
+    let timeout = crate::workspace::secrets::APPROVAL_TIMEOUT + Duration::from_secs(10);
+    let reply = std::thread::scope(|scope| {
+        let (done, timer) = std::sync::mpsc::channel::<()>();
+        scope.spawn(move || {
+            if timer.recv_timeout(WAIT_NOTICE_DELAY)
+                == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            {
+                eprintln!("Waiting for approval in the Plexi window (Needs you)...");
+            }
+        });
+        let body = crate::rpc::read_secret_reply(&token, stream, timeout);
+        drop(done);
+        HostReply::decode(body)
+    });
+    let unconfirmed = || {
+        if op == "get" {
+            eprintln!("No value was received from Plexi");
+        } else {
+            eprintln!("Plexi did not confirm the outcome");
+        }
         1
-    })
+    };
+    match reply {
+        HostReply::Transport(_) => Err(unconfirmed()),
+        HostReply::Refused(refusal) if refusal.fields["status"] == "denied" => {
+            match refusal.fields["reason"].as_str() {
+                Some("denied") => eprintln!("Request denied"),
+                Some("expired") => eprintln!("Approval expired"),
+                _ => return Err(refusal.report(OutputMode::Text)),
+            }
+            Err(1)
+        }
+        reply => {
+            let body = reply.payload_or_report(&label, OutputMode::Text)?;
+            let json = serde_json::from_str(&body).map_err(|_| unconfirmed())?;
+            secret_result(op, name, json)
+        }
+    }
 }
 
 fn secret_result(op: &str, name: &str, reply: Value) -> Result<Value, i32> {
@@ -411,48 +442,6 @@ fn secret_result(op: &str, name: &str, reply: Value) -> Result<Value, i32> {
     }
 }
 
-fn send_secret_set(
-    request: Value,
-    read: impl FnOnce() -> Result<zeroize::Zeroizing<String>, i32>,
-    mut send: impl FnMut(Value, Duration) -> Result<Option<Value>, i32>,
-    timeout: Duration,
-) -> Result<Value, i32> {
-    let value = read()?;
-    let mut submit = |wait| {
-        let mut payload = request.clone();
-        payload["value"] = value.as_str().into();
-        send(payload, wait)
-    };
-    let deadline = Instant::now() + timeout;
-    let mut reply = submit(timeout)?.ok_or_else(|| no_secret_reply("secret set"))?;
-    let mut prompted = false;
-    let first_ask = reply["pending_request_id"].clone();
-    while reply["status"] == "permission_required" && reply["pending_request_id"].is_string() {
-        // A different ask id means the first ask was resolved without an
-        // approval (denied or expired); stop instead of filing asks forever.
-        if reply["pending_request_id"] != first_ask {
-            eprintln!("error: secret set was not approved");
-            return Err(1);
-        }
-        if !prompted {
-            eprintln!("Approve in the Plexi window...");
-            prompted = true;
-        }
-        std::thread::sleep(
-            Duration::from_secs(1).min(deadline.saturating_duration_since(Instant::now())),
-        );
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        let Some(next) = submit(remaining)? else {
-            break;
-        };
-        reply = next;
-    }
-    secret_result("set", request["name"].as_str().expect("secret name"), reply)
-}
-
 pub fn workspace_secret_set(
     friendly: &str,
     from_env: bool,
@@ -469,8 +458,11 @@ pub fn workspace_secret_set(
     };
     request["name"] = alias.unwrap_or(friendly).into();
     request["route_name"] = alias.map(|_| friendly).into();
-    let read = || read_secret_value(friendly, from_env);
-    let reply = match send_secret_set(request, read, send_secret, SECRET_TIMEOUT) {
+    request["value"] = match read_secret_value(friendly, from_env) {
+        Ok(value) => value.as_str().into(),
+        Err(code) => return code,
+    };
+    let reply = match send_secret("set", friendly, request) {
         Ok(reply) => reply,
         Err(code) => return code,
     };
@@ -667,9 +659,7 @@ fn write_secret_inventory(
 }
 
 fn request_secret_once(op: &str, name: &str, global: bool) -> Result<serde_json::Value, i32> {
-    let reply = send_secret(secret_request(op, name, global)?, SECRET_TIMEOUT)?
-        .ok_or_else(|| no_secret_reply(&format!("secret {op}")))?;
-    secret_result(op, name, reply)
+    send_secret(op, name, secret_request(op, name, global)?)
 }
 
 pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
@@ -1387,48 +1377,6 @@ mod secret_list_tests {
 #[cfg(test)]
 mod secret_root_tests {
     use super::*;
-    #[test]
-    fn set_reads_once_while_waiting_for_approval() {
-        let frame = secret_request("set", "TOKEN", true).unwrap();
-        for (timeout, expected, attempts) in [(SECRET_TIMEOUT, 0, 2), (Duration::ZERO, 2, 1)] {
-            let (mut reads, mut sends) = (0, 0);
-            let read = || {
-                reads += 1;
-                Ok(zeroize::Zeroizing::new("fixture".into()))
-            };
-            let send = |mut request: Value, _| {
-                sends += 1;
-                assert!(request.as_object_mut().unwrap().remove("value").unwrap() == "fixture");
-                assert_eq!(request, frame);
-                Ok(Some(if sends == 1 {
-                    serde_json::json!({"status":"permission_required","pending_request_id":"ask"})
-                } else {
-                    serde_json::json!({"status":"ok"})
-                }))
-            };
-            let code = send_secret_set(frame.clone(), read, send, timeout)
-                .err()
-                .unwrap_or(0);
-            assert_eq!((code, reads, sends), (expected, 1, attempts));
-        }
-    }
-
-    #[test]
-    fn set_stops_when_its_ask_is_denied() {
-        let frame = secret_request("set", "TOKEN", true).unwrap();
-        let mut sends = 0;
-        let send = |_: Value, _| {
-            sends += 1;
-            Ok(Some(
-                serde_json::json!({"status":"permission_required","pending_request_id":format!("ask-{sends}")}),
-            ))
-        };
-        let read = || Ok(zeroize::Zeroizing::new("fixture".into()));
-        let result = send_secret_set(frame, read, send, SECRET_TIMEOUT);
-        assert_eq!(result, Err(1));
-        assert_eq!(sends, 2);
-    }
-
     #[test]
     fn secret_workspace_walk_cannot_escape_pane_context() {
         let dir = tempfile::tempdir().unwrap();

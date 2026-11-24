@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use super::folder::SecretActor;
 use super::store::NonDestructiveStore;
-use crate::broker::{gate::PermissionMonitor, PermissionPosture};
+use crate::broker::gate::{AdmitRequest, PermissionMonitor, UseDecision};
 
 /// Tool name the permission monitor admits for a pane's workspace or global read.
 pub const SECRET_GET_TOOL: &str = "secret.get";
@@ -25,11 +25,12 @@ pub enum SecretScope {
 
 impl SecretScope {
     /// Preserve the pane's existing exact binding. Outside approvals also bind
-    /// the human-readable class stamped by the socket entry.
+    /// the caller class and a host-generated nonce for this live invocation.
     pub(crate) fn input(&self, name: &str, outside: Option<&str>) -> serde_json::Value {
         let mut input = serde_json::json!({"name": name, "scope": self.label()});
         if let Some(caller) = outside {
             input["caller"] = caller.into();
+            input["invocation"] = uuid::Uuid::new_v4().to_string().into();
         }
         input
     }
@@ -43,14 +44,6 @@ impl SecretScope {
     }
 }
 
-/// What the host knows about the asker beyond its actor: the worker posture a
-/// pane carries, or the host-stamped class of a caller outside every pane.
-#[derive(Default, Clone, Copy)]
-pub struct ReadOrigin<'a> {
-    pub posture: Option<&'a PermissionPosture>,
-    pub outside: Option<&'a str>,
-}
-
 /// Admit `secret.get` for `actor`, then read `name` the way `plexi secret get`
 /// does: the workspace account first, then `plexi:user:<name>`.
 #[cfg(test)]
@@ -62,30 +55,31 @@ pub fn read_pane_secret(
     scope: &SecretScope,
     global_root: &Path,
 ) -> Result<super::folder::ReadResult, String> {
-    read_pane_secret_with_posture(
+    read_pane_secret_with(
         monitor,
         store,
         actor,
         name,
         scope,
         global_root,
-        ReadOrigin::default(),
+        None,
+        |req| Some(monitor.admit_for_use(req, None)),
     )
-    .map(|read| read.result)
+    .map(|read| read.expect("synchronous admission").result)
 }
 
 /// As [`read_pane_secret`], evaluating the immutable posture carried by the
 /// requesting worker pane, and returning the grant that admitted the read.
-pub fn read_pane_secret_with_posture(
+pub fn read_pane_secret_with(
     monitor: &PermissionMonitor,
     store: &dyn NonDestructiveStore,
     actor: &SecretActor,
     name: &str,
     scope: &SecretScope,
     global_root: &Path,
-    origin: ReadOrigin<'_>,
-) -> Result<super::folder::GrantedRead, String> {
-    let ReadOrigin { posture, outside } = origin;
+    outside: Option<&str>,
+    admit: impl FnOnce(AdmitRequest) -> Option<UseDecision>,
+) -> Result<Option<super::folder::GrantedRead>, String> {
     let accounts = match scope {
         SecretScope::Workspace { id, .. } => {
             let account = super::keychain_workspace_name(id, name);
@@ -102,14 +96,14 @@ pub fn read_pane_secret_with_posture(
         SecretScope::Workspace { root, .. } => root.as_path(),
         SecretScope::Global => global_root,
     };
-    super::folder::admitted_read_with_posture(
+    super::folder::admitted_read_with(
         monitor,
         actor,
         SECRET_GET_TOOL,
         &input.to_string(),
         workspace_root,
         &format!("name={name} scope={label}"),
-        posture,
+        admit,
         || {
             for account in &accounts {
                 if let Some(value) = store.get_interactive(account)? {

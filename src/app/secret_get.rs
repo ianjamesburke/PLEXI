@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use super::PlexiApp;
 use crate::broker::caller::{RequestOrigin, SocketCaller};
-use crate::broker::gate::PermissionMonitor;
+use crate::broker::gate::{AdmitRequest, ApprovalChoice, PermissionMonitor, UseDecision};
 use crate::broker::permit::{mint_pane, Coverage, Permit, SecretRelease};
 use crate::broker::principal::Principal;
 use crate::host::plugin_timeline::AdmittedScope;
@@ -157,6 +157,14 @@ impl PlexiApp {
             "{tool}: caller={} name={name} global={global} workspace={workspace_root:?}",
             origin.class()
         );
+        let write_reply = if matches!(
+            origin.socket_caller(),
+            Some(SocketCaller::External(_) | SocketCaller::Unidentified(_))
+        ) {
+            stream_reply
+        } else {
+            write_reply
+        };
         let monitor = match PermissionMonitor::for_profile(&profile) {
             Ok(monitor) => monitor,
             Err(error) => {
@@ -199,10 +207,14 @@ impl PlexiApp {
                     }
                 }
             }
-            Some(SocketCaller::External(_)) => (Subject::Outside("a terminal outside Plexi"), None),
-            Some(SocketCaller::Unidentified(_)) => {
-                (Subject::Outside("a detached caller (unidentified)"), None)
-            }
+            Some(SocketCaller::External(peer)) => (
+                Subject::Outside("a terminal outside Plexi", peer.hops.first().copied()),
+                None,
+            ),
+            Some(SocketCaller::Unidentified(_)) => (
+                Subject::Outside("a detached caller (unidentified)", None),
+                None,
+            ),
             None => {
                 write_reply(&reply_path, serde_json::json!({"status":"denied"}));
                 return;
@@ -228,6 +240,7 @@ impl PlexiApp {
         }
         let request = SecretRequest {
             subject,
+            repaint: self.ctx.clone(),
             name: name.into(),
             scope,
             profile,
@@ -235,6 +248,8 @@ impl PlexiApp {
             reply_path: reply_path.clone(),
         };
         let repaint = self.ctx.clone();
+        #[cfg(test)]
+        let outside = request.subject.outside().is_some();
         let run = move || {
             match request.subject.current() {
                 Ok(()) => work(request, monitor),
@@ -245,16 +260,22 @@ impl PlexiApp {
             }
             repaint.request_repaint();
         };
+        #[cfg(test)]
+        if !outside {
+            run();
+            return;
+        }
+        #[cfg(test)]
+        let spawn = worker_test::spawn(tool, crate::config::config_dir(), run);
         #[cfg(not(test))]
-        if let Err(error) = std::thread::Builder::new().name(tool.into()).spawn(run) {
+        let spawn = std::thread::Builder::new().name(tool.into()).spawn(run);
+        if let Err(error) = spawn {
             log::error!("{tool}: worker failed: {error}");
             write_reply(
                 &reply_path,
                 serde_json::json!({"status":"error","error":"Could not start the secret worker."}),
             );
         }
-        #[cfg(test)]
-        run();
     }
 }
 
@@ -267,28 +288,28 @@ pub(super) struct SecretAsk<'a> {
 
 enum Subject {
     Pane(AdmittedScope),
-    Outside(&'static str),
+    Outside(&'static str, Option<crate::broker::caller::PeerHop>),
 }
 
 impl Subject {
     fn principal(&self) -> Principal {
         match self {
             Self::Pane(scope) => Principal::agent(format!("pane:{}", scope.authority.pane_id())),
-            Self::Outside(_) => Principal::External,
+            Self::Outside(..) => Principal::External,
         }
     }
 
     fn current(&self) -> Result<(), String> {
         match self {
             Self::Pane(scope) => scope.current().map(|_| ()),
-            Self::Outside(_) => Ok(()),
+            Self::Outside(..) => Ok(()),
         }
     }
 
     fn outside(&self) -> Option<&'static str> {
         match self {
             Self::Pane(_) => None,
-            Self::Outside(label) => Some(label),
+            Self::Outside(label, _) => Some(label),
         }
     }
 }
@@ -296,6 +317,7 @@ impl Subject {
 /// Host-classified request carried into the secret worker.
 struct SecretRequest {
     subject: Subject,
+    repaint: egui::Context,
     name: String,
     scope: SecretScope,
     profile: PathBuf,
@@ -304,6 +326,80 @@ struct SecretRequest {
 }
 
 impl SecretRequest {
+    fn reply(&self, body: serde_json::Value) {
+        if self.subject.outside().is_some() {
+            stream_reply(&self.reply_path, body);
+        } else {
+            write_reply(&self.reply_path, body);
+        }
+    }
+
+    fn admit(&self, monitor: &PermissionMonitor, req: AdmitRequest<'_>) -> Option<UseDecision> {
+        let Subject::Outside(_, peer) = &self.subject else {
+            return Some(monitor.admit_for_use(req, self.posture.as_ref()));
+        };
+        let tool = req.tool;
+        let deadline = std::time::Instant::now() + crate::workspace::secrets::APPROVAL_TIMEOUT;
+        let decision = monitor.admit_for_use(req, None);
+        let UseDecision::Required {
+            pending_request_id: pending,
+        } = &decision
+        else {
+            return Some(decision);
+        };
+        let token = self.reply_path.to_string_lossy();
+        let stopped = |_claim: bool| {
+            #[cfg(test)]
+            let deadline = worker_test::deadline(deadline, _claim);
+            if crate::rpc::ReplyRegistry::connected(&token) != Some(true)
+                || peer.is_some_and(|p| !p.is_live())
+            {
+                Some("client gone")
+            } else if std::time::Instant::now() >= deadline {
+                Some("expired")
+            } else {
+                None
+            }
+        };
+        log::info!("{tool}: parked pending={pending}");
+        self.repaint.request_repaint();
+        let reason = loop {
+            if let Some(reason) = stopped(false) {
+                break reason;
+            }
+            if let Some(choice) = monitor.approval_resolution(pending) {
+                log::info!("{tool}: resolved pending={pending} choice={choice:?}");
+                if choice != ApprovalChoice::Once {
+                    break "denied";
+                }
+                // Only this worker starts or withdraws the effect. The final
+                // owner/deadline observation is inside the broker's Once claim.
+                let stop = std::cell::Cell::new(None);
+                let current = || {
+                    stop.set(stopped(true));
+                    stop.get().is_none()
+                };
+                let claim = monitor.admit_for_use_if(req, None, Some(&current));
+                if matches!(claim, UseDecision::Allowed { .. }) {
+                    log::info!("{tool}: effect started pending={pending}");
+                    return Some(claim);
+                }
+                break stop.get().unwrap_or("denied");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        log::info!("{tool}: {reason} pending={pending}");
+        if let Err(error) = monitor.withdraw_live_ask(pending) {
+            log::error!("{tool}: withdraw {pending}: {error}");
+        }
+        if reason == "client gone" {
+            crate::rpc::ReplyRegistry::remove(&token);
+        } else {
+            self.reply(serde_json::json!({"status":"denied","reason":reason}));
+        }
+        None
+    }
+
     /// Read under the broker gate and reply. A value leaves only through
     /// [`release_secret`], under the permit minted from the broker's approval
     /// of this read.
@@ -317,18 +413,19 @@ impl SecretRequest {
             kind: principal.actor_type(),
             id: principal.actor_id().into(),
         };
-        let result = crate::workspace::secrets::read_pane_secret_with_posture(
+        let Some(result) = crate::workspace::secrets::read_pane_secret_with(
             monitor,
             store,
             &actor,
             &self.name,
             &self.scope,
             &self.profile,
-            crate::workspace::secrets::ReadOrigin {
-                posture: self.posture.as_ref(),
-                outside: self.subject.outside(),
-            },
-        );
+            self.subject.outside(),
+            |req| self.admit(monitor, req),
+        )
+        .transpose() else {
+            return;
+        };
         let body = match result.map(|read| (read.result, read.approved)) {
             Ok((ReadResult::Value(value), Some(approved))) => {
                 let target = SecretRelease::target(&self.name, &self.scope);
@@ -338,7 +435,7 @@ impl SecretRequest {
                             Coverage::new(monitor.clone(), vec![(target.clone(), approved)]);
                         mint_pane::<SecretRelease>(scope.clone(), target.clone(), coverage)
                     }
-                    Subject::Outside(class) => crate::broker::permit::mint_external_secret(
+                    Subject::Outside(class, _) => crate::broker::permit::mint_external_secret(
                         class,
                         target.clone(),
                         monitor.clone(),
@@ -362,7 +459,7 @@ impl SecretRequest {
             Ok((ReadResult::NotFound, _)) => serde_json::json!({"status": "not_found"}),
             Err(error) => serde_json::json!({"status": "error", "error": error}),
         };
-        write_reply(&self.reply_path, body);
+        self.reply(body);
     }
 }
 
@@ -378,12 +475,15 @@ fn release_secret(permit: Permit<SecretRelease>, target: &str, reply_path: &Path
         ),
         Err(error) => {
             log::info!("secret_get: release withheld: {error}");
-            write_reply(reply_path, serde_json::json!({"status": "denied"}));
+            stream_reply(reply_path, serde_json::json!({"status": "denied"}));
             return;
         }
     };
     log::info!("secret_get: released {target}");
-    if !staged.is_some_and(crate::rpc::StagedReply::send) {
+    if staged.is_some_and(crate::rpc::StagedReply::send) {
+        log::info!("secret_get: value reply sent");
+    } else {
+        log::info!("secret_get: value reply lost");
         log::error!(
             "secret_get: value reply for {} failed",
             reply_path.display()
@@ -408,10 +508,86 @@ fn scope_for(global: bool, workspace_root: Option<&Path>) -> Result<SecretScope,
     )
 }
 
+fn stream_reply(path: &Path, body: serde_json::Value) {
+    let token = path.to_string_lossy();
+    #[cfg(test)]
+    if worker_test::TIMING.with_borrow(|mode| matches!(mode, worker_test::Timing::DropReply))
+        && body["status"] == "ok"
+    {
+        crate::rpc::ReplyRegistry::remove(&token);
+    }
+    let sent = crate::rpc::stage_stream_only_json_response(&token, body)
+        .is_some_and(crate::rpc::StagedReply::send);
+    log::info!(
+        "secret: reply {} token={token}",
+        if sent { "sent" } else { "lost" }
+    );
+}
+
 /// A reply that holds no secret value.
 fn write_reply(path: &Path, body: serde_json::Value) {
     if !crate::rpc::write_json_response(&path.to_string_lossy(), body) {
         log::error!("secret_get: reply write for {} failed", path.display());
+    }
+}
+
+#[cfg(test)]
+mod worker_test {
+    use std::{cell::RefCell, path::PathBuf, thread::JoinHandle};
+
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    type Evidence = (usize, Vec<String>);
+    #[derive(Default)]
+    pub(super) enum Timing {
+        #[default]
+        Normal,
+        Deadline(Arc<Mutex<Instant>>),
+        ExpireAtClaim,
+        DropReply,
+    }
+    thread_local! {
+        pub(super) static TIMING: RefCell<Timing> = const { RefCell::new(Timing::Normal) };
+        static WORKERS: RefCell<Vec<JoinHandle<Evidence>>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn deadline(real: Instant, claim: bool) -> Instant {
+        TIMING.with_borrow(|mode| match mode {
+            Timing::Deadline(time) => real.min(*time.lock().unwrap()),
+            Timing::ExpireAtClaim if claim => Instant::now(),
+            _ => real,
+        })
+    }
+
+    pub(super) fn spawn(
+        tool: &str,
+        profile: PathBuf,
+        run: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<()> {
+        let timing = TIMING.take();
+        let worker = std::thread::Builder::new()
+            .name(tool.into())
+            .spawn(move || {
+                let _profile = crate::config::set_test_profile_dir(profile);
+                TIMING.replace(timing);
+                let logs = crate::testing::test_log::capture_with_debug();
+                run();
+                (
+                    crate::workspace::secrets::take_test_store_calls(),
+                    logs.lines(),
+                )
+            })?;
+        WORKERS.with_borrow_mut(|workers| workers.push(worker));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    pub(super) fn join() -> Evidence {
+        WORKERS
+            .with_borrow_mut(|workers| workers.pop().unwrap())
+            .join()
+            .unwrap()
     }
 }
 
@@ -1158,6 +1334,7 @@ mod release_tests {
         crate::rpc::ReplyRegistry::register(reply.clone(), server.try_clone().unwrap());
         SecretRequest {
             subject: Subject::Pane(AdmittedScope::of(&store.pane)),
+            repaint: Default::default(),
             name: "TOKEN_1716".into(),
             scope,
             profile: store.profile.path().to_path_buf(),
@@ -1249,7 +1426,8 @@ mod release_tests {
 mod cli_tests {
     use crate::testing::HostHarness;
     use crate::workspace::secrets;
-    use std::io::{BufRead, BufReader};
+    use std::fs::{self, File};
+    use std::io::{BufRead, BufReader, ErrorKind, Write};
     use std::os::unix::net::UnixListener;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -1271,11 +1449,18 @@ mod cli_tests {
                 crate::platform::ipc::endpoint_path()
             );
         }
-        let name = "SOCKET_1280";
+        // A job-control shell starts a foreground CLI with the default SIGINT action.
+        unsafe { libc::signal(libc::SIGINT, libc::SIG_DFL) };
+        let name = &std::env::var("SECRET_TEST_NAME").unwrap_or_else(|_| "SOCKET_1280".into());
         secrets::take_test_store_calls();
         let code = match op.as_str() {
             "get" => crate::cli::workspace::workspace_secret_get(name, true),
-            "set" => crate::cli::workspace::workspace_secret_set(name, true, true, None),
+            "set" => crate::cli::workspace::workspace_secret_set(
+                name,
+                std::env::var_os("SECRET_PROMPT").is_none(),
+                true,
+                None,
+            ),
             "delete" => crate::cli::workspace::workspace_secret_delete(name, true),
             _ => unreachable!(),
         };
@@ -1310,15 +1495,24 @@ mod cli_tests {
     fn workspace_secret_cli_fails_closed_without_a_host() {
         let home = tempfile::tempdir().unwrap();
         let profile = home.path().join(".plexi");
-        std::fs::create_dir(&profile).unwrap();
+        fs::create_dir(&profile).unwrap();
         for op in ["get", "set", "delete"] {
-            let output = cli(op, &profile).env("HOME", home.path()).output().unwrap();
+            let mut command = cli(op, &profile);
+            command.env("HOME", home.path());
+            let output = if op == "set" {
+                finish(prompt_on_tty(command), 1)
+            } else {
+                command.output().unwrap()
+            };
             assert_eq!(output.status.code(), Some(1));
             assert_eq!(
                 String::from_utf8_lossy(&output.stdout).trim(),
                 "running 1 test"
             );
             let stderr = String::from_utf8_lossy(&output.stderr);
+            if op == "set" {
+                assert_eq!(stderr.matches("Enter value for").count(), 1);
+            }
             let endpoint = plexi_distribution::host_presence::endpoint_in(&profile);
             let attempted = format!("Plexi host did not answer at {}", endpoint.display());
             assert!(
@@ -1341,79 +1535,309 @@ mod cli_tests {
         drive_outside_get(None);
     }
 
-    fn drive_outside_get(override_socket: Option<std::path::PathBuf>) {
-        let mut h = HostHarness::new();
-        let profile = crate::config::config_dir();
-        let socket = override_socket
-            .clone()
-            .unwrap_or_else(crate::platform::ipc::endpoint_path);
-        let listener = UnixListener::bind(&socket).unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let store = secrets::system_store();
-        let account = secrets::keychain_user_name("SOCKET_1280");
-        store.set(&account, "fixture-value").unwrap();
-        for expected in [2, 0, 2] {
-            let mut command = cli("get", &profile);
-            if override_socket.is_some() {
-                command.env("SECRET_TEST_SOCKET", &socket);
+    fn drive_outside_get(socket: Option<std::path::PathBuf>) {
+        let mut f = Fixture::new(socket);
+        let account = secrets::keychain_user_name(&f.name);
+        secrets::system_store()
+            .set(&account, "fixture-value")
+            .unwrap();
+        let path = crate::config::config_dir().join("cli-stdout");
+        let child = f
+            .command("get")
+            .stdout(File::create(&path).unwrap())
+            .spawn()
+            .unwrap();
+        let ask = f.accept(None);
+        let stdout = || fs::read_to_string(&path).unwrap();
+        assert_eq!(stdout().trim(), "running 1 test"); // libtest banner only
+        f.decide(&ask, ApprovalChoice::Once);
+        finish(child, 0);
+        assert_eq!(stdout().lines().last(), Some("fixture-value"));
+    }
+
+    use super::worker_test::{join, Timing, TIMING};
+    use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::process::{Child, Output};
+
+    struct Fixture {
+        h: HostHarness,
+        monitor: std::sync::Arc<PermissionMonitor>,
+        listener: UnixListener,
+        socket: Option<std::path::PathBuf>,
+        name: String,
+    }
+
+    fn until(mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while !condition() {
+            assert!(Instant::now() < deadline, "timed out waiting for CLI/host");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn finish(mut child: Child, code: i32) -> Output {
+        until(|| child.try_wait().unwrap().is_some());
+        let output = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(code), "{stderr}");
+        output
+    }
+
+    impl Fixture {
+        fn new(socket: Option<std::path::PathBuf>) -> Self {
+            let h = HostHarness::new();
+            let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+            let path = socket
+                .clone()
+                .unwrap_or_else(crate::platform::ipc::endpoint_path);
+            let listener = UnixListener::bind(path).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            Self {
+                h,
+                monitor,
+                listener,
+                socket,
+                name: format!("SECRET_{}", uuid::Uuid::new_v4().simple()),
             }
-            let mut child = command.spawn().unwrap();
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(child.try_wait().unwrap().is_none() && Instant::now() < deadline);
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
+        }
+
+        fn command(&self, op: &str) -> Command {
+            let mut command = cli(op, self.h.profile_dir());
+            command.env("SECRET_TEST_NAME", &self.name);
+            if let Some(socket) = &self.socket {
+                command.env("SECRET_TEST_SOCKET", socket);
+            }
+            command
+        }
+
+        fn stored(&self) -> zeroize::Zeroizing<String> {
+            secrets::system_store()
+                .get(&secrets::keychain_user_name(&self.name))
+                .unwrap()
+        }
+
+        fn accept(&mut self, value: Option<&str>) -> String {
+            let mut stream = None;
+            until(|| {
+                stream = match self.listener.accept() {
+                    Ok((stream, _)) => Some(stream),
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => None,
                     Err(e) => panic!("accept: {e}"),
-                }
-            };
+                };
+                stream.is_some()
+            });
+            let mut stream = stream.unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
+                .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
             let peer = crate::broker::caller::PeerWitness::capture(
                 super::super::resolve_socket_peer_pid(&stream).unwrap(),
             );
             assert!(matches!(
-                h.app.classify_socket_peer(Some(&peer)),
+                self.h.app.classify_socket_peer(Some(&peer)),
                 crate::broker::caller::SocketCaller::External(_)
             ));
             let mut line = String::new();
             BufReader::new(&stream).read_line(&mut line).unwrap();
-            crate::app::handle_socket_line_in(
-                &profile,
-                line.trim(),
-                &h.ipc_tx,
-                Some(&peer),
-                &mut stream,
-            );
-            drop(stream);
-            h.hidden_frame();
-            let output = child.wait_with_output().unwrap();
-            assert_eq!(
-                output.status.code(),
-                Some(expected),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let stdout = String::from_utf8(output.stdout).unwrap();
-            if expected == 2 {
-                assert!(
-                    stdout.contains("permission_required") && !stdout.contains("fixture-value")
-                );
-                let id = stdout
-                    .lines()
-                    .find_map(|line| line.strip_prefix("pending_request_id="))
-                    .unwrap();
-                crate::broker::gate::PermissionMonitor::for_profile(&profile)
-                    .unwrap()
-                    .approve_pending(id, crate::broker::gate::ApprovalChoice::Once)
-                    .unwrap();
-            } else {
-                assert!(stdout.lines().any(|line| line == "fixture-value"));
+            let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(frame["value"].as_str(), value);
+            self.h
+                .dispatch_live_secret(&line, &peer, &mut stream)
+                .pending_request_id
+        }
+
+        fn decide(&self, ask: &str, choice: ApprovalChoice) {
+            self.monitor.approve_pending(ask, choice).unwrap();
+        }
+
+        fn set(&mut self, value: &str) -> (Child, String) {
+            let child = self.command("set").env(&self.name, value).spawn().unwrap();
+            (child, self.accept(Some(value)))
+        }
+    }
+
+    #[test]
+    fn live_set_prompts_once_without_echo_and_deny_ends_it() {
+        let mut f = Fixture::new(None);
+        let path = crate::config::config_dir().join("cli-stderr");
+        let mut command = f.command("set");
+        command.stderr(File::create(&path).unwrap());
+        let child = prompt_on_tty(command);
+        let ask = f.accept(Some("tty-canary"));
+        assert_eq!(f.monitor.open_needs_you().len(), 1);
+        let stderr = || fs::read_to_string(&path).unwrap();
+        until(|| stderr().contains("Waiting for approval"));
+        f.decide(&ask, ApprovalChoice::Deny);
+        finish(child, 1);
+        let stderr = stderr();
+        assert_eq!(stderr.matches("Enter value for").count(), 1);
+        let notice = "Waiting for approval in the Plexi window (Needs you)...";
+        assert_eq!(stderr.matches(notice).count(), 1);
+        assert!(stderr.contains("Request denied") && !stderr.contains("tty-canary"));
+        assert_eq!(join().0, 0);
+        assert!(f.monitor.open_needs_you().is_empty());
+        assert_eq!(
+            f.listener.accept().unwrap_err().kind(),
+            ErrorKind::WouldBlock
+        );
+    }
+
+    fn prompt_on_tty(mut command: Command) -> Child {
+        use std::ptr::null_mut;
+        let (mut master, mut slave) = (-1, -1);
+        // The shell cleanup fixture also uses openpty. Only stdin needs the slave here.
+        let (mut tty, slave) = unsafe {
+            let rc = libc::openpty(&mut master, &mut slave, null_mut(), null_mut(), null_mut());
+            assert_eq!(rc, 0);
+            (File::from_raw_fd(master), File::from_raw_fd(slave))
+        };
+        let echo = || unsafe {
+            let mut attrs = std::mem::zeroed();
+            assert_eq!(libc::tcgetattr(slave.as_raw_fd(), &mut attrs), 0);
+            attrs.c_lflag & libc::ECHO != 0
+        };
+        assert!(echo());
+        let child = command
+            .env("SECRET_PROMPT", "1")
+            .stdin(slave.try_clone().unwrap())
+            .spawn()
+            .unwrap();
+        until(|| !echo());
+        writeln!(tty, "tty-canary").unwrap();
+        until(echo);
+        child
+    }
+
+    #[test]
+    fn simultaneous_sets_keep_values_private_and_each_click_owns_one_write() {
+        let mut f = Fixture::new(None);
+        let logs = crate::testing::test_log::capture_with_debug();
+        let (first, a) = f.set("first-1280-canary");
+        let (second, b) = f.set("other-1280-canary");
+        assert_ne!(a, b);
+        f.h.app.sync_attention_queue();
+        let mut evidence = format!("{:?}", f.h.app.attention_queue.items);
+        assert_eq!(f.monitor.open_needs_you().len(), 2);
+        f.decide(&a, ApprovalChoice::Once);
+        finish(first, 0);
+        assert_eq!(f.stored().as_str(), "first-1280-canary");
+        let open = f.monitor.open_needs_you();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, b);
+        f.decide(&b, ApprovalChoice::Deny);
+        finish(second, 1);
+        // Join in reverse spawn order: B made no calls and A wrote once.
+        for calls in [0, 1] {
+            let (actual, lines) = join();
+            assert_eq!(actual, calls);
+            evidence.push_str(&lines.join("\n"));
+        }
+        evidence.push_str(&logs.lines().join("\n"));
+        let audit = f.h.profile_dir().join("permission-audit.jsonl");
+        evidence.push_str(&fs::read_to_string(audit).unwrap());
+        let rpc = f.h.profile_dir().join("rpc");
+        if rpc.exists() {
+            for entry in fs::read_dir(rpc).unwrap() {
+                evidence.push_str(&fs::read_to_string(entry.unwrap().path()).unwrap());
             }
         }
-        store.delete(&account).unwrap();
+        for canary in ["first-1280-canary", "other-1280-canary"] {
+            assert!(!evidence.contains(canary));
+        }
+    }
+
+    fn assert_no_secret_grant(monitor: &PermissionMonitor) {
+        let store = monitor.store();
+        assert!(store
+            .records()
+            .iter()
+            .all(|r| !r.target_id.starts_with("secret.")));
+    }
+
+    #[test]
+    fn deadline_wins_at_claim_and_lost_reply_reports_unknown_write() {
+        let mut f = Fixture::new(None);
+        let deadline = std::sync::Arc::new(std::sync::Mutex::new(
+            Instant::now() + crate::workspace::secrets::APPROVAL_TIMEOUT,
+        ));
+        TIMING.replace(Timing::Deadline(deadline.clone()));
+        let (child, a) = f.set("expired-canary");
+        *deadline.lock().unwrap() = Instant::now();
+        // Cancellation can already have closed the card before this late click.
+        let _late_click = f.monitor.approve_pending(&a, ApprovalChoice::Once);
+        assert!(String::from_utf8(finish(child, 1).stderr)
+            .unwrap()
+            .contains("Approval expired"));
+        assert_eq!(join().0, 0);
+        assert_no_secret_grant(&f.monitor);
+        TIMING.replace(Timing::DropReply);
+        let (child, b) = f.set("written-canary");
+        f.decide(&b, ApprovalChoice::Once);
+        assert!(String::from_utf8(finish(child, 1).stderr)
+            .unwrap()
+            .contains("Plexi did not confirm the outcome"));
+        assert_eq!(join().0, 1);
+        assert_eq!(f.stored().as_str(), "written-canary");
+    }
+
+    #[test]
+    fn two_streams_with_one_label_withdraw_only_their_own_authority() {
+        let mut h = HostHarness::new();
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let peer = crate::broker::caller::PeerWitness::for_live_pids(&[std::process::id()]);
+        let frame = serde_json::json!({"type":"secret_get","global":true,"name":"PAIR_1280",
+            "response_file":crate::rpc::response_file("fixture-label","json")})
+        .to_string();
+        let mut start = || {
+            let (mut server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+            let ask = h.dispatch_live_secret(&frame, &peer, &mut server);
+            (client, ask.pending_request_id)
+        };
+        let (a, first) = start();
+        TIMING.replace(Timing::ExpireAtClaim);
+        let (b, second) = start();
+        drop(a); // Process is still live. Only A's connection is gone.
+        until(|| monitor.show_pending(&first).is_none());
+        assert!(monitor
+            .approve_pending(&first, ApprovalChoice::Once)
+            .is_err());
+        monitor
+            .approve_pending(&second, ApprovalChoice::Once)
+            .unwrap();
+        let reply: serde_json::Value = serde_json::from_reader(b).unwrap();
+        assert_eq!(reply["reason"], "expired");
+        assert_no_secret_grant(&monitor);
+        assert_eq!(join().0, 0);
+        assert_eq!(join().0, 0);
+    }
+
+    #[test]
+    fn interrupted_and_killed_clients_withdraw_their_own_asks() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut f = Fixture::new(None);
+        for op in ["set", "get", "delete"] {
+            for signal in [libc::SIGINT, libc::SIGKILL] {
+                let child = f.command(op).env(&f.name, "unused-canary").spawn().unwrap();
+                let ask = f.accept((op == "set").then_some("unused-canary"));
+                assert_eq!(unsafe { libc::kill(child.id() as _, signal) }, 0);
+                let out = child.wait_with_output().unwrap();
+                assert_eq!(out.status.signal(), Some(signal));
+                assert_eq!(
+                    String::from_utf8_lossy(&out.stdout).trim(),
+                    "running 1 test"
+                );
+                until(|| f.monitor.open_needs_you().is_empty());
+                assert!(f
+                    .monitor
+                    .approve_pending(&ask, ApprovalChoice::Once)
+                    .is_err());
+                assert_eq!(join().0, 0);
+                assert_no_secret_grant(&f.monitor);
+            }
+        }
+        let (child, ask) = f.set("fresh-canary");
+        f.decide(&ask, ApprovalChoice::Deny);
+        finish(child, 1);
     }
 }

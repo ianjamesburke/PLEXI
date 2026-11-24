@@ -31,8 +31,12 @@ impl PlexiApp {
             move |request, monitor| {
                 let body = request
                     .mutate(&monitor, tool, set.as_ref())
-                    .unwrap_or_else(|error| serde_json::json!({"status":"error","error":error}));
-                write_reply(&request.reply_path, body);
+                    .unwrap_or_else(|error| {
+                        Some(serde_json::json!({"status":"error","error":error}))
+                    });
+                if let Some(body) = body {
+                    request.reply(body);
+                }
             },
         );
     }
@@ -44,7 +48,7 @@ impl SecretRequest {
         monitor: &PermissionMonitor,
         tool: &str,
         set: Option<&(SecretInput, Option<String>)>,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<Option<serde_json::Value>, String> {
         let (target, root) = match &self.scope {
             SecretScope::Workspace { id, root } => (
                 SecretTarget::Workspace {
@@ -69,7 +73,8 @@ impl SecretRequest {
         };
         let principal = self.subject.principal();
         let call = format!("{tool}-{}", uuid::Uuid::new_v4());
-        let admission = monitor.admit_for_use(
+        let Some(admission) = self.admit(
+            monitor,
             AdmitRequest {
                 call_id: &call,
                 tool,
@@ -83,13 +88,14 @@ impl SecretRequest {
                 instance_id: 0,
                 target_type: crate::broker::TargetType::Secret,
             },
-            self.posture.as_ref(),
-        );
+        ) else {
+            return Ok(None);
+        };
         match admission {
-            UseDecision::Required { pending_request_id } => Ok(serde_json::json!({
+            UseDecision::Required { pending_request_id } => Ok(Some(serde_json::json!({
                 "status":"permission_required", "pending_request_id":pending_request_id
-            })),
-            UseDecision::Denied => Ok(serde_json::json!({"status":"denied"})),
+            }))),
+            UseDecision::Denied => Ok(Some(serde_json::json!({"status":"denied"}))),
             UseDecision::Allowed {
                 approved,
                 grant_id,
@@ -133,7 +139,7 @@ impl SecretRequest {
                         "Could not audit the mutation outcome. Refresh before retrying."
                     })?;
                 result?;
-                Ok(serde_json::json!({"status":"ok", "target":target}))
+                Ok(Some(serde_json::json!({"status":"ok", "target":target})))
             }
         }
     }

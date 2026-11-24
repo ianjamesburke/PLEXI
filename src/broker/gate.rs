@@ -526,7 +526,7 @@ pub struct PermissionMonitor {
     pending: Mutex<Vec<Pending>>,
     /// Choices already applied, so a sheet and a dispatcher can both approve once.
     decision_lock: Mutex<()>,
-    resolutions: Mutex<std::collections::HashMap<String, ApprovalChoice>>,
+    resolutions: Mutex<std::collections::HashMap<String, (ApprovalChoice, String)>>,
     session_id: String,
     credentials: Mutex<std::collections::HashMap<String, SessionCredential>>,
     admission: Mutex<()>,
@@ -1188,6 +1188,17 @@ impl PermissionMonitor {
         req: AdmitRequest<'_>,
         posture: Option<&crate::broker::PermissionPosture>,
     ) -> UseDecision {
+        self.admit_for_use_if(req, posture, None)
+    }
+
+    /// A continuation rechecks the exact request under the claim lock. It
+    /// never files a replacement card if the witnessed grant was revoked.
+    pub(crate) fn admit_for_use_if(
+        &self,
+        req: AdmitRequest<'_>,
+        posture: Option<&crate::broker::PermissionPosture>,
+        before_claim: Option<&dyn Fn() -> bool>,
+    ) -> UseDecision {
         let Ok(fingerprint) = fingerprint_args(req.input_json) else {
             return UseDecision::Denied;
         };
@@ -1200,7 +1211,9 @@ impl PermissionMonitor {
         for _ in 0..2 {
             // A deny or an ask goes through the ordinary admission below,
             // which records the denial or files the ask.
-            if let Ok(mut claimed) = self.admit_questions(vec![request.clone()], posture) {
+            if let Ok(mut claimed) =
+                self.admit_locked(vec![request.clone()], posture, None, before_claim)
+            {
                 let (approved, grant_id) = claimed.remove(0);
                 return UseDecision::Allowed {
                     fingerprint: approved.request.args_fingerprint.clone(),
@@ -1208,6 +1221,9 @@ impl PermissionMonitor {
                     approved: Box::new(approved),
                     grant_id,
                 };
+            }
+            if before_claim.is_some() {
+                return UseDecision::Denied;
             }
             let disclosure = (req.target_type == TargetType::Secret
                 && req.principal.actor_type() == ActorType::External
@@ -1249,7 +1265,7 @@ impl PermissionMonitor {
         requests: Vec<PermissionRequest>,
         posture: Option<&crate::broker::PermissionPosture>,
     ) -> Result<Vec<(Approved, String)>, Decision> {
-        self.admit_locked(requests, posture, None)
+        self.admit_locked(requests, posture, None, None)
     }
 
     /// [`Self::admit_questions`] after a person allowed this one use: under
@@ -1262,7 +1278,7 @@ impl PermissionMonitor {
         posture: Option<&crate::broker::PermissionPosture>,
         once_row: &dyn Fn(&PermissionRequest) -> GrantRecord,
     ) -> Result<Vec<(Approved, String)>, Decision> {
-        self.admit_locked(requests, posture, Some(once_row))
+        self.admit_locked(requests, posture, Some(once_row), None)
     }
 
     fn admit_locked(
@@ -1270,6 +1286,7 @@ impl PermissionMonitor {
         mut requests: Vec<PermissionRequest>,
         posture: Option<&crate::broker::PermissionPosture>,
         once_row: Option<&dyn Fn(&PermissionRequest) -> GrantRecord>,
+        before_claim: Option<&dyn Fn() -> bool>,
     ) -> Result<Vec<(Approved, String)>, Decision> {
         let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
         let now = self.now_secs();
@@ -1300,6 +1317,12 @@ impl PermissionMonitor {
             });
         if strictest != Decision::Allow {
             return Err(strictest);
+        }
+        // Both the admission and store locks are held. A live invocation's
+        // successful owner/deadline check here linearizes effect start with
+        // the Once claim below. No revoke or competing claim can interleave.
+        if before_claim.is_some_and(|current| !current()) {
+            return Err(Decision::Deny);
         }
         Ok(requests
             .into_iter()
@@ -1586,18 +1609,14 @@ impl PermissionMonitor {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(pending_id)
-            .copied()
+            .map(|(choice, _)| *choice)
     }
 
     /// True when a desktop click already allowed this pending id.
     #[cfg(test)]
     pub fn approval_granted(&self, pending_id: &str) -> bool {
         matches!(
-            self.resolutions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(pending_id)
-                .copied(),
+            self.approval_resolution(pending_id),
             Some(
                 ApprovalChoice::Once
                     | ApprovalChoice::Session
@@ -1635,6 +1654,30 @@ impl PermissionMonitor {
         let result = self.approve_pending_inner(pending_id, ApprovalChoice::Deny, None);
         self.drain_retirements();
         result
+    }
+
+    /// Withdraw a live ask with a private invocation binding. cancel_pending
+    /// takes the decision lock, so a racing click has either lost or finished
+    /// publishing the exact grant to retire.
+    pub(crate) fn withdraw_live_ask(&self, pending: &str) -> Result<(), String> {
+        if let Err(error) = self.cancel_pending(pending) {
+            let resolution = self
+                .resolutions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(pending)
+                .cloned();
+            match resolution {
+                Some((ApprovalChoice::Once, id)) => {
+                    // Leave it spent even if saving the revocation fails.
+                    self.consume_once(&id, None);
+                    self.revoke_grant_id(&id)?;
+                }
+                Some(_) => (),
+                None => return Err(error),
+            }
+        }
+        Ok(())
     }
 
     fn approve_pending_inner(
@@ -1711,10 +1754,6 @@ impl PermissionMonitor {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .retain(|row| row.id != pending_id);
-            self.resolutions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(pending_id.to_string(), choice);
             let decision = if choice == ApprovalChoice::DenyAlways {
                 "deny_always"
             } else {
@@ -1751,6 +1790,11 @@ impl PermissionMonitor {
                 close_decision,
                 &grant_id,
             );
+            // Publish the verdict after settling the card on the desktop.
+            self.resolutions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(pending_id.to_string(), (choice, grant_id.clone()));
             if choice == ApprovalChoice::DenyAlways && is_plugin_capability(&pending.binding) {
                 self.settle_covered_pendings(&grant_id, choice);
             }
@@ -1872,10 +1916,6 @@ impl PermissionMonitor {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|row| row.id != pending_id);
-        self.resolutions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(pending_id.to_string(), choice);
         log::info!("permission_monitor: approved pending {pending_id} as {grant_id}");
         let _ = self.close_needs_you(
             pending_id,
@@ -1883,6 +1923,11 @@ impl PermissionMonitor {
             "approved",
             &grant_id,
         );
+        // Publish the verdict after settling the card on the desktop.
+        self.resolutions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(pending_id.to_string(), (choice, grant_id.clone()));
         if plugin_capability && choice != ApprovalChoice::Once {
             self.settle_covered_pendings(&grant_id, choice);
         }
@@ -1931,7 +1976,7 @@ impl PermissionMonitor {
             self.resolutions
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(row.id.clone(), settled);
+                .insert(row.id.clone(), (settled, grant_id.to_owned()));
             let (kind, label, resolution) = if decision == Decision::Deny {
                 ("deny", "deny_always", NeedsYouResolution::Denied)
             } else {
@@ -2314,7 +2359,7 @@ impl PermissionMonitor {
             self.resolutions
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(id.clone(), ApprovalChoice::Deny);
+                .insert(id.clone(), (ApprovalChoice::Deny, String::new()));
             self.run_outcomes
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())

@@ -106,16 +106,16 @@ fn secret_get_without_pane_ancestry_asks_as_external() {
     crate::workspace::secrets::system_store()
         .set("plexi:ws-0788-nopane:API_KEY_0788", canary)
         .unwrap();
-    let before = monitor().list_pending().len();
-
-    let reply = secret_get(&mut h, "API_KEY_0788", &root, &[]);
-    assert_eq!(reply["status"], "permission_required", "{reply}");
+    let get = serde_json::json!({"type":"secret_get","name":"API_KEY_0788","workspace_root":root});
+    let peer = crate::broker::caller::PeerWitness::for_live_pids(&[]);
+    let (client, ask) = super::socket_policy_tests::live_secret(&mut h, get, &peer);
+    monitor()
+        .approve_pending(&ask.pending_request_id, ApprovalChoice::Deny)
+        .unwrap();
+    let reply = super::socket_policy_tests::read_client(client, "detached get");
+    assert_eq!(reply["reason"], "denied");
     assert!(!reply.to_string().contains(canary));
-    assert_eq!(
-        monitor().list_pending().len(),
-        before + 1,
-        "detached caller must ask"
-    );
+    assert!(monitor().list_pending().is_empty());
 }
 
 #[test]
