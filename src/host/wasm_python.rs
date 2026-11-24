@@ -13,9 +13,11 @@ use std::pin::Pin;
 use std::process::Command;
 #[cfg(test)]
 use std::process::Stdio;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde_json::{json, Value};
@@ -582,9 +584,8 @@ fn cached_cpython_module(path: &Path) -> Result<(WasmtimeEngine, Module), String
     Ok((engine, module))
 }
 
-/// Long-lived guests on the CPython engine run without a time limit. They still
-/// need a deadline (the engine checks epochs), and they extend it whenever a
-/// script run's watchdog advances the shared epoch.
+/// The raw CPython smoke test extends its deadline on every epoch tick.
+#[cfg(test)]
 fn run_without_time_limit<T>(store: &mut Store<T>) {
     store.set_epoch_deadline(1);
     store.epoch_deadline_callback(|_| Ok(UpdateDeadline::Continue(1)));
@@ -1004,13 +1005,25 @@ fn cache_python_theme_for_relaunch(
     }
 }
 
-/// A live CPython interpreter. The owning thread retains the Wasmtime store;
-/// lifecycle traffic crosses only the appendable stdin/drainable stdout pair.
+#[derive(Default)]
+struct GuestAbort {
+    requested: AtomicBool,
+    engine: OnceLock<WasmtimeEngine>,
+}
+
+const GUEST_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+const GUEST_INTERRUPT_DEADLINE: Duration = Duration::from_secs(2);
+
+/// A live CPython interpreter. The owning thread retains the Wasmtime store
+/// and can be interrupted by advancing the engine's epoch during teardown.
 pub struct WasmPythonRuntime {
+    plugin_id: String,
+    pane_id: Option<u64>,
     stdin: AppendableStdin,
     stdout: DrainableOutput,
     stderr: DrainableOutput,
     thread: Option<JoinHandle<Result<(), String>>>,
+    abort: Arc<GuestAbort>,
     partial_stdout: Vec<u8>,
     /// Set by the guest thread the instant it enters `_start` — i.e. once the
     /// CPython module is compiled and instantiated and Python is executing.
@@ -1019,7 +1032,7 @@ pub struct WasmPythonRuntime {
     /// the compile cache is process-global and mutex-guarded, so a parallel
     /// caller can queue behind another one's compile). A caller polling for
     /// the plugin's first message must not charge that to the plugin.
-    started: Arc<std::sync::atomic::AtomicBool>,
+    started: Arc<AtomicBool>,
 }
 
 impl WasmPythonRuntime {
@@ -1068,9 +1081,11 @@ impl WasmPythonRuntime {
             })?
             .to_string();
         let plugin_id = config.plugin_id.clone();
-        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started = Arc::new(AtomicBool::new(false));
         let thread_started = Arc::clone(&started);
         let thread_plugin_id = plugin_id.clone();
+        let abort = Arc::new(GuestAbort::default());
+        let thread_abort = Arc::clone(&abort);
 
         let thread = std::thread::Builder::new()
             .name(format!("plexi-python-wasm-{plugin_id}"))
@@ -1087,6 +1102,7 @@ impl WasmPythonRuntime {
                 let _close_on_exit = CloseStdinOnExit(thread_stdin.clone());
                 let compile_begin = std::time::Instant::now();
                 let (engine, module) = cached_cpython_module(&bundle)?;
+                thread_abort.engine.get_or_init(|| engine.clone());
                 let compiled_in = compile_begin.elapsed();
                 let mut linker = Linker::<WasiP1Ctx>::new(&engine);
                 p1::add_to_linker_sync(&mut linker, |ctx| ctx).map_err(|e| e.to_string())?;
@@ -1120,7 +1136,18 @@ impl WasmPythonRuntime {
                     .preopened_dir(&plugin_dir, "/app", DirPerms::READ, FilePerms::READ)
                     .map_err(|e| e.to_string())?;
                 let mut store = Store::new(&engine, builder.build_p1());
-                run_without_time_limit(&mut store);
+                store.set_epoch_deadline(1);
+                // A cold startup may reach this point after Drop has detached it.
+                if thread_abort.requested.load(Ordering::Acquire) {
+                    return Ok(());
+                }
+                store.epoch_deadline_callback(move |_| {
+                    Ok(if thread_abort.requested.load(Ordering::Acquire) {
+                        UpdateDeadline::Interrupt
+                    } else {
+                        UpdateDeadline::Continue(1)
+                    })
+                });
                 let instance = linker
                     .instantiate(&mut store, &module)
                     .map_err(|e| e.to_string())?;
@@ -1132,19 +1159,26 @@ impl WasmPythonRuntime {
                      (module compiled in {compiled_in:?}, instantiated in {:?})",
                     compile_begin.elapsed() - compiled_in
                 );
-                thread_started.store(true, std::sync::atomic::Ordering::Release);
+                thread_started.store(true, Ordering::Release);
                 start.call(&mut store, ()).map_err(|e| e.to_string())
             })
             .map_err(|e| WasmPythonError::RuntimeStart(e.to_string()))?;
         log::info!("plugin::{plugin_id}: CPython WASM runtime started with read-only SDK and plugin mounts");
         Ok(Self {
+            plugin_id,
+            pane_id: None,
             stdin,
             stdout,
             stderr,
             thread: Some(thread),
+            abort,
             partial_stdout: Vec::new(),
             started,
         })
+    }
+
+    fn set_pane_id(&mut self, pane_id: u64) {
+        self.pane_id = Some(pane_id);
     }
 
     pub fn send(&self, event: &Value) -> Result<(), WasmPythonError> {
@@ -1180,7 +1214,7 @@ impl WasmPythonRuntime {
     /// Callers that police how long the plugin takes to answer start their clock
     /// from here, so a cold compile is never reported as an unresponsive plugin.
     pub fn has_started(&self) -> bool {
-        self.started.load(std::sync::atomic::Ordering::Acquire)
+        self.started.load(Ordering::Acquire)
     }
 
     /// Whether the guest thread has exited (crash, clean exit, or failed
@@ -1193,14 +1227,63 @@ impl WasmPythonRuntime {
     }
 }
 
+fn wait_for_guest_exit(
+    thread: &JoinHandle<Result<(), String>>,
+    timeout: Duration,
+    abort: Option<&GuestAbort>,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    while !thread.is_finished() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        if let Some(engine) = abort.and_then(|abort| abort.engine.get()) {
+            // Retry in case a concurrent epoch callback extended the deadline
+            // after the first tick, before it observed the abort request.
+            engine.increment_epoch();
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(10)));
+    }
+    true
+}
+
 impl Drop for WasmPythonRuntime {
     fn drop(&mut self) {
+        let started = Instant::now();
         let _ = self.send(&json!({"type": "shutdown"}));
         self.stdin.close();
-        if let Some(thread) = self.thread.take() {
-            if let Err(error) = thread.join() {
-                log::error!("CPython WASM runtime thread panicked: {error:?}");
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        let plugin_id = &self.plugin_id;
+        let pane_id = self
+            .pane_id
+            .map_or_else(|| "unassigned".to_string(), |id| id.to_string());
+        let interrupted = !wait_for_guest_exit(&thread, GUEST_SHUTDOWN_GRACE, None);
+        if interrupted {
+            self.abort.requested.store(true, Ordering::Release);
+            if !wait_for_guest_exit(&thread, GUEST_INTERRUPT_DEADLINE, Some(&self.abort)) {
+                log::warn!(
+                    "plugin::{plugin_id}: detaching CPython WASM guest thread still running after teardown interruption (pane_id={pane_id}, elapsed={:?})",
+                    started.elapsed()
+                );
+                // Detach as a last resort: epochs cannot interrupt a thread
+                // blocked inside a host call.
+                return;
             }
+            log::warn!(
+                "plugin::{plugin_id}: CPython WASM guest teardown needed interruption (pane_id={pane_id}, elapsed={:?})",
+                started.elapsed()
+            );
+        }
+        if let Err(error) = thread.join() {
+            log::error!("CPython WASM runtime thread panicked: {error:?}");
+        } else if !interrupted {
+            log::info!(
+                "plugin::{plugin_id}: CPython WASM guest teardown completed (pane_id={pane_id}, elapsed={:?})",
+                started.elapsed()
+            );
         }
     }
 }
@@ -3352,6 +3435,7 @@ impl LivePythonPane {
         } = &owner
         {
             self.pane_owner = Some((*pane_id, *context_id));
+            self.runtime.set_pane_id(*pane_id);
         }
         self.pipes.set_owner(owner);
     }
@@ -6194,7 +6278,10 @@ impl LivePythonPane {
         // decoder can wake the paint loop immediately; the published wake
         // schedule is cleared with the frame scheduler it describes, so the
         // fresh decoder wakes for the relaunched plugin's first frames.
-        let runtime = WasmPythonRuntime::launch(&self.config)?;
+        let mut runtime = WasmPythonRuntime::launch(&self.config)?;
+        if let Some((pane_id, _)) = self.pane_owner {
+            runtime.set_pane_id(pane_id);
+        }
         drop(start);
         *self.wake_schedule.lock().unwrap_or_else(|e| e.into_inner()) =
             WakeScheduleState::default();
@@ -9730,12 +9817,15 @@ mod tests {
         let old_runtime = std::mem::replace(
             &mut pane.runtime,
             WasmPythonRuntime {
+                plugin_id: pane.plugin_id.clone(),
+                pane_id: None,
                 stdin: old_stdin.clone(),
                 stdout: DrainableOutput::default(),
                 stderr: DrainableOutput::default(),
                 thread: None,
+                abort: Arc::new(GuestAbort::default()),
                 partial_stdout: Vec::new(),
-                started: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                started: Arc::new(AtomicBool::new(true)),
             },
         );
         drop(old_runtime);
@@ -12120,6 +12210,71 @@ mod tests {
                     if *x == 41.0 && *y == 42.0
             )
         )));
+    }
+
+    #[test]
+    fn persistent_cpython_runtime_drop_finishes_when_guest_spins_at_import() {
+        let app = tempdir().expect("plugin dir");
+        std::fs::write(
+            app.path().join("main.py"),
+            "import sys\nprint('import spin entered', file=sys.stderr, flush=True)\nwhile True: pass\n",
+        )
+        .expect("write spinning plugin");
+        let config = PythonLaunchConfig {
+            plugin_id: "test.wasm-python-spin".to_string(),
+            plugin_dir: app.path().to_path_buf(),
+            entry: app.path().join("main.py"),
+            module_name: "main".to_string(),
+            launch_args: Vec::new(),
+            workspace_root: app.path().to_path_buf(),
+            capabilities: Vec::new(),
+            declared_capabilities: Vec::new(),
+            allowed_hosts: Vec::new(),
+            theme: crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default())
+                .to_theme_map(),
+            state_scopes: crate::host::state_scope::default_scopes(),
+            state_format: crate::host::state_scope::StateFormat::Json,
+            context_root: app.path().to_path_buf(),
+        };
+        let mut runtime = WasmPythonRuntime::launch(&config).expect("launch CPython WASM");
+        runtime.set_pane_id(1744);
+        let boot_deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(60));
+        let mut stderr = String::new();
+        while std::time::Instant::now() < boot_deadline && !runtime.is_finished() {
+            if runtime.has_started() {
+                stderr.push_str(&runtime.drain_stderr());
+                if stderr.contains("import spin entered\n") {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let logs = crate::testing::test_log::capture();
+            drop(runtime);
+            let _ = done.send(logs.records());
+        });
+        assert!(
+            stderr.contains("import spin entered\n"),
+            "CPython guest did not reach the import loop; stderr={stderr:?}"
+        );
+        let timeout = crate::testing::load_aware_timeout(std::time::Duration::from_secs(6));
+        let traces = finished.recv_timeout(timeout).unwrap_or_else(|error| {
+            panic!(
+                "dropping the spinning CPython guest did not finish within {timeout:?}: {error:?}"
+            )
+        });
+        assert!(
+            matches!(
+                traces.as_slice(),
+                [(log::Level::Warn, line)]
+                    if line.starts_with("plugin::test.wasm-python-spin:")
+                        && line.contains("teardown needed interruption (pane_id=1744,")
+            ),
+            "expected one interruption warning for the joined guest, got {traces:?}"
+        );
     }
 
     /// Run one visible egui pass over the pane, the way `tiling.rs` does for a
