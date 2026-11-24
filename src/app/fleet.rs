@@ -1416,10 +1416,16 @@ impl PlexiApp {
         pane_id: u64,
         session_id: Option<&str>,
     ) {
+        let pane_incarnation = self
+            .terminal_incarnation(pane_id)
+            .and_then(|terminal| terminal.authority())
+            .map(|authority| authority.durable_key().to_string());
         let withdrawn =
             match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
             {
-                Ok(monitor) => monitor.withdraw_agent_needs_you(pane_id, session_id),
+                Ok(monitor) => {
+                    monitor.withdraw_agent_needs_you(pane_id, pane_incarnation.as_deref(), session_id)
+                }
                 Err(error) => {
                     log::error!("attention: agent items not withdrawn: {error}");
                     Vec::new()

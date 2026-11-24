@@ -1955,6 +1955,10 @@ impl PermissionMonitor {
                     row.resolution.is_none()
                         && row.kind == filed.kind
                         && row.run_tag.as_deref() == Some(tag)
+                        // A retry reuses only its own incarnation's row; a pane
+                        // number is not an identity (stint 1743).
+                        && row.details.as_ref().and_then(|d| d.pane_incarnation.as_deref())
+                            == details.as_ref().and_then(|d| d.pane_incarnation.as_deref())
                         && (!matches!(
                             filed.kind,
                             NeedsYouKind::Question | NeedsYouKind::BlockedRun
@@ -2149,7 +2153,16 @@ impl PermissionMonitor {
     /// Never records an approval or mints a grant, and never touches
     /// broker-filed items (`ApprovalClick`, `PermissionChange`,
     /// `PermissionRequest`, `Integrity`, `Keychain`).
-    pub fn withdraw_agent_needs_you(&self, pane_id: u64, session_id: Option<&str>) -> Vec<String> {
+    ///
+    /// A row bound to a pane number is withdrawn only by the terminal
+    /// incarnation that filed it (`pane_incarnation`), never by a later pane
+    /// reusing the number (stint 1743).
+    pub fn withdraw_agent_needs_you(
+        &self,
+        pane_id: u64,
+        pane_incarnation: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Vec<String> {
         let _guard = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
         let pane_tag = format!("pane:{pane_id}");
         let session_tag = session_id.map(str::trim).filter(|s| !s.is_empty());
@@ -2161,10 +2174,12 @@ impl PermissionMonitor {
             .filter(|row| {
                 row.resolution.is_none()
                     && matches!(row.kind, NeedsYouKind::Question | NeedsYouKind::BlockedRun)
-                    && (row.resource == pane_tag
-                        || row.actor == pane_tag
-                        || row.run_tag.as_deref() == Some(pane_tag.as_str())
-                        || row.details.as_ref().and_then(|d| d.pane_id) == Some(pane_id)
+                    && ((row.details.as_ref().and_then(|d| d.pane_incarnation.as_deref())
+                        == pane_incarnation
+                        && (row.resource == pane_tag
+                            || row.actor == pane_tag
+                            || row.run_tag.as_deref() == Some(pane_tag.as_str())
+                            || row.details.as_ref().and_then(|d| d.pane_id) == Some(pane_id)))
                         || session_tag.is_some_and(|sid| {
                             row.run_tag.as_deref() == Some(sid)
                                 || row.details.as_ref().and_then(|d| d.session_id.as_deref())

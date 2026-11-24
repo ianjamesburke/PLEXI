@@ -5534,6 +5534,48 @@ mod tests {
         );
     }
 
+    /// A tagged retry and a later `done` report from a pane reusing an earlier
+    /// pane's number touch only their own incarnation's rows (stint 1743).
+    #[test]
+    fn reused_pane_number_neither_reuses_nor_withdraws_an_earlier_panes_ask() {
+        use serde_json::{json, Value};
+
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let call = |h: &mut HostHarness, op: &str, payload: &Value| -> Value {
+            let origin = h.origin_from_pane(pane);
+            let response = crate::rpc::response_file_in(h.profile_dir(), op, "json");
+            h.app.handle_needs_you_api(op, payload, &origin, &response);
+            serde_json::from_slice(&std::fs::read(response).unwrap()).unwrap()
+        };
+        let retry = json!({"summary": "Proceed?", "run_tag": "op-1"});
+        let first = call(&mut h, "ask", &retry);
+        let first_id = first["id"].as_str().unwrap().to_string();
+        let again = call(&mut h, "ask", &retry);
+        assert_eq!(again["id"], first_id.as_str(), "same incarnation retries reuse");
+
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane)
+            .unwrap()
+            .terminal_incarnation_mut()
+            .unwrap();
+        let grant = terminal.authority().unwrap().grant().clone();
+        terminal.replace_grant_for_test(grant);
+
+        let later = call(&mut h, "ask", &retry);
+        let later_id = later["id"].as_str().unwrap();
+        assert_ne!(later_id, first_id, "a reused number files its own row: {later}");
+        assert_eq!(call(&mut h, "show", &json!({"id": later_id}))["ok"], true);
+
+        // The later pane reporting done withdraws only its own question.
+        h.app.withdraw_agent_attention_items(pane, None);
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let open = |id: &str| monitor.get_needs_you(id).is_some_and(|i| i.resolution.is_none());
+        assert!(open(&first_id), "the earlier pane's question stays open");
+        assert!(!open(later_id), "the later pane's own question is withdrawn");
+    }
+
     /// An `agent ask` whose question was not filed for the person answers
     /// `ok: false`, not success (Codex 3312).
     #[test]
