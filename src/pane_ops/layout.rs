@@ -2014,7 +2014,10 @@ impl PlexiApp {
         &self,
     ) -> Option<crate::app::CloseConfirmTarget> {
         self.active_focused_pane_id()
-            .map(|pane| self.close_confirm_target_for(pane))
+            .map(|pane| crate::app::CloseConfirmTarget {
+                focus_bound: true,
+                ..self.close_confirm_target_for(pane)
+            })
     }
 
     /// `pane` with the name the dialog shows: a terminal's title, a view's
@@ -2033,6 +2036,7 @@ impl PlexiApp {
             return crate::app::CloseConfirmTarget {
                 pane,
                 label: format!("pane {pane}"),
+                focus_bound: false,
             };
         };
         let label = name(&window.panes[&pane]);
@@ -2053,7 +2057,11 @@ impl PlexiApp {
             .map(|(&id, _)| (id, place(id)))
             .collect();
         if same.len() < 2 {
-            return crate::app::CloseConfirmTarget { pane, label };
+            return crate::app::CloseConfirmTarget {
+                pane,
+                label,
+                focus_bound: false,
+            };
         }
         same.sort_by(|a, b| {
             a.1 .0
@@ -2065,13 +2073,12 @@ impl PlexiApp {
         crate::app::CloseConfirmTarget {
             pane,
             label: format!("{label} ({index} of {})", same.len()),
+            focus_bound: false,
         }
     }
 
-    /// Confirm of a single-pane "Close pane?" dialog: close the pane it asked
-    /// about, and only while that pane is still the focused one. Focus that
-    /// moved (CLI `pane focus`, an agent, a plugin) or a pane closed another
-    /// way cancels instead of closing a different pane, and says so.
+    /// Close the pane named by the dialog. A Cmd+W request also requires
+    /// that pane to still have focus.
     pub(crate) fn confirm_single_close(&mut self, asked: Option<crate::app::CloseConfirmTarget>) {
         let Some(target) = asked else {
             log::warn!("close_confirm: confirm with no recorded pane; nothing closed");
@@ -2085,7 +2092,7 @@ impl PlexiApp {
             self.notify_close_target_gone(&target.label);
             return;
         }
-        if self.active_focused_pane_id() != Some(target.pane) {
+        if target.focus_bound && self.active_focused_pane_id() != Some(target.pane) {
             log::info!(
                 "close_confirm: cancel, focus moved from pane={} to {:?}; nothing closed",
                 target.pane,
@@ -2095,8 +2102,13 @@ impl PlexiApp {
             return;
         }
         log::info!("close_confirm: confirm pane={}", target.pane);
-        self.execute_close_pane();
-        self.mark_workspace_dirty();
+        if target.focus_bound {
+            self.execute_close_pane();
+            self.mark_workspace_dirty();
+        } else {
+            self.confirmed_pane_close = Some(target.pane);
+            self.ctx.request_repaint();
+        }
     }
 
     /// Execute the close-pane action (called directly when confirm_close is false,

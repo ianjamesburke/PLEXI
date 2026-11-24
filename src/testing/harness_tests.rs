@@ -26502,6 +26502,7 @@ fn answer_opens_the_decision_overlay_and_never_resolves_in_the_palette() {
         })
         .unwrap();
     open_agents_stop(&mut h);
+    wait_for_palette_agents_load(&mut h);
     h.app.apply_palette_command(PickerCommand::Accept(None));
     h.app.refresh_command_palette();
     assert!(!h.app.command_palette_open());
@@ -26510,12 +26511,71 @@ fn answer_opens_the_decision_overlay_and_never_resolves_in_the_palette() {
 }
 
 #[test]
+fn agents_snapshot_loads_off_thread_and_arrives_through_logic() {
+    let mut h = HostHarness::new();
+    let pane = palette_agent_fixture(&mut h, "reviewer", 200, 10);
+    let definition = h.profile_dir().join("agents").join("snapshot-builder");
+    std::fs::create_dir_all(&definition).unwrap();
+    std::fs::write(definition.join("AGENT.md"), "Build the fixture.\n").unwrap();
+    std::fs::write(
+        definition.join("settings.toml"),
+        "[agent]\nid = \"snapshot-builder\"\ndisplay_name = \"Snapshot Builder\"\n\n[harness]\ncli = \"pi\"\n",
+    )
+    .unwrap();
+    open_agents_stop(&mut h);
+    let expected_key = Some(format!("agents:pane/{pane}"));
+    assert_eq!(h.app.palette_selected_key(), expected_key);
+    let loads_before_drain = h.app.palette_agents_load_count();
+    let has_definition = |h: &HostHarness| {
+        h.app
+            .host
+            .picker(crate::host::picker::PickerId::Palette)
+            .unwrap()
+            .rows()
+            .iter()
+            .any(|row| row.key.as_str() == "agents:definition/snapshot-builder")
+    };
+    let definition_before_drain = has_definition(&h);
+
+    wait_for_palette_agents_load(&mut h);
+
+    assert_ne!(
+        h.app.palette_agents_load_thread().expect("loader thread"),
+        std::thread::current().id(),
+        "Agents disk load must run off the calling thread"
+    );
+    assert_eq!(
+        loads_before_drain, 0,
+        "the first refresh only starts the worker"
+    );
+    assert!(!definition_before_drain);
+    assert!(
+        has_definition(&h),
+        "the worker's definition reached the picker"
+    );
+    assert_eq!(h.app.palette_selected_key(), expected_key);
+}
+
+fn wait_for_palette_agents_load(h: &mut HostHarness) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while h.app.palette_agents_load_count() == 0 && std::time::Instant::now() < deadline {
+        h.run_hidden_frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(
+        h.app.palette_agents_load_count(),
+        1,
+        "snapshot drained through logic"
+    );
+}
+
+#[test]
 fn agents_source_does_not_read_disk_per_query() {
     use crate::host::picker::PickerCommand;
     let mut h = HostHarness::new();
     let pane = palette_agent_fixture(&mut h, "reviewer", 200, 10);
     open_agents_stop(&mut h);
-    assert_eq!(h.app.palette_agents_load_count(), 1);
+    wait_for_palette_agents_load(&mut h);
     for query in ["rev", "review", "", "missing"] {
         h.app
             .apply_palette_command(PickerCommand::QueryEdited(query.into()));

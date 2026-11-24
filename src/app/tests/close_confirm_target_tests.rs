@@ -70,6 +70,53 @@ fn notice_titles(h: &HostHarness) -> Vec<String> {
         .collect()
 }
 
+fn choose_palette_close(h: &mut HostHarness, pane: u64) {
+    use crate::app::palette_agents::AgentTarget;
+
+    h.app.begin_palette_agents_session();
+    h.app.queue_palette_agent_activation(
+        AgentTarget::Pane {
+            id: pane,
+            ask: None,
+        },
+        "close",
+    );
+    h.app.service_palette_agent_activation();
+}
+
+#[test]
+fn palette_close_confirm_targets_selected_pane() {
+    let mut h = HostHarness::new();
+    let (focused, selected) = two_panes(&mut h);
+    assert_eq!(h.app.active_focused_pane_id(), Some(focused));
+
+    choose_palette_close(&mut h, selected);
+
+    assert!(h.app.pending_close, "palette Close pane must ask first");
+    let target = h.app.close_confirm_target.as_ref().expect("close target");
+    assert_eq!(target.pane, selected);
+    assert_eq!(target.label, h.app.close_confirm_target_for(selected).label);
+    assert!(open(&h).contains(&selected));
+    assert_eq!(h.app.active_focused_pane_id(), Some(focused));
+
+    h.run_frames(2);
+    confirm(&mut h);
+    assert_eq!(open(&h), vec![focused], "only the selected pane closes");
+}
+
+#[test]
+fn palette_close_confirm_off_closes_selected_pane_immediately() {
+    let mut h = HostHarness::new();
+    let (focused, selected) = two_panes(&mut h);
+    h.app.config.confirm_close = Some(false);
+
+    choose_palette_close(&mut h, selected);
+
+    assert_eq!(open(&h), vec![focused]);
+    assert!(!h.app.pending_close);
+    assert!(h.app.close_confirm_target.is_none());
+}
+
 /// Focus moves to `b` through the command a CLI `pane focus` sends while
 /// the dialog for `a` is up: confirming closes nothing and says why.
 #[test]

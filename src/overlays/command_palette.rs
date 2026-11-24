@@ -1829,6 +1829,7 @@ impl PlexiApp {
         self.drain_palette_opens();
         self.palette_sources.usage.poll();
         self.drain_palette_previews();
+        self.drain_palette_agents_load();
         self.service_palette_agent_activation();
         let Some((source, query, generation)) = self
             .host

@@ -715,6 +715,13 @@ pub fn migrate_legacy_workspace_agents(workspace_root: &Path) {
     if !legacy.is_dir() {
         return;
     }
+    // Palette workers and host lookups can discover the same legacy tree
+    // concurrently. Serialize the copy and cleanup inside this process.
+    static MIGRATION_LOCK: Mutex<()> = Mutex::new(());
+    let _migration = MIGRATION_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    if !legacy.is_dir() {
+        return;
+    }
     let canonical = workspace_agents_dir(workspace_root);
     let entries = match std::fs::read_dir(&legacy) {
         Ok(entries) => entries,

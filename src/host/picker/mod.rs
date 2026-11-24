@@ -358,7 +358,8 @@ pub(crate) struct PickerState {
     open: bool,
     query: String,
     actions: Option<ActionsStep>,
-    show_actions_when_ready: bool,
+    /// Selection at Cmd+Enter, kept until the current query settles.
+    pending_actions: Option<Selection>,
     /// The presented rows. While a new query loads they are the previous
     /// answer's, still carrying `rows_stamp`, and no longer actionable.
     rows: Vec<PickerRow>,
@@ -387,7 +388,7 @@ impl PickerState {
             open: false,
             query: String::new(),
             actions: None,
-            show_actions_when_ready: false,
+            pending_actions: None,
             rows: Vec::new(),
             rows_stamp: Stamp {
                 generation: 0,
@@ -589,7 +590,7 @@ impl PickerState {
                 Vec::new()
             }
             PickerCommand::Back => {
-                let was_waiting = std::mem::take(&mut self.show_actions_when_ready);
+                let was_waiting = self.pending_actions.take().is_some();
                 if self.actions.take().is_some() || was_waiting {
                     log::info!("picker: returned to results");
                     self.reveal += 1;
@@ -652,7 +653,7 @@ impl PickerState {
                 }
             }
             PickerCommand::Yield => {
-                self.show_actions_when_ready = false;
+                self.pending_actions = None;
                 if self.pending.take().is_some() {
                     log::info!("picker: pending Enter cancelled; input moved to another surface");
                 }
@@ -693,7 +694,7 @@ impl PickerState {
         self.open = false;
         self.query.clear();
         self.actions = None;
-        self.show_actions_when_ready = false;
+        self.pending_actions = None;
         self.rows.clear();
         self.selection = Selection::Initial(Vec::new());
         self.loading = false;
@@ -709,7 +710,7 @@ impl PickerState {
     fn switch_stop(&mut self, index: usize) -> Vec<PickerEffect> {
         if !self.open
             || self.showing_actions()
-            || self.show_actions_when_ready
+            || self.pending_actions.is_some()
             || index == self.active
         {
             return Vec::new();
@@ -728,7 +729,7 @@ impl PickerState {
         self.generation += 1;
         self.loading = true;
         self.answered = false;
-        self.show_actions_when_ready = false;
+        self.pending_actions = None;
         if self.pending.take().is_some() {
             log::info!("picker: pending Enter cancelled by a new query");
         }
@@ -796,8 +797,17 @@ impl PickerState {
             self.actions = None;
         }
         if done {
-            if std::mem::take(&mut self.show_actions_when_ready) {
-                self.show_actions();
+            if let Some(selection) = self.pending_actions.take() {
+                let key = match selection {
+                    Selection::Key(key) => Some(key),
+                    Selection::Initial(moves) => {
+                        index_after(&self.rows, &moves).map(|i| self.rows[i].key.clone())
+                    }
+                    Selection::Cleared => None,
+                };
+                if let Some(key) = key {
+                    self.show_actions_for(key);
+                }
             }
             if let Some(pending) = self.pending.take() {
                 return self.resolve_pending(pending);
@@ -872,27 +882,43 @@ impl PickerState {
     }
 
     fn show_actions(&mut self) {
-        if !self.open || self.showing_actions() || self.pending.is_some() {
+        if !self.open
+            || self.showing_actions()
+            || self.pending.is_some()
+            || self.pending_actions.is_some()
+        {
             return;
         }
         if self.loading {
-            self.show_actions_when_ready = true;
-            return;
+            if self.selection != Selection::Cleared {
+                log::info!("picker: Actions waits for the completed answer");
+                self.pending_actions = Some(self.selection.clone());
+            }
+        } else if let Some(key) = self.selected().cloned() {
+            self.show_actions_for(key);
         }
-        let first = self
-            .selected_row()
+    }
+
+    fn show_actions_for(&mut self, key: RowKey) {
+        let Some(first) = self
+            .rows
+            .iter()
+            .find(|row| row.key == key)
             .filter(|row| row.unavailable.is_none())
             .and_then(|row| row.actions.first())
-            .map(|action| action.id);
-        if first.is_some() {
-            self.reveal += 1;
-            self.actions = Some(ActionsStep {
-                selected: first,
-                opening: self.reveal,
-                filter: String::new(),
-            });
-            log::info!("picker: opened actions on '{}'", self.active_stop().id);
-        }
+            .map(|action| action.id)
+        else {
+            log::info!("picker: requested row is gone or has no available actions");
+            return;
+        };
+        self.selection = Selection::Key(key);
+        self.reveal += 1;
+        self.actions = Some(ActionsStep {
+            selected: Some(first),
+            opening: self.reveal,
+            filter: String::new(),
+        });
+        log::info!("picker: opened actions on '{}'", self.active_stop().id);
     }
 
     fn move_action_selection(&mut self, step: Step) {
@@ -913,7 +939,7 @@ impl PickerState {
     }
 
     fn accept_enter(&mut self) -> Vec<PickerEffect> {
-        if !self.open || self.show_actions_when_ready {
+        if !self.open || self.pending_actions.is_some() {
             return Vec::new();
         }
         if self.pending.is_some() {

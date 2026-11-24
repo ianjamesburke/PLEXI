@@ -1522,6 +1522,9 @@ fn palette_agents_stop_with_preview() {
         h.run_steps(2);
     }
     assert_eq!(palette_picker(&h).1, "agents");
+    wait_for_palette(&mut h, "Agents snapshot", |app| {
+        app.palette_agents_load_count() == 1
+    });
     assert!(h
         .harness()
         .query_all_by_label("release-reviewer")

@@ -835,6 +835,66 @@ fn cmd_enter_lists_actions_and_keeps_the_query() {
 }
 
 #[test]
+fn cmd_enter_before_first_answer_uses_the_initial_selection_at_the_chord() {
+    let (mut state, _) = opened(THREE_STOPS);
+    state.apply(PickerCommand::QueryEdited("new query".into()));
+    state.apply(PickerCommand::ShowActions);
+    state.apply(PickerCommand::Move(Step::Down));
+    answer(&mut state, rows(&["a", "b"]));
+
+    assert!(state.showing_actions());
+    assert_eq!(selected(&state), Some("commands:a"));
+}
+
+#[test]
+fn cmd_enter_during_files_walk_keeps_the_requested_row() {
+    let (mut state, _) = opened(FILES_STOP);
+    let files = || vec![row("files", "a", 0, None), row("files", "b", 0, None)];
+    state.apply(PickerCommand::Rows {
+        generation: state.generation(),
+        rows: files(),
+        done: false,
+    });
+    let requested = state.selected().cloned().expect("visible file");
+
+    state.apply(PickerCommand::ShowActions);
+    state.apply(PickerCommand::Move(Step::Down));
+    assert_ne!(state.selected(), Some(&requested));
+    answer(&mut state, files());
+
+    assert!(state.showing_actions());
+    assert_eq!(
+        state.selected(),
+        Some(&requested),
+        "Cmd+Enter keeps its file"
+    );
+    assert_eq!(
+        activated(&state.apply(PickerCommand::Accept(None))),
+        vec![requested.stable_id()]
+    );
+}
+
+#[test]
+fn cmd_enter_during_files_walk_cancels_when_the_requested_row_disappears() {
+    let (mut state, _) = opened(FILES_STOP);
+    state.apply(PickerCommand::Rows {
+        generation: state.generation(),
+        rows: vec![row("files", "a", 0, None), row("files", "b", 0, None)],
+        done: false,
+    });
+
+    state.apply(PickerCommand::ShowActions);
+    state.apply(PickerCommand::Move(Step::Down));
+    answer(&mut state, vec![row("files", "b", 0, None)]);
+
+    assert!(
+        !state.showing_actions(),
+        "Cmd+Enter cannot retarget a missing file"
+    );
+    assert_eq!(selected(&state), Some("files:b"));
+}
+
+#[test]
 fn agents_waiting_on_you_sort_first() {
     let mut waiting = row("agents", "waiting", 0, Some(1));
     waiting.attention = Some(AttentionRank {

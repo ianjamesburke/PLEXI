@@ -245,8 +245,9 @@ pub struct PlexiApp {
     pub(crate) quit_last_press: Option<std::time::Instant>,
     pub(crate) pending_close: bool,
     /// The pane a single-pane "Close pane?" dialog asked about (stint 1491).
-    /// Confirm closes this pane only, and only while it is still focused.
     pub(crate) close_confirm_target: Option<CloseConfirmTarget>,
+    /// Confirmed by pane id in the dialog, closed on the next logic pass.
+    pub(crate) confirmed_pane_close: Option<PaneId>,
     pub(crate) pending_quit: bool,
     /// The working-agent confirmation on screen came from "Restart to
     /// update": confirming restarts into the update instead of quitting
@@ -1912,6 +1913,7 @@ impl PlexiApp {
                     claimed_host_key_releases: HashSet::new(),
                     pending_close: false,
                     close_confirm_target: None,
+                    confirmed_pane_close: None,
                     pending_quit: false,
                     update_restart_confirming: false,
                     pending_context_close: None,
@@ -2213,6 +2215,7 @@ impl PlexiApp {
             key_bindings,
             pending_close: false,
             close_confirm_target: None,
+            confirmed_pane_close: None,
             pending_quit: false,
             update_restart_confirming: false,
             pending_context_close: None,
@@ -3174,6 +3177,7 @@ impl PlexiApp {
             key_bindings,
             pending_close: false,
             close_confirm_target: None,
+            confirmed_pane_close: None,
             pending_quit: false,
             update_restart_confirming: false,
             pending_context_close: None,
@@ -3742,6 +3746,9 @@ impl eframe::App for PlexiApp {
         crate::platform::ui_profile::set_drag_active(drag.active);
         if self.service_pending_notification_decision() {
             ctx.request_repaint();
+        }
+        if let Some(pane) = self.confirmed_pane_close.take() {
+            self.close_pane_by_id(pane);
         }
         self.update_preamble(ctx, drag.active);
         if self.service_quit(frame) {
@@ -4735,9 +4742,7 @@ impl PlexiApp {
                     {
                         // No focused pane (an empty page) has nothing to name
                         // or terminate: it takes the no-pane cleanup below.
-                        log::info!("close_confirm: asking pane={}", target.pane);
-                        self.close_confirm_target = Some(target);
-                        self.pending_close = true;
+                        self.ask_to_close_pane(target);
                     } else {
                         self.execute_close_pane();
                         self.mark_workspace_dirty();

@@ -2,7 +2,8 @@
 //! query edits; querying it is entirely in memory.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
 use super::attention_queue::QueueCategory;
@@ -35,6 +36,7 @@ const CLOSE: RowAction = RowAction {
 pub(crate) struct PaletteAgents {
     origin: Option<AgentOrigin>,
     snapshot: Option<AgentSnapshot>,
+    loading: Option<Receiver<Result<LoadedAgentSource, String>>>,
     #[cfg(test)]
     loads: usize,
 }
@@ -45,9 +47,16 @@ struct AgentOrigin {
     caller: Option<PaneId>,
 }
 
-struct AgentSnapshot {
-    monitor: Option<Arc<PermissionMonitor>>,
+struct LoadedAgentSource {
+    monitor: Arc<PermissionMonitor>,
     definitions: Vec<AgentEntry>,
+    #[cfg(test)]
+    read_on: std::thread::ThreadId,
+}
+
+#[derive(Default)]
+struct AgentSnapshot {
+    source: Option<LoadedAgentSource>,
     needs_you: Vec<NeedsYouRecord>,
     // Keep the shared roster inputs as the change detector. Terminal tails
     // are captured only when rebuilding the snapshot.
@@ -59,6 +68,47 @@ struct AgentEntry {
     row: PickerRow,
     search_text: String,
     target: AgentTarget,
+}
+
+impl LoadedAgentSource {
+    fn load(profile: &Path, cwd: &Path) -> Result<Self, String> {
+        // Workspace discovery can resolve legacy, channel-scoped agent dirs.
+        #[cfg(test)]
+        let _profile_guard = crate::config::set_test_profile_dir(profile.to_path_buf());
+        let workspace = super::registry::resolve_agent_lookup_workspace_root(cwd);
+        let registry = crate::agent::AgentRegistry::load_with_optional_workspace(
+            profile,
+            workspace.as_deref(),
+        );
+        let monitor = PermissionMonitor::for_profile(profile)?;
+        let definitions = registry
+            .agents()
+            .map(|definition| {
+                let mut entry = AgentEntry::new(
+                    AgentTarget::Definition(definition.id.clone()),
+                    fleet::resolve_agent_label(
+                        Some(&definition.display_name),
+                        None,
+                        Some(&definition.id),
+                    ),
+                    "not running",
+                );
+                let harness = definition.harness.as_ref().map_or("", |h| h.cli.as_str());
+                entry.search_text = format!("{} {harness}", definition.id);
+                entry.row.actions.push(RowAction {
+                    chord: Some("Enter"),
+                    ..FOCUS
+                });
+                entry
+            })
+            .collect();
+        Ok(Self {
+            monitor,
+            definitions,
+            #[cfg(test)]
+            read_on: std::thread::current().id(),
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -193,61 +243,85 @@ impl PlexiApp {
         };
     }
 
+    fn start_palette_agents_load(&mut self, cwd: PathBuf) {
+        let profile = crate::config::config_dir();
+        let wake = Arc::clone(&self.ui_wake);
+        let (done, loading) = mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("plexi-palette-agents".to_owned())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(|| LoadedAgentSource::load(&profile, &cwd))
+                    .unwrap_or_else(|_| Err("The Agents loader stopped unexpectedly".into()));
+                // A closed palette drops the receiver for this session.
+                if done.send(result).is_ok() {
+                    wake.wake("palette_agents");
+                }
+            });
+        match spawned {
+            Ok(_) => {
+                log::info!("palette agents: started loading definitions and needs-you");
+                self.palette_agents.loading = Some(loading);
+            }
+            Err(error) => self.report_palette_agents_load_failure(&error.to_string()),
+        }
+    }
+
+    pub(crate) fn drain_palette_agents_load(&mut self) {
+        let Some(loading) = &self.palette_agents.loading else {
+            return;
+        };
+        let result = match loading.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("The Agents loader returned no snapshot".into()),
+        };
+        self.palette_agents.loading = None;
+        match result {
+            Ok(source) => {
+                log::info!(
+                    "palette agents: loaded snapshot ({} definitions)",
+                    source.definitions.len()
+                );
+                if let Some(snapshot) = &mut self.palette_agents.snapshot {
+                    snapshot.source = Some(source);
+                    #[cfg(test)]
+                    {
+                        self.palette_agents.loads += 1;
+                    }
+                }
+            }
+            Err(error) => self.report_palette_agents_load_failure(&error),
+        }
+    }
+
+    fn report_palette_agents_load_failure(&mut self, error: &str) {
+        use super::notifications::{new_notify_id, NotifySource, PendingNotification};
+
+        log::error!("palette agents: could not load definitions and needs-you: {error}");
+        self.enqueue_notification(
+            NotifySource::HostInternal,
+            PendingNotification {
+                notify_id: new_notify_id("palette-agents-load"),
+                title: "Could not load agent definitions or requests".into(),
+                body: error.into(),
+                scope: crate::protocol::NotifyScope::Global,
+                ..Default::default()
+            },
+        );
+    }
+
     pub(crate) fn refresh_palette_agents(&mut self) {
         let Some(origin) = self.palette_agents.origin.as_ref() else {
             return;
         };
-        let mut snapshot = self.palette_agents.snapshot.take().unwrap_or_else(|| {
-            let profile = crate::config::config_dir();
-            let workspace = super::registry::resolve_agent_lookup_workspace_root(&origin.cwd);
-            let registry = crate::agent::AgentRegistry::load_with_optional_workspace(
-                &profile,
-                workspace.as_deref(),
-            );
-            let definitions = registry
-                .agents()
-                .map(|definition| {
-                    let mut entry = AgentEntry::new(
-                        AgentTarget::Definition(definition.id.clone()),
-                        fleet::resolve_agent_label(
-                            Some(&definition.display_name),
-                            None,
-                            Some(&definition.id),
-                        ),
-                        "not running",
-                    );
-                    let harness = definition.harness.as_ref().map_or("", |h| h.cli.as_str());
-                    entry.search_text = format!("{} {harness}", definition.id);
-                    entry.row.actions.push(RowAction {
-                        chord: Some("Enter"),
-                        ..FOCUS
-                    });
-                    entry
-                })
-                .collect();
-            let monitor = match PermissionMonitor::for_profile(&profile) {
-                Ok(monitor) => Some(monitor),
-                Err(error) => {
-                    log::error!("palette agents: loading needs-you snapshot failed: {error}");
-                    None
-                }
-            };
-            #[cfg(test)]
-            {
-                self.palette_agents.loads += 1;
-            }
-            AgentSnapshot {
-                monitor,
-                definitions,
-                needs_you: Vec::new(),
-                inputs: Vec::new(),
-                live: Vec::new(),
-            }
-        });
+        if self.palette_agents.snapshot.is_none() {
+            self.start_palette_agents_load(origin.cwd.clone());
+        }
+        let mut snapshot = self.palette_agents.snapshot.take().unwrap_or_default();
         let needs_you = snapshot
-            .monitor
+            .source
             .as_ref()
-            .map_or_else(Vec::new, |monitor| monitor.open_needs_you());
+            .map_or_else(Vec::new, |source| source.monitor.open_needs_you());
         let now = crate::platform::clock::now_secs();
         let stalled_after = self
             .config
@@ -329,7 +403,11 @@ impl PlexiApp {
         let mut rows = Vec::new();
         let mut targets = HashMap::new();
         if let Some(snapshot) = &self.palette_agents.snapshot {
-            for entry in snapshot.live.iter().chain(&snapshot.definitions) {
+            let definitions = snapshot
+                .source
+                .iter()
+                .flat_map(|source| &source.definitions);
+            for entry in snapshot.live.iter().chain(definitions) {
                 if let AgentTarget::Definition(id) = &entry.target {
                     if snapshot
                         .inputs
@@ -402,7 +480,12 @@ impl PlexiApp {
                 if self.find_pane_in_any_window(id).is_none() {
                     return Err(format!("Pane {id} is already closed"));
                 }
-                self.close_pane_by_id(id);
+                if self.confirm_close() {
+                    self.ask_to_close_pane(self.close_confirm_target_for(id));
+                } else {
+                    log::info!("palette agents: closing pane={id}");
+                    self.close_pane_by_id(id);
+                }
             }
             _ => return Err(format!("The selected agent does not support '{action}'")),
         }
@@ -412,5 +495,17 @@ impl PlexiApp {
     #[cfg(test)]
     pub(crate) fn palette_agents_load_count(&self) -> usize {
         self.palette_agents.loads
+    }
+
+    #[cfg(test)]
+    pub(crate) fn palette_agents_load_thread(&self) -> Option<std::thread::ThreadId> {
+        Some(
+            self.palette_agents
+                .snapshot
+                .as_ref()?
+                .source
+                .as_ref()?
+                .read_on,
+        )
     }
 }

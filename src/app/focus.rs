@@ -287,6 +287,8 @@ pub(crate) struct CloseConfirmTarget {
     pub pane: u64,
     /// The pane's name as the dialog shows it.
     pub label: String,
+    /// Cmd+W is tied to focus. An explicit picker row is tied to its pane id.
+    pub focus_bound: bool,
 }
 
 /// State for the context-close confirmation dialog.
@@ -1205,6 +1207,12 @@ impl PlexiApp {
             delivered += 1;
         }
         log::info!("theme: broadcast Theme event to {delivered} running plugins");
+    }
+
+    pub(crate) fn ask_to_close_pane(&mut self, target: CloseConfirmTarget) {
+        log::info!("close_confirm: asking pane={}", target.pane);
+        self.close_confirm_target = Some(target);
+        self.pending_close = true;
     }
 
     /// Reconcile the confirm-close focus layer with `pending_close`. Mirrors
