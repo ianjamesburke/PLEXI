@@ -4811,6 +4811,14 @@ impl PermissionMonitor {
             };
         }
         let duration = self.effective_widen_duration(id, &entry, requested);
+        if action == "allow" {
+            if let Some(error) = self.once_for_stored_secret_denial(id, duration) {
+                return PermissionMutation::Rejected {
+                    entry_id: id.to_string(),
+                    error,
+                };
+            }
+        }
         let shown = if action == "allow" {
             format!("{action} ({})", duration.duration_label())
         } else {
@@ -4941,6 +4949,22 @@ impl PermissionMonitor {
         self.removal_outcome(id)
     }
 
+    /// A Once grant on a secret belongs to the call that filed its card, so a
+    /// stored denial, which has no such call, cannot become one (stint 1754).
+    fn once_for_stored_secret_denial(&self, id: &str, choice: ApprovalChoice) -> Option<String> {
+        if choice != ApprovalChoice::Once {
+            return None;
+        }
+        let store = self.store();
+        let record = store.records().iter().find(|row| row.grant_id == id)?;
+        (record.decision == Decision::Deny
+            && record.target_type.is_workspace_secret(&record.target_id))
+        .then(|| {
+            "once is not allowed for a stored secret denial: a one-time allow belongs to the call that asked, and a stored denial has none. Allowed durations: session, always"
+                .to_string()
+        })
+    }
+
     fn allow_entry(
         &self,
         id: &str,
@@ -4982,6 +5006,12 @@ impl PermissionMonitor {
             return PermissionMutation::Rejected {
                 entry_id: id.to_string(),
                 error: "allow replaces a denial or approves a pending ask".to_string(),
+            };
+        }
+        if let Some(error) = self.once_for_stored_secret_denial(id, choice) {
+            return PermissionMutation::Rejected {
+                entry_id: id.to_string(),
+                error,
             };
         }
         let grant_id = format!("grant_{}", uuid::Uuid::new_v4());
@@ -6390,6 +6420,69 @@ mod tests {
             }),
             Admission::Proceed { .. }
         ));
+    }
+
+    /// A Once secret grant is spent by the call that filed its card, which a
+    /// stored denial lacks: refuse `once` before removing anything (stint 1754).
+    #[test]
+    fn allowing_a_stored_secret_denial_once_is_refused_and_keeps_the_denial() {
+        let monitor = PermissionMonitor::ephemeral();
+        let principal = crate::broker::principal::Principal::agent("pane:7");
+        let req = AdmitRequest {
+            call_id: "first",
+            tool: "secret.get",
+            input_json: r#"{"name":"KEY","scope":"global"}"#,
+            principal: &principal,
+            actor_scope: ActorScope::User,
+            trust_origin: "host",
+            workspace_root: Path::new("/ws"),
+            context_id: 0,
+            package_id: "",
+            instance_id: 0,
+            target_type: TargetType::Secret,
+        };
+        let UseDecision::Required { pending_request_id } = monitor.admit_for_use(req, None) else {
+            panic!("expected a card");
+        };
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::DenyAlways)
+            .unwrap();
+        let deny = monitor
+            .list_entries()
+            .into_iter()
+            .find(|entry| entry.kind == "deny")
+            .expect("stored denial")
+            .id;
+        for outcome in [
+            monitor.mutate_entry_for(&deny, "allow", &agent_caller(), Some(ApprovalChoice::Once)),
+            monitor.apply_mutation(
+                &deny,
+                "allow",
+                DecisionEvidence::for_test(&deny, "allow").admit(&deny, "allow").ok(),
+                ApprovalChoice::Once,
+            ),
+        ] {
+            let PermissionMutation::Rejected { error, .. } = outcome else {
+                panic!("once must be refused: {outcome:?}");
+            };
+            assert!(error.contains("session, always"), "{error}");
+        }
+        assert!(open_permission_changes(&monitor).is_empty());
+        assert!(monitor.list_entries().iter().any(|entry| entry.id == deny));
+        let PermissionMutation::NeedsYou { needs_you_id, .. } = monitor.mutate_entry_for(
+            &deny,
+            "allow",
+            &agent_caller(),
+            Some(ApprovalChoice::Session),
+        ) else {
+            panic!("session files a widen item");
+        };
+        monitor.resolve_needs_you_for_test(&needs_you_id, true).unwrap();
+        assert!(monitor
+            .store()
+            .records()
+            .iter()
+            .any(|r| r.decision == Decision::Allow && r.duration == GrantDuration::Session));
     }
 
     #[test]
