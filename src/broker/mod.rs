@@ -2474,7 +2474,14 @@ created_at = 1700000000
 grant_id = "grant_legacy_1"
 args_unbound = true
 "#;
-        std::fs::write(dir.path().join("grants.toml"), legacy_toml).unwrap();
+        // A signed file from a build that predates `kind`; an unsigned file is
+        // quarantined, never loaded.
+        seal::write_sealed(
+            &custody::HostProcess::for_test(),
+            &dir.path().join("grants.toml"),
+            legacy_toml.as_bytes(),
+        )
+        .unwrap();
         let store = GrantStore::load_or_default(dir.path()).unwrap();
         assert_eq!(store.records().len(), 1);
         assert_eq!(store.records()[0].grant_id, "grant_legacy_1");
