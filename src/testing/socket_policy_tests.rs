@@ -2031,8 +2031,7 @@ fn dashboard_list_and_open_are_bound_to_the_requested_workspace() {
 
 /// Stint 1716 slice 2b: a dashboard permit asks again at each read. A pane's
 /// stops covering when its scope moves; an outside process's one-use claim
-/// stops when its grant is revoked, and a Session approval is never accepted
-/// (another process sharing the external principal could reuse it).
+/// stops when its grant is revoked.
 #[test]
 fn a_dashboard_permit_stops_covering_after_a_scope_move_or_a_revoke() {
     let _on =
@@ -2063,14 +2062,6 @@ fn a_dashboard_permit_stops_covering_after_a_scope_move_or_a_revoke() {
     };
     let refused = h.app.admit_dashboard_workspace(&outside_caller, &text).unwrap_err();
     assert_eq!(refused.code, "permission_denied");
-    approve(crate::broker::gate::ApprovalChoice::Session);
-    let session = h.app.admit_dashboard_workspace(&outside_caller, &text).unwrap_err();
-    assert!(session.message.contains("one-use"), "{}", session.message);
-    let rows = monitor.store().records().to_vec();
-    for row in rows {
-        monitor.revoke_grant_id(&row.grant_id).unwrap();
-    }
-    let _ = h.app.admit_dashboard_workspace(&outside_caller, &text);
     approve(crate::broker::gate::ApprovalChoice::Once);
     let permit = h.app.admit_dashboard_workspace(&outside_caller, &text).unwrap();
     assert!(permit.recheck().is_ok(), "the claimed once row covers its own use");
@@ -2121,13 +2112,60 @@ fn opening_a_dashboard_never_returns_another_workspaces_pane() {
     h.add_focused_terminal();
     let a = h.workspace_root();
     let b = tempfile::tempdir().unwrap();
-    let first = h.app.open_command_view(b.path()).unwrap();
+    let in_b = h.app.open_command_view(b.path()).unwrap();
     h.run_frames(2);
-    let second = h.app.open_command_view(&a).unwrap();
+    let in_a = h.app.open_command_view(&a).unwrap();
     h.run_frames(2);
-    assert_ne!(first, second, "B's pane was returned for A");
-    let again = h.app.open_command_view(&a).unwrap();
-    assert_eq!(again, second, "A's own pane is reused");
+    assert_ne!(in_b, in_a, "B's pane was returned for A");
+    let panes = h.app.windows[0].panes.len();
+    for _ in 0..2 {
+        assert_eq!(h.app.open_command_view(b.path()).unwrap(), in_b);
+        assert_eq!(h.app.open_command_view(&a).unwrap(), in_a);
+    }
+    h.run_frames(2);
+    assert_eq!(h.app.windows[0].panes.len(), panes, "a reopen made a duplicate");
+}
+
+/// Codex 3331 r2: the card for an outside dashboard read offers exactly Allow
+/// once and Deny, and the broker refuses a remembered choice outright.
+#[test]
+fn an_outside_dashboard_read_card_offers_only_once_and_deny() {
+    let _on =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentsDashboard]);
+    let mut h = HostHarness::new();
+    h.add_focused_terminal();
+    let root = h.workspace_root();
+    h.app.set_context_root(root.clone(), None);
+    let caller = h.app.classify_socket_peer(Some(&outside()));
+    h.app
+        .admit_dashboard_workspace(&caller, &root.to_string_lossy())
+        .unwrap_err();
+    h.run_frames(3);
+    let options: Vec<Vec<String>> = h
+        .app
+        .attention_queue
+        .items
+        .iter()
+        .filter(|item| {
+            matches!(&item.source, crate::app::attention_queue::QueueSource::BrokerPending { .. })
+                && item.command_text.contains("agents.dashboard.read")
+        })
+        .map(|item| item.options.iter().map(|o| o.key.clone()).collect())
+        .collect();
+    assert_eq!(options, vec![vec!["allow_once".to_string(), "deny".to_string()]]);
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    let ask = monitor
+        .list_pending()
+        .into_iter()
+        .find(|p| p.actor_id == crate::broker::principal::EXTERNAL_ID)
+        .unwrap();
+    for choice in [
+        crate::broker::gate::ApprovalChoice::Session,
+        crate::broker::gate::ApprovalChoice::Always,
+    ] {
+        assert!(monitor.approve_pending(&ask.pending_request_id, choice).is_err());
+    }
 }
 
 /// Design 1285 section 4, condition 3: with the dashboard experiment off,

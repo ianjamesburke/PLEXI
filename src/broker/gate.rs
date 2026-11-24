@@ -1782,6 +1782,12 @@ impl PermissionMonitor {
             return Err("An outside terminal needs a one-use approval for this secret.".into());
         }
         if pending.binding.actor_type == ActorType::External
+            && pending.tool == <super::permit::ReadDashboard as super::permit::Operation>::NAME
+            && matches!(choice, ApprovalChoice::Session | ApprovalChoice::Always)
+        {
+            return Err("An outside terminal needs a one-use approval to read a dashboard.".into());
+        }
+        if pending.binding.actor_type == ActorType::External
             && matches!(
                 choice,
                 ApprovalChoice::Always | ApprovalChoice::AllowTool | ApprovalChoice::DenyAlways
