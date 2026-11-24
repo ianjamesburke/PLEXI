@@ -9721,34 +9721,40 @@ mod tests {
         let path_a = dir_a.path().to_path_buf();
         let path_b = dir_b.path().to_path_buf();
 
+        // Taking `ExclusiveHostKey` queues behind every other test that holds
+        // the process-wide test lock, so how long that takes measures suite
+        // load, not a deadlock. Only the work done while holding the key is
+        // timed: that is where `for_profile` could wait on itself.
         let (exclusive_held_tx, exclusive_held_rx) = std::sync::mpsc::sync_channel(1);
-        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(2);
+        let (exclusive_done_tx, exclusive_done_rx) = std::sync::mpsc::sync_channel(1);
+        let (unguarded_done_tx, unguarded_done_rx) = std::sync::mpsc::sync_channel(1);
 
-        let done_a = done_tx.clone();
         std::thread::spawn(move || {
             let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
             let _denied = crate::broker::host_key::UnreadableMacKey::acquire();
             let _ = exclusive_held_tx.send(());
             std::thread::sleep(Duration::from_millis(25));
             let _monitor = PermissionMonitor::for_profile(&path_a).unwrap();
-            let _ = done_a.send("exclusive");
+            let _ = exclusive_done_tx.send(());
         });
 
-        let done_b = done_tx;
+        exclusive_held_rx
+            .recv()
+            .expect("exclusive holder thread ended before holding the host key");
         std::thread::spawn(move || {
-            let _ = exclusive_held_rx.recv();
             let _monitor = PermissionMonitor::for_profile(&path_b).unwrap();
-            let _ = done_b.send("unguarded");
+            let _ = unguarded_done_tx.send(());
         });
 
-        let deadline = Duration::from_secs(3);
-        let first = done_rx.recv_timeout(deadline).expect(
-            "first thread deadlocked between ExclusiveHostKey and PermissionMonitor::for_profile",
-        );
-        let second = done_rx.recv_timeout(deadline).expect(
-            "second thread deadlocked between ExclusiveHostKey and PermissionMonitor::for_profile",
-        );
-        assert_ne!(first, second);
+        // The holder finishing proves it released the key. The other thread may
+        // then still queue behind unrelated tests, so its wait is only a hang
+        // guard, far above any load delay.
+        exclusive_done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("exclusive holder deadlocked between ExclusiveHostKey and PermissionMonitor::for_profile");
+        unguarded_done_rx
+            .recv_timeout(Duration::from_secs(120))
+            .expect("unguarded for_profile never finished after the exclusive holder released the host key");
     }
 
     #[test]
