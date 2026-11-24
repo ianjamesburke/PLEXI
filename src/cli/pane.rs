@@ -792,7 +792,9 @@ pub fn pane_tree_cli(context: Option<u64>, current: bool, json: bool) -> i32 {
         payload["context_id"] = serde_json::json!(cid);
     }
 
-    let content = match super::request(payload, "pane-tree-response", "pane tree") {
+    let content = match super::request(payload, "pane-tree-response", "pane tree")
+        .and_then(|content| super::reply::HostReply::decode(&content).payload_or_report())
+    {
         Ok(c) => c,
         Err(code) => return code,
     };

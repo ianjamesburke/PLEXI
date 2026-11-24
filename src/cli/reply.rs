@@ -80,4 +80,41 @@ mod tests {
             assert_eq!(HostReply::decode(body), HostReply::Payload(body.to_string()), "{body}");
         }
     }
+
+    /// Codex 3290 r4 S1: real CLI entries against a host that refuses, on
+    /// the connection. Each exits nonzero; none reports the refusal as its
+    /// result. `context new` used to exit 0 here.
+    #[test]
+    fn cli_entries_exit_nonzero_on_a_host_refusal() {
+        use std::io::{BufRead as _, Write as _};
+        let entries: [(&str, fn() -> i32); 4] = [
+            ("context new", || {
+                crate::cli::context_cli::context_new_cli(
+                    Some("n"), Some("/tmp"), None, &[], false, "right", None,
+                )
+            }),
+            ("agent status", || crate::cli::agent::agent_status_cli(false, false, false)),
+            ("pane tree", || crate::cli::pane::pane_tree_cli(None, false, true)),
+            ("context list", crate::cli::context_cli::context_list_cli),
+        ];
+        for (name, entry) in entries {
+            let env = crate::cli::test_env::socket_env_guard();
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("notify.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            env.set(&socket);
+            let host = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                std::io::BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                stream
+                    .write_all(br#"{"ok":false,"error_code":"permission_denied","error":"refused"}"#)
+                    .unwrap();
+            });
+            assert_eq!(entry(), 1, "{name}");
+            host.join().unwrap();
+        }
+    }
 }

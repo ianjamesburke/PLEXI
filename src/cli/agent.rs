@@ -2904,7 +2904,9 @@ pub fn agent_status_cli(blocked: bool, working: bool, idle: bool) -> i32 {
         serde_json::json!({ "type": "get_agent_states" }),
         "plexi-agent-states",
         "agent states",
-    ) {
+    )
+    .and_then(|content| super::reply::HostReply::decode(&content).payload_or_report())
+    {
         Ok(content) => content,
         Err(code) => return code,
     };

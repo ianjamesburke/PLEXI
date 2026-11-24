@@ -2024,7 +2024,10 @@ pub fn host_log_cli(source: &str, message: &str) -> i32 {
     crate::rpc::register_client_stream(response_file.clone(), stream);
 
     match crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)) {
-        Ok(_) => 0,
+        Ok(reply) => match super::reply::HostReply::decode(&reply).payload_or_report() {
+            Ok(_) => 0,
+            Err(code) => code,
+        },
         Err(crate::rpc::PollError::TimedOut) => {
             eprintln!("error: timed out waiting for host log acknowledgement");
             1
