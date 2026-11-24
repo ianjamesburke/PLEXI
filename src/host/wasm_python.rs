@@ -13244,22 +13244,18 @@ default = true
             .collect()
     }
 
-    #[test]
-    fn live_pane_refuses_a_spoofed_permissions_plugin_end_to_end() {
+    /// Launch the Permissions copy at `dir` admitted by folder trust and drive
+    /// list, approve and revoke through the bridge: each is refused and the
+    /// monitor is unchanged.
+    fn assert_folder_copy_gets_no_bridge(dir: &Path, pending_call: &str) {
         let monitor_profile = bridge_profile();
         let monitor = monitor_profile.monitor();
-        let pending = bridge_admit(&monitor, "call-live-spoof", "bridge.live");
-        let root = tempdir().expect("root");
-        let spoof =
-            crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
-        let mut main = std::fs::read(spoof.join("main.py")).unwrap();
-        main.extend_from_slice(b"\n# not the bundled code\n");
-        std::fs::write(spoof.join("main.py"), main).unwrap();
+        let pending = bridge_admit(&monitor, pending_call, "bridge.live");
         let ctx = tempdir().expect("context");
 
-        let mut pane = LivePythonPane::launch_for_test(bridge_pane_config(&spoof, ctx.path()))
-            .expect("launch spoof");
-        assert_eq!(pane.plugin_id, "permissions", "the spoof claims the id");
+        let mut pane = LivePythonPane::launch_for_test(bridge_pane_config(dir, ctx.path()))
+            .expect("launch folder copy");
+        assert_eq!(pane.plugin_id, "permissions", "the copy claims the id");
         assert_eq!(pane.permission_ui(), PermissionUiTrust::Untrusted);
         assert!(seeded_entry_ids(&pane).is_empty(), "no inventory at open");
 
@@ -13280,6 +13276,32 @@ default = true
             Arc::ptr_eq(&monitor, &monitor_profile.monitor()),
             "the pane handler used this monitor"
         );
+    }
+
+    #[test]
+    fn live_pane_refuses_a_spoofed_permissions_plugin_end_to_end() {
+        let root = tempdir().expect("root");
+        let spoof =
+            crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
+        let mut main = std::fs::read(spoof.join("main.py")).unwrap();
+        main.extend_from_slice(b"\n# not the bundled code\n");
+        std::fs::write(spoof.join("main.py"), main).unwrap();
+        assert_folder_copy_gets_no_bridge(&spoof, "call-live-spoof");
+    }
+
+    /// Stint 1733: identical bytes are not provenance. A byte-for-byte copy
+    /// of the bundled Permissions plugin admitted by folder trust cannot
+    /// list, approve or revoke.
+    #[test]
+    fn a_byte_identical_folder_copy_of_permissions_cannot_list_approve_or_revoke() {
+        let root = tempdir().expect("root");
+        let copy =
+            crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
+        assert!(crate::cli::install_host::matches_bundled_plugin(
+            "permissions",
+            &copy
+        ));
+        assert_folder_copy_gets_no_bridge(&copy, "call-live-identical");
     }
 
     /// A relaunch is a new start: bridge trust comes from the permit that
