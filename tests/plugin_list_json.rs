@@ -2,13 +2,15 @@
 //! Agents pass `--json` and parse the result; text on stdout breaks them in a
 //! way that looks like success.
 
+mod common;
+
 use std::process::{Command, Stdio};
 
 #[test]
 fn plugin_list_json_prints_a_json_array() {
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_plexi"));
+    let mut command = Command::new(common::plexi_binary());
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("PLEXI_") {
             command.env_remove(key);

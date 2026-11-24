@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::process::{Command, Stdio};
@@ -14,7 +16,7 @@ fn capture_view_open(cross_channel: bool) -> (serde_json::Value, std::path::Path
     let listener = UnixListener::bind(&socket).unwrap();
     listener.set_nonblocking(true).unwrap();
     let binary = home.join("plexi-pr-1195");
-    std::fs::copy(env!("CARGO_BIN_EXE_plexi"), &binary).unwrap();
+    std::fs::copy(common::plexi_binary(), &binary).unwrap();
     let cwd = home.join("caller-workspace");
     std::fs::create_dir(&cwd).unwrap();
     let mut command = Command::new(binary);

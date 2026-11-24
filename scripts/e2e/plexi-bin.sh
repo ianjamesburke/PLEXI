@@ -30,6 +30,7 @@ if [[ -z "$BIN" || ! -x "$BIN" ]]; then
   exit 1
 fi
 
+BIN="$(python3 "$(dirname "${BASH_SOURCE[0]}")/../require_test_hook_binary.py" --installed -- "$BIN")" || exit $?
 BIN_PATH="$BIN"
 BIN_NAME="$(basename "$BIN")"
 BIN_NAME="${BIN_NAME%.exe}"

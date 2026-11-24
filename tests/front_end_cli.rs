@@ -8,6 +8,8 @@
 //! the positive control for both probes.
 #![cfg(unix)]
 
+mod common;
+
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -59,7 +61,7 @@ impl Probe {
     fn channel_binary(&self, name: &str) -> PathBuf {
         let link = self.bin_dir.path().join(name);
         if !link.exists() {
-            std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_plexi"), &link).unwrap();
+            std::os::unix::fs::symlink(common::plexi_binary(), &link).unwrap();
         }
         link
     }
@@ -265,7 +267,7 @@ fn assert_display(observed: &Observed, args: &[&str]) -> String {
 fn usage_errors_exit_2_with_no_profile_read_and_no_contact() {
     let probe = Probe::new();
     let profile = probe.fifo_profile(PROFILE);
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_plexi"));
+    let binary = PathBuf::from(common::plexi_binary());
     let cases: &[(&[&str], &str)] = &[
         (
             &["--version", "--profile", "one", "host", "--profile", "two"],
@@ -330,7 +332,7 @@ fn usage_errors_exit_2_with_no_profile_read_and_no_contact() {
 fn display_exits_0_with_no_profile_read_and_no_contact() {
     let probe = Probe::new();
     let profile = probe.fifo_profile(PROFILE);
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_plexi"));
+    let binary = PathBuf::from(common::plexi_binary());
     let run =
         |args: &[&str]| assert_display(&probe.run(&binary, &profile, ASSISTANT_ON, args), args);
 
@@ -365,7 +367,7 @@ fn display_exits_0_with_no_profile_read_and_no_contact() {
 fn a_valid_experiment_command_reads_the_profile() {
     let probe = Probe::new();
     let profile = probe.fifo_profile(PROFILE);
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_plexi"));
+    let binary = PathBuf::from(common::plexi_binary());
     let args = ["--profile", PROFILE, "assistant", "permission", "list"];
     let off = probe.run(&binary, &profile, EXPERIMENTS_OFF, &args);
     assert_eq!(

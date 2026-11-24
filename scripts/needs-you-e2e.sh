@@ -41,6 +41,7 @@ if [[ ! -x "$BIN" ]]; then
   echo "error: missing binary $BIN (run just build first)" >&2
   exit 1
 fi
+BIN="$(python3 "$ROOT/scripts/require_test_hook_binary.py" --installed -- "$BIN")"
 
 # A channel-named binary (`plexi-alpha`, `plexi-pr-N`) ignores PLEXI_CHANNEL.
 # The shim already set PROFILE from that name. Otherwise derive it here.

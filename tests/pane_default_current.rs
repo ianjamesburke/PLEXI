@@ -3,13 +3,15 @@
 //! else exit 1 with one shared message. Stint 1227.
 #![cfg(unix)]
 
+mod common;
+
 use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixListener;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 fn plexi(home: &std::path::Path, args: &[&str], pane_env: Option<&str>) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_plexi"));
+    let mut command = Command::new(common::plexi_binary());
     // Remove (not blank) every PLEXI_* var so "unset" is truly unset.
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("PLEXI_") {

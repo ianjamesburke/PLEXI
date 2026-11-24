@@ -16,6 +16,7 @@ if [[ ! -x "$BIN" ]]; then
   echo "error: missing binary $BIN (run just build first)" >&2
   exit 1
 fi
+BIN="$(python3 "$ROOT/scripts/require_test_hook_binary.py" --installed -- "$BIN")"
 export BIN
 # shellcheck disable=SC1091
 source "$ROOT/scripts/e2e/human.sh"

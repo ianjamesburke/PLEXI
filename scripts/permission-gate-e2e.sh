@@ -21,7 +21,10 @@ source "$ROOT/e2e/human.sh"
 EVID="${EVID:-/tmp/plexi-w16-evidence}"
 CHANNEL="${CHANNEL:-alpha}"
 BIN="${BIN:-$HOME/.local/bin/plexi-$CHANNEL}"
-PROFILE="${PROFILE:-$HOME/.plexi-$CHANNEL}"
+BIN="$(python3 "$REPO/scripts/require_test_hook_binary.py" --installed -- "$BIN")" || exit $?
+# The profile follows the guarded binary, never CHANNEL or PROFILE from the environment.
+CHANNEL="$(basename "$BIN")"; CHANNEL="${CHANNEL#plexi-}"
+PROFILE="$HOME/.plexi-$CHANNEL"
 WS="${WS:-/tmp/plexi-w16-ws}"
 MOCK_PORT="${MOCK_PORT:-8765}"
 MOCK_CONTROL="${MOCK_CONTROL:-/tmp/plexi-e2e/w16-move.json}"

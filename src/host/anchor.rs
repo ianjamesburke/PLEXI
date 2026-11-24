@@ -86,8 +86,12 @@ impl Anchor {
 /// Returns true if `path` is the home directory or looks like a profile dir
 /// (`~/.plexi`, `~/.plexi-alpha`, `~/.plexi-pr-123`, etc.).
 fn is_profile_dir(path: &Path) -> bool {
-    let Some(home) = dirs::home_dir() else {
-        return false;
+    let home = match crate::config::profile_home() {
+        Ok(home) => home,
+        Err(error) => {
+            log::warn!("anchor: skipping {}: {error}", path.display());
+            return true;
+        }
     };
     if path == home {
         return true;
@@ -101,6 +105,27 @@ fn is_profile_dir(path: &Path) -> bool {
         }
     }
     false
+}
+
+/// Workspace initialization also protects descendants of profile directories.
+pub(crate) fn check_workspace_init_root(root: &Path) -> Result<(), String> {
+    let home = crate::config::profile_home()?;
+    let inside_profile = root
+        .strip_prefix(&home)
+        .ok()
+        .and_then(|relative| relative.iter().next())
+        .is_some_and(|name| name.as_encoded_bytes().starts_with(b".plexi"));
+    if root == Path::new("/")
+        || root == home
+        || dirs::home_dir().as_deref() == Some(root)
+        || inside_profile
+    {
+        return Err(format!(
+            "cannot initialize a workspace in your home, root or Plexi profile directory ({})",
+            root.display()
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -161,18 +186,15 @@ mod tests {
 
     #[test]
     fn is_profile_dir_rejects_home() {
-        if let Some(home) = dirs::home_dir() {
-            assert!(is_profile_dir(&home));
-        }
+        assert!(is_profile_dir(&crate::config::profile_home().unwrap()));
     }
 
     #[test]
     fn is_profile_dir_rejects_plexi_profiles() {
-        if let Some(home) = dirs::home_dir() {
-            assert!(is_profile_dir(&home.join(".plexi")));
-            assert!(is_profile_dir(&home.join(".plexi-alpha")));
-            assert!(is_profile_dir(&home.join(".plexi-pr-123")));
-        }
+        let home = crate::config::profile_home().unwrap();
+        assert!(is_profile_dir(&home.join(".plexi")));
+        assert!(is_profile_dir(&home.join(".plexi-alpha")));
+        assert!(is_profile_dir(&home.join(".plexi-pr-123")));
     }
 
     #[test]

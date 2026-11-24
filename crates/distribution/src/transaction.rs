@@ -813,6 +813,7 @@ fn install_checked(
             "package channel or platform does not match the requested installation".into(),
         ));
     }
+    let profile_dir = channel_profile_dir(&options.channel)?;
     let mut options = options;
     for path in [&mut options.bin_dir, &mut options.applications_dir] {
         fs::create_dir_all(&*path).context("create integration directory")?;
@@ -973,14 +974,7 @@ fn install_checked(
         root.display()
     );
     let tag = installed_tag_text(&receipt.active.tag, &receipt.active.build_id);
-    match dirs::home_dir() {
-        Some(home) => write_installed_tag(&home, &receipt.channel, &tag)?,
-        None => log::error!(
-            "distribution: installed channel={} build={} but the home directory is unavailable; installed_tag was not written",
-            receipt.channel,
-            receipt.active.build_id
-        ),
-    }
+    write_installed_tag(&profile_dir, &receipt.channel, &tag)?;
     Ok(receipt)
 }
 
@@ -993,10 +987,8 @@ fn installed_tag_text(tag: &str, build_id: &str) -> String {
 }
 
 /// Record the package that just activated. This marker is not executable identity.
-fn write_installed_tag(home: &Path, channel: &str, tag: &str) -> Result<()> {
-    let path = home
-        .join(crate::host_presence::profile_dir_name(channel))
-        .join("installed_tag");
+fn write_installed_tag(profile_dir: &Path, channel: &str, tag: &str) -> Result<()> {
+    let path = profile_dir.join("installed_tag");
     atomic_write(&path, tag.as_bytes())?;
     log::info!(
         "distribution: wrote installed_tag {tag} for channel {channel} at {}",
@@ -1714,8 +1706,32 @@ const LAUNCH_LIMITS: LaunchLimits = LaunchLimits {
 
 /// The profile the installed channel's host uses.
 fn channel_profile_dir(channel: &str) -> Result<PathBuf> {
-    let home =
-        dirs::home_dir().ok_or_else(|| Error::Invalid("cannot resolve home directory".into()))?;
+    let account = crate::host_presence::account_home();
+    #[cfg(unix)]
+    let env_home = std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from);
+    #[cfg(windows)]
+    let env_home = account.clone(); // Windows hosts use the known folder on every channel.
+    channel_profile_dir_from(channel, env_home, account)
+}
+
+fn channel_profile_dir_from(
+    channel: &str,
+    env_home: Option<PathBuf>,
+    account_home: Option<PathBuf>,
+) -> Result<PathBuf> {
+    use crate::host_presence::ACCOUNT_HOME_ERROR;
+    let (home, error) = if channel.starts_with("pr-") {
+        #[cfg(unix)]
+        let error = "cannot resolve Plexi PR profile home: HOME is unset or empty";
+        #[cfg(windows)]
+        let error = ACCOUNT_HOME_ERROR;
+        (env_home, error)
+    } else {
+        (account_home, ACCOUNT_HOME_ERROR)
+    };
+    let home = home.ok_or_else(|| Error::Invalid(error.into()))?;
     Ok(home.join(crate::host_presence::profile_dir_name(channel)))
 }
 
@@ -2101,12 +2117,32 @@ mod tests {
     }
 
     #[test]
+    fn channel_profile_dir_selects_the_home_for_the_channel() {
+        let env = PathBuf::from("env-home");
+        let account = PathBuf::from("account-home");
+        for (channel, expected) in [
+            ("alpha", account.join(".plexi-alpha")),
+            ("stable", account.join(".plexi")),
+            ("pr-12", env.join(".plexi-pr-12")),
+        ] {
+            let dir = channel_profile_dir_from(channel, Some(env.clone()), Some(account.clone()));
+            assert_eq!(dir.unwrap(), expected);
+        }
+        let err = channel_profile_dir_from("beta", Some(env), None).unwrap_err();
+        assert!(matches!(err, Error::Invalid(_)));
+        #[cfg(unix)]
+        assert!(err.to_string().contains("getpwuid_r for the current uid"));
+    }
+
+    #[test]
     fn alpha_install_records_profile_installed_tag() {
         let home = tempfile::tempdir().unwrap();
-        write_installed_tag(home.path(), "alpha", "v1.2.3-alpha.4").unwrap();
+        let profile =
+            |channel| channel_profile_dir_from(channel, None, Some(home.path().into())).unwrap();
+        write_installed_tag(&profile("alpha"), "alpha", "v1.2.3-alpha.4").unwrap();
         let path = home.path().join(".plexi-alpha/installed_tag");
         assert_eq!(fs::read_to_string(&path).unwrap(), "v1.2.3-alpha.4");
-        write_installed_tag(home.path(), "stable", "build-no-tag").unwrap();
+        write_installed_tag(&profile("stable"), "stable", "build-no-tag").unwrap();
         assert_eq!(
             fs::read_to_string(home.path().join(".plexi/installed_tag")).unwrap(),
             "build-no-tag"

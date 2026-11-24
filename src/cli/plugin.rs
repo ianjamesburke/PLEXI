@@ -222,9 +222,11 @@ pub fn plugin_init(
                 }
             }
             println!("Created plugin '{name}' at {}", plugin_dir.display());
-            let (channel, profile_dir) = current_scaffold_channel();
+            let (channel, _) = current_scaffold_channel();
             let explicit_plexi = explicit_plexi_command(&channel);
-            let explicit_host_plexi = explicit_host_plexi_command(&channel, &profile_dir);
+            let endpoint = plexi_distribution::host_presence::endpoint_in(&crate::config::config_dir());
+            let socket = crate::host::shell::shell_quote(&endpoint.to_string_lossy());
+            let explicit_host_plexi = format!("{explicit_plexi} --socket {socket}");
             if lang == "wasm" {
                 println!("\nNext steps:");
                 println!("  cd {}", plugin_dir.display());
@@ -467,15 +469,6 @@ fn explicit_plexi_command(channel: &str) -> String {
         "plexi".to_string()
     } else {
         format!("PLEXI_CHANNEL={channel} plexi")
-    }
-}
-
-fn explicit_host_plexi_command(channel: &str, profile_dir: &str) -> String {
-    let socket = format!("PLEXI_SOCKET=$HOME/{profile_dir}/notify.sock");
-    if channel == "main" {
-        format!("{socket} plexi")
-    } else {
-        format!("{socket} PLEXI_CHANNEL={channel} plexi")
     }
 }
 
@@ -3337,7 +3330,7 @@ mod scaffold_marketplace_tests {
             std::path::Path::new("/ws/.plexi-alpha/plugins/myapp"),
             "myapp",
             "PLEXI_CHANNEL=alpha plexi",
-            "PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi",
+            "plexi-alpha --socket /tmp/example/notify.sock",
         )
         .join("\n");
 

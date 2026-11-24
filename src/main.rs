@@ -50,6 +50,7 @@ mod ui_tests;
 mod workspace;
 
 fn main() -> eframe::Result {
+    config::profile_home_or_exit();
     let process_start = std::time::Instant::now();
     let raw_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     // Installer and renderer entry points are exact argv shapes, outside

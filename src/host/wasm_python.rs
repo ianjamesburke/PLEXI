@@ -7339,9 +7339,7 @@ pub fn resolve_default_cpython_bundle() -> Result<PathBuf, WasmPythonError> {
 }
 
 fn shared_wasm_bundle_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".plexi/wasm-bundles")
+    crate::config::shared_dir_on_disk().join("wasm-bundles")
 }
 
 pub fn resolve_cpython_bundle(

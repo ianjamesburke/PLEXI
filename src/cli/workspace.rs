@@ -12,29 +12,11 @@ pub fn workspace_init() -> i32 {
         }
     };
     log::info!("workspace_init:cli: cwd={}", cwd.display());
-    // Guard: refuse home dir, root dir, and inside any ~/.plexi* profile dir
-    {
-        let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
-        let cwd_str = cwd.to_string_lossy();
-        let is_home_or_root =
-            cwd == std::path::Path::new("/") || home.as_ref().map(|h| cwd == *h).unwrap_or(false);
-        let is_inside_profile = home
-            .as_ref()
-            .map(|h| {
-                let prefix = format!("{}/.plexi", h.to_string_lossy());
-                cwd_str.starts_with(&prefix)
-            })
-            .unwrap_or(false);
-        if is_home_or_root || is_inside_profile {
-            log::warn!(
-                "workspace_init:cli: rejected — home/root/profile dir guard: {}",
-                cwd.display()
-            );
-            eprintln!("error: cannot initialize a workspace in your home or root directory.");
-            eprintln!("  This would conflict with your Plexi profile (~/.plexi/).");
-            eprintln!("  cd into a project directory first.");
-            return 1;
-        }
+    if let Err(error) = crate::host::anchor::check_workspace_init_root(&cwd) {
+        log::warn!("workspace_init:cli: {error}");
+        eprintln!("error: {error}");
+        eprintln!("  cd into a project directory first.");
+        return 1;
     }
     let channel_dir = crate::config::workspace_channel_dir();
     match crate::workspace::secrets::init_workspace(&cwd, &channel_dir) {
@@ -1389,48 +1371,30 @@ mod secret_set_tests {
         .unwrap();
     }
 
-    /// Helper: checks whether a given `cwd` path would be rejected by the
-    /// workspace_init home/root guard. Mirrors the exact logic in
-    /// `workspace_init()` so the condition is tested independently of the
-    /// real `std::env::current_dir()`.
-    fn init_guard_rejects(cwd: &std::path::Path) -> bool {
-        let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
-        let cwd_str = cwd.to_string_lossy();
-        let is_home_or_root =
-            cwd == std::path::Path::new("/") || home.as_ref().map(|h| cwd == *h).unwrap_or(false);
-        let is_inside_profile = home
-            .as_ref()
-            .map(|h| {
-                let prefix = format!("{}/.plexi", h.to_string_lossy());
-                cwd_str.starts_with(&prefix)
-            })
-            .unwrap_or(false);
-        is_home_or_root || is_inside_profile
-    }
+    use crate::host::anchor::check_workspace_init_root;
 
     #[test]
     fn root_dir_is_rejected_by_init_guard() {
-        assert!(init_guard_rejects(std::path::Path::new("/")));
+        assert!(check_workspace_init_root(std::path::Path::new("/")).is_err());
     }
 
     #[test]
     fn home_dir_is_rejected_by_init_guard() {
         let home = std::env::var("HOME").unwrap();
-        assert!(init_guard_rejects(std::path::Path::new(&home)));
+        assert!(check_workspace_init_root(std::path::Path::new(&home)).is_err());
     }
 
     #[test]
     fn plexi_profile_dir_is_rejected_by_init_guard() {
-        let home = std::env::var("HOME").unwrap();
-        let profile = std::path::PathBuf::from(format!("{home}/.plexi-alpha"));
-        assert!(init_guard_rejects(&profile));
+        let profile = crate::config::profile_home().unwrap().join(".plexi-alpha");
+        assert!(check_workspace_init_root(&profile).is_err());
     }
 
     #[test]
     fn project_subdir_is_allowed_by_init_guard() {
         let tmp = tempfile::tempdir().unwrap();
         // A temp dir under /private/var/... is not home/root/profile
-        assert!(!init_guard_rejects(tmp.path()));
+        check_workspace_init_root(tmp.path()).unwrap();
     }
 
     #[test]

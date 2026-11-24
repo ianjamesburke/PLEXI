@@ -35,6 +35,7 @@ else
     plexi_bin="plexi-$channel"
     profile_dir="$HOME/.plexi-$channel"
 fi
+python3 "$repo_root/scripts/require_test_hook_binary.py" --installed -- "$(command -v "$plexi_bin")" >/dev/null || exit $?
 
 mkdir -p "$out_dir"
 

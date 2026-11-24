@@ -14,6 +14,7 @@ if [[ ! -x "$BIN" ]]; then
   echo "error: missing binary $BIN (run just build first)" >&2
   exit 1
 fi
+BIN="$(python3 "$ROOT/scripts/require_test_hook_binary.py" --installed -- "$BIN")"
 
 WORK="$(mktemp -d)"
 trap 'if [[ -n "${HOST_PID:-}" ]]; then kill -9 "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; if [[ -n "${KEYRING_PID:-}" ]]; then kill "$KEYRING_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT

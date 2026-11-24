@@ -3,13 +3,15 @@
 //! new binary while an older Plexi may still own the profile; a profile whose
 //! migration would fail must not stop it.
 
+mod common;
+
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 const PROFILE: &str = "t1604";
 
 fn run(home: &Path, args: &[&str]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_plexi"));
+    let mut command = Command::new(common::plexi_binary());
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("PLEXI_") {
             command.env_remove(key);

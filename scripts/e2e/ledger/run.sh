@@ -20,6 +20,7 @@ if ! command -v "$BIN" >/dev/null 2>&1; then
   echo "FAIL: $BIN is not on PATH. Install the PR build first (just pr-install)." >&2
   exit 1
 fi
+python3 "$ROOT/scripts/require_test_hook_binary.py" --installed -- "$(command -v "$BIN")" >/dev/null || exit $?
 
 name="$(basename "$BIN")"
 channel="${name#plexi-}"

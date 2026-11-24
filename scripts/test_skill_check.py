@@ -17,6 +17,10 @@ class SkillCheckPaths(unittest.TestCase):
             root = Path(temp)
             script = root / "scripts/skill-check.sh"
             script.parent.mkdir()
+            # The real guard judges compiled hook names and installed receipts;
+            # this fixture has no real build, so the fake accepts its fake PR-channel binary.
+            guard = script.parent / "require_test_hook_binary.py"
+            guard.write_text("import sys\nprint(sys.argv[-1])\n")
             # Execute the real initialization and step 1, stopping before the
             # unrelated command-surface and live-host checks.
             script.write_text(SCRIPT.read_text().split("# ── 2.", 1)[0])

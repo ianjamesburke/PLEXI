@@ -14,9 +14,18 @@ import tempfile
 import time
 import threading
 
+from disposable_account import check_disposable
 from package import macos_deployment_target
 
 REPO = Path(__file__).resolve().parent.parent
+
+
+def profile_home_for(channel, temp_home, account_home):
+    if channel.startswith('pr-'):
+        return temp_home
+    if account_home is None or not account_home.is_absolute():
+        raise SystemExit('getpwuid for the current uid returned no absolute home directory')
+    return account_home
 
 
 def verify_macos_minimum(binary, target):
@@ -56,12 +65,31 @@ def main(args):
             if result.returncode:
                 raise RuntimeError(f'{command}: {result.stderr[-4000:]}')
             return result.stdout
-        # Windows Known Folders do not follow HOME/USERPROFILE overrides; native
-        # Windows runs use the disposable runner account's real profile.
-        profile_home = Path(run(['powershell', '-NoProfile', '-Command', "[Environment]::GetFolderPath('UserProfile')"]).strip()) if os.name == 'nt' else home
+        tag, channel = manifest['tag'], manifest['channel']
+        if os.name == 'nt':
+            # Windows uses the known folder even on PR channels.
+            profile_home = Path(run(['powershell', '-NoProfile', '-Command', "[Environment]::GetFolderPath('UserProfile')"]).strip())
+            if not profile_home.is_absolute():
+                raise SystemExit('Windows UserProfile known folder lookup returned no absolute path')
+        else:
+            import pwd
+            try:
+                account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+            except (KeyError, OSError):
+                account_home = None
+            profile_home = profile_home_for(channel, home, account_home)
+        if profile_home != home:
+            check_disposable(profile_home, os.environ)
+        elif os.name != 'nt' and channel.startswith('pr-'):
+            # Packaging can rename a release executable. Only a matching
+            # compiled PR build will actually use the temporary HOME.
+            binary = (package / manifest['executable']).resolve()
+            info = json.loads(run([binary, '--build-info']))
+            if (not re.fullmatch(r'pr-[0-9]+', channel) or binary.name != f'plexi-{channel}'
+                    or info.get('test_channel') != channel):
+                raise SystemExit(f'{binary} must be built for {channel} to honor the temporary HOME')
         installer = package / ('plexi-installer.exe' if os.name == 'nt' else 'plexi-installer')
         auto_started = False
-        tag, channel = manifest['tag'], manifest['channel']
         accepted = channel == 'alpha' or (channel == 'beta' and '-alpha.' not in tag) or (channel == 'stable' and '-' not in tag)
         if accepted:
             # Serve the actual release archive, then execute the public bootstrap.

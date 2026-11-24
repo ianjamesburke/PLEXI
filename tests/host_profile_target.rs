@@ -5,6 +5,8 @@
 //! records which one the command talked to.
 #![cfg(unix)]
 
+mod common;
+
 use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -93,7 +95,7 @@ fn fixture() -> Fixture {
     let default_host = FakeHost::bind(&home.join(format!(".plexi-{CHANNEL}")));
     let named_host = FakeHost::bind(&home.join(format!(".plexi-{PROFILE}")));
     let binary = home.join(format!("plexi-{CHANNEL}"));
-    std::fs::copy(env!("CARGO_BIN_EXE_plexi"), &binary).unwrap();
+    std::fs::copy(common::plexi_binary(), &binary).unwrap();
     Fixture {
         _home: temp,
         home,
@@ -301,7 +303,7 @@ fn a_linked_named_profile_reaches_no_host() {
     let default_dir = home.join(format!(".plexi-{CHANNEL}"));
     let default_host = FakeHost::bind(&default_dir);
     let binary = home.join(format!("plexi-{CHANNEL}"));
-    std::fs::copy(env!("CARGO_BIN_EXE_plexi"), &binary).unwrap();
+    std::fs::copy(common::plexi_binary(), &binary).unwrap();
     let linked_dir = home.join(".plexi-linkdir");
     std::os::unix::fs::symlink(&default_dir, &linked_dir).unwrap();
     let linked_sock = home.join(".plexi-linksock");

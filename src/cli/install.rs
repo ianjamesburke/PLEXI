@@ -332,7 +332,7 @@ pub fn plexi_uninstall_cli(keep_data: bool, mut delete_data: bool, assume_yes: b
         let receipt = crate::distribution::installed()?.ok_or_else(|| "No managed installation receipt found. No files were removed. Reinstall through the current installer to migrate this legacy installation.".to_string())?;
         let target = super::host::host_target()?;
         let profile = target.dir().to_path_buf();
-        let home = dirs::home_dir().ok_or("uninstall: no home directory to resolve profiles")?;
+        let home = crate::config::profile_home()?;
         delete_data = match data_choice(
             keep_data,
             delete_data,

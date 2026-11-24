@@ -12,6 +12,7 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLEXI="${1:-$REPO_ROOT/target/release/plexi}"
+python3 "$REPO_ROOT/scripts/require_test_hook_binary.py" --installed -- "$PLEXI" >/dev/null || exit $?
 WORK="$(mktemp -d -t plexi-linux-smoke-XXXXXX)"
 STEP_N=0
 FAILED=0

@@ -3,6 +3,8 @@
 //! deferral is logged, and only commands that read or write the profile's
 //! plugins or SDK are refused, naming the live host and the fix.
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -11,7 +13,7 @@ const PROFILE: &str = "t1609";
 const REFUSAL: &str = "Quit and reopen Plexi";
 
 fn run(home: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_plexi"));
+    let mut command = Command::new(common::plexi_binary());
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("PLEXI_") {
             command.env_remove(key);

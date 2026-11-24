@@ -1627,17 +1627,13 @@ impl LiveBackend {
             "main" => "plexi".to_string(),
             other => format!("plexi-{other}"),
         });
-        let home = dirs::home_dir()
-            .ok_or_else(|| SceneError::new("home_unavailable", "cannot resolve home directory"))?;
-        let profile = if channel == "main" {
-            ".plexi".to_string()
-        } else {
-            format!(".plexi-{channel}")
-        };
+        let home = crate::config::profile_home()
+            .map_err(|error| SceneError::new("home_unavailable", error))?;
+        let profile = home.join(plexi_distribution::host_presence::profile_dir_name(&channel));
         Ok(Self {
             binary,
             channel,
-            socket: home.join(profile).join("notify.sock"),
+            socket: plexi_distribution::host_presence::endpoint_in(&profile),
             owned_host: false,
             attached_host: false,
             handles: PaneHandles::default(),
@@ -4871,7 +4867,8 @@ run_steps = 100
         let backend = LiveBackend::from_env(&std::env::temp_dir(), true).expect("live config");
 
         assert_eq!(backend.binary, "plexi-pr-4242");
-        assert!(backend.socket.ends_with(".plexi-pr-4242/notify.sock"));
+        let profile = crate::config::profile_home().unwrap().join(".plexi-pr-4242");
+        assert_eq!(backend.socket, plexi_distribution::host_presence::endpoint_in(&profile));
         std::env::remove_var("PLEXI_SCENE_CHANNEL");
     }
 

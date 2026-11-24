@@ -79,6 +79,15 @@ pub(crate) fn is_hook(name: &str) -> bool {
 /// that will remove overrides before starting a child.
 #[cfg(not(test))]
 pub(crate) fn report_ignored() {
+    if !super::profile_home::honors_home() {
+        if let Some(home) = std::env::var_os("HOME") {
+            if super::profile_home().is_ok_and(|account| account != std::path::Path::new(&home)) {
+                log::info!(
+                    "ignoring HOME for Plexi profiles because it differs from the account home"
+                );
+            }
+        }
+    }
     if !super::is_test_channel(super::build_channel().as_deref())
         && std::env::vars_os().any(|(key, _)| key.to_str().is_some_and(is_hook))
     {

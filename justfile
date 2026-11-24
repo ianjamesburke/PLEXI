@@ -146,9 +146,9 @@ build:
     bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py build --release
 
 # Linux bringup smoke check: drives a real host through the CLI on an X
-# display and asserts a signal at every step. Needs `just build` first.
-linux-smoke:
-    bash scripts/linux-smoke.sh
+# display and asserts a signal at every step. Takes an installed PR build.
+linux-smoke pr:
+    bash scripts/linux-smoke.sh "$(command -v plexi-pr-{{pr}})"
 
 # Live Pi + Plexi integration test harness: exercises interactive Pi TUI inside
 # a Plexi host, non-interactive `pi -p --mode json`, tool discovery/invocation,
@@ -672,15 +672,16 @@ scene FILE out="/tmp/plexi-scenes" shots="1":
 scene-live FILE channel out="/tmp/plexi-scenes-live":
     bash scripts/run-live-scene.sh {{FILE}} {{channel}} {{out}}
 
-# Installed-host editor release gate: run every editor scene against a channel,
-# collect reports + artifacts, and write summary.json (stint 0479).
-editor-gate channel:
-    bash scripts/editor-gate.sh {{channel}}
+# Installed-host editor release gate: run every editor scene against an
+# installed PR build, collect reports + artifacts, and write summary.json
+# (stint 0479).
+editor-gate pr:
+    bash scripts/editor-gate.sh pr-{{pr}}
 
 # Installed-host DAW release gate: core model qualification + every DAW scene
-# against a channel, reports + artifacts + summary.json (stint 0519).
-daw-gate channel:
-    bash scripts/daw-gate.sh {{channel}}
+# against an installed PR build, reports + artifacts + summary.json (stint 0519).
+daw-gate pr:
+    bash scripts/daw-gate.sh pr-{{pr}}
 
 # Run one agent-drives-agent app-authoring E2E session from a prompt fixture.
 # Provisions an isolated session and leaves a capture dir under benchmarks/app-authoring/sessions.
