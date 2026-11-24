@@ -58,34 +58,47 @@ def wait_ready(binary, env):
 QUESTION = "Signing continuity acceptance question"
 
 
-def seed_command(binary, root):
-    """A pane command that asks the question as that pane, then keeps the pane open.
+def pane_command(binary, root, seed):
+    """A pane command that (for A) asks the question as that pane, then keeps
+    listing Needs-you as that pane.
 
-    The host places a socket caller by process ancestry, so only a process
-    inside the pane may report for it."""
-    script, output = root / "seed-question.sh", root / "seed-question.out"
-    report = [binary, "agent", "report", "--state", "blocked", "--agent", "signing-continuity", "--event", "AskQuestion", "--detail", QUESTION]
-    script.write_text(f"#!/bin/sh\n{shlex.join(map(str, report))} >{shlex.quote(str(output))} 2>&1\necho \"exit=$?\" >>{shlex.quote(str(output))}\nexec /bin/sleep 600\n")
+    The host places a socket caller by process ancestry: only a process inside
+    the pane may report for it, and a socket caller lists only the items it
+    filed. An ephemeral host restores no layout, so B's startup pane has A's
+    pane id and reads back the question A's pane asked."""
+    script, reported, listed = root / "pane.sh", root / "seed-question.out", root / "needs-you.json"
+    lines = ["#!/bin/sh"]
+    if seed:
+        report = [binary, "agent", "report", "--state", "blocked", "--agent", "signing-continuity", "--event", "AskQuestion", "--detail", QUESTION]
+        lines += [f"{shlex.join(map(str, report))} >{shlex.quote(str(reported))} 2>&1",
+                  f"echo \"exit=$?\" >>{shlex.quote(str(reported))}"]
+    staging = shlex.quote(str(listed) + ".tmp")
+    lines += [f"while :; do {shlex.quote(str(binary))} needs-you list --json >{staging} 2>&1; /bin/mv {staging} {shlex.quote(str(listed))}; /bin/sleep 0.2; done"]
+    script.write_text("\n".join(lines) + "\n")
     script.chmod(0o755)
-    return script, output
+    listed.unlink(missing_ok=True)
+    return script, reported, listed
 
 
 def start_and_stop(binary, env, seed=False):
-    pane = f"cwd={env['HOME']}"
-    if seed:
-        script, seed_output = seed_command(binary, Path(env["HOME"]).parent)
-        pane += f",cmd={script}"
-    run([binary, "host", "start", "--ephemeral", "--pane", pane, "--timeout-secs", "90"], env, timeout=120)
+    script, seed_output, listed = pane_command(binary, Path(env["HOME"]).parent, seed)
+    run([binary, "host", "start", "--ephemeral", "--pane", f"cwd={env['HOME']},cmd={script}", "--timeout-secs", "90"], env, timeout=120)
     try:
         wait_ready(binary, env)
         deadline = time.monotonic() + 15
+        listing = "(the pane never listed)"
         while time.monotonic() < deadline:
-            items = json.loads(run([binary, "needs-you", "list", "--json"], env).stdout)["items"]
-            if any(item.get("summary") == QUESTION for item in items):
-                return items
+            if listed.is_file():
+                listing = listed.read_text(errors="replace")
+                try:
+                    items = json.loads(listing)["items"]
+                except (ValueError, KeyError):
+                    items = []
+                if any(item.get("summary") == QUESTION for item in items):
+                    return items
             time.sleep(0.2)
         reported = seed_output.read_text(errors="replace") if seed and seed_output.is_file() else "(no seed output)"
-        raise AssertionError(f"sealed question was not retained: {items}\nseed report: {reported}")
+        raise AssertionError(f"sealed question was not retained; the pane listed: {listing}\nseed report: {reported}")
     finally:
         run([binary, "host", "stop"], env, timeout=120)
 

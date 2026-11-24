@@ -1144,6 +1144,42 @@ fn spawn_socket_listener(
     });
 }
 
+/// Test only: serve `listener` as the production accept loop does (peer
+/// witness captured at accept, one connection per thread), delivering to
+/// `mailbox`. Event-bus frames go nowhere.
+#[cfg(all(test, unix))]
+pub(crate) fn serve_test_socket(
+    listener: std::os::unix::net::UnixListener,
+    mailbox: ui_mailbox::UiMailbox<socket_caller::PaneIpcMessage>,
+) {
+    let wake = std::sync::Arc::new(ui_mailbox::EguiWake::new(egui::Context::default()));
+    let (subscribe_mailbox, subscribe_rx) = ui_mailbox::UiMailbox::<
+        crate::host::event_subscriptions::HostSubscribeRequest,
+    >::channel(wake.clone(), "event_subscribe");
+    let (publish_mailbox, publish_rx) = ui_mailbox::UiMailbox::<
+        crate::host::event_subscriptions::HostPublishRequest,
+    >::channel(wake, "event_publish");
+    let trace_profile = crate::config::config_dir();
+    std::thread::spawn(move || {
+        // Event-bus frames are dropped, never refused for a closed channel.
+        let _receivers = (subscribe_rx, publish_rx);
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { continue };
+            let peer =
+                resolve_socket_peer_pid(&stream).map(crate::broker::caller::PeerWitness::capture);
+            let (mailbox, subscribe, publish) = (
+                mailbox.clone(),
+                subscribe_mailbox.clone(),
+                publish_mailbox.clone(),
+            );
+            let trace_profile = trace_profile.clone();
+            std::thread::spawn(move || {
+                handle_socket_connection(&trace_profile, stream, mailbox, subscribe, publish, peer);
+            });
+        }
+    });
+}
+
 /// Per-connection handler. Most connections are one-shot `HostRequest` lines.
 /// Event-bus control messages (`events_subscribe`, `events_list`,
 /// `events_declare`, `events_emit`) are intercepted before `HostRequest` parsing

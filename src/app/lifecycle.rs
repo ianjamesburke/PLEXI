@@ -402,6 +402,44 @@ impl PlexiApp {
         }
     }
 
+    /// File a question or blocked run that pane `pane_id` raised about
+    /// itself, bound to that pane so the pane can read it back: a socket
+    /// caller lists only the items it filed (stint 1285).
+    fn file_pane_needs_you(
+        pane_id: crate::spatial::tiling::PaneId,
+        kind: crate::broker::gate::NeedsYouKind,
+        actor: String,
+        summary: String,
+        session_id: Option<String>,
+    ) {
+        let filed =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .map_err(|error| error.to_string())
+                .and_then(|monitor| {
+                    monitor.file_needs_you_with_details(
+                        crate::broker::gate::NeedsYouFile {
+                            kind,
+                            actor,
+                            resource: format!("pane:{pane_id}"),
+                            summary,
+                            expires_at: None,
+                            run_tag: session_id
+                                .clone()
+                                .or_else(|| Some(format!("pane:{pane_id}"))),
+                        },
+                        Some(crate::broker::gate::NeedsYouDetails {
+                            pane_id: Some(pane_id),
+                            session_id,
+                            ..Default::default()
+                        }),
+                    )
+                });
+        match filed {
+            Ok(id) => log::info!("needs_you: pane {pane_id} filed {} as {id}", kind.as_str()),
+            Err(error) => log::info!("needs_you: could not file for pane {pane_id}: {error}"),
+        }
+    }
+
     /// Whether `caller` may read the agents dashboard of `workspace`: a pane
     /// within its own context scope, an outside process once admitted as
     /// itself. Anything else is refused (stint 1285).
@@ -4846,25 +4884,13 @@ impl PlexiApp {
                         } else {
                             crate::broker::gate::NeedsYouKind::BlockedRun
                         };
-                        let filed = crate::broker::gate::PermissionMonitor::for_profile(
-                            &crate::config::config_dir(),
-                        )
-                        .map_err(|error| error.to_string())
-                        .and_then(|monitor| {
-                            monitor.file_needs_you(crate::broker::gate::NeedsYouFile {
-                                kind,
-                                actor: agent.clone(),
-                                resource: format!("pane:{pane_id}"),
-                                summary,
-                                expires_at: None,
-                                run_tag: session_id
-                                    .clone()
-                                    .or_else(|| Some(format!("pane:{pane_id}"))),
-                            })
-                        });
-                        if let Err(error) = filed {
-                            log::info!("needs_you: could not file blocked pane {pane_id}: {error}");
-                        }
+                        Self::file_pane_needs_you(
+                            *pane_id,
+                            kind,
+                            agent.clone(),
+                            summary,
+                            session_id.clone(),
+                        );
                     } else if !matches!(
                         state,
                         crate::protocol::AgentState::NeedsYou
@@ -5771,20 +5797,13 @@ impl PlexiApp {
                     // agent via `PaneLifecycleEvent::AgentBlocked` (and its `question` slot)
                     // without interrupting the human. Only file human `NeedsYou` when unparented.
                     if parent_pane_id.is_none() {
-                        let _ = crate::broker::gate::PermissionMonitor::for_profile(
-                            &crate::config::config_dir(),
-                        )
-                        .map_err(|error| error.to_string())
-                        .and_then(|monitor| {
-                            monitor.file_needs_you(crate::broker::gate::NeedsYouFile {
-                                kind: crate::broker::gate::NeedsYouKind::Question,
-                                actor: agent_label,
-                                resource: format!("pane:{pane_id}"),
-                                summary: question.clone(),
-                                expires_at: None,
-                                run_tag: session_id.or_else(|| Some(format!("pane:{pane_id}"))),
-                            })
-                        });
+                        Self::file_pane_needs_you(
+                            *pane_id,
+                            crate::broker::gate::NeedsYouKind::Question,
+                            agent_label,
+                            question.clone(),
+                            session_id,
+                        );
                     }
                     let payload = serde_json::json!({
                         "ok": true,
