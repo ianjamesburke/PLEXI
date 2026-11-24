@@ -182,7 +182,10 @@ fn needs_you_failed_audit_error_is_visible_in_decision_overlay() {
             }),
         )
         .unwrap();
-    h.with_app_mut(|app| assert!(app.open_decision_overlay_for_ask(&id)));
+    h.with_app_mut(|app| {
+        assert!(app.open_decision_overlay_for_ask(&id));
+        app.arm_decision_overlay_for_test();
+    });
     monitor.fail_audit(true);
     h.with_app_mut(|app| {
         assert!(!app.pick_decision_overlay_option(0));
