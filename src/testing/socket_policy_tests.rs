@@ -1955,6 +1955,80 @@ fn dashboard_cancel_stops_only_the_callers_own_run() {
     assert!(!active(&run), "the owner's cancel left the run running");
 }
 
+/// Stint 1716 slice 2b: `list` and `open` name a workspace, and the caller is
+/// bound to it before the host reads or opens anything. A pane serves only
+/// its own context's workspace, an outside process only one it was approved
+/// for (one use), and a caller the host cannot identify is refused.
+#[test]
+fn dashboard_list_and_open_are_bound_to_the_requested_workspace() {
+    let _on =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentsDashboard]);
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let root = h.workspace_root();
+    h.app.set_context_root(root.clone(), None);
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(elsewhere.path().join(".plexi")).unwrap();
+    let host = crate::agent::runs::AgentsCaller::Host { ceiling: Vec::new() };
+    for (workspace, name) in [(root.as_path(), "own-1716"), (elsewhere.path(), "foreign-1716")] {
+        let created = crate::agent::runs::handle_request(
+            "create_agent",
+            &serde_json::json!({"workspace": workspace, "name": name}),
+            &host,
+        );
+        assert_eq!(created["ok"], true, "{created}");
+    }
+    let list = |h: &mut HostHarness, workspace: &std::path::Path, peer: Option<PeerWitness>| {
+        send(
+            h,
+            serde_json::json!({"type": "agents_dashboard", "op": "list",
+                "payload": {"workspace": workspace}}),
+            peer,
+        )
+    };
+
+    let peer = pane_witness(&h, pane);
+    let own = list(&mut h, &root, Some(peer.clone()));
+    assert_eq!(own["ok"], true, "{own}");
+    assert!(own.to_string().contains("own-1716"), "{own}");
+    let foreign = list(&mut h, elsewhere.path(), Some(peer.clone()));
+    assert_eq!(foreign["error_code"], "permission_denied", "{foreign}");
+    assert!(!foreign.to_string().contains("foreign-1716"), "leaked: {foreign}");
+    let panes = h.app.windows[0].panes.len();
+    let opened = send(
+        &mut h,
+        serde_json::json!({"type": "agents_dashboard", "op": "open",
+            "payload": {"workspace": elsewhere.path()}}),
+        Some(peer),
+    );
+    assert_eq!(opened["error_code"], "permission_denied", "{opened}");
+    assert_eq!(h.app.windows[0].panes.len(), panes, "a pane opened on a foreign workspace");
+
+    let unknown = Some(witness(std::process::id(), AncestryEnd::LookupFailed));
+    let blind = list(&mut h, &root, unknown);
+    assert_eq!(blind["error_code"], "permission_denied", "{blind}");
+
+    let outside_list = |h: &mut HostHarness| list(h, elsewhere.path(), Some(outside()));
+    let asked = outside_list(&mut h);
+    assert_eq!(asked["error_code"], "permission_denied", "{asked}");
+    assert!(!asked.to_string().contains("foreign-1716"), "leaked: {asked}");
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    let ask = monitor
+        .list_pending()
+        .into_iter()
+        .find(|p| p.actor_id == crate::broker::principal::EXTERNAL_ID)
+        .expect("the outside read is filed for approval");
+    monitor
+        .approve_pending(&ask.pending_request_id, crate::broker::gate::ApprovalChoice::Once)
+        .unwrap();
+    let approved = outside_list(&mut h);
+    assert_eq!(approved["ok"], true, "{approved}");
+    assert!(approved.to_string().contains("foreign-1716"), "{approved}");
+    let again = outside_list(&mut h);
+    assert_eq!(again["error_code"], "permission_denied", "one approval is one read: {again}");
+}
+
 /// Design 1285 section 4, condition 3: with the dashboard experiment off,
 /// both raw host entries refuse: the list request and the follow stream.
 #[test]
