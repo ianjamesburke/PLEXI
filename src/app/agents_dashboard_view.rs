@@ -55,6 +55,6 @@ impl View for AgentsDashboardView {
     }
 
     fn semantic_state(&self) -> Option<serde_json::Value> {
-        Some(crate::agent::runs::projection(&self.workspace))
+        Some(crate::agent::runs::host_projection(&self.workspace))
     }
 }

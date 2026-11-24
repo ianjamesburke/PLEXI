@@ -187,7 +187,11 @@ fn inventory_for_scope(
     let mut entries = Vec::new();
     let (uses, permissions, grant_details_unavailable) =
         match PermissionMonitor::for_profile(&crate::config::config_dir()) {
-            Ok(monitor) => (monitor.secret_last_uses()?, monitor.list_entries(), None),
+            Ok(monitor) => (
+                monitor.secret_last_uses()?,
+                monitor.host_records().entries(),
+                None,
+            ),
             Err(error) => {
                 log::info!("secrets_manager: listing names without grant details: {error}");
                 (
@@ -511,7 +515,7 @@ mod tests {
         assert!(!audit.contains("canary-"));
         assert!(!audit.contains("SENTINEL_SECRET_0948_DO_NOT_LEAK"));
         assert!(!audit.contains("with spaces"));
-        let rows = monitor.audit_records();
+        let rows = monitor.host_records().audit();
         assert_eq!(
             rows.iter()
                 .filter(|r| r.kind == "secret_mutation" && r.decision == "ok")
@@ -564,7 +568,7 @@ mod tests {
             );
             assert_eq!(result.is_ok(), audited == "ok", "{result:?}");
             assert_eq!(store.deletes(), 1);
-            let rows = monitor.audit_records();
+            let rows = monitor.host_records().audit();
             let last = &rows[rows.len() - 1];
             assert_eq!(
                 (last.operation_id.as_str(), last.decision.as_str()),

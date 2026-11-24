@@ -230,53 +230,19 @@ impl PlexiApp {
         match name {
             "host.editors.list" => ToolCallResult::ok_value(self.assistant_editors()),
             "host.introspect" => {
-                let query = parsed
-                    .get("query")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|value| !value.is_empty());
-                let live = crate::plexi_ai::tool_dispatch::live_exposed_tools()
-                    .into_iter()
-                    .map(|(plugin_id, pane_id, name, description)| {
-                        crate::cli::introspect::LiveTool {
-                            plugin_id,
-                            pane_id,
-                            name,
-                            description,
-                        }
-                    })
-                    .collect::<Vec<_>>();
                 let permissions = match crate::broker::gate::PermissionMonitor::for_profile(
                     &crate::config::config_dir(),
                 ) {
-                    Ok(monitor) => monitor.list_entries(),
+                    Ok(monitor) => monitor.host_records().entries(),
                     Err(error) => return ToolCallResult::err(error.to_string()),
                 };
-                let permissions =
-                    serde_json::to_value(&permissions).unwrap_or(serde_json::json!([]));
-                let permissions = permissions.as_array().cloned().unwrap_or_default();
-                let panes = self.introspect_panes();
-                let doc = crate::cli::introspect::assemble(
-                    query,
-                    &crate::app::registry::plugins_dir(),
-                    &panes,
-                    &permissions,
-                    &live,
-                );
-                log::info!(
-                    "assistant_host_tool: host.introspect query={} cli={} plugins={} panes={} permissions={}",
-                    query.unwrap_or(""),
-                    doc["cli"].as_array().map(|rows| rows.len()).unwrap_or(0),
-                    doc["plugins"].as_array().map(|rows| rows.len()).unwrap_or(0),
-                    doc["panes"].as_array().map(|rows| rows.len()).unwrap_or(0),
-                    doc["permissions"].as_array().map(|rows| rows.len()).unwrap_or(0),
-                );
-                ToolCallResult::ok_value(doc)
+                self.introspect_for(&parsed, &permissions)
             }
             "host.permissions.list" => {
                 let entries = match crate::broker::gate::PermissionMonitor::for_profile(
                     &crate::config::config_dir(),
                 ) {
-                    Ok(monitor) => monitor.list_entries(),
+                    Ok(monitor) => monitor.host_records().entries(),
                     Err(error) => return ToolCallResult::err(error.to_string()),
                 };
                 log::info!(
@@ -300,7 +266,9 @@ impl PlexiApp {
                     id,
                     action,
                     &crate::broker::gate::PermissionCaller {
-                        actor_id: format!("agent:assistant:{origin_pane_id}"),
+                        owner: crate::broker::principal::RecordOwner::Host(format!(
+                            "agent:assistant:{origin_pane_id}"
+                        )),
                         revoke_scope: crate::broker::gate::RevokeScope::Own,
                     },
                 );
@@ -932,6 +900,47 @@ impl PlexiApp {
         result
     }
 
+    fn introspect_for(
+        &self,
+        parsed: &serde_json::Value,
+        permissions: &[crate::broker::gate::PermissionEntry],
+    ) -> ToolCallResult {
+        let query = parsed
+            .get("query")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty());
+        let live = crate::plexi_ai::tool_dispatch::live_exposed_tools()
+            .into_iter()
+            .map(
+                |(plugin_id, pane_id, name, description)| crate::cli::introspect::LiveTool {
+                    plugin_id,
+                    pane_id,
+                    name,
+                    description,
+                },
+            )
+            .collect::<Vec<_>>();
+        let permissions = serde_json::to_value(permissions).unwrap_or(serde_json::json!([]));
+        let permissions = permissions.as_array().cloned().unwrap_or_default();
+        let panes = self.introspect_panes();
+        let doc = crate::cli::introspect::assemble(
+            query,
+            &crate::app::registry::plugins_dir(),
+            &panes,
+            &permissions,
+            &live,
+        );
+        log::info!(
+                    "assistant_host_tool: host.introspect query={} cli={} plugins={} panes={} permissions={}",
+                    query.unwrap_or(""),
+                    doc["cli"].as_array().map(|rows| rows.len()).unwrap_or(0),
+                    doc["plugins"].as_array().map(|rows| rows.len()).unwrap_or(0),
+                    doc["panes"].as_array().map(|rows| rows.len()).unwrap_or(0),
+                    doc["permissions"].as_array().map(|rows| rows.len()).unwrap_or(0),
+                );
+        ToolCallResult::ok_value(doc)
+    }
+
     fn introspect_panes(&self) -> Vec<serde_json::Value> {
         let active = self.active_window;
         self.windows
@@ -1181,7 +1190,7 @@ impl PlexiApp {
                 Some(principal) => principal,
                 None => return ToolCallResult::err("permission_denied: caller unidentified"),
             },
-            None => Principal::agent("agent:assistant"),
+            None => Principal::agent("agent:assistant").expect("named agent"),
         };
         let caller_pane = socket.and_then(|caller| caller.pane());
         let posture = match caller_pane.map(|pane| self.pane_ceiling(pane.terminal_pane)) {
@@ -1208,8 +1217,7 @@ impl PlexiApp {
             Ok(monitor) => monitor,
             Err(error) => return ToolCallResult::err(error.to_string()),
         };
-        let actor = principal.actor_id().to_string();
-        let actor = actor.as_str();
+
         let call_id = format!("call_{}", uuid::Uuid::new_v4());
         let admission = monitor.admit_with_posture(
             AdmitRequest {
@@ -1247,13 +1255,29 @@ impl PlexiApp {
             } => (grant_id, fingerprint, resource_id.unwrap_or_default()),
         };
         if monitor
-            .note_use(actor, &call_id, &grant_id, &fingerprint, &resource, "")
+            .note_use(
+                &crate::broker::principal::RecordOwner::requester(&principal),
+                &call_id,
+                &grant_id,
+                &fingerprint,
+                &resource,
+                "",
+            )
             .is_err()
         {
             return ToolCallResult::coded("permission_denied", &call_id, None);
         }
         log::info!("assistant_host_tool: admitted tool={name} grant={grant_id}");
-        let result = self.handle_assistant_host_tool(name, input_json, 0, context_id);
+        let result = if name == "host.introspect" && socket.is_some() {
+            match serde_json::from_str(input_json) {
+                Ok(input) => {
+                    self.introspect_for(&input, &monitor.records_for(&principal).entries())
+                }
+                Err(error) => ToolCallResult::err(format!("invalid_input: {error}")),
+            }
+        } else {
+            self.handle_assistant_host_tool(name, input_json, 0, context_id)
+        };
         // A carried-forward accept is the Assistant's own; a socket caller's
         // edit is reviewed like any other.
         if socket.is_none()
@@ -1286,17 +1310,9 @@ fn socket_permission_tool(
         Ok(monitor) => monitor,
         Err(error) => return ToolCallResult::err(error.to_string()),
     };
-    let actor_id = principal.actor_id().to_string();
+    let actor_id = principal.label();
     if name == "host.permissions.list" {
-        let actor_type = serde_json::to_value(principal.actor_type())
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_string))
-            .unwrap_or_default();
-        let entries: Vec<_> = monitor
-            .list_entries()
-            .into_iter()
-            .filter(|entry| entry.actor_id == actor_id && entry.actor_type == actor_type)
-            .collect();
+        let entries = monitor.records_for(principal).entries();
         log::info!("assistant_host_tool: {name} actor={actor_id} count={}", entries.len());
         return ToolCallResult::ok_value(serde_json::json!({"ok": true, "entries": entries}));
     }
@@ -1312,7 +1328,7 @@ fn socket_permission_tool(
         id,
         action,
         &PermissionCaller {
-            actor_id: actor_id.clone(),
+            owner: crate::broker::principal::RecordOwner::requester(principal),
             revoke_scope: RevokeScope::Own,
         },
     );

@@ -86,7 +86,7 @@ fn secret_get_without_pane_ancestry_asks_as_external() {
     let reply = super::socket_policy_tests::read_client(client, "detached get");
     assert_eq!(reply["reason"], "denied");
     assert!(!reply.to_string().contains(canary));
-    assert!(monitor().list_pending().is_empty());
+    assert!(monitor().host_records().pending().is_empty());
 }
 
 #[test]
@@ -338,9 +338,13 @@ fn permissions_caller_is_derived_from_the_peer_not_the_wire() {
         .classify_socket_peer(Some(&crate::broker::caller::PeerWitness::for_live_pids(&[
             h.shell_pid(pane),
         ])))
-        .principal()
-        .map(|p| p.actor_id().to_string());
-    assert_eq!(principal, Some(format!("pane:{pane}")));
+        .principal();
+    assert_eq!(
+        principal,
+        h.app
+            .pane_principal(pane)
+            .map(crate::broker::principal::Principal::Pane)
+    );
     // A caller outside every pane is the shared outside principal, never the
     // human; no peer at all is nobody.
     let outside = crate::broker::caller::RequestOrigin::outside_for_test();
@@ -510,7 +514,7 @@ fn socket_caller_with_no_pane_is_not_human() {
         assert_eq!(reply["status"], "needs_you", "{ancestry:?}: {reply}");
         assert_eq!(reply["ok"], false, "{reply}");
         assert!(
-            monitor().show_pending(&pending).is_some(),
+            monitor().host_records().pending_id(&pending).is_some(),
             "{ancestry:?}: the pending ask was approved without a click"
         );
     }
@@ -520,7 +524,8 @@ fn socket_caller_with_no_pane_is_not_human() {
         .unwrap();
     assert_eq!(read_client(client, "pane get denied")["reason"], "denied");
     let deny = monitor()
-        .list_entries()
+        .host_records()
+        .entries()
         .into_iter()
         .find(|entry| entry.kind == "deny")
         .expect("stored denial")
@@ -530,7 +535,11 @@ fn socket_caller_with_no_pane_is_not_human() {
             let reply = permissions_socket(&mut h, op, Some(&deny), ancestry);
             assert_eq!(reply["status"], "needs_you", "{op} {ancestry:?}: {reply}");
             assert!(
-                monitor().list_entries().iter().any(|e| e.id == deny),
+                monitor()
+                    .host_records()
+                    .entries()
+                    .iter()
+                    .any(|e| e.id == deny),
                 "{op} {ancestry:?}: the denial changed without a click"
             );
         }
@@ -544,12 +553,20 @@ fn socket_caller_with_no_pane_is_not_human() {
     assert!(monitor()
         .resolve_needs_you_from(&item, true, crate::broker::gate::ResolveSurface::Socket)
         .is_err());
-    assert!(monitor().list_entries().iter().any(|e| e.id == deny));
+    assert!(monitor()
+        .host_records()
+        .entries()
+        .iter()
+        .any(|e| e.id == deny));
     monitor()
         .resolve_needs_you_from(&item, true, crate::broker::gate::ResolveSurface::Desktop)
         .unwrap();
     assert!(
-        monitor().list_entries().iter().all(|e| e.id != deny),
+        monitor()
+            .host_records()
+            .entries()
+            .iter()
+            .all(|e| e.id != deny),
         "the desktop click applies the reset"
     );
 }

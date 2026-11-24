@@ -3943,8 +3943,11 @@ mod tests {
         };
         let exact_allow = |h: &HostHarness, pane: PaneId| {
             let binding = crate::broker::ExactBinding {
-                actor_type: crate::broker::ActorType::Agent,
-                actor_id: format!("pane:{pane}"),
+                agent_run: None,
+                actor: crate::broker::principal::Principal::Pane(
+                    h.app.pane_principal(pane).unwrap(),
+                )
+                .into(),
                 actor_scope: crate::broker::ActorScope::Workspace,
                 trust_origin: "host".to_string(),
                 workspace_root: root.path().to_path_buf(),
@@ -4262,8 +4265,7 @@ mod tests {
                 .unwrap();
             let scope = h.app.pane_authority(pane).unwrap().scope().workspace_root;
             store.record(crate::broker::GrantRecord::event_stream_allow(
-                crate::broker::ActorType::Agent,
-                &format!("pane:{pane}"),
+                &crate::broker::principal::Principal::Pane(h.app.pane_principal(pane).unwrap()),
                 crate::broker::ActorScope::User,
                 &target,
                 &scope,
@@ -4288,8 +4290,9 @@ mod tests {
                     resource_id: None,
                     from_pane_id: None,
                     subscriber_override: Some(format!("cli-conn-{pane}")),
-                    subscriber_type_override: None,
-                    broker_actor_override: None,
+                    principal: crate::broker::principal::Principal::Pane(
+                        h.app.pane_principal(pane).unwrap(),
+                    ),
                     workspace_root_override: None,
                     subscriber_authority:
                         crate::host::event_subscriptions::SubscriberAuthority::External,
@@ -4357,10 +4360,11 @@ mod tests {
             let revision = h.app.pane_authority(pane).unwrap().scope().revision;
             (verified.workspace_root, over_mcp, revision)
         };
+        let owner = h.app.pane_principal(pane).unwrap();
         let allowed_in = |workspace: &std::path::Path, granted: &std::path::Path| {
             let binding = |root: &std::path::Path| crate::broker::ExactBinding {
-                actor_type: crate::broker::ActorType::Agent,
-                actor_id: format!("pane:{pane}"),
+                agent_run: None,
+                actor: crate::broker::principal::Principal::Pane(owner.clone()).into(),
                 actor_scope: crate::broker::ActorScope::Workspace,
                 trust_origin: "host".to_string(),
                 workspace_root: root.to_path_buf(),

@@ -551,7 +551,7 @@ fn integrity_notice_sorts_below_asks_dedupes_and_acknowledges() {
         monitor
             .file_needs_you(crate::broker::gate::NeedsYouFile {
                 kind: crate::broker::gate::NeedsYouKind::Integrity,
-                actor: "host".to_string(),
+                actor: crate::broker::principal::RecordOwner::Host("host".to_string()),
                 resource: "permission-profile".to_string(),
                 summary: "The host did not shut down cleanly.".to_string(),
                 expires_at: None,
@@ -596,7 +596,8 @@ fn integrity_notice_sorts_below_asks_dedupes_and_acknowledges() {
         .all(|b| b.category != QueueCategory::Notice));
     // Acknowledging cleared every duplicate record, so a restart finds none.
     assert!(monitor
-        .open_needs_you()
+        .host_records()
+        .open()
         .iter()
         .all(|r| r.kind != crate::broker::gate::NeedsYouKind::Integrity));
 }

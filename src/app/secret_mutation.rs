@@ -103,7 +103,7 @@ impl SecretRequest {
             return Ok(Some(serde_json::json!({"status":"denied"})));
         };
         monitor.note_use(
-            principal.actor_id(),
+            &crate::broker::principal::RecordOwner::requester(&principal),
             &call,
             &grant_id,
             &fingerprint,
@@ -119,7 +119,8 @@ impl SecretRequest {
         let result = mutate_secret(self.scope.store(), monitor, &target, &self.name, mutation);
         monitor
             .note_outcome(
-                principal.actor_id(),
+                None,
+                &crate::broker::principal::RecordOwner::requester(&principal),
                 &call,
                 &grant_id,
                 &fingerprint,

@@ -857,6 +857,7 @@ pub struct TerminalPane {
     pub ephemeral: bool,
     /// Parent master pane ID (`PLEXI_PARENT_PANE`), used for Tier 1 `Blocked` escalation.
     pub parent_pane_id: Option<u64>,
+    pub(crate) parent_owner: Option<crate::broker::principal::PanePrincipal>,
     /// Unspoofable spawner provenance (`"human"`, `"agent:<name>"`, `"team:<team>/<run_id>"`, `"system"`).
     pub spawned_by: Option<String>,
     /// Queued child `agent done` results waiting for this interactive parent pane to become Idle.
@@ -1157,6 +1158,7 @@ impl TerminalPane {
             name_locked: false,
             font_size: default_font_size,
             ephemeral,
+            parent_owner: None,
             parent_pane_id,
             spawned_by,
             pending_child_results: Vec::new(),

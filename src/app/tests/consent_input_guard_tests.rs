@@ -496,7 +496,7 @@ fn file_keychain_recovery() -> (
     let id = monitor
         .file_needs_you(crate::broker::gate::NeedsYouFile {
             kind: crate::broker::gate::NeedsYouKind::Keychain,
-            actor: "host".to_string(),
+            actor: crate::broker::principal::RecordOwner::Host("host".to_string()),
             resource: "permission-mac".to_string(),
             summary: crate::broker::gate::KEYCHAIN_ACCESS_SUMMARY.to_string(),
             expires_at: None,
@@ -511,7 +511,8 @@ fn keychain_resolution(
     id: &str,
 ) -> Option<crate::broker::gate::NeedsYouResolution> {
     monitor
-        .get_needs_you(id)
+        .host_records()
+        .question(id)
         .and_then(|record| record.resolution)
 }
 

@@ -303,8 +303,10 @@ fn screenshot_secret_get_banner_names_the_secret() {
         root: root.path().to_path_buf(),
     };
     let actor = crate::workspace::secrets::SecretActor {
-        kind: crate::broker::ActorType::Agent,
-        id: "pane:4".to_string(),
+        kind: crate::broker::ActorType::Pane,
+        id: crate::broker::principal::PanePrincipal::for_test(4)
+            .actor_id()
+            .to_owned(),
     };
     let store = crate::workspace::secrets::InMemoryKeychain::new();
     let read = crate::workspace::secrets::read_pane_secret(
@@ -354,7 +356,7 @@ fn screenshot_secret_get_banner_names_the_secret() {
     h.harness()
         .key_up_modifiers(egui::Modifiers::NONE, egui::Key::A);
     h.step();
-    assert_eq!(monitor.list_pending().len(), 1);
+    assert_eq!(monitor.host_records().pending().len(), 1);
     h.save_screenshot(&evidence_png!()).expect("render banner");
 }
 
@@ -370,7 +372,7 @@ fn screenshot_keychain_recovery_banner_is_actionable() {
     monitor
         .file_needs_you(crate::broker::gate::NeedsYouFile {
             kind: crate::broker::gate::NeedsYouKind::Keychain,
-            actor: "host".to_string(),
+            actor: crate::broker::principal::RecordOwner::Host("host".to_string()),
             resource: "permission-mac".to_string(),
             summary: crate::broker::gate::KEYCHAIN_ACCESS_SUMMARY.to_string(),
             expires_at: None,

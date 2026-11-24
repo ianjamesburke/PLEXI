@@ -3,13 +3,220 @@
 //!
 //! The host stamps the principal; a guest never supplies it. Its stored form is
 //! the `(actor_type, actor_id)` pair every `GrantRecord` and `ExactBinding`
-//! already carries, so recording it changes no existing row. Instance identity
-//! is the caller's live instance and is traced, not stored: grants stay keyed to
-//! the plugin or agent, and the binding's own `instance_id` keeps today's meaning.
+//! already carries. Pane owners include their terminal lifetime. Named agents
+//! and plugins retain their stable identity across launches.
 
 use std::fmt;
 
+use super::pane_authority::{LivePaneAuthority, PaneIncarnation};
 use super::ActorType;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct PanePrincipal {
+    number: u64,
+    incarnation: PaneIncarnation,
+    stored_id: String,
+}
+
+impl From<PanePrincipal> for String {
+    fn from(owner: PanePrincipal) -> String {
+        owner.stored_id
+    }
+}
+
+impl TryFrom<String> for PanePrincipal {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::from_stored(&value).ok_or("invalid stored pane principal")
+    }
+}
+
+impl PanePrincipal {
+    fn new(number: u64, incarnation: PaneIncarnation) -> Self {
+        let stored_id = format!("pane:{number}#{}", incarnation.as_str());
+        Self {
+            number,
+            incarnation,
+            stored_id,
+        }
+    }
+
+    pub(super) fn from_authority(live: &LivePaneAuthority) -> Self {
+        Self::new(live.pane_id(), PaneIncarnation::from_authority(live))
+    }
+
+    pub(super) fn from_stored(actor_id: &str) -> Option<Self> {
+        let (number, key) = actor_id.strip_prefix("pane:")?.split_once('#')?;
+        let owner = Self::new(number.parse().ok()?, PaneIncarnation::from_stored(key)?);
+        (owner.stored_id == actor_id).then_some(owner)
+    }
+
+    pub(crate) fn number(&self) -> u64 {
+        self.number
+    }
+
+    pub(crate) fn actor_id(&self) -> &str {
+        &self.stored_id
+    }
+
+    pub(crate) fn label(&self) -> &str {
+        self.stored_id
+            .split_once('#')
+            .expect("constructed pane id")
+            .0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(number: u64) -> Self {
+        Self::new(
+            number,
+            PaneIncarnation::from_stored(&uuid::Uuid::new_v4().to_string()).unwrap(),
+        )
+    }
+}
+
+/// Authenticated storage represents a requester by two fields. History whose
+/// fields do not identify a requester stays readable without granting access.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "ActorFields", into = "ActorFields")]
+pub struct StoredActor(StoredIdentity);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StoredIdentity {
+    Requester(Principal),
+    History(ActorType, String),
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ActorFields {
+    actor_type: ActorType,
+    actor_id: String,
+}
+
+impl From<ActorFields> for StoredActor {
+    fn from(fields: ActorFields) -> Self {
+        Principal::from_actor(fields.actor_type, &fields.actor_id, None)
+            .map(Self::from)
+            .unwrap_or_else(|| Self(StoredIdentity::History(fields.actor_type, fields.actor_id)))
+    }
+}
+
+impl From<StoredActor> for ActorFields {
+    fn from(actor: StoredActor) -> Self {
+        Self {
+            actor_type: actor.kind(),
+            actor_id: actor.id().to_owned(),
+        }
+    }
+}
+
+impl From<Principal> for StoredActor {
+    fn from(principal: Principal) -> Self {
+        let principal = match principal {
+            Principal::Plugin(plugin) => Principal::plugin(plugin.plugin_id, None),
+            other => other,
+        };
+        Self(StoredIdentity::Requester(principal))
+    }
+}
+
+impl StoredActor {
+    pub(super) fn unbound() -> Self {
+        Self(StoredIdentity::History(ActorType::System, String::new()))
+    }
+
+    pub(crate) fn kind(&self) -> ActorType {
+        match &self.0 {
+            StoredIdentity::Requester(principal) => principal.actor_type(),
+            StoredIdentity::History(kind, _) => *kind,
+        }
+    }
+
+    pub(crate) fn id(&self) -> &str {
+        match &self.0 {
+            StoredIdentity::Requester(principal) => principal.actor_id(),
+            StoredIdentity::History(_, id) => id,
+        }
+    }
+
+    pub(crate) fn principal(&self) -> Option<&Principal> {
+        match &self.0 {
+            StoredIdentity::Requester(principal) => Some(principal),
+            StoredIdentity::History(..) => None,
+        }
+    }
+
+    pub(crate) fn owner(&self) -> RecordOwner {
+        self.principal()
+            .map(RecordOwner::requester)
+            .unwrap_or_else(|| RecordOwner::Legacy(self.id().to_owned()))
+    }
+}
+
+/// Durable owner of a broker record. Host and legacy labels cannot authorize a requester.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordOwner {
+    Pane(PanePrincipal),
+    Actor { actor_type: ActorType, id: String },
+    Host(String),
+    Legacy(String),
+}
+
+impl RecordOwner {
+    pub fn requester(principal: &Principal) -> Self {
+        match principal {
+            Principal::Pane(pane) => Self::Pane(pane.clone()),
+            _ => Self::Actor {
+                actor_type: principal.actor_type(),
+                id: principal.actor_id().to_owned(),
+            },
+        }
+    }
+
+    pub(crate) fn stored(kind: ActorType, id: &str) -> Self {
+        Principal::from_actor(kind, id, None)
+            .as_ref()
+            .map(Self::requester)
+            .unwrap_or_else(|| Self::Legacy(id.to_owned()))
+    }
+
+    pub(super) fn stored_id(&self) -> &str {
+        match self {
+            Self::Pane(owner) => owner.actor_id(),
+            _ => self.label(),
+        }
+    }
+
+    pub fn pane(&self) -> Option<&PanePrincipal> {
+        match self {
+            Self::Pane(owner) => Some(owner),
+            _ => None,
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Pane(owner) => owner.label(),
+            Self::Actor { id, .. } | Self::Host(id) | Self::Legacy(id) => id,
+        }
+    }
+
+    pub fn serialize_label<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.label())
+    }
+}
+
+impl fmt::Display for RecordOwner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedAgent(String);
 
 /// Stored actor id of the one local user. There is no multi-user behavior.
 pub const LOCAL_USER_ID: &str = "user:local";
@@ -50,8 +257,9 @@ impl PluginInstance {
 pub enum Principal {
     /// The local user. One fixed value today.
     LocalUser,
-    /// A named agent, by its stored actor id (`agent:<id>`, `pane:<n>`, ...).
-    Agent { agent_id: String },
+    /// A named agent. The reserved pane namespace belongs to terminal lifetimes.
+    Agent(NamedAgent),
+    Pane(PanePrincipal),
     /// A plugin instance.
     Plugin(PluginInstance),
     /// Any kernel-identified process outside every pane. One shared
@@ -61,9 +269,15 @@ pub enum Principal {
 }
 
 impl Principal {
-    pub fn agent(agent_id: impl Into<String>) -> Self {
-        Self::Agent {
-            agent_id: agent_id.into(),
+    pub fn agent(agent_id: impl Into<String>) -> Option<Self> {
+        let id = agent_id.into();
+        (!id.is_empty() && !id.starts_with("pane:")).then_some(Self::Agent(NamedAgent(id)))
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Pane(pane) => pane.label(),
+            _ => self.actor_id(),
         }
     }
 
@@ -87,7 +301,8 @@ impl Principal {
     ) -> Option<Self> {
         match actor_type {
             ActorType::User if actor_id == LOCAL_USER_ID => Some(Self::LocalUser),
-            ActorType::Agent => Some(Self::agent(actor_id)),
+            ActorType::Agent => Self::agent(actor_id),
+            ActorType::Pane => PanePrincipal::from_stored(actor_id).map(Self::Pane),
             ActorType::Plugin => Some(Self::plugin(
                 actor_id,
                 instance_id.filter(|pane| *pane != 0),
@@ -104,7 +319,8 @@ impl Principal {
     pub fn actor_type(&self) -> ActorType {
         match self {
             Self::LocalUser => ActorType::User,
-            Self::Agent { .. } => ActorType::Agent,
+            Self::Agent(_) => ActorType::Agent,
+            Self::Pane(_) => ActorType::Pane,
             Self::Plugin(_) => ActorType::Plugin,
             Self::External => ActorType::External,
         }
@@ -114,7 +330,8 @@ impl Principal {
     pub fn actor_id(&self) -> &str {
         match self {
             Self::LocalUser => LOCAL_USER_ID,
-            Self::Agent { agent_id } => agent_id,
+            Self::Agent(agent) => &agent.0,
+            Self::Pane(pane) => pane.actor_id(),
             Self::Plugin(plugin) => &plugin.plugin_id,
             Self::External => EXTERNAL_ID,
         }
@@ -125,7 +342,8 @@ impl fmt::Display for Principal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::LocalUser => f.write_str("user/local"),
-            Self::Agent { agent_id } => write!(f, "agent/{agent_id}"),
+            Self::Agent(agent) => write!(f, "agent/{}", agent.0),
+            Self::Pane(pane) => f.write_str(pane.label()),
             Self::Plugin(PluginInstance {
                 plugin_id,
                 instance_id: Some(instance),
@@ -197,7 +415,8 @@ mod tests {
     fn stored_form_round_trips_for_every_requester() {
         for principal in [
             Principal::LocalUser,
-            Principal::agent("agent:editor"),
+            Principal::agent("agent:editor").expect("named agent"),
+            Principal::Pane(PanePrincipal::for_test(7)),
             Principal::plugin("notes", Some(4)),
         ] {
             let instance = match &principal {
@@ -229,7 +448,7 @@ mod tests {
         use crate::broker::{ActorScope, TargetType};
 
         let tag = uuid::Uuid::new_v4().simple().to_string();
-        let agent = Principal::agent(format!("agent:trace-{tag}"));
+        let agent = Principal::agent(format!("agent:trace-{tag}")).unwrap();
         let sentinel = format!("payload-sentinel-{tag}");
         let input = format!(r#"{{"path":"notes.md","body":"{sentinel}"}}"#);
         let ws = tempfile::tempdir().unwrap();
@@ -258,7 +477,8 @@ mod tests {
             "the trace never carries the payload"
         );
         let pending = monitor
-            .show_pending(&pending_request_id)
+            .host_records()
+            .pending_id(&pending_request_id)
             .expect("pending row");
         assert_eq!(pending.actor_id, agent.actor_id());
     }
@@ -297,6 +517,7 @@ mod tests {
         let encoded = |actor: ActorType| serde_json::to_string(&actor).unwrap();
         assert_eq!(encoded(ActorType::Plugin), "\"app\"");
         assert_eq!(encoded(ActorType::Agent), "\"agent\"");
+        assert_eq!(encoded(ActorType::Pane), "\"pane\"");
         assert_eq!(encoded(ActorType::System), "\"system\"");
         assert_eq!(encoded(ActorType::ManagedPolicy), "\"managed_policy\"");
         assert_eq!(encoded(ActorType::User), "\"user\"");

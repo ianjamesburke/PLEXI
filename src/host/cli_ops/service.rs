@@ -385,7 +385,12 @@ impl CliOpService {
             who.pane_id,
             ids.len()
         );
-        env.monitor.retire_pending_asks(&ids);
+        env.monitor
+            .records_for(&crate::broker::principal::Principal::plugin_in_pane(
+                &who.plugin_id,
+                who.pane_id,
+            ))
+            .retire_pending(&ids);
     }
 
     /// Advance parked and running requests. Safe to call every pass.
@@ -399,7 +404,14 @@ impl CliOpService {
                 Stage::Parked {
                     pending_id,
                     deadline,
-                } => match env.monitor.approval_resolution(pending_id) {
+                } => match env
+                    .monitor
+                    .records_for(&crate::broker::principal::Principal::plugin_in_pane(
+                        &who.plugin_id,
+                        who.pane_id,
+                    ))
+                    .decision(pending_id)
+                {
                     Some(ApprovalChoice::Deny | ApprovalChoice::DenyAlways) => {
                         Some(Resolved::Denied)
                     }
@@ -509,14 +521,22 @@ impl CliOpService {
             executable: &admitted.identity.path,
             executable_sha256: &admitted.identity.sha256,
             authority: &admitted.decl.authority,
-            changed_since_approval: env.monitor.list_entries().iter().any(|entry| {
-                entry.kind == "allow"
-                    && entry.actor_id == who.plugin_id
-                    && entry.tool == tool
-                    && entry.resource_id.as_deref().is_some_and(|id| {
-                        id != resource && id.starts_with(&format!("{operation_id}#"))
-                    })
-            }),
+            changed_since_approval: env
+                .monitor
+                .records_for(&crate::broker::principal::Principal::plugin_in_pane(
+                    &who.plugin_id,
+                    who.pane_id,
+                ))
+                .entries()
+                .iter()
+                .any(|entry| {
+                    entry.kind == "allow"
+                        && entry.actor_id == who.plugin_id
+                        && entry.tool == tool
+                        && entry.resource_id.as_deref().is_some_and(|id| {
+                            id != resource && id.starts_with(&format!("{operation_id}#"))
+                        })
+                }),
         }
         .text();
         let admission = env.monitor.admit_cli_operation(
@@ -558,7 +578,10 @@ impl CliOpService {
                 // revoked grant stops here.
                 env.monitor
                     .note_use(
-                        &who.plugin_id,
+                        &crate::broker::principal::RecordOwner::stored(
+                            crate::broker::ActorType::Plugin,
+                            &who.plugin_id,
+                        ),
                         &call_id,
                         &grant_id,
                         &fingerprint,
@@ -576,7 +599,11 @@ impl CliOpService {
                 env.monitor.consume_once(&grant_id, None);
                 let running = self.launch(who, env, &admitted).map_err(|(c, m)| {
                     let _ = env.monitor.note_outcome(
-                        &who.plugin_id,
+                        None,
+                        &crate::broker::principal::RecordOwner::stored(
+                            crate::broker::ActorType::Plugin,
+                            &who.plugin_id,
+                        ),
                         &call_id,
                         &grant_id,
                         &fingerprint,
@@ -924,7 +951,11 @@ fn finish(
         ),
     };
     if let Err(error) = env.monitor.note_outcome(
-        &running.actor,
+        None,
+        &crate::broker::principal::RecordOwner::stored(
+            crate::broker::ActorType::Plugin,
+            &running.actor,
+        ),
         &running.call_id,
         &running.grant_id,
         &running.fingerprint,

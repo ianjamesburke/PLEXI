@@ -21,8 +21,7 @@
 //! each one to the trusted pane id + workspace root while building that pane's
 //! environment. Requests never accept a client-provided workspace path.
 //!
-//! Identity: calls and subscriptions are stamped `mcp:pane:<id>` from the
-//! authenticated credential, never from tool arguments.
+//! The authenticated pane credential supplies the same lifetime principal used on the command socket.
 
 use crate::app::ui_mailbox::UiMailbox;
 use crate::host::event_subscriptions::{HostSubscribeReply, HostSubscribeRequest};
@@ -421,6 +420,10 @@ fn handle_connection(
         .map(|a| a.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
     crate::mcp_http::handle_connection(stream, authenticate, |json, caller| {
+        let Some(principal) = caller.principal() else {
+            log::info!("host_mcp: refused bearer without a requester principal");
+            return serde_json::json!({"jsonrpc":"2.0","id":json.get("id"),"error":{"code":-32001,"message":"missing requester"}});
+        };
         let dispatcher = crate::plexi_ai::tool_dispatch::ToolDispatcher::from_namespaced_registry(
             crate::plexi_ai::tool_dispatch::DispatchScope {
                 // The pane's ceiling, from the grant its bearer carries. A
@@ -428,7 +431,7 @@ fn handle_connection(
                 posture: caller.ceiling().ok().flatten(),
                 ..crate::plexi_ai::tool_dispatch::DispatchScope::new(
                     caller.pane_id,
-                    format!("mcp:pane:{}", caller.pane_id),
+                    principal,
                     caller.workspace_root.clone(),
                     caller.context_id,
                 )
@@ -500,6 +503,15 @@ fn handle_connection(
 }
 
 impl McpCaller {
+    fn principal(&self) -> Option<crate::broker::principal::Principal> {
+        if self.run_id.is_some() {
+            return crate::broker::principal::Principal::agent(self.actor_id.as_ref()?);
+        }
+        Some(crate::broker::principal::Principal::Pane(
+            self.authority.as_ref()?.principal(),
+        ))
+    }
+
     /// The pane ceiling every route of this caller is bounded by: the
     /// posture of the grant its bearer (or run token) acts for. `Ok(None)`
     /// for a baseline grant or a run with no pane; a sealed grant refuses.
@@ -605,6 +617,8 @@ fn call_route(
             let input_json = serde_json::to_string(arguments)
                 .map_err(|error| format!("serialize tool arguments: {error}"))?;
             let auth = crate::agent::runs::McpAuth {
+                acting_for: caller.authority.as_ref().map(|live| live.principal()),
+                principal: caller.principal().ok_or("missing requester")?,
                 workspace: caller.workspace_root.clone(),
                 run_id: caller.run_id.clone(),
                 actor_id: caller.actor_id.clone(),
@@ -646,7 +660,8 @@ fn tool_permissions(
         PermissionsOp::Allow => "allow",
     };
     if op == "list" {
-        let entries = monitor.list_entries();
+        let principal = caller.principal().ok_or("missing requester")?;
+        let entries = monitor.records_for(&principal).entries();
         log::info!(
             "host_mcp: permissions_list count={} pane={}",
             entries.len(),
@@ -663,7 +678,9 @@ fn tool_permissions(
         id,
         op,
         &crate::broker::gate::PermissionCaller {
-            actor_id: format!("mcp:pane:{}", caller.pane_id),
+            owner: crate::broker::principal::RecordOwner::requester(
+                &caller.principal().ok_or("missing requester")?,
+            ),
             revoke_scope: crate::broker::gate::RevokeScope::Own,
         },
     );
@@ -741,7 +758,8 @@ fn tool_subscribe_and_wait(
     // The authenticated pane identity owns both broker provenance and workspace
     // scope. A unique delivery suffix prevents concurrent waiters from
     // cross-talking or tearing each other down.
-    let actor_id = format!("mcp:pane:{}", caller.pane_id);
+    let principal = caller.principal().ok_or("missing requester")?;
+    let actor_id = principal.actor_id().to_owned();
     let delivery_id = format!("{actor_id}:{}", uuid::Uuid::new_v4());
     let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel::<HostSubscribeReply>(1);
     let req = HostSubscribeRequest {
@@ -752,8 +770,7 @@ fn tool_subscribe_and_wait(
         resource_id: None,
         from_pane_id: Some(caller.pane_id),
         subscriber_override: Some(delivery_id),
-        subscriber_type_override: None,
-        broker_actor_override: Some(actor_id),
+        principal,
         workspace_root_override: Some(caller.workspace_root.clone()),
         subscriber_authority: match &caller.authority {
             Some(authority) => crate::host::event_subscriptions::SubscriberAuthority::Pane(
@@ -947,19 +964,19 @@ mod tests {
     fn start_test_server(grant_target: Option<&str>) -> (u16, String, std::path::PathBuf) {
         static NEXT_PANE_ID: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(900_000_000);
-        use crate::broker::{ActorScope, ActorType, GrantDuration, GrantRecord, GrantSource};
+        use crate::broker::{ActorScope, GrantDuration, GrantRecord, GrantSource};
         let pane_id = NEXT_PANE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let actor_id = format!("mcp:pane:{pane_id}");
         let workspace_root = PathBuf::from(format!("/workspace/host-mcp-test-{pane_id}"));
         let (tx, rx) = UiMailbox::<HostSubscribeRequest>::channel(
             std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new()),
             "host_mcp_test",
         );
+        let token = register_pane_credential_for_test(pane_id, 1, workspace_root.clone());
+        let actor = authenticate(&token).unwrap().principal().unwrap();
         let mut store = crate::broker::GrantStore::default();
         if let Some(target) = grant_target {
             store.record(GrantRecord::event_stream_allow(
-                ActorType::Agent,
-                &actor_id,
+                &actor,
                 ActorScope::User,
                 target,
                 &workspace_root,
@@ -987,7 +1004,6 @@ mod tests {
         let port = start_host_mcp_server(tx, &profile).unwrap();
         // The accept thread keeps using this directory after the test returns.
         std::mem::forget(dir);
-        let token = register_pane_credential_for_test(pane_id, 1, workspace_root);
         (port, token, profile)
     }
 
@@ -1219,13 +1235,17 @@ mod tests {
 
         {
             use crate::broker::{
-                ActorScope, ActorType, Decision, ExactBinding, GrantDuration, GrantRecord,
-                GrantSource, ResourceScope, TargetType,
+                ActorScope, Decision, ExactBinding, GrantDuration, GrantRecord, GrantSource,
+                ResourceScope, TargetType,
             };
             let args = r#"{"value":7}"#;
             let binding = ExactBinding {
-                actor_type: ActorType::Plugin,
-                actor_id: format!("mcp:pane:{caller_pane}"),
+                agent_run: None,
+                actor: authenticate(&caller_token)
+                    .unwrap()
+                    .principal()
+                    .unwrap()
+                    .into(),
                 actor_scope: ActorScope::User,
                 trust_origin: "host".to_string(),
                 workspace_root: workspace_a.clone(),
@@ -1252,7 +1272,12 @@ mod tests {
                     "grant-mcp-echo",
                 ));
         }
-        let expected_caller_id = format!("mcp:pane:{caller_pane}");
+        let expected_caller_id = authenticate(&caller_token)
+            .unwrap()
+            .principal()
+            .unwrap()
+            .actor_id()
+            .to_owned();
         let responder = std::thread::spawn(move || {
             let line = provider_rx
                 .recv_timeout(Duration::from_secs(1))

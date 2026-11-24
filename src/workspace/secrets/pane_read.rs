@@ -169,8 +169,10 @@ mod tests {
         store.set("plexi:user:SHARED_0788", "global-canary-0788").unwrap();
         let monitor = PermissionMonitor::ephemeral();
         let actor = SecretActor {
-            kind: crate::broker::ActorType::Agent,
-            id: "pane:3".to_string(),
+            kind: crate::broker::ActorType::Pane,
+            id: crate::broker::principal::PanePrincipal::for_test(3)
+                .actor_id()
+                .to_owned(),
         };
         let root = tempfile::tempdir().unwrap();
         let scope = SecretScope::Workspace {
@@ -245,7 +247,7 @@ mod tests {
         let read = read_folder_secret(&monitor, &store, &actor, "OLD_DENY", &path).unwrap();
         assert!(matches!(read, ReadResult::Denied), "{read:?}");
         assert_eq!(take_test_store_calls(), 0);
-        assert!(monitor.open_needs_you().is_empty());
+        assert!(monitor.host_records().open().is_empty());
     }
 
     #[test]
@@ -302,7 +304,7 @@ mod tests {
         assert!(matches!(read.result, ReadResult::NotFound));
         assert_eq!(take_test_store_calls(), 1);
         assert!(read.approved.is_some());
-        assert!(monitor.open_needs_you().is_empty());
+        assert!(monitor.host_records().open().is_empty());
     }
 
     #[test]
@@ -310,14 +312,24 @@ mod tests {
         let store = InMemoryKeychain::new();
         let monitor = PermissionMonitor::ephemeral();
         let actor = SecretActor {
-            kind: crate::broker::ActorType::Agent,
-            id: "pane:3".to_string(),
+            kind: crate::broker::ActorType::Pane,
+            id: crate::broker::principal::PanePrincipal::for_test(3)
+                .actor_id()
+                .to_owned(),
         };
         let scope = SecretScope::Workspace {
             id: "host".to_string(),
             root: PathBuf::from("/tmp"),
         };
-        assert!(read_pane_secret(&monitor, &store, &actor, "permission-mac", &scope, Path::new("/tmp")).is_err());
-        assert!(monitor.list_pending().is_empty());
+        assert!(read_pane_secret(
+            &monitor,
+            &store,
+            &actor,
+            "permission-mac",
+            &scope,
+            Path::new("/tmp")
+        )
+        .is_err());
+        assert!(monitor.host_records().pending().is_empty());
     }
 }

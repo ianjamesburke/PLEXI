@@ -191,7 +191,7 @@ impl PaneCaller {
     /// The principal grants are stored under: the key the pane's call
     /// credential is issued as.
     pub fn principal(&self) -> Principal {
-        Principal::agent(format!("pane:{}", self.terminal_pane))
+        Principal::Pane(self.authority.principal())
     }
 }
 
@@ -221,7 +221,7 @@ impl SocketCaller {
     /// caller, which acts as nobody.
     pub fn principal(&self) -> Option<Principal> {
         match self {
-            Self::Pane(pane) => Some(pane.principal()),
+            Self::Pane(pane) => (!pane.authority.is_revoked()).then(|| pane.principal()),
             Self::External(_) => Some(Principal::External),
             Self::Unidentified(_) => None,
         }

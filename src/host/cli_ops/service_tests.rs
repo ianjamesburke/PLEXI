@@ -361,9 +361,15 @@ impl Rig {
     /// The asked operation is no longer approvable: its ask is gone, it is
     /// closed as retired, and approving it fails.
     fn assert_retired(&self, id: &str) {
-        assert!(self.monitor.show_pending(id).is_none(), "ask {id} is gone");
+        assert!(
+            self.monitor.host_records().pending_id(id).is_none(),
+            "ask {id} is gone"
+        );
         assert_eq!(
-            self.monitor.get_needs_you(id).and_then(|r| r.resolution),
+            self.monitor
+                .host_records()
+                .question(id)
+                .and_then(|r| r.resolution),
             Some(crate::broker::gate::NeedsYouResolution::Retired)
         );
         assert!(
@@ -392,7 +398,8 @@ impl Rig {
 
     fn pending(&self) -> Vec<crate::broker::gate::PendingView> {
         self.monitor
-            .list_pending()
+            .host_records()
+            .pending()
             .into_iter()
             .filter(|p| p.tool.starts_with("cli.op."))
             .collect()
@@ -573,7 +580,10 @@ fn cancelling_one_of_two_identical_requests_keeps_their_shared_ask() {
     assert_eq!(pending.len(), 1, "identical requests share one ask");
     let shared = pending[0].pending_request_id.clone();
     assert_eq!(code_of(&rig.cancel("one")[0]), "cancelled");
-    assert!(rig.monitor.show_pending(&shared).is_some(), "still open");
+    assert!(
+        rig.monitor.host_records().pending_id(&shared).is_some(),
+        "still open"
+    );
     rig.decide(ApprovalChoice::Once);
     let reply = rig.replies(1).remove(0);
     assert_eq!(reply["request_id"], "two", "{reply}");
@@ -948,7 +958,8 @@ fn remembered_consent_is_rechecked_on_every_call_and_revocation_blocks() {
 
     let entry = rig
         .monitor
-        .list_entries()
+        .host_records()
+        .entries()
         .into_iter()
         .find(|e| e.tool == "cli.op.read" && e.kind == "allow")
         .expect("remembered grant is listed in the Permissions inventory");
@@ -1105,7 +1116,16 @@ fn failed_grant_persistence_launches_nothing() {
         // A sealed profile, so an unreadable key makes the next save fail.
         let monitor = PermissionMonitor::open_profile(profile.path()).unwrap();
         monitor.store().try_save().expect("seal profile");
-        monitor.note_denial("actor", "c1", "res", "op", "denied");
+        monitor.note_denial(
+            &crate::broker::principal::RecordOwner::stored(
+                crate::broker::ActorType::Agent,
+                "actor",
+            ),
+            "c1",
+            "res",
+            "op",
+            "denied",
+        );
         crate::broker::integrity::mark_clean_shutdown(profile.path());
     }
     let mut rig = Rig::new();

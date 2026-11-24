@@ -228,7 +228,10 @@ pub(crate) fn gate(monitor: Option<&PermissionMonitor>, request: &Request<'_>) -
             ..
         } => {
             if let Err(error) = monitor.note_use(
-                request.plugin_id,
+                &crate::broker::principal::RecordOwner::stored(
+                    crate::broker::ActorType::Plugin,
+                    request.plugin_id,
+                ),
                 request.call_id,
                 &grant_id,
                 &fingerprint,
@@ -288,7 +291,8 @@ fn deny_entry_id(monitor: &PermissionMonitor, request: &Request<'_>) -> String {
         .to_string();
     let scope = request.host_scope();
     let denials: Vec<_> = monitor
-        .list_entries()
+        .records_for(&request.principal())
+        .entries()
         .into_iter()
         .filter(|entry| {
             entry.kind == "deny"
@@ -343,11 +347,12 @@ impl PaneConsent {
     }
 
     /// The first ask whose broker pending row still exists, with that row.
-    pub(crate) fn prompt(&self) -> Option<(&Waiting, PendingView)> {
+    pub(crate) fn prompt(&self, principal: &Principal) -> Option<(&Waiting, PendingView)> {
         let monitor = self.monitor.as_deref()?;
         self.waiting.iter().find_map(|waiting| {
             monitor
-                .show_pending(&waiting.pending_id)
+                .records_for(principal)
+                .pending_id(&waiting.pending_id)
                 .map(|view| (waiting, view))
         })
     }

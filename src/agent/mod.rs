@@ -270,6 +270,16 @@ fn parse_harness_cli_name(field: &str, raw: &str) -> Result<String, String> {
     }
 }
 
+fn check_named_agent_id(id: &str, file: &std::path::Path) -> Result<(), String> {
+    if id.starts_with("pane:") {
+        return Err(format!(
+            "{}: agent id '{id}' uses the reserved pane: prefix. Please rename the agent.",
+            file.display()
+        ));
+    }
+    Ok(())
+}
+
 impl AgentDefinition {
     /// Parse an agent from raw `AGENT.md` + `settings.toml` contents.
     /// Required fields fail fast with errors naming the field; nothing is
@@ -293,6 +303,8 @@ impl AgentDefinition {
         if settings.agent.id.trim().is_empty() {
             return Err("settings.toml: [agent] id must be non-empty".to_string());
         }
+        let directory = path.as_deref().unwrap_or_else(|| std::path::Path::new(""));
+        check_named_agent_id(&settings.agent.id, &directory.join("settings.toml"))?;
         if settings.agent.display_name.trim().is_empty() {
             return Err("settings.toml: [agent] display_name must be non-empty".to_string());
         }
@@ -1287,6 +1299,10 @@ impl AgentHost {
     /// is refused — subscriptions always need an explicit user grant. The
     /// agent is attached either way; without subscriptions it sees nothing.
     pub fn attach(&mut self, def: AgentDefinition) {
+        let Some(principal) = crate::broker::principal::Principal::agent(&def.id) else {
+            log::info!("agent: refused reserved requester id");
+            return;
+        };
         let mut subscription_ids = Vec::new();
         for sub in &def.subscriptions {
             // Subscriptions deliberately admit WITHOUT the agent's own
@@ -1298,7 +1314,7 @@ impl AgentHost {
                 None,
                 Some(&self.workspace_root),
                 &sub.app,
-                &crate::broker::principal::Principal::agent(&def.id),
+                &principal,
                 ActorScope::User,
                 None,
                 &sub.events,
@@ -1469,8 +1485,7 @@ impl AgentHost {
         let mut dispatcher = ToolDispatcher::from_registry(
             crate::plexi_ai::tool_dispatch::DispatchScope {
                 caller_pane_id: 0,
-                caller_plugin_id: format!("agent:{}", agent.def.id),
-                actor_type: ActorType::Agent,
+                principal: crate::broker::principal::Principal::agent(format!("agent:{}", agent.def.id)).expect("namespaced agent id"),
                 actor_scope: ActorScope::User,
                 workspace_root: self.workspace_root.clone(),
                 context_id: self.context_id,
@@ -2181,6 +2196,19 @@ default_tier = "low"
     }
 
     #[test]
+    fn reserved_pane_agent_definition_names_file_id_and_fix() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.toml");
+        std::fs::write(dir.path().join("AGENT.md"), "Named agent").unwrap();
+        std::fs::write(&file, SETTINGS.replace("chess-opponent", "pane:7")).unwrap();
+        let error = AgentDefinition::load_dir(dir.path(), AgentSource::Workspace).unwrap_err();
+        for expected in ["pane:7", file.to_str().unwrap(), "rename the agent"] {
+            assert!(error.contains(expected), "{error}");
+        }
+        assert!(crate::broker::principal::Principal::agent("pane:7").is_none());
+    }
+
+    #[test]
     fn load_dir_reads_agent_files_and_load_workspace_skips_broken() {
         let ws = tempfile::tempdir().unwrap();
         let agents_dir = workspace_agents_dir(ws.path());
@@ -2216,7 +2244,7 @@ default_tier = "low"
     /// and switching away detaches them and removes their subscriptions.
     #[test]
     fn reload_workspace_attaches_and_detaches_agents() {
-        use crate::broker::{ActorScope, ActorType, GrantDuration, GrantRecord, GrantSource};
+        use crate::broker::{ActorScope, GrantDuration, GrantRecord, GrantSource};
 
         let ws = tempfile::tempdir().unwrap();
         let agent_dir = ws
@@ -2245,8 +2273,7 @@ default_tier = "low"
             "game.ended",
         ] {
             host.monitor.store().record(GrantRecord::event_stream_allow(
-                ActorType::Agent,
-                "chess-opponent",
+                &crate::broker::principal::Principal::agent("chess-opponent").unwrap(),
                 ActorScope::User,
                 &format!("chess::{event}"),
                 ws.path(),
@@ -2324,8 +2351,7 @@ default_tier = "low"
         let mut played = None;
         for event in events {
             let grant = GrantRecord::event_stream_allow(
-                ActorType::Agent,
-                "chess-opponent",
+                &crate::broker::principal::Principal::agent("chess-opponent").unwrap(),
                 ActorScope::User,
                 &format!("chess::{event}"),
                 ws.path(),
@@ -2387,7 +2413,7 @@ default_tier = "low"
     fn reload_workspace_keeps_unsaved_scope_allows() {
         use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
         use crate::broker::{
-            ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, TargetType,
+            ActorScope, Decision, GrantDuration, GrantRecord, GrantSource, TargetType,
         };
 
         let profile = tempfile::tempdir().unwrap();
@@ -2398,8 +2424,8 @@ default_tier = "low"
         host.grants_dir = Some(profile.path().to_path_buf());
         host.monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
         let binding = crate::broker::ExactBinding {
-            actor_type: ActorType::Agent,
-            actor_id: "agent:lead".to_string(),
+            agent_run: None,
+            actor: crate::broker::principal::Principal::agent("agent:lead").unwrap().into(),
             actor_scope: ActorScope::Workspace,
             trust_origin: "host".to_string(),
             workspace_root: ws.path().to_path_buf(),
@@ -2431,7 +2457,7 @@ default_tier = "low"
             call_id: "call_list",
             tool: "agents.list",
             input_json: "{}",
-            principal: &crate::broker::principal::Principal::agent("agent:lead"),
+            principal: &crate::broker::principal::Principal::agent("agent:lead").expect("named agent"),
             actor_scope: ActorScope::Workspace,
             trust_origin: "host",
             workspace_root: ws.path(),

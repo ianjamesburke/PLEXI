@@ -603,7 +603,7 @@ pub(crate) fn seed_plugin_capability(
 /// True when `materialize_*` minted an allow row from the declaration alone.
 pub(crate) fn manifest_minted(monitor: &PermissionMonitor, plugin_id: &str, id: &str) -> bool {
     monitor.store().records().iter().any(|record| {
-        record.actor_id == plugin_id
+        record.actor.id() == plugin_id
             && record.target_id == id
             && record.decision == Decision::Allow
             && record.source == GrantSource::Workspace
@@ -800,6 +800,7 @@ fn agent_adapter_admission_matrix() {
     let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
     let ws = tempfile::tempdir().unwrap();
     let ws = ws.path();
+    let pane = super::principal::Principal::Pane(super::principal::PanePrincipal::for_test(4));
     let checked = verify(
         Runtime::Agent,
         &[
@@ -817,32 +818,32 @@ fn agent_adapter_admission_matrix() {
                 crate::workspace::secrets::SecretScope::Folder { path: ws.into() }
             };
             let secret_input = secret_scope.input(tool, "MATRIX", None).to_string();
-            let (target_type, actor_scope, actor_id, package_id, input) = match family {
+            let (target_type, actor_scope, principal, package_id, input) = match family {
                 Family::Secrets => (
                     TargetType::Secret,
                     ActorScope::User,
-                    "pane:4",
+                    pane.clone(),
                     "",
                     secret_input.as_str(),
                 ),
                 Family::FsWrite => (
                     TargetType::HostTool,
                     ActorScope::User,
-                    "agent:editor",
+                    super::principal::Principal::agent("agent:editor").unwrap(),
                     "",
                     r#"{"path":"notes.md","edit_fingerprint":"e1"}"#,
                 ),
                 Family::Panes => (
                     TargetType::Capability,
                     ActorScope::Workspace,
-                    "pane:4",
+                    pane.clone(),
                     "",
                     r#"{"pane_id":7,"submit":true,"paste":false,"text_fingerprint":"t1","operation_id":"op-1"}"#,
                 ),
                 Family::PluginTools => (
                     TargetType::PluginConnector,
                     ActorScope::User,
-                    "agent:caller",
+                    super::principal::Principal::agent("agent:caller").unwrap(),
                     "probe",
                     "{}",
                 ),
@@ -854,7 +855,7 @@ fn agent_adapter_admission_matrix() {
                         call_id: "call-1",
                         tool,
                         input_json: input,
-                        principal: &super::principal::Principal::agent(actor_id),
+                        principal: &principal,
                         actor_scope,
                         trust_origin: if tool == "secret.read" {
                             super::SECRET_SOCKET_ORIGIN
@@ -885,7 +886,11 @@ fn subscriber(runtime: Runtime) -> (ActorType, &'static str) {
     match runtime {
         Runtime::Python => (ActorType::Plugin, "python.subscriber"),
         Runtime::Wasm => (ActorType::Plugin, "wasm.subscriber"),
-        Runtime::Agent => (ActorType::Agent, "pane:4"),
+        Runtime::Agent => {
+            static SUBSCRIBER: std::sync::LazyLock<super::principal::PanePrincipal> =
+                std::sync::LazyLock::new(|| super::principal::PanePrincipal::for_test(4));
+            (ActorType::Pane, SUBSCRIBER.actor_id())
+        }
     }
 }
 
@@ -898,8 +903,7 @@ fn stream_grant(
 ) -> GrantRecord {
     let (actor_type, actor_id) = subscriber(runtime);
     GrantRecord::event_stream_allow(
-        actor_type,
-        actor_id,
+        &crate::broker::principal::Principal::from_actor(actor_type, actor_id, None).unwrap(),
         ActorScope::User,
         target,
         ws,
@@ -974,8 +978,8 @@ fn observe_stream(runtime: Runtime, ws: &Path, target: &str, state: GrantState) 
         GrantState::Denied => {
             let (actor_type, actor_id) = subscriber(runtime);
             let binding = ExactBinding::event_stream(
-                actor_type,
-                actor_id,
+                &crate::broker::principal::Principal::from_actor(actor_type, actor_id, None)
+                    .unwrap(),
                 ActorScope::User,
                 target,
                 ws,

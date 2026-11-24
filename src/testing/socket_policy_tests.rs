@@ -52,15 +52,7 @@ pub(crate) fn send(
     let token = crate::rpc::response_file("socket-policy-test", "json");
     request["response_file"] = serde_json::json!(token);
     let line = request.to_string();
-    let (mut server, client) = std::os::unix::net::UnixStream::pair().unwrap();
-    crate::app::handle_socket_line_in(
-        &crate::config::config_dir(),
-        &line,
-        &h.ipc_tx,
-        peer.as_ref(),
-        &mut server,
-    );
-    drop(server);
+    let client = open_request(h, &line, peer.as_ref());
     h.run_frames(2);
     let reply = read_client(client, &line);
     assert!(
@@ -68,6 +60,16 @@ pub(crate) fn send(
         "the reply took the file fallback: {line}"
     );
     reply
+}
+
+fn open_request(
+    h: &HostHarness,
+    line: &str,
+    peer: Option<&PeerWitness>,
+) -> std::os::unix::net::UnixStream {
+    let (mut server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+    crate::app::handle_socket_line_in(h.profile_dir(), line, &h.ipc_tx, peer, &mut server);
+    client
 }
 
 fn pane_witness(h: &HostHarness, pane: u64) -> PeerWitness {
@@ -163,7 +165,10 @@ fn a_socket_caller_cannot_answer_a_question() {
     }
     let monitor =
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
-    assert!(monitor.get_needs_you(&id).is_some_and(|item| item.answer.is_none()));
+    assert!(monitor
+        .host_records()
+        .question(&id)
+        .is_some_and(|item| item.answer.is_none()));
 }
 
 /// Inventory 23: the asker is the classified caller, never a payload actor.
@@ -179,6 +184,205 @@ fn a_question_is_asked_as_the_caller_not_the_payload_actor() {
         Some(peer),
     );
     assert_eq!(asked["item"]["actor"], format!("pane:{pane}"), "{asked}");
+}
+
+#[test]
+fn reused_pane_number_socket_questions_and_permission_observations_are_private() {
+    use serde_json::{json, Value};
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+    let peer = pane_witness(&h, pane);
+    let api = |h: &mut HostHarness, op: &str, payload: Value| {
+        send(
+            h,
+            json!({"type":"needs_you_api","op":op,"payload":payload}),
+            Some(peer.clone()),
+        )
+    };
+    let ask = json!({"question":"Review?", "session_id":"same-session","run_tag":"same-op","correlation_id":"same-op"});
+    let write = json!({"type":"assistant_host_tool","name":"host.files.write",
+        "input_json":json!({"path":h.workspace_root().join("probe"),"content":"same"}).to_string()});
+    let permission = |h: &mut HostHarness| {
+        send(
+            h,
+            json!({"type":"list_permission_requests"}),
+            Some(peer.clone()),
+        )
+    };
+    let first = api(&mut h, "ask", ask.clone())["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(api(&mut h, "ask", ask.clone())["id"], first);
+    let _ = send(&mut h, write.clone(), Some(peer.clone()));
+    let first_pending = monitor
+        .host_records()
+        .pending()
+        .into_iter()
+        .find(|row| row.tool == "host.files.write")
+        .unwrap()
+        .pending_request_id;
+    assert!(permission(&mut h).to_string().contains(&first_pending));
+    let first_question = monitor.host_records().question(&first).unwrap();
+    let first_run = monitor.host_records().run(&first).unwrap();
+    let first_audit = monitor
+        .records_for(&crate::broker::principal::Principal::Pane(
+            h.app.pane_principal(pane).unwrap(),
+        ))
+        .audit();
+    assert!(!first_audit.is_empty());
+    let terminal = h.app.windows[0]
+        .panes
+        .get_mut(&pane)
+        .unwrap()
+        .terminal_incarnation_mut()
+        .unwrap();
+    terminal.replace_grant_for_test(terminal.authority().unwrap().grant().clone());
+    for op in ["show", "reconcile", "complete"] {
+        let foreign = api(&mut h, op, json!({"id":first}));
+        let missing = api(&mut h, op, json!({"id":"missing-id"}));
+        assert_eq!(
+            foreign.to_string().replace(&first, "missing-id"),
+            missing.to_string(),
+            "{op}"
+        );
+    }
+
+    for id in [&first, &first_pending] {
+        let resolve = |h: &mut HostHarness, id: &str| {
+            send(
+                h,
+                json!({"type":"resolve_needs_you","id":id,"approve":false}),
+                Some(peer.clone()),
+            )
+        };
+        assert_eq!(
+            resolve(&mut h, id).to_string().replace(id, "missing-id"),
+            resolve(&mut h, "missing-id").to_string()
+        );
+    }
+    let second = api(&mut h, "ask", ask)["id"].as_str().unwrap().to_owned();
+    assert_ne!(first, second);
+    let listed = send(&mut h, json!({"type":"list_needs_you"}), Some(peer.clone()));
+    assert!(listed.to_string().contains(&second), "{listed}");
+    assert!(!listed.to_string().contains(&first), "{listed}");
+    assert_eq!(
+        api(&mut h, "show", json!({"id":"same-op"}))["continuation"]["needs_you_id"],
+        second
+    );
+    assert_eq!(
+        api(&mut h, "complete", json!({"id":"same-op","receipt":"B"}))["ok"],
+        true
+    );
+    let _ = send(&mut h, write, Some(peer.clone()));
+    let seen = permission(&mut h);
+    assert_eq!(seen["pending"].as_array().unwrap().len(), 1, "{seen}");
+    assert!(!seen.to_string().contains(&first_pending), "{seen}");
+    let own = monitor.records_for(&crate::broker::principal::Principal::Pane(
+        h.app.pane_principal(pane).unwrap(),
+    ));
+    assert_eq!(seen["audit"], serde_json::to_value(own.audit()).unwrap());
+    assert!(!own.audit().is_empty());
+    for fact in first_audit {
+        assert!(monitor
+            .host_records()
+            .audit()
+            .iter()
+            .any(|row| row.actor == first_question.actor && row.call_id == fact.call_id));
+        assert!(!seen["audit"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["call_id"] == fact.call_id));
+    }
+    let done = send(
+        &mut h,
+        json!({"type":"agent_done","pane_id":pane,"summary":"done"}),
+        Some(peer),
+    );
+    assert_eq!(done["ok"], true, "{done}");
+    assert!(monitor
+        .host_records()
+        .question(&second)
+        .unwrap()
+        .resolution
+        .is_some());
+    assert_eq!(
+        monitor.host_records().question(&first).unwrap(),
+        first_question
+    );
+    assert_eq!(monitor.host_records().run(&first).unwrap(), first_run);
+    assert!(monitor.host_records().pending_id(&first_pending).is_some());
+}
+
+#[test]
+fn reused_pane_number_send_requires_a_new_approval_and_ignores_a_late_submit() {
+    use crate::broker::gate::{ApprovalChoice, ContinuationState, PermissionMonitor};
+    use serde_json::json;
+    let mut h = HostHarness::new();
+    let caller = h.add_focused_terminal();
+    let target = h.add_focused_terminal();
+    h.terminal_backend(target).enable_input_tap();
+    let peer = pane_witness(&h, caller);
+    let mon = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+    let dispatch = |h: &mut HostHarness, id: &str, submit: bool| {
+        let response = crate::rpc::response_file_in(h.profile_dir(), "send-reuse", "json");
+        let line = json!({"type":"send_to_pane","pane_id":target,
+            "text":"same","submit":submit,"operation_id":id,"response_file":response})
+        .to_string();
+        let client = open_request(h, &line, Some(&peer));
+        h.hidden_frame();
+        client
+    };
+    let first = dispatch(&mut h, "same-op", false);
+    let approval = h.app.pending_send_approvals[0].pending_request_id.clone();
+    mon.approve_pending(&approval, ApprovalChoice::Always)
+        .unwrap();
+    h.hidden_frame();
+    let reply = read_client(first, "first send");
+    assert_eq!(reply["ok"], true, "{reply}");
+    let delivered = mon.host_records().run(&approval).unwrap();
+    assert_eq!(delivered.state, ContinuationState::Completed);
+    assert_eq!(h.terminal_backend(target).take_input_tap(), b"same");
+    let late = dispatch(&mut h, "late-submit", true);
+    if let Some(wait) = h.app.pending_send_approvals.first() {
+        mon.approve_pending(&wait.pending_request_id, ApprovalChoice::Once)
+            .unwrap();
+        h.hidden_frame();
+    }
+    assert_eq!(h.terminal_backend(target).take_input_tap(), b"same");
+    let unknown = mon.host_records().run("late-submit").unwrap();
+    let terminal = h.app.windows[0]
+        .panes
+        .get_mut(&caller)
+        .unwrap()
+        .terminal_incarnation_mut()
+        .unwrap();
+    terminal.replace_grant_for_test(terminal.authority().unwrap().grant().clone());
+    h.hidden_frame();
+    let reply = read_client(late, "delayed submit after the sender was replaced");
+    assert_eq!(reply["error_code"], "outcome_unknown");
+    assert!(h.terminal_backend(target).take_input_tap().is_empty());
+    assert_eq!(mon.host_records().run(&unknown.run_id).unwrap(), unknown);
+    let second = dispatch(&mut h, "same-op", false);
+    assert!(h.terminal_backend(target).take_input_tap().is_empty());
+    let next = h.app.pending_send_approvals[0].pending_request_id.clone();
+    assert_ne!(next, approval);
+    assert_eq!(
+        mon.host_records().run(&next).unwrap().request_fingerprint,
+        delivered.request_fingerprint
+    );
+    mon.approve_pending(&next, ApprovalChoice::Deny).unwrap();
+    h.hidden_frame();
+    let reply = read_client(second, "replacement send");
+    assert_eq!(reply["error_code"], "permission_denied", "{reply}");
+    assert_eq!(
+        mon.host_records().run(&next).unwrap().state,
+        ContinuationState::Canceled
+    );
+    assert_eq!(mon.host_records().run(&approval).unwrap(), delivered);
+    assert!(h.terminal_backend(target).take_input_tap().is_empty());
 }
 
 /// Inventory 6 and 19: no caller gets "operator" or "*" authority; widening
@@ -211,7 +415,7 @@ fn create_agent_beyond_the_callers_grants_files_a_request() {
             .store()
             .records()
             .iter()
-            .any(|row| row.actor_id.starts_with("agent:from-")),
+            .any(|row| row.actor.id().starts_with("agent:from-")),
         "a refused create wrote a grant"
     );
 }
@@ -352,7 +556,9 @@ fn outside_process_grants_are_once_or_session_only() {
         (principal.actor_type(), principal.actor_id()),
         (
             crate::broker::ActorType::Agent,
-            crate::broker::principal::Principal::agent("agent:external").actor_id()
+            crate::broker::principal::Principal::agent("agent:external")
+                .unwrap()
+                .actor_id()
         ),
         "an agent named external shares the outside-process key"
     );
@@ -427,7 +633,8 @@ fn an_outside_agent_message_is_brokered_once() {
     let monitor =
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
     let pending = monitor
-        .list_pending()
+        .host_records()
+        .pending()
         .into_iter()
         .find(|row| row.tool == "agent.message")
         .expect("a pending request")
@@ -451,13 +658,15 @@ fn an_outside_agent_message_is_brokered_once() {
 #[test]
 fn an_outside_event_bus_caller_has_the_external_identity() {
     use crate::broker::ActorType;
-    use crate::host::event_subscriptions::HostSubscriptionService as Service;
-    let (actor_type, actor_id) = Service::resolve_cli_subscriber(None);
-    assert_eq!(actor_type, ActorType::External);
-    assert_eq!(actor_id, crate::broker::principal::EXTERNAL_ID);
+    let caller = crate::broker::caller::SocketCaller::External(outside());
+    let principal = caller.principal().unwrap();
+    assert_eq!(principal.actor_type(), ActorType::External);
+    assert_eq!(principal.actor_id(), crate::broker::principal::EXTERNAL_ID);
     assert_ne!(
         crate::broker::principal::Principal::External.actor_type(),
-        crate::broker::principal::Principal::agent("agent:external").actor_type()
+        crate::broker::principal::Principal::agent("agent:external")
+            .unwrap()
+            .actor_type()
     );
 }
 
@@ -483,7 +692,8 @@ fn an_assistant_tool_over_the_socket_runs_as_the_caller() {
     assert!(!path.exists(), "nothing written before a decision");
     assert!(
         monitor
-            .list_pending()
+            .host_records()
+            .pending()
             .iter()
             .any(|row| row.tool == "host.files.write" && row.actor_id == format!("pane:{pane}")),
         "the request is the pane's, not the Assistant's"
@@ -513,7 +723,7 @@ fn permission_inventory_and_needs_you_lists_are_scoped_to_the_caller() {
         monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::Question,
-                actor: actor.to_string(),
+                actor: crate::broker::principal::RecordOwner::Legacy(actor.to_owned()),
                 resource: "r".into(),
                 summary: "s".into(),
                 expires_at: None,
@@ -521,7 +731,19 @@ fn permission_inventory_and_needs_you_lists_are_scoped_to_the_caller() {
             })
             .unwrap()
     };
-    let own = file(&format!("pane:{pane}"), "own");
+    // A pane reads what its own terminal incarnation filed, never by number
+    // (stint 1743): the same pane number without the key is not its record.
+    let own = monitor
+        .file_needs_you(NeedsYouFile {
+            kind: NeedsYouKind::Question,
+            actor: crate::broker::principal::RecordOwner::Pane(h.app.pane_principal(pane).unwrap()),
+            resource: "r".into(),
+            summary: "s".into(),
+            expires_at: None,
+            run_tag: Some("own".into()),
+        })
+        .unwrap();
+    let numbered = file(&format!("pane:{pane}"), "numbered");
     let other = file("pane:999999", "other");
     let listed = send(&mut h, serde_json::json!({"type": "list_needs_you"}), Some(peer.clone()));
     let ids: Vec<_> = listed["items"]
@@ -532,6 +754,7 @@ fn permission_inventory_and_needs_you_lists_are_scoped_to_the_caller() {
         .collect();
     assert!(ids.contains(&own.as_str()), "{listed}");
     assert!(!ids.contains(&other.as_str()), "{listed}");
+    assert!(!ids.contains(&numbered.as_str()), "{listed}");
     let inventory = send(&mut h, serde_json::json!({"type": "list_permissions"}), Some(peer));
     assert_eq!(inventory["permissions"], serde_json::json!([]), "{inventory}");
 }
@@ -1180,12 +1403,12 @@ impl HostHarness {
     ) -> crate::broker::gate::PendingView {
         let profile = crate::config::config_dir();
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile).unwrap();
-        let index = monitor.list_pending().len();
+        let index = monitor.host_records().pending().len();
         crate::app::handle_socket_line_in(&profile, line, &self.ipc_tx, Some(peer), server);
         self.hidden_frame();
         let start = std::time::Instant::now();
         loop {
-            if let Some(ask) = monitor.list_pending().into_iter().nth(index) {
+            if let Some(ask) = monitor.host_records().pending().into_iter().nth(index) {
                 return ask;
             }
             assert!(start.elapsed().as_secs() < 5, "no independent approval");
@@ -1213,7 +1436,8 @@ fn external_secret_get_asks_and_returns_no_value() {
         "test-read-value"
     );
     assert!(!monitor
-        .open_needs_you()
+        .host_records()
+        .open()
         .iter()
         .any(|item| item.id == ask.pending_request_id));
 }
@@ -1348,7 +1572,8 @@ fn external_secret_set_and_delete_ask_then_apply_once() {
             (op == "set").then_some("mutation-canary-before-click")
         );
         assert!(monitor
-            .audit_records()
+            .host_records()
+            .audit()
             .iter()
             .any(|r| r.kind == "secret_mutation" && r.operation_id == op && r.decision == "ok"));
     }
@@ -1552,7 +1777,7 @@ fn a_covered_worker_secret_get_is_satisfied_by_its_exact_approval() {
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
     let pending = &ask.pending_request_id;
     assert_eq!(
-        monitor.show_pending(pending).unwrap().actor_id,
+        monitor.host_records().pending_id(pending).unwrap().actor_id,
         format!("pane:{worker}"),
         "the request is the covered worker's"
     );
@@ -1576,8 +1801,8 @@ fn a_covered_worker_deny_beats_an_exact_stored_allow() {
     let monitor =
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
     let actor = crate::workspace::secrets::SecretActor {
-        kind: crate::broker::ActorType::Agent,
-        id: format!("pane:{worker}"),
+        kind: crate::broker::ActorType::Pane,
+        id: h.app.pane_principal(worker).unwrap().actor_id().to_owned(),
     };
     let scope = crate::workspace::secrets::SecretScope::Workspace {
         id: "ws-1673-deny".to_string(),
@@ -1765,7 +1990,8 @@ fn a_once_set_root_is_spent_by_one_change() {
     let monitor =
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
     let pending = monitor
-        .list_pending()
+        .host_records()
+        .pending()
         .into_iter()
         .find(|row| row.tool == "context.set_root" && row.actor_id == format!("pane:{pane}"))
         .expect("the pane's request is pending")

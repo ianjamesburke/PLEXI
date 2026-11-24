@@ -831,7 +831,7 @@ mod tests {
         app.import_selected(&app.target.clone(), &fixture);
         assert_eq!(std::fs::read(&fixture).unwrap(), bytes);
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile.path()).unwrap();
-        let rows = monitor.audit_records();
+        let rows = monitor.host_records().audit();
         assert_eq!(
             rows.iter()
                 .filter(|r| r.kind == "secret_mutation" && r.decision == "ok")

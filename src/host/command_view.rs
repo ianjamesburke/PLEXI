@@ -1,6 +1,6 @@
 //! Live command view over agents API records.
 //!
-//! The pane and `agents-dashboard --follow` read [`crate::agent::runs::projection`].
+//! The pane and `agents-dashboard --follow` read [`crate::agent::runs::host_projection`].
 //! This module does not keep a board. `enqueue`, `pause`, and `block` are not
 //! commands here, and `resolve` / `allow` do not grant.
 
@@ -32,7 +32,7 @@ pub fn publish(workspace: &Path, summary: &str) {
         revision
     };
     log::info!("command_view: revision={revision} {summary}");
-    let payload = crate::agent::runs::projection(workspace);
+    let payload = crate::agent::runs::host_projection(workspace);
     let timeline = crate::host::plugin_timeline::global();
     let Ok(mut timeline) = timeline.lock() else {
         log::warn!("command_view: timeline lock failed");
@@ -44,7 +44,11 @@ pub fn publish(workspace: &Path, summary: &str) {
 }
 
 /// Stream `command.view` until the client disconnects.
-pub fn serve_follow(mut socket: crate::platform::ipc::IpcStream, workspace: String) {
+pub fn serve_follow(
+    mut socket: crate::platform::ipc::IpcStream,
+    workspace: String,
+    caller: crate::broker::caller::SocketCaller,
+) {
     if workspace.is_empty() {
         log::warn!("command_view: follow missing workspace");
         return;
@@ -88,7 +92,7 @@ pub fn serve_follow(mut socket: crate::platform::ipc::IpcStream, workspace: Stri
         if revision != seen {
             drop(guard);
             seen = revision;
-            let mut event = crate::agent::runs::projection(&workspace);
+            let mut event = crate::agent::runs::socket_projection(&workspace, &caller);
             if let Some(obj) = event.as_object_mut() {
                 obj.insert("type".to_string(), json!("event"));
                 obj.insert("event".to_string(), json!(STREAM));

@@ -268,8 +268,12 @@ pub(crate) fn delivery_fixture(
             monitor
                 .store()
                 .record(super::GrantRecord::event_stream_allow(
-                    subscriber_type,
-                    subscriber_id,
+                    &crate::broker::principal::Principal::from_actor(
+                        subscriber_type,
+                        subscriber_id,
+                        None,
+                    )
+                    .unwrap(),
                     super::ActorScope::User,
                     &target,
                     workspace,
@@ -278,8 +282,12 @@ pub(crate) fn delivery_fixture(
                     None,
                 ));
             super::PermissionRequest::exact(&super::ExactBinding::event_stream(
-                subscriber_type,
-                subscriber_id,
+                &crate::broker::principal::Principal::from_actor(
+                    subscriber_type,
+                    subscriber_id,
+                    None,
+                )
+                .unwrap(),
                 super::ActorScope::User,
                 &target,
                 workspace,
@@ -310,8 +318,9 @@ mod tests {
 
     #[test]
     fn a_permit_commits_only_its_target_members_pane_and_live_grant() {
-        let permit = delivery_fixture(ActorType::Agent, "pane:7", "probe", &["a".into()]);
-        let target = DeliverEvents::target(ActorType::Agent, "pane:7", "probe");
+        let owner = crate::broker::principal::PanePrincipal::for_test(7);
+        let permit = delivery_fixture(ActorType::Pane, owner.actor_id(), "probe", &["a".into()]);
+        let target = DeliverEvents::target(ActorType::Pane, owner.actor_id(), "probe");
         assert!(permit.commit(&target, "a").is_ok());
         assert!(permit.commit("other", "a").is_err(), "another target");
         assert!(

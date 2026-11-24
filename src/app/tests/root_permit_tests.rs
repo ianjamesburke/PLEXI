@@ -7,7 +7,8 @@ use std::sync::Arc;
 pub(super) fn approve_root(actor: &str, context: u64) -> Arc<PermissionMonitor> {
     let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
     let ask = monitor
-        .list_pending()
+        .host_records()
+        .pending()
         .into_iter()
         .find(|p| {
             p.actor_id == actor && p.tool == "context.set_root" && p.context_id == Some(context)
@@ -110,7 +111,10 @@ fn a_persons_own_keypress_sets_the_root_in_one_gesture() {
         .dispatch_host_action(Action::SetContextRootFromCwd, &h.app.ctx.clone());
     assert_eq!(h.app.router.active().root, cwd);
     let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
-    assert!(monitor.list_pending().is_empty(), "no approval is filed");
+    assert!(
+        monitor.host_records().pending().is_empty(),
+        "no approval is filed"
+    );
 }
 
 #[test]

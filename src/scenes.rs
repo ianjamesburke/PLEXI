@@ -3508,12 +3508,15 @@ impl HeadlessBackend {
                 let profile = crate::config::config_dir();
                 let monitor =
                     crate::broker::gate::PermissionMonitor::for_profile(&profile).unwrap();
-                let actor = format!("pane:{pane_id}");
+                let owner = self
+                    .h
+                    .with_app(|app| app.pane_principal(pane_id))
+                    .ok_or_else(|| SceneError::new("seed_failed", "terminal has no authority"))?;
                 let admitted = monitor.admit(crate::broker::gate::AdmitRequest {
                     call_id: "pane-send",
                     tool: "pane.send",
                     input_json: r#"{"pane_id":42,"operation_id":"scene-retry"}"#,
-                    principal: &crate::broker::principal::Principal::agent(&actor),
+                    principal: &crate::broker::principal::Principal::Pane(owner.clone()),
                     actor_scope: crate::broker::ActorScope::Workspace,
                     trust_origin: "host",
                     workspace_root: &profile,
@@ -3530,7 +3533,7 @@ impl HeadlessBackend {
                     ));
                 };
                 monitor
-                    .detach_pane_send_waiter(&pending_request_id)
+                    .detach_pane_send_waiter(&owner, "scene-retry", &pending_request_id)
                     .map_err(|error| SceneError::new("seed_failed", error))?;
                 self.seeded_approval = Some((profile, pending_request_id));
                 self.h.with_app_mut(|app| {
@@ -3824,7 +3827,8 @@ impl HeadlessBackend {
                     call_id: "scene-host-permission",
                     tool: "chess.play",
                     input_json: &input.to_string(),
-                    principal: &crate::broker::principal::Principal::agent("agent:writing-helper"),
+                    principal: &crate::broker::principal::Principal::agent("agent:writing-helper")
+                        .expect("named agent"),
                     actor_scope: crate::broker::ActorScope::User,
                     trust_origin: "host",
                     workspace_root: &workspace,
@@ -3854,7 +3858,7 @@ impl HeadlessBackend {
                     let visible = crate::plexi_ai::tool_dispatch::ToolDispatcher::from_registry(
                         crate::plexi_ai::tool_dispatch::DispatchScope::new(
                             0,
-                            "agent:default",
+                            crate::broker::principal::Principal::agent("agent:default").unwrap(),
                             workspace.clone(),
                             context_id,
                         ),

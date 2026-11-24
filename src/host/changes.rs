@@ -13,8 +13,8 @@ use sha2::{Digest, Sha256};
 
 use crate::broker::gate::{self, Admission, AdmitRequest, PermissionMonitor};
 use crate::broker::{
-    ActorScope, ActorType, Decision, ExactBinding, GrantDuration, GrantRecord, GrantSource,
-    ResourceScope, TargetType,
+    ActorScope, Decision, ExactBinding, GrantDuration, GrantRecord, GrantSource, ResourceScope,
+    TargetType,
 };
 
 const TOOL: &str = "host.files.edit";
@@ -148,8 +148,10 @@ fn bind(agent: &str, path: &Path, old: &str, new: &str) -> Result<BoundEdit, Str
 
 fn binding(edit: &BoundEdit) -> Result<ExactBinding, String> {
     Ok(ExactBinding {
-        actor_type: ActorType::Agent,
-        actor_id: edit.agent_id.clone(),
+        agent_run: None,
+        actor: crate::broker::principal::Principal::agent(&edit.agent_id)
+            .ok_or("invalid agent identity")?
+            .into(),
         actor_scope: ActorScope::User,
         trust_origin: "host".to_string(),
         workspace_root: edit.workspace.clone(),
@@ -240,7 +242,8 @@ fn admit_edit(edit: &BoundEdit) -> Result<AdmissionOk, GateStop> {
         call_id: &call_id,
         tool: TOOL,
         input_json: &edit.input,
-        principal: &crate::broker::principal::Principal::agent(&edit.agent_id),
+        principal: &crate::broker::principal::Principal::agent(&edit.agent_id)
+            .ok_or_else(|| GateStop::Failed("invalid agent id".into()))?,
         actor_scope: ActorScope::User,
         trust_origin: "host",
         workspace_root: &edit.workspace,
@@ -259,7 +262,10 @@ fn admit_edit(edit: &BoundEdit) -> Result<AdmissionOk, GateStop> {
             let resource = resource_id.unwrap_or_default();
             if mon
                 .note_use(
-                    &edit.agent_id,
+                    &crate::broker::principal::RecordOwner::stored(
+                        crate::broker::ActorType::Agent,
+                        &edit.agent_id,
+                    ),
                     &call_id,
                     &grant_id,
                     &fingerprint,
@@ -293,7 +299,11 @@ fn note(
 ) -> Result<(), String> {
     monitor()?
         .note_outcome(
-            &edit.agent_id,
+            None,
+            &crate::broker::principal::RecordOwner::stored(
+                crate::broker::ActorType::Agent,
+                &edit.agent_id,
+            ),
             &admitted.call_id,
             &admitted.grant_id,
             &admitted.fingerprint,

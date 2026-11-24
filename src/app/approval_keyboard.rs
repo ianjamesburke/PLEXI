@@ -2,11 +2,11 @@
 use super::input_router::PlexiInput;
 use super::view_trait::KeyDisposition;
 use super::{FocusKind, PlexiApp};
-use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
-use std::collections::HashSet;
 use crate::broker::consent::{
     consent_request_key, ConsentDecision, ConsentGuard, DecisionFailure, ARM_DELAY,
 };
+use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 #[derive(Default)]
@@ -123,7 +123,7 @@ impl PlexiApp {
             log::error!("approval: no permission monitor in this process");
             return;
         };
-        if let Some(request) = monitor.list_pending().first() {
+        if let Some(request) = monitor.host_records().pending().first() {
             self.approval_keyboard
                 .focus(request.pending_request_id.clone(), Instant::now());
             self.focus_stack.open(
@@ -223,15 +223,16 @@ impl PlexiApp {
             log::error!("approval: no permission monitor in this process");
             return KeyDisposition::Passthrough;
         };
-        if monitor.show_pending(&id).is_none() {
+        if monitor.host_records().pending_id(&id).is_none() {
             if let Some(record) = monitor
-                .get_needs_you(&id)
+                .host_records()
+                .question(&id)
                 .filter(|r| r.resolution.is_none() && is_keyboard_actionable(r.kind))
             {
                 self.needs_you_key_at(&record, &owned, now);
                 return KeyDisposition::Consumed;
             }
-            if let Some(done_record) = monitor.get_needs_you(&id).filter(|r| {
+            if let Some(done_record) = monitor.host_records().question(&id).filter(|r| {
                 r.resolution.is_none() && r.kind == crate::broker::gate::NeedsYouKind::AgentDone
             }) {
                 let key = owned.events().iter().find_map(|event| match event {
@@ -313,7 +314,10 @@ impl PlexiApp {
             }
             Some((egui::Key::S, egui::Modifiers::NONE))
                 if !self.approval_keyboard.confirm_always
-                    && monitor.show_pending(&id).is_some_and(|r| r.allow_tool) =>
+                    && monitor
+                        .host_records()
+                        .pending_id(&id)
+                        .is_some_and(|r| r.allow_tool) =>
             {
                 Some(ApprovalChoice::AllowTool)
             }
@@ -415,22 +419,13 @@ impl PlexiApp {
                 .refuse_from_desktop(id, "approval keyboard")
                 .map_err(DecisionFailure::from),
             egui::Key::Enter if is_question && choices.is_empty() => {
-                let pane = record
-                    .details
-                    .as_ref()
-                    .and_then(|d| d.pane_id)
-                    .or_else(|| {
-                        record
-                            .actor
-                            .strip_prefix("pane:")
-                            .and_then(|s| s.parse().ok())
-                    })
-                    .or_else(|| {
-                        record
-                            .resource
-                            .strip_prefix("pane:")
-                            .and_then(|s| s.parse().ok())
-                    });
+                let hint = record.details.as_ref().and_then(|d| d.pane_id).or_else(|| {
+                    record
+                        .resource
+                        .strip_prefix("pane:")
+                        .and_then(|s| s.parse().ok())
+                });
+                let pane = self.record_source_pane(&record.actor, hint);
                 if let Some((win, tile)) = pane.and_then(|p| self.find_pane_in_any_window(p)) {
                     self.active_window = win;
                     self.set_window_focused_pane(win, tile);
@@ -486,8 +481,10 @@ mod tests {
             monitor,
             &crate::workspace::secrets::InMemoryKeychain::new(),
             &crate::workspace::secrets::SecretActor {
-                kind: crate::broker::ActorType::Agent,
-                id: "pane:4".into(),
+                kind: crate::broker::ActorType::Pane,
+                id: crate::broker::principal::PanePrincipal::for_test(4)
+                    .actor_id()
+                    .to_owned(),
             },
             name,
             &crate::workspace::secrets::SecretScope::Workspace {
@@ -530,7 +527,7 @@ mod tests {
                 .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now),
             KeyDisposition::Passthrough
         );
-        assert_eq!(monitor.list_pending().len(), 2);
+        assert_eq!(monitor.host_records().pending().len(), 2);
         h.app.focus_approval();
         assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&first));
         h.app.approval_keyboard.guard.set_since(now);
@@ -538,7 +535,7 @@ mod tests {
             &mut input(egui::Key::A, egui::Modifiers::NONE),
             now + ARM_DELAY - Duration::from_millis(1),
         );
-        assert_eq!(monitor.list_pending().len(), 2);
+        assert_eq!(monitor.host_records().pending().len(), 2);
         // Stint 1735: the early press is refused by the guard, not swallowed.
         assert_eq!(
             h.app
@@ -556,14 +553,18 @@ mod tests {
             now + ARM_DELAY,
         );
         assert!(h.app.approval_keyboard.id.is_none());
-        assert!(monitor.open_needs_you().iter().any(|row| row.id == first));
+        assert!(monitor
+            .host_records()
+            .open()
+            .iter()
+            .any(|row| row.id == first));
         h.app.focus_approval();
         h.app.approval_keyboard.guard.set_since(now);
         h.app.approval_key_at(
             &mut input(egui::Key::A, egui::Modifiers::NONE),
             now + ARM_DELAY,
         );
-        assert!(monitor.show_pending(&first).is_none());
+        assert!(monitor.host_records().pending_id(&first).is_none());
         h.app.focus_approval();
         assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&second));
         h.app.approval_keyboard.guard.set_since(now);
@@ -571,7 +572,7 @@ mod tests {
             &mut input(egui::Key::D, egui::Modifiers::NONE),
             now + ARM_DELAY,
         );
-        assert!(monitor.list_pending().is_empty());
+        assert!(monitor.host_records().pending().is_empty());
     }
     #[test]
     fn approval_keyboard_rejects_synthetic_and_repeat_input() {
@@ -585,7 +586,7 @@ mod tests {
         h.app.synthetic_input_frame = true;
         h.app
             .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now);
-        assert!(monitor.show_pending(&id).is_some());
+        assert!(monitor.host_records().pending_id(&id).is_some());
         h.app.synthetic_input_frame = false;
         let mut repeated = PlexiInput::synthetic(
             vec![egui::Event::Key {
@@ -598,7 +599,7 @@ mod tests {
             egui::Modifiers::NONE,
         );
         h.app.approval_key_at(&mut repeated, now);
-        assert!(monitor.show_pending(&id).is_some());
+        assert!(monitor.host_records().pending_id(&id).is_some());
         assert!(repeated.is_empty());
     }
 
@@ -624,7 +625,7 @@ mod tests {
         h.app
             .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now);
         assert!(
-            monitor.show_pending(&id).is_some(),
+            monitor.host_records().pending_id(&id).is_some(),
             "the banner decided the instant it regained the keyboard"
         );
     }
@@ -643,12 +644,12 @@ mod tests {
         assert!(h.app.approval_keyboard.confirm_always);
         h.app
             .approval_key_at(&mut input(egui::Key::Enter, egui::Modifiers::NONE), now);
-        assert!(monitor.show_pending(&id).is_some());
+        assert!(monitor.host_records().pending_id(&id).is_some());
         h.app.approval_key_at(
             &mut input(egui::Key::Enter, egui::Modifiers::NONE),
             now + ARM_DELAY,
         );
-        assert!(monitor.show_pending(&id).is_none());
+        assert!(monitor.host_records().pending_id(&id).is_none());
     }
 
     #[test]
@@ -662,7 +663,7 @@ mod tests {
         h.app.approval_keyboard.guard.set_since(now - ARM_DELAY);
         h.app
             .approval_key_at(&mut input(egui::Key::A, egui::Modifiers::NONE), now);
-        assert!(monitor.show_pending(&id).is_none());
+        assert!(monitor.host_records().pending_id(&id).is_none());
 
         let mut held_repeat = PlexiInput::synthetic(
             vec![
@@ -770,14 +771,14 @@ mod tests {
                 .pending_os
                 .iter()
                 .any(|(id, state, _)| {
-                    *id == pane_id && *state == crate::protocol::AgentState::Completed
+                    id.number() == pane_id && *state == crate::protocol::AgentState::Completed
                 }),
             "human-started agent done must queue an OS notification"
         );
 
         // AgentDone NeedsYou item is open with "<agent> done: <summary>".
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
-        let open = monitor.open_needs_you();
+        let open = monitor.host_records().open();
         let done_item = open
             .iter()
             .find(|r| r.kind == crate::broker::gate::NeedsYouKind::AgentDone)
@@ -802,7 +803,8 @@ mod tests {
             .approval_key_at(&mut input(egui::Key::Enter, egui::Modifiers::NONE), now);
         assert!(
             monitor
-                .open_needs_you()
+                .host_records()
+                .open()
                 .iter()
                 .all(|r| r.id != done_item.id),
             "Enter must settle the AgentDone attention item"
@@ -879,7 +881,8 @@ mod tests {
         h.hidden_frame();
         assert!(
             monitor
-                .open_needs_you()
+                .host_records()
+                .open()
                 .iter()
                 .all(|r| r.kind != crate::broker::gate::NeedsYouKind::AgentDone),
             "child agent with parent agent must not file a human AgentDone attention item"
@@ -896,7 +899,9 @@ mod tests {
             .file_needs_you_with_details(
                 crate::broker::gate::NeedsYouFile {
                     kind,
-                    actor: "pane:7".into(),
+                    actor: crate::broker::principal::RecordOwner::Pane(
+                        crate::broker::principal::PanePrincipal::for_test(7),
+                    ),
                     resource: format!("res-{tag}"),
                     summary: format!("summary {tag}"),
                     expires_at: None,
@@ -912,7 +917,7 @@ mod tests {
     }
 
     fn is_open(monitor: &PermissionMonitor, id: &str) -> bool {
-        monitor.open_needs_you().iter().any(|r| r.id == id)
+        monitor.host_records().open().iter().any(|r| r.id == id)
     }
 
     #[test]
@@ -982,7 +987,12 @@ mod tests {
             .approval_key_at(&mut input(egui::Key::Num2, egui::Modifiers::NONE), now);
         assert!(!is_open(&monitor, &q));
         assert_eq!(
-            monitor.get_needs_you(&q).unwrap().answer.as_deref(),
+            monitor
+                .host_records()
+                .question(&q)
+                .unwrap()
+                .answer
+                .as_deref(),
             Some("Abort")
         );
 
@@ -993,7 +1003,12 @@ mod tests {
             .approval_key_at(&mut input(egui::Key::Num1, egui::Modifiers::NONE), now);
         assert!(!is_open(&monitor, &blocked));
         assert_eq!(
-            monitor.get_needs_you(&blocked).unwrap().answer.as_deref(),
+            monitor
+                .host_records()
+                .question(&blocked)
+                .unwrap()
+                .answer
+                .as_deref(),
             Some("Retry")
         );
     }
@@ -1041,7 +1056,7 @@ mod tests {
             now + ARM_DELAY,
         );
         assert!(
-            monitor.show_pending(&first).is_some(),
+            monitor.host_records().pending_id(&first).is_some(),
             "failed approval decision must keep pending request open and not swap to another banner"
         );
         assert_eq!(
@@ -1064,7 +1079,7 @@ mod tests {
             &mut input(egui::Key::A, egui::Modifiers::NONE),
             now + ARM_DELAY,
         );
-        assert!(monitor.show_pending(&first).is_none());
+        assert!(monitor.host_records().pending_id(&first).is_none());
         assert!(h.app.approval_keyboard.last_error.is_none());
         assert!(h.app.approval_keyboard.id.is_none());
     }

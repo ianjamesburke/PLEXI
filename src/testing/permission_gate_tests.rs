@@ -14,8 +14,8 @@ use crate::broker::gate::{
     fingerprint_args, gate_log_contains, Admission, AdmitRequest, ApprovalChoice, PermissionMonitor,
 };
 use crate::broker::{
-    ActorScope, ActorType, Decision, ExactBinding, GrantDuration, GrantRecord, GrantSource,
-    ResourceScope, TargetType,
+    ActorScope, Decision, ExactBinding, GrantDuration, GrantRecord, GrantSource, ResourceScope,
+    TargetType,
 };
 use crate::plexi_ai::tool_dispatch::{
     self, DispatchScope, PluginEventSender, ToolCallResult, ToolDispatcher,
@@ -118,7 +118,7 @@ fn pump_until(h: &mut HostHarness, mut done: impl FnMut(&mut HostHarness) -> boo
 /// its own pane's process).
 fn terminal_caller(h: &mut HostHarness) -> (u64, String, u32) {
     let caller = h.add_focused_terminal();
-    let credential = monitor().issue_credential(Some(caller), &format!("pane:{caller}"));
+    let credential = monitor().issue_pane_credential(&h.app.pane_authority(caller).unwrap());
     let pid = h.shell_pid(caller);
     (caller, credential, pid)
 }
@@ -277,6 +277,93 @@ fn permission_gate_real_chess_all_ingresses() {
     }
 }
 
+#[test]
+fn pi_app_call_and_completion_update_only_the_invoking_panes_run() {
+    let mut h = HostHarness::new();
+    isolate_tool_context(&mut h);
+    h.launch_bundled_view("chess", &[]);
+    let (_, first_token, first_pid) = terminal_caller(&mut h);
+    let (_, second_token, second_pid) = terminal_caller(&mut h);
+    let operation = "pi-shared-operation";
+    let input = play(0, operation, "e2e4", "game-1");
+    let first = socket_call(&mut h, Some(&first_token), &[first_pid], input.clone());
+    let second = socket_call(&mut h, Some(&second_token), &[second_pid], input.clone());
+    let (a, b) = (pending_id_of(&first), pending_id_of(&second));
+    assert!(!a.is_empty() && !b.is_empty() && a != b, "{first} {second}");
+    let mon = monitor();
+    let before = mon.host_records().run(&a).unwrap();
+    mon.approve_pending(&b, ApprovalChoice::Once).unwrap();
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+    let mut pi = Command::new("node")
+        .arg("--experimental-strip-types")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/packages/pi-plexi/tests/host-app-call.mjs"
+        ))
+        .arg(input.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut requests = BufReader::new(pi.stdout.take().unwrap()).lines();
+    let mut reply = pi.stdin.take().unwrap();
+    let mut next_request = || -> Vec<String> {
+        serde_json::from_str(&requests.next().expect("Pi sent its CLI request").unwrap()).unwrap()
+    };
+    let call = next_request();
+    assert_eq!(
+        &call[..6],
+        ["plugin", "call", "chess", "chess.play", "--json", "--input"]
+    );
+    let result = socket_call(
+        &mut h,
+        Some(&second_token),
+        &[second_pid],
+        serde_json::from_str(&call[6]).unwrap(),
+    );
+    let output = committed_output(&result);
+    assert_eq!(output["move"], "e2e4", "{result}");
+    let after = mon.host_records().run(&b).unwrap();
+    assert_eq!(
+        after.state,
+        crate::broker::gate::ContinuationState::Completed
+    );
+    assert_eq!(mon.host_records().run(&a).unwrap(), before);
+    writeln!(reply, "{result}").unwrap();
+
+    let complete = next_request();
+    assert_eq!(
+        &complete[..6],
+        [
+            "needs-you",
+            "complete",
+            operation,
+            "--state",
+            "completed",
+            "--receipt"
+        ]
+    );
+    let receipt: serde_json::Value = serde_json::from_str(&complete[6]).unwrap();
+    assert_eq!(receipt, output);
+    let completed = super::socket_policy_tests::send(
+        &mut h,
+        serde_json::json!({"type":"needs_you_api","op":complete[1],"payload":{"id":complete[2],"state":complete[4],"receipt":complete[6]}}),
+        Some(crate::broker::caller::PeerWitness::for_live_pids(&[
+            second_pid,
+        ])),
+    );
+    assert_eq!(completed["continuation"]["run_id"], after.run_id);
+    assert_eq!(
+        mon.host_records().run(&b).unwrap().receipt.as_deref(),
+        Some(complete[6].as_str())
+    );
+    assert_eq!(mon.host_records().run(&a).unwrap(), before);
+    writeln!(reply, "{completed}").unwrap();
+    drop(reply);
+    assert!(pi.wait().unwrap().success());
+}
+
 fn run_ingress(ingress: Ingress) {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
@@ -354,8 +441,12 @@ fn run_ingress(ingress: Ingress) {
     let actor = output["actor"].as_str().unwrap_or("");
     match ingress {
         Ingress::Assistant => assert_eq!(actor, "agent:default", "{output}"),
-        Ingress::Mcp => assert!(actor.starts_with("mcp:pane:"), "{output}"),
-        Ingress::Socket => assert_eq!(actor, format!("pane:{caller}"), "{output}"),
+        Ingress::Mcp => assert!(actor.starts_with("pane:"), "{output}"),
+        Ingress::Socket => assert_eq!(
+            actor,
+            h.app.pane_principal(caller).unwrap().actor_id(),
+            "{output}"
+        ),
     }
     expect_commits(&mut h, start, &op, 1);
     let (_intruder, intruder_credential, intruder_pid) = terminal_caller(&mut h);
@@ -371,11 +462,17 @@ fn run_ingress(ingress: Ingress) {
         "a different actor cannot use the grant: {wrong_actor}"
     );
     assert_eq!(commits_for(start, &op), 1, "wrong actor must not move");
-    let facts = mon.audit_records();
+    let facts = mon.host_records().audit();
     assert!(
-        facts
-            .iter()
-            .any(|fact| { fact.kind == "use" && fact.actor == actor && fact.operation_id == op }),
+        facts.iter().any(|fact| {
+            fact.kind == "use"
+                && fact
+                    .actor
+                    .pane()
+                    .map_or_else(|| fact.actor.label(), |pane| pane.actor_id())
+                    == actor
+                && fact.operation_id == op
+        }),
         "audit links the actor and operation: {facts:?}"
     );
 
@@ -409,7 +506,7 @@ fn run_ingress(ingress: Ingress) {
         .store()
         .records()
         .iter()
-        .find(|record| record.actor_id == actor && record.decision == Decision::Allow)
+        .find(|record| record.actor.id() == actor && record.decision == Decision::Allow)
         .map(|record| record.grant_id.clone());
     if let Some(grant_id) = grant_id {
         assert!(
@@ -708,12 +805,7 @@ fn assert_waiting_plugin_call(choice: ApprovalChoice) {
     let workspace = h.workspace_root();
     let context_id = h.app.windows[h.app.active_window].context_id;
     let mon = monitor();
-    let credential = mon.issue_credential(
-        Some(caller),
-        &format!("pane:{caller}"),
-
-
-    );
+    let credential = mon.issue_pane_credential(&h.app.pane_authority(caller).unwrap());
     let (tx, rx) = std::sync::mpsc::channel();
     tool_dispatch::register(
         target,
@@ -745,14 +837,14 @@ fn assert_waiting_plugin_call(choice: ApprovalChoice) {
     }))
     .unwrap();
     h.inject_from_pane(caller, request);
-    pump_until(&mut h, |_| !mon.list_pending().is_empty());
+    pump_until(&mut h, |_| !mon.host_records().pending().is_empty());
     std::thread::sleep(Duration::from_millis(50));
     assert!(
         !reply.exists(),
         "waiting call must not return permission_required"
     );
     assert!(rx.try_recv().is_err(), "no execution before human approval");
-    mon.approve_pending(&mon.list_pending()[0].pending_request_id, choice)
+    mon.approve_pending(&mon.host_records().pending()[0].pending_request_id, choice)
         .unwrap();
     if choice == ApprovalChoice::Deny {
         pump_until(&mut h, |_| reply.is_file());
@@ -781,7 +873,7 @@ fn assert_waiting_plugin_call(choice: ApprovalChoice) {
         body["ok"],
         true,
         "{body}; attention={:?}",
-        mon.open_needs_you()
+        mon.host_records().open()
     );
     assert!(rx.try_recv().is_err(), "exactly one execution");
     tool_dispatch::unregister(target);
@@ -796,7 +888,12 @@ fn all_dispatchers_require_monitor() {
     let hits = Arc::new(AtomicU64::new(0));
     let hits_for_handler = Arc::clone(&hits);
     let mut assistant = ToolDispatcher::from_registry(
-        DispatchScope::new(1, "agent:assistant", workspace.clone(), context_id),
+        DispatchScope::new(
+            1,
+            crate::broker::principal::Principal::agent("agent:assistant").unwrap(),
+            workspace.clone(),
+            context_id,
+        ),
         Arc::clone(&mon),
     );
     assistant.add_host_tools(
@@ -850,7 +947,12 @@ fn all_dispatchers_require_monitor() {
     // AgentHost::gated_dispatcher is private and builds this same constructor.
     // Discovery is the snapshot taken when the dispatcher is built.
     let agent = ToolDispatcher::from_registry(
-        DispatchScope::new(2, "agent:chess-opponent", workspace.clone(), context_id),
+        DispatchScope::new(
+            2,
+            crate::broker::principal::Principal::agent("agent:chess-opponent").unwrap(),
+            workspace.clone(),
+            context_id,
+        ),
         Arc::clone(&mon),
     );
     let discovered = agent
@@ -860,8 +962,10 @@ fn all_dispatchers_require_monitor() {
     assert!(discovered, "discovery lists the tool");
     let args = r#"{"n":1}"#;
     let binding = ExactBinding {
-        actor_type: ActorType::Agent,
-        actor_id: "agent:chess-opponent".to_string(),
+        agent_run: None,
+        actor: crate::broker::principal::Principal::agent("agent:chess-opponent")
+            .unwrap()
+            .into(),
         actor_scope: ActorScope::User,
         trust_origin: "host".to_string(),
         workspace_root: workspace.clone(),
@@ -893,7 +997,7 @@ fn all_dispatchers_require_monitor() {
         None,
         Some(&workspace),
         "chess",
-        &crate::broker::principal::Principal::agent("agent:assistant"),
+        &crate::broker::principal::Principal::agent("agent:assistant").expect("named agent"),
         ActorScope::User,
         None,
         &["chess.move_committed".to_string()],
@@ -976,7 +1080,8 @@ fn plugin_call_rejects_forged_or_missing_identity() {
     let asked = socket_call(&mut h, None, &[pid], input.clone());
     assert_eq!(asked["error_code"], "permission_required", "{asked}");
     let pending = monitor()
-        .show_pending(asked["pending_request_id"].as_str().unwrap())
+        .host_records()
+        .pending_id(asked["pending_request_id"].as_str().unwrap())
         .unwrap();
     assert_eq!(pending.actor_id, format!("pane:{term}"));
     assert_ne!(pending.actor_id, "user");
@@ -1068,11 +1173,12 @@ fn plugin_call_and_mcp_are_gated_and_audited() {
     assert!(!called.to_string().contains("\"user\""), "{called}");
     assert_eq!(commits_for(start, "ungated-bc4"), 0);
     assert!(
-        mon.audit_records()
+        mon.host_records()
+            .audit()
             .iter()
-            .any(|fact| fact.kind == "ask" && fact.actor == format!("pane:{caller}")),
+            .any(|fact| fact.kind == "ask" && fact.actor.label() == format!("pane:{caller}")),
         "plugin call must write an ask audit row: {:?}",
-        mon.audit_records()
+        mon.host_records().audit()
     );
     assert!(
         gate_log_contains("op=ungated-bc4"),
@@ -1088,11 +1194,12 @@ fn plugin_call_and_mcp_are_gated_and_audited() {
     );
     assert!(!mcp.to_string().contains("holds no seat"), "{mcp}");
     assert!(
-        mon.audit_records()
+        mon.host_records()
+            .audit()
             .iter()
-            .any(|fact| fact.kind == "ask" && fact.actor.starts_with("mcp:pane:")),
+            .any(|fact| fact.kind == "ask" && fact.actor.label().starts_with("pane:")),
         "MCP must write an ask audit row: {:?}",
-        mon.audit_records()
+        mon.host_records().audit()
     );
     log::info!("permission_gate: plugin call and MCP asked and audited");
 }
@@ -1148,7 +1255,7 @@ fn second_chess_pane_routes_by_instance() {
         assert_eq!(asked["error_code"], "permission_required", "{asked}");
         let pending = asked["pending_request_id"].as_str().unwrap();
         assert_eq!(
-            mon.show_pending(pending).unwrap().instance_id,
+            mon.host_records().pending_id(pending).unwrap().instance_id,
             Some(expected_pane)
         );
         assert_eq!(commits_for(start, op), 0);
@@ -1168,7 +1275,10 @@ fn second_chess_pane_routes_by_instance() {
             expect_commits(&mut h, start, op, 0);
         } else {
             assert_eq!(reply["output"]["revision_after"], 1, "{reply}");
-            assert_eq!(reply["output"]["actor"], format!("pane:{caller}"));
+            assert_eq!(
+                reply["output"]["actor"],
+                h.app.pane_principal(caller).unwrap().actor_id()
+            );
             expect_commits(&mut h, start, op, 1);
         }
     }
@@ -1209,7 +1319,8 @@ fn gate_denial_reaches_the_host_log() {
     );
     assert!(
         monitor()
-            .audit_records()
+            .host_records()
+            .audit()
             .iter()
             .any(|fact| fact.kind == "deny"),
         "a gate denial must be an audit row"
@@ -1220,7 +1331,8 @@ fn gate_denial_reaches_the_host_log() {
 }
 
 fn refuse_rows(mon: &PermissionMonitor, pending_id: &str) -> usize {
-    mon.audit_records()
+    mon.host_records()
+        .audit()
         .iter()
         .filter(|fact| {
             fact.kind == "refuse"
@@ -1245,7 +1357,7 @@ fn socket_and_synthetic_resolve_are_refused() {
         call_id: "call-socket-refuse",
         tool: "chess.play",
         input_json: args,
-        principal: &crate::broker::principal::Principal::agent("agent:chess"),
+        principal: &crate::broker::principal::Principal::agent("agent:chess").expect("named agent"),
         actor_scope: ActorScope::User,
         trust_origin: "host",
         workspace_root: &workspace,
@@ -1269,7 +1381,7 @@ fn socket_and_synthetic_resolve_are_refused() {
     let resolve_body = std::fs::read_to_string(&resolve_path).unwrap();
     assert!(resolve_body.contains("permission_denied"), "{resolve_body}");
     assert!(
-        mon.show_pending(&pending_id).is_some(),
+        mon.host_records().pending_id(&pending_id).is_some(),
         "resolve leaves the pending"
     );
 
@@ -1315,7 +1427,10 @@ fn socket_and_synthetic_resolve_are_refused() {
         "one refuse row per attempt, got {}",
         refuse_rows(&mon, &pending_id)
     );
-    assert!(mon.show_pending(&pending_id).is_some(), "the pending stays");
+    assert!(
+        mon.host_records().pending_id(&pending_id).is_some(),
+        "the pending stays"
+    );
     assert!(
         mon.approve_pending(&pending_id, ApprovalChoice::Once)
             .is_ok(),
@@ -1460,7 +1575,7 @@ fn create_agent_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
         .to_string();
 
     let mon = monitor();
-    let open_before = mon.list_needs_you();
+    let open_before = mon.host_records().questions(true);
     assert_eq!(open_before.len(), 1, "{open_before:?}");
     assert_eq!(open_before[0].id, needs_you_id);
     assert_eq!(open_before[0].kind, NeedsYouKind::PermissionRequest);
@@ -1489,7 +1604,7 @@ fn create_agent_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
     assert_eq!(stamped_grants_sha, expected_sha, "{stamp_raw}");
 
     // Audit `grant` fact (and `needs_you` fact) carries a non-empty `grant_id`.
-    let audit_rows = mon.audit_records();
+    let audit_rows = mon.host_records().audit();
     let grant_fact = audit_rows
         .iter()
         .find(|row| row.kind == "grant" && row.resource_id == "agents.ping")
@@ -1505,19 +1620,19 @@ fn create_agent_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
     assert_eq!(ny_fact.grant_id, grant_fact.grant_id);
 
     // 3. Retry the same `create_agent` from the same pane -> `ok: true`, no second needs-you filed.
-    let needs_you_total_before_retry = mon.all_needs_you().len();
+    let needs_you_total_before_retry = mon.host_records().questions(false).len();
     let retry = call_create_agent(&mut h, "worker", pane);
     assert_eq!(
         retry["ok"], true,
         "retry after approve must succeed: {retry}"
     );
     assert!(
-        mon.list_needs_you().is_empty(),
+        mon.host_records().questions(true).is_empty(),
         "no open needs-you after successful retry: {:?}",
-        mon.list_needs_you()
+        mon.host_records().questions(true)
     );
     assert_eq!(
-        mon.all_needs_you().len(),
+        mon.host_records().questions(false).len(),
         needs_you_total_before_retry,
         "retry must not file a second needs-you item"
     );
@@ -1543,7 +1658,7 @@ fn create_agent_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
         .file_needs_you_with_details(
             NeedsYouFile {
                 kind: NeedsYouKind::PermissionRequest,
-                actor: "pane".to_string(),
+                actor: crate::broker::principal::RecordOwner::Host("pane".to_string()),
                 resource: "agents.ping".to_string(),
                 summary: "orphan request without run or pane".to_string(),
                 expires_at: None,
@@ -1854,9 +1969,9 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
         );
     }
     assert!(
-        mon.list_needs_you().is_empty(),
+        mon.host_records().questions(true).is_empty(),
         "cross-context refusal must not file needs-you: {:?}",
-        mon.list_needs_you()
+        mon.host_records().questions(true)
     );
 
     // 2. Human pane in context A cannot read context B's or nested context B's secrets via SecretGet.
@@ -1931,17 +2046,21 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
                 serde_json::json!({"status":"denied","error_code":"permission_denied"})
             );
             assert_eq!(secrets::take_test_store_calls(), 0);
-            assert!(mon.open_needs_you().is_empty());
-            assert!(mon.audit_records().iter().any(|row| row.kind == "deny"
-                && row.actor == format!("pane:{human_pane}")
-                && row.call_id == tool
-                && row.resource_id
-                    == format!(
-                        "{name}@{}{}",
-                        if op == "read" { "" } else { "folder:" },
-                        target.display()
-                    )
-                && row.decision == "context_scope_violation"));
+            assert!(mon.host_records().open().is_empty());
+            assert!(mon
+                .host_records()
+                .audit()
+                .iter()
+                .any(|row| row.kind == "deny"
+                    && row.actor.label() == format!("pane:{human_pane}")
+                    && row.call_id == tool
+                    && row.resource_id
+                        == format!(
+                            "{name}@{}{}",
+                            if op == "read" { "" } else { "folder:" },
+                            target.display()
+                        )
+                    && row.decision == "context_scope_violation"));
         }
     }
 }
@@ -2044,7 +2163,7 @@ fn agent_spawned_pane_does_not_get_human_authority() {
         .to_string();
 
     let mon = monitor();
-    let open = mon.list_needs_you();
+    let open = mon.host_records().questions(true);
     assert_eq!(open.len(), 1);
     assert_eq!(open[0].id, needs_you_id);
     assert_eq!(open[0].kind, NeedsYouKind::PermissionRequest);
@@ -2098,7 +2217,8 @@ fn click_permissions_node(h: &mut HostHarness, pane_id: u64, label: &str, node: 
 }
 
 fn permission_changes(mon: &PermissionMonitor) -> Vec<String> {
-    mon.list_needs_you()
+    mon.host_records()
+        .questions(true)
         .into_iter()
         .filter(|row| row.kind == crate::broker::gate::NeedsYouKind::PermissionChange)
         .map(|row| row.id)
@@ -2108,7 +2228,8 @@ fn permission_changes(mon: &PermissionMonitor) -> Vec<String> {
 /// Every permission row except plugin-folder trust, which these tests set up
 /// to launch fixtures (stint 1398) and never act on.
 fn entry_kinds(mon: &PermissionMonitor) -> Vec<(String, String)> {
-    mon.list_entries()
+    mon.host_records()
+        .entries()
         .into_iter()
         .filter(|entry| entry.tool != crate::host::plugin_admission::TRUST_FOLDER_TOOL)
         .map(|entry| (entry.id, entry.kind))
@@ -2120,7 +2241,8 @@ fn admit_probe(mon: &PermissionMonitor, workspace: &Path, call: &str, tool: &str
         call_id: call,
         tool,
         input_json: "{}",
-        principal: &crate::broker::principal::Principal::agent("agent:synthetic-probe"),
+        principal: &crate::broker::principal::Principal::agent("agent:synthetic-probe")
+            .expect("named agent"),
         actor_scope: ActorScope::User,
         trust_origin: "host",
         workspace_root: workspace,
@@ -2165,7 +2287,8 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
     assert_eq!(launch_grants.len(), 1, "only the timer launch grant");
     assert_eq!(launch_grants[0].1, "allow");
     let timer = mon
-        .list_entries()
+        .host_records()
+        .entries()
         .into_iter()
         .find(|row| row.id == launch_grants[0].0)
         .unwrap();
@@ -2180,7 +2303,7 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
     node_click_permissions_button(&mut h, pane, "Allow");
     pump_until(&mut h, |_| permission_changes(&mon).len() == 1);
     assert!(
-        mon.show_pending(&pending).is_some(),
+        mon.host_records().pending_id(&pending).is_some(),
         "the ask is still pending"
     );
     assert_eq!(
@@ -2192,7 +2315,9 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
     // (b) What a synthetic click can still do: narrow. Revoke denies the ask.
     let back_before_revoke = permissions_button(&h, pane, "Back").expect("Back before refresh");
     node_click_permissions_button(&mut h, pane, "Revoke");
-    pump_until(&mut h, |_| mon.show_pending(&pending).is_none());
+    pump_until(&mut h, |_| {
+        mon.host_records().pending_id(&pending).is_none()
+    });
     // Force the inventory rebuild to land after resolving Back and before its
     // click. The selected pending row disappears and selection clears.
     // Back must retain its identity while no other entry is opened implicitly.
@@ -2292,7 +2417,7 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
     let allow_item = permission_changes(&mon)
         .into_iter()
         .find(|id| {
-            mon.list_needs_you().iter().any(|row| {
+            mon.host_records().questions(true).iter().any(|row| {
                 &row.id == id && row.run_tag.as_deref() == Some(&format!("allow:{deny}"))
             })
         })
@@ -2324,7 +2449,10 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
     let rel = approve - origin;
     let undecided = |h: &HostHarness, route: &str| {
         assert!(
-            mon.list_needs_you().iter().any(|row| row.id == allow_item),
+            mon.host_records()
+                .questions(true)
+                .iter()
+                .any(|row| row.id == allow_item),
             "{route}: the Needs you item was resolved"
         );
         assert_eq!(entry_kinds(&mon), unchanged, "{route}: a grant changed");
@@ -2454,7 +2582,10 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
         ..Default::default()
     });
     pump_until(&mut h, |_| {
-        !mon.list_needs_you().iter().any(|row| row.id == allow_item)
+        !mon.host_records()
+            .questions(true)
+            .iter()
+            .any(|row| row.id == allow_item)
     });
     assert!(
         entry_kinds(&mon)
@@ -2469,7 +2600,10 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
 fn agent_widen(mon: &PermissionMonitor, ask: &str) -> String {
     let caller = crate::broker::gate::PermissionCaller {
         revoke_scope: crate::broker::gate::RevokeScope::Own,
-        actor_id: "agent:synthetic-probe".to_string(),
+        owner: crate::broker::principal::RecordOwner::stored(
+            crate::broker::ActorType::Agent,
+            "agent:synthetic-probe",
+        ),
     };
     match mon.mutate_entry(ask, "allow", &caller) {
         crate::broker::gate::PermissionMutation::NeedsYou { needs_you_id, .. } => needs_you_id,
@@ -2481,7 +2615,10 @@ fn resolution_of(
     mon: &PermissionMonitor,
     id: &str,
 ) -> Option<crate::broker::gate::NeedsYouResolution> {
-    mon.get_needs_you(id).expect("item record").resolution
+    mon.host_records()
+        .question(id)
+        .expect("item record")
+        .resolution
 }
 
 /// Approving the ask itself retires the agent's pending "allow" item for it
@@ -2497,7 +2634,8 @@ fn approving_an_ask_retires_its_permission_change_and_keeps_the_grant() {
     mon.approve_pending(&ask, ApprovalChoice::Always).unwrap();
 
     assert!(
-        mon.open_needs_you()
+        mon.host_records()
+            .open()
             .iter()
             .all(|row| row.kind != crate::broker::gate::NeedsYouKind::PermissionChange),
         "the ask was granted, so its widen item is retired immediately"
@@ -2507,7 +2645,8 @@ fn approving_an_ask_retires_its_permission_change_and_keeps_the_grant() {
         Some(NeedsYouResolution::Retired)
     );
     let grant = mon
-        .list_entries()
+        .host_records()
+        .entries()
         .into_iter()
         .find(|entry| entry.kind == "allow")
         .expect("the approval's grant is kept")
@@ -2518,13 +2657,18 @@ fn approving_an_ask_retires_its_permission_change_and_keeps_the_grant() {
         .expect("a retired item returns its receipt");
     assert!(receipt.already);
     assert_eq!(receipt.resolution, NeedsYouResolution::Retired);
-    assert!(mon.list_entries().iter().any(|entry| entry.id == grant));
+    assert!(mon
+        .host_records()
+        .entries()
+        .iter()
+        .any(|entry| entry.id == grant));
     assert!(matches!(
         mon.admit(AdmitRequest {
             call_id: "call-granted-again",
             tool: "probe.granted",
             input_json: "{}",
-            principal: &crate::broker::principal::Principal::agent("agent:synthetic-probe"),
+            principal: &crate::broker::principal::Principal::agent("agent:synthetic-probe")
+                .expect("named agent"),
             actor_scope: ActorScope::User,
             trust_origin: "host",
             workspace_root: workspace.path(),
@@ -2551,7 +2695,7 @@ fn a_retired_permission_change_id_cannot_settle_a_repeated_ask() {
     let old_widen = agent_widen(&mon, &first);
     let human = PermissionCaller {
         revoke_scope: crate::broker::gate::RevokeScope::Any,
-        actor_id: "human".to_string(),
+        owner: crate::broker::principal::RecordOwner::Host("human".into()),
     };
     let revoked = mon.mutate_entry(&first, "revoke", &human);
     assert!(
@@ -2560,7 +2704,10 @@ fn a_retired_permission_change_id_cannot_settle_a_repeated_ask() {
     );
     // `open_needs_you` only reads; `get_needs_you` sweeps and would retire it.
     assert!(
-        mon.open_needs_you().iter().all(|row| row.id != old_widen),
+        mon.host_records()
+            .open()
+            .iter()
+            .all(|row| row.id != old_widen),
         "the revoke itself retires the item"
     );
     assert_eq!(
@@ -2581,7 +2728,7 @@ fn a_retired_permission_change_id_cannot_settle_a_repeated_ask() {
         assert!(receipt.already, "approve={approve}");
         assert_eq!(receipt.resolution, NeedsYouResolution::Retired);
         assert!(
-            mon.show_pending(&second).is_some(),
+            mon.host_records().pending_id(&second).is_some(),
             "approve={approve}: the new ask is still pending"
         );
         assert_eq!(

@@ -200,8 +200,7 @@ pub(crate) fn admit_stream_members(
         .iter()
         .map(|target| {
             PermissionRequest::exact(&crate::broker::ExactBinding::event_stream(
-                subscriber.actor_type(),
-                subscriber.actor_id(),
+                subscriber,
                 actor_scope,
                 target,
                 workspace,
@@ -211,8 +210,7 @@ pub(crate) fn admit_stream_members(
         .collect();
     let once_row = |request: &PermissionRequest| {
         GrantRecord::event_stream_allow(
-            request.actor_type,
-            &request.actor_id,
+            subscriber,
             request.actor_scope,
             &request.target_id,
             workspace,
@@ -307,8 +305,7 @@ fn evaluate_targets(
     let mut strictest = Decision::Allow;
     for target in targets {
         let binding = crate::broker::ExactBinding::event_stream(
-            principal.actor_type(),
-            principal.actor_id(),
+            principal,
             actor_scope,
             target,
             workspace,
@@ -418,16 +415,8 @@ pub struct HostSubscribeRequest {
     /// per concurrent waiter (e.g. the host MCP server mints `mcp:host:<uuid>`),
     /// never sourced from an untrusted client argument.
     pub subscriber_override: Option<String>,
-    /// Host-stamped actor type for non-CLI subscribers. App runtimes set this
-    /// to `App`; transports leave it unset and resolve as `Agent`.
-    pub subscriber_type_override: Option<ActorType>,
-    /// Transport-supplied *authorization identity*: the stable actor id the
-    /// broker checks grants against, decoupled from the per-call routing key
-    /// above (#2290). When `None`, the broker actor is the routing id itself
-    /// (the CLI case, where `pane:N` is already both stable and unique). The
-    /// host MCP server sets this to the stable `mcp:host` so one "Always" grant
-    /// covers every concurrent connection.
-    pub broker_actor_override: Option<String>,
+    /// The requester established by the host transport before enqueueing.
+    pub principal: Principal,
     /// Workspace used for broker posture evaluation, resolved by the caller
     /// from the subscriber's host-established `ScopeOrigin` (stint 0724
     /// Phase D — there is no ambient service-level fallback). `None` only
@@ -460,8 +449,7 @@ pub struct HostSubscribeRequest {
 /// Who an always event-stream grant is for and what it covers; the
 /// person's decision travels beside it.
 struct AlwaysStreamGrant<'a> {
-    actor_type: ActorType,
-    actor_id: &'a str,
+    principal: &'a Principal,
     plugin_id: &'a str,
     targets: &'a [String],
     workspace_root: &'a Path,
@@ -527,7 +515,7 @@ pub struct PendingEventConsent {
     /// Authorization identity — stable actor the broker grant is persisted
     /// against on `AllowAlways` (#2290). Equals `subscriber_id` unless the
     /// transport decoupled them (host MCP: `mcp:host`).
-    pub broker_actor_id: String,
+    pub principal: Principal,
     /// App-id namespace the streams live under.
     pub plugin_id: String,
     /// Concrete stream names touched; an all-streams request was expanded to
@@ -746,35 +734,21 @@ impl HostSubscriptionService {
         self.posture = PermissionPosture::load_from_config(config_dir);
     }
 
-    /// Derive the trusted subscriber identity for a transport connection from
-    /// the host-stamped pane id. CLI/MCP agents are `Agent`-typed; the id is
-    /// namespaced by pane so it never collides with the assistant
-    /// (`agent:assistant`) or a `WASM plugin runtime` (its `type_id`). A connection with
-    /// no pane context (rare) gets a stable anonymous id.
-    pub fn resolve_cli_subscriber(from_pane_id: Option<u64>) -> (ActorType, String) {
-        match from_pane_id {
-            Some(p) => (ActorType::Agent, format!("pane:{p}")),
-            // No pane: the one stored identity of a process outside Plexi,
-            // disjoint from every agent name (stint 1285).
-            None => (
-                ActorType::External,
-                crate::broker::principal::EXTERNAL_ID.to_string(),
-            ),
-        }
-    }
-
     /// Record an in-memory session-scoped `Allow` grant so a parent master pane
     /// (`broker_actor_id`, e.g. `"pane:1"`) can subscribe to its spawned child
     /// worker pane's `plexi.pane::lifecycle` stream without a human consent modal.
-    pub fn allow_parent_child_lifecycle(&mut self, broker_actor_id: &str, workspace_root: &Path) {
+    pub fn allow_parent_child_lifecycle(
+        &mut self,
+        parent: &crate::broker::principal::PanePrincipal,
+        workspace_root: &Path,
+    ) {
         let target = format!(
             "{}::{}",
             crate::host::pane_lifecycle::PUBLISHER,
             crate::host::pane_lifecycle::STREAM
         );
         self.monitor.store().record(GrantRecord::event_stream_allow(
-            ActorType::Agent,
-            broker_actor_id,
+            &crate::broker::principal::Principal::Pane(parent.clone()),
             ActorScope::User,
             &target,
             workspace_root,
@@ -808,20 +782,26 @@ impl HostSubscriptionService {
         {
             return None;
         }
-        let (subscriber_type, subscriber_id) = match &req.subscriber_override {
-            Some(id) => (
-                req.subscriber_type_override.unwrap_or(ActorType::Agent),
-                id.clone(),
-            ),
-            None => Self::resolve_cli_subscriber(req.from_pane_id),
-        };
-        // Authorization identity: the stable actor the broker grants are keyed
-        // to. Defaults to the routing id (CLI: `pane:N` is both), overridden by
-        // the host MCP server to `mcp:host` so grants outlive any one connection.
-        let broker_actor_id = req
-            .broker_actor_override
+        let subscriber = req.principal.clone();
+        if let Principal::Pane(owner) = &subscriber {
+            let current = req
+                .subscriber_authority
+                .admitted()
+                .and_then(|scope| scope.current().ok().map(|live| live.principal()));
+            if current.as_ref() != Some(owner) {
+                log::info!("event_subscriptions: refused subscription with stale pane authority");
+                let _ = req.reply.send(HostSubscribeReply::Err {
+                    message: "missing live subscriber authority".into(),
+                });
+                return None;
+            }
+        }
+        let subscriber_type = subscriber.actor_type();
+        let broker_actor_id = subscriber.actor_id().to_owned();
+        let subscriber_id = req
+            .subscriber_override
             .clone()
-            .unwrap_or_else(|| subscriber_id.clone());
+            .unwrap_or_else(|| broker_actor_id.clone());
         // Viewer context for reachability and stream-declaration scoping —
         // stint 0724 Phase D. `0` matches no real context (mirrors
         // `AgentHost`'s pre-attach sentinel) and is only reached when the
@@ -874,17 +854,6 @@ impl HostSubscriptionService {
                 let _ = req.reply.send(HostSubscribeReply::Err { message });
                 return None;
             }
-        };
-        let Some(subscriber) =
-            Principal::from_actor(subscriber_type, &broker_actor_id, req.from_pane_id)
-        else {
-            log::info!(
-                "event_subscriptions: deny {subscriber_type:?} '{broker_actor_id}': not a requesting principal"
-            );
-            let _ = req.reply.send(HostSubscribeReply::Err {
-                message: format!("'{broker_actor_id}' cannot request event subscriptions"),
-            });
-            return None;
         };
         let posture = match (&self.posture, &ceiling) {
             (Some(host), Some(pane)) => Some(host.clone().restricted_by(pane)),
@@ -974,7 +943,7 @@ impl HostSubscriptionService {
                     request_id: crate::broker::consent::next_consent_request_id(),
                     subscriber_type,
                     subscriber_id,
-                    broker_actor_id,
+                    principal: subscriber.clone(),
                     plugin_id: req.publisher_plugin_id,
                     event_names: req.event_names,
                     admitted: req.subscriber_authority.admitted(),
@@ -1026,7 +995,7 @@ impl HostSubscriptionService {
             request_id,
             subscriber_type,
             subscriber_id,
-            broker_actor_id,
+            principal,
             plugin_id,
             event_names,
             admitted,
@@ -1075,8 +1044,7 @@ impl HostSubscriptionService {
                 Some(Err(error)) => Err(error),
                 Some(Ok(evidence)) => self.persist_always_grants(
                     AlwaysStreamGrant {
-                        actor_type: subscriber_type,
-                        actor_id: &broker_actor_id,
+                        principal: &principal,
                         plugin_id: &plugin_id,
                         targets: &targets,
                         workspace_root: &workspace_root,
@@ -1254,8 +1222,7 @@ impl HostSubscriptionService {
         evidence: crate::broker::consent::CoveredDecision<'_>,
     ) -> Result<(), String> {
         let AlwaysStreamGrant {
-            actor_type,
-            actor_id,
+            principal,
             plugin_id,
             targets,
             workspace_root,
@@ -1266,8 +1233,7 @@ impl HostSubscriptionService {
                 .iter()
                 .map(|target| {
                     let record = GrantRecord::event_stream_allow(
-                        actor_type,
-                        actor_id,
+                        principal,
                         ActorScope::User,
                         target,
                         workspace_root,
@@ -1291,7 +1257,7 @@ impl HostSubscriptionService {
             return Err(message);
         }
         log::info!(
-            "event_subscriptions: user granted ALWAYS to {actor_type:?} '{actor_id}' -> '{plugin_id}' grants={ids:?}"
+            "event_subscriptions: user granted ALWAYS to {principal} -> '{plugin_id}' grants={ids:?}"
         );
         Ok(())
     }
@@ -1310,10 +1276,19 @@ impl HostSubscriptionService {
         &self,
         mut req: HostPublishRequest,
     ) -> Option<PendingEventConsent> {
-        let (actor_type, actor_id) = match &req.subscriber_override {
-            Some(id) => (ActorType::Agent, id.clone()),
-            None => Self::resolve_cli_subscriber(req.from_pane_id),
+        let publisher = match &req.socket_caller {
+            Some(caller) => caller.principal(),
+            None => req.subscriber_override.as_ref().and_then(Principal::agent),
         };
+        let Some(publisher) = publisher else {
+            log::info!("event_subscriptions: publish refused without a live requester");
+            let _ = req.reply.send(HostPublishReply::Err {
+                message: "missing publisher authority".into(),
+            });
+            return None;
+        };
+        let actor_type = publisher.actor_type();
+        let actor_id = publisher.actor_id().to_owned();
         // Host-stamp the emitter identity so an event's provenance is the
         // agent/pane, never the plugin-id namespace it publishes under.
         if let PublishAction::Emit(ev) = &mut req.action {
@@ -1343,15 +1318,6 @@ impl HostSubscriptionService {
                 return None;
             }
         }
-        let Some(publisher) = Principal::from_actor(actor_type, &actor_id, req.from_pane_id) else {
-            log::info!(
-                "event_subscriptions: deny publish by {actor_type:?} '{actor_id}': not a requesting principal"
-            );
-            let _ = req.reply.send(HostPublishReply::Err {
-                message: format!("'{actor_id}' cannot publish events"),
-            });
-            return None;
-        };
         let decision = evaluate_publish(
             &self.monitor.store(),
             self.posture.as_ref(),
@@ -1392,11 +1358,17 @@ impl HostSubscriptionService {
                     subscriber_type: actor_type,
                     // Publish is one-shot with no long-poll, so routing and
                     // authorization identity are the same emitter id.
-                    broker_actor_id: actor_id.clone(),
+                    principal: publisher,
                     subscriber_id: actor_id,
                     plugin_id: req.plugin_id,
                     event_names,
-                    admitted: None,
+                    admitted: req
+                        .socket_caller
+                        .as_ref()
+                        .and_then(|caller| caller.pane())
+                        .map(|pane| {
+                            crate::host::plugin_timeline::AdmittedScope::of(&pane.authority)
+                        }),
                     subscriber_context_id: context_id,
                     workspace_root: req.workspace_root_override.clone().unwrap_or_default(),
                     action: ConsentAction::Publish {
@@ -1467,10 +1439,24 @@ mod tests {
     /// existing same-context assertion unchanged.
     const CTX: u64 = 1;
 
+    fn allow_pane(
+        scope: &crate::host::plugin_timeline::AdmittedScope,
+        target: &str,
+    ) -> GrantRecord {
+        GrantRecord::event_stream_allow(
+            &Principal::Pane(scope.authority.principal()),
+            ActorScope::User,
+            target,
+            Path::new("/tmp/ws"),
+            GrantDuration::Always,
+            GrantSource::User,
+            None,
+        )
+    }
+
     fn allow_grant(actor_id: &str, target_id: &str) -> GrantRecord {
         GrantRecord::event_stream_allow(
-            ActorType::Agent,
-            actor_id,
+            &crate::broker::principal::Principal::agent(actor_id).unwrap(),
             ActorScope::User,
             target_id,
             Path::new("/tmp/ws"),
@@ -1508,7 +1494,7 @@ mod tests {
             &timeline,
             "event-probe",
             ActorType::Agent,
-            "pane:7",
+            "event-test",
             CTX,
             vec!["probe.tick".to_string()],
             PayloadMode::Full,
@@ -1525,7 +1511,7 @@ mod tests {
     fn subscribe_succeeds_with_grant() {
         let timeline = timeline_with_stream();
         let mut store = GrantStore::default();
-        store.record(allow_grant("pane:7", "event-probe::probe.tick"));
+        store.record(allow_grant("event-test", "event-probe::probe.tick"));
         let res = evaluate_and_record_subscription(
             &store,
             None,
@@ -1533,7 +1519,7 @@ mod tests {
             &timeline,
             "event-probe",
             ActorType::Agent,
-            "pane:7",
+            "event-test",
             CTX,
             vec!["probe.tick".to_string()],
             PayloadMode::Full,
@@ -1551,9 +1537,9 @@ mod tests {
         // Grant both the pane-derived (CLI) and override (MCP) identities, for
         // both read (subscribe) and write (publish) targets — the two are
         // distinct grant targets and never satisfy each other.
-        store.record(allow_grant("pane:7", "event-probe::probe.tick"));
+        store.record(allow_grant("event-test", "event-probe::probe.tick"));
         store.record(allow_grant("mcp:host", "event-probe::probe.tick"));
-        store.record(allow_grant("pane:7", "publish:event-probe::probe.tick"));
+        store.record(allow_grant("event-test", "publish:event-probe::probe.tick"));
         store.record(allow_grant("mcp:host", "publish:event-probe::probe.tick"));
         HostSubscriptionService::new_for_test(store, timeline)
     }
@@ -1563,7 +1549,7 @@ mod tests {
         let timeline = timeline_with_stream();
         let mut store = GrantStore::default();
         let mut grant = allow_grant("notes-app", "event-probe::probe.tick");
-        grant.actor_type = ActorType::Plugin;
+        grant.actor = Principal::plugin("notes-app", None).into();
         grant.workspace_root = Some(PathBuf::from("/workspace/notes"));
         store.record(grant);
         let service = HostSubscriptionService::new_for_test(store, Arc::clone(&timeline));
@@ -1576,8 +1562,7 @@ mod tests {
             resource_id: None,
             from_pane_id: Some(41),
             subscriber_override: Some(plugin_subscriber_id(41)),
-            subscriber_type_override: Some(ActorType::Plugin),
-            broker_actor_override: Some("notes-app".to_string()),
+            principal: Principal::plugin_in_pane("notes-app", 41),
             workspace_root_override: Some(PathBuf::from("/workspace/notes")),
             subscriber_authority: SubscriberAuthority::External,
             context_id_override: Some(CTX),
@@ -1619,9 +1604,8 @@ mod tests {
             trigger_mode: TriggerMode::Conversation,
             resource_id: None,
             from_pane_id: Some(7),
-            subscriber_override: override_id.map(String::from),
-            subscriber_type_override: None,
-            broker_actor_override: None,
+            subscriber_override: Some(override_id.unwrap_or("event-test").into()),
+            principal: Principal::agent(override_id.unwrap_or("event-test")).unwrap(),
             workspace_root_override: Some(PathBuf::from("/tmp/ws")),
             subscriber_authority: SubscriberAuthority::External,
             context_id_override: Some(CTX),
@@ -1651,8 +1635,7 @@ mod tests {
             resource_id: None,
             from_pane_id: None,
             subscriber_override: Some(delivery_id.to_string()),
-            subscriber_type_override: None,
-            broker_actor_override: Some(broker_actor.to_string()),
+            principal: Principal::agent(broker_actor).unwrap(),
             workspace_root_override: Some(PathBuf::from("/tmp/ws")),
             subscriber_authority: SubscriberAuthority::External,
             context_id_override: Some(CTX),
@@ -1758,7 +1741,7 @@ mod tests {
         let (req, rx) = subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
         assert!(svc.classify_subscribe_request(req).is_none());
         match rx.recv().unwrap() {
-            HostSubscribeReply::Ok { subscriber_id, .. } => assert_eq!(subscriber_id, "pane:7"),
+            HostSubscribeReply::Ok { subscriber_id, .. } => assert_eq!(subscriber_id, "event-test"),
             HostSubscribeReply::Err { message } => panic!("should subscribe: {message}"),
         }
     }
@@ -1793,12 +1776,12 @@ mod tests {
         let consent = svc
             .classify_subscribe_request(req)
             .expect("Ask must park a consent, not answer inline");
-        assert_eq!(consent.subscriber_id, "pane:7");
+        assert_eq!(consent.subscriber_id, "event-test");
         assert!(timeline.lock().unwrap().subscriptions().is_empty());
 
         svc.resolve_consent(consent, ConsentChoice::AllowOnce);
         match rx.recv().unwrap() {
-            HostSubscribeReply::Ok { subscriber_id, .. } => assert_eq!(subscriber_id, "pane:7"),
+            HostSubscribeReply::Ok { subscriber_id, .. } => assert_eq!(subscriber_id, "event-test"),
             HostSubscribeReply::Err { message } => panic!("allow-once should subscribe: {message}"),
         }
         assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
@@ -1854,7 +1837,7 @@ mod tests {
             .store()
             .records()
             .iter()
-            .filter(|record| record.actor_id == actor)
+            .filter(|record| record.actor.id() == actor)
             .map(|record| record.grant_id.clone())
             .collect()
     }
@@ -1870,13 +1853,14 @@ mod tests {
             HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
         let admitted = pane_scope(7, &[]);
         let (mut req, rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.principal = Principal::Pane(admitted.authority.principal());
         req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
         let consent = svc
             .classify_subscribe_request(req)
             .expect("no grant yet: consent is asked");
         svc.resolve_consent(consent, ConsentChoice::AllowAlways);
         assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
-        let granted = grant_ids_of(&svc, "pane:7");
+        let granted = grant_ids_of(&svc, admitted.authority.principal().actor_id());
         assert_eq!(granted.len(), 1, "the Always row is in the monitor's store");
 
         emit(&timeline, "probe.tick");
@@ -1900,6 +1884,7 @@ mod tests {
 
         // The next subscribe asks again.
         let (mut req, _rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.principal = Principal::Pane(admitted.authority.principal());
         req.subscriber_authority = SubscriberAuthority::Pane(admitted);
         assert!(svc.classify_subscribe_request(req).is_some());
     }
@@ -1917,6 +1902,7 @@ mod tests {
         let mut svc = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
         let admitted = pane_scope(7, &[]);
         let (mut req, rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.principal = Principal::Pane(admitted.authority.principal());
         req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
         let consent = svc.classify_subscribe_request(req).expect("asks first");
         svc.resolve_consent(consent, ConsentChoice::AllowAlways);
@@ -1931,9 +1917,13 @@ mod tests {
         // As `reload_after_keychain_prompt` does: the same monitor's store is
         // replaced by the reset file.
         *svc.monitor().store() = GrantStore::load_or_default(dir.path()).unwrap();
-        assert!(grant_ids_of(&svc, "pane:7").is_empty(), "grants were reset");
+        assert!(
+            grant_ids_of(&svc, admitted.authority.principal().actor_id()).is_empty(),
+            "grants were reset"
+        );
         assert_eq!(delivered(&timeline), Vec::<String>::new(), "dropped");
         let (mut req, _rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.principal = Principal::Pane(admitted.authority.principal());
         req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
         assert!(svc.classify_subscribe_request(req).is_some(), "asks again");
 
@@ -1941,6 +1931,7 @@ mod tests {
         crate::broker::gate::PermissionMonitor::reload_for_test(dir.path());
         let svc2 = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
         let (mut req, _rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.principal = Principal::Pane(admitted.authority.principal());
         req.subscriber_authority = SubscriberAuthority::Pane(admitted);
         assert!(
             svc2.classify_subscribe_request(req).is_some(),
@@ -2034,7 +2025,7 @@ mod tests {
             plugin_id: plugin_id.to_string(),
             action,
             from_pane_id: Some(7),
-            subscriber_override: override_id.map(String::from),
+            subscriber_override: Some(override_id.unwrap_or("event-test").into()),
             workspace_root_override: Some(PathBuf::from("/tmp/ws")),
             context_id_override: Some(CTX),
             socket_caller: None,
@@ -2061,7 +2052,7 @@ mod tests {
         }
         let t = timeline.lock().unwrap();
         assert_eq!(t.events().len(), 1);
-        assert_eq!(t.events()[0].actor_id, "pane:7");
+        assert_eq!(t.events()[0].actor_id, "event-test");
     }
 
     /// The host-stamped override identity (MCP) is honoured for publish too.
@@ -2112,7 +2103,7 @@ mod tests {
         let consent = svc
             .classify_publish_request(req)
             .expect("Ask must park a consent");
-        assert_eq!(consent.subscriber_id, "pane:7");
+        assert_eq!(consent.subscriber_id, "event-test");
         assert_eq!(consent.action_verb(), "publish to");
         assert!(timeline
             .lock()
@@ -2308,7 +2299,7 @@ mod tests {
         timeline
             .lock()
             .unwrap()
-            .take_deliveries_for(ActorType::Agent, "pane:7")
+            .take_deliveries_for(ActorType::Pane, "event-test")
             .into_iter()
             .map(|d| d.event)
             .collect()
@@ -2327,7 +2318,6 @@ mod tests {
         let mut subscribe = |delivery: &str, events: &[&str]| {
             let (mut req, rx) = subscribe_request_decoupled(delivery, "app-probe");
             req.event_names = events.iter().map(|e| e.to_string()).collect();
-            req.subscriber_type_override = Some(ActorType::Agent);
             req.subscriber_authority = SubscriberAuthority::Plugin;
             if let Some(consent) = svc.classify_subscribe_request(req) {
                 svc.resolve_consent(consent, ConsentChoice::AllowAlways);
@@ -2375,14 +2365,16 @@ mod tests {
         let timeline = timeline_with_stream();
         declare(&timeline, "probe.late");
         let mut store = GrantStore::default();
-        let always = allow_grant("pane:7", "event-probe::probe.tick");
+        let admitted = pane_scope(7, &[]);
+        let always = allow_pane(&admitted, "event-probe::probe.tick");
         let always_id = always.grant_id.clone();
         store.record(always);
         let mut svc = HostSubscriptionService::new_for_test(store, Arc::clone(&timeline));
         let subscribe = |svc: &mut HostSubscriptionService, events: &[&str]| {
             let names = events.iter().map(|e| e.to_string()).collect();
             let (mut req, rx) = subscribe_request(names, PayloadMode::Full, None);
-            req.subscriber_authority = SubscriberAuthority::Pane(pane_scope(7, &[]));
+            req.principal = Principal::Pane(admitted.authority.principal());
+            req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
             (svc.classify_subscribe_request(req), rx)
         };
         let (consent, rx) = subscribe(&mut svc, &["probe.tick", "probe.late"]);
@@ -2406,7 +2398,9 @@ mod tests {
         let subscribe = |svc: &mut HostSubscriptionService| {
             let (mut req, rx) =
                 subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
-            req.subscriber_authority = SubscriberAuthority::Pane(pane_scope(7, &[]));
+            let admitted = pane_scope(7, &[]);
+            req.principal = Principal::Pane(admitted.authority.principal());
+            req.subscriber_authority = SubscriberAuthority::Pane(admitted);
             (svc.classify_subscribe_request(req), rx)
         };
         let (consent, rx) = subscribe(&mut svc);
@@ -2430,13 +2424,14 @@ mod tests {
         for change in ["none", "scope", "close", "grant"] {
             let timeline = timeline_with_stream();
             let mut store = GrantStore::default();
-            let grant = allow_grant("pane:7", "event-probe::probe.tick");
+            let admitted = pane_scope(7, &[]);
+            let grant = allow_pane(&admitted, "event-probe::probe.tick");
             let grant_id = grant.grant_id.clone();
             store.record(grant);
             let service = HostSubscriptionService::new_for_test(store, Arc::clone(&timeline));
-            let admitted = pane_scope(7, &[]);
             let (mut req, rx) =
                 subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+            req.principal = Principal::Pane(admitted.authority.principal());
             req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
             assert!(service.classify_subscribe_request(req).is_none());
             assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
@@ -2484,15 +2479,18 @@ mod tests {
         let timeline = timeline_with_stream();
         declare(&timeline, "probe.secret");
         let mut store = GrantStore::default();
-        for stream in ["probe.tick", "probe.secret", "probe.late"] {
-            store.record(allow_grant("pane:7", &format!("event-probe::{stream}")));
+        let admitted = pane_scope(7, &[]);
+        let restricted = pane_scope(7, &["event-probe::probe.secret"]);
+        for scope in [&admitted, &restricted] {
+            for stream in ["probe.tick", "probe.secret", "probe.late", "*"] {
+                store.record(allow_pane(scope, &format!("event-probe::{stream}")));
+            }
         }
-        store.record(allow_grant("pane:7", "event-probe::*"));
         let service = HostSubscriptionService::new_for_test(store, Arc::clone(&timeline));
 
         let (mut req, rx) = subscribe_request(Vec::new(), PayloadMode::Full, None);
-        req.subscriber_authority =
-            SubscriberAuthority::Pane(pane_scope(7, &["event-probe::probe.secret"]));
+        req.principal = Principal::Pane(restricted.authority.principal());
+        req.subscriber_authority = SubscriberAuthority::Pane(restricted);
         assert!(service.classify_subscribe_request(req).is_none());
         assert!(
             matches!(rx.recv().unwrap(), HostSubscribeReply::Err { .. }),
@@ -2508,8 +2506,8 @@ mod tests {
         );
 
         // Positive control: every member allowed.
-        let admitted = pane_scope(7, &[]);
         let (mut req, rx) = subscribe_request(Vec::new(), PayloadMode::Full, None);
+        req.principal = Principal::Pane(admitted.authority.principal());
         req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
         assert!(service.classify_subscribe_request(req).is_none());
         assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
@@ -2538,6 +2536,7 @@ mod tests {
             HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
         let admitted = pane_scope(7, &[]);
         let (mut req, rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.principal = Principal::Pane(admitted.authority.principal());
         req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
         let consent = service
             .classify_subscribe_request(req)

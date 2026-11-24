@@ -140,7 +140,7 @@ impl PlexiApp {
         let mut input = Vec::new();
         let needs_you =
             crate::broker::gate::PermissionMonitor::loaded(&crate::config::config_dir())
-                .map(|m| m.open_needs_you())
+                .map(|m| m.host_records().open())
                 .unwrap_or_default();
         for win in &self.windows {
             let context_name = self
@@ -163,12 +163,8 @@ impl PlexiApp {
                     .filter(|s| !s.is_empty());
                 let human_record = needs_you.iter().find(|n| {
                     n.kind != crate::broker::gate::NeedsYouKind::AgentDone
-                        && (n.resource == format!("pane:{pane_id}")
-                            || n.actor == format!("pane:{pane_id}")
-                            || n.run_tag
-                                .as_ref()
-                                .zip(t.agent_session_id.as_ref())
-                                .is_some_and(|(a, b)| a == b))
+                        && t.authority()
+                            .is_some_and(|live| n.actor.pane() == Some(&live.principal()))
                 });
                 let state = if human_record.is_some() {
                     AgentState::NeedsYou
@@ -225,7 +221,8 @@ impl PlexiApp {
                 let events = self
                     .pending_notifications
                     .iter()
-                    .filter(|n| n.agent_source_pane() == pane_id)
+                    .filter(|n| n.agent_source_pane() == pane_id && (!n.notify_id.starts_with("agent-attention-") ||
+                        t.authority().is_some_and(|authority| n.notify_id == super::notifications::PendingNotification::agent_attention_id(&authority.principal()))))
                     .map(|n| n.agent_event())
                     .collect();
                 let parent_title = t.parent_pane_id.and_then(|parent_id| {
@@ -424,22 +421,17 @@ impl PlexiApp {
             Some(from_pane_id),
             serde_json::json!({"answer":text}).to_string(),
         );
-        let mut session_id = None;
         if let Some(pane) = self.windows[index].panes.get_mut(&pane_id) {
             if let Some(mut state) = pane.agent().cloned() {
-                session_id = state.session_id.clone();
                 state.state = AgentState::Working;
                 state.detail = None;
                 pane.set_agent(Some(state));
             }
             if let Some(t) = pane.as_terminal_mut() {
-                if session_id.is_none() {
-                    session_id = t.agent_session_id.clone();
-                }
                 t.last_blocked_reason = None;
             }
         }
-        self.withdraw_agent_attention_items(pane_id, session_id.as_deref());
+        self.withdraw_agent_attention_items(pane_id);
         self.mark_workspace_dirty();
         log::info!("agents: reply delivered pane_id={pane_id} from_pane_id={from_pane_id}");
     }
@@ -1072,7 +1064,10 @@ mod attention_tests {
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .unwrap();
-        let settled = monitor.get_needs_you(&question_id).expect("settled item");
+        let settled = monitor
+            .host_records()
+            .question(&question_id)
+            .expect("settled item");
         assert_eq!(
             settled.resolution,
             Some(crate::broker::gate::NeedsYouResolution::Denied),
@@ -1118,7 +1113,9 @@ mod attention_tests {
             .file_needs_you_with_details(
                 crate::broker::gate::NeedsYouFile {
                     kind: crate::broker::gate::NeedsYouKind::PermissionRequest,
-                    actor: format!("pane:{agent}"),
+                    actor: crate::broker::principal::RecordOwner::Pane(
+                        h.app.pane_principal(agent).unwrap(),
+                    ),
                     resource: "git.push".into(),
                     summary: "tool 'git.push' was denied".into(),
                     expires_at: None,
@@ -1197,8 +1194,13 @@ mod attention_tests {
 #[derive(Default)]
 pub(crate) struct AttentionState {
     dock: crate::platform::attention::DockState,
-    pub(crate) reports: std::collections::HashMap<u64, AgentState>,
-    pub(crate) pending_os: Vec<(u64, AgentState, crate::agent::fleet::AgentEvent)>,
+    pub(crate) reports:
+        std::collections::HashMap<u64, (crate::broker::principal::PanePrincipal, AgentState)>,
+    pub(crate) pending_os: Vec<(
+        crate::broker::principal::PanePrincipal,
+        AgentState,
+        crate::agent::fleet::AgentEvent,
+    )>,
     toast_until: Option<std::time::Instant>,
 }
 
@@ -1209,18 +1211,17 @@ impl PlexiApp {
         state: &AgentState,
         detail: Option<&str>,
     ) {
-        if self
-            .agent_attention
-            .reports
-            .insert(pane_id, state.clone())
-            .as_ref()
-            == Some(state)
-        {
+        let Some(owner) = self.pane_principal(pane_id) else {
+            return;
+        };
+        let report = (owner.clone(), state.clone());
+        if self.agent_attention.reports.get(&pane_id) == Some(&report) {
             return;
         }
+        self.agent_attention.reports.insert(pane_id, report);
         self.agent_attention
             .pending_os
-            .retain(|(id, _, _)| *id != pane_id);
+            .retain(|(prior, _, _)| prior != &owner);
         if !matches!(
             state,
             AgentState::NeedsYou
@@ -1228,7 +1229,7 @@ impl PlexiApp {
                 | AgentState::Completed
                 | AgentState::ExitedUnreported
         ) {
-            self.clear_agent_attention_notification(pane_id);
+            self.clear_agent_attention_notification(&owner);
             return;
         }
         let role = self
@@ -1261,7 +1262,7 @@ impl PlexiApp {
         };
         // Both inboxes read this same event through the notification queue.
         let mut notification =
-            super::notifications::PendingNotification::from_agent_event(pane_id, &event);
+            super::notifications::PendingNotification::from_agent_event(&owner, &event);
         if let Some(win) = self.windows.iter().find(|w| w.panes.contains_key(&pane_id)) {
             notification.source_context_id = win.context_id;
             notification.source_window_id = win.window_id;
@@ -1277,7 +1278,7 @@ impl PlexiApp {
         {
             self.agent_attention
                 .pending_os
-                .push((pane_id, state.clone(), event));
+                .push((owner, state.clone(), event));
         }
     }
 
@@ -1330,11 +1331,8 @@ impl PlexiApp {
         &mut self,
         record: &crate::broker::gate::NeedsYouRecord,
     ) -> Option<std::path::PathBuf> {
-        let pane_id = record.details.as_ref().and_then(|d| d.pane_id).or_else(|| {
-            record
-                .actor
-                .strip_prefix("pane:")
-                .and_then(|s| s.parse::<u64>().ok())
+        let pane_id = record.actor.pane().and_then(|owner| {
+            (self.pane_principal(owner.number()).as_ref() == Some(owner)).then_some(owner.number())
         });
         let result_path = record
             .details
@@ -1397,8 +1395,11 @@ impl PlexiApp {
         result_path
     }
 
-    pub(crate) fn clear_agent_attention_notification(&mut self, pane_id: u64) {
-        let notify_id = format!("agent-attention-{pane_id}");
+    fn clear_agent_attention_notification(
+        &mut self,
+        owner: &crate::broker::principal::PanePrincipal,
+    ) {
+        let notify_id = super::notifications::PendingNotification::agent_attention_id(owner);
         let before = self.pending_notifications.len();
         self.pending_notifications
             .retain(|n| n.notify_id != notify_id);
@@ -1411,15 +1412,14 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn withdraw_agent_attention_items(
-        &mut self,
-        pane_id: u64,
-        session_id: Option<&str>,
-    ) {
+    pub(crate) fn withdraw_agent_attention_items(&mut self, pane_id: u64) {
+        let Some(owner) = self.pane_principal(pane_id) else {
+            return;
+        };
         let withdrawn =
             match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
             {
-                Ok(monitor) => monitor.withdraw_agent_needs_you(pane_id, session_id),
+                Ok(monitor) => monitor.withdraw_agent_needs_you(&owner),
                 Err(error) => {
                     log::error!("attention: agent items not withdrawn: {error}");
                     Vec::new()
@@ -1432,7 +1432,7 @@ impl PlexiApp {
                 withdrawn
             );
         }
-        self.clear_agent_attention_notification(pane_id);
+        self.clear_agent_attention_notification(&owner);
     }
 
     pub(crate) fn service_agent_attention(&mut self, ctx: &egui::Context) {
@@ -1471,8 +1471,13 @@ impl PlexiApp {
         self.agent_attention
             .reports
             .retain(|id, _| live.contains(id));
-        for (pane_id, state, event) in self.agent_attention.pending_os.drain(..) {
-            if should_raise_attention(enabled, focused, live.contains(&pane_id)) {
+        for (owner, state, event) in std::mem::take(&mut self.agent_attention.pending_os) {
+            let pane_id = owner.number();
+            if should_raise_attention(
+                enabled,
+                focused,
+                self.pane_principal(pane_id).as_ref() == Some(&owner),
+            ) {
                 crate::platform::attention::raise(pane_id, &state, &event, ctx);
             }
         }

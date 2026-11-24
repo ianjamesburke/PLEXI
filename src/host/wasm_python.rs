@@ -3127,13 +3127,13 @@ fn answer_permission_bridge(
         return (reply, Some(refusal));
     }
     if kind == PermissionBridgeKind::Read {
-        return (inventory(monitor.list_entries(), "", "list"), None);
+        return (inventory(monitor.host_records().entries(), "", "list"), None);
     }
     let outcome = monitor.mutate_entry(
         id,
         action,
         &crate::broker::gate::PermissionCaller {
-            actor_id: format!("app:{plugin_id}"),
+            owner: crate::broker::principal::RecordOwner::Host(format!("app:{plugin_id}")),
             // Reached only past `refuse_unless_bundled`: the bundled
             // Permissions view the person drives.
             revoke_scope: crate::broker::gate::RevokeScope::Any,
@@ -3159,7 +3159,7 @@ fn answer_permission_bridge(
             (error.clone(), "rejected")
         }
     };
-    (inventory(monitor.list_entries(), &notice, status), None)
+    (inventory(monitor.host_records().entries(), &notice, status), None)
 }
 
 /// The refusal for every guest that is not the bundled Permissions copy:
@@ -4486,8 +4486,9 @@ impl LivePythonPane {
         let mut index = 0;
         while index < self.consent.waiting.len() {
             let pending_id = self.consent.waiting[index].pending_id.clone();
-            let resolution = monitor.approval_resolution(&pending_id);
-            let still_pending = resolution.is_none() && monitor.show_pending(&pending_id).is_some();
+            let records = monitor.records_for(&self.principal());
+            let resolution = records.decision(&pending_id);
+            let still_pending = resolution.is_none() && records.pending_id(&pending_id).is_some();
             if still_pending {
                 index += 1;
                 continue;
@@ -4570,7 +4571,7 @@ impl LivePythonPane {
             ids.len()
         );
         if let Some(monitor) = self.consent.monitor.as_deref() {
-            monitor.retire_pending_asks(&ids);
+            monitor.records_for(&self.principal()).retire_pending(&ids);
         }
     }
 
@@ -4578,12 +4579,12 @@ impl LivePythonPane {
     /// broker pending row it renders.
     pub fn pending_capability_prompt(&self) -> Option<(u64, crate::broker::gate::PendingView)> {
         self.consent
-            .prompt()
+            .prompt(&self.principal())
             .map(|(waiting, view)| (waiting.prompt_seq, view))
     }
 
     pub fn has_pending_capability_prompt(&self) -> bool {
-        self.consent.prompt().is_some()
+        self.consent.prompt(&self.principal()).is_some()
     }
 
     /// Settle the shown ask through the broker. Only `approve_pending`
@@ -4944,7 +4945,7 @@ impl LivePythonPane {
 
     fn permission_entries() -> Vec<crate::broker::gate::PermissionEntry> {
         match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()) {
-            Ok(monitor) => monitor.list_entries(),
+            Ok(monitor) => monitor.host_records().entries(),
             Err(error) => {
                 log::error!("permissions: no inventory in this process: {error}");
                 Vec::new()
@@ -12806,7 +12807,7 @@ default = true
             call_id: call,
             tool,
             input_json: "{}",
-            principal: &crate::broker::principal::Principal::agent("agent:bridge-test"),
+            principal: &crate::broker::principal::Principal::agent("agent:bridge-test").expect("named agent"),
             actor_scope: crate::broker::ActorScope::User,
             trust_origin: "host",
             workspace_root: Path::new("/ws"),
@@ -12833,7 +12834,7 @@ default = true
             .approve_pending(&to_grant, ApprovalChoice::Always)
             .unwrap();
         let pending = bridge_admit(&monitor, "call-pending", "bridge.pending");
-        let entries = monitor.list_entries();
+        let entries = monitor.host_records().entries();
         let id_of = |kind: &str| {
             entries
                 .iter()
@@ -12856,7 +12857,7 @@ default = true
 
     fn rows(monitor: &crate::broker::gate::PermissionMonitor) -> Vec<(String, String)> {
         monitor
-            .list_entries()
+            .host_records().entries()
             .into_iter()
             .map(|entry| (entry.id, entry.kind))
             .collect()
@@ -12866,7 +12867,7 @@ default = true
     fn permission_bridge_refuses_a_plugin_without_bundled_provenance() {
         let fx = bridge_fixture();
         let before = rows(&fx.monitor);
-        let needs_before = fx.monitor.list_needs_you().len();
+        let needs_before = fx.monitor.host_records().questions(true).len();
         let read = json!({"type": "read_permission_decisions"});
         let (reply, refusal) = answer_permission_bridge(
             PermissionUiTrust::Untrusted,
@@ -12908,7 +12909,7 @@ default = true
                 })
             );
             assert_eq!(rows(&fx.monitor), before, "{action} {id} changed nothing");
-            assert_eq!(fx.monitor.list_needs_you().len(), needs_before);
+            assert_eq!(fx.monitor.host_records().questions(true).len(), needs_before);
         }
     }
 
@@ -12994,7 +12995,7 @@ default = true
         );
         let change = fx
             .monitor
-            .list_needs_you()
+            .host_records().questions(true)
             .into_iter()
             .find(|row| row.kind == NeedsYouKind::PermissionChange)
             .expect("allow files a Needs you item");
@@ -13554,7 +13555,7 @@ default = true
                 call_id: "call-1",
                 tool: "probe.add",
                 input_json: "{}",
-                principal: &crate::broker::principal::Principal::agent("agent:caller"),
+                principal: &crate::broker::principal::Principal::agent("agent:caller").expect("named agent"),
                 actor_scope: ActorScope::User,
                 trust_origin: "host",
                 workspace_root: ws.path(),

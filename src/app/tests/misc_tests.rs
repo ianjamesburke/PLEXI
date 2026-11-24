@@ -530,7 +530,8 @@ fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
         );
         assert_eq!(
             monitor
-                .get_continuation("socket-liveness-test")
+                .host_records()
+                .run("socket-liveness-test")
                 .unwrap()
                 .state,
             crate::broker::gate::ContinuationState::Paused
@@ -561,7 +562,8 @@ fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
         );
         assert_eq!(
             monitor
-                .get_continuation("socket-liveness-test")
+                .host_records()
+                .run("socket-liveness-test")
                 .unwrap()
                 .state,
             crate::broker::gate::ContinuationState::Completed
@@ -593,7 +595,7 @@ fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
                 "the persistent grant permits a fresh operation: {fresh}"
             );
             assert_eq!(h.terminal_backend(target).take_input_tap(), b"hello");
-            assert!(monitor.list_pending().is_empty());
+            assert!(monitor.host_records().pending().is_empty());
 
             // Seed the durable pre-effect claim left by a crash. The boundary
             // must return unknown and never execute it under the still-live grant.
@@ -616,18 +618,17 @@ fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
                 .find(|window| window.panes.contains_key(&caller))
                 .unwrap()
                 .context_id;
-            assert_eq!(
+            assert!(matches!(
                 monitor
                     .claim_pane_send(
                         "persistent-unknown",
-                        &format!("pane:{caller}"),
+                        &h.app.pane_principal(caller).unwrap(),
                         context,
-                        target,
                         &fingerprint
                     )
                     .unwrap(),
-                crate::broker::gate::PaneSendClaim::Claimed
-            );
+                crate::broker::gate::PaneSendClaim::Claimed(_)
+            ));
             let unknown = dispatch(&mut h, "persistent-unknown", "unknown");
             assert_eq!(unknown["error_code"], "outcome_unknown", "{unknown}");
             assert!(
@@ -1972,7 +1973,8 @@ fn dashboard_follow_stream_serves_only_the_callers_workspace() {
             call_id: &format!("follow-{marker}"),
             tool: "agents.review",
             input_json: &serde_json::json!({"marker": marker}).to_string(),
-            principal: &crate::broker::principal::Principal::agent("agent:worker"),
+            principal: &crate::broker::principal::Principal::agent("agent:worker")
+                .expect("named agent"),
             actor_scope: crate::broker::ActorScope::Workspace,
             trust_origin: "host",
             workspace_root: &crate::platform::path::canonical_or_self(&workspace),

@@ -1227,7 +1227,11 @@ impl PlexiApp {
                 .filter(|w| w.context_id == *context_id)
                 .flat_map(|w| w.panes.keys().copied())
                 .collect();
-            crate::app::attention_queue::retire_requester_approvals(&panes, Some(*context_id));
+            crate::app::attention_queue::retire_requester_approvals(
+                self,
+                &panes,
+                Some(*context_id),
+            );
         }
         self.retire_directed_pipes_in_slots(
             &doomed_pane_ids,
@@ -1602,6 +1606,7 @@ impl PlexiApp {
             .enumerate()
             .any(|(i, w)| i != index && w.context_id == removed_ws_id);
         crate::app::attention_queue::retire_requester_approvals(
+            self,
             &pane_ids,
             last_window.then_some(removed_ws_id),
         );
@@ -2128,7 +2133,7 @@ impl PlexiApp {
             if let Some(idx) = self.router.position(|c| c.context_id == child_ctx_id) {
                 self.router.remove_at(idx);
             }
-            crate::app::attention_queue::retire_requester_approvals(&[], Some(child_ctx_id));
+            crate::app::attention_queue::retire_requester_approvals(self, &[], Some(child_ctx_id));
             self.context_active_window.remove(&child_ctx_id);
             self.host.remove_strip(child_ctx_id);
             self.router.retain_depth_stack(|cid| cid != child_ctx_id);
@@ -2250,7 +2255,7 @@ impl PlexiApp {
         if let Some(idx) = self.router.position(|c| c.context_id == child_ctx_id) {
             self.router.remove_at(idx);
         }
-        crate::app::attention_queue::retire_requester_approvals(&[], Some(child_ctx_id));
+        crate::app::attention_queue::retire_requester_approvals(self, &[], Some(child_ctx_id));
 
         self.context_active_window.remove(&child_ctx_id);
         self.context_active_window

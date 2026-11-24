@@ -20,6 +20,8 @@ use super::{
 };
 
 const SCHEMA: u32 = 1;
+use super::principal::{PanePrincipal, RecordOwner};
+
 pub(crate) const ALWAYS_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 
 /// Process cache so Assistant, AgentHost, MCP, and `plexi plugin call` in one
@@ -204,17 +206,14 @@ pub struct NeedsYouDetails {
     pub context_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<u64>,
-    /// The durable key of the terminal incarnation `pane_id` names
-    /// (`LivePaneAuthority::durable_key`). A socket caller reads a
-    /// pane-bound item only from that incarnation, never by number alone.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pane_incarnation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_run: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_actor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -225,7 +224,8 @@ pub struct NeedsYouDetails {
 pub struct NeedsYouRecord {
     pub id: String,
     pub kind: NeedsYouKind,
-    pub actor: String,
+    #[serde(serialize_with = "RecordOwner::serialize_label")]
+    pub actor: RecordOwner,
     pub resource: String,
     pub summary: String,
     pub created_at: i64,
@@ -242,7 +242,7 @@ pub struct NeedsYouRecord {
 #[derive(Debug, Clone)]
 pub struct NeedsYouFile {
     pub kind: NeedsYouKind,
-    pub actor: String,
+    pub actor: RecordOwner,
     pub resource: String,
     pub summary: String,
     pub expires_at: Option<i64>,
@@ -300,12 +300,10 @@ pub struct ContinuationRecord {
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<u64>,
-    /// As [`NeedsYouDetails::pane_incarnation`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pane_incarnation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_id: Option<u64>,
-    pub actor: String,
+    #[serde(serialize_with = "RecordOwner::serialize_label")]
+    pub actor: RecordOwner,
     pub target_resource: String,
     /// Exact request binding, when this continuation represents a pane send.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -332,7 +330,7 @@ pub struct ContinuationRecord {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum PaneSendClaim {
-    Claimed,
+    Claimed(RunHandle),
     Completed,
     Conflict,
     Waiting,
@@ -393,13 +391,17 @@ struct PendingWiden {
 struct InstalledQueue {
     open: std::collections::BTreeSet<String>,
     retired: Vec<String>,
+    rebound: bool,
+    live_senders: std::collections::HashMap<String, PanePrincipal>,
 }
 
 /// One row the Permissions plugin and `plexi permissions list` share.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PermissionEntry {
+    #[serde(skip)]
+    owner: RecordOwner,
     pub id: String,
-    /// `allow`, `deny`, or `pending`.
+    /// `allow`, `deny`, `pending`, or inactive `history`.
     pub kind: String,
     /// `once`, `session`, `until`, `always`, or `ask`.
     pub duration: String,
@@ -440,7 +442,7 @@ impl CapabilityMint {
 /// applies them (stints 1264, 1271, 1285).
 #[derive(Debug, Clone)]
 pub struct PermissionCaller {
-    pub actor_id: String,
+    pub owner: RecordOwner,
     /// Whose rows a `revoke` applies to directly. Revoking another
     /// principal's row files Needs you like a widening.
     pub revoke_scope: RevokeScope,
@@ -484,6 +486,8 @@ struct SheetButton {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PendingView {
+    #[serde(skip)]
+    pub owner: RecordOwner,
     pub pending_request_id: String,
     pub actor_id: String,
     pub tool: String,
@@ -504,10 +508,10 @@ struct Pending {
     created_at: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct AuditFact {
     pub kind: String,
-    pub actor: String,
+    pub actor: RecordOwner,
     pub call_id: String,
     pub grant_id: String,
     pub resource_id: String,
@@ -520,6 +524,185 @@ pub struct AuditFact {
 
 /// In-memory audit window size for [`PermissionMonitor`].
 pub(crate) const AUDIT_MEM_CAP: usize = 4096;
+
+pub(crate) struct Records<'a> {
+    monitor: &'a PermissionMonitor,
+    access: RecordAccess,
+}
+
+enum RecordAccess {
+    Host,
+    Requester(RecordOwner),
+}
+
+impl Records<'_> {
+    fn visible(&self, actor: &RecordOwner) -> bool {
+        match &self.access {
+            RecordAccess::Host => true,
+            RecordAccess::Requester(owner) => owner == actor,
+        }
+    }
+
+    pub(crate) fn entries(&self) -> Vec<PermissionEntry> {
+        self.monitor
+            .list_entries()
+            .into_iter()
+            .filter(|row| self.visible(&row.owner))
+            .collect()
+    }
+
+    pub(crate) fn open(&self) -> Vec<NeedsYouRecord> {
+        self.monitor
+            .open_needs_you()
+            .into_iter()
+            .filter(|row| self.visible(&row.actor))
+            .collect()
+    }
+
+    pub(crate) fn pending_in_workspace(&self, workspace: &Path) -> Vec<PendingView> {
+        self.monitor
+            .list_pending_in_workspace(workspace)
+            .into_iter()
+            .filter(|row| self.visible(&row.owner))
+            .collect()
+    }
+
+    pub(crate) fn pending(&self) -> Vec<PendingView> {
+        self.monitor
+            .list_pending()
+            .into_iter()
+            .filter(|row| self.visible(&row.owner))
+            .collect()
+    }
+
+    pub(crate) fn decision(&self, pending_id: &str) -> Option<ApprovalChoice> {
+        self.question(pending_id)?;
+        self.monitor.approval_resolution(pending_id)
+    }
+
+    pub(crate) fn retire_pending(&self, ids: &[String]) {
+        self.monitor.retire_pending_asks(self, ids);
+    }
+
+    pub(crate) fn cancel(&self, pending_id: &str) -> Result<(), String> {
+        self.question(pending_id)
+            .ok_or_else(|| format!("unknown pending request {pending_id}"))?;
+        self.monitor.cancel_pending(pending_id)
+    }
+
+    pub(crate) fn withdraw_live_ask(&self, id: &str) -> Result<(), String> {
+        self.question(id)
+            .ok_or_else(|| format!("unknown pending request {id}"))?;
+        self.monitor.withdraw_live_ask(id)
+    }
+
+    pub(crate) fn filing_owner(&self) -> RecordOwner {
+        match &self.access {
+            RecordAccess::Requester(owner) => owner.clone(),
+            RecordAccess::Host => RecordOwner::Host("session:unscoped".into()),
+        }
+    }
+
+    pub(crate) fn pending_id(&self, id: &str) -> Option<PendingView> {
+        self.monitor
+            .show_pending(id)
+            .filter(|row| self.visible(&row.owner))
+    }
+
+    pub(crate) fn audit(&self) -> Vec<AuditFact> {
+        self.monitor
+            .audit_records()
+            .into_iter()
+            .filter(|row| self.visible(&row.actor))
+            .collect()
+    }
+
+    pub(crate) fn record_refusal(&self, id: &str) {
+        match &self.access {
+            RecordAccess::Requester(owner) => self.monitor.audit_refusal(owner, id),
+            RecordAccess::Host => self.monitor.refuse_client_resolve(id),
+        }
+    }
+
+    pub(crate) fn resolve_from_socket(
+        &self,
+        id: &str,
+        approve: bool,
+    ) -> Result<NeedsYouReceipt, NeedsYouResolveError> {
+        if self.question(id).is_none() {
+            return Err(NeedsYouResolveError::Failed(format!(
+                "unknown needs-you item {id}"
+            )));
+        }
+        self.monitor
+            .resolve_needs_you_on(id, approve, ResolveSurface::Socket, None)
+    }
+
+    pub(crate) fn question(&self, id: &str) -> Option<NeedsYouRecord> {
+        self.monitor
+            .get_needs_you(id)
+            .filter(|row| self.visible(&row.actor))
+    }
+
+    pub(crate) fn questions(&self, open_only: bool) -> Vec<NeedsYouRecord> {
+        let mut rows = if open_only {
+            self.monitor.list_needs_you()
+        } else {
+            self.monitor.all_needs_you()
+        };
+        rows.retain(|row| self.visible(&row.actor));
+        rows
+    }
+
+    pub(crate) fn runs(
+        &self,
+        session: Option<&str>,
+        pane: Option<u64>,
+        context: Option<u64>,
+    ) -> Vec<ContinuationRecord> {
+        let mut rows = self.monitor.list_continuations(session, pane, context);
+        rows.retain(|row| self.visible(&row.actor));
+        rows
+    }
+
+    pub(crate) fn run(&self, id: &str) -> Option<ContinuationRecord> {
+        let map = self
+            .monitor
+            .continuations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let rows = || map.values().filter(|row| self.visible(&row.actor));
+        if let Some(row) = map
+            .get(id)
+            .filter(|row| self.visible(&row.actor))
+            .or_else(|| rows().find(|row| row.needs_you_id.as_deref() == Some(id)))
+        {
+            return Some(row.clone());
+        }
+        let mut operations = rows().filter(|row| row.operation_id.as_deref() == Some(id));
+        if let Some(row) = operations.next() {
+            return operations.next().is_none().then(|| row.clone());
+        }
+        let mut correlations = rows().filter(|row| row.correlation_id.as_deref() == Some(id));
+        let row = correlations.next()?;
+        correlations.next().is_none().then(|| row.clone())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RunHandle {
+    id: String,
+    owner: RecordOwner,
+}
+
+impl ContinuationRecord {
+    pub(crate) fn handle(&self) -> RunHandle {
+        RunHandle {
+            id: self.run_id.clone(),
+            owner: self.actor.clone(),
+        }
+    }
+}
 
 pub struct PermissionMonitor {
     store: Arc<Mutex<GrantStore>>,
@@ -628,8 +811,7 @@ pub enum IdentityError {
 
 #[derive(Debug, Clone)]
 pub struct VerifiedCaller {
-    pub actor_id: String,
-    pub actor_type: ActorType,
+    pub principal: super::principal::Principal,
     pub actor_scope: ActorScope,
     pub pane_id: Option<u64>,
     pub context_id: u64,
@@ -705,6 +887,7 @@ pub enum PluginStartDecision<'m> {
 
 pub enum Admission {
     Proceed {
+        run: Option<RunHandle>,
         grant_id: String,
         fingerprint: String,
         resource_scope: ResourceScope,
@@ -741,6 +924,20 @@ impl ApprovalChoice {
 }
 
 impl PermissionMonitor {
+    pub(crate) fn records_for(&self, principal: &super::principal::Principal) -> Records<'_> {
+        Records {
+            monitor: self,
+            access: RecordAccess::Requester(RecordOwner::requester(principal)),
+        }
+    }
+
+    pub(crate) fn host_records(&self) -> Records<'_> {
+        Records {
+            monitor: self,
+            access: RecordAccess::Host,
+        }
+    }
+
     /// The profile's shared monitor. Host only: a process that never ran host
     /// start (every CLI command) gets [`super::custody::NotHostProcess`].
     pub fn for_profile(dir: &Path) -> Result<Arc<Self>, super::custody::NotHostProcess> {
@@ -836,8 +1033,9 @@ impl PermissionMonitor {
         }
         let audit = dir.join("permission-audit.jsonl");
         let mut rejected_audit_reason = None;
-        if let Err(reason) = super::seal::verify_audit(host, &audit) {
-            if super::host_key::is_key_unreadable(&reason) {
+        let history = super::seal::verified_audit(host, &audit);
+        if let Err(reason) = &history {
+            if super::host_key::is_key_unreadable(reason) {
                 log::info!(
                     "permission_monitor: audit could not be checked because the seal key is unreadable ({reason})"
                 );
@@ -846,7 +1044,7 @@ impl PermissionMonitor {
                     file: "permission-audit.jsonl".to_string(),
                     reason: reason.clone(),
                 });
-                rejected_audit_reason = Some(reason);
+                rejected_audit_reason = Some(reason.clone());
             }
         }
         log::info!(
@@ -861,6 +1059,9 @@ impl PermissionMonitor {
             Some(dir.to_path_buf()),
             Some(*host),
         );
+        if let Ok(history) = history {
+            monitor.restore_audit_window(&history);
+        }
         // Restore before filing new seal faults or clearing an untrusted seal
         // state so a persist of those faults cannot replace a queue left by the
         // previous process.
@@ -889,7 +1090,7 @@ impl PermissionMonitor {
         };
         if let Err(error) = self.file_needs_you(NeedsYouFile {
             kind: NeedsYouKind::Integrity,
-            actor: "host".to_string(),
+            actor: RecordOwner::Host("host".into()),
             resource: "permission-profile".to_string(),
             summary: finding.summary,
             expires_at: None,
@@ -902,7 +1103,7 @@ impl PermissionMonitor {
     fn file_keychain_needs_you(&self) {
         if let Err(error) = self.file_needs_you(NeedsYouFile {
             kind: NeedsYouKind::Keychain,
-            actor: "host".to_string(),
+            actor: RecordOwner::Host("host".into()),
             resource: "permission-mac".to_string(),
             summary: KEYCHAIN_ACCESS_SUMMARY.to_string(),
             expires_at: None,
@@ -969,16 +1170,19 @@ impl PermissionMonitor {
             }
             let audit = dir.join("permission-audit.jsonl");
             let mut trusted = faults.is_empty();
-            if let Err(reason) = super::seal::verify_audit(&host, &audit) {
-                if super::host_key::is_key_unreadable(&reason) {
-                    return Err(reason);
+            match super::seal::verified_audit(&host, &audit) {
+                Ok(history) => self.restore_audit_window(&history),
+                Err(reason) => {
+                    if super::host_key::is_key_unreadable(&reason) {
+                        return Err(reason);
+                    }
+                    trusted = false;
+                    super::seal::reject_untrusted_audit(&host, &audit, &reason);
+                    self.raise_integrity(&super::seal::IntegrityFault {
+                        file: "permission-audit.jsonl".to_string(),
+                        reason,
+                    });
                 }
-                trusted = false;
-                super::seal::reject_untrusted_audit(&host, &audit, &reason);
-                self.raise_integrity(&super::seal::IntegrityFault {
-                    file: "permission-audit.jsonl".to_string(),
-                    reason,
-                });
             }
             // The queue was restored before the grants loaded; retire only
             // now that the grant store is the real, verified one. This runs
@@ -1008,7 +1212,7 @@ impl PermissionMonitor {
         );
         if let Err(error) = self.file_needs_you(NeedsYouFile {
             kind: NeedsYouKind::Integrity,
-            actor: "host".to_string(),
+            actor: RecordOwner::Host("host".into()),
             resource: fault.file.clone(),
             summary,
             expires_at: None,
@@ -1018,7 +1222,7 @@ impl PermissionMonitor {
         }
         let fact = AuditFact {
             kind: "integrity".to_string(),
-            actor: "host".to_string(),
+            actor: RecordOwner::Host("host".into()),
             call_id: String::new(),
             grant_id: String::new(),
             resource_id: fault.file.clone(),
@@ -1160,7 +1364,7 @@ impl PermissionMonitor {
         req: AdmitRequest<'_>,
         posture: Option<&crate::broker::PermissionPosture>,
     ) -> Admission {
-        self.admit_inner(req, posture, None)
+        self.admit_inner(req, posture, None, None)
     }
 
     /// Admit one typed CLI operation. `disclosure` is the text the approval
@@ -1170,7 +1374,7 @@ impl PermissionMonitor {
     pub fn admit_cli_operation(&self, req: AdmitRequest<'_>, disclosure: &str) -> Admission {
         debug_assert!(req.tool.starts_with(CLI_OPERATION_TOOL_PREFIX));
         debug_assert!(req.target_type == TargetType::CliOperation);
-        self.admit_inner(req, None, Some(disclosure))
+        self.admit_inner(req, None, Some(disclosure), None)
     }
 
     /// Admit one use of a plugin consent capability (`net.http`, `fs.write`,
@@ -1179,7 +1383,7 @@ impl PermissionMonitor {
     pub fn admit_plugin_capability(&self, req: AdmitRequest<'_>, disclosure: &str) -> Admission {
         debug_assert!(req.principal.actor_type() == ActorType::Plugin);
         debug_assert!(req.target_type == TargetType::Capability);
-        self.admit_inner(req, None, Some(disclosure))
+        self.admit_inner(req, None, Some(disclosure), None)
     }
 
     /// Decide one use and, on allow, claim a once grant it rests on for one
@@ -1408,6 +1612,7 @@ impl PermissionMonitor {
                 },
                 None,
                 Some(disclosure),
+                None,
             ) {
                 Admission::Required { pending_request_id } => {
                     return PluginStartDecision::Required { pending_request_id }
@@ -1423,8 +1628,8 @@ impl PermissionMonitor {
     fn exact_binding(&self, req: &AdmitRequest<'_>, fingerprint: String) -> ExactBinding {
         let (resource_scope, resource_id) = resource_of(req.tool, req.input_json);
         ExactBinding {
-            actor_type: req.principal.actor_type(),
-            actor_id: req.principal.actor_id().to_string(),
+            agent_run: None,
+            actor: req.principal.clone().into(),
             actor_scope: req.actor_scope,
             trust_origin: req.trust_origin.to_string(),
             workspace_root: req.workspace_root.to_path_buf(),
@@ -1442,11 +1647,52 @@ impl PermissionMonitor {
         }
     }
 
+    /// Bind an outcome to the run for the admitted grant. Client operation IDs
+    /// may repeat, even within a single pane.
+    fn admitted_run(&self, binding: &ExactBinding, grant_id: &str) -> Option<RunHandle> {
+        let owner = binding.owner();
+        let resolutions = self.resolutions.lock().unwrap_or_else(|e| e.into_inner());
+        let runs = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
+        let mut candidates = runs.values().filter(|row| {
+            row.actor == owner
+                && row.request_fingerprint.is_none()
+                && if binding.operation_id.is_empty() {
+                    row.correlation_id.as_deref() == Some(&binding.call_id)
+                } else {
+                    row.operation_id.as_deref() == Some(&binding.operation_id)
+                        || row.correlation_id.as_deref() == Some(&binding.operation_id)
+                }
+        });
+        let mut decisions = candidates.clone().filter(|row| {
+            row.needs_you_id
+                .as_ref()
+                .and_then(|id| resolutions.get(id))
+                .is_some_and(|(_, granted)| !grant_id.is_empty() && granted == grant_id)
+        });
+        if let Some(exact) = decisions.next() {
+            return decisions.next().is_none().then(|| exact.handle());
+        }
+        // A question may track an operation without issuing its grant. A
+        // different approval's run cannot serve as that tracking record.
+        let first = candidates.next()?;
+        (first.resume_condition.as_deref() != Some("approval_click") && candidates.next().is_none())
+            .then(|| first.handle())
+    }
+
+    pub(crate) fn admit_agent_run(
+        &self,
+        req: AdmitRequest<'_>,
+        scope: &super::AgentRunScope,
+    ) -> Admission {
+        self.admit_inner(req, None, None, Some(scope))
+    }
+
     fn admit_inner(
         &self,
         req: AdmitRequest<'_>,
         posture: Option<&crate::broker::PermissionPosture>,
         disclosure: Option<&str>,
+        agent_run: Option<&super::AgentRunScope>,
     ) -> Admission {
         let resource_class = snake(&req.target_type);
         let trace = |decision: &str, mechanism: &str, outcome_ref: &str| {
@@ -1473,7 +1719,8 @@ impl PermissionMonitor {
                 code: "permission_denied",
             };
         }
-        let binding = self.exact_binding(&req, fingerprint);
+        let mut binding = self.exact_binding(&req, fingerprint);
+        binding.agent_run = agent_run.cloned();
         let request = PermissionRequest::exact(&binding);
         // Secret workers may file simultaneously. Finish publishing and auditing
         // the card before another worker files one or a click resolves it.
@@ -1493,7 +1740,7 @@ impl PermissionMonitor {
             Decision::Deny => {
                 trace("deny", mechanism, "code=permission_denied");
                 self.note_denial(
-                    &binding.actor_id,
+                    &binding.owner(),
                     &binding.call_id,
                     binding.resource_id.as_deref().unwrap_or(""),
                     &binding.operation_id,
@@ -1512,7 +1759,9 @@ impl PermissionMonitor {
                     .map(|record| record.grant_id.clone())
                     .unwrap_or_default();
                 trace("allow", mechanism, &format!("grant={grant_id}"));
+                let run = self.admitted_run(&binding, &grant_id);
                 Admission::Proceed {
+                    run,
                     grant_id,
                     fingerprint: binding.args_fingerprint.clone(),
                     resource_scope: binding.resource_scope,
@@ -1547,7 +1796,7 @@ impl PermissionMonitor {
                 let _ = self.audit_with(
                     &AuditFact {
                         kind: "ask".to_string(),
-                        actor: binding.actor_id.clone(),
+                        actor: binding.owner(),
                         call_id: binding.call_id.clone(),
                         grant_id: String::new(),
                         resource_id: binding.resource_id.clone().unwrap_or_default(),
@@ -1587,7 +1836,7 @@ impl PermissionMonitor {
                 log::info!(
                     "permission_monitor: reuse pending {} for actor={} tool={}",
                     existing.id,
-                    binding.actor_id,
+                    binding.actor.id(),
                     tool
                 );
                 let id = existing.id.clone();
@@ -1598,7 +1847,7 @@ impl PermissionMonitor {
                 let id = format!("req_{}", uuid::Uuid::new_v4());
                 log::info!(
                     "permission_monitor: pending {id} actor={} tool={} resource={:?}",
-                    binding.actor_id,
+                    binding.actor.id(),
                     tool,
                     binding.resource_id
                 );
@@ -1674,7 +1923,7 @@ impl PermissionMonitor {
     }
 
     /// Cancel this invocation's card or retire its Once if a click won the race.
-    pub(crate) fn withdraw_live_ask(&self, pending: &str) -> Result<(), String> {
+    fn withdraw_live_ask(&self, pending: &str) -> Result<(), String> {
         if let Err(error) = self.cancel_pending(pending) {
             let resolution = self
                 .resolutions
@@ -1736,14 +1985,14 @@ impl PermissionMonitor {
         {
             return Err("tool allowance is only available for plugin tools".to_string());
         }
-        if pending.binding.actor_type == ActorType::External
+        if pending.binding.actor.kind() == ActorType::External
             && pending.binding.target_type == TargetType::Secret
             && super::command_secret_tool(&pending.tool)
             && choice == ApprovalChoice::Session
         {
             return Err("An outside terminal needs a one-use approval for this secret.".into());
         }
-        if pending.binding.actor_type == ActorType::External
+        if pending.binding.actor.kind() == ActorType::External
             && matches!(
                 choice,
                 ApprovalChoice::Always | ApprovalChoice::AllowTool | ApprovalChoice::DenyAlways
@@ -1791,7 +2040,7 @@ impl PermissionMonitor {
             let _ = self.audit_with(
                 &AuditFact {
                     kind: "deny".to_string(),
-                    actor: pending.binding.actor_id.clone(),
+                    actor: pending.binding.owner(),
                     call_id: pending.binding.call_id.clone(),
                     grant_id: grant_id.clone(),
                     resource_id: pending.binding.resource_id.clone().unwrap_or_default(),
@@ -1913,7 +2162,7 @@ impl PermissionMonitor {
         if let Err(error) = self.audit_with(
             &AuditFact {
                 kind: "grant".to_string(),
-                actor: binding.actor_id.clone(),
+                actor: binding.owner(),
                 call_id: binding.call_id,
                 grant_id: grant_id.clone(),
                 resource_id: binding.resource_id.unwrap_or_default(),
@@ -2013,7 +2262,7 @@ impl PermissionMonitor {
             let _ = self.audit_with(
                 &AuditFact {
                     kind: kind.to_string(),
-                    actor: row.binding.actor_id.clone(),
+                    actor: row.binding.owner(),
                     call_id: row.binding.call_id.clone(),
                     grant_id: grant_id.to_string(),
                     resource_id: row.binding.resource_id.clone().unwrap_or_default(),
@@ -2054,22 +2303,22 @@ impl PermissionMonitor {
         if filed.kind.is_approval() {
             return Err("approval items are filed by the permission gate".to_string());
         }
-        if filed.actor.is_empty() || filed.summary.is_empty() {
+        if filed.actor.label().is_empty() || filed.summary.is_empty() {
             return Err("needs-you actor and summary are required".to_string());
         }
         let now = self.now_secs();
-        let (id, record, reused) = {
+        let (id, record) = {
             let mut map = self.needs_you.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(tag) = filed.run_tag.as_deref() {
                 if let Some(existing) = map.values().find(|row| {
                     row.resolution.is_none()
                         && row.kind == filed.kind
+                        && row.actor == filed.actor
                         && row.run_tag.as_deref() == Some(tag)
                         && (!matches!(
                             filed.kind,
                             NeedsYouKind::Question | NeedsYouKind::BlockedRun
-                        ) || (row.actor == filed.actor
-                            && row.resource == filed.resource
+                        ) || (row.resource == filed.resource
                             && row.summary == filed.summary
                             && match (row.details.as_ref(), details.as_ref()) {
                                 (Some(a), Some(b))
@@ -2113,27 +2362,20 @@ impl PermissionMonitor {
                 record.resource
             );
             map.insert(id.clone(), record.clone());
-            (id, record, false)
+            (id, record)
         };
-        let _ = reused;
         self.remember_origin(&id);
         if matches!(
             record.kind,
             NeedsYouKind::Question | NeedsYouKind::BlockedRun
         ) {
             let det = details.unwrap_or_default();
-            let run_id = det
-                .correlation_id
-                .clone()
-                .or_else(|| record.run_tag.clone())
-                .unwrap_or_else(|| id.clone());
-            self.upsert_continuation(ContinuationRecord {
-                run_id,
+            self.insert_continuation(ContinuationRecord {
+                run_id: format!("run_{}", uuid::Uuid::new_v4()),
                 operation_id: record.run_tag.clone(),
                 correlation_id: det.correlation_id,
                 session_id: det.session_id,
                 pane_id: det.pane_id,
-                pane_incarnation: det.pane_incarnation,
                 context_id: det.context_id,
                 actor: record.actor.clone(),
                 target_resource: record.resource.clone(),
@@ -2253,16 +2495,15 @@ impl PermissionMonitor {
     }
 
     /// Withdraw open agent-filed `Question` and `BlockedRun` attention items
-    /// for `pane_id` (or `session_id`) when the agent transitions to a
+    /// for this pane lifetime when the agent transitions to a
     /// non-attention state (`idle`, `working`, `completed`, `interrupted`).
     ///
     /// Never records an approval or mints a grant, and never touches
     /// broker-filed items (`ApprovalClick`, `PermissionChange`,
     /// `PermissionRequest`, `Integrity`, `Keychain`).
-    pub fn withdraw_agent_needs_you(&self, pane_id: u64, session_id: Option<&str>) -> Vec<String> {
+    pub fn withdraw_agent_needs_you(&self, owner: &PanePrincipal) -> Vec<String> {
         let _guard = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
-        let pane_tag = format!("pane:{pane_id}");
-        let session_tag = session_id.map(str::trim).filter(|s| !s.is_empty());
+        let pane_id = owner.number();
         let matching_ids: Vec<String> = self
             .needs_you
             .lock()
@@ -2271,15 +2512,7 @@ impl PermissionMonitor {
             .filter(|row| {
                 row.resolution.is_none()
                     && matches!(row.kind, NeedsYouKind::Question | NeedsYouKind::BlockedRun)
-                    && (row.resource == pane_tag
-                        || row.actor == pane_tag
-                        || row.run_tag.as_deref() == Some(pane_tag.as_str())
-                        || row.details.as_ref().and_then(|d| d.pane_id) == Some(pane_id)
-                        || session_tag.is_some_and(|sid| {
-                            row.run_tag.as_deref() == Some(sid)
-                                || row.details.as_ref().and_then(|d| d.session_id.as_deref())
-                                    == Some(sid)
-                        }))
+                    && row.actor.pane() == Some(owner)
             })
             .map(|row| row.id.clone())
             .collect();
@@ -2303,7 +2536,12 @@ impl PermissionMonitor {
     }
 
     /// Retire approvals owned by a removed pane or context without granting them.
-    pub(crate) fn retire_requester_approvals(&self, pane_ids: &[u64], context_id: Option<u64>) {
+    pub(crate) fn retire_requester_approvals(
+        &self,
+        owners: &[PanePrincipal],
+        plugin_panes: &[u64],
+        context_id: Option<u64>,
+    ) {
         let _resolve = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
         let _decision = self.decision_lock.lock().unwrap_or_else(|e| e.into_inner());
         let ids: Vec<String> = self
@@ -2314,16 +2552,18 @@ impl PermissionMonitor {
             .filter(|row| {
                 row.resolution.is_none()
                     && row.kind == NeedsYouKind::ApprovalClick
-                    && (row
-                        .actor
-                        .strip_prefix("pane:")
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .is_some_and(|id| pane_ids.contains(&id))
-                        || row
+                    && (row.actor.pane().is_some_and(|owner| owners.contains(owner))
+                        || (matches!(
+                            row.actor,
+                            RecordOwner::Actor {
+                                actor_type: ActorType::Plugin,
+                                ..
+                            }
+                        ) && row
                             .details
                             .as_ref()
                             .and_then(|d| d.pane_id)
-                            .is_some_and(|id| pane_ids.contains(&id))
+                            .is_some_and(|id| plugin_panes.contains(&id)))
                         || context_id.is_some_and(|id| {
                             row.details.as_ref().and_then(|d| d.context_id) == Some(id)
                         }))
@@ -2335,7 +2575,7 @@ impl PermissionMonitor {
 
     /// Retire these open approval asks without granting them: their requester
     /// is gone (a Python pane's runtime was replaced, stint 1489).
-    pub(crate) fn retire_pending_asks(&self, ids: &[String]) {
+    fn retire_pending_asks(&self, records: &Records<'_>, ids: &[String]) {
         let _resolve = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
         let _decision = self.decision_lock.lock().unwrap_or_else(|e| e.into_inner());
         let open: Vec<String> = self
@@ -2346,6 +2586,7 @@ impl PermissionMonitor {
             .filter(|row| {
                 row.resolution.is_none()
                     && row.kind == NeedsYouKind::ApprovalClick
+                    && records.visible(&row.actor)
                     && ids.contains(&row.id)
             })
             .map(|row| row.id.clone())
@@ -2398,13 +2639,13 @@ impl PermissionMonitor {
     }
 
     /// Return one `NeedsYouRecord` (open or resolved) by id.
-    pub fn get_needs_you(&self, id: &str) -> Option<NeedsYouRecord> {
+    fn get_needs_you(&self, id: &str) -> Option<NeedsYouRecord> {
         self.expire_needs_you();
         self.needs_you_of(id)
     }
 
     /// Return all `NeedsYouRecord`s (open and resolved) in creation order.
-    pub fn all_needs_you(&self) -> Vec<NeedsYouRecord> {
+    fn all_needs_you(&self) -> Vec<NeedsYouRecord> {
         self.expire_needs_you();
         let mut rows: Vec<NeedsYouRecord> = self
             .needs_you
@@ -2468,7 +2709,7 @@ impl PermissionMonitor {
     }
 
     /// Open items, after expired ones have been auto-denied.
-    pub fn list_needs_you(&self) -> Vec<NeedsYouRecord> {
+    fn list_needs_you(&self) -> Vec<NeedsYouRecord> {
         // Expiry only: a list does not retire (stint 1383); the frame loop's
         // `expire_needs_you` sweep and the mutation sites do.
         self.expire_soft_grants();
@@ -2481,7 +2722,7 @@ impl PermissionMonitor {
     }
 
     /// Open items without expiring. The frame loop expires; the badge only reads.
-    pub fn open_needs_you(&self) -> Vec<NeedsYouRecord> {
+    fn open_needs_you(&self) -> Vec<NeedsYouRecord> {
         let mut rows: Vec<NeedsYouRecord> = self
             .needs_you
             .lock()
@@ -2558,14 +2799,6 @@ impl PermissionMonitor {
     }
 
     /// A resolve from the command socket: it can never approve.
-    pub(crate) fn resolve_needs_you_from_socket(
-        &self,
-        id: &str,
-        approve: bool,
-    ) -> Result<NeedsYouReceipt, NeedsYouResolveError> {
-        self.resolve_needs_you_on(id, approve, ResolveSurface::Socket, None)
-    }
-
     /// Answer Needs-you question `id` with the person's answer (stint 1285).
     pub(crate) fn answer_needs_you_decided(
         &self,
@@ -2792,16 +3025,16 @@ impl PermissionMonitor {
                             // run file is never a grant source (stint 1285).
                             minted_grant_id = self.record_run_only_grant(
                                 ws,
-                                &row.actor,
+                                det.grant_actor.as_deref().unwrap_or(row.actor.stored_id()),
                                 &target_run,
                                 &tool,
-                                det.pane_id,
+                                row.actor.pane(),
                             )?;
-                        } else if let Some(pane_id) = det.pane_id {
+                        } else if let Some(pane_id) = row.actor.pane() {
                             minted_grant_id = self.record_pane_session_grant(ws, pane_id, &tool)?;
                         }
                     } else if target_run.is_empty() {
-                        if let Some(pane_id) = det.pane_id {
+                        if let Some(pane_id) = row.actor.pane() {
                             let fallback_ws = self
                                 .profile_dir
                                 .clone()
@@ -2909,9 +3142,18 @@ impl PermissionMonitor {
             .unwrap_or(RunOutcome::OutcomeUnknown)
     }
 
+    fn continuation_for_question(&self, question: &str) -> Option<ContinuationRecord> {
+        self.continuations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .find(|run| run.needs_you_id.as_deref() == Some(question))
+            .cloned()
+    }
+
     fn run_outcome_for(&self, id: &str) -> RunOutcome {
         if self
-            .get_continuation(id)
+            .continuation_for_question(id)
             .is_some_and(|record| record.run_outcome.as_deref() == Some("retry_required"))
         {
             RunOutcome::RetryRequired
@@ -2925,7 +3167,7 @@ impl PermissionMonitor {
     fn decision_run_outcome(&self, id: &str, resolution: NeedsYouResolution) -> RunOutcome {
         if resolution == NeedsYouResolution::Denied
             && self
-                .get_continuation(id)
+                .continuation_for_question(id)
                 .is_some_and(|record| record.request_fingerprint.is_some())
         {
             RunOutcome::Canceled
@@ -2971,6 +3213,7 @@ impl PermissionMonitor {
             self.remember_origin(&pending.id);
             return;
         }
+        let owner = pending.binding.owner();
         let details = NeedsYouDetails {
             choices: Vec::new(),
             allow_free_text: false,
@@ -2982,18 +3225,14 @@ impl PermissionMonitor {
             context_id: pending.binding.context_id,
             // A plugin's ask belongs to the pane that made it, so closing the
             // pane retires it (stint 1489).
-            pane_id: if pending.binding.actor_type == ActorType::Plugin
+            pane_id: if pending.binding.actor.kind() == ActorType::Plugin
                 && matches!(
                     pending.binding.target_type,
                     TargetType::Capability | TargetType::CliOperation
                 ) {
                 pending.binding.instance_id
             } else {
-                pending
-                    .binding
-                    .actor_id
-                    .strip_prefix("pane:")
-                    .and_then(|s| s.parse::<u64>().ok())
+                owner.pane().map(|pane| pane.number())
             },
             expected_revision: None,
             ..Default::default()
@@ -3001,10 +3240,10 @@ impl PermissionMonitor {
         let record = NeedsYouRecord {
             id: pending.id.clone(),
             kind: NeedsYouKind::ApprovalClick,
-            actor: pending.binding.actor_id.clone(),
+            actor: owner.clone(),
             resource: resource.clone(),
             summary: if pending.binding.target_type == TargetType::Secret
-                && pending.binding.actor_type == ActorType::External
+                && pending.binding.actor.kind() == ActorType::External
                 && super::command_secret_tool(&pending.tool)
             {
                 pending.input_summary.clone()
@@ -3034,16 +3273,15 @@ impl PermissionMonitor {
             pending.binding.call_id.clone()
         };
         if !run_id.is_empty() {
-            self.upsert_continuation(ContinuationRecord {
-                run_id,
+            self.insert_continuation(ContinuationRecord {
+                run_id: format!("run_{}", uuid::Uuid::new_v4()),
                 operation_id: (!pending.binding.operation_id.is_empty())
                     .then(|| pending.binding.operation_id.clone()),
                 correlation_id: details.correlation_id,
                 session_id: details.session_id,
                 pane_id: details.pane_id,
-                pane_incarnation: details.pane_incarnation,
                 context_id: details.context_id,
-                actor: pending.binding.actor_id.clone(),
+                actor: owner.clone(),
                 target_resource: resource,
                 request_fingerprint: (pending.tool == "pane.send")
                     .then(|| pending.binding.args_fingerprint.clone()),
@@ -3234,7 +3472,10 @@ impl PermissionMonitor {
         };
         let fact = AuditFact {
             kind: "needs_you".to_string(),
-            actor: actor_override.map_or_else(|| snapshot.actor.clone(), str::to_string),
+            actor: actor_override.map_or_else(
+                || snapshot.actor.clone(),
+                |label| RecordOwner::Host(label.into()),
+            ),
             call_id: snapshot
                 .run_tag
                 .clone()
@@ -3270,125 +3511,17 @@ impl PermissionMonitor {
         true
     }
 
-    pub fn upsert_continuation(&self, mut record: ContinuationRecord) -> ContinuationRecord {
-        let now = self.now_secs();
-        record.updated_at = now;
-        if record.created_at == 0 {
-            record.created_at = now;
-        }
-        if record.origin_session.is_empty() {
-            record.origin_session = self.session_id.clone();
-        }
-        let stored = {
-            let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
-            // A run can produce another request before an earlier one is settled.
-            // Keep each request addressable rather than replacing its predecessor.
-            let renewed_approval = map.get(&record.run_id).is_some_and(|existing| {
-                existing.run_outcome.as_deref() == Some("retry_requires_authorization_check")
-                    && existing.operation_id == record.operation_id
-                    && existing.actor == record.actor
-                    && existing.request_fingerprint.is_some()
-                    && existing.request_fingerprint == record.request_fingerprint
-            });
-            if let Some(request_id) = record.needs_you_id.as_ref() {
-                if !renewed_approval
-                    && map.get(&record.run_id).is_some_and(|existing| {
-                        existing
-                            .needs_you_id
-                            .as_ref()
-                            .is_some_and(|id| id != request_id)
-                    })
-                {
-                    record.run_id = request_id.clone();
-                }
-            }
-            if let Some(existing) = map.get_mut(&record.run_id) {
-                if renewed_approval {
-                    existing.resolution = None;
-                    existing.run_outcome = None;
-                    existing.receipt = None;
-                    existing.origin_session = self.session_id.clone();
-                }
-                // Never overwrite a terminal completed/outcome_unknown record with an earlier state.
-                if matches!(
-                    existing.state,
-                    ContinuationState::Completed | ContinuationState::OutcomeUnknown
-                ) && record.state.is_in_flight()
-                {
-                    return existing.clone();
-                }
-                existing.updated_at = now;
-                if record.operation_id.is_some() {
-                    existing.operation_id = record.operation_id;
-                }
-                if record.correlation_id.is_some() {
-                    existing.correlation_id = record.correlation_id;
-                }
-                if record.session_id.is_some() {
-                    existing.session_id = record.session_id;
-                }
-                // A pane and its incarnation bind together.
-                if record.pane_id.is_some() {
-                    existing.pane_id = record.pane_id;
-                    existing.pane_incarnation = record.pane_incarnation;
-                }
-                if record.context_id.is_some() {
-                    existing.context_id = record.context_id;
-                }
-                if !record.target_resource.is_empty() {
-                    existing.target_resource = record.target_resource;
-                }
-                if record.expected_revision.is_some() {
-                    existing.expected_revision = record.expected_revision;
-                }
-                if record.needs_you_id.is_some() {
-                    existing.needs_you_id = record.needs_you_id;
-                }
-                if record.resume_condition.is_some() {
-                    existing.resume_condition = record.resume_condition;
-                }
-                existing.state = record.state;
-                if record.resolution.is_some() {
-                    existing.resolution = record.resolution;
-                }
-                if record.answer.is_some() {
-                    existing.answer = record.answer;
-                }
-                if record.run_outcome.is_some() {
-                    existing.run_outcome = record.run_outcome;
-                }
-                if record.receipt.is_some() {
-                    existing.receipt = record.receipt;
-                }
-                existing.clone()
-            } else {
-                map.insert(record.run_id.clone(), record.clone());
-                record
-            }
-        };
+    fn insert_continuation(&self, record: ContinuationRecord) {
         log::info!(
-            "continuation: upserted run_id={} state={} needs_you={:?} resource={}",
-            stored.run_id,
-            stored.state.as_str(),
-            stored.needs_you_id,
-            stored.target_resource
+            "continuation: created {} for {}",
+            record.run_id,
+            record.actor
         );
+        self.continuations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(record.run_id.clone(), record);
         self.persist_continuations();
-        stored
-    }
-
-    pub fn get_continuation(&self, id_or_needs_you: &str) -> Option<ContinuationRecord> {
-        let map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(found) = map.get(id_or_needs_you) {
-            return Some(found.clone());
-        }
-        map.values()
-            .find(|row| {
-                row.needs_you_id.as_deref() == Some(id_or_needs_you)
-                    || row.operation_id.as_deref() == Some(id_or_needs_you)
-                    || row.correlation_id.as_deref() == Some(id_or_needs_you)
-            })
-            .cloned()
     }
 
     /// Journal a pane send before its first side effect. The unknown marker
@@ -3396,21 +3529,22 @@ impl PermissionMonitor {
     pub(crate) fn claim_pane_send(
         &self,
         operation_id: &str,
-        actor: &str,
+        actor: &PanePrincipal,
         context_id: u64,
-        pane_id: u64,
         fingerprint: &str,
     ) -> Result<PaneSendClaim, String> {
         let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
         let key = map
             .iter()
-            .find(|(_, record)| record.operation_id.as_deref() == Some(operation_id))
+            .find(|(_, record)| {
+                record.actor.pane() == Some(actor)
+                    && record.operation_id.as_deref() == Some(operation_id)
+            })
             .map(|(key, _)| key.clone());
         let now = self.now_secs();
         let previous = key.as_ref().and_then(|key| map.get(key).cloned());
         if let Some(record) = previous.as_ref() {
-            if record.actor != actor
-                || record.context_id != Some(context_id)
+            if record.context_id != Some(context_id)
                 || record.request_fingerprint.as_deref() != Some(fingerprint)
             {
                 return Ok(PaneSendClaim::Conflict);
@@ -3427,16 +3561,15 @@ impl PermissionMonitor {
                 _ => {}
             }
         }
-        let key = key.unwrap_or_else(|| operation_id.to_string());
+        let key = key.unwrap_or_else(|| format!("run_{}", uuid::Uuid::new_v4()));
         let mut record = previous.clone().unwrap_or(ContinuationRecord {
-            run_id: operation_id.to_string(),
+            run_id: key.clone(),
             operation_id: Some(operation_id.to_string()),
             correlation_id: Some(operation_id.to_string()),
             session_id: Some(self.session_id.clone()),
-            pane_id: Some(pane_id),
-            pane_incarnation: None,
+            pane_id: Some(actor.number()),
             context_id: Some(context_id),
-            actor: actor.to_string(),
+            actor: RecordOwner::Pane(actor.clone()),
             target_resource: "pane.send".to_string(),
             request_fingerprint: Some(fingerprint.to_string()),
             expected_revision: None,
@@ -3454,6 +3587,7 @@ impl PermissionMonitor {
         record.state = ContinuationState::OutcomeUnknown;
         record.run_outcome = Some("outcome_unknown".to_string());
         record.updated_at = now;
+        let handle = record.handle();
         map.insert(key.clone(), record);
         if let Some(profile) = self.profile_dir.as_deref() {
             let rows: Vec<_> = map.values().cloned().collect();
@@ -3469,20 +3603,32 @@ impl PermissionMonitor {
                 return Err(error);
             }
         }
-        log::info!("pane_send: claimed operation={operation_id} actor={actor}");
-        Ok(PaneSendClaim::Claimed)
+        log::info!(
+            "pane_send: claimed operation={operation_id} actor={}",
+            actor.label()
+        );
+        Ok(PaneSendClaim::Claimed(handle))
     }
 
     /// Record that the pane-send waiter has ended without executing the send.
     /// The pending human decision stays open, but approval cannot resume this
     /// particular waiter and must not be reported as operation completion.
-    pub(crate) fn detach_pane_send_waiter(&self, request_id: &str) -> Result<(), String> {
+    pub(crate) fn detach_pane_send_waiter(
+        &self,
+        owner: &PanePrincipal,
+        operation_id: &str,
+        request_id: &str,
+    ) -> Result<(), String> {
         let _decision = self.decision_lock.lock().unwrap_or_else(|e| e.into_inner());
         {
             let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
             let record = map
                 .values_mut()
-                .find(|record| record.needs_you_id.as_deref() == Some(request_id))
+                .find(|record| {
+                    record.actor.pane() == Some(owner)
+                        && record.operation_id.as_deref() == Some(operation_id)
+                        && record.needs_you_id.as_deref() == Some(request_id)
+                })
                 .ok_or_else(|| format!("unknown continuation for {request_id}"))?;
             record.state = ContinuationState::Paused;
             record.run_outcome = Some(RunOutcome::RetryRequired.as_str().to_string());
@@ -3502,7 +3648,7 @@ impl PermissionMonitor {
         Ok(())
     }
 
-    pub fn list_continuations(
+    fn list_continuations(
         &self,
         session_id: Option<&str>,
         pane_id: Option<u64>,
@@ -3530,27 +3676,17 @@ impl PermissionMonitor {
 
     pub fn complete_continuation(
         &self,
-        run_id: &str,
+        handle: &RunHandle,
         state: ContinuationState,
         receipt: Option<String>,
     ) -> Result<ContinuationRecord, String> {
         let now = self.now_secs();
         let updated = {
             let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
-            let key = if map.contains_key(run_id) {
-                Some(run_id.to_string())
-            } else {
-                map.values()
-                    .find(|row| {
-                        row.needs_you_id.as_deref() == Some(run_id)
-                            || row.operation_id.as_deref() == Some(run_id)
-                            || row.correlation_id.as_deref() == Some(run_id)
-                    })
-                    .map(|row| row.run_id.clone())
-            };
-            let Some(key) = key else {
-                return Err(format!("unknown continuation {run_id}"));
-            };
+            let key = handle.id.clone();
+            if !map.get(&key).is_some_and(|row| row.actor == handle.owner) {
+                return Err(format!("unknown continuation {}", handle.id));
+            }
             let previous = map.get(&key).expect("checked key").clone();
             let entry = map.get_mut(&key).expect("checked key");
             entry.state = state;
@@ -3672,6 +3808,9 @@ impl PermissionMonitor {
             }
             super::needs_you_store::LoadedQueue::Items(items) => {
                 let count = items.len();
+                for item in &items {
+                    log::info!("needs_you: restored open item {}", item.id);
+                }
                 restored = self.install_restored(items);
                 log::info!(
                     "needs_you: restored {count} open items from {}",
@@ -3717,6 +3856,10 @@ impl PermissionMonitor {
             // of them; `restore_continuations` settles those.
             self.retire_approvals_locked(restored.retired.clone(), "host_restarted");
         }
+        if restored.rebound {
+            log::info!("needs_you: recovered pending sender ownership from its live request");
+            self.persist_queue();
+        }
         self.restore_continuations(&host, &profile, &restored);
     }
 
@@ -3736,6 +3879,29 @@ impl PermissionMonitor {
         let mut dirty = false;
         let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
         for mut record in loaded {
+            if let Some(existing) = map.get_mut(&record.run_id) {
+                if let Some(owner) = existing
+                    .needs_you_id
+                    .as_ref()
+                    .and_then(|id| restored.live_senders.get(id))
+                    .filter(|owner| matches!(&existing.actor, RecordOwner::Legacy(label) if label == owner.label()))
+                {
+                    existing.actor = RecordOwner::Pane(owner.clone());
+                    dirty = true;
+                }
+                continue;
+            }
+            if matches!(record.actor, RecordOwner::Legacy(_)) {
+                if let Some(owner) = record
+                    .needs_you_id
+                    .as_ref()
+                    .and_then(|id| restored.live_senders.get(id))
+                    .filter(|owner| matches!(&record.actor, RecordOwner::Legacy(label) if label == owner.label()))
+                {
+                    record.actor = RecordOwner::Pane(owner.clone());
+                    dirty = true;
+                }
+            }
             if record.origin_session != self.session_id && record.receipt.is_none() {
                 let waiting_on_restored_open = record
                     .needs_you_id
@@ -3806,7 +3972,21 @@ impl PermissionMonitor {
     /// (stint 1624). An id this session already holds is skipped, so a
     /// reload never reopens what memory resolved.
     fn install_restored(&self, items: Vec<super::needs_you_store::RestoredItem>) -> InstalledQueue {
-        let mut restored = InstalledQueue::default();
+        let live_senders = self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|row| row.tool == "pane.send")
+            .filter_map(|row| match row.binding.actor.principal()? {
+                super::principal::Principal::Pane(owner) => Some((row.id.clone(), owner.clone())),
+                _ => None,
+            })
+            .collect();
+        let mut restored = InstalledQueue {
+            live_senders,
+            ..InstalledQueue::default()
+        };
         let mut needs = self
             .needs_you
             .lock()
@@ -3815,12 +3995,22 @@ impl PermissionMonitor {
             .origins
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        for item in items {
-            if needs.contains_key(&item.id) {
+        for mut item in items {
+            let live_sender = restored.live_senders.get(&item.id);
+            if let Some(owner) = live_sender.filter(
+                |owner| matches!(&item.actor, RecordOwner::Legacy(label) if label == owner.label()),
+            ) {
+                item.actor = RecordOwner::Pane(owner.clone());
+            }
+            if let Some(existing) = needs.get_mut(&item.id) {
+                if let Some(owner) = live_sender.filter(|owner| matches!(&existing.actor, RecordOwner::Legacy(label) if label == owner.label())) {
+                    existing.actor = RecordOwner::Pane(owner.clone());
+                    restored.rebound = true;
+                }
                 continue;
             }
             restored.open.insert(item.id.clone());
-            if item.kind.mints_authority() {
+            if item.kind.mints_authority() && live_sender.is_none() {
                 restored.retired.push(item.id.clone());
             }
             origins.insert(item.id.clone(), item.origin_session.clone());
@@ -3878,7 +4068,7 @@ impl PermissionMonitor {
                 NeedsYouRecord {
                     id: id.clone(),
                     kind: NeedsYouKind::Integrity,
-                    actor: "host".to_string(),
+                    actor: RecordOwner::Host("host".into()),
                     resource: "needs-you".to_string(),
                     summary,
                     created_at: self.now_secs(),
@@ -3983,11 +4173,12 @@ impl PermissionMonitor {
     /// append one `permission-audit.jsonl` row per expired grant.
     pub fn expire_soft_grants(&self) -> usize {
         let now = self.now_secs();
-        let expired: Vec<(String, String, String, Option<PathBuf>)> = {
+        let expired: Vec<(RecordOwner, String, String, Option<PathBuf>)> = {
             let mut store = self.store();
             let mut found = Vec::new();
             for record in store.records_mut().iter_mut() {
-                if record.kind == super::GrantKind::Soft
+                if !record.is_legacy_pane_history()
+                    && record.kind == super::GrantKind::Soft
                     && record.decision == Decision::Allow
                     && record.expires_at.is_some_and(|exp| now >= exp)
                 {
@@ -3998,7 +4189,7 @@ impl PermissionMonitor {
                         .clone()
                         .unwrap_or_else(|| record.target_id.clone());
                     found.push((
-                        record.actor_id.clone(),
+                        record.owner(),
                         record.grant_id.clone(),
                         resource,
                         record.workspace_root.clone(),
@@ -4015,9 +4206,11 @@ impl PermissionMonitor {
         }
         for (actor, grant_id, resource_id, workspace_root) in &expired {
             if let Some(ws) = workspace_root {
-                if let Err(error) =
-                    crate::agent::runs::expire_soft_grant_in_workspace(ws, actor, resource_id)
-                {
+                if let Err(error) = crate::agent::runs::expire_soft_grant_in_workspace(
+                    ws,
+                    actor.stored_id(),
+                    resource_id,
+                ) {
                     log::error!(
                         "permission_monitor: sync expired soft grant {grant_id} actor={actor} tool={resource_id} workspace={} failed: {error}",
                         ws.display()
@@ -4050,11 +4243,13 @@ impl PermissionMonitor {
         actor_id: &str,
         run_id: &str,
         tool: &str,
-        requester_pane: Option<u64>,
+        requester_pane: Option<&PanePrincipal>,
     ) -> Result<String, String> {
         let binding = ExactBinding {
-            actor_type: ActorType::Agent,
-            actor_id: actor_id.to_string(),
+            agent_run: None,
+            actor: crate::broker::principal::Principal::agent(actor_id)
+                .ok_or("invalid named agent identity")?
+                .into(),
             actor_scope: ActorScope::Workspace,
             trust_origin: "host".to_string(),
             workspace_root: crate::platform::path::canonical_or_self(workspace),
@@ -4082,11 +4277,13 @@ impl PermissionMonitor {
         record.session_id = Some(self.session_id.clone());
         record.args_unbound = true;
         record.bound_operation_id = Some(run_id.to_string());
-        record.run_requester_pane = requester_pane;
+        record.run_requester_pane = requester_pane.cloned().map(super::RunRequester::Pane);
+        record.agent_run_id = Some(run_id.to_owned());
+        let owner = record.owner();
         self.store().record(record);
         self.audit(&AuditFact {
             kind: "grant".to_string(),
-            actor: actor_id.to_string(),
+            actor: owner,
             call_id: run_id.to_string(),
             grant_id: grant_id.clone(),
             resource_id: tool.to_string(),
@@ -4107,15 +4304,19 @@ impl PermissionMonitor {
         &self,
         workspace: &Path,
         actor_id: &str,
-        run_id: &str,
+        scope: &super::AgentRunScope,
         tool: &str,
     ) -> bool {
         let workspace = crate::platform::path::canonical_or_self(workspace);
         let now = self.now_secs();
         self.store().records().iter().any(|row| {
-            row.bound_operation_id.as_deref() == Some(run_id)
-                && row.actor_type == ActorType::Agent
-                && row.actor_id == actor_id
+            row.bound_run().is_some()
+                && row.allows_run(Some(scope))
+                && matches!(
+                    row.actor.principal(),
+                    Some(super::principal::Principal::Agent(_))
+                )
+                && row.actor.id() == actor_id
                 && row.target_id == tool
                 && row.decision == Decision::Allow
                 && !row.consumed
@@ -4130,13 +4331,14 @@ impl PermissionMonitor {
     pub fn record_pane_session_grant(
         &self,
         workspace: &Path,
-        pane_id: u64,
+        owner: &PanePrincipal,
         tool: &str,
     ) -> Result<String, String> {
-        let pane_tag = format!("pane:{pane_id}");
+        let pane_id = owner.number();
+        let pane_tag = owner.actor_id().to_owned();
         let binding = ExactBinding {
-            actor_type: ActorType::Agent,
-            actor_id: pane_tag.clone(),
+            agent_run: None,
+            actor: crate::broker::principal::Principal::Pane(owner.clone()).into(),
             actor_scope: ActorScope::Workspace,
             trust_origin: "host".to_string(),
             workspace_root: crate::platform::path::canonical_or_self(workspace),
@@ -4177,7 +4379,7 @@ impl PermissionMonitor {
         self.epoch.fetch_add(1, Ordering::SeqCst);
         self.audit(&AuditFact {
             kind: "grant".to_string(),
-            actor: pane_tag.clone(),
+            actor: RecordOwner::Pane(owner.clone()),
             call_id: pane_tag.clone(),
             grant_id: grant_id.clone(),
             resource_id: tool.to_string(),
@@ -4201,7 +4403,7 @@ impl PermissionMonitor {
         let before = store.records().len();
         store
             .records_mut()
-            .retain(|r| r.bound_operation_id.as_deref() != Some(run_id));
+            .retain(|r| r.bound_run() != Some(run_id));
         let removed = before - store.records().len();
         if removed > 0 {
             log::info!(
@@ -4215,29 +4417,76 @@ impl PermissionMonitor {
     /// the admission lock first makes this return `Err`.
     pub fn note_use(
         &self,
-        actor: &str,
+        actor: &RecordOwner,
         call_id: &str,
         grant_id: &str,
         fingerprint: &str,
         resource: &str,
         operation_id: &str,
     ) -> Result<(), String> {
+        self.record_grant_use(
+            actor,
+            None,
+            call_id,
+            grant_id,
+            fingerprint,
+            resource,
+            operation_id,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn note_run_use(
+        &self,
+        subject: &RecordOwner,
+        run: &super::AgentRunScope,
+        call_id: &str,
+        grant_id: &str,
+        fingerprint: &str,
+        resource: &str,
+        operation_id: &str,
+    ) -> Result<(), String> {
+        self.record_grant_use(
+            subject,
+            Some(run),
+            call_id,
+            grant_id,
+            fingerprint,
+            resource,
+            operation_id,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_grant_use(
+        &self,
+        subject: &RecordOwner,
+        run: Option<&super::AgentRunScope>,
+        call_id: &str,
+        grant_id: &str,
+        fingerprint: &str,
+        resource: &str,
+        operation_id: &str,
+    ) -> Result<(), String> {
+        let actor = run.map_or(subject, |run| &run.requester);
         let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
         let epoch = self.epoch.load(Ordering::SeqCst);
         if epoch == 0 {
             return Err("permission monitor epoch is unset".to_string());
         }
-        let alive = self
-            .store()
-            .records()
-            .iter()
-            .any(|record| record.grant_id == grant_id && record.decision == Decision::Allow);
+        let alive = self.store().records().iter().any(|record| {
+            record.grant_id == grant_id
+                && record.decision == Decision::Allow
+                && record.actor.owner() == *subject
+                && record.allows_run(run)
+                && !matches!(actor, RecordOwner::Legacy(_))
+        });
         if grant_id.is_empty() || !alive {
             return Err("grant revoked".to_string());
         }
         self.audit_locked(&AuditFact {
             kind: "use".to_string(),
-            actor: actor.to_string(),
+            actor: actor.clone(),
             call_id: call_id.to_string(),
             grant_id: grant_id.to_string(),
             resource_id: resource.to_string(),
@@ -4252,7 +4501,8 @@ impl PermissionMonitor {
     #[allow(clippy::too_many_arguments)]
     pub fn note_outcome(
         &self,
-        actor: &str,
+        run: Option<&RunHandle>,
+        actor: &RecordOwner,
         call_id: &str,
         grant_id: &str,
         fingerprint: &str,
@@ -4262,9 +4512,12 @@ impl PermissionMonitor {
         revision_before: &str,
         revision_after: &str,
     ) -> Result<(), String> {
+        if run.is_some_and(|handle| handle.owner != *actor) {
+            return Err("outcome owner does not match the admitted run".into());
+        }
         let audited = self.audit(&AuditFact {
             kind: "outcome".to_string(),
-            actor: actor.to_string(),
+            actor: actor.clone(),
             call_id: call_id.to_string(),
             grant_id: grant_id.to_string(),
             resource_id: resource.to_string(),
@@ -4274,22 +4527,8 @@ impl PermissionMonitor {
             revision_before: revision_before.to_string(),
             revision_after: revision_after.to_string(),
         });
-        let run_key = if !operation_id.is_empty() {
-            operation_id
-        } else {
-            call_id
-        };
-        if call_id == "pane-send" {
+        if let Some(handle) = run {
             audited?;
-            let state = if decision == "ok" {
-                ContinuationState::Completed
-            } else {
-                ContinuationState::Failed
-            };
-            self.complete_continuation(run_key, state, Some(format!("decision={decision}")))?;
-            return Ok(());
-        }
-        if !run_key.is_empty() {
             let state = if decision == "ok" {
                 ContinuationState::Completed
             } else {
@@ -4298,7 +4537,8 @@ impl PermissionMonitor {
             let receipt = Some(format!(
                 "call_id={call_id};grant_id={grant_id};decision={decision};rev_before={revision_before};rev_after={revision_after}"
             ));
-            let _ = self.complete_continuation(run_key, state, receipt);
+            self.complete_continuation(handle, state, receipt)?;
+            return Ok(());
         }
         audited
     }
@@ -4353,7 +4593,7 @@ impl PermissionMonitor {
             *store.records_mut() = kept;
             removed
         };
-        let Some(actor) = removed.first().map(|record| record.actor_id.clone()) else {
+        let Some(actor) = removed.first().map(|record| record.owner()) else {
             return Ok(false);
         };
         if let Err(error) = self.save_durable() {
@@ -4381,11 +4621,21 @@ impl PermissionMonitor {
 
     /// Live inventory: durable grants and denies, session and one-shot grants
     /// still in memory, and asks waiting on a person. One list, no second store.
-    pub fn list_entries(&self) -> Vec<PermissionEntry> {
+    fn list_entries(&self) -> Vec<PermissionEntry> {
         self.expire_soft_grants();
         let now = self.now_secs();
         let mut entries = Vec::new();
-        for record in self.store().records() {
+        for (index, record) in self.store().records().iter().enumerate() {
+            if record.is_legacy_pane_history() {
+                let mut entry = entry_from_record(record);
+                entry.kind = "history".into();
+                entry.summary = format!("Legacy grant (inactive): {}", entry.summary);
+                if entry.id.is_empty() {
+                    entry.id = format!("legacy-history-{index}");
+                }
+                entries.push(entry);
+                continue;
+            }
             if let Some(expires) = record.expires_at {
                 if now >= expires {
                     continue;
@@ -4452,8 +4702,8 @@ impl PermissionMonitor {
         resource_id: Option<String>,
     ) -> Result<String, String> {
         let binding = ExactBinding {
-            actor_type: ActorType::Plugin,
-            actor_id: plugin_id.to_string(),
+            agent_run: None,
+            actor: crate::broker::principal::Principal::plugin(plugin_id, None).into(),
             actor_scope: ActorScope::User,
             trust_origin: "host".to_string(),
             workspace_root: workspace_root.to_path_buf(),
@@ -4686,8 +4936,8 @@ impl PermissionMonitor {
             .records()
             .iter()
             .filter(|record| {
-                record.actor_type == ActorType::Plugin
-                    && record.actor_id == plugin_id
+                record.actor.kind() == ActorType::Plugin
+                    && record.actor.id() == plugin_id
                     && record.target_type == TargetType::Capability
                     && record.workspace_root.as_deref() == Some(ws.as_path())
                     && !declared_set.contains(record.target_id.as_str())
@@ -4757,18 +5007,30 @@ impl PermissionMonitor {
             };
         }
         let widening = matches!(action, "reset" | "allow");
+        if let RecordOwner::Pane(_) = &caller.owner {
+            if !self
+                .entry_by_id(id)
+                .is_some_and(|entry| entry.owner == caller.owner)
+            {
+                log::info!("permissions: requester has no such entry");
+                return PermissionMutation::Rejected {
+                    entry_id: id.to_owned(),
+                    error: "unknown permission entry".into(),
+                };
+            }
+        }
         let foreign_revoke = action == "revoke"
             && caller.revoke_scope == RevokeScope::Own
             && self
                 .entry_by_id(id)
-                .is_some_and(|entry| entry.actor_id != caller.actor_id);
+                .is_some_and(|entry| entry.owner != caller.owner);
         if widening || foreign_revoke {
-            return self.file_widen(id, action, &caller.actor_id, requested);
+            return self.file_widen(id, action, &caller.owner, requested);
         }
         let outcome = self.apply_mutation(id, action, None, ApprovalChoice::Once);
         log::info!(
             "permission_monitor: mutate {action} id={id:?} actor={} revoke_scope={:?} outcome={}",
-            caller.actor_id,
+            caller.owner,
             caller.revoke_scope,
             mutation_label(&outcome)
         );
@@ -4800,7 +5062,7 @@ impl PermissionMonitor {
         &self,
         id: &str,
         action: &str,
-        actor: &str,
+        actor: &RecordOwner,
         requested: Option<ApprovalChoice>,
     ) -> PermissionMutation {
         let Some(entry) = self.entry_by_id(id) else {
@@ -4836,11 +5098,7 @@ impl PermissionMonitor {
         };
         match self.file_needs_you(NeedsYouFile {
             kind: NeedsYouKind::PermissionChange,
-            actor: if actor.is_empty() {
-                entry.actor_id.clone()
-            } else {
-                actor.to_string()
-            },
+            actor: actor.clone(),
             resource: entry.tool.clone(),
             summary: format!(
                 "Approve {shown} for {} {} ({id}). A request cannot widen this by itself.",
@@ -5078,7 +5336,7 @@ impl PermissionMonitor {
         }
         let _ = self.audit(&AuditFact {
             kind: "grant".to_string(),
-            actor: record.actor_id,
+            actor: record.owner(),
             call_id: String::new(),
             grant_id: grant_id.clone(),
             resource_id: record.resource_id.unwrap_or_default(),
@@ -5164,7 +5422,7 @@ impl PermissionMonitor {
         Ok(())
     }
 
-    pub fn list_pending(&self) -> Vec<PendingView> {
+    fn list_pending(&self) -> Vec<PendingView> {
         self.pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -5175,7 +5433,7 @@ impl PermissionMonitor {
 
     /// Pending requests whose stored binding names `workspace`. A projection
     /// for one workspace never shows another's (Codex 3290 r2).
-    pub fn list_pending_in_workspace(&self, workspace: &Path) -> Vec<PendingView> {
+    fn list_pending_in_workspace(&self, workspace: &Path) -> Vec<PendingView> {
         let workspace = crate::platform::path::canonical_or_self(workspace);
         self.pending
             .lock()
@@ -5188,7 +5446,7 @@ impl PermissionMonitor {
             .collect()
     }
 
-    pub fn show_pending(&self, id: &str) -> Option<PendingView> {
+    fn show_pending(&self, id: &str) -> Option<PendingView> {
         self.pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -5200,14 +5458,11 @@ impl PermissionMonitor {
     /// A socket, CLI, or synthetic-input resolve. The pending stays, no grant
     /// is written, and the audit records the refusal.
     pub fn refuse_client_resolve(&self, pending_id: &str) {
-        let actor = self
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .find(|row| row.id == pending_id)
-            .map(|row| row.binding.actor_id.clone())
-            .unwrap_or_else(|| "socket".to_string());
+        self.audit_refusal(&RecordOwner::Host("socket".into()), pending_id);
+    }
+
+    fn audit_refusal(&self, requester: &RecordOwner, pending_id: &str) {
+        let actor = requester.clone();
         let _ = self.audit(&AuditFact {
             kind: "refuse".to_string(),
             actor,
@@ -5315,7 +5570,7 @@ impl PermissionMonitor {
         binding: &std::sync::Arc<super::pane_authority::LivePaneAuthority>,
     ) -> String {
         self.insert_credential(
-            &format!("pane:{}", binding.pane_id()),
+            binding.principal().actor_id(),
             CredentialBinding::Pane(binding.clone()),
         )
     }
@@ -5353,8 +5608,7 @@ impl PermissionMonitor {
         }
         let scope = live.scope();
         Ok(VerifiedCaller {
-            actor_id: format!("pane:{}", live.pane_id()),
-            actor_type: ActorType::Agent,
+            principal: super::principal::Principal::Pane(live.principal()),
             actor_scope: ActorScope::User,
             pane_id: Some(live.pane_id()),
             context_id: scope.context_id,
@@ -5443,8 +5697,7 @@ impl PermissionMonitor {
             credential.is_some()
         );
         Ok(VerifiedCaller {
-            actor_id: pane.principal().actor_id().to_string(),
-            actor_type: ActorType::Agent,
+            principal: pane.principal(),
             actor_scope: ActorScope::User,
             pane_id: Some(pane.terminal_pane),
             context_id: scope.context_id,
@@ -5457,7 +5710,7 @@ impl PermissionMonitor {
     /// are the same fact: callers can read the row, and the host log shows it.
     pub fn note_denial(
         &self,
-        actor: &str,
+        actor: &RecordOwner,
         call_id: &str,
         resource: &str,
         operation_id: &str,
@@ -5465,7 +5718,7 @@ impl PermissionMonitor {
     ) {
         let _ = self.audit(&AuditFact {
             kind: "deny".to_string(),
-            actor: actor.to_string(),
+            actor: actor.clone(),
             call_id: call_id.to_string(),
             grant_id: String::new(),
             resource_id: resource.to_string(),
@@ -5480,7 +5733,32 @@ impl PermissionMonitor {
         ));
     }
 
-    pub fn audit_records(&self) -> Vec<AuditFact> {
+    fn restore_audit_window(&self, history: &str) {
+        let mut recent = std::collections::VecDeque::new();
+        for line in history.lines().rev().take(AUDIT_MEM_CAP) {
+            let decode = || -> Option<AuditFact> {
+                let envelope: serde_json::Value = serde_json::from_str(line).ok()?;
+                let mut fact: serde_json::Value =
+                    serde_json::from_str(envelope["fact"].as_str()?).ok()?;
+                let owner = match fact.get_mut("owner") {
+                    Some(owner) => owner.take(),
+                    None => {
+                        serde_json::json!(RecordOwner::Legacy(fact["actor"].as_str()?.to_owned()))
+                    }
+                };
+                fact["actor"] = owner;
+                serde_json::from_value(fact).ok()
+            };
+            match decode() {
+                Some(fact) => recent.push_front(fact),
+                None => log::warn!("permission_monitor: skipped unrecognized sealed audit fact"),
+            }
+        }
+        log::info!("permission_monitor: restored {} audit facts", recent.len());
+        *self.audit_mem.lock().unwrap_or_else(|e| e.into_inner()) = recent;
+    }
+
+    fn audit_records(&self) -> Vec<AuditFact> {
         self.audit_mem
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -5500,7 +5778,7 @@ impl PermissionMonitor {
     ) -> Result<(), String> {
         self.audit(&AuditFact {
             kind: "secret_mutation".into(),
-            actor: "user:secrets".into(),
+            actor: RecordOwner::Host("user:secrets".into()),
             call_id: call_id.into(),
             resource_id: resource.into(),
             operation_id: operation.into(),
@@ -5592,7 +5870,7 @@ impl PermissionMonitor {
         };
         let mut data = serde_json::json!({
             "audit_kind": fact.kind,
-            "actor": fact.actor,
+            "actor": fact.actor.label(),
             "grant_id": fact.grant_id,
             "resource_id": fact.resource_id,
             "operation_id": fact.operation_id,
@@ -5625,6 +5903,7 @@ impl PermissionMonitor {
             // the live audit API, where serialization time is not event time.
             let mut persisted_fact = serde_json::to_value(fact)
                 .map_err(|error| format!("audit serialization failed: {error}"))?;
+            persisted_fact["owner"] = serde_json::json!(fact.actor);
             persisted_fact["timestamp"] = serde_json::json!(self.now_secs());
             let appended = match self.custody() {
                 Ok(host) => super::seal::append_audit(&host, path, &persisted_fact),
@@ -5677,8 +5956,8 @@ fn stored_capability_decision(
     let mut ask = false;
     let mut deny = false;
     for record in store.records() {
-        if record.actor_type != ActorType::Plugin
-            || record.actor_id != plugin_id
+        if record.actor.kind() != ActorType::Plugin
+            || record.actor.id() != plugin_id
             || record.target_type != TargetType::Capability
             || record.target_id != capability_id
             || record.workspace_root.as_deref() != Some(workspace)
@@ -5712,6 +5991,9 @@ fn stored_capability_decision(
 }
 
 fn record_is_durable(record: &GrantRecord) -> bool {
+    if record.is_legacy_pane_history() {
+        return true;
+    }
     if record
         .bound_operation_id
         .as_deref()
@@ -5764,16 +6046,19 @@ fn entry_from_record(record: &GrantRecord) -> PermissionEntry {
         .as_ref()
         .map(|path| path.display().to_string())
         .unwrap_or_default();
+    let owner = record.owner();
     let summary = format!(
         "{} {kind} {duration} {} since {when}",
-        record.actor_id, record.target_id
+        owner.label(),
+        record.target_id
     );
     PermissionEntry {
         id: record.grant_id.clone(),
         kind,
         duration,
-        actor_type: snake(&record.actor_type),
-        actor_id: record.actor_id.clone(),
+        actor_type: snake(&record.actor.kind()),
+        actor_id: owner.label().into(),
+        owner,
         tool: record.target_id.clone(),
         resource_id: record.resource_id.clone(),
         resource_scope: snake(&record.resource_scope),
@@ -5790,13 +6075,15 @@ fn entry_from_record(record: &GrantRecord) -> PermissionEntry {
 fn entry_from_pending(row: &Pending) -> PermissionEntry {
     let when = when_label(row.created_at);
     let workspace = row.binding.workspace_root.display().to_string();
-    let summary = format!("{} ask {} since {when}", row.binding.actor_id, row.tool);
+    let owner = row.binding.owner();
+    let summary = format!("{} ask {} since {when}", owner.label(), row.tool);
     PermissionEntry {
         id: row.id.clone(),
         kind: "pending".to_string(),
         duration: "ask".to_string(),
-        actor_type: snake(&row.binding.actor_type),
-        actor_id: row.binding.actor_id.clone(),
+        actor_type: snake(&row.binding.actor.kind()),
+        actor_id: owner.label().into(),
+        owner,
         tool: row.tool.clone(),
         resource_id: row.binding.resource_id.clone(),
         resource_scope: snake(&row.binding.resource_scope),
@@ -5872,7 +6159,7 @@ impl serde::Serialize for AuditFact {
         use serde::ser::SerializeStruct;
         let mut row = serializer.serialize_struct("AuditFact", 10)?;
         row.serialize_field("kind", &self.kind)?;
-        row.serialize_field("actor", &self.actor)?;
+        row.serialize_field("actor", self.actor.label())?;
         row.serialize_field("call_id", &self.call_id)?;
         row.serialize_field("grant_id", &self.grant_id)?;
         row.serialize_field("resource_id", &self.resource_id)?;
@@ -5886,9 +6173,11 @@ impl serde::Serialize for AuditFact {
 }
 
 fn pending_view(row: &Pending) -> PendingView {
+    let owner = row.binding.owner();
     PendingView {
+        actor_id: owner.label().to_owned(),
+        owner,
         pending_request_id: row.id.clone(),
-        actor_id: row.binding.actor_id.clone(),
         tool: row.tool.clone(),
         resource_id: row.binding.resource_id.clone(),
         args_fingerprint: row.binding.args_fingerprint.clone(),
@@ -5902,7 +6191,7 @@ fn pending_view(row: &Pending) -> PendingView {
 /// A plugin asking for a capability by exact request (stint 1489). Its
 /// remembered decisions are plugin-wide and settle sibling asks.
 fn is_plugin_capability(binding: &ExactBinding) -> bool {
-    binding.actor_type == ActorType::Plugin && binding.target_type == TargetType::Capability
+    binding.actor.kind() == ActorType::Plugin && binding.target_type == TargetType::Capability
 }
 
 fn same_pending(row: &Pending, binding: &ExactBinding) -> bool {
@@ -5913,8 +6202,8 @@ fn same_pending(row: &Pending, binding: &ExactBinding) -> bool {
     {
         return false;
     }
-    row.binding.actor_id == binding.actor_id
-        && row.binding.actor_type == binding.actor_type
+    row.binding.actor == binding.actor
+        && row.binding.agent_run == binding.agent_run
         && row.binding.actor_scope == binding.actor_scope
         && row.binding.trust_origin == binding.trust_origin
         && row.binding.target_id == binding.target_id
@@ -6353,7 +6642,9 @@ mod tests {
     #[test]
     fn a_secret_click_reserves_one_claim_for_the_call_that_filed_it() {
         let monitor = PermissionMonitor::ephemeral();
-        let principal = crate::broker::principal::Principal::agent("pane:7");
+        let principal = crate::broker::principal::Principal::Pane(
+            crate::broker::principal::PanePrincipal::for_test(7),
+        );
         let req = AdmitRequest {
             call_id: "first",
             tool: "secret.get",
@@ -6441,7 +6732,9 @@ mod tests {
     #[test]
     fn allowing_a_stored_secret_denial_once_is_refused_and_keeps_the_denial() {
         let monitor = PermissionMonitor::ephemeral();
-        let principal = crate::broker::principal::Principal::agent("pane:7");
+        let principal = crate::broker::principal::Principal::Pane(
+            crate::broker::principal::PanePrincipal::for_test(7),
+        );
         let req = AdmitRequest {
             call_id: "first",
             tool: "secret.get",
@@ -6541,7 +6834,7 @@ mod tests {
             monitor
                 .file_needs_you(NeedsYouFile {
                     kind,
-                    actor: "agent:probe".to_string(),
+                    actor: RecordOwner::stored(ActorType::Agent, "agent:probe"),
                     resource: "pane:1".to_string(),
                     summary: "probe".to_string(),
                     expires_at: None,
@@ -6583,8 +6876,10 @@ mod tests {
 
     fn binding(fingerprint: &str) -> ExactBinding {
         ExactBinding {
-            actor_type: ActorType::Agent,
-            actor_id: "agent:chess".to_string(),
+            agent_run: None,
+            actor: crate::broker::principal::Principal::agent("agent:chess")
+                .unwrap()
+                .into(),
             actor_scope: ActorScope::User,
             trust_origin: "host".to_string(),
             workspace_root: PathBuf::from("/ws"),
@@ -6607,12 +6902,7 @@ mod tests {
             call_id: &binding.call_id,
             tool: &binding.target_id,
             input_json: args,
-            principal: &crate::broker::principal::Principal::from_actor(
-                binding.actor_type,
-                &binding.actor_id,
-                None,
-            )
-            .expect("test binding names a requesting principal"),
+            principal: binding.actor.principal().unwrap(),
             actor_scope: binding.actor_scope,
             trust_origin: &binding.trust_origin,
             workspace_root: &binding.workspace_root,
@@ -6626,20 +6916,24 @@ mod tests {
     fn agent_caller() -> PermissionCaller {
         PermissionCaller {
             revoke_scope: crate::broker::gate::RevokeScope::Own,
-            actor_id: "agent:test".to_string(),
+            owner: crate::broker::principal::RecordOwner::stored(
+                crate::broker::ActorType::Agent,
+                "agent:test",
+            ),
         }
     }
 
     fn human_caller() -> PermissionCaller {
         PermissionCaller {
             revoke_scope: crate::broker::gate::RevokeScope::Any,
-            actor_id: "human".to_string(),
+            owner: crate::broker::principal::RecordOwner::Host("human".into()),
         }
     }
 
     fn open_permission_changes(monitor: &PermissionMonitor) -> Vec<NeedsYouRecord> {
         monitor
-            .list_needs_you()
+            .host_records()
+            .questions(true)
             .into_iter()
             .filter(|row| row.kind == NeedsYouKind::PermissionChange)
             .collect()
@@ -6737,14 +7031,17 @@ mod tests {
             open.is_empty(),
             "the ask is gone, so is its widen item: {open:?}"
         );
-        let row = monitor.get_needs_you(&widen).expect("item record");
+        let row = monitor
+            .host_records()
+            .question(&widen)
+            .expect("item record");
         assert_eq!(row.resolution, Some(NeedsYouResolution::Retired));
         let audit = monitor
             .audit_records()
             .into_iter()
             .find(|fact| fact.kind == "needs_you" && fact.operation_id == widen)
             .expect("retirement audited");
-        assert_eq!(audit.actor, "host");
+        assert_eq!(audit.actor.label(), "host");
         assert!(audit.decision.starts_with("retired:"), "{}", audit.decision);
         drop(monitor);
         let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
@@ -6800,7 +7097,9 @@ mod tests {
         let id = monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::PermissionChange,
-                actor: "agent:test".to_string(),
+                actor: crate::broker::principal::RecordOwner::requester(
+                    &crate::broker::principal::Principal::agent("agent:test").unwrap(),
+                ),
                 resource: "chess.play".to_string(),
                 summary: "reset an allow".to_string(),
                 expires_at: None,
@@ -6809,7 +7108,10 @@ mod tests {
             .unwrap();
         let result = monitor.resolve_needs_you_from(&id, true, ResolveSurface::Desktop);
         assert!(result.is_err(), "{result:?}");
-        assert_eq!(monitor.get_needs_you(&id).unwrap().resolution, None);
+        assert_eq!(
+            monitor.host_records().question(&id).unwrap().resolution,
+            None
+        );
     }
 
     /// Stint 1624: load retires every widen item from disk, stale or live;
@@ -6822,7 +7124,9 @@ mod tests {
         let stale = monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::PermissionChange,
-                actor: "agent:test".to_string(),
+                actor: crate::broker::principal::RecordOwner::requester(
+                    &crate::broker::principal::Principal::agent("agent:test").unwrap(),
+                ),
                 resource: "chess.play".to_string(),
                 summary: "Approve allow for an entry an older build revoked".to_string(),
                 expires_at: None,
@@ -6840,7 +7144,10 @@ mod tests {
         assert!(open.is_empty(), "{open:?}");
         for id in [&live, &stale] {
             assert_eq!(
-                restored.get_needs_you(id).and_then(|row| row.resolution),
+                restored
+                    .host_records()
+                    .question(id)
+                    .and_then(|row| row.resolution),
                 Some(NeedsYouResolution::Retired)
             );
         }
@@ -6886,7 +7193,8 @@ mod tests {
         unloaded.restore_queue();
         assert_eq!(
             unloaded
-                .get_needs_you(&needs_you_id)
+                .host_records()
+                .question(&needs_you_id)
                 .and_then(|row| row.resolution),
             Some(NeedsYouResolution::Retired)
         );
@@ -6930,7 +7238,9 @@ mod tests {
         monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::PermissionChange,
-                actor: "agent:test".to_string(),
+                actor: crate::broker::principal::RecordOwner::requester(
+                    &crate::broker::principal::Principal::agent("agent:test").unwrap(),
+                ),
                 resource: "chess.play".to_string(),
                 summary: "names an entry the untrusted store lacks".to_string(),
                 expires_at: None,
@@ -6963,7 +7273,7 @@ mod tests {
             None,
             RunOutcome::Unblocked,
         );
-        let record = monitor.get_continuation("retired-op").unwrap();
+        let record = monitor.host_records().run("retired-op").unwrap();
         assert_eq!(record.state, ContinuationState::Canceled);
         assert_eq!(record.run_outcome.as_deref(), Some("ask_gone"));
     }
@@ -7087,7 +7397,9 @@ mod tests {
         monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::PermissionChange,
-                actor: "agent:test".to_string(),
+                actor: crate::broker::principal::RecordOwner::requester(
+                    &crate::broker::principal::Principal::agent("agent:test").unwrap(),
+                ),
                 resource: "chess.play".to_string(),
                 summary: "names a gone entry".to_string(),
                 expires_at: None,
@@ -7112,6 +7424,8 @@ mod tests {
         let args = r#"{"pane_id":42,"text_fingerprint":"hash","operation_id":"waiting-restart"}"#;
         let fingerprint = fingerprint_args(args).unwrap();
         let mut base = binding(&fingerprint);
+        let pane = PanePrincipal::for_test(7);
+        base.actor = crate::broker::principal::Principal::Pane(pane.clone()).into();
         base.target_type = TargetType::Capability;
         base.target_id = "pane.send".into();
         base.call_id = "pane-send".into();
@@ -7119,7 +7433,7 @@ mod tests {
             panic!("approval needed")
         };
         assert_eq!(
-            monitor.get_continuation("waiting-restart").unwrap().state,
+            monitor.host_records().run("waiting-restart").unwrap().state,
             ContinuationState::WaitingUser
         );
         drop(monitor);
@@ -7131,10 +7445,12 @@ mod tests {
         drop(restored);
         let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert!(restored.show_pending(&pending_request_id).is_none());
-        let record = restored.get_continuation("waiting-restart").unwrap();
+        let record = restored.host_records().run("waiting-restart").unwrap();
         assert_eq!(record.state, ContinuationState::Paused);
         assert_eq!(record.run_outcome.as_deref(), Some("retry_required"));
         assert_eq!(record.resolution, None, "nothing was approved");
+        let pane = PanePrincipal::for_test(7);
+        base.actor = crate::broker::principal::Principal::Pane(pane.clone()).into();
         let Admission::Required {
             pending_request_id: renewed,
         } = admit_of(&restored, &base, args)
@@ -7149,15 +7465,15 @@ mod tests {
             admit_of(&restored, &base, args),
             Admission::Proceed { .. }
         ));
-        assert_eq!(
+        assert!(matches!(
             restored
-                .claim_pane_send("waiting-restart", &base.actor_id, 9, 42, &fingerprint)
+                .claim_pane_send("waiting-restart", &pane, 9, &fingerprint)
                 .unwrap(),
-            PaneSendClaim::Claimed
-        );
+            PaneSendClaim::Claimed(_)
+        ));
         assert_eq!(
             restored
-                .claim_pane_send("waiting-restart", &base.actor_id, 9, 42, &fingerprint)
+                .claim_pane_send("waiting-restart", &pane, 9, &fingerprint)
                 .unwrap(),
             PaneSendClaim::OutcomeUnknown,
             "a durable dispatch marker must still prevent replay after execution may have started"
@@ -7171,6 +7487,8 @@ mod tests {
             let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
             let args = r#"{"pane_id":42,"text_fingerprint":"hash","operation_id":"deny-detached"}"#;
             let mut base = binding(&fingerprint_args(args).unwrap());
+            let pane = PanePrincipal::for_test(7);
+            base.actor = crate::broker::principal::Principal::Pane(pane.clone()).into();
             base.target_type = TargetType::Capability;
             base.target_id = "pane.send".into();
             base.call_id = "pane-send".into();
@@ -7178,7 +7496,7 @@ mod tests {
                 panic!("approval needed")
             };
             monitor
-                .detach_pane_send_waiter(&pending_request_id)
+                .detach_pane_send_waiter(&pane, "deny-detached", &pending_request_id)
                 .unwrap();
             if via_socket {
                 let receipt = monitor
@@ -7190,14 +7508,15 @@ mod tests {
                     .approve_pending(&pending_request_id, ApprovalChoice::Deny)
                     .unwrap();
             }
-            let record = monitor.get_continuation("deny-detached").unwrap();
+            let record = monitor.host_records().run("deny-detached").unwrap();
             assert_eq!(record.state, ContinuationState::Canceled);
             assert_eq!(record.run_outcome.as_deref(), Some("canceled"));
             drop(monitor);
             let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
             assert_eq!(
                 restored
-                    .get_continuation("deny-detached")
+                    .host_records()
+                    .run("deny-detached")
                     .unwrap()
                     .run_outcome
                     .as_deref(),
@@ -7207,11 +7526,187 @@ mod tests {
     }
 
     #[test]
+    fn detached_live_sender_recovers_only_its_own_legacy_rows_during_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let args = r#"{"pane_id":42,"text_fingerprint":"hash","operation_id":"detached"}"#;
+        let pane = PanePrincipal::for_test(7);
+        let mut base = binding(&fingerprint_args(args).unwrap());
+        base.actor = crate::broker::principal::Principal::Pane(pane.clone()).into();
+        base.target_type = TargetType::Capability;
+        base.target_id = "pane.send".into();
+        let id = pending_of(admit_of(&monitor, &base, args));
+        monitor
+            .detach_pane_send_waiter(&pane, "detached", &id)
+            .unwrap();
+        let before = monitor.host_records().run(&id).unwrap();
+        let legacy = RecordOwner::Legacy(pane.label().into());
+        monitor
+            .needs_you
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .unwrap()
+            .actor = legacy.clone();
+        monitor
+            .continuations
+            .lock()
+            .unwrap()
+            .get_mut(&before.run_id)
+            .unwrap()
+            .actor = legacy;
+        monitor.persist_queue();
+        monitor.persist_continuations();
+        monitor.restore_queue();
+        let original = monitor.records_for(&super::super::principal::Principal::Pane(pane));
+        assert!(original.question(&id).is_some());
+        assert_eq!(original.run("detached").unwrap(), before);
+        let replacement = monitor.records_for(&super::super::principal::Principal::Pane(
+            PanePrincipal::for_test(7),
+        ));
+        assert!(replacement.question(&id).is_none());
+        assert!(replacement.run("detached").is_none());
+    }
+
+    #[test]
+    fn delegated_run_grant_requires_its_run_and_original_requester() {
+        use super::super::{principal::Principal, AgentRunScope};
+        let monitor = PermissionMonitor::ephemeral();
+        let workspace = tempfile::tempdir().unwrap();
+        let first = PanePrincipal::for_test(7);
+        let second = PanePrincipal::for_test(7);
+        let named = Principal::agent("agent:worker").unwrap();
+        let request = || AdmitRequest {
+            call_id: "call",
+            tool: "agents.admin",
+            input_json: "{}",
+            principal: &named,
+            actor_scope: ActorScope::Workspace,
+            trust_origin: "host",
+            workspace_root: workspace.path(),
+            context_id: 0,
+            package_id: "agents",
+            instance_id: 0,
+            target_type: TargetType::HostTool,
+        };
+        let scope = |id: &str, pane: &PanePrincipal| AgentRunScope {
+            id: id.to_owned(),
+            parent: None,
+            requester: RecordOwner::Pane(pane.clone()),
+        };
+        let original = scope("run-host-id", &first);
+        let replacement = scope("run-host-id", &second);
+        let grant = monitor
+            .record_run_only_grant(
+                workspace.path(),
+                named.actor_id(),
+                &original.id,
+                "agents.admin",
+                Some(&first),
+            )
+            .unwrap();
+        assert!(
+            matches!(monitor.admit_agent_run(request(), &original), Admission::Proceed { grant_id, .. } if grant_id == grant)
+        );
+        let second_pending = pending_of(monitor.admit_agent_run(request(), &replacement));
+        assert!(monitor
+            .records_for(&Principal::Pane(second))
+            .question(&second_pending)
+            .is_some());
+        assert!(monitor
+            .records_for(&Principal::Pane(first.clone()))
+            .question(&second_pending)
+            .is_none());
+        assert!(matches!(
+            monitor.admit_agent_run(request(), &scope("other-run", &first)),
+            Admission::Required { .. }
+        ));
+        assert!(matches!(
+            monitor.admit(request()),
+            Admission::Required { .. }
+        ));
+        assert!(monitor
+            .note_run_use(
+                &RecordOwner::requester(&named),
+                &replacement,
+                "call",
+                &grant,
+                "",
+                "",
+                ""
+            )
+            .is_err());
+        monitor
+            .note_run_use(
+                &RecordOwner::requester(&named),
+                &original,
+                "call",
+                &grant,
+                "",
+                "",
+                "",
+            )
+            .unwrap();
+        assert!(monitor
+            .records_for(&Principal::Pane(first))
+            .audit()
+            .iter()
+            .any(|row| row.kind == "use" && row.grant_id == grant));
+    }
+
+    #[test]
+    fn admitted_run_selects_the_decided_request_when_operation_ids_collide() {
+        let monitor = PermissionMonitor::ephemeral();
+        let base = binding("");
+        let first = r#"{"game_id":"one","operation_id":"same"}"#;
+        let second = r#"{"game_id":"two","operation_id":"same"}"#;
+        let a = pending_of(admit_of(&monitor, &base, first));
+        let b = pending_of(admit_of(&monitor, &base, second));
+        assert!(monitor
+            .records_for(base.actor.principal().unwrap())
+            .run("same")
+            .is_none());
+        let before = monitor.host_records().run(&a).unwrap();
+        monitor.approve_pending(&b, ApprovalChoice::Once).unwrap();
+        let Admission::Proceed {
+            run: Some(handle),
+            grant_id,
+            fingerprint,
+            ..
+        } = admit_of(&monitor, &base, second)
+        else {
+            panic!("the approved request must return its run");
+        };
+        assert_eq!(handle, monitor.host_records().run(&b).unwrap().handle());
+        monitor
+            .note_outcome(
+                Some(&handle),
+                &before.actor,
+                "call",
+                &grant_id,
+                &fingerprint,
+                "two",
+                "same",
+                "ok",
+                "",
+                "",
+            )
+            .unwrap();
+        assert_eq!(monitor.host_records().run(&a).unwrap(), before);
+        assert_eq!(
+            monitor.host_records().run(&b).unwrap().state,
+            ContinuationState::Completed
+        );
+    }
+
+    #[test]
     fn detached_pane_send_restart_reports_authority_must_be_rechecked() {
         let dir = tempfile::tempdir().unwrap();
         let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         let args = r#"{"pane_id":42,"text_fingerprint":"hash","operation_id":"send-restart"}"#;
         let mut base = binding(&fingerprint_args(args).unwrap());
+        let pane = PanePrincipal::for_test(7);
+        base.actor = crate::broker::principal::Principal::Pane(pane.clone()).into();
         base.target_type = TargetType::Capability;
         base.target_id = "pane.send".into();
         base.call_id = "pane-send".into();
@@ -7219,7 +7714,7 @@ mod tests {
             panic!("approval needed")
         };
         monitor
-            .detach_pane_send_waiter(&pending_request_id)
+            .detach_pane_send_waiter(&pane, "send-restart", &pending_request_id)
             .unwrap();
         monitor
             .approve_pending(&pending_request_id, ApprovalChoice::Once)
@@ -7227,7 +7722,7 @@ mod tests {
         drop(monitor);
 
         let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
-        let continuation = restored.get_continuation("send-restart").unwrap();
+        let continuation = restored.host_records().run("send-restart").unwrap();
         assert_eq!(continuation.state, ContinuationState::Paused);
         assert_eq!(
             continuation.run_outcome.as_deref(),
@@ -7237,12 +7732,15 @@ mod tests {
         let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert_eq!(
             restored
-                .get_continuation("send-restart")
+                .host_records()
+                .run("send-restart")
                 .unwrap()
                 .run_outcome
                 .as_deref(),
             Some("retry_requires_authorization_check")
         );
+        let pane = PanePrincipal::for_test(7);
+        base.actor = crate::broker::principal::Principal::Pane(pane.clone()).into();
         let Admission::Required {
             pending_request_id: renewed,
         } = admit_of(&restored, &base, args)
@@ -7250,7 +7748,10 @@ mod tests {
             panic!("an ephemeral Once grant cannot survive host restart");
         };
         assert_ne!(renewed, pending_request_id);
-        let waiting = restored.get_continuation("send-restart").unwrap();
+        let waiting = restored
+            .records_for(&super::super::principal::Principal::Pane(pane))
+            .run("send-restart")
+            .unwrap();
         assert_eq!(waiting.needs_you_id.as_deref(), Some(renewed.as_str()));
         assert_eq!(waiting.state, ContinuationState::WaitingUser);
         assert_eq!(waiting.resolution, None);
@@ -7258,43 +7759,46 @@ mod tests {
 
     #[test]
     fn pane_send_claim_is_durable_and_fails_closed_on_persistence_error() {
+        let pane = PanePrincipal::for_test(1);
         let dir = tempfile::tempdir().unwrap();
         let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
-        assert_eq!(
-            monitor
-                .claim_pane_send("send-1", "pane:1", 2, 42, "fp-1")
-                .unwrap(),
-            PaneSendClaim::Claimed
-        );
+        assert!(matches!(
+            monitor.claim_pane_send("send-1", &pane, 2, "fp-1").unwrap(),
+            PaneSendClaim::Claimed(_)
+        ));
         drop(monitor);
         let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert_eq!(
             restored
-                .claim_pane_send("send-1", "pane:1", 2, 42, "fp-1")
+                .claim_pane_send("send-1", &pane, 2, "fp-1")
                 .unwrap(),
             PaneSendClaim::OutcomeUnknown,
             "a crash after claiming must never cause an automatic replay"
         );
         assert_eq!(
             restored
-                .claim_pane_send("send-1", "pane:1", 2, 42, "other")
+                .claim_pane_send("send-1", &pane, 2, "other")
                 .unwrap(),
             PaneSendClaim::Conflict
         );
-        assert_eq!(
+        assert!(matches!(
             restored
-                .claim_pane_send("send-done", "pane:1", 2, 42, "fp-done")
+                .claim_pane_send("send-done", &pane, 2, "fp-done")
                 .unwrap(),
-            PaneSendClaim::Claimed
-        );
+            PaneSendClaim::Claimed(_)
+        ));
         restored
-            .complete_continuation("send-done", ContinuationState::Completed, None)
+            .complete_continuation(
+                &restored.host_records().run("send-done").unwrap().handle(),
+                ContinuationState::Completed,
+                None,
+            )
             .unwrap();
         drop(restored);
         let completed = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert_eq!(
             completed
-                .claim_pane_send("send-done", "pane:1", 2, 42, "fp-done")
+                .claim_pane_send("send-done", &pane, 2, "fp-done")
                 .unwrap(),
             PaneSendClaim::Completed,
             "a completed operation remains deduplicated after restart"
@@ -7305,12 +7809,77 @@ mod tests {
         let path = broken.path().join("host").join("continuations.json");
         std::fs::create_dir_all(&path).unwrap();
         assert!(unavailable
-            .claim_pane_send("send-2", "pane:1", 2, 42, "fp-2")
+            .claim_pane_send("send-2", &pane, 2, "fp-2")
             .is_err());
         assert!(
-            unavailable.get_continuation("send-2").is_none(),
+            unavailable.host_records().run("send-2").is_none(),
             "a failed claim cannot permit dispatch"
         );
+    }
+
+    #[test]
+    fn sealed_audit_restores_legacy_history_and_exact_pane_owners() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = profile.path().join("permission-audit.jsonl");
+        let before = PermissionMonitor::open_profile(profile.path()).unwrap();
+        let pane = super::super::principal::Principal::Pane(PanePrincipal::for_test(7));
+        let replacement = super::super::principal::Principal::Pane(PanePrincipal::for_test(7));
+        before.note_denial(
+            &RecordOwner::requester(&pane),
+            "current-call",
+            "",
+            "",
+            "deny",
+        );
+        let mut legacy = serde_json::to_value(before.audit_records().last().unwrap()).unwrap();
+        legacy["call_id"] = serde_json::json!("legacy-call");
+        assert_eq!(legacy["actor"], "pane:7");
+        super::super::seal::append_audit(&before.custody().unwrap(), &path, &legacy).unwrap();
+        drop(before);
+        let restored = PermissionMonitor::open_profile(profile.path()).unwrap();
+        assert!(restored
+            .host_records()
+            .audit()
+            .iter()
+            .any(|row| row.call_id == "legacy-call"));
+        let own = restored.records_for(&pane).audit();
+        assert_eq!(own.len(), 1);
+        assert_eq!(own[0].call_id, "current-call");
+        assert!(restored.records_for(&replacement).audit().is_empty());
+    }
+
+    #[test]
+    fn pane_always_grant_requires_fresh_consent_on_reuse_and_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let args = r#"{"operation_id":"shared","game_id":"game"}"#;
+        let mut base = binding(&fingerprint_args(args).unwrap());
+        base.actor = crate::broker::principal::Principal::Pane(PanePrincipal::for_test(7)).into();
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &base, args) else {
+            panic!("first consent")
+        };
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::Always)
+            .unwrap();
+        assert!(matches!(
+            admit_of(&monitor, &base, args),
+            Admission::Proceed { .. }
+        ));
+        base.actor = crate::broker::principal::Principal::Pane(PanePrincipal::for_test(7)).into();
+        let Admission::Required {
+            pending_request_id: second,
+        } = admit_of(&monitor, &base, args)
+        else {
+            panic!("replacement must ask")
+        };
+        drop(monitor);
+        let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
+        assert_retired_at_restart(&restored, &second);
+        base.actor = crate::broker::principal::Principal::Pane(PanePrincipal::for_test(7)).into();
+        assert!(matches!(
+            admit_of(&restored, &base, args),
+            Admission::Required { .. }
+        ));
     }
 
     #[test]
@@ -7348,8 +7917,7 @@ mod tests {
         base.session_id = Some(monitor.session_id().to_string());
         // Schema-0 broad grant does not authorize.
         monitor.store().record(GrantRecord {
-            actor_type: ActorType::Agent,
-            actor_id: base.actor_id.clone(),
+            actor: base.actor.clone(),
             actor_scope: ActorScope::User,
             workspace_root: None,
             target_type: TargetType::PluginConnector,
@@ -7383,12 +7951,14 @@ mod tests {
         ));
 
         let mut wrong = base.clone();
-        wrong.actor_id = "agent:other".into();
+        wrong.actor = crate::broker::principal::Principal::agent("agent:other")
+            .unwrap()
+            .into();
         assert!(matches!(
             admit_of(&monitor, &wrong, args_a),
             Admission::Required { .. } | Admission::Denied { .. }
         ));
-        wrong.actor_id = base.actor_id.clone();
+        wrong.actor = base.actor.clone();
         wrong.resource_id = Some("game-2".into());
         // resource comes from args, so pass a different game id
         let other_game =
@@ -7484,7 +8054,17 @@ mod tests {
         let worker = monitor.clone_for_test();
         let fp_for_worker = fp.clone();
         let handle = thread::spawn(move || {
-            worker.note_use("agent:chess", "c", "g1", &fp_for_worker, "game-1", "op-1")
+            worker.note_use(
+                &crate::broker::principal::RecordOwner::stored(
+                    crate::broker::ActorType::Agent,
+                    "agent:chess",
+                ),
+                "c",
+                "g1",
+                &fp_for_worker,
+                "game-1",
+                "op-1",
+            )
         });
         thread::sleep(Duration::from_millis(40));
         assert!(monitor
@@ -7499,7 +8079,11 @@ mod tests {
         monitor.fail_audit(true);
         assert!(monitor
             .note_outcome(
-                "agent:chess",
+                None,
+                &crate::broker::principal::RecordOwner::stored(
+                    crate::broker::ActorType::Agent,
+                    "agent:chess"
+                ),
                 "c2",
                 "g1",
                 &fp,
@@ -7525,18 +8109,18 @@ mod tests {
         let Admission::Required { pending_request_id } = admit_of(&monitor, &base, args) else {
             panic!("a click approval must be filed");
         };
-        let open = monitor.list_needs_you();
+        let open = monitor.host_records().questions(true);
         assert_eq!(open.len(), 1, "{open:?}");
         assert_eq!(open[0].id, pending_request_id);
         assert_eq!(open[0].kind, NeedsYouKind::ApprovalClick);
         assert!(open[0].resolution.is_none());
         assert!(open[0].expires_at.is_none());
-        assert_eq!(open[0].actor, base.actor_id);
+        assert_eq!(open[0].actor.stored_id(), base.actor.id());
         assert_eq!(open[0].resource, "game-1");
         assert_eq!(open[0].run_tag.as_deref(), Some(base.call_id.as_str()));
         monitor.set_now_for_test(9_000_000_000);
         assert_eq!(
-            monitor.list_needs_you().len(),
+            monitor.host_records().questions(true).len(),
             1,
             "click items do not expire"
         );
@@ -7545,7 +8129,7 @@ mod tests {
             .unwrap();
         assert!(!receipt.already);
         assert_eq!(receipt.resolution, NeedsYouResolution::Approved);
-        assert!(monitor.list_needs_you().is_empty());
+        assert!(monitor.host_records().questions(true).is_empty());
         assert!(
             matches!(admit_of(&monitor, &base, args), Admission::Proceed { .. }),
             "the approved tool proceeds"
@@ -7665,7 +8249,8 @@ mod tests {
         ));
         assert_eq!(
             monitor
-                .get_needs_you(&a)
+                .host_records()
+                .question(&a)
                 .and_then(|item| item.details)
                 .and_then(|d| d.pane_id),
             Some(4),
@@ -7682,7 +8267,10 @@ mod tests {
             Some(ApprovalChoice::Always)
         );
         assert_eq!(
-            monitor.get_needs_you(&b).and_then(|item| item.resolution),
+            monitor
+                .host_records()
+                .question(&b)
+                .and_then(|item| item.resolution),
             Some(NeedsYouResolution::Approved)
         );
         assert!(
@@ -7708,7 +8296,10 @@ mod tests {
             Some(ApprovalChoice::DenyAlways)
         );
         assert_eq!(
-            monitor.get_needs_you(&c).and_then(|item| item.resolution),
+            monitor
+                .host_records()
+                .question(&c)
+                .and_then(|item| item.resolution),
             Some(NeedsYouResolution::Denied)
         );
         assert!(matches!(
@@ -7806,7 +8397,9 @@ mod tests {
         {
             let _unsealable =
                 crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
-            monitor.retire_pending_asks(std::slice::from_ref(&ask));
+            monitor
+                .host_records()
+                .retire_pending(std::slice::from_ref(&ask));
         }
         assert_eq!(
             std::fs::read(&queue).unwrap(),
@@ -7819,7 +8412,10 @@ mod tests {
         let reopened = PermissionMonitor::open_profile(dir.path()).unwrap();
         assert!(reopened.show_pending(&ask).is_none(), "no pending row");
         assert_eq!(
-            reopened.get_needs_you(&ask).and_then(|row| row.resolution),
+            reopened
+                .host_records()
+                .question(&ask)
+                .and_then(|row| row.resolution),
             Some(NeedsYouResolution::Retired)
         );
         assert!(
@@ -7841,7 +8437,10 @@ mod tests {
             "{id}: approval refused"
         );
         assert_eq!(
-            monitor.get_needs_you(id).and_then(|row| row.resolution),
+            monitor
+                .host_records()
+                .question(id)
+                .and_then(|row| row.resolution),
             Some(NeedsYouResolution::Retired),
             "{id}: closed as retired"
         );
@@ -7878,7 +8477,7 @@ mod tests {
         {
             let _unsealable =
                 crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
-            monitor.retire_requester_approvals(&[], Some(9));
+            monitor.retire_requester_approvals(&[], &[], Some(9));
         }
         assert_eq!(
             std::fs::read(queue_path(dir.path())).unwrap(),
@@ -7914,8 +8513,7 @@ mod tests {
         send.call_id = "pane-send".into();
         let pane_send = pending_of(admit_of(&monitor, &send, send_args));
         let mut connector = binding("ignored");
-        connector.actor_type = ActorType::Plugin;
-        connector.actor_id = "probe".into();
+        connector.actor = crate::broker::principal::Principal::plugin("probe", None).into();
         let plugin_tool = pending_of(admit_of(&monitor, &connector, r#"{"game_id":"game-2"}"#));
         let capability = pending_of(plugin_capability_admit(
             &monitor,
@@ -8075,7 +8673,9 @@ mod tests {
             monitor
                 .file_needs_you(NeedsYouFile {
                     kind: NeedsYouKind::Question,
-                    actor: "agent:test".to_string(),
+                    actor: crate::broker::principal::RecordOwner::requester(
+                        &crate::broker::principal::Principal::agent("agent:test").unwrap(),
+                    ),
                     resource: "task-unlock".to_string(),
                     summary: "Keep me across keychain prompt".to_string(),
                     expires_at: None,
@@ -8131,7 +8731,10 @@ mod tests {
         std::fs::remove_dir(&blocker).unwrap();
         monitor.restore_queue();
         assert_eq!(
-            monitor.get_needs_you(&widen).and_then(|row| row.resolution),
+            monitor
+                .host_records()
+                .question(&widen)
+                .and_then(|row| row.resolution),
             Some(NeedsYouResolution::Denied)
         );
         assert!(
@@ -8150,7 +8753,9 @@ mod tests {
         let tool_request = monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::PermissionRequest,
-                actor: "agent:test".to_string(),
+                actor: crate::broker::principal::RecordOwner::requester(
+                    &crate::broker::principal::Principal::agent("agent:test").unwrap(),
+                ),
                 resource: "fs.write".to_string(),
                 summary: "Allow fs.write for this run".to_string(),
                 expires_at: None,
@@ -8163,7 +8768,10 @@ mod tests {
         let entries = reopened.list_entries();
         for id in [&widen, &tool_request] {
             assert_eq!(
-                reopened.get_needs_you(id).and_then(|row| row.resolution),
+                reopened
+                    .host_records()
+                    .question(id)
+                    .and_then(|row| row.resolution),
                 Some(NeedsYouResolution::Retired),
                 "{id}"
             );
@@ -8192,7 +8800,7 @@ mod tests {
             4,
             r#"{"host_scope":"api.example","request":"fp-a"}"#,
         ));
-        monitor.retire_requester_approvals(&[4], None);
+        monitor.retire_requester_approvals(&[], &[4], None);
         assert!(monitor.show_pending(&ask).is_none());
         assert_eq!(
             monitor.approval_resolution(&ask),
@@ -8207,7 +8815,9 @@ mod tests {
         let question = monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::Question,
-                actor: "agent:guide".into(),
+                actor: crate::broker::principal::RecordOwner::requester(
+                    &crate::broker::principal::Principal::agent("agent:guide").unwrap(),
+                ),
                 resource: "repo".into(),
                 summary: "Which branch should I push?".into(),
                 expires_at: Some(1_050),
@@ -8217,7 +8827,9 @@ mod tests {
         let blocked = monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::BlockedRun,
-                actor: "agent:guide".into(),
+                actor: crate::broker::principal::RecordOwner::requester(
+                    &crate::broker::principal::Principal::agent("agent:guide").unwrap(),
+                ),
                 resource: "ci".into(),
                 summary: "Runner stopped before the build finished".into(),
                 expires_at: None,
@@ -8227,7 +8839,9 @@ mod tests {
         assert!(monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::ApprovalClick,
-                actor: "agent:guide".into(),
+                actor: crate::broker::principal::RecordOwner::requester(
+                    &crate::broker::principal::Principal::agent("agent:guide").unwrap()
+                ),
                 resource: "repo".into(),
                 summary: "no".into(),
                 expires_at: None,
@@ -8237,7 +8851,9 @@ mod tests {
         let again_blocked = monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::BlockedRun,
-                actor: "agent:guide".into(),
+                actor: crate::broker::principal::RecordOwner::requester(
+                    &crate::broker::principal::Principal::agent("agent:guide").unwrap(),
+                ),
                 resource: "ci".into(),
                 summary: "Runner stopped before the build finished".into(),
                 expires_at: None,
@@ -8245,9 +8861,9 @@ mod tests {
             })
             .unwrap();
         assert_eq!(again_blocked, blocked);
-        assert_eq!(monitor.list_needs_you().len(), 2);
+        assert_eq!(monitor.host_records().questions(true).len(), 2);
         monitor.set_now_for_test(1_050);
-        let open = monitor.list_needs_you();
+        let open = monitor.host_records().questions(true);
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].id, blocked);
         assert_eq!(needs_you_decisions(&monitor, "auto_denied"), 1);
@@ -8284,7 +8900,11 @@ mod tests {
         for changed in 0..5 {
             let mut other = row.clone();
             match changed {
-                0 => other.actor_id = "agent:other".into(),
+                0 => {
+                    other.actor = crate::broker::principal::Principal::agent("agent:other")
+                        .unwrap()
+                        .into()
+                }
                 1 => other.context_id = Some(10),
                 2 => other.instance_id = Some(5),
                 3 => other.package_id = "other-package".into(),
@@ -8321,7 +8941,7 @@ mod tests {
         assert_eq!(grant.duration, GrantDuration::Session);
         let caller = PermissionCaller {
             revoke_scope: crate::broker::gate::RevokeScope::Own,
-            actor_id: row.actor_id.clone(),
+            owner: row.actor.owner(),
         };
         assert!(matches!(
             monitor.mutate_entry(&grant.grant_id, "revoke", &caller),
@@ -8366,7 +8986,7 @@ mod tests {
         let monitor = PermissionMonitor::ephemeral();
         let row = binding("ignored");
         admit_of(&monitor, &row, "{}");
-        let entries = monitor.list_needs_you();
+        let entries = monitor.host_records().questions(true);
         assert!(entries[0].summary.contains("chess.play"));
         assert_ne!(entries[0].summary, "{}");
     }
@@ -8464,7 +9084,10 @@ mod tests {
         );
         let agent = PermissionCaller {
             revoke_scope: crate::broker::gate::RevokeScope::Own,
-            actor_id: "agent:test".to_string(),
+            owner: crate::broker::principal::RecordOwner::stored(
+                crate::broker::ActorType::Agent,
+                "agent:test",
+            ),
         };
         let filed = monitor.mutate_entry(&deny_id, "allow", &agent);
         assert!(
@@ -8514,10 +9137,7 @@ mod tests {
         );
         let owner = PermissionCaller {
             revoke_scope: crate::broker::gate::RevokeScope::Own,
-            actor_id: monitor
-                .entry_by_id(&grant_id)
-                .expect("the grant is still listed")
-                .actor_id,
+            owner: row.actor.owner(),
         };
         let revoked = monitor.mutate_entry(&grant_id, "revoke", &owner);
         assert!(
@@ -8598,8 +9218,26 @@ mod tests {
     fn edited_and_deleted_audit_lines_are_detected() {
         let edited = tempfile::tempdir().unwrap();
         let monitor = PermissionMonitor::open_profile(edited.path()).unwrap();
-        monitor.note_denial("actor", "c1", "res", "op", "denied");
-        monitor.note_denial("actor", "c2", "res", "op", "denied");
+        monitor.note_denial(
+            &crate::broker::principal::RecordOwner::stored(
+                crate::broker::ActorType::Agent,
+                "actor",
+            ),
+            "c1",
+            "res",
+            "op",
+            "denied",
+        );
+        monitor.note_denial(
+            &crate::broker::principal::RecordOwner::stored(
+                crate::broker::ActorType::Agent,
+                "actor",
+            ),
+            "c2",
+            "res",
+            "op",
+            "denied",
+        );
         drop(monitor);
         let path = edited.path().join("permission-audit.jsonl");
         let original = std::fs::read_to_string(&path).unwrap();
@@ -8621,8 +9259,26 @@ mod tests {
 
         let deleted = tempfile::tempdir().unwrap();
         let monitor = PermissionMonitor::open_profile(deleted.path()).unwrap();
-        monitor.note_denial("actor", "c1", "res", "op", "denied");
-        monitor.note_denial("actor", "c2", "res", "op", "denied");
+        monitor.note_denial(
+            &crate::broker::principal::RecordOwner::stored(
+                crate::broker::ActorType::Agent,
+                "actor",
+            ),
+            "c1",
+            "res",
+            "op",
+            "denied",
+        );
+        monitor.note_denial(
+            &crate::broker::principal::RecordOwner::stored(
+                crate::broker::ActorType::Agent,
+                "actor",
+            ),
+            "c2",
+            "res",
+            "op",
+            "denied",
+        );
         drop(monitor);
         let path = deleted.path().join("permission-audit.jsonl");
         let original = std::fs::read_to_string(&path).unwrap();
@@ -8659,7 +9315,9 @@ mod tests {
         let blocked = monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::BlockedRun,
-                actor: "agent:guide".into(),
+                actor: crate::broker::principal::RecordOwner::requester(
+                    &crate::broker::principal::Principal::agent("agent:guide").unwrap(),
+                ),
                 resource: "ci".into(),
                 summary: "Runner stopped".into(),
                 expires_at: None,
@@ -8668,7 +9326,7 @@ mod tests {
             .unwrap();
         drop(monitor);
         let restored = PermissionMonitor::reload_for_test(dir.path());
-        let open = restored.list_needs_you();
+        let open = restored.host_records().questions(true);
         assert!(open.iter().any(|row| row.id == blocked), "{open:?}");
         // Stint 1624: the approval does not cross the restart; its exact
         // request asks again.
@@ -8720,7 +9378,7 @@ mod tests {
         )
         .unwrap();
         let restored = PermissionMonitor::reload_for_test(dir.path());
-        let open = restored.list_needs_you();
+        let open = restored.host_records().questions(true);
         assert!(
             open.iter()
                 .all(|row| row.id != "req_forged" && row.id != "req_planted"),
@@ -8756,7 +9414,7 @@ mod tests {
         drop(monitor);
         std::fs::remove_file(dir.path().join("host").join("needs-you.json")).unwrap();
         let restored = PermissionMonitor::reload_for_test(dir.path());
-        let open = restored.list_needs_you();
+        let open = restored.host_records().questions(true);
         assert!(
             open.iter().any(|row| row.kind == NeedsYouKind::Integrity),
             "deleting the queue must be reported: {open:?}"
@@ -8911,8 +9569,12 @@ mod tests {
             let ws = tempfile::tempdir().unwrap();
             let admission = |tool: &str, actor_type: ActorType, actor_id: &str| {
                 let binding = ExactBinding {
-                    actor_type,
-                    actor_id: actor_id.to_string(),
+                    agent_run: None,
+                    actor: crate::broker::principal::Principal::from_actor(
+                        actor_type, actor_id, None,
+                    )
+                    .unwrap()
+                    .into(),
                     actor_scope: ActorScope::User,
                     trust_origin: "host".to_string(),
                     workspace_root: ws.path().to_path_buf(),
@@ -9270,7 +9932,9 @@ mod tests {
             monitor
                 .file_needs_you(NeedsYouFile {
                     kind: NeedsYouKind::Question,
-                    actor: "agent:test".to_string(),
+                    actor: crate::broker::principal::RecordOwner::requester(
+                        &crate::broker::principal::Principal::agent("agent:test").unwrap(),
+                    ),
                     resource: "task-1".to_string(),
                     summary: "Which branch?".to_string(),
                     expires_at: None,
@@ -9307,7 +9971,9 @@ mod tests {
             monitor
                 .file_needs_you(NeedsYouFile {
                     kind: NeedsYouKind::Question,
-                    actor: "agent:test".to_string(),
+                    actor: crate::broker::principal::RecordOwner::requester(
+                        &crate::broker::principal::Principal::agent("agent:test").unwrap(),
+                    ),
                     resource: "task-rotate".to_string(),
                     summary: "Question sealed with previous key".to_string(),
                     expires_at: None,
@@ -9351,7 +10017,9 @@ mod tests {
             monitor
                 .file_needs_you(NeedsYouFile {
                     kind: NeedsYouKind::Question,
-                    actor: "agent:test".to_string(),
+                    actor: crate::broker::principal::RecordOwner::requester(
+                        &crate::broker::principal::Principal::agent("agent:test").unwrap(),
+                    ),
                     resource: "task-unlock".to_string(),
                     summary: "Keep me across keychain prompt".to_string(),
                     expires_at: None,
@@ -9422,7 +10090,8 @@ mod tests {
             call_id: "c-rotate",
             tool: "host.files.read",
             input_json: "{}",
-            principal: &crate::broker::principal::Principal::agent("agent:test"),
+            principal: &crate::broker::principal::Principal::agent("agent:test")
+                .expect("named agent"),
             actor_scope: ActorScope::User,
             trust_origin: "host",
             workspace_root: ws.path(),
@@ -9466,7 +10135,8 @@ mod tests {
             call_id: "c-save",
             tool: "host.files.read",
             input_json: "{}",
-            principal: &crate::broker::principal::Principal::agent("agent:test"),
+            principal: &crate::broker::principal::Principal::agent("agent:test")
+                .expect("named agent"),
             actor_scope: ActorScope::User,
             trust_origin: "host",
             workspace_root: ws.path(),
@@ -9655,7 +10325,16 @@ mod tests {
             ));
             store.try_save().expect("seal profile grant");
         }
-        monitor.note_denial("actor", "c1", "res", "op", "denied");
+        monitor.note_denial(
+            &crate::broker::principal::RecordOwner::stored(
+                crate::broker::ActorType::Agent,
+                "actor",
+            ),
+            "c1",
+            "res",
+            "op",
+            "denied",
+        );
         // This helper is a finished host session. A dirty running stamp would
         // make the next open look like a crash on top of the keychain prompt.
         crate::broker::integrity::mark_clean_shutdown(dir);
@@ -9773,7 +10452,16 @@ mod tests {
         let monitor = PermissionMonitor::ephemeral();
         let total = AUDIT_MEM_CAP + 25;
         for n in 0..total {
-            monitor.note_denial("pane:1", &format!("call-{n}"), "res", "", "deny");
+            monitor.note_denial(
+                &crate::broker::principal::RecordOwner::stored(
+                    crate::broker::ActorType::Agent,
+                    "pane:1",
+                ),
+                &format!("call-{n}"),
+                "res",
+                "",
+                "deny",
+            );
         }
         let rows = monitor.audit_records();
         assert_eq!(rows.len(), AUDIT_MEM_CAP);
@@ -9829,6 +10517,7 @@ mod tests {
         let monitor = PermissionMonitor::ephemeral();
         let workspace = tempfile::tempdir().unwrap();
 
+        let caller = super::super::principal::Principal::Pane(PanePrincipal::for_test(1));
         let admit_clip = |call_id: &str, clip_id: &str, preset: &str| {
             let input = serde_json::json!({
                 "clip_id": clip_id,
@@ -9841,7 +10530,7 @@ mod tests {
                 call_id,
                 tool: "clip-editor-probe__clip.crop",
                 input_json: &input,
-                principal: &crate::broker::principal::Principal::agent("pane:1"),
+                principal: &caller,
                 actor_scope: ActorScope::User,
                 trust_origin: "host",
                 workspace_root: workspace.path(),
@@ -9903,7 +10592,7 @@ mod tests {
             .file_needs_you_with_details(
                 NeedsYouFile {
                     kind: NeedsYouKind::Question,
-                    actor: "pane:7".to_string(),
+                    actor: crate::broker::principal::RecordOwner::Host("pane:7".to_string()),
                     resource: "intro".to_string(),
                     summary: "Which crop preset for intro?".to_string(),
                     expires_at: None,
@@ -9914,7 +10603,7 @@ mod tests {
             .unwrap();
 
         // Continuation starts in WaitingUser
-        let cont = monitor.get_continuation("corr-crop-intro").unwrap();
+        let cont = monitor.host_records().run("corr-crop-intro").unwrap();
         assert_eq!(cont.state, ContinuationState::WaitingUser);
         assert_eq!(cont.needs_you_id.as_deref(), Some(qid.as_str()));
         assert_eq!(cont.expected_revision.as_deref(), Some("rev-1"));
@@ -9926,7 +10615,12 @@ mod tests {
             "9:16",
         );
         assert_eq!(forged, Err(NeedsYouResolveError::Refused));
-        assert!(monitor.get_needs_you(&qid).unwrap().resolution.is_none());
+        assert!(monitor
+            .host_records()
+            .question(&qid)
+            .unwrap()
+            .resolution
+            .is_none());
 
         // 2. Invalid choice when allow_free_text=false is rejected
         let invalid = monitor.answer_needs_you_decided(
@@ -9948,7 +10642,7 @@ mod tests {
         assert_eq!(monitor.store().records().len(), records_before);
 
         // Continuation reflects the human answer and Running (unblocked, ready to resume) state
-        let cont_after = monitor.get_continuation(&qid).unwrap();
+        let cont_after = monitor.host_records().run(&qid).unwrap();
         assert_eq!(cont_after.answer.as_deref(), Some("9:16"));
         assert_eq!(cont_after.resolution, Some(NeedsYouResolution::Approved));
         assert_eq!(cont_after.state, ContinuationState::Running);
@@ -9956,7 +10650,7 @@ mod tests {
         // Complete the continuation with a receipt and verify it survives a profile reload
         monitor
             .complete_continuation(
-                "corr-crop-intro",
+                &cont_after.handle(),
                 ContinuationState::Completed,
                 Some(r#"{"ok":true,"revision_after":"rev-2"}"#.to_string()),
             )
@@ -9964,7 +10658,7 @@ mod tests {
         crate::broker::integrity::mark_clean_shutdown(dir.path());
 
         let reloaded = PermissionMonitor::reload_for_test(dir.path());
-        let restored = reloaded.get_continuation("corr-crop-intro").unwrap();
+        let restored = reloaded.host_records().run("corr-crop-intro").unwrap();
         assert_eq!(restored.state, ContinuationState::Completed);
         assert_eq!(restored.answer.as_deref(), Some("9:16"));
         assert_eq!(

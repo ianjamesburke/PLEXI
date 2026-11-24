@@ -1897,7 +1897,7 @@ pub fn view_render(
         let (entries, notice) =
             match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
             {
-                Ok(monitor) => (monitor.list_entries(), String::new()),
+                Ok(monitor) => (monitor.host_records().entries(), String::new()),
                 Err(error) => {
                     log::info!("view_render: permissions inventory unavailable: {error}");
                     eprintln!("{PERMISSION_ROWS_FROM_HOST}");
