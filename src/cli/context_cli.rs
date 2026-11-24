@@ -292,9 +292,9 @@ pub fn context_open_cli(path: Option<&str>) -> i32 {
 
 /// `plexi context set-root [path]`
 ///
-/// Sets the root of the caller's own context: the host names it from the
-/// calling pane, never from the environment (stint 1285). Uses CWD if path
-/// omitted.
+/// Sets the root of the caller's own context. The frame names it from the
+/// pane's environment; the host checks it against the calling pane (stint
+/// 1285). Uses CWD if path omitted.
 pub fn context_set_root_cli(path: Option<&str>) -> i32 {
     let root = match resolve_path(path) {
         Ok(p) => p,
@@ -303,11 +303,8 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
             return 1;
         }
     };
-    log::info!("context_set_root_cli: root={}", root.display());
-    let payload = serde_json::json!({
-        "type": "set_context_root",
-        "root": root,
-    });
+    let payload = set_root_frame(&root, caller_context_id());
+    log::info!("context_set_root_cli: root={} frame={payload}", root.display());
     let rc = context_mutation(payload, "context set-root");
     if rc == 0 {
         print_tip(
@@ -315,6 +312,18 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
         );
     }
     rc
+}
+
+/// The `set_context_root` request for `root`. It names the caller's own
+/// context: a host of this build checks it is the caller's, and an older
+/// host, which reads a missing id as its active context, changes the right
+/// one (Codex 3290 r4).
+fn set_root_frame(root: &std::path::Path, context_id: Option<u64>) -> serde_json::Value {
+    let mut payload = serde_json::json!({"type": "set_context_root", "root": root});
+    if let Some(id) = context_id {
+        payload["context_id"] = serde_json::Value::from(id);
+    }
+    payload
 }
 
 /// `plexi context describe "text"`
@@ -445,6 +454,36 @@ pub fn context_list_cli() -> i32 {
 #[cfg(test)]
 mod context_sub_tests {
     use super::expand_pane_commands;
+
+    /// Codex 3290 r4 L3: the frame names the caller's context, so an older
+    /// host (which reads a missing id as its active context) changes the
+    /// caller's own root.
+    #[test]
+    fn set_root_names_the_callers_context() {
+        let frame = super::set_root_frame(std::path::Path::new("/w"), Some(7));
+        assert_eq!(frame["context_id"], 7, "{frame}");
+        let request: crate::protocol::HostRequest = serde_json::from_value(frame).unwrap();
+        assert!(matches!(
+            request,
+            crate::protocol::HostRequest::SetContextRoot { context_id: Some(7), .. }
+        ));
+    }
+
+    /// Codex 3290 r4 L3: a fire-and-forget verb whose caller does not matter
+    /// does not wait for an identity ack an older host never sends.
+    #[test]
+    fn pane_focus_does_not_wait_for_an_identity_ack() {
+        let (mut client, _host) = std::os::unix::net::UnixStream::pair().unwrap();
+        let started = std::time::Instant::now();
+        crate::cli::await_peer_identity_ack(&mut client, r#"{"type":"focus_pane","pane_id":3}"#);
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        let started = std::time::Instant::now();
+        crate::cli::await_peer_identity_ack(&mut client, r#"{"type":"set_agent_state","pane_id":3}"#);
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(400),
+            "an identity-consuming verb waits for the ack"
+        );
+    }
 
     #[test]
     fn no_command_gives_every_pane_a_plain_shell() {

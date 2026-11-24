@@ -1691,14 +1691,33 @@ fn send_line_to_socket(
     Ok(stream)
 }
 
+/// The fire-and-forget verbs whose caller matters to the host: the CLI waits
+/// for the host's identity ack before disconnecting for these only, the same
+/// set both alpha endpoints use, so a newer CLI adds no wait against an older
+/// host (Codex 3290 r4). Pane driving that is not in the set is served to an
+/// unidentified caller.
+const IDENTITY_ACK_VERBS: &[&str] = &[
+    "agent_ask", "agent_call", "agent_done", "agent_message", "agent_new_chat", "agent_open",
+    "agent_reopen", "agent_spawn", "agent_wait", "agents_api", "call_plugin_tool",
+    "caller_context", "create_context", "create_sub_context", "dismiss_notification",
+    "file_open", "focus_context", "list_plugin_tools", "needs_you_api", "notify",
+    "pane_message_send", "pane_secret_get", "pane_secret_list", "permissions", "resource_lease",
+    "send_to_pane", "set_agent_state", "spawn_pane",
+];
+
 /// Hold a fire-and-forget connection until the host acks that it read our
-/// peer identity (`PEER_IDENTITY_ACK` in `src/app/mod.rs`). Disconnecting
-/// first leaves the host no pid to attribute the request to, and every
-/// socket request is admitted by its caller (stint 1285). A request with a
-/// reply token holds its connection until the reply and returns at once.
-/// A missed ack is logged, not fatal: the request was already delivered.
+/// peer identity (`PEER_IDENTITY_ACK` in `src/app/mod.rs`), for a verb whose
+/// caller matters. A request with a reply token holds its connection until
+/// the reply and returns at once. A missed ack is logged, not fatal: the
+/// request was already delivered.
 pub(crate) fn await_peer_identity_ack(stream: &mut crate::platform::ipc::IpcStream, line: &str) {
-    if crate::rpc::extract_response_file_token(line).is_some() {
+    let verb = serde_json::from_str::<serde_json::Value>(line.trim())
+        .ok()
+        .and_then(|frame| frame["type"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    if !IDENTITY_ACK_VERBS.contains(&verb.as_str())
+        || crate::rpc::extract_response_file_token(line).is_some()
+    {
         return;
     }
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
