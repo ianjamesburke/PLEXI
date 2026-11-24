@@ -28,7 +28,7 @@
         { "text": "Agents shows each agent's state, whether it is waiting on you, and its latest message. Focus it, answer it or close it from there.", "status": "in progress", "stints": ["1396", "1447"] },
         { "text": "Commands that plugins add show up in the palette, labelled with their plugin.", "status": "planned", "stints": ["1151"] },
         { "text": "Agents you define appear by name. Pick one and it picks up its last chat.", "status": "in progress", "stints": ["1396", "1397"] },
-        { "text": "Permission system hardening continues.", "status": "in progress", "stints": ["1285", "1283", "1288", "1279", "1277", "1349", "1344", "1158"] }
+        { "text": "Permission system hardening continues.", "status": "in progress", "stints": ["1285", "1349", "1344", "1743"] }
       ],
       "forYou": "The picker is part of Plexi itself in this release. Plugins may use it in 0.7 Workbench. Still an early beta."
     },
@@ -46,7 +46,8 @@
         { "text": "Each plugin gets one defined place to keep its saved data.", "status": "planned", "stints": ["1320", "1400"] },
         { "text": "One permission broker: every request for access goes through the same place.", "status": "planned", "stints": ["1238"] },
         { "text": "Code identity: Plexi and the plugins you approve are signed and identified, so a permission stays with the code you gave it to.", "status": "planned", "stints": ["1282"] },
-        { "text": "A walkthrough of twelve everyday steps passes on a fresh install.", "status": "planned", "stints": ["1401"] }
+        { "text": "A walkthrough of twelve everyday steps passes on a fresh install.", "status": "planned", "stints": ["1401"] },
+        { "text": "Permission system hardening continues.", "status": "planned", "stints": ["1283", "1158", "1288", "1279", "1277"] }
       ],
       "forYou": "When you upgrade, Plexi asks you once to approve your plugins again."
     },
