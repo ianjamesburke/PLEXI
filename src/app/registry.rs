@@ -870,19 +870,23 @@ impl PluginRegistry {
             match self.load_plugin(&entry_dir) {
                 Ok(installed) => {
                     let id = installed.manifest.id.clone();
-                    let refusal = match gate {
-                        Some(gate) => gate
-                            .decide(
+                    // A local scan source never owns a bundled id, whatever its
+                    // path resolves to (a link to the bundled install included);
+                    // that is decided by source before admission classifies the
+                    // destination (stint 1398).
+                    let reserved = (source != RegistrySource::Global)
+                        .then(|| crate::host::plugin_admission::reserved_id(&id, &entry_dir).err())
+                        .flatten();
+                    let refusal = reserved.or_else(|| {
+                        gate.and_then(|gate| {
+                            gate.decide(
                                 &id,
                                 &entry_dir,
                                 crate::host::plugin_admission::Launch::Discovery,
                             )
-                            .err(),
-                        None if source != RegistrySource::Global => {
-                            crate::host::plugin_admission::reserved_id(&id, &entry_dir).err()
-                        }
-                        None => None,
-                    };
+                            .err()
+                        })
+                    });
                     if let Some(refusal) = refusal {
                         skipped.push(SkippedPlugin {
                             id: Some(id),

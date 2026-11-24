@@ -625,3 +625,22 @@ fn a_dev_copy_never_stands_in_for_the_bundled_plugin_opened_by_id() {
         "the dev copy never enters the registry"
     );
 }
+
+/// (c) A workspace directory link that resolves to the bundled install itself
+/// still never owns the id: the reservation applies to the scan source, before
+/// the link's destination is classified.
+#[test]
+fn a_workspace_link_to_the_bundled_install_never_owns_its_id() {
+    let rig = Rig::new();
+    let bundled = extract_bundled("todo", &rig.plugins());
+    std::os::unix::fs::symlink(&bundled, rig.repo_plugins().join("todo")).unwrap();
+    rig.admission().trust_folder_for_test(&rig.repo_plugins());
+    let registry = rig.load();
+    let todo = registry.get("todo").expect("bundled todo");
+    assert_eq!(todo.source, RegistrySource::Global);
+    assert!(todo.workspace_root.is_none());
+    assert!(matches!(
+        rig.refusal(&registry, "todo"),
+        Refusal::ShadowsBundled { .. }
+    ));
+}
