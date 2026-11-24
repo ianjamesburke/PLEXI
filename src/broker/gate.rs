@@ -4440,9 +4440,8 @@ impl PermissionMonitor {
         self.revoke_locked(grant_id)
     }
 
-    /// `Ok(true)` when the grant was removed and the removal saved. A removal
-    /// that cannot be saved is put back and returned as an error: memory must
-    /// never claim a revoke the disk does not hold (stint 1489).
+    /// Seal damage still permits a local revoke. Report a durable removal
+    /// that only took effect in memory. Roll back other save failures.
     fn revoke_locked(&self, grant_id: &str) -> Result<bool, String> {
         self.epoch.fetch_add(1, Ordering::SeqCst);
         let removed: Vec<GrantRecord> = {
@@ -4457,13 +4456,27 @@ impl PermissionMonitor {
         let Some(actor) = removed.first().map(|record| record.actor_id.clone()) else {
             return Ok(false);
         };
-        if let Err(error) = self.save_durable() {
-            self.store().records_mut().extend(removed);
-            let message =
-                format!("revoke of {grant_id} was not saved: {error}. The grant still stands.");
-            log::error!("permission_monitor: {message}");
-            return Err(message);
-        }
+        let result = match self.save_durable() {
+            Ok(()) => Ok(true),
+            Err(error) if super::seal::is_damage_refusal(&error) => {
+                if removed.iter().any(record_is_durable) {
+                    let message = format!(
+                        "{grant_id} was revoked for now but not saved. Reset the permission seal in Plexi and revoke again to make it permanent."
+                    );
+                    log::info!("permission_monitor: {message}");
+                    Err(message)
+                } else {
+                    Ok(true)
+                }
+            }
+            Err(error) => {
+                self.store().records_mut().extend(removed);
+                let message =
+                    format!("revoke of {grant_id} was not saved: {error}. The grant still stands.");
+                log::error!("permission_monitor: {message}");
+                return Err(message);
+            }
+        };
         let _ = self.audit_locked(&AuditFact {
             kind: "revoke".to_string(),
             actor,
@@ -4477,7 +4490,7 @@ impl PermissionMonitor {
             revision_after: String::new(),
         });
         log::info!("permission_monitor: revoked {grant_id}");
-        Ok(true)
+        result
     }
 
     /// Live inventory: durable grants and denies, session and one-shot grants
@@ -5748,7 +5761,7 @@ impl PermissionMonitor {
                     // A person may decide and exercise transient grants. Other
                     // effects that require a durable audit still fail closed.
                     let transient = match fact.kind.as_str() {
-                        "ask" | "deny" | "needs_you" => true,
+                        "ask" | "deny" | "needs_you" | "revoke" => true,
                         "grant" | "use" | "outcome" => self.store().records().iter().any(|row| {
                             row.grant_id == fact.grant_id && !record_is_durable(row)
                         }),
@@ -7839,10 +7852,9 @@ mod tests {
         ));
     }
 
-    /// Stint 1489 (Codex round 2, finding 2): a revoke whose removal cannot
-    /// be saved is rejected, and the grant still stands in memory and on disk.
+    /// A key-store outage leaves the grant in effect in memory and on disk.
     #[test]
-    fn a_revoke_that_cannot_be_saved_is_rejected_and_the_grant_stands() {
+    fn a_revoke_with_an_unreadable_key_is_rejected_and_the_grant_stands() {
         let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
         let dir = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
@@ -8803,6 +8815,87 @@ mod tests {
     #[test]
     fn saved_denial_requires_a_seal_reset_to_save() {
         decide_with_deleted_audit(ApprovalChoice::DenyAlways);
+    }
+
+    #[test]
+    fn audit_fault_preserves_saved_denial_at_launch_after_restart() {
+        use crate::app::permissions::Capability::LogsRead;
+        use crate::broker::principal::PluginInstance;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        monitor.store().record(GrantRecord::plugin_capability(
+            "logs",
+            ws.path(),
+            LogsRead,
+            Decision::Deny,
+        ));
+        monitor.save_grants().unwrap();
+        monitor.note_denial("logs", "seed", "logs.read", "", "denied");
+        drop(monitor);
+        std::fs::remove_file(dir.path().join("permission-audit.jsonl")).unwrap();
+
+        let reopened = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let (permissions, mint) = reopened.plan_plugin_permissions(
+            &PluginInstance::new("logs", None),
+            ws.path(),
+            &[LogsRead].into(),
+            Vec::new(),
+        );
+        assert!(
+            !permissions.capabilities.contains(&LogsRead),
+            "launch granted a saved denial"
+        );
+        assert!(permissions.blocked.contains(&LogsRead));
+        assert!(mint.capability_ids().next().is_none());
+        assert!(reopened.open_needs_you().iter().any(|row| {
+            row.kind == NeedsYouKind::SealReset && row.resource == "permission-audit.jsonl"
+        }));
+    }
+
+    fn revoke_with_damaged_audit(choice: ApprovalChoice) {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let args = r#"{"game_id":"game-1","move":"e2e4"}"#;
+        let row = binding("ignored");
+        let pending = pending_of(admit_of(&monitor, &row, args));
+        monitor.approve_pending(&pending, choice).unwrap();
+        let Admission::Proceed { grant_id, .. } = admit_of(&monitor, &row, args) else {
+            panic!("the approval must grant admission before revoke");
+        };
+        let grants = dir.path().join("grants.toml");
+        let before = std::fs::read(&grants).ok();
+        let audit = dir.path().join("permission-audit.jsonl");
+        std::fs::remove_file(&audit).unwrap();
+        let revoked = monitor.revoke_grant_id(&grant_id);
+        if choice == ApprovalChoice::Always {
+            let error = revoked.unwrap_err();
+            assert!(error.contains("revoked for now but not saved"), "{error}");
+            assert!(error.contains("Reset the permission seal in Plexi"), "{error}");
+            assert!(before.is_some());
+        } else {
+            assert_eq!(revoked, Ok(true));
+        }
+        assert!(matches!(
+            admit_of(&monitor, &row, args),
+            Admission::Required { .. }
+        ));
+        assert!(monitor.audit_records().iter().any(|fact| {
+            fact.kind == "revoke" && fact.grant_id == grant_id
+        }));
+        assert!(!audit.exists());
+        assert_eq!(std::fs::read(&grants).ok(), before);
+    }
+
+    #[test]
+    fn audit_fault_session_revoke_requires_new_approval() {
+        revoke_with_damaged_audit(ApprovalChoice::Session);
+    }
+
+    #[test]
+    fn audit_fault_durable_revoke_reports_unsaved_removal() {
+        revoke_with_damaged_audit(ApprovalChoice::Always);
     }
 
     #[test]

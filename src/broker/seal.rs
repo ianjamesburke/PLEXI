@@ -57,6 +57,13 @@ pub struct IntegrityFault {
 const AUDIT_FILE: &str = "permission-audit.jsonl";
 const STATE_FILE: &str = "seal-state.json";
 pub(crate) const RESET_TO_SAVE: &str = "permission seal damaged: reset it in Plexi to save this";
+const DAMAGE_DETAIL_PREFIX: &str = "permission seal damaged (";
+
+/// The monitor can refuse before saving, or the writer can detect damage
+/// while saving and return the file-specific refusal.
+pub(super) fn is_damage_refusal(error: &str) -> bool {
+    error == RESET_TO_SAVE || error.starts_with(DAMAGE_DETAIL_PREFIX)
+}
 
 #[derive(Debug)]
 pub(crate) struct SealDamage {
@@ -67,7 +74,7 @@ pub(crate) struct SealDamage {
 impl SealDamage {
     pub(super) fn refusal(&self) -> String {
         format!(
-            "permission seal damaged ({}): a person must reset it in Plexi ({})",
+            "{DAMAGE_DETAIL_PREFIX}{}): a person must reset it in Plexi ({})",
             self.file, self.reason
         )
     }
@@ -234,11 +241,15 @@ pub fn load_toml<T: DeserializeOwned + Default>(host: &HostProcess, path: &Path)
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
     let dir = profile_dir_for_path(path);
-    if let Err(SealError::Untrusted(damage)) = check_profile(host, &dir) {
-        log::info!("permission_seal: ignoring {file_name} until reset ({})", damage.reason);
+    // Each decision file has its own MAC. A damaged audit blocks durable
+    // writes, but does not invalidate the decisions that preceded it.
+    if let Err(SealError::Untrusted(SealDamage { file: STATE_FILE, reason })) =
+        check_profile(host, &dir)
+    {
+        log::info!("permission_seal: ignoring {file_name} until reset ({reason})");
         return LoadedToml {
             data: T::default(),
-            fault: Some(IntegrityFault { file: damage.file.into(), reason: damage.reason }),
+            fault: Some(IntegrityFault { file: STATE_FILE.into(), reason }),
             trusted: false,
             key_unreadable: false,
         };
