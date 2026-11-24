@@ -420,6 +420,13 @@ pub struct CapabilityMint {
     capability_ids: Vec<String>,
 }
 
+impl CapabilityMint {
+    /// The capabilities this mint grants.
+    pub fn capability_ids(&self) -> impl Iterator<Item = &str> {
+        self.capability_ids.iter().map(String::as_str)
+    }
+}
+
 /// Who is asking to change a stored permission. No caller is the human:
 /// `allow` and `reset` always file Needs you, and only a desktop click
 /// applies them (stints 1264, 1271, 1285).

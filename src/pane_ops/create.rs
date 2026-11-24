@@ -1546,11 +1546,14 @@ impl PlexiApp {
                         wasm_runtime_capabilities_from_permissions(&permissions, &workspace_root);
                     let monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir)
                         .map_err(|error| error.to_string())?;
-                    let (remembered_grants, remembered_blocks, mint) = monitor.plan_wasm_sets(
+                    let (mut remembered_grants, remembered_blocks, mint) = monitor.plan_wasm_sets(
                         &crate::broker::principal::PluginInstance::new(&plugin_id, None),
                         &workspace_root,
                         &wasm_declared,
                     );
+                    // The manifest rows this start mints are not stored yet,
+                    // so the stored-row read above cannot return them.
+                    remembered_grants.extend(mints.capability_ids().map(str::to_string));
                     mints.add(monitor, mint);
                     let grants = Grants {
                         state: true,
@@ -4460,6 +4463,11 @@ impl PendingMints {
         mint: crate::broker::gate::CapabilityMint,
     ) {
         self.0.push((monitor, mint));
+    }
+
+    /// The capabilities these mints will grant.
+    fn capability_ids(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().flat_map(|(_, mint)| mint.capability_ids())
     }
 
     /// Write the planned rows: the guest started.
