@@ -1673,9 +1673,11 @@ mod cli_tests {
         if let Some(socket) = std::env::var_os("SECRET_TEST_SOCKET") {
             crate::cli::set_command_socket_override(socket.into());
         } else {
+            // A clean shell resolves its own channel's host under its home.
+            let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
             assert_eq!(
                 crate::cli::resolve_secret_socket(),
-                crate::platform::ipc::endpoint_path()
+                clean_shell_endpoint(&home)
             );
         }
         // A job-control shell starts a foreground CLI with the default SIGINT action.
@@ -1701,6 +1703,16 @@ mod cli_tests {
         std::process::exit(code);
     }
 
+    /// Where a clean shell's secret command finds this binary's own host.
+    fn clean_shell_endpoint(home: &std::path::Path) -> std::path::PathBuf {
+        let channel = crate::config::build_channel();
+        plexi_distribution::host_presence::endpoint_in(&home.join(
+            plexi_distribution::host_presence::profile_dir_name(
+                channel.as_deref().unwrap_or("stable"),
+            ),
+        ))
+    }
+
     fn cli(op: &str, profile: &std::path::Path) -> Command {
         let mut cmd = Command::new(std::env::current_exe().unwrap());
         cmd.args([
@@ -1723,7 +1735,8 @@ mod cli_tests {
     #[test]
     fn workspace_secret_cli_fails_closed_without_a_host() {
         let home = tempfile::tempdir().unwrap();
-        let profile = home.path().join(".plexi");
+        let endpoint = clean_shell_endpoint(home.path());
+        let profile = endpoint.parent().unwrap().to_path_buf();
         fs::create_dir(&profile).unwrap();
         for op in ["get", "set", "delete"] {
             let mut command = cli(op, &profile);
@@ -1742,7 +1755,6 @@ mod cli_tests {
             if op == "set" {
                 assert_eq!(stderr.matches("Enter value for").count(), 1);
             }
-            let endpoint = plexi_distribution::host_presence::endpoint_in(&profile);
             let attempted = format!("Plexi host did not answer at {}", endpoint.display());
             assert!(
                 stderr.contains(&attempted) && stderr.contains("start Plexi"),
@@ -1817,9 +1829,12 @@ mod cli_tests {
         fn new(socket: Option<std::path::PathBuf>) -> Self {
             let h = HostHarness::new();
             let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
-            let path = socket
-                .clone()
-                .unwrap_or_else(crate::platform::ipc::endpoint_path);
+            let path = socket.clone().unwrap_or_else(|| {
+                // The CLI child's HOME is the harness profile dir.
+                let endpoint = clean_shell_endpoint(h.profile_dir());
+                fs::create_dir_all(endpoint.parent().unwrap()).unwrap();
+                endpoint
+            });
             let listener = UnixListener::bind(path).unwrap();
             listener.set_nonblocking(true).unwrap();
             Self {

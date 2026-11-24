@@ -1337,8 +1337,22 @@ pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {
     socket
 }
 
+/// The host a secret command talks to: the usual routing, else this binary's
+/// own channel host, so a clean shell with no `PLEXI_SOCKET` still finds it.
 pub(crate) fn resolve_secret_socket() -> std::path::PathBuf {
-    resolve_command_socket().unwrap_or_else(crate::platform::ipc::endpoint_path)
+    secret_socket_from(
+        resolve_command_socket(),
+        crate::config::build_channel(),
+        command_profile_home,
+    )
+}
+
+fn secret_socket_from(
+    routed: Option<std::path::PathBuf>,
+    channel: Option<String>,
+    home: impl FnOnce() -> std::path::PathBuf,
+) -> std::path::PathBuf {
+    routed.unwrap_or_else(|| host::HostTarget::resolve(channel, None, &home()).socket())
 }
 
 const SOCKET_TRANSPORT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
@@ -2412,3 +2426,24 @@ pub fn host_action_cli(
 
 #[cfg(test)]
 mod parity_tests;
+
+#[cfg(test)]
+mod secret_socket_tests {
+    use super::secret_socket_from;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn a_clean_stable_shell_finds_the_stable_host_and_routing_still_wins() {
+        let home = Path::new("/home/someone");
+        let fallback = secret_socket_from(None, None, || home.to_path_buf());
+        assert_eq!(
+            fallback,
+            plexi_distribution::host_presence::endpoint_in(&home.join(".plexi"))
+        );
+        let routed = PathBuf::from("/elsewhere/notify.sock");
+        assert_eq!(
+            secret_socket_from(Some(routed.clone()), None, || unreachable!("routed")),
+            routed
+        );
+    }
+}
