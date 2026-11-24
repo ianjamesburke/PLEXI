@@ -1907,7 +1907,11 @@ fn bundled_id_reuse_never_focuses_a_dev_pane_through_a_swapped_install() {
         .app
         .launch_view_by_id_with_layout("logs", None, &[], Some(workspace))
         .expect("logs by id");
-    assert_eq!(focused, Some(bundled), "the bundled pane, never the dev one");
+    assert_eq!(
+        focused,
+        Some(bundled),
+        "the bundled pane, never the dev one"
+    );
     assert_eq!(focused_pane(&h), bundled);
 }
 
@@ -1920,6 +1924,14 @@ fn a_fresh_id_open_of_a_bundled_id_never_starts_a_linked_dev_tree() {
     let dev = tempfile::tempdir().unwrap();
     let dev_logs = extract_bundled("logs", dev.path());
     h.trust_plugin_folder(dev.path());
+    // The registry indexed the verified install before the swap.
+    let context = h.app.windows[h.app.active_window].context_id;
+    assert!(h
+        .app
+        .registries
+        .view_for_context(context, &h.app.router)
+        .get("logs")
+        .is_some());
     let install = plugins.join("logs");
     std::fs::rename(&install, plugins.join("logs.moved")).unwrap();
     std::os::unix::fs::symlink(&dev_logs, &install).unwrap();

@@ -2988,14 +2988,7 @@ impl PlexiApp {
         } else {
             OriginQuery::Entry(&entry)
         };
-        self.focus_for_on_launch(
-            on_launch,
-            id,
-            origin,
-            caller_context_id,
-            args,
-            cwd_override,
-        )
+        self.focus_for_on_launch(on_launch, id, origin, caller_context_id, args, cwd_override)
     }
 
     /// Focus a live instance when `policy` says this launch must not spawn.
@@ -5063,7 +5056,11 @@ default = true
             "schema_version = 2\n\n[plugin]\nid = \"t1733-py\"\nname = \"t\"\nversion = \"0.0.1\"\n\n[plugin.capabilities]\ncapabilities = [\"fs.read\"]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"t1733-py.main\"\ndefault = true\n",
         )
         .unwrap();
-        std::fs::write(root.join("main.py"), "def init(size, args):\n    return []\n").unwrap();
+        std::fs::write(
+            root.join("main.py"),
+            "def init(size, args):\n    return []\n",
+        )
+        .unwrap();
         let resolved = crate::app::registry::resolve_plugin_dir(&root).unwrap();
         let config = python_launch_config(&resolved).unwrap();
         // An entry outside its root fails the runtime launch after planning.

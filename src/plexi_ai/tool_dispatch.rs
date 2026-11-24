@@ -1439,11 +1439,9 @@ impl ToolDispatcher {
     /// package their stored grants are keyed by.
     fn provider_of(&self, name: &str) -> (String, u64) {
         if let Some((pane, provider_name, _)) = self.tools.get(name) {
-            if let Some(identity) = self
-                .provider_apps
-                .get(pane)
-                .filter(|identity| identity.starts_with(crate::host::pane::DEVELOPMENT_TOOL_IDENTITY))
-            {
+            if let Some(identity) = self.provider_apps.get(pane).filter(|identity| {
+                identity.starts_with(crate::host::pane::DEVELOPMENT_TOOL_IDENTITY)
+            }) {
                 return (identity.clone(), *pane);
             }
             let package = name
@@ -2029,7 +2027,10 @@ mod tests {
         assert_eq!(namespaced["dev:chess:7__chess.play"].0, 7);
         assert!(!namespaced.contains_key("chess:7__chess.play"));
         let bare = reg.snapshot_for_caller(70);
-        assert_eq!(bare["chess.play"].0, 8, "the bare name stays with the genuine pane");
+        assert_eq!(
+            bare["chess.play"].0, 8,
+            "the bare name stays with the genuine pane"
+        );
         assert_eq!(bare["chess.play@7"].0, 7);
 
         let dispatcher = ToolDispatcher::from_parts(

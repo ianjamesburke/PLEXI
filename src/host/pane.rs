@@ -2979,7 +2979,10 @@ impl ViewPane {
         if self.runtime.origin().owns_declared_id() {
             return self.manifest_id.clone();
         }
-        format!("{DEVELOPMENT_TOOL_IDENTITY}{}:{}", self.manifest_id, self.id)
+        format!(
+            "{DEVELOPMENT_TOOL_IDENTITY}{}:{}",
+            self.manifest_id, self.id
+        )
     }
 
     pub(crate) fn semantic_state(&self) -> SemanticPaneState {
