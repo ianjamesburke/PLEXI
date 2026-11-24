@@ -60,6 +60,10 @@ struct SealState {
     audit_tip: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     needs_you_tip: Option<String>,
+    /// Per workspace, the runs that predate sealed run owners (stint 1716).
+    /// A workspace with an entry has been captured, even if the set is empty.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    legacy_runs: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
 }
 
 enum SealStateStatus {
@@ -891,6 +895,7 @@ fn update_seal_state(
             sealed: false,
             audit_tip: None,
             needs_you_tip: None,
+            legacy_runs: Default::default(),
         },
         SealStateStatus::KeyUnreadable(error) => return Err(error),
         SealStateStatus::Untrusted(reason) => {
@@ -907,6 +912,7 @@ fn update_seal_state(
                 sealed: false,
                 audit_tip: None,
                 needs_you_tip: None,
+                legacy_runs: Default::default(),
             }
         }
     };
@@ -957,6 +963,58 @@ pub(crate) fn store_needs_you_tip(
     update_seal_state(host, dir, |state| {
         state.sealed = true;
         state.needs_you_tip = tip.map(ToOwned::to_owned);
+    })
+}
+
+/// A host-key MAC over `data`, hex encoded.
+pub(crate) fn keyed_mac(host: &HostProcess, dir: &Path, data: &[u8]) -> Result<String, String> {
+    let key = key_bytes(host, dir)?;
+    Ok(hex_encode(&hmac_sha256(key.as_slice(), data)))
+}
+
+/// Whether `mac` is the host-key MAC of `data`, in constant time. A value
+/// that is not hex matches nothing.
+pub(crate) fn keyed_mac_matches(
+    host: &HostProcess,
+    dir: &Path,
+    data: &[u8],
+    mac: &str,
+) -> Result<bool, String> {
+    let key = key_bytes(host, dir)?;
+    let Ok(got) = decode_hex(mac) else {
+        return Ok(false);
+    };
+    Ok(ct_eq(&hmac_sha256(key.as_slice(), data), &got))
+}
+
+/// The recorded pre-owner runs of `workspace`; `None` before its capture.
+pub(crate) fn legacy_runs(
+    host: &HostProcess,
+    dir: &Path,
+    workspace: &Path,
+) -> Result<Option<std::collections::BTreeSet<String>>, String> {
+    match read_seal_state(host, dir) {
+        SealStateStatus::Absent => Ok(None),
+        SealStateStatus::Trusted(state) => {
+            Ok(state.legacy_runs.get(&workspace.to_string_lossy().into_owned()).cloned())
+        }
+        SealStateStatus::KeyUnreadable(error) | SealStateStatus::Untrusted(error) => Err(error),
+    }
+}
+
+/// Record `workspace`'s pre-owner runs. The first capture stands.
+pub(crate) fn record_legacy_runs(
+    host: &HostProcess,
+    dir: &Path,
+    workspace: &Path,
+    runs: &std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    update_seal_state(host, dir, |state| {
+        state.sealed = true;
+        state
+            .legacy_runs
+            .entry(workspace.to_string_lossy().into_owned())
+            .or_insert_with(|| runs.clone());
     })
 }
 

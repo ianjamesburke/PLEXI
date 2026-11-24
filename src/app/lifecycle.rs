@@ -347,6 +347,7 @@ impl PlexiApp {
                 agent: None,
                 context_root: None,
                 context_denied: false,
+                authority: None,
             });
         };
         let pane_id = pane.terminal_pane;
@@ -374,6 +375,7 @@ impl PlexiApp {
             agent,
             context_root,
             context_denied,
+            authority: Some(pane.authority.clone()),
         })
     }
 

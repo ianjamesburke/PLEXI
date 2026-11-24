@@ -213,6 +213,7 @@ impl Importer<'_> {
             ceiling: restriction.ceiling,
             secrets: SecretEligibility::none(),
             scope: scope.clone(),
+            owner_key: crate::broker::pane_authority::mint_owner_key(),
         };
         let live = LiveScope {
             context_id: scope.context_id,

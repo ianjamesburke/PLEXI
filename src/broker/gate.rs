@@ -1032,7 +1032,7 @@ impl PermissionMonitor {
     }
 
     /// The host token for a disk-backed monitor. Only [`Self::open`] sets it.
-    fn custody(&self) -> Result<super::custody::HostProcess, String> {
+    pub(super) fn custody(&self) -> Result<super::custody::HostProcess, String> {
         self.custody
             .ok_or_else(|| super::custody::NotHostProcess.to_string())
     }

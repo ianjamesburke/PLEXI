@@ -346,6 +346,15 @@ pub(crate) struct PaneAuthority {
     pub(crate) ceiling: Ceiling,
     pub(crate) secrets: SecretEligibility,
     pub(crate) scope: CredentialScope,
+    /// Names this pane as a run's durable owner (stint 1716). A pane number
+    /// can be reused after a crash; this key cannot. A record saved before
+    /// it existed gets a fresh key, so it owns nothing it did not start.
+    #[serde(default = "mint_owner_key")]
+    pub(crate) owner_key: String,
+}
+
+pub(crate) fn mint_owner_key() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 impl PaneAuthority {
@@ -443,6 +452,7 @@ impl PaneAuthority {
             ceiling,
             secrets,
             scope,
+            owner_key: mint_owner_key(),
         };
         log::info!(
             "pane_authority: admitted pane={pane_id} provenance={:?} ownership={:?} role={:?} ceiling={} secrets={:?}",
@@ -480,6 +490,7 @@ impl PaneAuthority {
             ceiling: Ceiling::Sealed { reason },
             secrets: SecretEligibility::none(),
             scope,
+            owner_key: mint_owner_key(),
         }
     }
 
@@ -545,6 +556,7 @@ impl PaneAuthority {
             ceiling,
             secrets: SecretEligibility::none(),
             scope: scope.clone(),
+            owner_key: mint_owner_key(),
         };
         match grant {
             Some(value) => match serde_json::from_value::<Self>(value.clone()) {
@@ -641,6 +653,7 @@ impl PaneAuthority {
                 context_id,
                 workspace_root,
             },
+            owner_key: mint_owner_key(),
         }
     }
 }

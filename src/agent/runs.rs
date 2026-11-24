@@ -9,7 +9,7 @@
 //! child. A child that asks for a tool the parent does not hold is refused
 //! and audited. Reporting metadata (`reports_to`) grants no rights.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 use crate::broker::gate::{
     Admission, AdmitRequest, NeedsYouDetails, NeedsYouFile, NeedsYouKind, PermissionMonitor,
 };
+use crate::broker::permit::{self, Finish, Invoke, PermitSubject, Reissue, RunBinding, RunPermit, StartPermit};
 use crate::broker::principal::Principal;
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantKind, GrantRecord, GrantSource, TargetType,
@@ -70,6 +71,10 @@ struct RunRecord {
     input_tokens: u32,
     output_tokens: u32,
     grants: Vec<ToolGrant>,
+    /// Host-key MAC naming this run's owner (stint 1716). Written in the
+    /// same line as the run. Absent only on runs that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner_seal: Option<String>,
 }
 
 struct TokenRec {
@@ -108,66 +113,12 @@ pub fn authenticate_run_token(token: &str) -> Option<RunAuth> {
     })
 }
 
-/// The principal that started each agent run, while this host lives
-/// (stint 1285). Kept in memory only: durable, permit-backed ownership is
-/// stint 1716. A run with no live record (a restarted host, or a run that
-/// predates this build) follows alpha's rules, which had no owner.
-/// The owner recorded for a run host code started. No principal's actor id
-/// takes this form.
-const HOST_RUN_OWNER: &str = "host";
-
-fn run_owners() -> &'static Mutex<HashMap<String, String>> {
-    static OWNERS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-    OWNERS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Whether `caller` may act on `run_id` by ownership: host code always; a
-/// socket principal when it is the live owner, or when the run has no live
-/// owner record (alpha's rule, logged; stint 1716 replaces it).
-fn owner_admits(run_id: &str, caller: Option<&str>) -> bool {
-    let Some(caller) = caller else {
-        return true;
-    };
-    match run_owners()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(run_id)
-    {
-        Some(owner) => owner == caller,
-        None => {
-            log::info!(
-                "agents_api: run={run_id} has no live owner record; caller={caller} admitted by alpha's rule (stint 1716)"
-            );
-            true
-        }
-    }
-}
-
-/// The run's token for `owner` (`None` is host code). A fresh run records
-/// its owner in memory; a retry is answered for that owner, or under
-/// alpha's rule when the run has no live owner record.
-fn remember_token(
-    workspace: &Path,
-    run_id: &str,
-    actor_id: &str,
-    owner: Option<&str>,
-    fresh: bool,
-) -> Result<String, Value> {
-    if fresh {
-        // Host code owns the runs it starts (teams, the dashboard): no
-        // socket principal acts on them while this host lives.
-        let recorded = owner.unwrap_or(HOST_RUN_OWNER);
-        run_owners()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(run_id.to_string(), recorded.to_string());
-        log::info!("agents_api: run={run_id} owner={recorded}");
-    } else if !owner_admits(run_id, owner) {
-        return Err(not_run_owner(run_id, owner));
-    }
+/// The bearer for a run, stable while this host lives. Only a sink holding
+/// a reissue or start permit reaches it.
+fn run_token(workspace: &Path, run_id: &str, actor_id: &str) -> String {
     let mut by_run = token_by_run().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = by_run.get(run_id) {
-        return Ok(existing.clone());
+        return existing.clone();
     }
     let token = format!("run_{}", uuid::Uuid::new_v4());
     by_run.insert(run_id.to_string(), token.clone());
@@ -180,43 +131,57 @@ fn remember_token(
             workspace: workspace.to_path_buf(),
         },
     );
-    Ok(token)
+    token
 }
 
-fn not_run_owner(run_id: &str, caller: Option<&str>) -> Value {
-    log::info!(
-        "agents_api: refused run={run_id} caller={} outcome=not_run_owner",
-        caller.unwrap_or("host")
-    );
-    json!({
-        "ok": false,
-        "error_code": "permission_denied",
-        "error": format!("run {run_id} was not started by this caller"),
+fn permit_refused(error: impl std::fmt::Display) -> Value {
+    log::info!("agents_api: permit refused: {error}");
+    json!({"ok": false, "error_code": "permission_denied", "error": error.to_string()})
+}
+
+/// The runs in `workspace` that predate sealed owners, captured once before
+/// the first sealed run is written there.
+fn legacy_run_ids(gate: &PermissionMonitor, workspace: &Path) -> Result<BTreeSet<String>, Value> {
+    gate.legacy_runs(workspace, || {
+        Ok(load_runs(workspace)?
+            .into_iter()
+            .filter(|run| run.owner_seal.is_none())
+            .map(|run| run.id)
+            .collect())
     })
+    .map_err(permit_refused)
 }
 
-/// Only the run's live owner, host code, or (with no live owner record)
-/// anyone alpha admitted acts on `run_id`.
-fn require_run_owner(run_id: &str, caller: &AgentsCaller) -> Result<(), Value> {
-    let caller = match caller {
-        AgentsCaller::Principal { principal, .. } => Some(principal.actor_id()),
-        AgentsCaller::Host { .. } => None,
-    };
-    if owner_admits(run_id, caller) {
-        Ok(())
-    } else {
-        Err(not_run_owner(run_id, caller))
+fn binding_of<'a>(workspace: &'a Path, run: &'a RunRecord) -> RunBinding<'a> {
+    RunBinding {
+        workspace,
+        run_id: &run.id,
+        actor_id: &run.actor_id,
+        admission_id: &run.admission_id,
     }
 }
 
-/// Test only: this one run's in-memory owner and token are gone, as after
-/// a host restart. Other runs keep theirs.
+/// The broker's permit for `Op` on this run, for this subject.
+fn permit_for<Op>(
+    workspace: &Path,
+    run: &RunRecord,
+    subject: &PermitSubject,
+) -> Result<RunPermit<Op>, Value> {
+    let gate = monitor()?;
+    let legacy = legacy_run_ids(&gate, workspace)?;
+    permit::mint_run(
+        &gate,
+        subject,
+        binding_of(workspace, run),
+        run.owner_seal.as_deref(),
+        &legacy,
+    )
+    .map_err(permit_refused)
+}
+
+/// Test only: this run's in-memory bearer is gone, as after a host restart.
 #[cfg(test)]
 fn forget_run_for_test(run_id: &str) {
-    run_owners()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(run_id);
     if let Some(token) = token_by_run()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -822,8 +787,10 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
 
 struct IssueRun<'a> {
     workspace: &'a Path,
-    /// The socket principal starting the run; `None` for host code.
-    owner: Option<&'a str>,
+    /// Who is asking. A retry of a charged admission is admitted for it.
+    subject: &'a PermitSubject,
+    /// The broker's permit for a new run; `None` when only a retry can apply.
+    start: Option<&'a StartPermit>,
     agent: &'a AgentAuthorityRecord,
     parent_run: Option<&'a str>,
     admission_id: &'a str,
@@ -842,7 +809,8 @@ fn clear_run_step(run_id: &str) -> String {
 fn issue_run(req: IssueRun<'_>) -> Value {
     let IssueRun {
         workspace,
-        owner,
+        subject,
+        start,
         agent,
         parent_run,
         admission_id,
@@ -892,10 +860,11 @@ fn issue_run(req: IssueRun<'_>) -> Value {
                 return json!({"ok": false, "error_code": "ledger_error", "error": error});
             }
         }
-        let token = match remember_token(workspace, &existing.id, &existing.actor_id, owner, false) {
-            Ok(token) => token,
+        let permit: RunPermit<Reissue> = match permit_for(workspace, existing, subject) {
+            Ok(permit) => permit,
             Err(refused) => return refused,
         };
+        let token = run_token(permit.workspace(), permit.run_id(), &existing.actor_id);
         log::info!(
             "agents_api: admission {} returned existing run {} for agent {}",
             admission_id,
@@ -928,6 +897,12 @@ fn issue_run(req: IssueRun<'_>) -> Value {
             "admission_id": admission_id,
         });
     }
+    let Some(start) = start else {
+        return permit_refused(format!("no start permit for agent {}", agent.id));
+    };
+    if let Err(error) = start.check(workspace, &agent.id, admission_id) {
+        return permit_refused(error);
+    }
     let version = runs
         .iter()
         .filter(|run| run.agent_id == agent.id)
@@ -935,7 +910,7 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         .max()
         .unwrap_or(0)
         + 1;
-    let record = RunRecord {
+    let mut record = RunRecord {
         id: format!("run_{}", uuid::Uuid::new_v4()),
         agent_id: agent.id.clone(),
         actor_id: actor_of(&agent.id),
@@ -949,7 +924,20 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         input_tokens,
         output_tokens,
         grants: agent.grants.clone(),
+        owner_seal: None,
     };
+    // Sealed before anything is charged: a run that cannot name its owner
+    // is never started.
+    let gate = host_gate!();
+    let seal = match permit::seal_run_owner(&gate, start, binding_of(workspace, &record)) {
+        Ok(seal) => seal,
+        Err(error) => {
+            log::error!("agents_api: could not seal owner of {}: {error}", record.id);
+            return json!({"ok": false, "error_code": "owner_seal_failed", "error": error});
+        }
+    };
+    record.owner_seal = Some(seal);
+    log::info!("agents_api: run={} owner={}", record.id, start.owner_id());
     // The ledger row is written before the run record (stint 1441): a ledger
     // that refuses the row leaves no run behind, so nothing is active, and a
     // retry cannot find a run that was never charged.
@@ -978,10 +966,7 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         );
         return json!({"ok": false, "error_code": "io_error", "error": error});
     }
-    let token = match remember_token(workspace, &record.id, &record.actor_id, owner, true) {
-        Ok(token) => token,
-        Err(refused) => return refused,
-    };
+    let token = run_token(workspace, &record.id, &record.actor_id);
     log::info!(
         "agents_api: spawned run {} agent={} client_ref={} kind={} tokens={}/{} version={}",
         record.id,
@@ -1175,6 +1160,8 @@ pub(crate) enum AgentsCaller {
         context_root: Option<PathBuf>,
         /// The host found the request outside the caller's context.
         context_denied: bool,
+        /// The caller's live pane incarnation, when it has one.
+        authority: Option<std::sync::Arc<crate::broker::pane_authority::LivePaneAuthority>>,
     },
     /// Host code acting under its own run principal (team setup, the
     /// dashboard). It brings the ceiling it was admitted with.
@@ -1191,6 +1178,18 @@ impl AgentsCaller {
         match self {
             Self::Principal { principal, .. } => principal.actor_id().to_string(),
             Self::Host { .. } => "host".to_string(),
+        }
+    }
+
+    /// This caller as the broker's permit subject.
+    fn subject(&self) -> PermitSubject {
+        match self {
+            Self::Principal {
+                principal,
+                authority,
+                ..
+            } => PermitSubject::principal(principal.actor_id(), authority.as_ref()),
+            Self::Host { .. } => PermitSubject::Host,
         }
     }
 
@@ -1258,6 +1257,12 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
         });
     }
     log::info!("agents_api: op={op} workspace={}", workspace.display());
+    // Pre-owner runs are listed before this workspace's first sealed run.
+    if matches!(op, "spawn_run" | "delegate") {
+        if let Err(refused) = legacy_run_ids(&*host_gate!(), &workspace) {
+            return refused;
+        }
+    }
     match op {
         "create_agent" => {
             let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -1343,7 +1348,10 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
             // A fresh run acts with the agent's sealed rows: a socket caller
             // starts one only when it holds every allow the agent holds, else
             // it files a request (stint 1285).
-            if !retry && matches!(caller, AgentsCaller::Principal { .. }) {
+            let subject = caller.subject();
+            let start = if retry {
+                None
+            } else {
                 let agent_rows: Vec<ToolGrant> = sealed_ceiling(
                     &workspace,
                     &Principal::agent(actor_of(&agent.id)),
@@ -1358,24 +1366,35 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
                     expires_at: None,
                 })
                 .collect();
-                if let Some(refused) = subset_denied(
-                    &workspace,
-                    &caller.actor(),
-                    &caller.ceiling(&workspace, None),
-                    &agent_rows,
-                    None,
-                    caller_pane,
-                ) {
-                    return refused;
+                let held = caller.ceiling(&workspace, None);
+                if matches!(caller, AgentsCaller::Principal { .. }) {
+                    if let Some(refused) = subset_denied(
+                        &workspace,
+                        &caller.actor(),
+                        &held,
+                        &agent_rows,
+                        None,
+                        caller_pane,
+                    ) {
+                        return refused;
+                    }
                 }
-            }
-            let owner = match caller {
-                AgentsCaller::Principal { principal, .. } => Some(principal.actor_id().to_string()),
-                AgentsCaller::Host { .. } => None,
+                match permit::mint_start(
+                    &subject,
+                    &workspace,
+                    &agent.id,
+                    &admission,
+                    &allowed_tools(&agent_rows),
+                    &held_allows(&held),
+                ) {
+                    Ok(start) => Some(start),
+                    Err(error) => return permit_refused(error),
+                }
             };
             issue_run(IssueRun {
                 workspace: &workspace,
-                owner: owner.as_deref(),
+                subject: &subject,
+                start: start.as_ref(),
                 agent: &agent,
                 parent_run: None,
                 admission_id: &admission,
@@ -1413,10 +1432,14 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
         }
         "finish_run" => {
             let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            if let Err(refused) = require_run_owner(id, caller) {
-                return refused;
+            let run = match find_run(&workspace, id) {
+                Ok(run) => run,
+                Err(error) => return error,
+            };
+            match permit_for::<Finish>(&workspace, &run, &caller.subject()) {
+                Ok(permit) => finish_run(&permit),
+                Err(refused) => refused,
             }
-            finish_run(&workspace, id)
         }
         "delegate" => delegate(
             &workspace,
@@ -1436,19 +1459,22 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
         ),
         "call" => {
             let run_id = payload.get("run_id").and_then(|v| v.as_str()).unwrap_or("");
-            if let Err(refused) = require_run_owner(run_id, caller) {
-                return refused;
+            let run = match find_run(&workspace, run_id) {
+                Ok(run) => run,
+                Err(error) => return error,
+            };
+            match permit_for::<Invoke>(&workspace, &run, &caller.subject()) {
+                Ok(permit) => invoke(
+                    &permit,
+                    payload.get("tool").and_then(|v| v.as_str()).unwrap_or(""),
+                    payload
+                        .get("input_json")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("{}"),
+                    caller_pane,
+                ),
+                Err(refused) => refused,
             }
-            invoke(
-            &workspace,
-            run_id,
-            payload.get("tool").and_then(|v| v.as_str()).unwrap_or(""),
-            payload
-                .get("input_json")
-                .and_then(|v| v.as_str())
-                .unwrap_or("{}"),
-            caller_pane,
-        )
         }
         other => {
             json!({"ok": false, "error_code": "invalid_argument", "error": format!("unknown agents op {other}")})
@@ -1497,9 +1523,14 @@ fn list_grants(workspace: &Path) -> Value {
     json!({"ok": true, "grants": rows})
 }
 
-fn finish_run(workspace: &Path, id: &str) -> Value {
+fn finish_run(permit: &RunPermit<Finish>) -> Value {
+    let workspace = permit.workspace();
+    let id = permit.run_id();
     let finished = {
         let _guard = journal_lock().lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(error) = permit.check() {
+            return permit_refused(error);
+        }
         let mut runs = match load_runs(workspace) {
             Ok(runs) => runs,
             Err(error) => return json!({"ok": false, "error_code": "io_error", "error": error}),
@@ -1601,13 +1632,22 @@ fn delegate(
     };
     let admission = format!("delegate:{parent_run}:{name}");
     // The child run belongs to whoever delegated it.
-    let owner = match caller {
-        AgentsCaller::Principal { principal, .. } => Some(principal.actor_id().to_string()),
-        AgentsCaller::Host { .. } => None,
+    let subject = caller.subject();
+    let start = match permit::mint_start(
+        &subject,
+        workspace,
+        &child.id,
+        &admission,
+        &allowed_tools(&grants),
+        &held_allows(&ceiling),
+    ) {
+        Ok(start) => start,
+        Err(error) => return permit_refused(error),
     };
     let spawned = issue_run(IssueRun {
         workspace,
-        owner: owner.as_deref(),
+        subject: &subject,
+        start: Some(&start),
         agent: &child,
         parent_run: Some(parent_run),
         admission_id: &admission,
@@ -1625,13 +1665,31 @@ fn delegate(
     spawned
 }
 
+/// The tools `grants` allow.
+fn allowed_tools(grants: &[ToolGrant]) -> BTreeSet<String> {
+    grants
+        .iter()
+        .filter(|grant| grant.decision == Decision::Allow)
+        .map(|grant| grant.tool.clone())
+        .collect()
+}
+
+/// The tools a ceiling allows.
+fn held_allows(rows: &[CeilingRow]) -> BTreeSet<String> {
+    rows.iter()
+        .filter(|row| row.decision == Decision::Allow)
+        .map(|row| row.tool.clone())
+        .collect()
+}
+
 fn invoke(
-    workspace: &Path,
-    run_id: &str,
+    permit: &RunPermit<Invoke>,
     tool: &str,
     input_json: &str,
     caller_pane: Option<u64>,
 ) -> Value {
+    let workspace = permit.workspace();
+    let run_id = permit.run_id();
     let run = match find_run(workspace, run_id) {
         Ok(run) => run,
         Err(error) => return error,
@@ -1766,6 +1824,9 @@ fn invoke(
                     run_id: Some(&run.id),
                     caller_pane,
                 });
+            }
+            if let Err(error) = permit.check() {
+                return permit_refused(error);
             }
             let body = execute_tool(workspace, &run, tool, input_json);
             host_gate!().consume_once(&grant_id, Some("agents-api"));
@@ -1935,6 +1996,7 @@ pub fn mcp_call(auth: &McpAuth, tool: &str, input_json: &str) -> Result<String, 
                     agent: None,
                     context_root: None,
                     context_denied: false,
+                    authority: None,
                 };
                 delegate(
                     &auth.workspace,
@@ -1945,7 +2007,15 @@ pub fn mcp_call(auth: &McpAuth, tool: &str, input_json: &str) -> Result<String, 
                 )
             }
         } else {
-            invoke(&auth.workspace, run_id, tool, input_json, caller_pane)
+            let subject = PermitSubject::RunBearer {
+                run_id: run_id.clone(),
+            };
+            match find_run(&auth.workspace, run_id)
+                .and_then(|run| permit_for::<Invoke>(&auth.workspace, &run, &subject))
+            {
+                Ok(permit) => invoke(&permit, tool, input_json, caller_pane),
+                Err(refused) => refused,
+            }
         }
     } else {
         admit_pane(auth, tool, input_json)
@@ -2100,6 +2170,7 @@ mod tests {
             agent: agent.map(str::to_string),
             context_root: None,
             context_denied: false,
+            authority: None,
         }
     }
 
@@ -2285,6 +2356,7 @@ mod tests {
             input_tokens: 0,
             output_tokens: 0,
             grants: agent.grants.clone(),
+            owner_seal: None,
         };
         append_run_record(fix.ws(), &orphan).unwrap();
 
@@ -2318,6 +2390,7 @@ mod tests {
                 input_tokens: 0,
                 output_tokens: 0,
                 grants: agent.grants.clone(),
+                owner_seal: None,
             },
         )
         .unwrap();
@@ -2919,14 +2992,11 @@ mod tests {
         assert_eq!(own["ok"], true, "{own}");
     }
 
-    /// Codex 3290 r3 ruling A: a run's owner is kept in memory while the
-    /// host lives and nothing is written to the grant store on start or
-    /// finish. A stranger is refused a live owned run; the owner's replayed
-    /// finish answers as alpha's did. After a restart (the run's record is
-    /// gone) alpha's rules apply: no owner check. Durable ownership is stint
-    /// 1716.
+    /// Stint 1716: a run's owner is sealed into its own journal line, so it
+    /// outlives the host, writes nothing to the grant store, and cannot be
+    /// renamed, removed or copied by editing the journal.
     #[test]
-    fn run_ownership_lives_with_the_host_and_ownerless_runs_follow_alpha() {
+    fn a_run_owner_survives_restart_and_the_journal_cannot_change_it() {
         let fix = Fixture::new();
         create(&fix, "worker", &["agents.ping=ask"]);
         let grants = crate::config::config_dir().join("grants.toml");
@@ -2934,63 +3004,94 @@ mod tests {
         let before = snapshot();
         let owner = pane_caller(42, None);
         let stranger = pane_caller(43, None);
-        let start = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-owned-live"});
+        let start = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-owned"});
         let started = handle_request("spawn_run", &start, &owner);
         assert_eq!(started["ok"], true, "{started}");
         let run_id = started["run"]["id"].as_str().unwrap().to_string();
         let finish = json!({"workspace": fix.ws(), "id": run_id});
 
-        // Live host: the stranger is refused, the owner retries.
-        let foreign_retry = handle_request("spawn_run", &start, &stranger);
-        assert_eq!(foreign_retry["error_code"], "permission_denied", "{foreign_retry}");
-        let foreign_finish = handle_request("finish_run", &finish, &stranger);
-        assert_eq!(foreign_finish["error_code"], "permission_denied", "{foreign_finish}");
+        // Restart: the bearer is gone, the owner is not.
+        forget_run_for_test(&run_id);
+        let foreign = handle_request("spawn_run", &start, &stranger);
+        assert_eq!(foreign["error_code"], "permission_denied", "{foreign}");
+        assert!(foreign.get("run_token").is_none(), "{foreign}");
+        let foreign = handle_request("finish_run", &finish, &stranger);
+        assert_eq!(foreign["error_code"], "permission_denied", "{foreign}");
+        let foreign = handle_request(
+            "call",
+            &json!({"workspace": fix.ws(), "run_id": run_id, "tool": "agents.ping",
+                "input_json": "{}"}),
+            &stranger,
+        );
+        assert_eq!(foreign["error_code"], "permission_denied", "{foreign}");
         assert!(find_run(fix.ws(), &run_id).unwrap().active);
-        let retry = handle_request("spawn_run", &start, &owner);
-        assert_eq!(retry["run_token"], started["run_token"], "{retry}");
+        let retried = handle_request("spawn_run", &start, &owner);
+        assert_eq!(retried["ok"], true, "{retried}");
+        let auth = authenticate_run_token(retried["run_token"].as_str().unwrap()).unwrap();
+        assert_eq!(auth.run_id, run_id);
 
-        // The owner's finish, then its replay: both answer as alpha's did.
+        // Removing the seal does not turn the run into a pre-owner run.
+        let path = runs_path(fix.ws());
+        let sealed = fs::read_to_string(&path).unwrap();
+        let mut stripped: RunRecord = serde_json::from_str(sealed.lines().last().unwrap()).unwrap();
+        stripped.owner_seal = None;
+        fs::write(&path, format!("{}\n", serde_json::to_string(&stripped).unwrap())).unwrap();
+        let foreign = handle_request("finish_run", &finish, &stranger);
+        assert_eq!(foreign["error_code"], "permission_denied", "stripped: {foreign}");
+        fs::write(&path, &sealed).unwrap();
+
+        // The owner's finish and its replay both answer.
         let finished = handle_request("finish_run", &finish, &owner);
         assert_eq!(finished["ok"], true, "{finished}");
         let replayed = handle_request("finish_run", &finish, &owner);
-        assert_eq!(replayed["ok"], true, "a replayed finish answers as alpha: {replayed}");
+        assert_eq!(replayed["ok"], true, "{replayed}");
         assert_eq!(snapshot(), before, "run start and finish wrote the grant store");
-
-        // After a restart the run has no live owner record. The owner retries
-        // and finishes; alpha's rule admits any caller for such a run, and
-        // that is asserted here until stint 1716 makes ownership durable.
-        let restarted = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-restart"});
-        let second = handle_request("spawn_run", &restarted, &owner);
-        let second_id = second["run"]["id"].as_str().unwrap().to_string();
-        forget_run_for_test(&second_id);
-        let retry = handle_request("spawn_run", &restarted, &owner);
-        assert_eq!(retry["ok"], true, "{retry}");
-        assert!(retry["run_token"].is_string(), "{retry}");
-        let stranger_retry = handle_request("spawn_run", &restarted, &stranger);
-        assert_eq!(stranger_retry["ok"], true, "alpha's rule (stint 1716): {stranger_retry}");
-        let finished = handle_request(
-            "finish_run",
-            &json!({"workspace": fix.ws(), "id": second_id}),
-            &owner,
-        );
-        assert_eq!(finished["ok"], true, "{finished}");
-        assert_eq!(snapshot(), before, "no grant-store write");
     }
 
-    /// Codex 3290 r4 L1: a retry of a charged admission is found before the
-    /// fresh-start grant check. An agent holding a persistent allow, started
-    /// before a restart, is retried by a pane without that allow: the
-    /// existing run's bearer is reissued and authenticates as that run, its
-    /// agent and its workspace, as on alpha.
+    /// A run whose owner cannot be sealed is never charged or recorded, so
+    /// no line can exist without its owner.
     #[test]
-    fn a_retried_admission_is_found_before_the_fresh_start_check() {
+    fn a_seal_is_in_the_same_line_as_its_run() {
+        let fix = Fixture::new();
+        create(&fix, "worker", &["agents.ping=ask"]);
+        let start = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-line"});
+        let started = handle_request("spawn_run", &start, &pane_caller(42, None));
+        assert_eq!(started["ok"], true, "{started}");
+        let journal = fs::read_to_string(runs_path(fix.ws())).unwrap();
+        assert_eq!(journal.lines().count(), 1);
+        let line: RunRecord = serde_json::from_str(journal.trim()).unwrap();
+        assert!(line.owner_seal.is_some(), "the run line carries its owner");
+    }
+
+    /// Codex 3290 r4 L1: a charged run that predates sealed owners is
+    /// retried by a pane without the agent's allow. The bearer reissues and
+    /// authenticates as that run, agent and workspace.
+    #[test]
+    fn a_retried_pre_owner_admission_reissues_its_bearer() {
         let fix = Fixture::new();
         create(&fix, "worker", &["agents.ping=allow"]);
-        let start = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-upgrade"});
-        let started = handle_request("spawn_run", &start, &test_host());
-        assert_eq!(started["ok"], true, "{started}");
-        let run_id = started["run"]["id"].as_str().unwrap().to_string();
-        forget_run_for_test(&run_id);
+        let workspace = crate::platform::path::canonical_or_self(fix.ws());
+        let run = RunRecord {
+            id: format!("run_{}", uuid::Uuid::new_v4()),
+            agent_id: "worker".into(),
+            actor_id: actor_of("worker"),
+            parent_run: None,
+            admission_id: "adm-upgrade".into(),
+            version: 1,
+            state: "running".into(),
+            active: true,
+            client_ref: "internal/unallocated".into(),
+            kind: "system".into(),
+            input_tokens: 0,
+            output_tokens: 0,
+            grants: Vec::new(),
+            owner_seal: None,
+        };
+        ledger::append_result(&LedgerRow::for_agent_run(
+            &run.id, &run.actor_id, &run.client_ref, &run.kind, None, 0, 0,
+        ))
+        .unwrap();
+        append_run_record(&workspace, &run).unwrap();
 
         let pane = pane_caller(42, None);
         let fresh = handle_request(
@@ -2999,13 +3100,31 @@ mod tests {
             &pane,
         );
         assert_eq!(fresh["ok"], false, "a fresh start still needs the allow: {fresh}");
+        let start = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-upgrade"});
         let retried = handle_request("spawn_run", &start, &pane);
         assert_eq!(retried["ok"], true, "{retried}");
         let token = retried["run_token"].as_str().expect("a bearer");
         let auth = authenticate_run_token(token).expect("the bearer authenticates");
-        assert_eq!(auth.run_id, run_id);
+        assert_eq!(auth.run_id, run.id);
         assert_eq!(auth.actor_id, "agent:worker");
-        assert_eq!(auth.workspace, crate::platform::path::canonical_or_self(fix.ws()));
+        assert_eq!(auth.workspace, workspace);
+
+        // A line added after the capture is not a pre-owner run.
+        let mut planted = run.clone();
+        planted.id = format!("run_{}", uuid::Uuid::new_v4());
+        planted.admission_id = "adm-planted".into();
+        ledger::append_result(&LedgerRow::for_agent_run(
+            &planted.id, &planted.actor_id, &planted.client_ref, &planted.kind, None, 0, 0,
+        ))
+        .unwrap();
+        append_run_record(&workspace, &planted).unwrap();
+        let forged = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-planted"}),
+            &pane,
+        );
+        assert_eq!(forged["error_code"], "permission_denied", "{forged}");
+        assert!(forged.get("run_token").is_none(), "{forged}");
     }
 
     /// Design 1285 section 4, condition 3: the dashboard projection of one

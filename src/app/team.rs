@@ -26,6 +26,7 @@ mod tests {
             agent: None,
             context_root: None,
             context_denied: false,
+            authority: None,
         }
     }
 
