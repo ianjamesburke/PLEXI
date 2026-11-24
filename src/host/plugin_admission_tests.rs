@@ -644,3 +644,61 @@ fn a_workspace_link_to_the_bundled_install_never_owns_its_id() {
         Refusal::ShadowsBundled { .. }
     ));
 }
+
+/// (g) Python restore resolves the entry with the same resolver as discovery:
+/// an absolute, parent-relative or symlinked entry outside the folder fails the
+/// restore before any runtime is built.
+#[test]
+fn python_restore_refuses_an_entry_outside_the_plugin_folder() {
+    let h = crate::testing::HostHarness::new();
+    let outside = tempfile::tempdir().unwrap();
+    let foreign = outside.path().join("foreign.py");
+    std::fs::write(&foreign, "print('outside')\n").unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    std::fs::write(parent.path().join("foreign.py"), "print('outside')\n").unwrap();
+    h.app
+        .registries
+        .admission()
+        .trust_folder_for_test(parent.path());
+    let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
+    for (name, entry) in [
+        ("absolute", foreign.display().to_string()),
+        ("parent", "../foreign.py".to_string()),
+        ("symlink", "linked.py".to_string()),
+    ] {
+        let dir = parent.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("manifest.toml"),
+            format!(
+                "schema_version = 2\n\n[plugin]\nid = \"{name}\"\nname = \"{name}\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"{entry}\"\n\n[[contributes.views]]\nid = \"{name}.main\"\ndefault = true\n"
+            ),
+        )
+        .unwrap();
+        if name == "symlink" {
+            std::os::unix::fs::symlink(&foreign, dir.join("linked.py")).unwrap();
+        }
+        let workspace = h.workspace_root();
+        let restored = crate::pane_ops::create::restore_view_pane_in_profile(
+            name,
+            &crate::workspace::SavedViewLaunch::Python {
+                plugin_dir: dir.clone(),
+                args: Vec::new(),
+            },
+            crate::pane_ops::create::RestoreTarget {
+                pane_id: 4242,
+                context_id: h.app.windows[0].context_id,
+                workspace_root: workspace.clone(),
+                context_root: &workspace,
+                saved_name: None,
+            },
+            &colors,
+            h.profile_dir(),
+        );
+        let error = restored.err().expect("restore must refuse");
+        assert!(
+            error.contains("outside the plugin folder"),
+            "{name}: {error}"
+        );
+    }
+}

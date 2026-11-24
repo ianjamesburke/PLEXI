@@ -761,8 +761,10 @@ pub enum WasmPythonError {
     },
     #[error("runtime.python_compat requires a .py or .pyc entry, got '{entry}'")]
     InvalidEntry { entry: String },
-    #[error("runtime.python_compat entry is missing: {path}")]
-    MissingEntry { path: PathBuf },
+    /// The manifest entry is missing or resolves outside the plugin folder,
+    /// as `registry::resolve_entry` decides for every route (stint 1398).
+    #[error("{0}")]
+    Entry(String),
     #[error("runtime.python_compat execution='{execution}' is not implemented yet")]
     UnsupportedExecution { execution: &'static str },
     #[error("CPython WASM bundle unavailable at {path}; fix: {fix}")]
@@ -899,10 +901,12 @@ impl PythonLaunchConfig {
         if !(entry.ends_with(".py") || entry.ends_with(".pyc")) {
             return Err(WasmPythonError::InvalidEntry { entry });
         }
-        let entry_path = plugin_dir.join(&entry);
-        if !entry_path.is_file() {
-            return Err(WasmPythonError::MissingEntry { path: entry_path });
-        }
+        let entry_path = crate::app::registry::resolve_entry(
+            &plugin_dir.to_path_buf(),
+            &entry,
+            crate::app::registry::ManifestType::Python,
+        )
+        .map_err(WasmPythonError::Entry)?;
         let module_name = entry_path
             .file_stem()
             .and_then(|stem| stem.to_str())
