@@ -128,6 +128,7 @@ Document failures in the issue **body** under `## Prior Attempts`, not in commen
 - **Ideas become stint tasks, not tangents.**
 - **Direct-to-alpha when user is watching.**
 - **Own the build.** If your change breaks something, fix it.
+- **Sub-agent reports:** result first, at most about 30 lines, real output for every claim, one report only; long detail goes in a log file.
 
 ## Documentation Rule
 
