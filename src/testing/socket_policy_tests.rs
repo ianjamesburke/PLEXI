@@ -743,8 +743,9 @@ fn expected_admission(policy: VerbPolicy, caller: Caller) -> Option<&'static str
     use VerbPolicy::*;
     match (policy, caller) {
         (Open, _) => None,
-        (Operator | Protected | Widening, PaneSelf | PaneOther | External) => None,
-        (Operator | Protected | Widening, Unidentified) => Some("permission_denied"),
+        (Operator, _) => None,
+        (Protected | Widening, PaneSelf | PaneOther | External) => None,
+        (Protected | Widening, Unidentified) => Some("permission_denied"),
         (Decision, _) => Some("approval_required"),
         (OwnPane | PaneOnly, PaneSelf | PaneOther) => None,
         (OwnPane | PaneOnly, External | Unidentified) => Some("permission_denied"),
@@ -1740,4 +1741,38 @@ fn an_explicit_notify_scope_the_host_cannot_resolve_is_refused_not_widened() {
     );
     h.run_frames(2);
     assert_eq!(h.app.pending_notifications.len(), before + 1, "an unscoped notify posts");
+}
+
+/// Codex 3290 r3 B2: a pane whose shell start time could not be read at
+/// spawn is still that pane's caller (read again lazily, matched by pid
+/// while unreadable, as alpha did); it never becomes an outside process.
+/// A walk that cannot be completed still drives panes (operator requests,
+/// as alpha allowed) and is refused anything protected.
+#[test]
+fn a_pane_shell_without_a_recorded_start_is_still_its_pane() {
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let shell = h.shell_pid(pane);
+    h.app
+        .windows
+        .iter_mut()
+        .find_map(|w| w.panes.get_mut(&pane))
+        .and_then(|p| p.as_terminal_mut())
+        .unwrap()
+        .forget_shell_start_for_test();
+    let caller = h.app.classify_socket_peer(Some(&PeerWitness::for_live_pids(&[shell])));
+    assert!(
+        matches!(caller, SocketCaller::Pane(ref found) if found.terminal_pane == pane),
+        "{caller:?}"
+    );
+
+    let incomplete = Some(witness(std::process::id(), AncestryEnd::LookupFailed));
+    let listed = send(&mut h, serde_json::json!({"type": "list_panes"}), incomplete.clone());
+    assert!(listed.get("error_code").is_none(), "an operator request is served: {listed}");
+    let secret = send(
+        &mut h,
+        serde_json::json!({"type": "pane_secret_list", "context": "1"}),
+        incomplete,
+    );
+    assert_eq!(secret["error_code"], "permission_denied", "{secret}");
 }

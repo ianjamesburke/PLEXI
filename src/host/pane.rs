@@ -871,11 +871,11 @@ pub struct TerminalPane {
     /// from (posture, provenance), fixed at construction (stint 1632).
     /// `None` only for a credential-free fixture.
     credentials: Option<crate::pane_ops::construct::PaneCredentials>,
-    /// The kernel start time of the shell this pane spawned, read once right
-    /// after the spawn. A socket peer is this pane's process only when its
-    /// ancestor matches both the pid and this start time (stint 1285); `None`
-    /// (the shell was already gone) matches nothing.
-    shell_start: Option<crate::platform::process::ProcStart>,
+    /// The kernel start time of the shell this pane spawned, read right
+    /// after the spawn and, if that read failed, again on first use. A socket
+    /// peer is this pane's process when its ancestor matches the pid and
+    /// this start time (stint 1285).
+    shell_start: std::sync::OnceLock<crate::platform::process::ProcStart>,
     /// Latest blocked reason reported by hook or `plexi agent ask`.
     pub last_blocked_reason: Option<crate::protocol::AgentBlockedReason>,
     /// Cached tail preview preserved across Standby / Interrupted restore.
@@ -1136,9 +1136,13 @@ impl TerminalPane {
             backend.child_pid(),
             shell_start.is_some()
         );
+        let shell_start_cell = std::sync::OnceLock::new();
+        if let Some(start) = shell_start {
+            let _ = shell_start_cell.set(start);
+        }
         Ok(Self {
             _process_group: process_group,
-            shell_start,
+            shell_start: shell_start_cell,
             id,
             backend,
             exited: false,
@@ -1216,7 +1220,37 @@ impl TerminalPane {
         pid: u32,
         start: crate::platform::process::ProcStart,
     ) -> bool {
-        self.backend.child_pid() == pid && self.shell_start == Some(start)
+        if self.backend.child_pid() != pid {
+            return false;
+        }
+        let recorded = self.shell_start.get().copied().or_else(|| {
+            // The read at spawn failed: try again now, while the shell lives.
+            if self.exited {
+                return None;
+            }
+            let start = crate::platform::process::process_info(pid)?.start;
+            log::info!("terminal_pane: pane_id={} shell start recorded late", self.id);
+            Some(*self.shell_start.get_or_init(|| start))
+        });
+        match recorded {
+            Some(recorded) => recorded == start,
+            // Still unreadable: match the live shell by pid alone, as alpha
+            // did, rather than turn the pane's own shell into an outside
+            // process (Codex 3290 r3).
+            None => {
+                log::info!(
+                    "terminal_pane: pane_id={} shell start unreadable; matched by pid as alpha did",
+                    self.id
+                );
+                !self.exited
+            }
+        }
+    }
+
+    /// Test only: the start-time read at spawn failed.
+    #[cfg(test)]
+    pub(crate) fn forget_shell_start_for_test(&mut self) {
+        self.shell_start = std::sync::OnceLock::new();
     }
 
     /// Why this pane's authority could not be established, when it could

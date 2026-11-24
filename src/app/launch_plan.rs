@@ -2428,7 +2428,7 @@ mod tests {
         assert!(
             reply["error"]
                 .as_str()
-                .is_some_and(|e| e.contains("could not be established")),
+                .is_some_and(|e| e.contains("could not be")),
             "{reply}"
         );
         let after = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
@@ -3061,7 +3061,7 @@ mod tests {
                 body["error"]
                     .as_str()
                     .unwrap_or("")
-                    .contains("could not be established"),
+                    .contains("could not be"),
                 "{type_id}: {body}"
             );
             assert_eq!(

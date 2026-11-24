@@ -457,7 +457,11 @@ pub(crate) fn admit(caller: &SocketCaller, policy: VerbPolicy) -> Result<(), Ref
             code: "approval_required",
             message: "Approve it in the Plexi window.".to_string(),
         }),
-        (VerbPolicy::Open, _) => Ok(()),
+        // Pane driving and observation is attribution, not a boundary, for
+        // every same-user caller (the socket is the user's own); a walk
+        // that could not be completed still drives a pane, as on alpha
+        // (Codex 3290 r3).
+        (VerbPolicy::Open, _) | (VerbPolicy::Operator, SocketCaller::Unidentified(_)) => Ok(()),
         (
             VerbPolicy::Operator | VerbPolicy::Protected | VerbPolicy::Widening,
             SocketCaller::Pane(_) | SocketCaller::External(_),
@@ -468,8 +472,7 @@ pub(crate) fn admit(caller: &SocketCaller, policy: VerbPolicy) -> Result<(), Ref
             message: "only a process running in a Plexi pane can make this request".to_string(),
         }),
         (
-            VerbPolicy::Operator
-            | VerbPolicy::Protected
+            VerbPolicy::Protected
             | VerbPolicy::Widening
             | VerbPolicy::OwnPane
             | VerbPolicy::PaneOnly,
