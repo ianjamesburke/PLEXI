@@ -1383,18 +1383,29 @@ impl PlexiApp {
                     response_file,
                 );
             }
-            crate::protocol::HostRequest::CallerContext { response_file } => {
+            crate::protocol::HostRequest::CallerContext {
+                workspace_cwd,
+                response_file,
+            } => {
+                use crate::cli::workspace::check_pane_context_scope;
                 let pane = origin
                     .socket_caller()
                     .and_then(crate::broker::caller::SocketCaller::pane)
                     .map(|pane| pane.visible_pane);
                 let root = pane.and_then(|pane| self.pane_context_authority_root(pane));
+                let workspace_error = match (&root, workspace_cwd) {
+                    (Some(root), Some(cwd)) => {
+                        check_pane_context_scope(root.clone(), cwd, false, None).err()
+                    }
+                    _ => None,
+                };
                 write_json_response(
                     response_file,
                     serde_json::json!({
                         "ok": true,
                         "pane_id": pane,
                         "context_root": root,
+                        "workspace_error": workspace_error,
                     }),
                 );
             }

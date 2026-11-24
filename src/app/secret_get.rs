@@ -1265,6 +1265,11 @@ mod cli_tests {
         );
         if let Some(socket) = std::env::var_os("SECRET_TEST_SOCKET") {
             crate::cli::set_command_socket_override(socket.into());
+        } else {
+            assert_eq!(
+                crate::cli::resolve_secret_socket(),
+                crate::platform::ipc::endpoint_path()
+            );
         }
         let name = "SOCKET_1280";
         secrets::take_test_store_calls();
@@ -1303,17 +1308,21 @@ mod cli_tests {
 
     #[test]
     fn workspace_secret_cli_fails_closed_without_a_host() {
-        let profile = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let profile = home.path().join(".plexi");
+        std::fs::create_dir(&profile).unwrap();
         for op in ["get", "set", "delete"] {
-            let output = cli(op, profile.path()).output().unwrap();
+            let output = cli(op, &profile).env("HOME", home.path()).output().unwrap();
             assert_eq!(output.status.code(), Some(1));
             assert_eq!(
                 String::from_utf8_lossy(&output.stdout).trim(),
                 "running 1 test"
             );
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let endpoint = plexi_distribution::host_presence::endpoint_in(&profile);
+            let attempted = format!("Plexi host did not answer at {}", endpoint.display());
             assert!(
-                stderr.contains("Plexi host did not answer") && stderr.contains("start Plexi"),
+                stderr.contains(&attempted) && stderr.contains("start Plexi"),
                 "{stderr}"
             );
         }
@@ -1321,20 +1330,34 @@ mod cli_tests {
 
     #[test]
     fn outside_cli_secret_get_over_host_socket() {
+        let socket_dir = tempfile::tempdir_in("/tmp").unwrap();
+        drive_outside_get(Some(socket_dir.path().join("host.sock")));
+    }
+
+    /// A clean shell (no `PLEXI_SOCKET`, no override) reaches the channel's
+    /// own host at its profile endpoint.
+    #[test]
+    fn clean_shell_secret_get_finds_the_channel_host() {
+        drive_outside_get(None);
+    }
+
+    fn drive_outside_get(override_socket: Option<std::path::PathBuf>) {
         let mut h = HostHarness::new();
         let profile = crate::config::config_dir();
-        let socket_dir = tempfile::tempdir_in("/tmp").unwrap();
-        let socket = socket_dir.path().join("host.sock");
+        let socket = override_socket
+            .clone()
+            .unwrap_or_else(crate::platform::ipc::endpoint_path);
         let listener = UnixListener::bind(&socket).unwrap();
         listener.set_nonblocking(true).unwrap();
         let store = secrets::system_store();
         let account = secrets::keychain_user_name("SOCKET_1280");
         store.set(&account, "fixture-value").unwrap();
         for expected in [2, 0, 2] {
-            let mut child = cli("get", &profile)
-                .env("SECRET_TEST_SOCKET", &socket)
-                .spawn()
-                .unwrap();
+            let mut command = cli("get", &profile);
+            if override_socket.is_some() {
+                command.env("SECRET_TEST_SOCKET", &socket);
+            }
+            let mut child = command.spawn().unwrap();
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut stream = loop {
                 match listener.accept() {

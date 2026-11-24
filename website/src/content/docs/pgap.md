@@ -916,6 +916,7 @@ Ask the host which pane (if any) the socket peer lives in and that pane's live c
 | Field | Type | Required |
 |-------|------|----------|
 | `response_file` | `string` | yes |
+| `workspace_cwd` | `string?` | no |
 
 ### `file_open`
 

@@ -178,7 +178,7 @@ pub fn write_default_route(
     if !secrets_path.exists() {
         let dir = workspace_root.join(crate::config::workspace_channel_dir());
         std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-        let content = format!("fallback = true\n\n[default]\n{canonical} = \"{friendly}\"\n");
+        let content = upsert_default_route_line("fallback = true\n", canonical, friendly);
         return std::fs::write(&secrets_path, content)
             .map_err(|e| format!("write {}: {e}", secrets_path.display()));
     }
@@ -251,7 +251,8 @@ pub fn write_terminal_env_inject(
 /// If an existing `canonical = "..."` line is found, it is replaced in-place.
 /// All other content and comments are preserved.
 fn upsert_default_route_line(raw: &str, canonical: &str, friendly: &str) -> String {
-    let entry_line = format!("{canonical} = \"{friendly}\"");
+    let canonical = toml_edit::Key::new(canonical);
+    let entry_line = format!("{canonical} = {}", toml_edit::Value::from(friendly));
     let lines: Vec<&str> = raw.lines().collect();
     let trailing_newline = raw.ends_with('\n');
 

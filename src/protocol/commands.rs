@@ -1190,6 +1190,8 @@ pub enum HostRequest {
     /// live context authority root. The CLI uses this instead of the stale
     /// `PLEXI_CONTEXT_ROOT` / `PLEXI_PANE_ID` environment.
     CallerContext {
+        /// Check this working directory against the pane's workspace authority.
+        workspace_cwd: Option<std::path::PathBuf>,
         response_file: String,
     },
     /// Open one file or directory in the Plexi surface that handles it

@@ -1,5 +1,6 @@
 //! Shared names-only inventory and user-initiated secret mutations.
 //! Read admission and click-only approvals remain owned by the permission monitor.
+pub(crate) use super::folder::valid_env_name;
 use super::{SecretStore, WorkspaceConfig};
 use crate::broker::gate::PermissionMonitor;
 use std::path::{Path, PathBuf};
@@ -34,23 +35,16 @@ impl SecretTarget {
     }
 
     fn account(&self, name: &str) -> Result<String, String> {
-        let friendly_workspace_name = matches!(self, Self::Workspace { .. })
-            && !name.is_empty()
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
-        if !friendly_workspace_name && !super::folder::valid_env_name(name) {
-            return Err(
-                "Use an environment variable name (letters, digits and underscores).".into(),
-            );
-        }
         match self {
             Self::Global => Ok(super::keychain_user_name(name)),
             Self::Workspace { id, .. } => {
-                if super::workspace_id_is_reserved(id) {
+                let account = super::keychain_workspace_name(id, name);
+                if super::workspace_id_is_reserved(id)
+                    || super::secret_account_is_reserved(&account)
+                {
                     return Err(super::reserved_secret_error(id));
                 }
-                Ok(super::keychain_workspace_name(id, name))
+                Ok(account)
             }
             Self::Folder(folder) => {
                 if !crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets) {
@@ -287,12 +281,8 @@ pub fn mutate_secret(
     let (canonical, value) = match mutation {
         Mutation::Set(value) => (name, Some(value)),
         Mutation::SetRouted { canonical, value } => {
-            if !matches!(target, SecretTarget::Workspace { .. })
-                || !super::folder::valid_env_name(canonical)
-            {
-                return Err(
-                    "A workspace alias needs a canonical environment variable name.".into(),
-                );
+            if !matches!(target, SecretTarget::Workspace { .. }) {
+                return Err("An alias requires a workspace.".into());
             }
             (canonical, Some(value))
         }
@@ -397,7 +387,7 @@ fn parse_env(text: &str) -> Result<Vec<(String, zeroize::Zeroizing<String>)>, St
         let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
         let (name, raw) = line.split_once('=').ok_or_else(invalid)?;
         let name = name.trim();
-        if !super::folder::valid_env_name(name) {
+        if !valid_env_name(name) {
             return Err(invalid());
         }
         let raw = raw.trim();

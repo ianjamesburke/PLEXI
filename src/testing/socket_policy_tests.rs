@@ -1245,7 +1245,7 @@ fn external_secret_set_and_delete_ask_then_apply_once() {
     use crate::workspace::secrets::{keychain_user_name, system_store};
     let mut h = HostHarness::new();
     let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
-    let name = format!("MUTATE_{}", uuid::Uuid::new_v4().simple());
+    let name = format!("MUTATE_{}.prod", uuid::Uuid::new_v4().simple());
     let logs = crate::testing::test_log::capture_with_debug();
     let account = keychain_user_name(&name);
     let peer = witness(std::process::id(), AncestryEnd::ReachedRoot);
@@ -1259,6 +1259,12 @@ fn external_secret_set_and_delete_ask_then_apply_once() {
         assert_eq!(ask.tool, format!("secret.{op}"));
         assert_eq!(ask.resource_id.unwrap(), format!("{name}@global"));
         assert!(!ask.input_summary.contains("mutation-canary"));
+        let pending_count = monitor.list_pending().len();
+        let needs_you_count = monitor.list_needs_you().len();
+        let repeated = secret_ask(&mut h, &request, &peer);
+        assert_eq!(ask.pending_request_id, repeated.pending_request_id);
+        assert_eq!(monitor.list_pending().len(), pending_count);
+        assert_eq!(monitor.list_needs_you().len(), needs_you_count);
         assert_eq!(system_store().get(&account).is_some(), op == "delete");
         monitor
             .approve_pending(&ask.pending_request_id, ApprovalChoice::Once)
@@ -1295,15 +1301,24 @@ fn external_secret_set_and_delete_ask_then_apply_once() {
 
 #[test]
 fn pane_secret_mutations_ask_as_the_pane_within_its_root() {
+    use crate::workspace::secrets::{
+        init_workspace, keychain_workspace_name, system_store, WorkspaceSecrets,
+    };
     let mut h = HostHarness::new();
-    let root = workspace_secret(&h, "ws-1280-pane", "PANE_1280", "initial");
+    let root = h.workspace_root();
+    let cfg = init_workspace(&root, &crate::config::workspace_channel_dir()).unwrap();
+    let account = keychain_workspace_name(&cfg.id, "vendor.prod");
     let pane = h.add_focused_terminal();
     let peer = pane_witness(&h, pane);
     let other = tempfile::tempdir().unwrap();
-    for op in ["set", "delete"] {
-        let mut req = serde_json::json!({"type":format!("secret_{op}"), "name":"PANE_1280","workspace_root":root});
-        if op == "set" {
-            req["value"] = "fixture".into();
+    for value in [Some("first"), Some("replacement"), None] {
+        let op = if value.is_some() { "set" } else { "delete" };
+        let mut req = serde_json::json!({"type":format!("secret_{op}"), "name":"vendor.prod","workspace_root":root});
+        if let Some(value) = value {
+            req["value"] = value.into();
+        }
+        if value == Some("first") {
+            req["route_name"] = "VENDOR_TOKEN".into();
         }
         let ask = secret_ask(&mut h, &req, &peer);
         assert_eq!(ask.actor_id, format!("pane:{pane}"));
@@ -1321,12 +1336,16 @@ fn pane_secret_mutations_ask_as_the_pane_within_its_root() {
             )
             .unwrap();
         let reply = secret_metadata(&mut h, req, &peer);
-        assert_eq!(reply["target"]["Workspace"]["id"], "ws-1280-pane");
-        let value = crate::workspace::secrets::system_store().get("plexi:ws-1280-pane:PANE_1280");
-        assert_eq!(
-            value.as_deref().map(String::as_str),
-            (op == "set").then_some("fixture")
-        );
+        assert_eq!(reply["target"]["Workspace"]["id"], cfg.id, "{reply}");
+        let stored = system_store().get(&account);
+        assert_eq!(stored.as_deref().map(String::as_str), value);
+        let router = WorkspaceSecrets::load(&root).unwrap().unwrap();
+        let canonical = if value == Some("first") {
+            "VENDOR_TOKEN"
+        } else {
+            "vendor.prod"
+        };
+        assert_eq!(router.default[canonical], "vendor.prod");
     }
 }
 

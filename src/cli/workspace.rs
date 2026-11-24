@@ -1,7 +1,10 @@
 use super::open::read_secret_from_stdin;
 use super::print_tip;
 use super::reply::OutputMode;
+use serde_json::Value;
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 pub fn workspace_init() -> i32 {
     let cwd = match std::env::current_dir() {
@@ -185,6 +188,16 @@ pub(crate) fn enforce_pane_context_scope(
     let Some(ctx_root) = active_pane_context_root() else {
         return Ok(());
     };
+    check_pane_context_scope(ctx_root, target_dir, explicit_folder, Some(op))
+}
+
+/// A host preflight supplies the verified root without performing CLI denial logging.
+pub(crate) fn check_pane_context_scope(
+    ctx_root: PathBuf,
+    target_dir: &Path,
+    explicit_folder: bool,
+    cli_op: Option<&str>,
+) -> Result<(), String> {
     let target_canon = crate::platform::path::canonical_or_self(target_dir);
     let denied = if explicit_folder {
         target_canon != ctx_root
@@ -210,6 +223,12 @@ pub(crate) fn enforce_pane_context_scope(
         false
     };
     if denied {
+        let reason = format!(
+            "permission_denied: pane has no authority over context '{}' (authority is scoped to '{}')",
+            target_canon.display(),
+            ctx_root.display()
+        );
+        let Some(op) = cli_op else { return Err(reason) };
         let actor = std::env::var("PLEXI_PANE_ID")
             .ok()
             .filter(|id| !id.is_empty())
@@ -223,11 +242,7 @@ pub(crate) fn enforce_pane_context_scope(
             target_canon.display(),
             ctx_root.display()
         );
-        return Err(format!(
-            "permission_denied: pane has no authority over context '{}' (authority is scoped to '{}')",
-            target_canon.display(),
-            ctx_root.display()
-        ));
+        return Err(reason);
     }
     Ok(())
 }
@@ -260,44 +275,117 @@ fn secret_not_set(name: &str) -> String {
     format!("{name} not set; run `{binary} secret set {name}`")
 }
 
+/// The host checks the cwd against its verified pane (including nested folder
+/// secrets). Only workspace metadata is read in the CLI.
+fn workspace_caller_context(cwd: &Path, op: &str) -> Result<Value, i32> {
+    let socket = super::resolve_secret_socket();
+    let request = serde_json::json!({"type":"caller_context", "workspace_cwd":cwd});
+    let reply =
+        crate::rpc::request_json(&socket, request, Duration::from_secs(3)).map_err(|error| {
+            log::warn!("secret {op}: caller context at {socket:?}: {error}");
+            no_secret_reply(&format!("secret {op}"))
+        })?;
+    if !super::reply::acknowledged(&reply) || reply.get("workspace_error").is_none() {
+        eprintln!("error: secret {op}: host could not confirm the caller's workspace scope");
+        return Err(1);
+    }
+    Ok(reply)
+}
+
+fn require_workspace(cwd: &Path, scope: &Value) -> Result<PathBuf, String> {
+    let context = scope["context_root"].as_str().map(Path::new);
+    if let Some(error) = scope["workspace_error"].as_str() {
+        return Err(error.into());
+    }
+    let directory = crate::config::workspace_channel_dir();
+    let root = secret_workspace_root(cwd, context).ok_or_else(|| {
+        format!(
+            "no {directory}/ workspace found at or above {}.\nRun `plexi workspace init` first.",
+            cwd.display()
+        )
+    })?;
+    if context.is_some_and(|context| root != context) {
+        return Err(format!(
+            "permission_denied: pane has no authority over context '{}'",
+            root.display()
+        ));
+    }
+    crate::workspace::secrets::WorkspaceConfig::load(&root)?
+        .ok_or_else(|| format!("{directory}/ exists at {} but workspace.toml is missing.\nRun `plexi workspace init` to create it.", root.display()))?;
+    Ok(root)
+}
+
 /// Send the workspace path only. The host resolves its id and authorizes the operation.
-fn secret_request(
-    op: &str,
-    name: &str,
-    global: bool,
-    mut payload: serde_json::Value,
-) -> Result<serde_json::Value, i32> {
-    let root = if global {
+fn secret_request(op: &str, name: &str, global: bool) -> Result<Value, i32> {
+    let workspace = if global {
         None
     } else {
-        let cwd = std::env::current_dir().map_err(|error| {
-            eprintln!("error: could not resolve secret workspace: {error}");
-            1
-        })?;
-        secret_workspace_root(&cwd, None)
+        Some(match std::env::current_dir() {
+            Ok(cwd) => require_workspace(&cwd, &workspace_caller_context(&cwd, op)?),
+            Err(error) => Err(format!("cwd: {error}")),
+        })
     };
-    log::info!("secret_{op}:cli: asking host name={name} global={global} workspace={root:?}");
-    payload["type"] = format!("secret_{op}").into();
-    payload["name"] = name.into();
-    payload["global"] = global.into();
-    payload["workspace_root"] = serde_json::json!(root);
-    let label = format!("secret {op}");
-    let response = match super::request_reply(
-        payload,
-        "secret-response",
-        &label,
-        std::time::Duration::from_secs(120),
-    ) {
-        Ok(super::reply::HostReply::Transport(_)) | Err(_) => {
-            eprintln!("error: {label}: the Plexi host did not answer; start Plexi and try again.");
+    secret_request_for_workspace(op, name, workspace)
+}
+
+fn secret_request_for_workspace(
+    op: &str,
+    name: &str,
+    workspace: Option<Result<PathBuf, String>>,
+) -> Result<Value, i32> {
+    let global = workspace.is_none();
+    let root = match workspace {
+        None => None,
+        Some(Ok(root)) => Some(root),
+        Some(Err(error)) if op == "get" && error.starts_with("permission_denied") => {
+            eprintln!("error: {error}");
+            println!("permission_denied");
             return Err(1);
         }
+        Some(Err(_)) if op == "get" => None,
+        Some(Err(error)) => {
+            if op == "set" {
+                log::warn!("secret_set:cli: no workspace found: {error}");
+                eprintln!("error: no .plexi/ workspace found in this directory tree.");
+                eprintln!("  → plexi workspace init        (initialize one here, then retry)");
+                eprintln!("  → plexi secret set --global {name}   (set globally — requires explicit flag)");
+            } else {
+                eprintln!("error: {error}");
+            }
+            return Err(1);
+        }
+    };
+    log::info!("secret_{op}:cli: asking host name={name} global={global} workspace={root:?}");
+    Ok(
+        serde_json::json!({"type":format!("secret_{op}"), "name":name, "global":global, "workspace_root":root}),
+    )
+}
+
+const SECRET_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn no_secret_reply(label: &str) -> i32 {
+    eprintln!(
+        "error: {label}: the Plexi host did not answer at {}; start Plexi and try again.",
+        super::resolve_secret_socket().display()
+    );
+    1
+}
+
+fn send_secret(payload: Value, timeout: Duration) -> Result<Option<Value>, i32> {
+    let verb = payload["type"].as_str().expect("secret request type");
+    let label = verb.replace('_', " ");
+    let response = match super::request_reply(payload, "secret-response", &label, timeout) {
+        Ok(super::reply::HostReply::Transport(crate::rpc::PollError::TimedOut)) => return Ok(None),
+        Ok(super::reply::HostReply::Transport(_)) | Err(_) => return Err(no_secret_reply(&label)),
         Ok(reply) => reply.payload_or_report(&label, OutputMode::Text)?,
     };
-    let reply: serde_json::Value = serde_json::from_str(&response).map_err(|_| {
+    serde_json::from_str(&response).map(Some).map_err(|_| {
         eprintln!("error: invalid {label} reply");
         1
-    })?;
+    })
+}
+
+fn secret_result(op: &str, name: &str, reply: Value) -> Result<Value, i32> {
     match (reply["status"].as_str(), op) {
         (Some("value"), "get") if reply["value"].is_string() => Ok(reply),
         (Some("ok"), "set" | "delete") => Ok(reply),
@@ -307,7 +395,9 @@ fn secret_request(
                 "pending_request_id={}",
                 reply["pending_request_id"].as_str().unwrap()
             );
-            eprintln!("Approve in the Plexi window, then run this again.");
+            if op != "set" {
+                eprintln!("Approve in the Plexi window, then run this again.");
+            }
             Err(2)
         }
         (Some("not_found"), _) => {
@@ -315,10 +405,52 @@ fn secret_request(
             Err(1)
         }
         _ => {
-            eprintln!("error: unexpected {label} response");
+            eprintln!("error: unexpected secret {op} response");
             Err(1)
         }
     }
+}
+
+fn send_secret_set(
+    request: Value,
+    read: impl FnOnce() -> Result<zeroize::Zeroizing<String>, i32>,
+    mut send: impl FnMut(Value, Duration) -> Result<Option<Value>, i32>,
+    timeout: Duration,
+) -> Result<Value, i32> {
+    let value = read()?;
+    let mut submit = |wait| {
+        let mut payload = request.clone();
+        payload["value"] = value.as_str().into();
+        send(payload, wait)
+    };
+    let deadline = Instant::now() + timeout;
+    let mut reply = submit(timeout)?.ok_or_else(|| no_secret_reply("secret set"))?;
+    let mut prompted = false;
+    let first_ask = reply["pending_request_id"].clone();
+    while reply["status"] == "permission_required" && reply["pending_request_id"].is_string() {
+        // A different ask id means the first ask was resolved without an
+        // approval (denied or expired); stop instead of filing asks forever.
+        if reply["pending_request_id"] != first_ask {
+            eprintln!("error: secret set was not approved");
+            return Err(1);
+        }
+        if !prompted {
+            eprintln!("Approve in the Plexi window...");
+            prompted = true;
+        }
+        std::thread::sleep(
+            Duration::from_secs(1).min(deadline.saturating_duration_since(Instant::now())),
+        );
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let Some(next) = submit(remaining)? else {
+            break;
+        };
+        reply = next;
+    }
+    secret_result("set", request["name"].as_str().expect("secret name"), reply)
 }
 
 pub fn workspace_secret_set(
@@ -331,12 +463,14 @@ pub fn workspace_secret_set(
         eprintln!("error: --alias cannot be combined with --global.");
         return 1;
     }
-    let value = match read_secret_value(friendly, from_env) {
-        Ok(value) => value,
+    let mut request = match secret_request("set", friendly, global) {
+        Ok(request) => request,
         Err(code) => return code,
     };
-    let payload = serde_json::json!({"value":value.as_str(),"route_name":alias.map(|_| friendly)});
-    let reply = match secret_request("set", alias.unwrap_or(friendly), global, payload) {
+    request["name"] = alias.unwrap_or(friendly).into();
+    request["route_name"] = alias.map(|_| friendly).into();
+    let read = || read_secret_value(friendly, from_env);
+    let reply = match send_secret_set(request, read, send_secret, SECRET_TIMEOUT) {
         Ok(reply) => reply,
         Err(code) => return code,
     };
@@ -358,7 +492,7 @@ pub fn workspace_secret_set(
         eprintln!("Stored '{friendly}' for workspace {root} ({id})");
         print_tip(&format!("Route written to {channel_dir}/secrets.toml — use in {channel_dir}/commands.toml: [secrets] required = [\"{friendly}\"]"));
         print_tip(&format!("'{friendly}' is not added to terminal environments. Agent panes never receive workspace secrets; a pane reads it with plexi secret get after you click Allow."));
-        match crate::workspace::secrets::WorkspaceSecrets::load(std::path::Path::new(root)) {
+        match crate::workspace::secrets::WorkspaceSecrets::load(Path::new(root)) {
             Ok(Some(config)) if !config.terminal.env.inject.is_empty() => eprintln!(
                 "Still injected into human terminal panes by {channel_dir}/secrets.toml: {}. Turn injection off in Secrets (Cmd+Shift+S).",
                 config.terminal.env.inject.join(", ")
@@ -532,8 +666,14 @@ fn write_secret_inventory(
     Ok(())
 }
 
+fn request_secret_once(op: &str, name: &str, global: bool) -> Result<serde_json::Value, i32> {
+    let reply = send_secret(secret_request(op, name, global)?, SECRET_TIMEOUT)?
+        .ok_or_else(|| no_secret_reply(&format!("secret {op}")))?;
+    secret_result(op, name, reply)
+}
+
 pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
-    match secret_request("get", friendly, global, serde_json::json!({})) {
+    match request_secret_once("get", friendly, global) {
         Ok(reply) => {
             println!("{}", reply["value"].as_str().expect("validated get reply"));
             0
@@ -543,7 +683,7 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
 }
 
 pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
-    match secret_request("delete", friendly, global, serde_json::json!({})) {
+    match request_secret_once("delete", friendly, global) {
         Ok(reply) => {
             if global {
                 println!("Deleted global secret '{friendly}'");
@@ -1248,17 +1388,72 @@ mod secret_list_tests {
 mod secret_root_tests {
     use super::*;
     #[test]
+    fn set_reads_once_while_waiting_for_approval() {
+        let frame = secret_request("set", "TOKEN", true).unwrap();
+        for (timeout, expected, attempts) in [(SECRET_TIMEOUT, 0, 2), (Duration::ZERO, 2, 1)] {
+            let (mut reads, mut sends) = (0, 0);
+            let read = || {
+                reads += 1;
+                Ok(zeroize::Zeroizing::new("fixture".into()))
+            };
+            let send = |mut request: Value, _| {
+                sends += 1;
+                assert!(request.as_object_mut().unwrap().remove("value").unwrap() == "fixture");
+                assert_eq!(request, frame);
+                Ok(Some(if sends == 1 {
+                    serde_json::json!({"status":"permission_required","pending_request_id":"ask"})
+                } else {
+                    serde_json::json!({"status":"ok"})
+                }))
+            };
+            let code = send_secret_set(frame.clone(), read, send, timeout)
+                .err()
+                .unwrap_or(0);
+            assert_eq!((code, reads, sends), (expected, 1, attempts));
+        }
+    }
+
+    #[test]
+    fn set_stops_when_its_ask_is_denied() {
+        let frame = secret_request("set", "TOKEN", true).unwrap();
+        let mut sends = 0;
+        let send = |_: Value, _| {
+            sends += 1;
+            Ok(Some(
+                serde_json::json!({"status":"permission_required","pending_request_id":format!("ask-{sends}")}),
+            ))
+        };
+        let read = || Ok(zeroize::Zeroizing::new("fixture".into()));
+        let result = send_secret_set(frame, read, send, SECRET_TIMEOUT);
+        assert_eq!(result, Err(1));
+        assert_eq!(sends, 2);
+    }
+
+    #[test]
     fn secret_workspace_walk_cannot_escape_pane_context() {
         let dir = tempfile::tempdir().unwrap();
-        let context = dir.path().join("context");
+        let context = dir.path().canonicalize().unwrap().join("context");
         let cwd = context.join("child");
         std::fs::create_dir_all(&cwd).unwrap();
         let channel = crate::config::workspace_channel_dir();
-        std::fs::create_dir_all(dir.path().join(&channel)).unwrap();
+        crate::workspace::secrets::init_workspace(dir.path(), &channel).unwrap();
+        let scope = serde_json::json!({"context_root":context,"workspace_error":null});
+        let request =
+            |op| secret_request_for_workspace(op, "TOKEN", Some(require_workspace(&cwd, &scope)));
+        assert!(request("get").unwrap()["workspace_root"].is_null());
+        for op in ["set", "delete"] {
+            assert_eq!(request(op), Err(1));
+        }
         assert_eq!(secret_workspace_root(&cwd, Some(&context)), None);
         let _pane = set_test_pane_context_root(&context);
         assert!(enforce_pane_context_scope(&cwd, false, "secret.workspace").is_ok());
-        std::fs::create_dir_all(context.join(&channel)).unwrap();
+        crate::workspace::secrets::init_workspace(&context, &channel).unwrap();
+        for op in ["get", "set", "delete"] {
+            assert_eq!(
+                request(op).unwrap()["workspace_root"],
+                serde_json::json!(context)
+            );
+        }
         assert_eq!(
             secret_workspace_root(&cwd, Some(&context)),
             Some(context.canonicalize().unwrap())

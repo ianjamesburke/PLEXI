@@ -389,6 +389,7 @@ fn caller_context_is_answered_from_the_verified_peer() {
     let ask = |h: &mut HostHarness, ancestry: &[u32], name: &str| {
         let token = root.join(name);
         let req = HostRequest::CallerContext {
+            workspace_cwd: root.parent().map(Path::to_owned),
             response_file: token.to_string_lossy().into_owned(),
         };
         socket_request(h, &req, ancestry, &token)
@@ -396,11 +397,16 @@ fn caller_context_is_answered_from_the_verified_peer() {
     let inside = ask(&mut h, &[pid], "ctx-in.json");
     assert_eq!(inside["ok"], true, "{inside}");
     assert_eq!(inside["pane_id"], pane, "{inside}");
+    assert!(inside["workspace_error"]
+        .as_str()
+        .unwrap()
+        .starts_with("permission_denied"));
     assert!(
         inside["context_root"].is_string(),
         "pane has a live context root: {inside}"
     );
     let outside = ask(&mut h, &[999_999], "ctx-out.json");
+    assert!(outside["workspace_error"].is_null());
     assert_eq!(outside["ok"], true, "{outside}");
     assert!(
         outside["pane_id"].is_null() && outside["context_root"].is_null(),

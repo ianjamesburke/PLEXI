@@ -1337,6 +1337,10 @@ pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {
     socket
 }
 
+pub(crate) fn resolve_secret_socket() -> std::path::PathBuf {
+    resolve_command_socket().unwrap_or_else(crate::platform::ipc::endpoint_path)
+}
+
 const SOCKET_TRANSPORT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Debug)]
@@ -1699,12 +1703,12 @@ pub(super) fn try_send_to_socket_quiet(payload: serde_json::Value) {
 fn send_to_socket_connected(
     payload: serde_json::Value,
 ) -> Result<crate::platform::ipc::IpcStream, i32> {
-    let socket_path = match resolve_command_socket() {
-        Some(path) => path,
-        None => {
+    let socket_path = match payload["type"].as_str() {
+        Some("secret_get" | "secret_set" | "secret_delete") => resolve_secret_socket(),
+        _ => resolve_command_socket().ok_or_else(|| {
             eprintln!("{NO_COMMAND_SOCKET}");
-            return Err(1);
-        }
+            1
+        })?,
     };
     let line = format!("{}\n", payload);
     let started = std::time::Instant::now();
