@@ -44,6 +44,15 @@ impl SecretScope {
     }
 }
 
+/// The secret a read names: its name, scope, and the profile root used when
+/// the scope is global.
+#[derive(Clone, Copy)]
+pub struct ReadTarget<'a> {
+    pub name: &'a str,
+    pub scope: &'a SecretScope,
+    pub global_root: &'a Path,
+}
+
 /// Admit `secret.get` for `actor`, then read `name` the way `plexi secret get`
 /// does: the workspace account first, then `plexi:user:<name>`.
 #[cfg(test)]
@@ -59,9 +68,11 @@ pub fn read_pane_secret(
         monitor,
         store,
         actor,
-        name,
-        scope,
-        global_root,
+        ReadTarget {
+            name,
+            scope,
+            global_root,
+        },
         None,
         |req| Some(monitor.admit_for_use(req, None)),
     )
@@ -74,12 +85,15 @@ pub fn read_pane_secret_with(
     monitor: &PermissionMonitor,
     store: &dyn NonDestructiveStore,
     actor: &SecretActor,
-    name: &str,
-    scope: &SecretScope,
-    global_root: &Path,
+    target: ReadTarget<'_>,
     outside: Option<&str>,
     admit: impl FnOnce(AdmitRequest) -> Option<UseDecision>,
 ) -> Result<Option<super::folder::GrantedRead>, String> {
+    let ReadTarget {
+        name,
+        scope,
+        global_root,
+    } = target;
     let accounts = match scope {
         SecretScope::Workspace { id, .. } => {
             let account = super::keychain_workspace_name(id, name);

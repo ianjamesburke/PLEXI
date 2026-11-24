@@ -417,9 +417,11 @@ impl SecretRequest {
             monitor,
             store,
             &actor,
-            &self.name,
-            &self.scope,
-            &self.profile,
+            crate::workspace::secrets::ReadTarget {
+                name: &self.name,
+                scope: &self.scope,
+                global_root: &self.profile,
+            },
             self.subject.outside(),
             |req| self.admit(monitor, req),
         )
