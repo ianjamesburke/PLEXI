@@ -33,8 +33,26 @@ struct Outcome {
     exit_code: i32,
 }
 
-fn outcome(reply: &str, json: bool) -> Outcome {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(reply) else {
+fn outcome(reply: super::reply::HostReply, json: bool) -> Outcome {
+    use super::reply::HostReply;
+    let reply = match reply {
+        HostReply::Payload(reply) => reply,
+        HostReply::Refused(refusal) => {
+            return Outcome {
+                stdout: json.then(|| refusal.json_body().to_owned()),
+                stderr: Some(refusal.stderr_line()),
+                exit_code: 1,
+            }
+        }
+        HostReply::Transport(error) => {
+            return Outcome {
+                stdout: None,
+                stderr: Some(format!("error: {error}")),
+                exit_code: 1,
+            }
+        }
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&reply) else {
         return Outcome {
             stdout: None,
             stderr: Some(format!("error: unreadable file open reply: {reply}")),
@@ -42,17 +60,6 @@ fn outcome(reply: &str, json: bool) -> Outcome {
         };
     };
     let printed_json = json.then(|| value.to_string());
-    if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
-        let code = value
-            .get("error_code")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("error");
-        return Outcome {
-            stdout: printed_json,
-            stderr: Some(format!("error: {error} ({code})")),
-            exit_code: 1,
-        };
-    }
     let pane_id = value.get("pane_id").and_then(serde_json::Value::as_u64);
     Outcome {
         stdout: printed_json.or_else(|| pane_id.map(|id| id.to_string())),
@@ -89,11 +96,16 @@ pub fn file_open_cli(args: &FileOpenArgs, from_pane_id: Option<u64>, json: bool)
         args.placement(),
         args.no_focus
     );
-    let reply = match super::request(payload, "file-open-response", "file open") {
+    let reply = match super::request_reply(
+        payload,
+        "file-open-response",
+        "file open",
+        crate::rpc::DEFAULT_TIMEOUT,
+    ) {
         Ok(reply) => reply,
         Err(code) => return code,
     };
-    print_outcome(&outcome(&reply, json))
+    print_outcome(&outcome(reply, json))
 }
 
 fn print_outcome(outcome: &Outcome) -> i32 {
@@ -115,7 +127,7 @@ fn unrepresentable_cwd(raw: &std::ffi::OsStr, json: bool) -> Outcome {
          pass an absolute PATH from a UTF-8 directory"
     );
     let reply = serde_json::json!({"error": error, "error_code": "unrepresentable_path"});
-    outcome(&reply.to_string(), json)
+    outcome(super::reply::HostReply::decode(Ok(reply.to_string())), json)
 }
 
 #[cfg(test)]
@@ -136,12 +148,7 @@ mod tests {
     }
 
     fn wire(args: &FileOpenArgs) -> serde_json::Value {
-        serde_json::to_value(file_open_request(
-            args,
-            Some(7),
-            Some("/work".into()),
-        ))
-        .unwrap()
+        serde_json::to_value(file_open_request(args, Some(7), Some("/work".into()))).unwrap()
     }
 
     #[test]
@@ -195,14 +202,20 @@ mod tests {
     fn plain_output_is_the_pane_id_and_json_is_the_receipt() {
         let receipt = r#"{"status":"opened","path":"/w/justfile","handler":"text-editor","matched_by":"content","context_id":4,"pane_id":27,"placement":"right","focused":true}"#;
         assert_eq!(
-            outcome(receipt, false),
+            outcome(
+                super::super::reply::HostReply::decode(Ok(receipt.to_owned())),
+                false
+            ),
             Outcome {
                 stdout: Some("27".into()),
                 stderr: None,
                 exit_code: 0
             }
         );
-        let json = outcome(receipt, true);
+        let json = outcome(
+            super::super::reply::HostReply::decode(Ok(receipt.to_owned())),
+            true,
+        );
         assert_eq!(json.exit_code, 0);
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(json.stdout.as_deref().unwrap()).unwrap(),
@@ -211,14 +224,20 @@ mod tests {
 
         let refusal = r#"{"error":"/w/x does not exist","error_code":"not_found"}"#;
         assert_eq!(
-            outcome(refusal, false),
+            outcome(
+                super::super::reply::HostReply::decode(Ok(refusal.to_owned())),
+                false
+            ),
             Outcome {
                 stdout: None,
-                stderr: Some("error: /w/x does not exist (not_found)".into()),
+                stderr: Some("error: not_found: /w/x does not exist".into()),
                 exit_code: 1
             }
         );
-        let json = outcome(refusal, true);
+        let json = outcome(
+            super::super::reply::HostReply::decode(Ok(refusal.to_owned())),
+            true,
+        );
         assert_eq!(json.exit_code, 1);
         assert!(json
             .stdout

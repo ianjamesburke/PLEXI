@@ -1511,7 +1511,7 @@ fn try_query_live_plugin_tools_for_info(
     )
     .ok()?;
     let reply: serde_json::Value = serde_json::from_str(&content).ok()?;
-    if reply.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+    if !super::reply::acknowledged(&reply) {
         return None;
     }
     let context_id = reply.get("context_id").and_then(|v| v.as_u64())?;
@@ -2098,14 +2098,8 @@ pub fn pane_action_cli(pane_id: u64, action: &str, args: &[String]) -> i32 {
         payload["args"] = serde_json::json!(args);
     }
 
-    let content = match super::request(payload, "app-action-response", "pane action") {
-        Ok(content) => content,
-        Err(code) => return code,
-    };
-    if let Err(code) = super::check_reply_error(&content) {
-        return code;
-    }
-    0
+    super::request(payload, "app-action-response", "pane action")
+        .map_or_else(|code| code, |_| 0)
 }
 
 /// Host deadline for a CLI tool call. Strictly below the CLI's poll window so
@@ -2152,7 +2146,7 @@ pub fn plugin_call_cli(
             payload["call_credential"] = serde_json::json!(credential);
         }
     }
-    let content = match super::request_with(
+    let content = match super::request_reply(
         payload,
         "app-call-response",
         "plugin call",
@@ -2163,24 +2157,17 @@ pub fn plugin_call_cli(
             } else {
                 std::time::Duration::ZERO
             },
-    ) {
+    )
+    .and_then(|reply| reply.payload_or_report("plugin call", json))
+    {
         Ok(content) => content,
         Err(code) => return code,
     };
-    if !json {
-        if let Err(code) = super::check_reply_error(&content) {
-            return code;
-        }
-    }
     match serde_json::from_str::<serde_json::Value>(&content) {
         Ok(reply) => {
             if json {
                 println!("{reply}");
-                return if reply.get("ok").and_then(|v| v.as_bool()) == Some(false) {
-                    1
-                } else {
-                    0
-                };
+                return 0;
             }
             let output = reply
                 .get("output")
@@ -2202,13 +2189,17 @@ pub fn plugin_call_cli(
 pub fn plugin_tools_cli(plugin_id: Option<&str>, context_id: Option<u64>, json: bool) -> i32 {
     log::info!("plugin_tools:cli: plugin={plugin_id:?} context={context_id:?} json={json}");
     let payload = build_list_plugin_tools_payload(plugin_id, context_id);
-    let content = match super::request(payload, "app-tools-response", "plugin tools") {
+    let content = match super::request_reply(
+        payload,
+        "app-tools-response",
+        "plugin tools",
+        crate::rpc::DEFAULT_TIMEOUT,
+    )
+    .and_then(|reply| reply.payload_or_report("plugin tools", json))
+    {
         Ok(content) => content,
         Err(code) => return code,
     };
-    if let Err(code) = super::check_reply_error(&content) {
-        return code;
-    }
     if json {
         return super::print_json_output(&content);
     }
@@ -2266,18 +2257,20 @@ pub fn needs_you_cli(op: &str, id: Option<&str>, approve: Option<bool>) -> i32 {
         }
     };
     log::info!("needs_you:cli: op={op} id={id:?} approve={approve:?}");
-    let content = match super::request_with(
+    let content = match super::request_reply(
         payload,
         "needs-you",
         "needs-you",
         std::time::Duration::from_secs(15),
-    ) {
+    )
+    .and_then(|reply| reply.payload_or_report("needs-you", true))
+    {
         Ok(content) => content,
         Err(code) => return code,
     };
     println!("{content}");
     match serde_json::from_str::<serde_json::Value>(&content) {
-        Ok(value) if value.get("ok").and_then(|v| v.as_bool()) == Some(true) => 0,
+        Ok(value) if super::reply::acknowledged(&value) => 0,
         Ok(_) => 1,
         Err(_) => 1,
     }
@@ -2293,18 +2286,20 @@ pub fn needs_you_api_cli(op: &str, payload: serde_json::Value) -> i32 {
         "response_file": response_file,
     });
     log::info!("needs_you:cli: api op={op}");
-    let content = match super::request_with(
+    let content = match super::request_reply(
         request,
         "needs-you",
         "needs-you",
         std::time::Duration::from_secs(15),
-    ) {
+    )
+    .and_then(|reply| reply.payload_or_report("needs-you", true))
+    {
         Ok(content) => content,
         Err(code) => return code,
     };
     println!("{content}");
     match serde_json::from_str::<serde_json::Value>(&content) {
-        Ok(value) if value.get("ok").and_then(|v| v.as_bool()) == Some(true) => 0,
+        Ok(value) if super::reply::acknowledged(&value) => 0,
         Ok(_) => 1,
         Err(_) => 1,
     }
@@ -2329,18 +2324,20 @@ pub fn assistant_permission_cli(op: &str, id: Option<&str>, choice: Option<&str>
         }
     };
     log::info!("assistant_permission:cli: op={op} id={id:?}");
-    let content = match super::request_with(
+    let content = match super::request_reply(
         payload,
         "assistant-permission",
         "assistant permission",
         std::time::Duration::from_secs(15),
-    ) {
+    )
+    .and_then(|reply| reply.payload_or_report("assistant permission", true))
+    {
         Ok(content) => content,
         Err(code) => return code,
     };
     println!("{content}");
     match serde_json::from_str::<serde_json::Value>(&content) {
-        Ok(value) if value.get("ok").and_then(|v| v.as_bool()) == Some(true) => 0,
+        Ok(value) if super::reply::acknowledged(&value) => 0,
         Ok(_) => 1,
         Err(_) => 1,
     }
@@ -2357,24 +2354,28 @@ pub fn assistant_tool_cli(name: &str, input_json: &str) -> i32 {
         "response_file": response_file,
     });
     log::info!("assistant_tool:cli: name={name}");
-    let content = match super::request_with(
+    let content = match super::request_reply(
         payload,
         "assistant-tool",
         "assistant tool",
         std::time::Duration::from_secs(30),
     ) {
+        Ok(reply) => reply,
+        Err(code) => return code,
+    };
+    if let super::reply::HostReply::Refused(refusal) = &content {
+        if refusal.code.as_deref() == Some("permission_required") {
+            refusal.report(true);
+            return 2;
+        }
+    }
+    let content = match content.payload_or_report("assistant tool", true) {
         Ok(content) => content,
         Err(code) => return code,
     };
     println!("{content}");
     match serde_json::from_str::<serde_json::Value>(&content) {
-        Ok(value) if value.get("ok").and_then(|item| item.as_bool()) == Some(true) => 0,
-        Ok(value)
-            if value.get("error_code").and_then(|item| item.as_str())
-                == Some("permission_required") =>
-        {
-            2
-        }
+        Ok(value) if super::reply::acknowledged(&value) => 0,
         Ok(_) => 1,
         Err(_) => 1,
     }
@@ -2426,13 +2427,13 @@ pub struct AssistantSendRoute<'a> {
 /// opts into the desktop transcript. `status_for` reads a turn that already
 /// returned `waiting_for_permission` and does not submit a prompt. A caller
 /// turn never carries a grant; the desktop permission gate still admits tools.
-pub fn assistant_send_result(
+pub fn assistant_send_cli(
     text: Option<&str>,
     request_id: Option<&str>,
     pane_id: Option<u64>,
     context_id: Option<u64>,
     route: AssistantSendRoute<'_>,
-) -> Result<serde_json::Value, String> {
+) -> i32 {
     let AssistantSendRoute {
         conversation,
         join_desktop,
@@ -2445,7 +2446,10 @@ pub fn assistant_send_result(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let response_file = crate::rpc::response_file("assistant-send", "json");
     if let Some(kind) = kind {
-        crate::plexi_ai::ledger::RunKind::parse(kind)?;
+        if let Err(error) = crate::plexi_ai::ledger::RunKind::parse(kind) {
+            eprintln!("error: {error}");
+            return 1;
+        }
     }
     if let Some(turn_id) = status_for {
         log::info!("assistant_send:cli: status poll turn_id={turn_id} request_id={request_id}");
@@ -2467,42 +2471,29 @@ pub fn assistant_send_result(
         client: client.map(str::trim).filter(|client| !client.is_empty()),
         kind: kind.map(str::trim).filter(|kind| !kind.is_empty()),
     });
-    let content = super::request_with(
+    let content = match super::request_reply(
         payload,
         "assistant-send",
         "assistant send",
         std::time::Duration::from_secs(120),
     )
-    .map_err(|code| format!("assistant_send_exit_{code}"))?;
-    serde_json::from_str(&content).map_err(|_| "assistant_send_bad_json".to_string())
-}
-
-/// Submit one turn to the host Assistant and print its terminal JSON envelope.
-pub fn assistant_send_cli(
-    text: Option<&str>,
-    request_id: Option<&str>,
-    pane_id: Option<u64>,
-    context_id: Option<u64>,
-    route: AssistantSendRoute<'_>,
-) -> i32 {
-    match assistant_send_result(text, request_id, pane_id, context_id, route) {
-        Ok(value) => {
-            println!("{value}");
-            if value.get("state").and_then(|v| v.as_str()) == Some("succeeded") {
-                0
-            } else {
-                2
-            }
-        }
+    .and_then(|reply| reply.payload_or_report("assistant send", true))
+    {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    let value = match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(value) => value,
         Err(error) => {
-            if let Some(code) = error.strip_prefix("assistant_send_exit_") {
-                if let Ok(code) = code.parse::<i32>() {
-                    return code;
-                }
-            }
-            eprintln!("error: {error}");
-            1
+            eprintln!("error: invalid assistant reply: {error}");
+            return 1;
         }
+    };
+    println!("{value}");
+    if value["state"] == "succeeded" {
+        0
+    } else {
+        2
     }
 }
 

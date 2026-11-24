@@ -2544,13 +2544,13 @@ fn dispatch_agent_spawn_payload(
     label: &str,
     json: bool,
 ) -> i32 {
-    let content = match super::request(payload, response_prefix, label) {
-        Ok(c) => c,
-        Err(code) => return code,
-    };
-    if let Err(code) = super::check_reply_error(&content) {
-        return code;
-    }
+    let content =
+        match super::request_reply(payload, response_prefix, label, crate::rpc::DEFAULT_TIMEOUT)
+            .and_then(|reply| reply.payload_or_report(label, json))
+        {
+            Ok(c) => c,
+            Err(code) => return code,
+        };
     if json {
         println!("{content}");
         return 0;
@@ -2666,14 +2666,12 @@ pub fn agent_wait_cli(pane_ids: &[u64], timeout_secs: f64, json: bool) -> i32 {
         "timeout_secs": timeout_secs,
     });
     let wait_dur = std::time::Duration::from_secs_f64(timeout_secs.max(1.0) + 5.0);
-    let content = match super::request_with(payload, "agent-wait-response", "agent wait", wait_dur)
+    let content = match super::request_reply(payload, "agent-wait-response", "agent wait", wait_dur)
+        .and_then(|reply| reply.payload_or_report("agent wait", json))
     {
         Ok(c) => c,
         Err(code) => return code,
     };
-    if let Err(code) = super::check_reply_error(&content) {
-        return code;
-    }
     if json {
         println!("{content}");
         return 0;
@@ -2724,24 +2722,25 @@ pub fn agent_done_cli(result: &str, summary: Option<&str>, pane_id_flag: Option<
     if let Some(s) = summary.and_then(non_empty_string) {
         payload["summary"] = serde_json::Value::String(s.to_string());
     }
-    let content = match super::request(payload, "agent-done-response", "agent done") {
-        Ok(c) => c,
+    let reply = match super::request_reply(
+        payload,
+        "agent-done-response",
+        "agent done",
+        crate::rpc::DEFAULT_TIMEOUT,
+    ) {
+        Ok(reply) => reply,
         Err(code) => return code,
     };
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-        if val.get("ok").and_then(|v| v.as_bool()) == Some(false) || val.get("error").is_some() {
-            let err_code = val
-                .get("error_code")
-                .and_then(|v| v.as_str())
-                .unwrap_or("error");
-            let msg = val
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("agent done failed");
-            eprintln!("error: {err_code}: {msg}");
-            return if err_code == "invalid_result" { 2 } else { 1 };
+    if let super::reply::HostReply::Refused(refusal) = &reply {
+        if refusal.code.as_deref() == Some("invalid_result") {
+            refusal.report(false);
+            return 2;
         }
     }
+    let content = match reply.payload_or_report("agent done", false) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
     crate::program_status::emit::emit_agent_report(
         if crate::program_status::emit::done_is_failure(result) {
             crate::program_status::State::Error
@@ -2779,9 +2778,6 @@ pub fn agent_ask_cli(question: &str, pane_id_flag: Option<u64>) -> i32 {
         Ok(c) => c,
         Err(code) => return code,
     };
-    if let Err(code) = super::check_reply_error(&content) {
-        return code;
-    }
     crate::program_status::emit::emit_agent_report(
         crate::program_status::State::Blocked,
         Some("question"),
@@ -2904,9 +2900,7 @@ pub fn agent_status_cli(blocked: bool, working: bool, idle: bool) -> i32 {
         serde_json::json!({ "type": "get_agent_states" }),
         "plexi-agent-states",
         "agent states",
-    )
-    .and_then(|content| super::reply::HostReply::decode(&content).payload_or_report())
-    {
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -3047,17 +3041,17 @@ fn named_agent_cli(
         "name": name,
         "cwd": effective_cwd.to_string_lossy(),
     });
-    let content = match super::request(
+    let content = match super::request_reply(
         payload,
         &format!("{}-response", kind.replace('_', "-")),
         label,
-    ) {
+        crate::rpc::DEFAULT_TIMEOUT,
+    )
+    .and_then(|reply| reply.payload_or_report(label, json))
+    {
         Ok(c) => c,
         Err(code) => return code,
     };
-    if let Err(code) = super::check_reply_error(&content) {
-        return code;
-    }
     if json {
         println!("{content}");
         return 0;
@@ -3100,13 +3094,17 @@ pub fn agent_reopen_cli(target: &str, subcontext: Option<&str>, json: bool) -> i
     if let Some(sub) = subcontext.and_then(non_empty_string) {
         payload["subcontext"] = serde_json::Value::String(sub.to_string());
     }
-    let content = match super::request(payload, "agent-reopen-response", "agent reopen") {
+    let content = match super::request_reply(
+        payload,
+        "agent-reopen-response",
+        "agent reopen",
+        crate::rpc::DEFAULT_TIMEOUT,
+    )
+    .and_then(|reply| reply.payload_or_report("agent reopen", json))
+    {
         Ok(c) => c,
         Err(code) => return code,
     };
-    if let Err(code) = super::check_reply_error(&content) {
-        return code;
-    }
     if json {
         println!("{content}");
         return 0;
@@ -6224,11 +6222,13 @@ mod agent_tests {
 
 /// Read the same host projection painted by the Agents pane.
 pub fn agent_fleet_cli(json: bool, filter: crate::protocol::FleetFilter) -> i32 {
-    let content = match super::request(
+    let content = match super::request_reply(
         serde_json::json!({"type":"agent_fleet", "filter":filter}),
         "plexi-agent-fleet",
         "agent fleet",
-    ) {
+        crate::rpc::DEFAULT_TIMEOUT,
+    )
+    .and_then(|reply| reply.payload_or_report("agent fleet", json)) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -6322,7 +6322,7 @@ pub fn agent_fleet_dismiss_cli(target: Option<&str>, all_failed: bool, json: boo
         }
         None => None,
     };
-    let content = match super::request(
+    let content = match super::request_reply(
         serde_json::json!({
             "type": "agent_fleet_dismiss",
             "target": parsed_target,
@@ -6330,7 +6330,9 @@ pub fn agent_fleet_dismiss_cli(target: Option<&str>, all_failed: bool, json: boo
         }),
         "plexi-agent-fleet-dismiss",
         "agent fleet dismiss",
-    ) {
+        crate::rpc::DEFAULT_TIMEOUT,
+    )
+    .and_then(|reply| reply.payload_or_report("agent fleet dismiss", json)) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -6372,11 +6374,13 @@ pub fn agent_fleet_dismiss_cli(target: Option<&str>, all_failed: bool, json: boo
 }
 
 pub fn agent_next_cli(json: bool) -> i32 {
-    let content = match super::request(
+    let content = match super::request_reply(
         serde_json::json!({"type":"agent_next"}),
         "plexi-agent-next",
         "agent next",
-    ) {
+        crate::rpc::DEFAULT_TIMEOUT,
+    )
+    .and_then(|reply| reply.payload_or_report("agent next", json)) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -6458,16 +6462,14 @@ pub fn agent_tool_cli(mut payload: serde_json::Value) -> i32 {
             return 1;
         }
     };
-    let reply = match super::request_with(payload, "agent-tool", "agent tool", timeout) {
+    let reply = match super::request_reply(payload, "agent-tool", "agent tool", timeout)
+        .and_then(|reply| reply.payload_or_report("agent tool", true))
+    {
         Ok(reply) => reply,
         Err(code) => return code,
     };
     println!("{reply}");
-    if super::reply_error(&reply).is_some() {
-        1
-    } else {
-        0
-    }
+    0
 }
 
 fn is_safe_result_dir_key(key: &str) -> bool {

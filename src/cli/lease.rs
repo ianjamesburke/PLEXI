@@ -14,7 +14,7 @@ pub(crate) fn dispatch(cmd: LeaseCmd) -> i32 {
             return 1;
         }
     };
-    match super::request(
+    match super::request_json_output(
         json!({"type": "resource_lease", "op": op, "name": name,
         "max": max, "holder_pid": holder_pid}),
         "lease",
@@ -24,7 +24,7 @@ pub(crate) fn dispatch(cmd: LeaseCmd) -> i32 {
             println!("{content}");
             match serde_json::from_str::<serde_json::Value>(&content) {
                 Ok(reply) if reply["status"] == "paused" => 2,
-                Ok(reply) if reply.get("error").is_none() => 0,
+                Ok(_) => 0,
                 _ => 1,
             }
         }

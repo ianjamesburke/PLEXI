@@ -96,9 +96,7 @@ pub fn context_new_cli(
     // Every creation waits for the host's authoritative name. Sub-context
     // callers get the structured response; top-level creation stays quiet on
     // success and prints only the collision note.
-    match super::request(payload, "context-new-response", "context-new")
-        .and_then(|content| super::reply::HostReply::decode(&content).payload_or_report())
-    {
+    match super::request(payload, "context-new-response", "context-new") {
         Ok(content) => {
             let response: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
             if explicit_parent.is_some() {
@@ -213,14 +211,6 @@ pub fn context_sub_cli(
     }
     match super::request(payload, "context-sub-response", "context-sub") {
         Ok(content) => {
-            // The request helper only distinguishes transport failures. The
-            // host reports a refused parent or a failed terminal spawn *in* the
-            // payload, so an unattended caller needs that surfaced as a nonzero
-            // exit rather than a successful-looking JSON blob.
-            if let Some(err) = super::reply_error(&content) {
-                eprintln!("error: context sub failed: {err}");
-                return 1;
-            }
             println!("{content}");
             0
         }
@@ -235,21 +225,15 @@ pub fn context_sub_cli(
 /// silent success.
 pub fn context_zoom_cli(context_id: u64) -> i32 {
     log::info!("context_zoom_cli: context_id={context_id}");
-    let content = match super::request(
+    super::request(
         serde_json::json!({
             "type": "zoom_into_context",
             "context_id": context_id,
         }),
         "context-zoom-response",
         "context zoom",
-    ) {
-        Ok(content) => content,
-        Err(code) => return code,
-    };
-    match super::check_reply_error(&content) {
-        Ok(()) => 0,
-        Err(code) => code,
-    }
+    )
+    .map_or_else(|code| code, |_| 0)
 }
 
 /// `plexi context zoom-out`
@@ -264,13 +248,10 @@ pub fn context_zoom_out_cli() -> i32 {
 /// Mutations report host rejection, never transport-only success.
 fn context_mutation(payload: serde_json::Value, label: &str) -> i32 {
     match super::request(payload, "context-response", label) {
-        Ok(content) => match super::check_reply_error(&content) {
-            Ok(()) => {
-                println!("{content}");
-                0
-            }
-            Err(code) => code,
-        },
+        Ok(content) => {
+            println!("{content}");
+            0
+        }
         Err(code) => code,
     }
 }
@@ -306,7 +287,10 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
         }
     };
     let payload = set_root_frame(&root, caller_context_id());
-    log::info!("context_set_root_cli: root={} frame={payload}", root.display());
+    log::info!(
+        "context_set_root_cli: root={} frame={payload}",
+        root.display()
+    );
     let rc = context_mutation(payload, "context set-root");
     if rc == 0 {
         print_tip(
@@ -419,9 +403,6 @@ pub fn context_current_cli() -> i32 {
 fn render_current_context(reply: &str) -> Result<String, String> {
     let v: serde_json::Value =
         serde_json::from_str(reply).map_err(|e| format!("invalid JSON from host: {e}"))?;
-    if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
-        return Err(err.to_string());
-    }
     let context_id = v
         .get("context_id")
         .and_then(|c| c.as_u64())
@@ -443,7 +424,7 @@ fn render_current_context(reply: &str) -> Result<String, String> {
 pub fn context_list_cli() -> i32 {
     log::info!("context_list:cli: sending via socket");
 
-    match super::request(
+    match super::request_json_output(
         serde_json::json!({ "type": "list_contexts" }),
         "context-list-response",
         "context list",
@@ -537,12 +518,6 @@ mod context_current_tests {
         assert_eq!(out["context_id"], 6);
         assert_eq!(out["context_name"], "child");
         assert_eq!(out["context_description"], "d");
-    }
-
-    #[test]
-    fn host_error_is_surfaced() {
-        let err = render_current_context(r#"{"error":"pane 5 not found"}"#).unwrap_err();
-        assert_eq!(err, "pane 5 not found");
     }
 
     #[test]

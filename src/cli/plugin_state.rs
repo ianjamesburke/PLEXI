@@ -66,9 +66,6 @@ fn cli_context_root() -> Result<PathBuf, String> {
             })?;
             let reply: serde_json::Value = serde_json::from_str(&content)
                 .map_err(|error| format!("invalid plugin state scope reply: {error}"))?;
-            if let Some(error) = reply.get("error").and_then(|v| v.as_str()) {
-                return Err(error.to_string());
-            }
             let root = reply
                 .get("context_root")
                 .and_then(|v| v.as_str())

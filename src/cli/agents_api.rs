@@ -23,8 +23,11 @@ pub fn command_view_cli(op: &str, json_out: bool) -> i32 {
         "command_view:cli: op={op} workspace={}",
         workspace.display()
     );
-    let _ = json_out;
-    send_dashboard(dashboard_frame(&workspace, op, None), "agents-dashboard")
+    send_dashboard(
+        dashboard_frame(&workspace, op, None),
+        "agents-dashboard",
+        json_out,
+    )
 }
 
 pub fn command_view_cancel_cli(run: &str) -> i32 {
@@ -42,6 +45,7 @@ fn command_view_cancel_in(workspace: &std::path::Path, run: &str) -> i32 {
     send_dashboard(
         dashboard_frame(workspace, "cancel", Some(run)),
         "agents-dashboard cancel",
+        false,
     )
 }
 
@@ -55,19 +59,21 @@ fn dashboard_frame(workspace: &std::path::Path, op: &str, run: Option<&str>) -> 
 }
 
 /// Send one dashboard request and print the host's answer; 0 when it is ok.
-fn send_dashboard(frame: Value, label: &str) -> i32 {
-    let content = match super::request_with(
+fn send_dashboard(frame: Value, label: &str, json: bool) -> i32 {
+    let content = match super::request_reply(
         frame,
         &label.replace(' ', "-"),
         label,
         std::time::Duration::from_secs(20),
-    ) {
+    )
+    .and_then(|reply| reply.payload_or_report(label, json))
+    {
         Ok(content) => content,
         Err(code) => return code,
     };
     println!("{content}");
     match serde_json::from_str::<Value>(&content) {
-        Ok(value) if value.get("ok").and_then(|item| item.as_bool()) == Some(true) => 0,
+        Ok(value) if super::reply::acknowledged(&value) => 0,
         _ => 1,
     }
 }
@@ -166,12 +172,14 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i
             )
         }
     };
-    let body = match super::request_with(
+    let body = match super::request_reply(
         payload,
         "agent-team",
         "agent team run",
         std::time::Duration::from_secs(timeout + 20),
-    ) {
+    )
+    .and_then(|reply| reply.payload_or_report("agent team run", json_out))
+    {
         Ok(body) => body,
         Err(code) => return code,
     };
@@ -187,24 +195,20 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i
     } else {
         println!("{}", team_run_text(&value));
     }
-    if let Err(code) = super::check_reply_error(&body) {
-        return code;
-    }
     0
 }
 
 pub(crate) fn team_run_text(value: &Value) -> String {
-    if value.get("ok").and_then(Value::as_bool) == Some(false) {
-        return value["error"]
-            .as_str()
-            .unwrap_or("team run was refused")
-            .to_string();
+    if let super::reply::HostReply::Refused(refusal) =
+        super::reply::HostReply::decode(Ok(value.to_string()))
+    {
+        return refusal.reason;
     }
     format!(
         "{}\nRESULT.md: {}",
         value["report"]
             .as_str()
-            .unwrap_or_else(|| value["error"].as_str().unwrap_or("No team report returned")),
+            .unwrap_or("No team report returned"),
         value["result_path"].as_str().unwrap_or("unavailable")
     )
 }
@@ -231,6 +235,7 @@ mod tests {
                 None => super::send_dashboard(
                     super::dashboard_frame(&path, "list", None),
                     "agents-dashboard",
+                    false,
                 ),
             };
             let env = socket_env_guard();

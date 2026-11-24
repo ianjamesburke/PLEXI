@@ -15,7 +15,9 @@
 //! The host identifies the caller from the socket; there is deliberately no
 //! flag or field for the subscriber/emitter identity.
 
+use super::reply::HostReply;
 use crate::platform::ipc::{self, IpcStream};
+use crate::rpc::PollError;
 use std::io::{BufRead, BufReader, Write};
 
 /// Connect to the running host's command socket. Mirrors the connect/cleanup
@@ -66,22 +68,20 @@ pub(crate) fn stream_control_line(payload: serde_json::Value) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
+    let json = payload["json"] == true;
     let reader = BufReader::new(stream);
     let stdout = std::io::stdout();
     for line in reader.lines() {
-        match line {
-            Ok(line) => {
-                let mut out = stdout.lock();
-                if writeln!(out, "{line}").is_err() {
-                    return 0; // downstream consumer went away
-                }
-                let _ = out.flush();
-            }
-            Err(e) => {
-                eprintln!("error: reading event stream: {e}");
-                return 1;
-            }
+        let reply = HostReply::decode(line.map_err(PollError::Unreadable));
+        let line = match reply.payload_or_report("event stream", json) {
+            Ok(line) => line,
+            Err(code) => return code,
+        };
+        let mut out = stdout.lock();
+        if writeln!(out, "{line}").is_err() {
+            return 0; // downstream consumer went away
         }
+        let _ = out.flush();
     }
     0
 }
@@ -209,26 +209,22 @@ fn read_publish_reply<W: Write, E: Write>(
             }
         }
     }
-    let reply = reply.trim();
-    if reply.is_empty() {
-        let _ = writeln!(errors, "error: host closed the connection without replying");
-        return 1;
-    }
-    match serde_json::from_str::<serde_json::Value>(reply) {
-        Ok(val) => match val["type"].as_str() {
-            Some("error") => {
-                let _ = writeln!(
-                    errors,
-                    "error: {}",
-                    val["message"].as_str().unwrap_or("unknown error")
-                );
-                1
-            }
-            _ => {
-                let _ = writeln!(out, "{}", val["detail"].as_str().unwrap_or(reply));
-                0
-            }
-        },
+    let reply = match HostReply::decode(Ok(reply)) {
+        HostReply::Payload(reply) => reply,
+        HostReply::Refused(refusal) => {
+            let _ = writeln!(errors, "{}", refusal.stderr_line());
+            return 1;
+        }
+        HostReply::Transport(error) => {
+            let _ = writeln!(errors, "error: {error}");
+            return 1;
+        }
+    };
+    match serde_json::from_str::<serde_json::Value>(&reply) {
+        Ok(val) => {
+            let _ = writeln!(out, "{}", val["detail"].as_str().unwrap_or(reply.trim()));
+            0
+        }
         Err(_) => {
             let _ = writeln!(errors, "error: host reply was not valid JSON: {reply}");
             1
@@ -436,16 +432,21 @@ fn consume_lifecycle<R: BufRead, W: Write, E: Write>(
     wait: bool,
 ) -> i32 {
     for line in reader.lines() {
-        let value: serde_json::Value = match line {
-            Ok(line) => match serde_json::from_str(&line) {
-                Ok(value) => value,
-                Err(error) => {
-                    let _ = writeln!(errors, "error: invalid lifecycle reply: {error}");
-                    return 1;
-                }
-            },
+        let line = match HostReply::decode(line.map_err(PollError::Unreadable)) {
+            HostReply::Payload(line) => line,
+            HostReply::Refused(refusal) => {
+                let _ = writeln!(errors, "{}", refusal.stderr_line());
+                return 1;
+            }
+            HostReply::Transport(error) => {
+                let _ = writeln!(errors, "error: {error}");
+                return 1;
+            }
+        };
+        let value: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
             Err(error) => {
-                let _ = writeln!(errors, "error: reading lifecycle stream: {error}");
+                let _ = writeln!(errors, "error: invalid lifecycle reply: {error}");
                 return 1;
             }
         };
@@ -463,16 +464,6 @@ fn consume_lifecycle<R: BufRead, W: Write, E: Write>(
             Some("timeout") if wait => {
                 let _ = writeln!(errors, "pane wait timed out");
                 return 2;
-            }
-            Some("error") => {
-                let _ = writeln!(
-                    errors,
-                    "error: {}",
-                    value["message"]
-                        .as_str()
-                        .unwrap_or("lifecycle request failed")
-                );
-                return 1;
             }
             _ => {
                 let _ = writeln!(errors, "error: unexpected lifecycle reply");
@@ -691,6 +682,19 @@ mod pane_consumer_output_tests {
         assert!(String::from_utf8(errors)
             .unwrap()
             .contains("writing lifecycle output"));
+    }
+
+    #[test]
+    fn lifecycle_stream_reports_a_coded_refusal() {
+        let reply = br#"{"error_code":"permission_denied","error":"pane inaccessible"}"#;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            consume_lifecycle(&reply[..], &mut stdout, &mut stderr, true),
+            1
+        );
+        assert!(stdout.is_empty());
+        assert_eq!(stderr, b"error: permission_denied: pane inaccessible\n");
     }
 
     #[test]

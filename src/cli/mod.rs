@@ -518,7 +518,6 @@ impl ContextTarget {
             "list-contexts-target-resolve",
             "context target lookup",
         )?;
-        check_reply_error(&content)?;
         let entries: Vec<serde_json::Value> = serde_json::from_str(&content).map_err(|e| {
             log::warn!("cli:target: failed to parse list_contexts response: {e}");
             eprintln!("error: failed to parse context list from host: {e}");
@@ -562,7 +561,6 @@ impl PaneTarget {
             "list-panes-target-resolve",
             "pane target lookup",
         )?;
-        check_reply_error(&content)?;
         let entries: Vec<serde_json::Value> = serde_json::from_str(&content).map_err(|e| {
             log::warn!("cli:target: failed to parse list_panes response: {e}");
             eprintln!("error: failed to parse pane list from host: {e}");
@@ -627,7 +625,7 @@ pub mod help;
 pub mod introspect;
 mod pane_caller;
 mod queued_spawn;
-mod reply;
+pub(crate) mod reply;
 pub mod registry;
 pub mod setup;
 pub mod skill_draft;
@@ -694,15 +692,8 @@ pub(super) fn print_tip(msg: &str) {
     }
 }
 
-/// Prints JSON to stdout, pretty-printed by serde. Content that is not JSON
-/// at all is passed through verbatim — the host's reply is never withheld
-/// from the caller.
+/// Pretty-print a JSON payload, or pass plain text through verbatim.
 pub(super) fn print_json_output(json_str: &str) -> i32 {
-    let json_str = match reply::HostReply::decode(json_str).payload_or_report() {
-        Ok(payload) => payload,
-        Err(code) => return code,
-    };
-    let json_str = json_str.as_str();
     match serde_json::from_str::<serde_json::Value>(json_str) {
         Ok(v) => match serde_json::to_string_pretty(&v) {
             Ok(pretty) => {
@@ -718,37 +709,6 @@ pub(super) fn print_json_output(json_str: &str) -> i32 {
             print!("{json_str}");
             0
         }
-    }
-}
-
-#[cfg(test)]
-mod reply_error_tests {
-    use super::reply_error;
-
-    /// A host-reported failure must be detectable so the CLI can exit nonzero —
-    /// the poll succeeds here, because the transport worked.
-    #[test]
-    fn error_field_is_surfaced() {
-        assert_eq!(
-            reply_error(r#"{"error":"no parent context for id=Some(9)"}"#).as_deref(),
-            Some("no parent context for id=Some(9)")
-        );
-    }
-
-    #[test]
-    fn successful_response_has_no_error() {
-        assert_eq!(
-            reply_error(r#"{"context_id":76,"windows":[],"panes":[317,318]}"#),
-            None
-        );
-    }
-
-    /// Unparseable output is not an error here: the poll owns transport
-    /// failures, and swallowing an unexpected-but-valid shape would hide the
-    /// response from the caller.
-    #[test]
-    fn unparseable_output_is_not_treated_as_an_error() {
-        assert_eq!(reply_error("not json at all"), None);
     }
 }
 
@@ -1167,30 +1127,11 @@ pub(super) fn command_socket_available() -> bool {
     command_socket_available_from(has_override, std::env::var_os("PLEXI_SOCKET").is_some())
 }
 
-/// Poll an RPC response file with the standard CLI error reporting: timeout
-/// and read failures print `error: ...` to stderr and yield exit code 1.
-/// `label` names the command in the timeout message.
-pub(super) fn poll_rpc(response_file: &str, label: &str) -> Result<String, i32> {
-    poll_rpc_with(response_file, label, crate::rpc::DEFAULT_TIMEOUT)
-}
-
-pub(super) fn poll_rpc_with(
+pub(super) fn poll_reply(
     response_file: &str,
-    label: &str,
-    timeout: std::time::Duration,
-) -> Result<String, i32> {
-    match crate::rpc::poll_string(response_file, Some(timeout)) {
-        Ok(content) => Ok(content),
-        Err(crate::rpc::PollError::TimedOut) => {
-            eprintln!("error: timed out waiting for {label} response");
-            Err(1)
-        }
-        Err(e) => {
-            log::warn!("{label}:cli: {e}");
-            eprintln!("error: {e}");
-            Err(1)
-        }
-    }
+    timeout: Option<std::time::Duration>,
+) -> reply::HostReply {
+    reply::HostReply::decode(crate::rpc::poll_string(response_file, timeout))
 }
 
 /// Mint a response file for `prefix`, inject it into `payload`, and send the
@@ -1247,34 +1188,26 @@ pub(super) fn request_with(
     label: &str,
     timeout: std::time::Duration,
 ) -> Result<String, i32> {
-    // macOS cannot recover LOCAL_PEERPID after the client disconnects, even
-    // while this CLI process is alive. Hold the connection through the reply.
+    request_reply(payload, prefix, label, timeout)?.payload_or_report(label, false)
+}
+
+pub(super) fn request_json_output(
+    payload: serde_json::Value,
+    prefix: &str,
+    label: &str,
+) -> Result<String, i32> {
+    request_reply(payload, prefix, label, crate::rpc::DEFAULT_TIMEOUT)?.payload_or_report(label, true)
+}
+
+pub(super) fn request_reply(
+    payload: serde_json::Value,
+    prefix: &str,
+    label: &str,
+    timeout: std::time::Duration,
+) -> Result<reply::HostReply, i32> {
+    // Keep the connection alive through the reply for peer attribution.
     let (response_file, _stream) = send_request_connected(payload, prefix, label)?;
-    poll_rpc_with(&response_file, label, timeout)
-}
-
-/// The host's top-level `error` string, if the reply is JSON and carries one.
-///
-/// A reply that does not parse is not an error here: transport failures are
-/// already owned by [`poll_rpc`], and swallowing a valid-but-unexpected shape
-/// would hide the response from the caller.
-pub(super) fn reply_error(content: &str) -> Option<String> {
-    match reply::HostReply::decode(content) {
-        reply::HostReply::Refused { reason, .. } => Some(reason),
-        reply::HostReply::Payload(_) => None,
-    }
-}
-
-/// Surface a host-reported `error` as `error: <msg>` on stderr with exit code 1.
-/// The shared postlude for commands whose success payload carries no `error`.
-pub(super) fn check_reply_error(content: &str) -> Result<(), i32> {
-    match reply_error(content) {
-        Some(msg) => {
-            eprintln!("error: {msg}");
-            Err(1)
-        }
-        None => Ok(()),
-    }
+    Ok(poll_reply(&response_file, Some(timeout)))
 }
 
 /// Spawn-queue writer gate (stint 0532): outside a Plexi pane, a spawn
@@ -2107,10 +2040,12 @@ pub(super) fn queue_spawn_and_wait(
 /// queue-file write as success: the host may reject the plugin after it drains
 /// the file (for example when the CPython bundle is unavailable).
 pub(super) fn queued_spawn_pane_id(content: &str) -> Result<u64, String> {
-    if let Some(error) = reply_error(content) {
-        return Err(error);
-    }
-    serde_json::from_str::<serde_json::Value>(content)
+    let content = match reply::HostReply::decode(Ok(content.to_owned())) {
+        reply::HostReply::Payload(content) => content,
+        reply::HostReply::Refused(refusal) => return Err(refusal.coded_reason()),
+        reply::HostReply::Transport(error) => return Err(error.to_string()),
+    };
+    serde_json::from_str::<serde_json::Value>(&content)
         .ok()
         .and_then(|reply| reply.get("pane_id").and_then(serde_json::Value::as_u64))
         .ok_or_else(|| format!("spawn response carried no pane id: {content}"))
@@ -2439,10 +2374,6 @@ pub fn host_action_cli(
     }
     match request(payload, "host-action", "host action") {
         Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
-            Ok(reply) if reply.get("error").is_some() => {
-                eprintln!("error: {}", reply["error"].as_str().unwrap_or(&content));
-                1
-            }
             Ok(_) => {
                 println!("{content}");
                 0

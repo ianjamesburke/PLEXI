@@ -1789,6 +1789,28 @@ fn a_pane_shell_without_a_recorded_start_is_still_its_pane() {
         );
     }
 
+    let caller = h.add_focused_terminal();
+    let target = h.add_focused_terminal();
+    h.app
+        .windows
+        .iter_mut()
+        .find_map(|window| window.panes.get_mut(&caller))
+        .and_then(|pane| pane.as_terminal_mut())
+        .unwrap()
+        .forget_shell_start_for_test(true);
+    let peer = pane_witness(&h, caller);
+    let refusal = send(
+        &mut h,
+        serde_json::json!({"type": "agent_done", "pane_id": target, "result": "{}", "summary": "s"}),
+        Some(peer),
+    );
+    assert_eq!(refusal["error_code"], "permission_denied", "{refusal}");
+    assert_eq!(
+        refusal["error"],
+        format!("pane {caller} cannot act as pane {target}")
+    );
+    assert!(!h.app.terminal_incarnation(target).unwrap().agent_completed);
+
     let incomplete = Some(witness(std::process::id(), AncestryEnd::LookupFailed));
     let listed = send(&mut h, serde_json::json!({"type": "list_panes"}), incomplete.clone());
     assert!(listed.get("error_code").is_none(), "an operator request is served: {listed}");

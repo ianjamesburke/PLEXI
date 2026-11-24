@@ -31,35 +31,6 @@ pub struct NotifyCliArgs<'a> {
     pub json: bool,
 }
 
-/// What a waiting `plexi notify` writes for the host's reply.
-#[derive(Debug, PartialEq, Eq)]
-struct ChoiceOutput {
-    stdout: Option<String>,
-    stderr: Option<String>,
-    code: i32,
-}
-
-/// The chosen key on stdout, or a refusal: its reason on stderr, nonzero, and
-/// nothing on stdout unless the caller asked for `--json`, so
-/// `key=$(plexi notify ...)` never captures a refusal as a key.
-fn choice_output(reply: &str, json: bool) -> ChoiceOutput {
-    match super::reply::HostReply::decode(reply) {
-        super::reply::HostReply::Payload(key) => ChoiceOutput {
-            stdout: Some(key.trim().to_string()),
-            stderr: None,
-            code: 0,
-        },
-        super::reply::HostReply::Refused { reason, code, body } => {
-            log::info!("notify:cli: host refused code={code:?}");
-            ChoiceOutput {
-                stdout: json.then_some(body),
-                stderr: Some(format!("error: {reason}")),
-                code: 1,
-            }
-        }
-    }
-}
-
 pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
     let NotifyCliArgs {
         title,
@@ -77,7 +48,10 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
     // pane: outside one, say so before sending (the host refuses it too).
     // A set-but-garbled pane or context variable is corrupt state, not an
     // outside caller: fail loudly before sending, as alpha did.
-    let (context_id, _pane_id) = match (caller_env_id("PLEXI_CONTEXT_ID"), caller_env_id("PLEXI_PANE_ID")) {
+    let (context_id, _pane_id) = match (
+        caller_env_id("PLEXI_CONTEXT_ID"),
+        caller_env_id("PLEXI_PANE_ID"),
+    ) {
         (Ok(context), Ok(pane)) => (context, pane),
         (Err(code), _) | (_, Err(code)) => return code,
     };
@@ -160,8 +134,8 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
         response_file_str
     );
 
-    use std::io::Write;
     use crate::platform::ipc::{self, IpcStream};
+    use std::io::Write;
     let mut stream = match IpcStream::connect(&socket_path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
@@ -180,34 +154,10 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
         return 1;
     }
 
-    // Block until the host confirms it captured our socket-peer identity
-    // (`PEER_IDENTITY_ACK`, `handle_socket_line` in `src/app/mod.rs`) before
-    // this call is allowed to proceed. Load-bearing specifically for the
-    // fire-and-forget branch just below: without it, this process can exit
-    // the instant its write completes — a real race against the host's own
-    // accept()-return latency under load, not just a spawned-thread delay.
-    // Losing that race means `get_pid_ppid` fails on an already-gone pid and
-    // the notification misattributes to "outside pane" (global scope, no
-    // dismiss) even though the caller really was a live, known pane. The
-    // blocking-choice branch below can't lose this race either way — it
-    // polls `response_file` until the host finishes processing, well past
-    // the ack point — so this read is belt-and-suspenders there, but it's
-    // cheap and correct to do unconditionally before committing to either
-    // branch. A short timeout keeps a stuck/uncooperative host — or one
-    // from before this change, mid-upgrade, that never sends an ack at all
-    // — from hanging this call for long; a missed ack is logged, not
-    // fatal, and the request was already delivered either way. A
-    // same-host unix-socket round trip normally completes in microseconds,
-    // so this bound is already generous, not a tight deadline being cut
-    // close.
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
-    let mut ack = [0u8; 1];
-    if let Err(e) = std::io::Read::read_exact(&mut stream, &mut ack) {
-        log::warn!("notify:cli: peer identity ack not received: {e}");
-    }
-
-    // Fire-and-forget path — command is delivered, nothing to wait for.
+    // A fire-and-forget caller must stay alive until the host captures its
+    // identity. A waiting caller holds its stream through the reply instead.
     let Some(response_file) = response_file_str else {
+        super::await_peer_identity_ack(&mut stream, &line);
         println!("{notify_id}");
         return 0;
     };
@@ -216,27 +166,20 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
 
     let timeout =
         (wait_timeout_secs > 0).then(|| std::time::Duration::from_secs(wait_timeout_secs));
-    match crate::rpc::poll_string(&response_file, timeout) {
-        Ok(reply) => {
-            let output = choice_output(&reply, json);
-            log::info!("notify:cli: response received code={}", output.code);
-            if let Some(line) = &output.stderr {
-                eprintln!("{line}");
-            }
-            if let Some(out) = &output.stdout {
-                print!("{out}");
-            }
-            output.code
+    let reply = super::poll_reply(&response_file, timeout);
+    if matches!(
+        reply,
+        super::reply::HostReply::Transport(crate::rpc::PollError::TimedOut)
+    ) {
+        log::info!("notify:cli: choice wait timed out after {wait_timeout_secs}s");
+        return 2;
+    }
+    match reply.payload_or_report("notify", json) {
+        Ok(key) => {
+            print!("{}", key.trim());
+            0
         }
-        Err(crate::rpc::PollError::TimedOut) => {
-            log::info!("notify:cli: choice wait timed out after {wait_timeout_secs}s");
-            2
-        }
-        Err(e) => {
-            log::warn!("notify:cli: {e}");
-            eprintln!("error: {e}");
-            1
-        }
+        Err(code) => code,
     }
 }
 
@@ -255,44 +198,22 @@ pub fn dismiss_notify_cli(notify_id: &str) -> i32 {
     if let Err(code) = caller_env_id("PLEXI_CONTEXT_ID").and(caller_env_id("PLEXI_PANE_ID")) {
         return code;
     }
-    let Some(socket_path) = super::resolve_command_socket() else {
-        eprintln!("{}", super::NO_COMMAND_SOCKET);
-        return 1;
-    };
-    let response_file = crate::rpc::response_file("notify-dismiss", "txt");
-    let payload = serde_json::json!({
-        "type": "dismiss_notification",
-        "notify_id": notify_id,
-        "response_file": response_file,
-    });
-    use std::io::Write;
-    use crate::platform::ipc::IpcStream;
-    let mut stream = match IpcStream::connect(&socket_path) {
-        Ok(stream) => stream,
-        Err(e) => {
-            eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
-            return 1;
-        }
-    };
-    if let Err(e) = stream.write_all(format!("{payload}\n").as_bytes()) {
-        eprintln!("error: could not write to socket: {e}");
-        return 1;
-    }
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
-    let mut ack = [0u8; 1];
-    let _ = std::io::Read::read_exact(&mut stream, &mut ack);
-    crate::rpc::register_client_stream(response_file.clone(), stream);
-    match crate::rpc::poll_string(&response_file, Some(std::time::Duration::from_secs(30))) {
-        Ok(result) if result.trim() == "dismissed" => 0,
-        Ok(result) => {
-            eprintln!("error: {}", result.trim());
-            1
-        }
-        Err(e) => {
-            eprintln!("error: notify dismiss: {e}");
-            1
-        }
-    }
+    let reply = super::request_reply(
+        serde_json::json!({
+            "type": "dismiss_notification",
+            "notify_id": notify_id,
+        }),
+        "notify-dismiss",
+        "notify dismiss",
+        std::time::Duration::from_secs(30),
+    );
+    reply
+        .and_then(|reply| {
+            reply
+                .expect_text_ack("dismissed")
+                .payload_or_report("notify dismiss", false)
+        })
+        .map_or_else(|code| code, |_| 0)
 }
 
 #[cfg(test)]
@@ -503,7 +424,9 @@ mod notify_tests {
             reader.read_line(&mut line).unwrap();
             stream.write_all(&[0x06]).unwrap();
             stream
-                .write_all(br#"{"ok":false,"error_code":"scope_unresolvable","error":"no context"}"#)
+                .write_all(
+                    br#"{"ok":false,"error_code":"scope_unresolvable","error":"no context"}"#,
+                )
                 .unwrap();
         });
         let choices = vec![("talk".to_string(), "Talk".to_string(), None)];
@@ -518,17 +441,6 @@ mod notify_tests {
         });
         handle.join().unwrap();
         assert_eq!(code, 1, "a refusal exits nonzero");
-        // What that waiter writes for this reply: nothing on stdout, so a
-        // captured key is empty; the body only for `--json`.
-        let refusal = r#"{"ok":false,"error_code":"scope_unresolvable","error":"no context"}"#;
-        let plain = super::choice_output(refusal, false);
-        assert_eq!(plain.stdout, None, "a refusal reached stdout");
-        assert_eq!(plain.stderr.as_deref(), Some("error: no context"));
-        assert_eq!(plain.code, 1);
-        let json = super::choice_output(refusal, true);
-        assert_eq!(json.stdout.as_deref(), Some(refusal));
-        assert_eq!(json.code, 1);
-        assert_eq!(super::choice_output("talk\n", false).stdout.as_deref(), Some("talk"));
     }
 
     /// Codex 3290 r4 S1: a garbled pane variable is refused before anything

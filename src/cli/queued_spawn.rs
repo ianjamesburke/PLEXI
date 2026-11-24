@@ -26,12 +26,16 @@ pub(super) fn open_receipt(token: &str) -> Result<IpcStream, String> {
         .map_err(|error| format!("the host did not confirm the spawn receipt: {error}"))?;
     if ack != crate::app::PEER_IDENTITY_ACK {
         let mut rest = Vec::new();
-        let _ = stream.read_to_end(&mut rest);
+        stream.read_to_end(&mut rest)
+            .map_err(|error| format!("could not read the spawn receipt refusal: {error}"))?;
         ack.extend(rest);
-        return Err(format!(
-            "the host refused the spawn receipt: {}",
-            String::from_utf8_lossy(&ack)
-        ));
+        let body = String::from_utf8_lossy(&ack).into_owned();
+        let reason = match super::reply::HostReply::decode(Ok(body)) {
+            super::reply::HostReply::Refused(refusal) => refusal.coded_reason(),
+            super::reply::HostReply::Payload(text) => text,
+            super::reply::HostReply::Transport(error) => error.to_string(),
+        };
+        return Err(format!("the host refused the spawn receipt: {reason}"));
     }
     Ok(stream)
 }
