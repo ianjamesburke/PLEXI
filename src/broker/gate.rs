@@ -3925,12 +3925,20 @@ impl PermissionMonitor {
                 return Err("grant revoked".to_string());
             };
             if record.duration == GrantDuration::Once {
-                if record.consumed {
+                let replay = !operation_id.is_empty()
+                    && record.bound_operation_id.as_deref() == Some(operation_id);
+                if record.consumed && !replay {
                     log::info!("permission_monitor: once-grant {grant_id} already used");
                     return Err("grant already used".to_string());
                 }
+                // A retry of the operation that spent it recovers that
+                // operation's receipt; it is not a second use.
+                let claim = !record.consumed;
                 record.consumed = true;
-                true
+                if !operation_id.is_empty() {
+                    record.bound_operation_id = Some(operation_id.to_string());
+                }
+                claim
             } else {
                 false
             }
@@ -3955,6 +3963,7 @@ impl PermissionMonitor {
                 .find(|record| record.grant_id == grant_id)
             {
                 record.consumed = false;
+                record.bound_operation_id = None;
             }
         }
         if claimed_once && audited.is_ok() {

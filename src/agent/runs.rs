@@ -1840,7 +1840,7 @@ fn invoke(
                     &grant_id,
                     &fingerprint,
                     &resource,
-                    "agents-api",
+                    &call_id,
                 )
                 .is_err()
             {
@@ -1858,7 +1858,7 @@ fn invoke(
                 return permit_refused(error);
             }
             let body = execute_tool(workspace, &run, tool, input_json);
-            host_gate!().consume_once(&grant_id, Some("agents-api"));
+            host_gate!().consume_once(&grant_id, Some(&call_id));
             log::info!(
                 "agents_api: executed tool={tool} actor={} run={} call_id={call_id}",
                 run.actor_id,
@@ -3195,10 +3195,13 @@ mod tests {
         let run = spawned["run"]["id"].as_str().unwrap().to_string();
         let grant = approve_once(&fix, &run, "agents.review");
         let gate = monitor().unwrap();
-        let first = gate.note_use("agent:worker", "c1", &grant, "fp", "", "agents-api");
-        let second = gate.note_use("agent:worker", "c2", &grant, "fp", "", "agents-api");
+        let first = gate.note_use("agent:worker", "c1", &grant, "fp", "", "op-1");
+        let second = gate.note_use("agent:worker", "c2", &grant, "fp", "", "op-2");
         assert!(first.is_ok(), "{first:?}");
         assert_eq!(second, Err("grant already used".to_string()));
+        // The operation that spent it may recover its receipt.
+        let replay = gate.note_use("agent:worker", "c3", &grant, "fp", "", "op-1");
+        assert!(replay.is_ok(), "{replay:?}");
     }
 
     /// Stint 1716: a launch is checked against what the run could execute,
