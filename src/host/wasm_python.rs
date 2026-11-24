@@ -871,6 +871,17 @@ pub struct PythonLaunchConfig {
 
 impl PythonLaunchConfig {
     pub fn from_manifest_file(plugin_dir: &Path) -> Result<Option<Self>, WasmPythonError> {
+        let resolved =
+            crate::app::registry::resolve_plugin_dir(plugin_dir).map_err(WasmPythonError::Entry)?;
+        Self::from_resolved(&resolved)
+    }
+
+    /// The launch config for a resolved plugin: its canonical root and the
+    /// exact entry the resolver checked (stint 1398).
+    pub(crate) fn from_resolved(
+        resolved: &crate::app::registry::ResolvedPlugin,
+    ) -> Result<Option<Self>, WasmPythonError> {
+        let plugin_dir = resolved.root.as_path();
         let manifest_path = plugin_dir.join("manifest.toml");
         let raw = std::fs::read_to_string(&manifest_path).map_err(|source| {
             WasmPythonError::ReadManifest {
@@ -901,12 +912,7 @@ impl PythonLaunchConfig {
         if !(entry.ends_with(".py") || entry.ends_with(".pyc")) {
             return Err(WasmPythonError::InvalidEntry { entry });
         }
-        let entry_path = crate::app::registry::resolve_entry(
-            &plugin_dir.to_path_buf(),
-            &entry,
-            crate::app::registry::ManifestType::Python,
-        )
-        .map_err(WasmPythonError::Entry)?;
+        let entry_path = resolved.entry.clone();
         let module_name = entry_path
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -1072,11 +1078,20 @@ impl WasmPythonRuntime {
         let thread_stdout = stdout.clone();
         let thread_stderr = stderr.clone();
         let plugin_dir = config.plugin_dir.clone();
+        // The entry runs beneath /app at its path inside the plugin folder, so a
+        // nested entry runs the exact file that was resolved (stint 1398).
         let entry_name = config
             .entry
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| WasmPythonError::RuntimeStart("Python entry is not UTF-8".to_string()))?
+            .strip_prefix(&config.plugin_dir)
+            .ok()
+            .and_then(|relative| relative.to_str())
+            .ok_or_else(|| {
+                WasmPythonError::RuntimeStart(format!(
+                    "Python entry {} is not a UTF-8 path inside {}",
+                    config.entry.display(),
+                    config.plugin_dir.display()
+                ))
+            })?
             .to_string();
         let plugin_id = config.plugin_id.clone();
         let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -9216,8 +9231,10 @@ mod tests {
             else {
                 panic!("expected a Python launch spec, got {launch:?}");
             };
+            // The launch records the resolved (canonical) plugin root.
             assert_eq!(
-                recorded_dir, &plugin_dir,
+                recorded_dir,
+                &crate::platform::path::canonical_or_self(&plugin_dir),
                 "launch context must name the real plugin_dir"
             );
             assert!(args.is_empty());

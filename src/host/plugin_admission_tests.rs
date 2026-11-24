@@ -787,3 +787,119 @@ fn a_workspace_pack_naming_a_bundled_plugin_reports_the_conflict() {
     assert!(error.contains("bundled with Plexi"), "{error}");
     assert!(!rig.repo_plugins().join("todo").exists(), "nothing written");
 }
+
+/// A WASM plugin folder named `id` whose entry is a copy of the timer fixture.
+fn write_wasm_plugin(parent: &Path, id: &str) -> PathBuf {
+    let dir = parent.join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/timer-only.wasm"),
+        dir.join("component.wasm"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("manifest.toml"),
+        format!(
+            "schema_version = 2\n\n[plugin]\nid = \"{id}\"\nname = \"{id}\"\nversion = \"0.0.1\"\n\n[plugin.capabilities]\ncapabilities = [\"timer\"]\n\n[runtime]\nkind = \"wasm\"\nentry = \"component.wasm\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
+        ),
+    )
+    .unwrap();
+    dir
+}
+
+/// Step 1: a saved layout's id is an assertion. Profile plugin `alpha` holds an
+/// Allow; a saved pane names `alpha` but points at the component plugin `beta`
+/// owns. The restore fails on identity before any grant, state or import under
+/// `alpha` is touched.
+#[test]
+fn restore_with_a_saved_id_that_does_not_own_the_component_is_refused() {
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+    let h = crate::testing::HostHarness::new();
+    let profile = h.profile_dir().to_path_buf();
+    let admission = PluginAdmission::new(&profile, &profile.join("plugins"));
+    let alpha = write_wasm_plugin(&profile.join("plugins"), "alpha");
+    admission.allow_copy_for_test("alpha", &alpha);
+    let elsewhere = tempfile::tempdir().unwrap();
+    let beta = write_wasm_plugin(elsewhere.path(), "beta");
+    let monitor = PermissionMonitor::for_profile(&profile).unwrap();
+    let grants_before = monitor.list_entries().len();
+    let workspace = h.workspace_root();
+    let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
+    let restored = crate::pane_ops::create::restore_view_pane_in_profile(
+        "alpha",
+        &crate::workspace::SavedViewLaunch::Wasm {
+            wasm_path: beta.join("component.wasm"),
+            args: Vec::new(),
+        },
+        crate::pane_ops::create::RestoreTarget {
+            pane_id: 4343,
+            context_id: h.app.windows[0].context_id,
+            workspace_root: workspace.clone(),
+            context_root: &workspace,
+            saved_name: None,
+        },
+        &colors,
+        &profile,
+    );
+    let error = restored.err().expect("identity mismatch refuses");
+    assert!(error.contains("belongs to 'beta'"), "{error}");
+    assert_eq!(monitor.list_entries().len(), grants_before, "no grant touched");
+    assert!(
+        !profile.join("wasm-state").join("alpha").exists(),
+        "no state opened under alpha"
+    );
+}
+
+/// Step 1: a Python plugin whose entry is nested runs that exact file under
+/// /app, not a same-named file at the plugin root.
+#[test]
+fn a_nested_python_entry_runs_the_exact_resolved_file() {
+    let mut h = crate::testing::HostHarness::new();
+    let parent = tempfile::tempdir().unwrap();
+    let dir = parent.path().join("nested-entry");
+    std::fs::create_dir_all(dir.join("pkg")).unwrap();
+    std::fs::write(
+        dir.join("manifest.toml"),
+        "schema_version = 2\n\n[plugin]\nid = \"nested-entry\"\nname = \"nested-entry\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"pkg/main.py\"\n\n[[contributes.views]]\nid = \"nested-entry.main\"\ndefault = true\n",
+    )
+    .unwrap();
+    let body = |title: &str| {
+        format!(
+            "from plexi_sdk.effects import SetTitle\nfrom plexi_sdk.ui import Column\n\n\
+             def init(size, args):\n    return [SetTitle({title:?})]\n\n\
+             def update(event):\n    return []\n\n\
+             def view():\n    return Column([])\n"
+        )
+    };
+    std::fs::write(dir.join("pkg/main.py"), body("nested")).unwrap();
+    std::fs::write(dir.join("main.py"), body("top")).unwrap();
+    h.app.trust_plugin_path_for_test(&dir.to_string_lossy());
+    let pane = h
+        .app
+        .launch_view_by_path_with_layout(&dir.to_string_lossy(), None, None, &[])
+        .expect("launch")
+        .expect("pane id");
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let title = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane)
+            .and_then(|pane| pane.as_view())
+            .and_then(|view| match &view.runtime {
+                crate::host::pane::ViewRuntime::Python(runtime) => Some(runtime.display_name()),
+                _ => None,
+            });
+        if title.as_deref() == Some("nested") {
+            break;
+        }
+        assert_ne!(title.as_deref(), Some("top"), "ran the root main.py");
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "nested entry never ran (title {title:?})"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}

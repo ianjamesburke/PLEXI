@@ -1543,7 +1543,133 @@ pub(crate) fn resolve_entry(
         ));
     }
 
-    Ok(path)
+    Ok(resolved)
+}
+
+/// A plugin resolved for a live start (stint 1398): who owns the code, its
+/// runtime, and exactly which file runs. Built by [`resolve_plugin_dir`] or
+/// [`resolve_component`] from what is on disk now, never from a cached entry
+/// or a saved id.
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedPlugin {
+    /// The owning manifest's `[plugin] id`, or a standalone component's name.
+    pub owner: String,
+    pub kind: ManifestType,
+    /// Canonical plugin root: the manifest's folder, or a standalone
+    /// component's folder.
+    pub root: PathBuf,
+    /// Canonical entry file, a regular file inside `root`.
+    pub entry: PathBuf,
+    /// A `.wasm` with no owning manifest.
+    pub standalone: bool,
+    /// The parsed manifest, for a manifest-backed plugin.
+    pub installed: Option<InstalledPlugin>,
+}
+
+impl ResolvedPlugin {
+    /// The folder whose trust admits this plugin when it is not a profile
+    /// install: the folder holding the plugin root, or a standalone
+    /// component's own folder.
+    pub(crate) fn trust_folder(&self) -> PathBuf {
+        if self.standalone {
+            return self.root.clone();
+        }
+        self.root
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.root.clone())
+    }
+}
+
+/// Resolve the manifest-backed plugin at `dir`: parse its manifest now and
+/// return its owner, runtime, canonical root and contained entry.
+pub(crate) fn resolve_plugin_dir(dir: &Path) -> Result<ResolvedPlugin, String> {
+    let root = std::fs::canonicalize(dir)
+        .map_err(|error| format!("plugin folder {} cannot be resolved: {error}", dir.display()))?;
+    let installed = PluginRegistry::empty().load_plugin(&root)?;
+    Ok(ResolvedPlugin {
+        owner: installed.manifest.id.clone(),
+        kind: installed.manifest.manifest_type,
+        root,
+        entry: installed.bin_path.clone(),
+        standalone: false,
+        installed: Some(installed),
+    })
+}
+
+/// Resolve the owner of the WASM component at `component`. The nearest
+/// enclosing manifest owns it only when its validated entry is this exact file;
+/// a component inside a plugin it is not the entry of, or under a manifest that
+/// does not load, is refused. A component with no enclosing manifest is
+/// standalone and named by its file.
+pub(crate) fn resolve_component(component: &Path) -> Result<ResolvedPlugin, String> {
+    let entry = std::fs::canonicalize(component).map_err(|error| {
+        format!(
+            "WASM component {} cannot be resolved: {error}",
+            component.display()
+        )
+    })?;
+    if !entry.is_file() {
+        return Err(format!(
+            "WASM component {} is not a file",
+            entry.display()
+        ));
+    }
+    let manifest_root = entry
+        .ancestors()
+        .skip(1)
+        .find(|dir| dir.join("manifest.toml").is_file());
+    if let Some(root) = manifest_root {
+        let resolved = resolve_plugin_dir(root).map_err(|error| {
+            format!(
+                "WASM component {} sits under the plugin at {}, whose manifest does not load: {error}",
+                entry.display(),
+                root.display()
+            )
+        })?;
+        if resolved.entry != entry {
+            return Err(format!(
+                "WASM component {} sits inside plugin '{}' at {} but is not its declared entry",
+                entry.display(),
+                crate::host::guest_text::shown(&resolved.owner),
+                resolved.root.display()
+            ));
+        }
+        return Ok(resolved);
+    }
+    let owner = bare_wasm_plugin_id(&entry)?;
+    let root = entry
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| format!("WASM component {} has no folder", entry.display()))?;
+    Ok(ResolvedPlugin {
+        owner,
+        kind: ManifestType::Wasm,
+        root,
+        entry,
+        standalone: true,
+        installed: None,
+    })
+}
+
+/// A standalone `.wasm` is named by its file; the name must be a plugin id.
+pub(crate) fn bare_wasm_plugin_id(component: &Path) -> Result<String, String> {
+    let stem = component
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match crate::host::state_scope::validate_plugin_id(&stem) {
+        Ok(()) => Ok(stem),
+        Err(_) => {
+            let shown = crate::host::guest_text::shown(&stem);
+            log::info!("wasm launch refused: file name '{shown}' is not a valid plugin id");
+            Err(format!(
+                "cannot launch '{shown}': a .wasm without a manifest is named by its file, and \
+                 plugin ids use only A-Z a-z 0-9 . _ - (no leading '.', no '..'); rename the \
+                 file or add a manifest.toml"
+            ))
+        }
+    }
 }
 
 /// Walk up from `start` looking for a `plugins/dev/` directory (the PLEXI repo's

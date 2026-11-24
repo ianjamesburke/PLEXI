@@ -465,6 +465,25 @@ pub(crate) struct RestoredViewPane {
     pub hot_reload_dir: PathBuf,
 }
 
+/// A saved layout's plugin id is only an assertion: refuse the restore when
+/// the plugin on disk now has another owner (stint 1398).
+fn check_saved_owner(
+    saved_id: &str,
+    resolved: &crate::app::registry::ResolvedPlugin,
+) -> Result<(), String> {
+    if resolved.owner == saved_id {
+        return Ok(());
+    }
+    let message = format!(
+        "the saved layout names plugin '{}', but {} belongs to '{}'",
+        crate::host::guest_text::shown(saved_id),
+        resolved.entry.display(),
+        crate::host::guest_text::shown(&resolved.owner)
+    );
+    log::info!("workspace_restore: refused: {message}");
+    Err(message)
+}
+
 /// The admission check for `profile_dir`'s own plugins folder.
 fn profile_admission(profile_dir: &Path) -> crate::host::plugin_admission::PluginAdmission {
     crate::host::plugin_admission::PluginAdmission::new(profile_dir, &profile_dir.join("plugins"))
@@ -520,13 +539,14 @@ pub(crate) fn restore_view_pane_in_profile(
                     plugin_dir.display()
                 ));
             }
-            let config =
-                crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(plugin_dir)
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
+            let resolved = crate::app::registry::resolve_plugin_dir(plugin_dir)?;
+            check_saved_owner(manifest_id, &resolved)?;
+            let config = crate::host::wasm_python::PythonLaunchConfig::from_resolved(&resolved)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
             profile_admission(profile_dir).admit_or_ask(
                 &config.plugin_id,
-                plugin_dir,
+                &resolved.root,
                 crate::host::plugin_admission::Launch::ExplicitPath,
             )?;
             let permissions = gate_plugin_permissions_in_profile(
@@ -578,7 +598,7 @@ pub(crate) fn restore_view_pane_in_profile(
             })
         }
         crate::workspace::SavedViewLaunch::Wasm { wasm_path, args } => {
-            use crate::app::registry::{ManifestType, PluginRegistry};
+            use crate::app::registry::ManifestType;
             use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
             use crate::host::wasm_view::{StateStore, WasmView};
 
@@ -594,31 +614,23 @@ pub(crate) fn restore_view_pane_in_profile(
                     wasm_path.display()
                 ));
             }
-            let registry =
-                PluginRegistry::load_with_global(&workspace_root, &profile_dir.join("plugins"));
-            // A saved layout names a path; admission decides the tree that
-            // holds it, as a fresh launch does.
-            let admitted_dir = registry
-                .get(manifest_id)
-                .filter(|installed| {
-                    crate::platform::path::canonical_or_self(&installed.bin_path)
-                        == crate::platform::path::canonical_or_self(wasm_path)
-                })
-                .map_or_else(
-                    || wasm_path.clone(),
-                    |installed| installed.plugin_dir.clone(),
-                );
+            // The saved id is an assertion: the component's actual owner is
+            // resolved from disk and must match before any grant, state or
+            // import under that id is touched (stint 1398).
+            let resolved = crate::app::registry::resolve_component(wasm_path)?;
+            check_saved_owner(manifest_id, &resolved)?;
+            let admitted_path = if resolved.standalone {
+                resolved.entry.clone()
+            } else {
+                resolved.root.clone()
+            };
             profile_admission(profile_dir).admit_or_ask(
                 manifest_id,
-                &admitted_dir,
+                &admitted_path,
                 crate::host::plugin_admission::Launch::ExplicitPath,
             )?;
-            match registry.get(manifest_id) {
-                Some(installed)
-                    if installed.manifest.manifest_type == ManifestType::Wasm
-                        && crate::platform::path::canonical_or_self(&installed.bin_path)
-                            == crate::platform::path::canonical_or_self(wasm_path) =>
-                {
+            match resolved.installed.as_ref() {
+                Some(installed) if installed.manifest.manifest_type == ManifestType::Wasm => {
                     // Mint non-sensitive manifest capabilities before the WASM
                     // sets collect stored rows, just as an installed launch does.
                     // Import-derived grants below still require sensitive review.
@@ -632,9 +644,9 @@ pub(crate) fn restore_view_pane_in_profile(
                 }
                 installed => {
                     let reason = if installed.is_some() {
-                        "installed manifest is not WASM or its entry does not match saved wasm_path"
+                        "installed manifest is not WASM"
                     } else {
-                        "no installed manifest found"
+                        "standalone component with no manifest"
                     };
                     log::info!(
                         "plugin::{manifest_id}: restore minted no manifest capabilities: {reason}"
@@ -3413,7 +3425,7 @@ impl PlexiApp {
                 // Already admitted: the host view holds only admitted plugins.
                 Some(id) => id,
                 None => {
-                    let id = bare_wasm_plugin_id(&plugin_dir)?;
+                    let id = crate::app::registry::bare_wasm_plugin_id(&plugin_dir)?;
                     self.registries.admission().admit_or_ask(
                         &id,
                         &plugin_dir,
@@ -4386,25 +4398,6 @@ fn wasm_state_path_in_profile(
 /// name, and that id is its permission principal and state key. Rewriting the
 /// name would let two files share one id and so one set of grants, so a name
 /// that is not a valid plugin id is refused instead (stint 1344).
-fn bare_wasm_plugin_id(plugin_dir: &Path) -> Result<String, String> {
-    let stem = plugin_dir
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    match crate::host::state_scope::validate_plugin_id(&stem) {
-        Ok(()) => Ok(stem),
-        Err(_) => {
-            let shown = crate::host::guest_text::shown(&stem);
-            log::info!("wasm launch refused: file name '{shown}' is not a valid plugin id");
-            Err(format!(
-                "cannot launch '{shown}': a .wasm without a manifest is named by its file, and \
-                 plugin ids use only A-Z a-z 0-9 . _ - (no leading '.', no '..'); rename the \
-                 file or add a manifest.toml"
-            ))
-        }
-    }
-}
-
 fn sanitize_wasm_path_component(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
@@ -4477,10 +4470,10 @@ mod tests {
     /// share it: an invalid name is refused, never rewritten.
     #[test]
     fn bare_wasm_ids_are_refused_not_rewritten() {
-        let ok = bare_wasm_plugin_id(Path::new("/plugins/a_b.wasm")).expect("valid name");
+        let ok = crate::app::registry::bare_wasm_plugin_id(Path::new("/plugins/a_b.wasm")).expect("valid name");
         assert_eq!(ok, "a_b");
         for name in ["a b", "a\u{1b}b", "..ab", "a..b", ".hidden"] {
-            let error = bare_wasm_plugin_id(&Path::new("/plugins").join(format!("{name}.wasm")))
+            let error = crate::app::registry::bare_wasm_plugin_id(&Path::new("/plugins").join(format!("{name}.wasm")))
                 .expect_err(name);
             assert!(
                 error.contains("rename the file or add a manifest.toml"),
@@ -4746,13 +4739,15 @@ default = true
             h.profile_dir(),
         );
         if matches!(manifest_case, "missing" | "mismatch" | "unknown") {
-            let reason = if manifest_case == "mismatch" {
-                "installed manifest is not WASM or its entry does not match saved wasm_path"
-            } else {
-                "no installed manifest found"
-            };
-            assert!(logs.records().contains(&(log::Level::Info,
-                format!("plugin::com.plexi.timer-only: restore minted no manifest capabilities: {reason}"))));
+            // The saved id does not own the saved component (stint 1398): the
+            // restore fails before any grant, state or timer under that id.
+            let error = restored.err().expect("an unowned component is refused");
+            assert!(error.contains("belongs to"), "{error}");
+            assert!(!logs
+                .records()
+                .iter()
+                .any(|(_, line)| line.contains("restore minted")));
+            return;
         }
         if requires_review {
             assert_eq!(
@@ -4815,17 +4810,17 @@ default = true
     }
 
     #[test]
-    fn restore_wasm_invalid_manifest_logs_and_denies_timer() {
+    fn restore_wasm_invalid_manifest_with_an_unowned_component_is_refused() {
         restore_wasm_timer_case("timer-only", false, "unknown");
     }
 
     #[test]
-    fn restore_wasm_missing_manifest_logs_and_denies_timer() {
+    fn restore_wasm_without_a_manifest_under_a_saved_id_is_refused() {
         restore_wasm_timer_case("timer-only", false, "missing");
     }
 
     #[test]
-    fn restore_wasm_mismatched_manifest_logs_and_denies_timer() {
+    fn restore_wasm_component_the_manifest_does_not_own_is_refused() {
         restore_wasm_timer_case("timer-only", false, "mismatch");
     }
 
