@@ -3099,7 +3099,7 @@ impl FileBrowserView {
         let response = ActionModal::new("file_browser_move_to_trash", "Move to Trash", &actions)
             .focus_surface(crate::ui::focus::SurfaceKey::Pane(pane_key))
             .width(style::MODAL_WIDTH_SM)
-            .destructive_input(synthetic_input)
+            .destructive_input(synthetic_input, paths)
             .show(ctx, colors, |ui| {
                 crate::ui::typography::modal_body(ui, &question, colors);
             });

@@ -44,7 +44,9 @@ fn ask_to_close(h: &mut HostHarness) {
     assert!(h.app.pending_close, "the close asks first");
 }
 
+/// A deliberate Enter: the dialog has waited out its arm delay (stint 1513).
 fn confirm(h: &mut HostHarness) {
+    h.app.arm_destructive_dialogs_for_test();
     h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
     h.run_frames(2);
 }

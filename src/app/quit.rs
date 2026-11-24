@@ -2012,6 +2012,7 @@ mod tests {
         );
         let (mut h, _path) = quit_with_unsaveable_workspace();
         h.run_frames(2);
+        h.app.arm_destructive_dialogs_for_test();
         h.press_key(egui::Key::Q, egui::Modifiers::NONE);
         assert!(h.app.quit_coordinator.save_waived, "Q quits without saving");
         assert!(h.app.quit_coordinator.save_failure().is_none());

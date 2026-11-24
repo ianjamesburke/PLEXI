@@ -34,7 +34,7 @@ impl PlexiApp {
     fn draw_quit_save_failure(&mut self, ctx: &egui::Context, cause: &str) {
         let actions = quit_save_failure_actions();
         let response = quit_save_failure_modal(&actions)
-            .destructive_input(self.synthetic_input_frame)
+            .destructive_input(self.synthetic_input_frame, "quit_save_failure")
             .show(ctx, &self.colors, |ui| {
                 crate::ui::typography::caption(ui, cause, &self.colors);
                 crate::ui::typography::caption(
@@ -103,7 +103,13 @@ impl PlexiApp {
                         crate::app::FocusKind::ConfirmClose,
                     ),
                 ))
-                .destructive_input(self.synthetic_input_frame)
+                .destructive_input(
+                    self.synthetic_input_frame,
+                    (
+                        self.pending_quit,
+                        self.close_confirm_target.as_ref().map(|target| target.pane),
+                    ),
+                )
                 .width(super::MODAL_WIDTH)
                 .show(ctx, &self.colors, |ui| {
                     crate::ui::typography::caption(
@@ -124,10 +130,12 @@ impl PlexiApp {
             self.resolve_quit_confirmation(confirmed);
         } else if confirmed {
             self.pending_close = false;
+            // Taken first: a batch installs the next pane's target, which
+            // must survive to name that dialog and key its own arm delay.
+            let asked = self.close_confirm_target.take();
             if !self.confirm_close_batch_pane() {
-                self.confirm_single_close();
+                self.confirm_single_close(asked);
             }
-            self.close_confirm_target = None;
         } else if cancelled {
             self.pending_close = false;
             self.close_confirm_target = None;
@@ -224,7 +232,7 @@ impl PlexiApp {
                         crate::app::FocusKind::ContextCloseConfirm,
                     ),
                 ))
-                .destructive_input(self.synthetic_input_frame)
+                .destructive_input(self.synthetic_input_frame, state.context_id)
                 .width(super::MODAL_WIDTH)
                 .show(ctx, &colors, |ui| {
                     for item in &state.items {

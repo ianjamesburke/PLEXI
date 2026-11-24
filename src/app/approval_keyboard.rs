@@ -4,7 +4,9 @@ use super::view_trait::KeyDisposition;
 use super::{FocusKind, PlexiApp};
 use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
 use std::collections::HashSet;
-use crate::broker::consent::{consent_request_key, ConsentDecision, ConsentGuard, ARM_DELAY};
+use crate::broker::consent::{
+    consent_request_key, ConsentDecision, ConsentGuard, DecisionFailure, ARM_DELAY,
+};
 use std::time::{Duration, Instant};
 
 #[derive(Default)]
@@ -15,7 +17,7 @@ pub(super) struct ApprovalKeyboard {
     pub confirm_always: bool,
     /// Last decision failure `(request_id, reason)` so the banner can display
     /// an explicit error message while keeping the ask open and actionable.
-    pub last_error: Option<(String, String)>,
+    pub last_error: Option<(String, crate::broker::consent::DecisionFailure)>,
     /// Decision keys remain owned after the banner closes until their key-up.
     /// This stops OS auto-repeat from being delivered to the previously focused pane.
     held_decision_keys: HashSet<egui::Key>,
@@ -57,7 +59,8 @@ impl ApprovalKeyboard {
         refuses: bool,
         now: Instant,
         synthetic: bool,
-    ) -> Result<crate::broker::consent::DecisionEvidence, String> {
+    ) -> Result<crate::broker::consent::DecisionEvidence, crate::broker::consent::ConsentRefusal>
+    {
         self.guard.witness(ConsentDecision {
             displayed: consent_request_key(id),
             target: id,
@@ -155,6 +158,31 @@ impl PlexiApp {
         }
     }
 
+    /// A fresh key press before the focused request armed (stint 1735): the
+    /// guard's own refusal is recorded so the press is answered, not
+    /// swallowed. Escape and chords are not decisions.
+    fn refuse_unarmed_press(&mut self, id: &str, owned: &PlexiInput, now: Instant) {
+        let pressed = owned.events().iter().any(|event| {
+            matches!(event,
+                egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
+                    if *key != egui::Key::Escape
+                        && !(modifiers.command || modifiers.ctrl || modifiers.alt)
+            )
+        });
+        if !pressed {
+            return;
+        }
+        if let Err(refusal) = self.approval_keyboard.witness(
+            id,
+            "early press",
+            false,
+            now,
+            self.synthetic_input_frame,
+        ) {
+            self.approval_keyboard.last_error = Some((id.to_string(), refusal.into()));
+        }
+    }
+
     pub(super) fn leave_approval(&mut self) {
         self.approval_keyboard.leave_focus();
         self.focus_stack.dismiss(FocusKind::ApprovalBanner);
@@ -245,6 +273,7 @@ impl PlexiApp {
             return KeyDisposition::Consumed;
         }
         if !self.approval_keyboard.armed(now) {
+            self.refuse_unarmed_press(&id, &owned, now);
             return KeyDisposition::Consumed;
         }
         // Exact modifiers and fresh presses only: held keys cannot become consent.
@@ -316,7 +345,12 @@ impl PlexiApp {
                     now,
                     self.synthetic_input_frame,
                 )
-                .and_then(|evidence| monitor.decide_pending(&evidence, &id, choice));
+                .map_err(DecisionFailure::from)
+                .and_then(|evidence| {
+                    monitor
+                        .decide_pending(&evidence, &id, choice)
+                        .map_err(DecisionFailure::from)
+                });
             match decided {
                 Ok(()) => {
                     log::info!("approval: decided id={id} decision={choice:?} via=keyboard");
@@ -342,6 +376,7 @@ impl PlexiApp {
     ) {
         use crate::broker::gate::NeedsYouKind as K;
         if !self.approval_keyboard.armed(now) {
+            self.refuse_unarmed_press(&record.id, owned, now);
             return;
         }
         let Some(key) = owned.events().iter().find_map(|event| match event {
@@ -371,8 +406,14 @@ impl PlexiApp {
             egui::Key::A if !is_question => self
                 .approval_keyboard
                 .witness(id, "approve", false, now, self.synthetic_input_frame)
-                .and_then(|evidence| self.approve_from_desktop(evidence, id, "approval keyboard")),
-            egui::Key::D if !is_question => self.refuse_from_desktop(id, "approval keyboard"),
+                .map_err(DecisionFailure::from)
+                .and_then(|evidence| {
+                    self.approve_from_desktop(evidence, id, "approval keyboard")
+                        .map_err(DecisionFailure::from)
+                }),
+            egui::Key::D if !is_question => self
+                .refuse_from_desktop(id, "approval keyboard")
+                .map_err(DecisionFailure::from),
             egui::Key::Enter if is_question && choices.is_empty() => {
                 let pane = record
                     .details
@@ -404,8 +445,10 @@ impl PlexiApp {
                     Some(answer) => self
                         .approval_keyboard
                         .witness(id, answer, false, now, self.synthetic_input_frame)
+                        .map_err(DecisionFailure::from)
                         .and_then(|evidence| {
                             self.answer_from_desktop(evidence, id, answer, "approval keyboard")
+                                .map_err(DecisionFailure::from)
                         }),
                     None => return,
                 }
@@ -496,6 +539,18 @@ mod tests {
             now + ARM_DELAY - Duration::from_millis(1),
         );
         assert_eq!(monitor.list_pending().len(), 2);
+        // Stint 1735: the early press is refused by the guard, not swallowed.
+        assert_eq!(
+            h.app
+                .approval_keyboard
+                .last_error
+                .as_ref()
+                .map(|(id, error)| (id.as_str(), error.to_string())),
+            Some((
+                first.as_str(),
+                "Wait a moment, then press again.".to_string()
+            ))
+        );
         h.app.approval_key_at(
             &mut input(egui::Key::Escape, egui::Modifiers::NONE),
             now + ARM_DELAY,
@@ -890,6 +945,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .1
+            .to_string()
             .contains("unknown"));
         h.app.leave_approval();
 
@@ -998,8 +1054,8 @@ mod tests {
                 .approval_keyboard
                 .last_error
                 .as_ref()
-                .map(|(id, msg)| (id.as_str(), msg.as_str())),
-            Some((first.as_str(), "audit write failed"))
+                .map(|(id, msg)| (id.as_str(), msg.to_string())),
+            Some((first.as_str(), "audit write failed".to_string()))
         );
 
         // Once the underlying error clears, pressing `a` again succeeds and clears last_error.

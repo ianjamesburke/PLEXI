@@ -73,6 +73,66 @@ pub(crate) struct ConsentDecision<'a> {
     pub synthetic: bool,
 }
 
+/// Why a [`ConsentGuard`] issued no evidence (stint 1735).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConsentRefusal {
+    NotDisplayed,
+    Synthetic,
+    /// A real press before the arm delay ended: the person should retry.
+    NotArmed,
+}
+
+impl std::fmt::Display for ConsentRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotDisplayed => "Ignored: this request is not the one on screen.",
+            Self::Synthetic => "Ignored: only the person at the desktop can do this.",
+            Self::NotArmed => "Wait a moment, then press again.",
+        })
+    }
+}
+
+/// What a decision surface shows when a decision did not apply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DecisionFailure {
+    Refused(ConsentRefusal),
+    Failed(String),
+}
+
+impl DecisionFailure {
+    /// The press was early, not wrong: nothing failed.
+    pub(crate) fn is_wait(&self) -> bool {
+        matches!(self, Self::Refused(ConsentRefusal::NotArmed))
+    }
+}
+
+impl From<ConsentRefusal> for DecisionFailure {
+    fn from(refusal: ConsentRefusal) -> Self {
+        Self::Refused(refusal)
+    }
+}
+
+impl From<String> for DecisionFailure {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+
+impl From<&str> for DecisionFailure {
+    fn from(error: &str) -> Self {
+        Self::Failed(error.to_string())
+    }
+}
+
+impl std::fmt::Display for DecisionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(refusal) => refusal.fmt(f),
+            Self::Failed(error) => f.write_str(error),
+        }
+    }
+}
+
 /// The guard key of a request known by a string id.
 pub(crate) fn consent_request_key(id: &str) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -114,15 +174,6 @@ pub(crate) struct ConsentInput {
 }
 
 impl ConsentInput {
-    /// The same check with no arm delay (stint 1513): a destructive dialog
-    /// action takes a fresh, real press at once, never an injected one.
-    pub(crate) fn without_arm_delay(synthetic: bool) -> Self {
-        Self {
-            armed: true,
-            synthetic,
-        }
-    }
-
     /// Whether an action decides this frame: nothing on a synthetic frame;
     /// a refusal (deny, dismiss) any time; an approval only once armed.
     pub(crate) fn admits(self, refuses: bool) -> bool {
@@ -133,7 +184,7 @@ impl ConsentInput {
 /// Arms one consent dialog's current request: the delay starts when the
 /// request is first shown, and again whenever it comes back after a frame in
 /// which it was not shown (hidden, unfocused, covered).
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub(crate) struct ConsentGuard {
     request: Option<u64>,
     since: Option<Instant>,
@@ -192,7 +243,10 @@ impl ConsentGuard {
     /// Evidence for one decision, only when this guard is showing exactly
     /// the request being decided and its input is admitted: real input, and
     /// for an approval, armed. The one way to get a [`DecisionEvidence`].
-    pub(crate) fn witness(&self, decision: ConsentDecision<'_>) -> Result<DecisionEvidence, String> {
+    pub(crate) fn witness(
+        &self,
+        decision: ConsentDecision<'_>,
+    ) -> Result<DecisionEvidence, ConsentRefusal> {
         let ConsentDecision {
             displayed,
             target,
@@ -203,13 +257,19 @@ impl ConsentGuard {
         } = decision;
         if self.request != Some(displayed) {
             log::info!("consent_guard: refused {choice:?} on {target}: not the displayed request");
-            return Err("Ignored: this request is not the one on screen.".to_string());
+            return Err(ConsentRefusal::NotDisplayed);
         }
-        if !self.input(now, synthetic).admits(refuses) {
+        let input = self.input(now, synthetic);
+        if !input.admits(refuses) {
+            let refusal = if input.synthetic {
+                ConsentRefusal::Synthetic
+            } else {
+                ConsentRefusal::NotArmed
+            };
             log::info!(
-                "consent_guard: refused {choice:?} on {target} synthetic={synthetic} refuses={refuses}"
+                "consent_guard: refused {choice:?} on {target} reason={refusal:?} refuses={refuses}"
             );
-            return Err("Ignored: only the person at the desktop can do this.".to_string());
+            return Err(refusal);
         }
         log::info!("consent_guard: witnessed {choice:?} on {target}");
         Ok(DecisionEvidence {
@@ -247,7 +307,16 @@ mod tests {
         let mut guard = ConsentGuard::default();
         assert!(guard.witness(decision(7, false, false, now)).is_err(), "nothing shown");
         guard.present(7, 1, now);
-        assert!(guard.witness(decision(7, false, false, now)).is_err(), "not armed");
+        assert_eq!(
+            guard.witness(decision(7, false, false, now)).unwrap_err(),
+            ConsentRefusal::NotArmed,
+            "not armed"
+        );
+        assert_eq!(
+            guard.witness(decision(7, false, true, now)).unwrap_err(),
+            ConsentRefusal::Synthetic,
+            "synthetic outranks not armed"
+        );
         assert!(guard.witness(decision(7, true, false, now)).is_ok(), "refusal counts at once");
         let armed = now + ARM_DELAY;
         assert!(guard.witness(decision(8, false, false, armed)).is_err(), "another request");

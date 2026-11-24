@@ -16,6 +16,7 @@
 use crate::app::input_router::PlexiInput;
 use crate::app::view_trait::KeyDisposition;
 use crate::app::PlexiApp;
+use crate::broker::consent::DecisionFailure;
 use crate::broker::gate::{ApprovalChoice, NeedsYouKind, PermissionMonitor};
 use crate::ui::card_block::{layout_card, paint_card, wrap_text, CardForm, CardSpec, CardState};
 use crate::ui::hints::{HintBar, HintGroup};
@@ -1729,6 +1730,22 @@ impl PlexiApp {
             .backdate(crate::broker::consent::ARM_DELAY * 2);
     }
 
+    /// Test hook: every destructive dialog on screen has waited out its arm
+    /// delay (stint 1513).
+    #[cfg(test)]
+    pub(crate) fn arm_destructive_dialogs_for_test(&self) {
+        crate::ui::dialog::arm_destructive_dialogs_for_test(&self.ctx);
+    }
+
+    /// Test hook: the refusal or failure the overlay is showing.
+    #[cfg(test)]
+    pub(crate) fn decision_overlay_error_for_test(&self) -> Option<String> {
+        self.approval_keyboard
+            .last_error
+            .as_ref()
+            .map(|(_, error)| error.to_string())
+    }
+
     /// Evidence from the overlay's guard for one decision on the ask it shows.
     fn witness_overlay_decision(
         &self,
@@ -1736,7 +1753,8 @@ impl PlexiApp {
         target: &str,
         choice: &str,
         refuses: bool,
-    ) -> Result<crate::broker::consent::DecisionEvidence, String> {
+    ) -> Result<crate::broker::consent::DecisionEvidence, crate::broker::consent::ConsentRefusal>
+    {
         self.attention_queue
             .decision_guard
             .witness(crate::broker::consent::ConsentDecision {
@@ -1781,7 +1799,7 @@ impl PlexiApp {
                     Err(error) => {
                         log::error!("decision_overlay: {error}");
                         self.approval_keyboard.last_error =
-                            Some((request_id.clone(), error.to_string()));
+                            Some((request_id.clone(), error.to_string().into()));
                         return false;
                     }
                 };
@@ -1797,7 +1815,12 @@ impl PlexiApp {
                         &format!("{choice:?}"),
                         choice == ApprovalChoice::Deny,
                     )
-                    .and_then(|evidence| monitor.decide_pending(&evidence, request_id, choice));
+                    .map_err(DecisionFailure::from)
+                    .and_then(|evidence| {
+                        monitor
+                            .decide_pending(&evidence, request_id, choice)
+                            .map_err(DecisionFailure::from)
+                    });
                 match decided {
                     Ok(()) => self.approval_keyboard.last_error = None,
                     Err(error) => {
@@ -1829,6 +1852,7 @@ impl PlexiApp {
                             &option.label,
                             false,
                         )
+                        .map_err(DecisionFailure::from)
                         .and_then(|evidence| {
                             self.answer_from_desktop(
                                 evidence,
@@ -1836,17 +1860,21 @@ impl PlexiApp {
                                 &option.label,
                                 "decision overlay",
                             )
+                            .map_err(DecisionFailure::from)
                         })
                     } else if option.key != "deny"
                         && !option.label.eq_ignore_ascii_case("deny")
                         && !option.label.eq_ignore_ascii_case("dismiss")
                     {
                         self.witness_overlay_decision(&overlay.ask_id, request_id, "approve", false)
+                            .map_err(DecisionFailure::from)
                             .and_then(|evidence| {
                                 self.approve_from_desktop(evidence, request_id, "decision overlay")
+                                    .map_err(DecisionFailure::from)
                             })
                     } else {
                         self.refuse_from_desktop(request_id, "decision overlay")
+                            .map_err(DecisionFailure::from)
                     };
                     match result {
                         Ok(()) => self.approval_keyboard.last_error = None,
@@ -1891,7 +1919,8 @@ impl PlexiApp {
                             .remove(&overlay.ask_id);
                         self.approval_keyboard.last_error = Some((
                             overlay.ask_id.clone(),
-                            format!("Could not record this decision; no action was sent: {error}"),
+                            format!("Could not record this decision; no action was sent: {error}")
+                                .into(),
                         ));
                         log::warn!("decision_overlay: notification attempt not recorded id={notify_id}: {error}", notify_id = crate::host::guest_text::shown(notify_id));
                         return false;
@@ -2538,10 +2567,13 @@ impl PlexiApp {
                                 if let Some((err_id, err_msg)) = &self.approval_keyboard.last_error
                                 {
                                     if err_id == &overlay.ask_id {
+                                        let (line, color) = if err_msg.is_wait() {
+                                            (err_msg.to_string(), colors.text_primary)
+                                        } else {
+                                            (format!("Decision failed: {err_msg}"), colors.danger)
+                                        };
                                         ui.label(
-                                            RichText::new(format!("Decision failed: {err_msg}"))
-                                                .color(colors.danger)
-                                                .size(style::TEXT_HINT),
+                                            RichText::new(line).color(color).size(style::TEXT_HINT),
                                         );
                                     }
                                 }
@@ -3916,6 +3948,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .1
+            .to_string()
             .contains("unknown"));
     }
 
@@ -4189,6 +4222,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .1
+            .to_string()
             .contains("no action was sent"));
     }
 
@@ -4564,7 +4598,7 @@ mod tests {
         let (error_id, message) = h.app.approval_keyboard.last_error.as_ref().unwrap();
         assert_eq!(error_id, &id);
         assert!(
-            message.contains("audit"),
+            message.to_string().contains("audit"),
             "expected audit error, got {message}"
         );
 

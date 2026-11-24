@@ -285,6 +285,13 @@ impl Capture {
                 text.id = action.id.clone();
                 text.allocated = action.hit;
                 text.inactive = action.inactive;
+            } else if report
+                .actions
+                .iter()
+                .any(|a| a.inactive && contained(a.hit, text.paint))
+            {
+                // A disabled button's key hint is inactive text like its label.
+                text.inactive = true;
             }
         }
         if report.scroll {

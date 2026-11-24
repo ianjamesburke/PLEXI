@@ -203,6 +203,61 @@ fn needs_you_failed_audit_error_is_visible_in_decision_overlay() {
     monitor.fail_audit(false);
 }
 
+/// Stint 1735: a real press during the arm delay is told to wait; only a
+/// synthetic press hears "only the person at the desktop".
+#[test]
+fn decision_overlay_refusal_names_the_arm_delay_or_synthetic_input() {
+    let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
+    let pane_id = add_focused_pane(&mut h);
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    let id = monitor
+        .file_needs_you_with_details(
+            crate::broker::gate::NeedsYouFile {
+                kind: crate::broker::gate::NeedsYouKind::Question,
+                actor: "codex".into(),
+                resource: format!("pane:{pane_id}"),
+                summary: "Ready to continue the release check".into(),
+                expires_at: None,
+                run_tag: Some(format!("pane:{pane_id}")),
+            },
+            Some(crate::broker::gate::NeedsYouDetails {
+                choices: vec!["Continue".to_string()],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let refusal = |h: &mut PlexiUiHarness, synthetic: bool| {
+        h.with_app_mut(|app| {
+            app.synthetic_input_frame = synthetic;
+            assert!(
+                !app.pick_decision_overlay_option(0),
+                "the press was refused"
+            );
+            app.synthetic_input_frame = false;
+            app.decision_overlay_error_for_test()
+                .expect("a refusal is shown")
+        })
+    };
+    h.with_app_mut(|app| assert!(app.open_decision_overlay_for_ask(&id)));
+    let waiting = refusal(&mut h, false);
+    assert_eq!(waiting, "Wait a moment, then press again.");
+    h.run_steps(3);
+    assert!(h.host_has_label(&waiting), "the wait wording is painted");
+    assert!(
+        !h.host_has_label(&format!("Decision failed: {waiting}")),
+        "waiting out the delay is not a failed decision"
+    );
+    h.save_screenshot(&crate::ui_tests::evidence_png!())
+        .unwrap();
+    h.with_app_mut(|app| app.arm_decision_overlay_for_test());
+    assert_eq!(
+        refusal(&mut h, true),
+        "Ignored: only the person at the desktop can do this.",
+        "synthetic input keeps its refusal once armed"
+    );
+}
+
 #[test]
 fn screenshot_attention_queue_all_states_themes() {
     use crate::app::attention_queue::{QueueBar, QueueCategory, QueueSource};

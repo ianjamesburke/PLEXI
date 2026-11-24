@@ -260,6 +260,7 @@ fn explorer_trash_takes_only_a_fresh_real_enter() {
     });
     let open = |h: &mut PlexiUiHarness| h.harness().query_by_label("Cancel").is_some();
     open_explorer_trash(&mut h);
+    arm_destructive(&mut h);
     for _ in 0..3 {
         h.harness().key_down(egui::Key::Enter);
         h.step();
@@ -342,6 +343,7 @@ fn explorer_trash_tab_enters_at_cancel_and_wraps() {
     let labels = ["Cancel", "Move to Trash"];
     let (mut h, _dir, file, _pane) = explorer_with_one_file(900.0, 600.0);
     open_explorer_trash(&mut h);
+    arm_destructive(&mut h);
     let mut seen = Vec::new();
     for _ in 0..3 {
         tab(&mut h, false);
