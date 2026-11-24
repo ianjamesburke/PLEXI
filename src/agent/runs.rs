@@ -1326,10 +1326,24 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
                 Ok(agent) => agent,
                 Err(error) => return error,
             };
-            // A run acts with the agent's sealed rows: a socket caller starts
-            // one only when it holds every allow the agent holds, else it
-            // files a request (stint 1285).
-            if let AgentsCaller::Principal { .. } = caller {
+            let admission = payload
+                .get("admission")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("adm_{}", uuid::Uuid::new_v4()));
+            // A retry of a charged admission is answered as alpha answered
+            // it: by the existing run (its owner rule applies in issue_run),
+            // before any fresh-start check (Codex 3290 r4).
+            let retry = match load_runs(&workspace) {
+                Ok(runs) => runs
+                    .iter()
+                    .any(|run| run.agent_id == agent.id && run.admission_id == admission),
+                Err(error) => return json!({"ok": false, "error_code": "io_error", "error": error}),
+            };
+            // A fresh run acts with the agent's sealed rows: a socket caller
+            // starts one only when it holds every allow the agent holds, else
+            // it files a request (stint 1285).
+            if !retry && matches!(caller, AgentsCaller::Principal { .. }) {
                 let agent_rows: Vec<ToolGrant> = sealed_ceiling(
                     &workspace,
                     &Principal::agent(actor_of(&agent.id)),
@@ -1355,11 +1369,6 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
                     return refused;
                 }
             }
-            let admission = payload
-                .get("admission")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("adm_{}", uuid::Uuid::new_v4()));
             let owner = match caller {
                 AgentsCaller::Principal { principal, .. } => Some(principal.actor_id().to_string()),
                 AgentsCaller::Host { .. } => None,
@@ -2966,6 +2975,37 @@ mod tests {
         );
         assert_eq!(finished["ok"], true, "{finished}");
         assert_eq!(snapshot(), before, "no grant-store write");
+    }
+
+    /// Codex 3290 r4 L1: a retry of a charged admission is found before the
+    /// fresh-start grant check. An agent holding a persistent allow, started
+    /// before a restart, is retried by a pane without that allow: the
+    /// existing run's bearer is reissued and authenticates as that run, its
+    /// agent and its workspace, as on alpha.
+    #[test]
+    fn a_retried_admission_is_found_before_the_fresh_start_check() {
+        let fix = Fixture::new();
+        create(&fix, "worker", &["agents.ping=allow"]);
+        let start = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-upgrade"});
+        let started = handle_request("spawn_run", &start, &test_host());
+        assert_eq!(started["ok"], true, "{started}");
+        let run_id = started["run"]["id"].as_str().unwrap().to_string();
+        forget_run_for_test(&run_id);
+
+        let pane = pane_caller(42, None);
+        let fresh = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-new"}),
+            &pane,
+        );
+        assert_eq!(fresh["ok"], false, "a fresh start still needs the allow: {fresh}");
+        let retried = handle_request("spawn_run", &start, &pane);
+        assert_eq!(retried["ok"], true, "{retried}");
+        let token = retried["run_token"].as_str().expect("a bearer");
+        let auth = authenticate_run_token(token).expect("the bearer authenticates");
+        assert_eq!(auth.run_id, run_id);
+        assert_eq!(auth.actor_id, "agent:worker");
+        assert_eq!(auth.workspace, crate::platform::path::canonical_or_self(fix.ws()));
     }
 
     /// Design 1285 section 4, condition 3: the dashboard projection of one
