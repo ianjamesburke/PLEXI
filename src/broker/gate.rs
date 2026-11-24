@@ -4177,9 +4177,9 @@ impl PermissionMonitor {
         Ok(grant_id)
     }
 
-    /// Turn declared capabilities into gate rows and an [`PluginPermissions`] set.
-    /// Non-sensitive capabilities with no stored decision are auto-granted.
-    /// Sensitive capabilities stay withheld until a human grant exists.
+    /// [`Self::plan_plugin_permissions`] committed at once, for tests of the
+    /// launch set. Launches commit only after their guest starts.
+    #[cfg(test)]
     pub fn materialize_plugin_permissions(
         &self,
         plugin: &super::principal::PluginInstance,
@@ -4193,10 +4193,11 @@ impl PermissionMonitor {
         permissions
     }
 
-    /// [`Self::materialize_plugin_permissions`] without writing: the rows the
-    /// auto-grant would add come back as a [`CapabilityMint`] for the caller to
-    /// commit once the guest has started, so a failed start leaves none
-    /// (stint 1733).
+    /// Turn declared capabilities into a [`PluginPermissions`] set without
+    /// writing. Non-sensitive capabilities with no stored decision are granted
+    /// and come back as a [`CapabilityMint`] for the caller to commit once the
+    /// guest has started, so a failed start leaves no rows (stint 1733).
+    /// Sensitive capabilities stay withheld until a human grant exists.
     pub fn plan_plugin_permissions(
         &self,
         plugin: &super::principal::PluginInstance,
