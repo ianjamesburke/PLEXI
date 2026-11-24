@@ -86,8 +86,9 @@ impl std::fmt::Display for Refusal {
             ),
             Self::InstallOverBundled { id, dir } => write!(
                 f,
-                "refused to install {} as '{}': that id belongs to a plugin bundled with Plexi \
-                 and these files differ from it, so nothing was changed. Change [plugin] id in \
+                "refused to install {} as '{}': that id or its install folder belongs to a \
+                 plugin bundled with Plexi (ids differing only in case share a folder on \
+                 macOS) and these files differ from it, so nothing was changed. Change [plugin] id in \
                  its manifest.toml, or develop it in place with `{} view open {}`.",
                 dir.display(),
                 shown(id),
@@ -214,10 +215,32 @@ pub(crate) fn verify_reserved_profile_entry(
 /// A local folder may install under a bundled plugin's id only when it is that
 /// plugin, byte for byte: anything else would replace a working bundled copy
 /// with one that is refused at launch.
-pub(crate) fn admit_local_install(id: &str, source: &Path) -> Result<(), Refusal> {
-    if crate::cli::install_host::is_bundled_plugin_id(id)
-        && !crate::cli::install_host::matches_bundled_plugin(id, source)
-    {
+///
+/// An id that differs from a bundled one only in case is refused on every
+/// volume: on a case-insensitive one it names the same folder, even before the
+/// bundled plugin is seeded. A destination that already resolves to another
+/// bundled install (a link) is refused too.
+pub(crate) fn admit_local_install(
+    id: &str,
+    source: &Path,
+    profile_plugins: &Path,
+) -> Result<(), Refusal> {
+    use crate::cli::install_host::{bundled_id_ignoring_case, matches_bundled_plugin};
+    let conflicts = match bundled_id_ignoring_case(id) {
+        Some(bundled) if bundled == id => !matches_bundled_plugin(id, source),
+        Some(_) => true,
+        None => false,
+    };
+    let plugins = crate::platform::path::canonical_or_self(profile_plugins);
+    let aliases_bundled = std::fs::canonicalize(profile_plugins.join(id))
+        .ok()
+        .filter(|actual| actual.parent() == Some(plugins.as_path()))
+        .and_then(|actual| {
+            let name = actual.file_name()?.to_str()?;
+            bundled_id_ignoring_case(name)
+        })
+        .is_some_and(|bundled| bundled != id);
+    if conflicts || aliases_bundled {
         let refusal = Refusal::InstallOverBundled {
             id: id.to_string(),
             dir: source.to_path_buf(),

@@ -1119,6 +1119,20 @@ pub(crate) fn is_bundled_plugin_id(id: &str) -> bool {
             .is_some()
 }
 
+/// The embedded plugin id equal to `id` ignoring ASCII case, the exact match
+/// first. Plugin ids are ASCII, so case is the only way two of them can name
+/// one folder on a case-insensitive volume.
+pub(crate) fn bundled_id_ignoring_case(id: &str) -> Option<String> {
+    if is_bundled_plugin_id(id) {
+        return Some(id.to_string());
+    }
+    EMBEDDED_APPS
+        .dirs()
+        .filter_map(|dir| dir.path().file_name()?.to_str())
+        .find(|name| name.eq_ignore_ascii_case(id) && is_bundled_plugin_id(name))
+        .map(str::to_string)
+}
+
 /// Host-derived provenance: true when `plugin_dir` holds exactly the plugin
 /// this binary embeds as `local:<name>`. Same files, identical bytes, nothing
 /// extra, no symlinks. The selection follows the packager's

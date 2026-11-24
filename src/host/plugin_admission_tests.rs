@@ -1322,6 +1322,41 @@ fn a_local_install_over_a_bundled_id_is_refused_and_the_copy_survives() {
         Ok(Basis::Bundled),
         "the bundled copy survives"
     );
+
+    // On a case-insensitive volume `Todo` names the same folder as `todo`.
+    let variant_parent = tempfile::tempdir().unwrap();
+    let variant = write_plugin(variant_parent.path(), "Todo");
+    assert_eq!(
+        crate::cli::plugin::plugin_install_with_pin(
+            &variant.to_string_lossy(),
+            None,
+            crate::cli::InstallConfirm::Interactive,
+            true,
+        ),
+        1,
+        "a case variant of a bundled id is refused"
+    );
+    assert_eq!(
+        rig.start(&todo),
+        Ok(Basis::Bundled),
+        "the original keeps bundled admission"
+    );
+
+    // A personal id whose install path is a link to the bundled install.
+    std::os::unix::fs::symlink(&todo, rig.plugins().join("mine")).unwrap();
+    let linked_parent = tempfile::tempdir().unwrap();
+    let linked = write_plugin(linked_parent.path(), "mine");
+    assert_eq!(
+        crate::cli::plugin::plugin_install_with_pin(
+            &linked.to_string_lossy(),
+            None,
+            crate::cli::InstallConfirm::Interactive,
+            true,
+        ),
+        1,
+        "a destination that aliases a bundled install is refused"
+    );
+    assert_eq!(rig.start(&todo), Ok(Basis::Bundled));
 }
 
 /// Round 3, recovery: the command a changed copy's refusal names repairs it.

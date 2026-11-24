@@ -1117,7 +1117,11 @@ fn plugin_install_with_pin_inner(
     }
     // Before the trust sheet and before anything is replaced (stint 1398).
     if let Some(id) = crate::app::registry::declared_plugin_id(&src) {
-        if let Err(refusal) = crate::host::plugin_admission::admit_local_install(&id, &src) {
+        if let Err(refusal) = crate::host::plugin_admission::admit_local_install(
+            &id,
+            &src,
+            &crate::app::registry::plugins_dir(),
+        ) {
             eprintln!("error: {refusal}");
             return 1;
         }
