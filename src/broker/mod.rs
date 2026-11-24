@@ -17,6 +17,7 @@ pub(crate) mod host_key;
 pub mod integrity;
 mod needs_you_store;
 pub(crate) mod pane_authority;
+pub(crate) mod permit;
 pub mod principal;
 pub(crate) mod seal;
 
@@ -972,6 +973,10 @@ impl GrantStore {
     /// an integrity fault.
     ///
     /// Host only: a process that never ran host start gets [`custody::NotHostProcess`].
+    ///
+    /// Test-only: the host's one store is the permission monitor's; nothing
+    /// in the host loads a private copy of `grants.toml` (stint 1716).
+    #[cfg(test)]
     pub fn load_or_default(config_dir: &Path) -> Result<Self, custody::NotHostProcess> {
         let host = custody::host_process()?;
         Ok(Self::load_sealed(&host, config_dir))
@@ -1194,8 +1199,11 @@ impl GrantStore {
             );
             return;
         }
+        // A claimed once grant belongs to the use that claimed it: a new
+        // equivalent row never replaces it (stint 1716).
         self.file.data.records.retain(|r| {
-            !(r.actor_type == record.actor_type
+            (r.duration == GrantDuration::Once && r.consumed)
+                || !(r.actor_type == record.actor_type
                 && r.actor_id == record.actor_id
                 && r.actor_scope == record.actor_scope
                 && r.target_type == record.target_type
@@ -1337,12 +1345,62 @@ impl GrantStore {
         posture: Option<&PermissionPosture>,
         now: i64,
     ) -> Decision {
+        let decision = self.decide(req, posture, now, |_| true);
+        log::info!(
+            "broker: {:?} '{}' -> {:?}:'{}' (ws={:?}) = {}",
+            req.actor_type,
+            req.actor_id,
+            req.target_type,
+            req.target_id,
+            req.workspace_root,
+            decision.as_str()
+        );
+        decision
+    }
+
+    /// [`Self::evaluate_at`] at a permit's commit (stint 1716): the same
+    /// rules, but an unclaimed once grant does not count. Standing rows or
+    /// this use's own claim must allow it; a fresh once is never spent here.
+    pub(crate) fn decide_at_commit(
+        &self,
+        req: &PermissionRequest,
+        posture: Option<&PermissionPosture>,
+        now: i64,
+    ) -> Decision {
+        self.decide(req, posture, now, |r| {
+            r.duration != GrantDuration::Once || r.consumed
+        })
+    }
+
+    /// The first unclaimed once allow that answers `req`, claimed for
+    /// `use_id`: spent, and bound so only that use matches it again.
+    pub(crate) fn claim_once(&mut self, req: &PermissionRequest, now: i64, use_id: &str) -> Option<String> {
+        let row = self.file.data.records.iter_mut().find(|r| {
+            r.duration == GrantDuration::Once
+                && !r.consumed
+                && r.decision == Decision::Allow
+                && r.duration_admissible()
+                && r.matches(req, now)
+        })?;
+        row.consumed = true;
+        row.bound_operation_id = Some(use_id.to_string());
+        log::info!("grant_store: claimed once-grant {} for {use_id}", row.grant_id);
+        Some(row.grant_id.clone())
+    }
+
+    fn decide(
+        &self,
+        req: &PermissionRequest,
+        posture: Option<&PermissionPosture>,
+        now: i64,
+        counts: impl Fn(&GrantRecord) -> bool,
+    ) -> Decision {
         let matching: Vec<&GrantRecord> = self
             .file
             .data
             .records
             .iter()
-            .filter(|r| r.matches(req, now))
+            .filter(|r| counts(r) && r.matches(req, now))
             .filter(|r| {
                 let admissible = r.duration_admissible();
                 if !admissible {
@@ -1362,7 +1420,7 @@ impl GrantStore {
                 .any(|r| r.decision == decision && (r.source == GrantSource::Managed) == managed)
         };
 
-        let decision = if has(Decision::Deny, true) // 2. managed deny
+        if has(Decision::Deny, true) // 2. managed deny
             || has(Decision::Deny, false) // 3. user/workspace/session deny
             || posture.is_some_and(|p| PermissionPosture::lists_contain(&p.deny, &req.target_id))
         // 4. actor deny
@@ -1388,18 +1446,7 @@ impl GrantStore {
         } else {
             // Posture allow and an Allow default are not authorization.
             Decision::Ask
-        };
-
-        log::info!(
-            "broker: {:?} '{}' -> {:?}:'{}' (ws={:?}) = {}",
-            req.actor_type,
-            req.actor_id,
-            req.target_type,
-            req.target_id,
-            req.workspace_root,
-            decision.as_str()
-        );
-        decision
+        }
     }
 
     /// Capability sets for a plugin launch, equivalent to the legacy

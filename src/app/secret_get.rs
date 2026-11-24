@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use super::PlexiApp;
+use crate::broker::permit::{mint_pane, Coverage, Permit, SecretRelease};
 use crate::workspace::secrets::{ReadResult, SecretActor, SecretScope};
 
 impl PlexiApp {
@@ -127,7 +128,7 @@ impl PlexiApp {
                 Ok(monitor) => monitor,
                 Err(error) => {
                     log::error!("secret_get: denied name={name}: {error}");
-                    write_reply(&reply_path, serde_json::json!({"status": "denied"}), false);
+                    write_reply(&reply_path, serde_json::json!({"status": "denied"}));
                     return;
                 }
             };
@@ -146,7 +147,7 @@ impl PlexiApp {
                 "secret_get: denied name={name} caller={} is no pane",
                 origin.class()
             );
-            write_reply(&reply_path, serde_json::json!({"status": "denied"}), false);
+            write_reply(&reply_path, serde_json::json!({"status": "denied"}));
             return;
         };
         if !global {
@@ -172,7 +173,6 @@ impl PlexiApp {
                     write_reply(
                         &reply_path,
                         serde_json::json!({"status": "denied", "error_code": "permission_denied"}),
-                        false,
                     );
                     return;
                 }
@@ -185,7 +185,6 @@ impl PlexiApp {
                 write_reply(
                     &reply_path,
                     serde_json::json!({"status": "error", "error": error}),
-                    false,
                 );
                 return;
             }
@@ -201,6 +200,11 @@ impl PlexiApp {
                 SecretScope::Global => "global".to_string(),
             }
         );
+        if let Err(error) = admitted.current() {
+            log::info!("secret_get: pane={pane_id} withheld: {error}");
+            write_reply(&reply_path, serde_json::json!({"status": "denied"}));
+            return;
+        }
         // Keychain authentication can wait for a human. Keep servicing the
         // host while the exact admitted request finishes; no re-admission loop.
         let posture = match self.pane_ceiling(pane_id) {
@@ -210,57 +214,22 @@ impl PlexiApp {
                 write_reply(
                     &reply_path,
                     serde_json::json!({"status": "error", "error": error}),
-                    false,
                 );
                 return;
             }
         };
-        let name = name.to_string();
-        let profile = crate::config::config_dir();
-        let failure_path = reply_path.clone();
+        let request = ReadRequest {
+            admitted,
+            actor,
+            name: name.to_string(),
+            scope,
+            profile: crate::config::config_dir(),
+            posture,
+            reply_path: reply_path.clone(),
+        };
         let repaint = self.ctx.clone();
         let read = move || {
-            // The pane that asked, as it was admitted: one closed, replaced
-            // or re-scoped since gets no value, before or after the read
-            // (Codex 3290 r1).
-            let still_admitted = || {
-                admitted.current().map(|_| ()).inspect_err(|error| {
-                    log::info!("secret_get: pane={pane_id} withheld: {error}");
-                })
-            };
-            if still_admitted().is_err() {
-                write_reply(&reply_path, serde_json::json!({"status": "denied"}), false);
-                return;
-            }
-            let result = crate::workspace::secrets::read_pane_secret_with_posture(
-                &monitor,
-                crate::workspace::secrets::system_store(),
-                &actor,
-                &name,
-                &scope,
-                &profile,
-                posture.as_ref(),
-            );
-            let (body, holds_value) = match result {
-                Ok(ReadResult::Value(_)) if still_admitted().is_err() => {
-                    (serde_json::json!({"status": "denied"}), false)
-                }
-                Ok(ReadResult::Value(value)) => (
-                    serde_json::json!({"status": "value", "value": value.as_str()}),
-                    true,
-                ),
-                Ok(ReadResult::PermissionRequired { pending_id }) => (
-                    serde_json::json!({"status": "permission_required", "pending_request_id": pending_id}),
-                    false,
-                ),
-                Ok(ReadResult::Denied) => (serde_json::json!({"status": "denied"}), false),
-                Ok(ReadResult::NotFound) => (serde_json::json!({"status": "not_found"}), false),
-                Err(error) => (
-                    serde_json::json!({"status": "error", "error": error}),
-                    false,
-                ),
-            };
-            write_reply(&reply_path, body, holds_value);
+            request.read_and_release(&monitor, crate::workspace::secrets::system_store());
             // Admission ran off-thread: wake an idle host to display a newly
             // pending banner (or remove a consumed one) without another input.
             repaint.request_repaint();
@@ -272,16 +241,103 @@ impl PlexiApp {
         {
             log::error!("secret_get: could not start read worker: {error}");
             write_reply(
-                &failure_path,
+                &reply_path,
                 serde_json::json!({"status": "error", "error": "could not start secret read"}),
-                false,
             );
         }
         #[cfg(test)]
-        {
-            let _ = failure_path;
-            read();
+        read();
+    }
+}
+
+/// One admitted pane secret read, carried to the worker thread.
+struct ReadRequest {
+    /// The asking pane incarnation at the revision it was admitted under.
+    admitted: crate::host::plugin_timeline::AdmittedScope,
+    actor: SecretActor,
+    name: String,
+    scope: SecretScope,
+    profile: PathBuf,
+    posture: Option<crate::broker::PermissionPosture>,
+    reply_path: PathBuf,
+}
+
+impl ReadRequest {
+    /// Read under the broker gate and reply. A value leaves only through
+    /// [`release_secret`], under the permit minted from the broker's approval
+    /// of this read.
+    fn read_and_release(
+        &self,
+        monitor: &std::sync::Arc<crate::broker::gate::PermissionMonitor>,
+        store: &dyn crate::workspace::secrets::NonDestructiveStore,
+    ) {
+        if let Err(error) = self.admitted.current() {
+            log::info!(
+                "secret_get: {} withheld before read: {error}",
+                self.actor.id
+            );
+            write_reply(&self.reply_path, serde_json::json!({"status": "denied"}));
+            return;
         }
+        let result = crate::workspace::secrets::read_pane_secret_with_posture(
+            monitor,
+            store,
+            &self.actor,
+            &self.name,
+            &self.scope,
+            &self.profile,
+            self.posture.as_ref(),
+        );
+        let body = match result.map(|read| (read.result, read.approved)) {
+            Ok((ReadResult::Value(value), Some(approved))) => {
+                let target = SecretRelease::target(&self.name, &self.scope);
+                let coverage = Coverage::new(monitor.clone(), vec![(target.clone(), approved)]);
+                match mint_pane::<SecretRelease>(self.admitted.clone(), target.clone(), coverage) {
+                    Ok(permit) => return release_secret(permit, &target, &self.reply_path, &value),
+                    Err(error) => {
+                        log::info!("secret_get: {} withheld after read: {error}", self.actor.id);
+                        serde_json::json!({"status": "denied"})
+                    }
+                }
+            }
+            Ok((ReadResult::Value(_), None)) | Ok((ReadResult::Denied, _)) => {
+                serde_json::json!({"status": "denied"})
+            }
+            Ok((ReadResult::PermissionRequired { pending_id }, _)) => {
+                serde_json::json!({"status": "permission_required", "pending_request_id": pending_id})
+            }
+            Ok((ReadResult::NotFound, _)) => serde_json::json!({"status": "not_found"}),
+            Err(error) => serde_json::json!({"status": "error", "error": error}),
+        };
+        write_reply(&self.reply_path, body);
+    }
+}
+
+/// The one place a secret value leaves the host to a pane. The reply is
+/// staged first; then the permit commits it: the broker must still allow the
+/// approved read and the pane must still be at its admitted incarnation and
+/// revision. The waiting stream is taken under that commit, so a revoke or
+/// reset either lands before (and the pane gets `denied`) or after the
+/// hand-over. The blocking write runs outside the lock. The permit is spent.
+fn release_secret(permit: Permit<SecretRelease>, target: &str, reply_path: &Path, value: &str) {
+    let token = reply_path.to_string_lossy();
+    let staged = match permit.commit(target, target) {
+        Ok(_commit) => crate::rpc::stage_stream_only_json_response(
+            &token,
+            serde_json::json!({"status": "value", "value": value}),
+        ),
+        Err(error) => {
+            log::info!("secret_get: release withheld: {error}");
+            write_reply(reply_path, serde_json::json!({"status": "denied"}));
+            return;
+        }
+    };
+    log::info!("secret_get: released {target}");
+    if !staged.is_some_and(crate::rpc::StagedReply::send) {
+        log::error!(
+            "secret_get: value reply for {} failed",
+            reply_path.display()
+        );
     }
 }
 
@@ -302,14 +358,9 @@ fn scope_for(global: bool, workspace_root: Option<&Path>) -> Result<SecretScope,
     )
 }
 
-fn write_reply(path: &Path, body: serde_json::Value, holds_value: bool) {
-    let token = path.to_string_lossy();
-    let wrote = if holds_value {
-        crate::rpc::write_stream_only_json_response(&token, body)
-    } else {
-        crate::rpc::write_json_response(&token, body)
-    };
-    if !wrote {
+/// A reply that holds no secret value.
+fn write_reply(path: &Path, body: serde_json::Value) {
+    if !crate::rpc::write_json_response(&path.to_string_lossy(), body) {
         log::error!("secret_get: reply write for {} failed", path.display());
     }
 }
@@ -507,10 +558,51 @@ mod list_tests {
 
         // Without a registered socket stream, value replies are refused rather than written to disk.
         let unbacked = crate::rpc::response_file("secret-get-unbacked", "json");
-        super::write_reply(
+        let live = h
+            .app
+            .terminal_incarnation(pane)
+            .unwrap()
+            .authority()
+            .unwrap()
+            .clone();
+        // A standing approval, so only the missing stream withholds the value.
+        let actor = format!("pane:{pane}");
+        monitor
+            .store()
+            .record(crate::broker::GrantRecord::event_stream_allow(
+                crate::broker::ActorType::Agent,
+                &actor,
+                crate::broker::ActorScope::User,
+                "unbacked::release",
+                &ws,
+                crate::broker::GrantDuration::Always,
+                crate::broker::GrantSource::Workspace,
+                None,
+            ));
+        let question =
+            crate::broker::PermissionRequest::exact(&crate::broker::ExactBinding::event_stream(
+                crate::broker::ActorType::Agent,
+                &actor,
+                crate::broker::ActorScope::User,
+                "unbacked::release",
+                &ws,
+                None,
+            ));
+        let (approved, _) = monitor
+            .admit_questions(vec![question], None)
+            .unwrap()
+            .remove(0);
+        let permit = super::mint_pane::<super::SecretRelease>(
+            crate::host::plugin_timeline::AdmittedScope::of(&live),
+            "unbacked".into(),
+            super::Coverage::new(monitor.clone(), vec![("unbacked".into(), approved)]),
+        )
+        .unwrap();
+        super::release_secret(
+            permit,
+            "unbacked",
             std::path::Path::new(&unbacked),
-            serde_json::json!({"status": "value", "value": secret_val}),
-            true,
+            secret_val,
         );
         assert!(
             !std::path::Path::new(&unbacked).exists(),
@@ -922,5 +1014,186 @@ mod list_tests {
         assert_eq!(req_b["status"], "permission_required", "{req_b}");
 
         secrets::system_store().delete(&account).unwrap();
+    }
+}
+
+/// Stint 1716: the value is released only under a permit whose pane
+/// incarnation and revision, and the grant that admitted the read, still
+/// hold at the write.
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+    use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
+    use crate::broker::pane_authority::{Ceiling, LivePaneAuthority, PaneAuthority};
+    use crate::workspace::secrets::{
+        InMemoryKeychain, NonDestructiveStore, SecretError, SecretStore,
+    };
+    use std::sync::Arc;
+    use zeroize::Zeroizing;
+
+    /// What happens while the store read is in progress.
+    #[derive(Clone, Copy, Debug)]
+    enum DuringRead {
+        Nothing,
+        ClosePane,
+        RescopePane,
+        RevokeGrant,
+        /// A second reader with the same approval arrives mid-read.
+        SecondReader,
+    }
+
+    /// A store that acts on the asking pane or its grant mid-read.
+    struct ActsDuringRead {
+        inner: InMemoryKeychain,
+        pane: Arc<LivePaneAuthority>,
+        monitor: Arc<PermissionMonitor>,
+        during: DuringRead,
+        profile: tempfile::TempDir,
+        gets: std::sync::atomic::AtomicUsize,
+        second: std::sync::Mutex<Option<serde_json::Value>>,
+    }
+
+    impl NonDestructiveStore for ActsDuringRead {
+        fn get(&self, account: &str) -> Option<Zeroizing<String>> {
+            let first = self.gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+            match self.during {
+                DuringRead::Nothing => {}
+                DuringRead::SecondReader if first => {
+                    *self.second.lock().unwrap() = Some(read(self));
+                }
+                DuringRead::SecondReader => {}
+                DuringRead::ClosePane => self.pane.revoke(),
+                DuringRead::RescopePane => {
+                    self.pane.publish_scope(PathBuf::from("/tmp/elsewhere"));
+                }
+                DuringRead::RevokeGrant => {
+                    let ids: Vec<String> = self
+                        .monitor
+                        .store()
+                        .records()
+                        .iter()
+                        .filter(|record| record.actor_id == "pane:7")
+                        .map(|record| record.grant_id.clone())
+                        .collect();
+                    assert!(!ids.is_empty(), "the read was admitted by a grant");
+                    for id in ids {
+                        assert!(self.monitor.revoke_grant_id(&id).unwrap());
+                    }
+                }
+            }
+            self.inner.get(account)
+        }
+        fn add_new(&self, account: &str, value: &str) -> Result<(), SecretError> {
+            self.inner.add_new(account, value)
+        }
+        fn delete_if_value(&self, account: &str, expected: &str) -> Result<(), SecretError> {
+            self.inner.delete_if_value(account, expected)
+        }
+        fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
+            self.inner.list_with_prefix(prefix)
+        }
+        fn scan_accounts(&self) -> Result<Vec<String>, SecretError> {
+            self.inner.scan_accounts()
+        }
+    }
+
+    fn read(store: &ActsDuringRead) -> serde_json::Value {
+        let scope = SecretScope::Global;
+        let reply = crate::rpc::response_file("secret-release-1716", "json");
+        // As the socket listener wires a reply: the host writes one end, the
+        // waiting client reads the other.
+        let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        crate::rpc::register_client_stream(reply.clone(), client);
+        crate::rpc::ReplyRegistry::register(reply.clone(), server.try_clone().unwrap());
+        ReadRequest {
+            admitted: crate::host::plugin_timeline::AdmittedScope::of(&store.pane),
+            actor: SecretActor {
+                kind: crate::broker::ActorType::Agent,
+                id: "pane:7".into(),
+            },
+            name: "TOKEN_1716".into(),
+            scope,
+            profile: store.profile.path().to_path_buf(),
+            posture: None,
+            reply_path: PathBuf::from(&reply),
+        }
+        .read_and_release(&store.monitor, store);
+        drop(server);
+        let body =
+            crate::rpc::poll_string(&reply, Some(std::time::Duration::from_secs(2))).unwrap();
+        serde_json::from_str(&body).unwrap()
+    }
+
+    /// Approve the read with `choice`, then read once while `during` happens.
+    fn read_while(
+        during: DuringRead,
+        choice: ApprovalChoice,
+    ) -> (serde_json::Value, ActsDuringRead) {
+        let pane = LivePaneAuthority::admitted(PaneAuthority::for_test(
+            7,
+            Ceiling::Baseline,
+            1,
+            PathBuf::from("/tmp/ws"),
+        ));
+        pane.mark_live();
+        let store = ActsDuringRead {
+            inner: InMemoryKeychain::new(),
+            pane,
+            monitor: PermissionMonitor::ephemeral(),
+            during,
+            profile: tempfile::tempdir().unwrap(),
+            gets: Default::default(),
+            second: Default::default(),
+        };
+        store
+            .inner
+            .set(
+                &crate::workspace::secrets::keychain_user_name("TOKEN_1716"),
+                "canary-1716",
+            )
+            .unwrap();
+        // Admission comes before the store is touched: this read only asks.
+        let ask = read(&store);
+        assert_eq!(ask["status"], "permission_required", "{ask}");
+        store
+            .monitor
+            .approve_pending(ask["pending_request_id"].as_str().unwrap(), choice)
+            .unwrap();
+        (read(&store), store)
+    }
+
+    #[test]
+    fn the_value_is_released_only_while_pane_and_grant_still_hold() {
+        for choice in [ApprovalChoice::Once, ApprovalChoice::Always] {
+            let (released, _) = read_while(DuringRead::Nothing, choice);
+            assert_eq!(released["status"], "value", "{choice:?}: {released}");
+            assert_eq!(released["value"], "canary-1716");
+            for during in [
+                DuringRead::ClosePane,
+                DuringRead::RescopePane,
+                DuringRead::RevokeGrant,
+            ] {
+                let (reply, _) = read_while(during, choice);
+                assert_eq!(reply["status"], "denied", "{during:?} {choice:?}: {reply}");
+                assert!(!reply.to_string().contains("canary-1716"));
+            }
+        }
+    }
+
+    /// Stint 1716 (design-3306 once): one approval admits one read. A
+    /// second reader arriving mid-read is asked again and never reaches the
+    /// store; once the first read has run, the next read asks again too.
+    #[test]
+    fn a_once_approval_admits_exactly_one_read() {
+        let (first, store) = read_while(DuringRead::SecondReader, ApprovalChoice::Once);
+        assert_eq!(first["status"], "value", "{first}");
+        let second = store.second.lock().unwrap().take().unwrap();
+        assert_eq!(second["status"], "permission_required", "{second}");
+        assert_eq!(store.gets.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            read(&store)["status"],
+            "permission_required",
+            "the claim was spent"
+        );
     }
 }

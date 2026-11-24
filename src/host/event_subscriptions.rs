@@ -81,6 +81,12 @@ pub fn evaluate_and_record_subscription(
         );
         return Err(decision);
     }
+    let permit = crate::broker::permit::delivery_fixture(
+        subscriber_type,
+        subscriber_id,
+        publisher_plugin_id,
+        &event_names,
+    );
     Ok(record_subscription(
         timeline,
         publisher_plugin_id,
@@ -92,6 +98,7 @@ pub fn evaluate_and_record_subscription(
         trigger_mode,
         resource_id,
         duration,
+        permit,
     ))
 }
 
@@ -126,8 +133,9 @@ fn publish_targets(plugin_id: &str, event_names: &[String]) -> Vec<String> {
 }
 
 /// Run the broker over every target a subscription touches and return the
-/// strictest decision (`Deny` > `Ask` > `Allow`). Records nothing — callers
-/// decide what to do with the verdict (record on `Allow`, prompt on `Ask`).
+/// strictest decision (`Deny` > `Ask` > `Allow`). Records and claims nothing:
+/// it answers what a subscribe would get, for display and discovery. A
+/// subscription itself is admitted by [`admit_stream_members`].
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate_subscription(
     grant_store: &GrantStore,
@@ -149,6 +157,88 @@ pub fn evaluate_subscription(
         "event.subscribe",
         &subscription_targets(publisher_plugin_id, event_names),
     )
+}
+
+/// Admit a subscription to exactly `event_names` in the profile's live
+/// store, claiming any once grant a member rests on for this registration.
+/// `allowed_once` means a person just allowed this one registration: a once
+/// grant is created, already claimed, only for members nothing else allows.
+/// The coverage pairs each admitted member with its approved question; the
+/// delivery permit asks it again at every commit (stint 1716).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn admit_stream_members(
+    monitor: &Arc<crate::broker::gate::PermissionMonitor>,
+    posture: Option<&PermissionPosture>,
+    workspace_root: Option<&Path>,
+    publisher_plugin_id: &str,
+    subscriber: &Principal,
+    actor_scope: ActorScope,
+    session_id: Option<&str>,
+    event_names: &[String],
+    allowed_once: bool,
+) -> Result<crate::broker::permit::Coverage, Decision> {
+    let targets = subscription_targets(publisher_plugin_id, event_names);
+    let trace = |target: &str, decision: Decision, mechanism: &str| {
+        crate::broker::principal::AdmissionTrace {
+            principal: subscriber,
+            effect: &format!("event.subscribe:{target}"),
+            resource_class: "app_event_stream",
+            decision: decision.as_str(),
+            mechanism,
+            call_id: "",
+            outcome_ref: "",
+        }
+        .emit();
+    };
+    let Some(workspace) = workspace_root else {
+        for target in &targets {
+            trace(target, Decision::Deny, "missing_workspace");
+        }
+        return Err(Decision::Deny);
+    };
+    let questions = targets
+        .iter()
+        .map(|target| {
+            PermissionRequest::exact(&crate::broker::ExactBinding::event_stream(
+                subscriber.actor_type(),
+                subscriber.actor_id(),
+                actor_scope,
+                target,
+                workspace,
+                session_id.map(str::to_string),
+            ))
+        })
+        .collect();
+    let once_row = |request: &PermissionRequest| {
+        GrantRecord::event_stream_allow(
+            request.actor_type,
+            &request.actor_id,
+            request.actor_scope,
+            &request.target_id,
+            workspace,
+            GrantDuration::Once,
+            GrantSource::Session,
+            request.session_id.clone(),
+        )
+    };
+    let admitted = if allowed_once {
+        monitor.admit_questions_allowed_once(questions, posture, &once_row)
+    } else {
+        monitor.admit_questions(questions, posture)
+    };
+    let decision = admitted.as_ref().err().copied().unwrap_or(Decision::Allow);
+    for target in &targets {
+        trace(target, decision, "broker_admission");
+    }
+    let members = event_names
+        .iter()
+        .cloned()
+        .zip(admitted?.into_iter().map(|(approved, _)| approved))
+        .collect();
+    Ok(crate::broker::permit::Coverage::new(
+        Arc::clone(monitor),
+        members,
+    ))
 }
 
 /// Publish twin of [`evaluate_subscription`]: evaluate the broker over the
@@ -240,9 +330,10 @@ fn evaluate_targets(
     strictest
 }
 
-/// Add a subscription to `timeline` and return its id. Performs no broker check
-/// — the caller has already established consent (a unanimous `Allow` grant or an
-/// interactive user approval).
+/// Add a subscription to `timeline` and return its id. Performs no broker
+/// check: the caller has already established consent (a unanimous `Allow`
+/// grant or an interactive user approval) and holds the broker's delivery
+/// permit for this subscriber and publisher.
 #[allow(clippy::too_many_arguments)]
 pub fn record_subscription(
     timeline: &Arc<Mutex<PluginTimeline>>,
@@ -255,52 +346,13 @@ pub fn record_subscription(
     trigger_mode: TriggerMode,
     resource_id: Option<String>,
     duration: GrantDuration,
-) -> String {
-    let subscription_id = format!("sub-{}", uuid::Uuid::new_v4());
-    let record = SubscriptionRecord {
-        subscription_id: subscription_id.clone(),
-        subscriber_type,
-        subscriber_id: subscriber_id.to_string(),
-        plugin_id: publisher_plugin_id.to_string(),
-        event_names,
-        payload_mode,
-        trigger_mode,
-        resource_id,
-        duration,
-        subscriber_context_id,
-        created_at: event_log::now_timestamp(),
-        admitted: None,
-    };
-    log::info!(
-        "event_subscriptions: recorded subscription {subscription_id} for {subscriber_type:?} \
-         '{subscriber_id}' (context={subscriber_context_id}) -> '{publisher_plugin_id}' \
-         (payload={payload_mode:?}, trigger={trigger_mode:?})"
-    );
-    timeline.lock().unwrap().add_subscription(record);
-    subscription_id
-}
-
-/// [`record_subscription`] for an admitted request: a pane subscriber's
-/// deliveries stop when its incarnation is revoked or its scope moves.
-#[allow(clippy::too_many_arguments)]
-fn record_admitted_subscription(
-    timeline: &Arc<Mutex<PluginTimeline>>,
-    publisher_plugin_id: &str,
-    subscriber_type: ActorType,
-    subscriber_id: &str,
-    subscriber_context_id: u64,
-    event_names: Vec<String>,
-    payload_mode: PayloadMode,
-    trigger_mode: TriggerMode,
-    resource_id: Option<String>,
-    admitted: Option<crate::host::plugin_timeline::AdmittedScope>,
+    permit: crate::host::plugin_timeline::DeliveryPermit,
 ) -> String {
     let subscription_id = format!("sub-{}", uuid::Uuid::new_v4());
     log::info!(
         "event_subscriptions: recorded subscription {subscription_id} for {subscriber_type:?} \
          '{subscriber_id}' (context={subscriber_context_id}) -> '{publisher_plugin_id}' \
-         {event_names:?} admitted_scope={:?}",
-        admitted.as_ref().map(|a| a.revision)
+         {event_names:?} (payload={payload_mode:?}, trigger={trigger_mode:?}) {permit:?}"
     );
     timeline
         .lock()
@@ -314,12 +366,35 @@ fn record_admitted_subscription(
             payload_mode,
             trigger_mode,
             resource_id,
-            duration: GrantDuration::Session,
+            duration,
             subscriber_context_id,
             created_at: event_log::now_timestamp(),
-            admitted,
+            permit,
         });
     subscription_id
+}
+
+/// Mint the delivery permit for an admitted subscriber over the broker's
+/// coverage. A pane subscriber must still be at the incarnation and revision
+/// it was admitted under.
+fn mint_delivery_permit(
+    authority: &SubscriberAuthority,
+    subscriber_type: ActorType,
+    subscriber_id: &str,
+    publisher_plugin_id: &str,
+    coverage: crate::broker::permit::Coverage,
+) -> Result<crate::host::plugin_timeline::DeliveryPermit, String> {
+    use crate::broker::permit::{mint_pane, mint_unbound, DeliverEvents};
+    let target = DeliverEvents::target(subscriber_type, subscriber_id, publisher_plugin_id);
+    match authority {
+        SubscriberAuthority::Pane(admitted) => mint_pane(admitted.clone(), target, coverage),
+        SubscriberAuthority::Plugin => Ok(mint_unbound("plugin", target, coverage)),
+        SubscriberAuthority::Run => Ok(mint_unbound("run", target, coverage)),
+        SubscriberAuthority::External => Ok(mint_unbound("external", target, coverage)),
+        SubscriberAuthority::Sealed => {
+            Err("a sealed pane authority holds no delivery permit".into())
+        }
+    }
 }
 
 /// An in-memory subscribe request handed from a transport's connection thread
@@ -485,6 +560,13 @@ enum ConsentAction {
         payload_mode: PayloadMode,
         trigger_mode: TriggerMode,
         resource_id: Option<String>,
+        /// Who asked, as classified; the delivery permit is minted from it
+        /// once the person allows.
+        authority: SubscriberAuthority,
+        /// The broker principal and posture the request was decided under;
+        /// the consented subscription is admitted again under both.
+        principal: Principal,
+        posture: Option<PermissionPosture>,
         cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
         reply: SyncSender<HostSubscribeReply>,
     },
@@ -591,15 +673,17 @@ pub enum HostSubscribeReply {
 }
 
 /// Host-level subscription service for non-plugin actors (CLI agents reading
-/// subprocess stdout, host MCP clients). Owns its own grant store + posture
-/// loaded from the profile dir and a clone of the global timeline handle.
+/// subprocess stdout, host MCP clients). Evaluates against the profile's one
+/// live grant store (the permission monitor's, so a revoke there is seen at
+/// once) under the posture loaded from the profile dir, and holds a clone of
+/// the global timeline handle.
 ///
 /// Every transport routes through this so the host has one event permission
 /// model, one delivery queue, and one disconnect-cleanup path. The service
 /// stamps subscriber identity from host-trusted state; callers never pass an
 /// identity sourced from untrusted CLI arguments.
 pub struct HostSubscriptionService {
-    grant_store: GrantStore,
+    monitor: Arc<crate::broker::gate::PermissionMonitor>,
     posture: Option<PermissionPosture>,
     timeline: Arc<Mutex<PluginTimeline>>,
 }
@@ -619,18 +703,19 @@ impl HostSubscriptionService {
     /// no ambient fallback.
     pub fn new(config_dir: &Path, timeline: Arc<Mutex<PluginTimeline>>) -> Self {
         // Host only (stint 1291); elsewhere no grants, so every stream asks.
-        let grant_store = GrantStore::load_or_default(config_dir).unwrap_or_else(|error| {
-            log::error!("HostSubscriptionService: no grant store: {error}");
-            GrantStore::default()
-        });
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(config_dir)
+            .unwrap_or_else(|error| {
+                log::error!("HostSubscriptionService: no grant store: {error}");
+                crate::broker::gate::PermissionMonitor::ephemeral()
+            });
         let posture = PermissionPosture::load_from_config(config_dir);
         log::info!(
-            "HostSubscriptionService: loaded {} grant record(s), posture={}",
-            grant_store.records().len(),
+            "HostSubscriptionService: {} grant record(s), posture={}",
+            monitor.store().records().len(),
             posture.is_some()
         );
         Self {
-            grant_store,
+            monitor,
             posture,
             timeline,
         }
@@ -640,21 +725,24 @@ impl HostSubscriptionService {
     /// bypassing disk loading.
     #[cfg(test)]
     pub fn new_for_test(grant_store: GrantStore, timeline: Arc<Mutex<PluginTimeline>>) -> Self {
+        let monitor = crate::broker::gate::PermissionMonitor::ephemeral();
+        *monitor.store() = grant_store;
         Self {
-            grant_store,
+            monitor,
             posture: None,
             timeline,
         }
     }
 
-    /// Reload grants + posture from disk. Call before evaluating a fresh
-    /// subscription so newly-granted permissions take effect without a host
-    /// restart.
+    /// The live grant store this service evaluates against.
+    #[cfg(test)]
+    pub(crate) fn monitor(&self) -> &Arc<crate::broker::gate::PermissionMonitor> {
+        &self.monitor
+    }
+
+    /// Reload posture from disk before evaluating a fresh subscription. The
+    /// grants are the monitor's live store and need no reload.
     pub fn reload(&mut self, config_dir: &Path) {
-        match GrantStore::load_or_default(config_dir) {
-            Ok(store) => self.grant_store = store,
-            Err(error) => log::error!("HostSubscriptionService: reload kept its grants: {error}"),
-        }
         self.posture = PermissionPosture::load_from_config(config_dir);
     }
 
@@ -684,7 +772,7 @@ impl HostSubscriptionService {
             crate::host::pane_lifecycle::PUBLISHER,
             crate::host::pane_lifecycle::STREAM
         );
-        self.grant_store.record(GrantRecord::event_stream_allow(
+        self.monitor.store().record(GrantRecord::event_stream_allow(
             ActorType::Agent,
             broker_actor_id,
             ActorScope::User,
@@ -803,25 +891,42 @@ impl HostSubscriptionService {
             (host, None) => host.clone(),
             (None, Some(pane)) => Some(pane.clone()),
         };
-        let decision = evaluate_subscription(
-            &self.grant_store,
-            posture.as_ref(),
-            req.workspace_root_override.as_deref(),
-            &req.publisher_plugin_id,
-            &subscriber,
-            ActorScope::User,
-            None,
-            &req.event_names,
-        );
         // An empty expansion authorizes zero deliveries.
-        let decision = if req.event_names.is_empty() {
-            Decision::Allow
+        let admitted = if req.event_names.is_empty() {
+            Ok(crate::broker::permit::Coverage::new(
+                Arc::clone(&self.monitor),
+                Vec::new(),
+            ))
         } else {
-            decision
+            admit_stream_members(
+                &self.monitor,
+                posture.as_ref(),
+                req.workspace_root_override.as_deref(),
+                &req.publisher_plugin_id,
+                &subscriber,
+                ActorScope::User,
+                None,
+                &req.event_names,
+                false,
+            )
         };
-        match decision {
-            Decision::Allow => {
-                let subscription_id = record_admitted_subscription(
+        match admitted {
+            Ok(coverage) => {
+                let permit = match mint_delivery_permit(
+                    &req.subscriber_authority,
+                    subscriber_type,
+                    &subscriber_id,
+                    &req.publisher_plugin_id,
+                    coverage,
+                ) {
+                    Ok(permit) => permit,
+                    Err(message) => {
+                        log::info!("event_subscriptions: refused {subscriber_id}: {message}");
+                        let _ = req.reply.send(HostSubscribeReply::Err { message });
+                        return None;
+                    }
+                };
+                let subscription_id = record_subscription(
                     &self.timeline,
                     &req.publisher_plugin_id,
                     subscriber_type,
@@ -831,7 +936,8 @@ impl HostSubscriptionService {
                     req.payload_mode,
                     req.trigger_mode,
                     req.resource_id,
-                    req.subscriber_authority.admitted(),
+                    GrantDuration::Session,
+                    permit,
                 );
                 if req
                     .reply
@@ -852,13 +958,13 @@ impl HostSubscriptionService {
                 }
                 None
             }
-            Decision::Deny => {
+            Err(Decision::Deny) => {
                 let _ = req.reply.send(HostSubscribeReply::Err {
                     message: "blocked by broker: deny".to_string(),
                 });
                 None
             }
-            Decision::Ask => {
+            Err(_) => {
                 log::info!(
                     "event_subscriptions: subscription to '{}' for {subscriber_type:?} \
                      '{subscriber_id}' awaiting user consent",
@@ -878,6 +984,9 @@ impl HostSubscriptionService {
                         payload_mode: req.payload_mode,
                         trigger_mode: req.trigger_mode,
                         resource_id: req.resource_id,
+                        authority: req.subscriber_authority,
+                        principal: subscriber,
+                        posture,
                         cancelled: req.cancelled,
                         reply: req.reply,
                     },
@@ -894,17 +1003,12 @@ impl HostSubscriptionService {
     /// recorded subscription is rolled back so no orphan accumulates deliveries.
     /// A test standing in for the click on the consent dialog.
     #[cfg(test)]
-    pub fn resolve_consent(
-        &mut self,
-        consent: PendingEventConsent,
-        choice: ConsentChoice,
-        config_dir: &Path,
-    ) {
+    pub fn resolve_consent(&mut self, consent: PendingEventConsent, choice: ConsentChoice) {
         let evidence = crate::broker::consent::DecisionEvidence::for_test(
             &consent.request_id.to_string(),
             "allow_always",
         );
-        self.resolve_consent_decided(consent, choice, config_dir, Some(evidence));
+        self.resolve_consent_decided(consent, choice, Some(evidence));
     }
 
     /// Settle one consent. `AllowAlways` writes standing grants, so it needs
@@ -913,7 +1017,6 @@ impl HostSubscriptionService {
         &mut self,
         consent: PendingEventConsent,
         choice: ConsentChoice,
-        config_dir: &Path,
         evidence: Option<crate::broker::consent::DecisionEvidence>,
     ) {
         if consent.is_cancelled() {
@@ -978,7 +1081,6 @@ impl HostSubscriptionService {
                         targets: &targets,
                         workspace_root: &workspace_root,
                     },
-                    config_dir,
                     evidence,
                 ),
                 None => Err("an always grant needs the person's decision".to_string()),
@@ -1006,6 +1108,9 @@ impl HostSubscriptionService {
                 payload_mode,
                 trigger_mode,
                 resource_id,
+                authority,
+                principal,
+                posture,
                 cancelled: _,
                 reply,
             } => {
@@ -1019,7 +1124,42 @@ impl HostSubscriptionService {
                     });
                     return;
                 }
-                let subscription_id = record_admitted_subscription(
+                let admitted = admit_stream_members(
+                    &self.monitor,
+                    posture.as_ref(),
+                    Some(&workspace_root),
+                    &plugin_id,
+                    &principal,
+                    ActorScope::User,
+                    None,
+                    &event_names,
+                    choice == ConsentChoice::AllowOnce,
+                )
+                .map_err(|decision| {
+                    format!(
+                        "the consent does not cover this subscription ({})",
+                        decision.as_str()
+                    )
+                });
+                let permit = match admitted.and_then(|coverage| {
+                    mint_delivery_permit(
+                        &authority,
+                        subscriber_type,
+                        &subscriber_id,
+                        &plugin_id,
+                        coverage,
+                    )
+                }) {
+                    Ok(permit) => permit,
+                    Err(message) => {
+                        log::info!(
+                            "event_subscriptions: consent for '{subscriber_id}' refused: {message}"
+                        );
+                        let _ = reply.send(HostSubscribeReply::Err { message });
+                        return;
+                    }
+                };
+                let subscription_id = record_subscription(
                     &self.timeline,
                     &plugin_id,
                     subscriber_type,
@@ -1029,7 +1169,8 @@ impl HostSubscriptionService {
                     payload_mode,
                     trigger_mode,
                     resource_id,
-                    admitted,
+                    GrantDuration::Session,
+                    permit,
                 );
                 if reply
                     .send(HostSubscribeReply::Ok {
@@ -1105,12 +1246,11 @@ impl HostSubscriptionService {
 
     /// Persist an `Always` `Allow` grant for every operation-qualified target
     /// the consent touched (built by the caller via [`subscription_targets`] or
-    /// [`publish_targets`]), then reload so later evaluations see it. Shared by
-    /// the subscribe and publish consent paths.
+    /// [`publish_targets`]) in the profile's one grant store. Shared by the
+    /// subscribe and publish consent paths.
     fn persist_always_grants(
         &mut self,
         grant: AlwaysStreamGrant<'_>,
-        config_dir: &Path,
         evidence: crate::broker::consent::CoveredDecision<'_>,
     ) -> Result<(), String> {
         let AlwaysStreamGrant {
@@ -1120,39 +1260,38 @@ impl HostSubscriptionService {
             targets,
             workspace_root,
         } = grant;
-        let before: Vec<String> = self
-            .grant_store
-            .records()
-            .iter()
-            .map(|record| record.grant_id.clone())
-            .collect();
-        for target in targets {
-            self.grant_store.record_decided(
-                GrantRecord::event_stream_allow(
-                    actor_type,
-                    actor_id,
-                    ActorScope::User,
-                    target,
-                    workspace_root,
-                    GrantDuration::Always,
-                    GrantSource::User,
-                    None,
-                ),
-                evidence,
-            );
-        }
-        if let Err(error) = self.grant_store.try_save() {
-            self.grant_store
+        let ids: Vec<String> = {
+            let mut store = self.monitor.store();
+            targets
+                .iter()
+                .map(|target| {
+                    let record = GrantRecord::event_stream_allow(
+                        actor_type,
+                        actor_id,
+                        ActorScope::User,
+                        target,
+                        workspace_root,
+                        GrantDuration::Always,
+                        GrantSource::User,
+                        None,
+                    );
+                    let id = record.grant_id.clone();
+                    store.record_decided(record, evidence);
+                    id
+                })
+                .collect()
+        };
+        if let Err(error) = self.monitor.save_grants() {
+            self.monitor
+                .store()
                 .records_mut()
-                .retain(|record| before.iter().any(|id| id == &record.grant_id));
+                .retain(|record| !ids.contains(&record.grant_id));
             let message = crate::broker::gate::grant_not_saved(&error);
             log::error!("event_subscriptions: {message}");
             return Err(message);
         }
-        // Keep the in-memory store consistent with disk for later evals.
-        self.reload(config_dir);
         log::info!(
-            "event_subscriptions: user granted ALWAYS to {actor_type:?} '{actor_id}' -> '{plugin_id}'"
+            "event_subscriptions: user granted ALWAYS to {actor_type:?} '{actor_id}' -> '{plugin_id}' grants={ids:?}"
         );
         Ok(())
     }
@@ -1214,7 +1353,7 @@ impl HostSubscriptionService {
             return None;
         };
         let decision = evaluate_publish(
-            &self.grant_store,
+            &self.monitor.store(),
             self.posture.as_ref(),
             req.workspace_root_override.as_deref(),
             &req.plugin_id,
@@ -1657,7 +1796,7 @@ mod tests {
         assert_eq!(consent.subscriber_id, "pane:7");
         assert!(timeline.lock().unwrap().subscriptions().is_empty());
 
-        svc.resolve_consent(consent, ConsentChoice::AllowOnce, Path::new("/tmp/ws"));
+        svc.resolve_consent(consent, ConsentChoice::AllowOnce);
         match rx.recv().unwrap() {
             HostSubscribeReply::Ok { subscriber_id, .. } => assert_eq!(subscriber_id, "pane:7"),
             HostSubscribeReply::Err { message } => panic!("allow-once should subscribe: {message}"),
@@ -1675,7 +1814,7 @@ mod tests {
         let consent = svc
             .classify_subscribe_request(req)
             .expect("Ask must park a consent");
-        svc.resolve_consent(consent, ConsentChoice::Deny, Path::new("/tmp/ws"));
+        svc.resolve_consent(consent, ConsentChoice::Deny);
         match rx.recv().unwrap() {
             HostSubscribeReply::Err { message } => assert!(message.contains("denied by user")),
             HostSubscribeReply::Ok { .. } => panic!("deny must refuse"),
@@ -1694,7 +1833,7 @@ mod tests {
         let consent = svc
             .classify_subscribe_request(req)
             .expect("Ask must park a consent");
-        svc.resolve_consent(consent, ConsentChoice::AllowAlways, dir.path());
+        svc.resolve_consent(consent, ConsentChoice::AllowAlways);
         assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
 
         // Fresh service over the same profile dir: the persisted grant makes the
@@ -1707,6 +1846,106 @@ mod tests {
             "persisted ALWAYS grant must answer inline, not re-prompt"
         );
         assert!(matches!(rx2.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+    }
+
+    /// The rows `actor` holds in the service's live store.
+    fn grant_ids_of(svc: &HostSubscriptionService, actor: &str) -> Vec<String> {
+        svc.monitor()
+            .store()
+            .records()
+            .iter()
+            .filter(|record| record.actor_id == actor)
+            .map(|record| record.grant_id.clone())
+            .collect()
+    }
+
+    /// Stint 1716, one grant store: an Always grant the person gives through
+    /// a subscription consent lands in the permission monitor's store, and
+    /// revoking it there stops the open subscription's deliveries at once,
+    /// with the pane and its scope revision unchanged.
+    #[test]
+    fn an_always_subscription_grant_revoked_through_the_monitor_stops_delivery() {
+        let timeline = timeline_with_stream();
+        let mut svc =
+            HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
+        let admitted = pane_scope(7, &[]);
+        let (mut req, rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
+        let consent = svc
+            .classify_subscribe_request(req)
+            .expect("no grant yet: consent is asked");
+        svc.resolve_consent(consent, ConsentChoice::AllowAlways);
+        assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+        let granted = grant_ids_of(&svc, "pane:7");
+        assert_eq!(granted.len(), 1, "the Always row is in the monitor's store");
+
+        emit(&timeline, "probe.tick");
+        assert_eq!(delivered(&timeline), vec!["probe.tick"], "positive control");
+        emit(&timeline, "probe.tick");
+        let revision = admitted.authority.scope().revision;
+        assert!(svc.monitor().revoke_grant_id(&granted[0]).unwrap());
+        assert!(!admitted.authority.is_revoked());
+        assert_eq!(admitted.authority.scope().revision, revision);
+        assert_eq!(
+            delivered(&timeline),
+            Vec::<String>::new(),
+            "queued item withheld"
+        );
+        emit(&timeline, "probe.tick");
+        assert_eq!(
+            delivered(&timeline),
+            Vec::<String>::new(),
+            "nothing routed after"
+        );
+
+        // The next subscribe asks again.
+        let (mut req, _rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.subscriber_authority = SubscriberAuthority::Pane(admitted);
+        assert!(svc.classify_subscribe_request(req).is_some());
+    }
+
+    /// Stint 1497 with one grant store: a seal-key rotation resets grants.
+    /// The service reads the monitor's store, so after the reset the open
+    /// subscription delivers nothing and the next subscribe asks again,
+    /// both when the store is reloaded in place (the Keychain-prompt
+    /// recovery) and when the host starts again on the reset profile.
+    #[test]
+    fn a_seal_reset_drops_subscription_grants_and_asks_again() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::broker::gate::PermissionMonitor::reload_for_test(dir.path());
+        let timeline = timeline_with_stream();
+        let mut svc = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
+        let admitted = pane_scope(7, &[]);
+        let (mut req, rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
+        let consent = svc.classify_subscribe_request(req).expect("asks first");
+        svc.resolve_consent(consent, ConsentChoice::AllowAlways);
+        assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+        emit(&timeline, "probe.tick");
+
+        crate::broker::seal::reset_unverified_profile(
+            &crate::broker::custody::HostProcess::for_test(),
+            dir.path(),
+        )
+        .unwrap();
+        // As `reload_after_keychain_prompt` does: the same monitor's store is
+        // replaced by the reset file.
+        *svc.monitor().store() = GrantStore::load_or_default(dir.path()).unwrap();
+        assert!(grant_ids_of(&svc, "pane:7").is_empty(), "grants were reset");
+        assert_eq!(delivered(&timeline), Vec::<String>::new(), "dropped");
+        let (mut req, _rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
+        assert!(svc.classify_subscribe_request(req).is_some(), "asks again");
+
+        // A host start on the reset profile opens the same one store.
+        crate::broker::gate::PermissionMonitor::reload_for_test(dir.path());
+        let svc2 = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
+        let (mut req, _rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.subscriber_authority = SubscriberAuthority::Pane(admitted);
+        assert!(
+            svc2.classify_subscribe_request(req).is_some(),
+            "asks after restart"
+        );
     }
 
     /// End-to-end: subscribe (full payload) → emit → the delivery carries the
@@ -1881,7 +2120,7 @@ mod tests {
             .declared_streams(CTX, "declare-probe")
             .is_empty());
 
-        svc.resolve_consent(consent, ConsentChoice::AllowOnce, Path::new("/tmp/ws"));
+        svc.resolve_consent(consent, ConsentChoice::AllowOnce);
         match rx.recv().unwrap() {
             HostPublishReply::Ok { detail, .. } => assert!(detail.contains("foo.stream")),
             HostPublishReply::Err { message } => panic!("allow-once should declare: {message}"),
@@ -1910,7 +2149,7 @@ mod tests {
         let consent = svc
             .classify_publish_request(req)
             .expect("Ask must park a consent");
-        svc.resolve_consent(consent, ConsentChoice::Deny, Path::new("/tmp/ws"));
+        svc.resolve_consent(consent, ConsentChoice::Deny);
         match rx.recv().unwrap() {
             HostPublishReply::Err { message } => assert!(message.contains("denied by user")),
             HostPublishReply::Ok { .. } => panic!("deny must refuse"),
@@ -1933,7 +2172,7 @@ mod tests {
         let consent = svc
             .classify_publish_request(req)
             .expect("Ask must park a consent");
-        svc.resolve_consent(consent, ConsentChoice::AllowAlways, dir.path());
+        svc.resolve_consent(consent, ConsentChoice::AllowAlways);
         assert!(matches!(rx.recv().unwrap(), HostPublishReply::Ok { .. }));
 
         let svc2 = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
@@ -1965,7 +2204,7 @@ mod tests {
         let consent = svc
             .classify_subscribe_request(sub_req)
             .expect("Ask must park a subscribe consent");
-        svc.resolve_consent(consent, ConsentChoice::AllowAlways, dir.path());
+        svc.resolve_consent(consent, ConsentChoice::AllowAlways);
         assert!(matches!(
             sub_rx.recv().unwrap(),
             HostSubscribeReply::Ok { .. }
@@ -2002,7 +2241,7 @@ mod tests {
         let consent = svc
             .classify_publish_request(pub_req)
             .expect("Ask must park a publish consent");
-        svc.resolve_consent(consent, ConsentChoice::AllowAlways, dir.path());
+        svc.resolve_consent(consent, ConsentChoice::AllowAlways);
         assert!(matches!(
             pub_rx.recv().unwrap(),
             HostPublishReply::Ok { .. }
@@ -2073,6 +2312,165 @@ mod tests {
             .into_iter()
             .map(|d| d.event)
             .collect()
+    }
+
+    /// Stint 1716 (design-3306 widening): two subscribers of one app share
+    /// its broker identity. Approving Always A+B for the second re-records
+    /// A's row; the first keeps receiving its queued and later A, never B.
+    /// Revoking B narrows the second back to A.
+    #[test]
+    fn widening_or_re_recording_an_always_grant_keeps_the_live_subscription() {
+        let timeline = timeline_with_stream();
+        declare(&timeline, "probe.late");
+        let mut svc =
+            HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
+        let mut subscribe = |delivery: &str, events: &[&str]| {
+            let (mut req, rx) = subscribe_request_decoupled(delivery, "app-probe");
+            req.event_names = events.iter().map(|e| e.to_string()).collect();
+            req.subscriber_type_override = Some(ActorType::Agent);
+            req.subscriber_authority = SubscriberAuthority::Plugin;
+            if let Some(consent) = svc.classify_subscribe_request(req) {
+                svc.resolve_consent(consent, ConsentChoice::AllowAlways);
+            }
+            assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+        };
+        let take = |id: &str| -> Vec<String> {
+            let mut t = timeline.lock().unwrap();
+            let got = t.take_deliveries_for(ActorType::Agent, id);
+            got.into_iter().map(|d| d.event).collect()
+        };
+        subscribe("pane-1", &["probe.tick"]);
+        emit(&timeline, "probe.tick");
+        subscribe("pane-2", &["probe.tick", "probe.late"]);
+        emit(&timeline, "probe.late");
+        emit(&timeline, "probe.tick");
+        assert_eq!(
+            take("pane-1"),
+            ["probe.tick", "probe.tick"],
+            "A only, queued and later"
+        );
+        assert_eq!(take("pane-2"), ["probe.late", "probe.tick"]);
+
+        let late: Vec<String> = svc
+            .monitor()
+            .store()
+            .records()
+            .iter()
+            .filter(|r| r.target_id == "event-probe::probe.late")
+            .map(|r| r.grant_id.clone())
+            .collect();
+        assert_eq!(late.len(), 1);
+        assert!(svc.monitor().revoke_grant_id(&late[0]).unwrap());
+        emit(&timeline, "probe.late");
+        emit(&timeline, "probe.tick");
+        assert_eq!(take("pane-2"), ["probe.tick"], "narrowed to A");
+        assert_eq!(take("pane-1"), ["probe.tick"]);
+    }
+
+    /// Stint 1716 (round 3): with Always A on file, Allow Once for A+B
+    /// creates and claims a once grant only for B. Nothing is left for A, so
+    /// after Always A is revoked an A-only subscription asks again.
+    #[test]
+    fn a_once_consent_leaves_no_unclaimed_grant_behind() {
+        let timeline = timeline_with_stream();
+        declare(&timeline, "probe.late");
+        let mut store = GrantStore::default();
+        let always = allow_grant("pane:7", "event-probe::probe.tick");
+        let always_id = always.grant_id.clone();
+        store.record(always);
+        let mut svc = HostSubscriptionService::new_for_test(store, Arc::clone(&timeline));
+        let subscribe = |svc: &mut HostSubscriptionService, events: &[&str]| {
+            let names = events.iter().map(|e| e.to_string()).collect();
+            let (mut req, rx) = subscribe_request(names, PayloadMode::Full, None);
+            req.subscriber_authority = SubscriberAuthority::Pane(pane_scope(7, &[]));
+            (svc.classify_subscribe_request(req), rx)
+        };
+        let (consent, rx) = subscribe(&mut svc, &["probe.tick", "probe.late"]);
+        svc.resolve_consent(consent.expect("B asks"), ConsentChoice::AllowOnce);
+        assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+        assert!(svc.monitor().revoke_grant_id(&always_id).unwrap());
+        assert!(
+            subscribe(&mut svc, &["probe.tick"]).0.is_some(),
+            "an A-only subscription asks; no leftover once grant admits it"
+        );
+    }
+
+    /// Stint 1716 (design-3306 once): a once consent authorizes one
+    /// registration, which delivers every event while it lives; a second
+    /// registration asks again.
+    #[test]
+    fn a_once_consent_is_one_registration() {
+        let timeline = timeline_with_stream();
+        let mut svc =
+            HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
+        let subscribe = |svc: &mut HostSubscriptionService| {
+            let (mut req, rx) =
+                subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+            req.subscriber_authority = SubscriberAuthority::Pane(pane_scope(7, &[]));
+            (svc.classify_subscribe_request(req), rx)
+        };
+        let (consent, rx) = subscribe(&mut svc);
+        svc.resolve_consent(consent.expect("asks first"), ConsentChoice::AllowOnce);
+        assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+        emit(&timeline, "probe.tick");
+        emit(&timeline, "probe.tick");
+        assert_eq!(delivered(&timeline), ["probe.tick", "probe.tick"]);
+        assert!(
+            subscribe(&mut svc).0.is_some(),
+            "a second registration asks"
+        );
+    }
+
+    /// Stint 1716: an event queued while the subscription was admitted is not
+    /// handed over once the pane's scope moves, the pane closes, or the grant
+    /// that allowed it is revoked. The drain itself checks the delivery
+    /// permit, not only routing.
+    #[test]
+    fn queued_deliveries_are_withheld_after_scope_change_revoke_or_grant_revocation() {
+        for change in ["none", "scope", "close", "grant"] {
+            let timeline = timeline_with_stream();
+            let mut store = GrantStore::default();
+            let grant = allow_grant("pane:7", "event-probe::probe.tick");
+            let grant_id = grant.grant_id.clone();
+            store.record(grant);
+            let service = HostSubscriptionService::new_for_test(store, Arc::clone(&timeline));
+            let admitted = pane_scope(7, &[]);
+            let (mut req, rx) =
+                subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+            req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
+            assert!(service.classify_subscribe_request(req).is_none());
+            assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+            emit(&timeline, "probe.tick");
+            assert_eq!(
+                timeline.lock().unwrap().pending_delivery_count(),
+                1,
+                "queued"
+            );
+            let revision = admitted.authority.scope().revision;
+            match change {
+                "scope" => {
+                    admitted
+                        .authority
+                        .publish_scope(PathBuf::from("/tmp/elsewhere"));
+                }
+                "close" => admitted.authority.revoke(),
+                "grant" => assert!(service.monitor().revoke_grant_id(&grant_id).unwrap()),
+                _ => {}
+            }
+            if change == "none" {
+                assert_eq!(delivered(&timeline), vec!["probe.tick"], "positive control");
+                continue;
+            }
+            if change == "grant" {
+                assert!(!admitted.authority.is_revoked());
+                assert_eq!(admitted.authority.scope().revision, revision);
+            }
+            assert_eq!(
+                delivered(&timeline),
+                Vec::<String>::new(),
+                "old-scope data is not delivered ({change})"
+            );
+        }
     }
 
     /// Round 3 item 4, round 4 aggregate: "all streams" from a pane is
@@ -2148,8 +2546,7 @@ mod tests {
         admitted
             .authority
             .publish_scope(PathBuf::from("/tmp/elsewhere"));
-        let config = tempfile::tempdir().unwrap();
-        service.resolve_consent(consent, ConsentChoice::AllowOnce, config.path());
+        service.resolve_consent(consent, ConsentChoice::AllowOnce);
         assert!(
             matches!(rx.recv().unwrap(), HostSubscribeReply::Err { .. }),
             "consent cannot release an effect in another scope"

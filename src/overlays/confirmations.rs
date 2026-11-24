@@ -396,9 +396,8 @@ impl PlexiApp {
                 _ => None,
             };
             if let Some(consent) = self.pending_event_consents.pop_front() {
-                let config_dir = crate::config::config_dir();
                 self.host_subscriptions
-                    .resolve_consent_decided(consent, choice, &config_dir, evidence);
+                    .resolve_consent_decided(consent, choice, evidence);
             }
         }
     }

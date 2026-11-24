@@ -1344,6 +1344,7 @@ fn a_covered_worker_deny_beats_an_exact_stored_allow() {
             None,
         )
         .unwrap()
+        .result
     };
     let crate::workspace::secrets::ReadResult::PermissionRequired { pending_id } = read() else {
         panic!("expected a pending request");

@@ -195,7 +195,12 @@ mod tests {
                 trigger_mode: TriggerMode::Conversation,
                 duration: GrantDuration::Session,
                 created_at: "test".into(),
-                admitted: None,
+                permit: crate::broker::permit::delivery_fixture(
+                    ActorType::Agent,
+                    name,
+                    PUBLISHER,
+                    &[STREAM.to_string()],
+                ),
             });
         }
         let outcome = timeline

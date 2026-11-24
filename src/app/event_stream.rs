@@ -501,7 +501,12 @@ mod tests {
                 duration: crate::broker::GrantDuration::Session,
                 subscriber_context_id: CONTEXT,
                 created_at: "test".into(),
-                admitted: None,
+                permit: crate::broker::permit::delivery_fixture(
+                    ActorType::External,
+                    &key,
+                    "probe-1285",
+                    &["tick".to_string()],
+                ),
             });
             timeline
                 .record_event(
