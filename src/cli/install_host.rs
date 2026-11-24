@@ -649,6 +649,25 @@ fn apply_admitted_pack(
     outcomes
 }
 
+/// `plugin install local:<name>` over a copy that is not the shipped one
+/// replaces it with the shipped one: the recovery a refused launch names
+/// (stint 1398). `None` when nothing is there or it is already the bundle.
+pub(crate) fn repair_changed_bundled(name: &str, target_root: &Path) -> Option<InstallOutcome> {
+    if !is_bundled_plugin_id(name) {
+        return None;
+    }
+    let dest = target_root.join(name);
+    let meta = std::fs::symlink_metadata(&dest).ok()?;
+    if !meta.file_type().is_symlink() && matches_bundled_plugin(name, &dest) {
+        return None;
+    }
+    log::info!(
+        "install: replacing changed copy of bundled {name} at {}",
+        dest.display()
+    );
+    Some(refresh_one_local(&UvProvisioner, name, name, target_root))
+}
+
 /// Replace an installed `local:` plugin with the copy embedded in this binary.
 fn refresh_one_local(
     provision: &dyn Provision,

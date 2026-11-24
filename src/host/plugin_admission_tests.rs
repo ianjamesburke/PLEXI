@@ -1298,3 +1298,41 @@ fn a_buried_pane_is_revealed_only_for_its_own_origin() {
     assert_eq!(top_origin(&h), dev_entry);
     assert_eq!(guest_starts_for_test(), starts, "revealing starts no guest");
 }
+
+/// Round 3, install path: a local install over a bundled id is refused before
+/// it replaces the working copy, and the bundled plugin still starts.
+#[test]
+fn a_local_install_over_a_bundled_id_is_refused_and_the_copy_survives() {
+    let rig = Rig::new();
+    let _profile = crate::config::set_test_profile_dir(rig.profile.path().to_path_buf());
+    let todo = extract_bundled("todo", &rig.plugins());
+    let elsewhere = tempfile::tempdir().unwrap();
+    let changed = write_plugin(elsewhere.path(), "todo");
+    assert_eq!(
+        crate::cli::plugin::plugin_install_with_pin(
+            &changed.to_string_lossy(),
+            None,
+            crate::cli::InstallConfirm::Interactive,
+            true,
+        ),
+        1
+    );
+    assert_eq!(
+        rig.start(&todo),
+        Ok(Basis::Bundled),
+        "the bundled copy survives"
+    );
+}
+
+/// Round 3, recovery: the command a changed copy's refusal names repairs it.
+#[test]
+fn the_refusal_hint_repairs_a_changed_bundled_copy() {
+    let rig = Rig::new();
+    let _profile = crate::config::set_test_profile_dir(rig.profile.path().to_path_buf());
+    let todo = extract_bundled("todo", &rig.plugins());
+    std::fs::write(todo.join("main.py"), "print('changed')\n").unwrap();
+    let error = rig.start(&todo).unwrap_err();
+    assert!(error.contains("plugin install local:todo"), "{error}");
+    assert_eq!(crate::cli::install_cli("local:todo", true), 0);
+    assert_eq!(rig.start(&todo), Ok(Basis::Bundled), "repaired");
+}

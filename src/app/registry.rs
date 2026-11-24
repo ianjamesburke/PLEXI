@@ -1096,7 +1096,7 @@ impl PluginRegistry {
 
 /// The `[plugin] id` a plugin directory's manifest declares, read without
 /// validating the rest of the manifest; `None` when it cannot be read.
-fn declared_plugin_id(plugin_dir: &Path) -> Option<String> {
+pub(crate) fn declared_plugin_id(plugin_dir: &Path) -> Option<String> {
     let raw = std::fs::read_to_string(plugin_dir.join("manifest.toml")).ok()?;
     let value: toml::Value = toml::from_str(&raw).ok()?;
     value.get("plugin")?.get("id")?.as_str().map(str::to_owned)

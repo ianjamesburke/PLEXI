@@ -47,6 +47,8 @@ pub(crate) enum Refusal {
     RemoteSource { source: String },
     /// A workspace or path tree that reuses the id of a bundled plugin.
     ShadowsBundled { id: String, dir: PathBuf },
+    /// A local install that would replace a bundled plugin with other files.
+    InstallOverBundled { id: String, dir: PathBuf },
     /// A profile install the person has not allowed.
     NotAllowed { id: String, dir: PathBuf },
     /// A plugin in a folder the person has not trusted.
@@ -80,6 +82,16 @@ impl std::fmt::Display for Refusal {
                  Plexi, and a workspace or folder plugin cannot replace a bundled one. \
                  Change [plugin] id in its manifest.toml.",
                 shown(id),
+                dir.display()
+            ),
+            Self::InstallOverBundled { id, dir } => write!(
+                f,
+                "refused to install {} as '{}': that id belongs to a plugin bundled with Plexi \
+                 and these files differ from it, so nothing was changed. Change [plugin] id in \
+                 its manifest.toml, or develop it in place with `{} view open {}`.",
+                dir.display(),
+                shown(id),
+                crate::cli::setup::cli_name(),
                 dir.display()
             ),
             Self::NotAllowed { id, dir, .. } => write!(
@@ -158,6 +170,28 @@ pub(crate) fn reserved_id(id: &str, plugin_dir: &Path) -> Result<(), Refusal> {
             dir: plugin_dir.to_path_buf(),
         });
     }
+    Ok(())
+}
+
+/// A local folder may install under a bundled plugin's id only when it is that
+/// plugin, byte for byte: anything else would replace a working bundled copy
+/// with one that is refused at launch.
+pub(crate) fn admit_local_install(id: &str, source: &Path) -> Result<(), Refusal> {
+    if crate::cli::install_host::is_bundled_plugin_id(id)
+        && !crate::cli::install_host::matches_bundled_plugin(id, source)
+    {
+        let refusal = Refusal::InstallOverBundled {
+            id: id.to_string(),
+            dir: source.to_path_buf(),
+        };
+        log::info!("plugin_admission: install refused: {refusal}");
+        return Err(refusal);
+    }
+    log::info!(
+        "plugin_admission: local install admitted: {} from {}",
+        shown(id),
+        source.display()
+    );
     Ok(())
 }
 
@@ -465,7 +499,9 @@ impl PluginAdmission {
                 dir: plugin.root.clone(),
                 error: format!(
                     "it uses the id of a plugin bundled with Plexi but differs from the copy \
-                     shipped with this version; reinstall it with `plexi plugin install local:{}`",
+                     shipped with this version; `{} plugin install local:{}` replaces it with \
+                     the shipped copy",
+                    crate::cli::setup::cli_name(),
                     plugin.owner
                 ),
             });

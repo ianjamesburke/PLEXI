@@ -942,14 +942,18 @@ pub fn host_version_gate(report: &crate::app::package::PackageReport) -> Option<
     }
 }
 
-/// Resolve the trust label for a report against the bundled core pack ids.
+/// The trust label for a report: "Bundled" only for a source folder verified
+/// against the copy built into this binary (stint 1398).
 fn trust_label_for(
     report: &crate::app::package::PackageReport,
+    source_dir: Option<&std::path::Path>,
     marketplace_reviewed: bool,
 ) -> crate::app::package::TrustLabel {
-    let core_ids = crate::cli::install_host::core_pack_ids();
-    let core_refs: Vec<&str> = core_ids.iter().map(String::as_str).collect();
-    crate::app::package::trust_label(report, &core_refs, marketplace_reviewed)
+    let verified_bundle = source_dir.is_some_and(|dir| {
+        crate::cli::install_host::is_bundled_plugin_id(&report.id)
+            && crate::cli::install_host::matches_bundled_plugin(&report.id, dir)
+    });
+    crate::app::package::trust_label(report, verified_bundle, marketplace_reviewed)
 }
 
 /// The install confirmation gate. Returns `Ok(true)` to proceed,
@@ -999,11 +1003,12 @@ pub fn confirm_install(
 /// capability (stint 1291). Returns an exit code when the install stops.
 fn run_install_gate(
     report: &crate::app::package::PackageReport,
+    source_dir: Option<&std::path::Path>,
     assume_yes: bool,
     marketplace_reviewed: bool,
 ) -> Result<(), i32> {
     use std::io::IsTerminal;
-    let label = trust_label_for(report, marketplace_reviewed);
+    let label = trust_label_for(report, source_dir, marketplace_reviewed);
     print_trust_sheet(report, label);
     // Host-version compatibility: a too-old host (or malformed requirement)
     // aborts before the confirm prompt; a too-new host only warns.
@@ -1051,7 +1056,10 @@ pub fn plugin_inspect_cli(path: &str) -> i32 {
     };
     match report {
         Ok(report) => {
-            print_trust_sheet(&report, trust_label_for(&report, false));
+            print_trust_sheet(
+                &report,
+                trust_label_for(&report, target.is_dir().then_some(target), false),
+            );
             0
         }
         Err(e) => {
@@ -1097,6 +1105,13 @@ fn plugin_install_with_pin_inner(
         eprintln!("error: {refusal}");
         return 1;
     }
+    // Before the trust sheet and before anything is replaced (stint 1398).
+    if let Some(id) = crate::app::registry::declared_plugin_id(&src) {
+        if let Err(refusal) = crate::host::plugin_admission::admit_local_install(&id, &src) {
+            eprintln!("error: {refusal}");
+            return 1;
+        }
+    }
 
     // The 0015 validator is the install gate (stint 0016). User-initiated
     // installs must pass it; PreApproved installs (bundled first-party
@@ -1106,7 +1121,7 @@ fn plugin_install_with_pin_inner(
     match crate::app::package::validate_dir(&src) {
         Ok(report) => {
             if confirm == InstallConfirm::Interactive {
-                if let Err(code) = run_install_gate(&report, assume_yes, false) {
+                if let Err(code) = run_install_gate(&report, Some(&src), assume_yes, false) {
                     return code;
                 }
             }
@@ -1364,7 +1379,7 @@ fn plugin_install_package_inner(
     };
 
     if confirm == InstallConfirm::Interactive {
-        if let Err(code) = run_install_gate(&report, assume_yes, marketplace_reviewed) {
+        if let Err(code) = run_install_gate(&report, None, assume_yes, marketplace_reviewed) {
             return code;
         }
     }
@@ -2776,10 +2791,13 @@ mod install_confirm_tests {
     fn marketplace_reviewed_helper_uses_reviewed_native_label() {
         let r = report();
         assert_eq!(
-            super::trust_label_for(&r, false),
+            super::trust_label_for(&r, None, false),
             TrustLabel::PythonUnreviewed
         );
-        assert_eq!(super::trust_label_for(&r, true), TrustLabel::ReviewedNative);
+        assert_eq!(
+            super::trust_label_for(&r, None, true),
+            TrustLabel::ReviewedNative
+        );
     }
 }
 
@@ -3399,6 +3417,36 @@ pub(super) fn plugin_lookup_error(
         .unwrap_or_else(|| {
             format!("plugin '{id}' not found — run `plexi plugin list` to see installed plugins")
         })
+}
+
+#[cfg(test)]
+mod bundled_label_tests {
+    use crate::app::package::{validate_dir, TrustLabel};
+    use crate::cli::install_host::test_support::extract_bundled;
+
+    /// Stint 1398: "Bundled" on the trust sheet is verified provenance. A
+    /// changed copy carrying a core id is not labelled Bundled.
+    #[test]
+    fn the_bundled_label_comes_from_the_files_not_the_id() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = extract_bundled("todo", root.path());
+        let report = validate_dir(&dir).unwrap();
+        assert_eq!(
+            super::trust_label_for(&report, Some(&dir), false),
+            TrustLabel::FirstPartyCore
+        );
+        std::fs::write(dir.join("main.py"), "print('changed')\n").unwrap();
+        let report = validate_dir(&dir).unwrap();
+        assert_eq!(
+            super::trust_label_for(&report, Some(&dir), false),
+            TrustLabel::PythonUnreviewed
+        );
+        assert_eq!(
+            super::trust_label_for(&report, None, false),
+            TrustLabel::PythonUnreviewed,
+            "a package file is never verified as the bundle"
+        );
+    }
 }
 
 #[cfg(test)]

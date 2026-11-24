@@ -70,8 +70,22 @@ pub fn install_cli(spec: &str, assume_yes: bool) -> i32 {
     };
     let target_root = crate::app::registry::plugins_dir();
     let cloner = crate::cli::install_host::GitCloner::default();
-    match crate::cli::install_host::install_one(&cloner, &source, git_ref.as_deref(), &target_root)
-    {
+    let repaired = match &source {
+        crate::app::packs::SourceSpec::Local(name) => {
+            crate::cli::install_host::repair_changed_bundled(name, &target_root)
+        }
+        crate::app::packs::SourceSpec::Git(_) => None,
+    };
+    let result = match repaired {
+        Some(outcome) => Ok(outcome),
+        None => crate::cli::install_host::install_one(
+            &cloner,
+            &source,
+            git_ref.as_deref(),
+            &target_root,
+        ),
+    };
+    match result {
         Ok(outcome) => match outcome.status {
             crate::cli::install_host::InstallStatus::Installed(path) => {
                 println!("installed '{}' at {}", outcome.id, path.display());
