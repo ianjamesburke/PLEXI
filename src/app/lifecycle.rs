@@ -5494,30 +5494,14 @@ impl PlexiApp {
                     .set_root_context_for(&origin, *context_id)
                     .and_then(|target| self.resolve_context_idx(target, "set_context_root"))
                     .and_then(|idx| {
-                        if !root.is_dir() {
-                            return Err(format!(
-                                "context root {} is not a directory",
-                                root.display()
-                            ));
-                        }
                         let id = self.router.get(idx).context_id;
-                        // Moving a root moves the scope of every pane in
-                        // the context: the caller is admitted for it as
-                        // itself (stint 1285).
-                        let current = self.router.get(idx).root.clone();
-                        self.admit_caller_use(
-                            &origin,
-                            "context.set_root",
-                            &serde_json::json!({"context_id": id, "root": root}),
-                            &current,
-                            id,
-                        )?;
-                        self.set_context_root(root.clone(), Some(id));
+                        let subject = super::agent_tools::UseSubject::from_origin(&origin)?;
+                        self.set_root_for(subject, root, id)?;
                         log::info!(
                             "set_context_root: context_id={id} caller={} applied",
                             origin.class()
                         );
-                        Ok(serde_json::json!({"context_id":id, "root":root}))
+                        Ok(serde_json::json!({"context_id":id, "root":self.router.get(idx).root}))
                     });
                 let reply = result.unwrap_or_else(|error| {
                     log::info!("set_context_root: rejected: {error}");

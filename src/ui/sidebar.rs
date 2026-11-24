@@ -412,12 +412,6 @@ impl PlexiApp {
         let mut unpark_context: Option<usize> = None;
         let mut parked_header_rect: Option<Rect> = None;
 
-        let focused_cwd = self
-            .windows
-            .get(self.active_window)
-            .and_then(|w| w.focused_pane.map(|tile| (w, tile)))
-            .and_then(|(w, tile)| w.get_focused_pane_cwd(tile));
-
         self.sync_attention_queue();
 
         // Build display order: top-level contexts only. Subcontexts never appear
@@ -487,7 +481,6 @@ impl PlexiApp {
 
                     if delete_context.is_none() {
                         let num_ctxs = num_contexts;
-                        let cwd_for_menu = focused_cwd.clone();
                         response.context_menu(|ui| {
                             if crate::ui::button::menu_item(ui, "Rename", &self.colors).clicked() {
                                 menu_action = Some((i, WindowMenuAction::Rename));
@@ -529,7 +522,9 @@ impl PlexiApp {
                                 }
                             }
                             ui.separator();
-                            if let Some(cwd) = &cwd_for_menu {
+                            if let Some(source) =
+                                self.windows[self.active_window].focused_root_source(ctx_id)
+                            {
                                 if crate::ui::button::menu_item(
                                     ui,
                                     "Set root to current path",
@@ -537,14 +532,14 @@ impl PlexiApp {
                                 )
                                 .clicked()
                                 {
-                                    menu_action = Some((i, WindowMenuAction::SetRoot(cwd.clone())));
+                                    menu_action = Some((i, WindowMenuAction::SetRoot(source)));
                                     ui.close();
                                 }
                             }
                             if crate::ui::button::menu_item(ui, "Edit root\u{2026}", &self.colors)
                                 .clicked()
                             {
-                                menu_action = Some((i, WindowMenuAction::OpenRootOverlay));
+                                menu_action = Some((i, WindowMenuAction::OpenRootOverlay(ctx_id)));
                                 ui.close();
                             }
                             if num_ctxs > 1 {
@@ -825,18 +820,13 @@ impl PlexiApp {
                     self.cancel_context_rename("sidebar reorder");
                     self.router.reorder_top_level(i, ContextMove::Bottom);
                 }
-                WindowMenuAction::SetRoot(path) => {
-                    log::info!(
-                        "sidebar: set context root ctx_idx={i} root={}",
-                        path.display()
-                    );
-                    let ctx_id = self.router.get(i).context_id;
-                    self.set_context_root(path, Some(ctx_id));
-                    self.mark_workspace_dirty();
-                }
-                WindowMenuAction::OpenRootOverlay => {
-                    let existing = self.router.get(i).root.display().to_string();
-                    log::info!("TextInputOverlay: opened target=ContextRoot({i}) via sidebar");
+                WindowMenuAction::SetRoot(source) => self.set_root_from_pane(source),
+                WindowMenuAction::OpenRootOverlay(id) => {
+                    let Some(root) = self.context_root_for(id) else {
+                        return;
+                    };
+                    let existing = root.display().to_string();
+                    log::info!("TextInputOverlay: opened target=ContextRoot({id}) via sidebar");
                     self.text_overlay_browse_rx = None;
                     self.text_overlay = Some((
                         crate::app::TextInputOverlay {
@@ -845,7 +835,7 @@ impl PlexiApp {
                             buffer: existing,
                             session: crate::ui::text_field::OpenSession::new(),
                         },
-                        crate::app::OverlayTarget::ContextRoot(i),
+                        crate::app::OverlayTarget::ContextRoot(id),
                     ));
                 }
                 WindowMenuAction::Park => {

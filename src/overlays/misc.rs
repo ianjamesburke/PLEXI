@@ -1,4 +1,17 @@
 use super::*;
+use crate::broker::permit::ContextRootProof;
+
+pub(crate) struct WindowChosenRoot(());
+
+#[cfg(test)]
+impl PlexiApp {
+    /// Set up a fixture through the same boundary as a window-chosen root.
+    pub(crate) fn set_context_root(&mut self, root: std::path::PathBuf, id: Option<u64>) {
+        let proof = ContextRootProof::HostUi(WindowChosenRoot(()));
+        self.commit_context_root(root, id.unwrap_or(self.router.active().context_id), proof)
+            .unwrap();
+    }
+}
 
 pub(super) fn section_label(ui: &mut egui::Ui, title: &str, colors: &Colors) {
     ui.label(
@@ -577,15 +590,15 @@ impl PlexiApp {
             let raw = overlay.buffer.trim().to_string();
 
             match target {
-                OverlayTarget::ContextRoot(idx) => {
-                    if idx >= self.router.len() {
-                        log::warn!("TextInputOverlay: context idx={idx} no longer exists");
+                OverlayTarget::ContextRoot(id) => {
+                    let Some(current) = self.context_root_for(id) else {
+                        log::info!("TextInputOverlay: context {id} no longer exists");
                         return;
-                    }
+                    };
                     if raw.is_empty() {
                         // A context is always anchored — an empty commit leaves
                         // the root unchanged rather than un-rooting the context.
-                        log::info!("TextInputOverlay: empty root input idx={idx} — root unchanged");
+                        log::info!("TextInputOverlay: empty root input for context {id}");
                     } else {
                         // Tilde expansion.
                         let expanded = if let Some(rest) = raw.strip_prefix("~/") {
@@ -604,19 +617,20 @@ impl PlexiApp {
                         // Skip resolution if the raw input started with ~ (failed
                         // tilde expansion should not be treated as relative).
                         let resolved = if expanded.is_relative() && !raw.starts_with('~') {
-                            self.router.get(idx).root.join(&expanded)
+                            current.join(&expanded)
                         } else {
                             expanded
                         };
 
                         log::info!(
-                            "TextInputOverlay: set context root idx={idx} path={}",
+                            "TextInputOverlay: set context root id={id} path={}",
                             resolved.display()
                         );
-                        let ctx_id = self.router.get(idx).context_id;
-                        self.set_context_root(resolved, Some(ctx_id));
+                        let proof = ContextRootProof::HostUi(WindowChosenRoot(()));
+                        if let Err(error) = self.commit_context_root(resolved, id, proof) {
+                            log::info!("TextInputOverlay: root change refused: {error}");
+                        }
                     }
-                    self.mark_workspace_dirty();
                 }
             }
         }

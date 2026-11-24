@@ -1,7 +1,16 @@
 //! Agent tool calls use the worker lifecycle and the host's structured mailbox.
 use super::PlexiApp;
+use crate::broker::caller::{RequestOrigin, SocketCaller};
+use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor, UseDecision};
+use crate::broker::permit::{self, ContextRootProof, Coverage, Operation, Permit, SetContextRoot};
+use crate::broker::principal::Principal;
+use crate::broker::PermissionPosture;
+use crate::host::context::PaneCwd;
+use crate::host::plugin_timeline::AdmittedScope;
 use crate::protocol::AgentState;
 use serde_json::{json, Value};
+use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// The caller of an agent tool, as the host established it (stint 1285).
@@ -27,6 +36,18 @@ pub(crate) struct AgentToolWait {
     response_file: String,
     deadline: Instant,
     resolve_idle: bool,
+}
+
+/// The incarnation that supplied a value, or the shared outside-process principal.
+pub(super) enum UseSubject {
+    Pane(AdmittedScope),
+    External,
+}
+
+struct CallerUse {
+    monitor: Arc<PermissionMonitor>,
+    actor: String,
+    call: String,
 }
 
 impl PlexiApp {
@@ -94,46 +115,112 @@ impl PlexiApp {
         root: &std::path::Path,
         context_id: u64,
     ) -> Result<(), String> {
-        use crate::broker::caller::{RequestOrigin, SocketCaller};
-        use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
-        use crate::broker::principal::Principal;
-        let (principal, posture) = match origin {
-            RequestOrigin::Socket(SocketCaller::External(_)) => (Principal::External, None),
-            RequestOrigin::Socket(SocketCaller::Pane(pane)) => (
-                Principal::agent(format!("pane:{}", pane.terminal_pane)),
-                self.pane_ceiling(pane.terminal_pane)?,
-            ),
-            RequestOrigin::Socket(SocketCaller::Unidentified(reason)) => {
-                return Err(format!(
-                    "permission_denied: {tool}: caller identity could not be established: {reason}"
-                ))
+        if matches!(origin, RequestOrigin::HostUi | RequestOrigin::HostSystem) {
+            return Ok(());
+        }
+        let subject = UseSubject::from_origin(origin)?;
+        let decide = PermissionMonitor::admit_with_posture;
+        let (caller, answer) = subject.decide(tool, input, root, context_id, decide)?;
+        caller.finish_immediate(tool, answer)
+    }
+}
+
+impl UseSubject {
+    pub(super) fn from_origin(origin: &RequestOrigin) -> Result<Self, String> {
+        match origin.socket_caller() {
+            Some(SocketCaller::Pane(pane)) => {
+                let scope = AdmittedScope::of(&pane.authority);
+                if scope.authority.scope().context_id != pane.context_id {
+                    return Err("permission_denied: caller pane changed context".into());
+                }
+                Ok(Self::Pane(scope))
             }
-            RequestOrigin::PluginGuest(_) | RequestOrigin::SpawnQueue => {
-                return Err(format!(
-                    "permission_denied: {tool} is not served to {}",
-                    origin.class()
-                ))
+            Some(SocketCaller::External(_)) => Ok(Self::External),
+            Some(SocketCaller::Unidentified(reason)) => Err(format!(
+                "permission_denied: caller identity could not be established: {reason}"
+            )),
+            None => Err(format!(
+                "permission_denied: {} has no socket caller proof",
+                origin.class()
+            )),
+        }
+    }
+
+    fn decide<D>(
+        &self,
+        tool: &str,
+        input: &Value,
+        root: &Path,
+        context_id: u64,
+        decide: impl FnOnce(&PermissionMonitor, AdmitRequest<'_>, Option<&PermissionPosture>) -> D,
+    ) -> Result<(CallerUse, D), String> {
+        let (principal, posture) = match self {
+            Self::Pane(scope) => {
+                let live = scope.current()?;
+                let actor = Principal::agent(format!("pane:{}", live.pane_id()));
+                let posture = live.grant().posture().map_err(|e| e.to_string())?;
+                (actor, posture)
             }
-            RequestOrigin::HostUi | RequestOrigin::HostSystem => return Ok(()),
+            Self::External => (Principal::External, None),
         };
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir())
-            .map_err(|error| error.to_string())?;
+            .map_err(|e| e.to_string())?;
         let actor = principal.actor_id().to_string();
         let call = format!("caller-{tool}-{}", uuid::Uuid::new_v4());
-        let root = crate::platform::path::canonical_or_self(root);
-        match monitor.admit_with_posture(AdmitRequest {
+        let request = AdmitRequest {
             call_id: &call,
             tool,
             input_json: &input.to_string(),
             principal: &principal,
             actor_scope: crate::broker::ActorScope::User,
             trust_origin: "plexi-cli",
-            workspace_root: &root,
+            workspace_root: &crate::platform::path::canonical_or_self(root),
             context_id,
             package_id: "",
             instance_id: 0,
             target_type: crate::broker::TargetType::HostTool,
-        }, posture.as_ref()) {
+        };
+        let answer = decide(&monitor, request, posture);
+        Ok((
+            CallerUse {
+                monitor,
+                actor,
+                call,
+            },
+            answer,
+        ))
+    }
+}
+
+impl CallerUse {
+    fn note_use(&self, grant: &str, fingerprint: &str, resource: &str) -> Result<(), String> {
+        self.monitor
+            .note_use(&self.actor, &self.call, grant, fingerprint, resource, "")
+    }
+
+    fn outcome(
+        &self,
+        grant: &str,
+        fingerprint: &str,
+        resource: &str,
+        outcome: &str,
+    ) -> Result<(), String> {
+        self.monitor.note_outcome(
+            &self.actor,
+            &self.call,
+            grant,
+            fingerprint,
+            resource,
+            "",
+            outcome,
+            "",
+            "",
+        )
+    }
+
+    fn finish_immediate(&self, tool: &str, answer: Admission) -> Result<(), String> {
+        let actor = &self.actor;
+        match answer {
             Admission::Proceed {
                 grant_id,
                 fingerprint,
@@ -141,24 +228,100 @@ impl PlexiApp {
                 ..
             } => {
                 let resource = resource_id.unwrap_or_default();
-                monitor.note_use(&actor, &call, &grant_id, &fingerprint, &resource, "")?;
-                monitor.note_outcome(
-                    &actor, &call, &grant_id, &fingerprint, &resource, "", "ok", "", "",
-                )?;
-                monitor.consume_once(&grant_id, None);
+                self.note_use(&grant_id, &fingerprint, &resource)?;
+                self.outcome(&grant_id, &fingerprint, &resource, "ok")?;
+                self.monitor.consume_once(&grant_id, None);
                 log::info!("caller_use: admitted tool={tool} actor={actor} grant={grant_id}");
                 Ok(())
             }
             Admission::Required { pending_request_id } => {
                 log::info!("caller_use: tool={tool} actor={actor} waits on {pending_request_id}");
-                Err(format!(
-                    "permission_denied: {tool} needs approval for {actor}. Approve request {pending_request_id} in Needs you, then rerun this command."
-                ))
+                Err(needs_approval(tool, actor, &pending_request_id))
             }
             Admission::Denied { code } => {
                 log::info!("caller_use: tool={tool} actor={actor} denied code={code}");
                 Err(format!("permission_denied: {tool} for {actor} was denied ({code})"))
             }
+        }
+    }
+}
+
+impl UseSubject {
+    pub(super) fn admit_root_change(
+        &self,
+        workspace: &Path,
+        id: u64,
+        root: &Path,
+    ) -> Result<(Permit<SetContextRoot>, impl FnOnce(bool)), String> {
+        let (canonical, target) = SetContextRoot::target(id, root)?;
+        let tool = SetContextRoot::NAME;
+        let input = json!({"context_id": id, "root": canonical});
+        let decide = PermissionMonitor::admit_for_use;
+        let (caller, answer) = self.decide(tool, &input, workspace, id, decide)?;
+        let actor = &caller.actor;
+        let (approved, grant, fingerprint, resource) = match answer {
+            UseDecision::Allowed {
+                approved,
+                grant_id,
+                fingerprint,
+                resource_id,
+            } => (*approved, grant_id, fingerprint, resource_id),
+            UseDecision::Required { pending_request_id } => {
+                return Err(needs_approval(tool, actor, &pending_request_id))
+            }
+            UseDecision::Denied => {
+                return Err(format!("permission_denied: {tool} for {actor} was denied"))
+            }
+        };
+        let coverage = Coverage::new(caller.monitor.clone(), vec![(target.clone(), approved)]);
+        let permit = match self {
+            Self::Pane(scope) => permit::mint_pane(scope.clone(), target, coverage)?,
+            Self::External => permit::mint_unbound("external", target, coverage),
+        };
+        caller.note_use(&grant, &fingerprint, &resource)?;
+        // Audit after the irreversible handoff, outside the admission lock.
+        let record_outcome = move |applied| {
+            let outcome = if applied { "ok" } else { "denied" };
+            if let Err(error) = caller.outcome(&grant, &fingerprint, &resource, outcome) {
+                log::error!("context.set_root: could not record {outcome}: {error}");
+            }
+        };
+        Ok((permit, record_outcome))
+    }
+}
+
+fn needs_approval(tool: &str, actor: &str, pending_request_id: &str) -> String {
+    format!(
+        "permission_denied: {tool} needs approval for {actor}. \
+             Approve request {pending_request_id} in Needs you, then rerun this command."
+    )
+}
+
+impl PlexiApp {
+    pub(super) fn set_root_for(
+        &mut self,
+        subject: UseSubject,
+        root: &Path,
+        id: u64,
+    ) -> Result<(), String> {
+        let idx = self.resolve_context_idx(Some(id), "set_context_root")?;
+        let (permit, record_outcome) =
+            subject.admit_root_change(&self.router.get(idx).root, id, root)?;
+        let result = self.commit_context_root(root.into(), id, ContextRootProof::Permitted(permit));
+        record_outcome(result.is_ok());
+        result
+    }
+
+    pub(crate) fn set_root_from_pane(&mut self, source: PaneCwd) {
+        if let Err(error) = self.set_root_for(
+            UseSubject::Pane(source.scope),
+            &source.cwd,
+            source.target_context_id,
+        ) {
+            log::info!(
+                "set_root_from_pane: context {} refused: {error}",
+                source.target_context_id
+            );
         }
     }
 
