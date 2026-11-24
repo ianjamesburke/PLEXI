@@ -849,7 +849,7 @@ pub(crate) fn admit_stream_frame(
     peer: Option<&crate::broker::caller::PeerWitness>,
     frame: socket_policy::StreamFrame,
     scope: Option<String>,
-) -> Result<crate::broker::caller::SocketCaller, socket_policy::Refusal> {
+) -> Result<socket_caller::StreamAdmission, socket_policy::Refusal> {
     let (reply, admitted) = std::sync::mpsc::sync_channel(1);
     if mailbox
         .send(socket_caller::PaneIpcMessage::Admit {
@@ -887,10 +887,10 @@ pub(crate) fn handle_socket_line_in(
         if frame["type"] == "cli_trace" {
             match admit_stream_frame(mailbox, peer, socket_policy::StreamFrame::CliTrace, None) {
                 // The pane on the record is the one the kernel named.
-                Ok(caller) => match crate::host::flight_recorder::record_cli_trace(
+                Ok(admitted) => match crate::host::flight_recorder::record_cli_trace(
                     profile,
                     &frame,
-                    caller.pane().map(|pane| pane.terminal_pane),
+                    admitted.caller.pane().map(|pane| pane.terminal_pane),
                 ) {
                     Ok(()) => {
                         if let Err(error) = ack_writer.write_all(PEER_IDENTITY_ACK) {
@@ -1283,8 +1283,8 @@ fn handle_socket_connection(
                     .unwrap_or("")
                     .to_string()
             });
-            let caller = match admit_stream_frame(&mailbox, peer.as_ref(), frame, scope) {
-                Ok(caller) => caller,
+            let (caller, dashboard) = match admit_stream_frame(&mailbox, peer.as_ref(), frame, scope) {
+                Ok(admitted) => (admitted.caller, admitted.dashboard),
                 Err(refusal) => {
                     let mut reply = refusal.reply();
                     reply["type"] = serde_json::json!("error");
@@ -1309,13 +1309,11 @@ fn handle_socket_connection(
                 ),
                 StreamFrame::EventsList => handle_events_list(write_half, &val),
                 StreamFrame::CommandViewFollow => {
-                    let workspace = val
-                        .get("workspace")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("")
-                        .to_string();
                     log::info!("command_view: follow connected caller={}", caller.class());
-                    crate::host::command_view::serve_follow(write_half, workspace);
+                    match dashboard {
+                        Some(permit) => crate::host::command_view::serve_follow(write_half, &permit),
+                        None => log::error!("command_view: follow admitted without a permit"),
+                    }
                 }
                 StreamFrame::EventsDeclare | StreamFrame::EventsEmit => {
                     handle_events_publish(write_half, val, &publish_mailbox, caller)

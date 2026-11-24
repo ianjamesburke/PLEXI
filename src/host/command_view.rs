@@ -1,6 +1,8 @@
 //! Live command view over agents API records.
 //!
 //! The pane and `agents-dashboard --follow` read [`crate::agent::runs::projection`].
+//! A socket reader reaches it only through [`read`], which commits against the
+//! caller's [`ReadDashboard`] permit (stint 1716).
 //! This module does not keep a board. `enqueue`, `pause`, and `block` are not
 //! commands here, and `resolve` / `allow` do not grant.
 
@@ -11,6 +13,8 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
+
+use crate::broker::permit::{Permit, ReadDashboard};
 
 pub const PUBLISHER: &str = "plexi.host.command";
 pub const STREAM: &str = "command.view";
@@ -43,13 +47,22 @@ pub fn publish(workspace: &Path, summary: &str) {
     }
 }
 
-/// Stream `command.view` until the client disconnects.
-pub fn serve_follow(mut socket: crate::platform::ipc::IpcStream, workspace: String) {
-    if workspace.is_empty() {
-        log::warn!("command_view: follow missing workspace");
-        return;
-    }
-    let workspace = std::path::PathBuf::from(workspace);
+/// The projection of `workspace` for the permit's holder: staged first, then
+/// handed over only while the permit still covers the workspace, so a revoke,
+/// a scope move or a closed pane stops the next read.
+pub(crate) fn read(permit: &Permit<ReadDashboard>) -> Result<Value, String> {
+    let body = crate::agent::runs::projection(&permit.workspace());
+    permit.recheck()?;
+    Ok(body)
+}
+
+/// Stream `command.view` until the client disconnects or `permit` stops
+/// covering the workspace, which ends the stream with an error line.
+pub(crate) fn serve_follow(
+    mut socket: crate::platform::ipc::IpcStream,
+    permit: &Permit<ReadDashboard>,
+) {
+    let workspace = permit.workspace();
     log::info!(
         "command_view: follow open workspace={}",
         workspace.display()
@@ -82,13 +95,21 @@ pub fn serve_follow(mut socket: crate::platform::ipc::IpcStream, workspace: Stri
     }
     let mut seen = u64::MAX;
     while !stop.load(Ordering::Acquire) {
+        // An idle stream notices a revoke or a moved scope at each wake. The
+        // wake lock is not held: the broker's admission lock is taken here.
+        if let Err(error) = permit.recheck() {
+            return end_follow(&mut socket, &workspace, &error);
+        }
         let (lock, cond) = wake();
         let guard = lock.lock().unwrap_or_else(|err| err.into_inner());
         let revision = *guard;
         if revision != seen {
             drop(guard);
             seen = revision;
-            let mut event = crate::agent::runs::projection(&workspace);
+            let mut event = match read(permit) {
+                Ok(event) => event,
+                Err(error) => return end_follow(&mut socket, &workspace, &error),
+            };
             if let Some(obj) = event.as_object_mut() {
                 obj.insert("type".to_string(), json!("event"));
                 obj.insert("event".to_string(), json!(STREAM));
@@ -110,6 +131,23 @@ pub fn serve_follow(mut socket: crate::platform::ipc::IpcStream, workspace: Stri
     log::info!("command_view: follow closed");
 }
 
+fn end_follow(socket: &mut crate::platform::ipc::IpcStream, workspace: &Path, error: &str) {
+    log::info!(
+        "command_view: follow of {} ended: {error}",
+        workspace.display()
+    );
+    let reply = json!({
+        "type": "error", "ok": false, "error_code": "permission_denied",
+        "error": error, "message": error,
+    });
+    // The client may already be gone.
+    let _ = writeln_line(socket, &reply);
+    // Closing wakes the reader thread, which holds a clone of the socket.
+    if let Err(error) = socket.shutdown(std::net::Shutdown::Both) {
+        log::info!("command_view: follow shutdown failed: {error}");
+    }
+}
+
 fn writeln_line(socket: &mut crate::platform::ipc::IpcStream, value: &Value) -> Result<(), ()> {
     writeln!(socket, "{value}")
         .and_then(|()| socket.flush())
@@ -121,6 +159,56 @@ fn writeln_line(socket: &mut crate::platform::ipc::IpcStream, value: &Value) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stint 1716: a followed stream ends, with an error line and no further
+    /// projection, once the follower's pane scope moves. Waking it with a
+    /// publish is the same path a real mutation takes.
+    #[cfg(unix)]
+    #[test]
+    fn a_follow_ends_when_its_permit_stops_covering_the_workspace() {
+        use crate::broker::pane_authority::{Ceiling, LivePaneAuthority, PaneAuthority};
+        use std::io::BufRead as _;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".plexi")).unwrap();
+        let live = LivePaneAuthority::admitted(PaneAuthority::for_test(
+            7,
+            Ceiling::Baseline,
+            1,
+            dir.path().to_path_buf(),
+        ));
+        let permit = Permit::<ReadDashboard>::contained(
+            crate::host::plugin_timeline::AdmittedScope::of(&live),
+            dir.path(),
+            crate::broker::gate::PermissionMonitor::ephemeral(),
+        )
+        .unwrap();
+        let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        let worker = std::thread::spawn(move || serve_follow(server, &permit));
+        let mut lines = std::io::BufReader::new(client);
+        let mut next = || {
+            let mut line = String::new();
+            lines.read_line(&mut line).unwrap();
+            serde_json::from_str::<Value>(&line).unwrap_or(Value::Null)
+        };
+        assert_eq!(next()["type"], "subscribed");
+        assert_eq!(next()["type"], "event");
+        publish(dir.path(), "still covered");
+        assert_eq!(next()["type"], "event");
+        live.publish_scope(dir.path().join("elsewhere"));
+        publish(dir.path(), "after the scope moved");
+        // Other tests publish on the shared wake, so an event staged before
+        // the move may still arrive first; none follows the refusal.
+        let ended = loop {
+            let line = next();
+            if line["type"] != "event" {
+                break line;
+            }
+        };
+        assert_eq!(ended["type"], "error", "{ended}");
+        assert_eq!(ended["error_code"], "permission_denied", "{ended}");
+        worker.join().unwrap();
+        assert_eq!(next(), Value::Null, "nothing follows the refusal");
+    }
 
     #[test]
     fn publish_advances_the_revision() {

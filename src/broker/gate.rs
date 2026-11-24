@@ -666,6 +666,17 @@ pub(crate) struct Approved {
 }
 
 impl Approved {
+    /// An outside process's one-use claim of `tool`: a standing or session
+    /// row never reaches here, since another process sharing the external
+    /// principal could reuse it.
+    pub(super) fn is_external_once_use(&self, tool: &str) -> bool {
+        self.request.actor_type == ActorType::External
+            && self.request.actor_id == super::principal::EXTERNAL_ID
+            && self.request.target_type == TargetType::HostTool
+            && self.request.target_id == tool
+            && !self.request.operation_id.is_empty()
+    }
+
     pub(super) fn is_external_secret_read(&self) -> bool {
         self.request.actor_type == ActorType::External
             && self.request.actor_id == super::principal::EXTERNAL_ID
@@ -1769,6 +1780,12 @@ impl PermissionMonitor {
             && choice == ApprovalChoice::Session
         {
             return Err("An outside terminal needs a one-use approval for this secret.".into());
+        }
+        if pending.binding.actor_type == ActorType::External
+            && pending.tool == <super::permit::ReadDashboard as super::permit::Operation>::NAME
+            && matches!(choice, ApprovalChoice::Session | ApprovalChoice::Always)
+        {
+            return Err("An outside terminal needs a one-use approval to read a dashboard.".into());
         }
         if pending.binding.actor_type == ActorType::External
             && matches!(

@@ -208,6 +208,14 @@ pub fn default_ask_options() -> Vec<QueueOption> {
     ]
 }
 
+/// An outside process's dashboard read is one use: no remembered choice.
+pub(crate) fn outside_dashboard_ask_options() -> Vec<QueueOption> {
+    default_ask_options()
+        .into_iter()
+        .filter(|o| matches!(o.key.as_str(), "allow_once" | "deny"))
+        .collect()
+}
+
 fn pane_send_ask_options() -> Vec<QueueOption> {
     let mut options = default_ask_options();
     options[1].label = format!(
@@ -699,6 +707,9 @@ impl PlexiApp {
             let is_secret = crate::broker::command_secret_tool(&pending.tool)
                 && (pending.actor_id == crate::broker::principal::EXTERNAL_ID
                     || pending.tool == "secret.exec");
+            let is_outside_dashboard_read = pending.tool
+                == <crate::broker::permit::ReadDashboard as crate::broker::permit::Operation>::NAME
+                && pending.actor_id == crate::broker::principal::EXTERNAL_ID;
             let cmd_text = if is_cli_operation || is_plugin_admission || is_secret {
                 // The summary is already a full sentence naming plugin, workspace,
                 // program and ambient authority; a tool-name prefix adds nothing.
@@ -747,7 +758,9 @@ impl PlexiApp {
                     )
                 },
                 command_text: cmd_text,
-                options: if is_secret {
+                options: if is_outside_dashboard_read {
+                    outside_dashboard_ask_options()
+                } else if is_secret {
                     default_ask_options()
                         .into_iter()
                         .filter(|o| o.key != "allow_always")

@@ -74,6 +74,7 @@ python3 -c 'import json,sys; rows=json.loads(sys.argv[1]); assert all(row.get("t
 
 # shellcheck disable=SC1091
 source "$ROOT/scripts/e2e/human.sh"
+source "$ROOT/scripts/e2e/dashboard.sh"
 export BIN
 
 printf '%s\n' '{"text":"write-file"}' >"$WORKDIR/task.json"
@@ -83,7 +84,7 @@ python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body.get("ok")
 ASK_ID="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["task"]["id"])' "$ASK")"
 PENDING=""
 for _ in $(seq 1 40); do
-  VIEW="$(cli agents-dashboard --json)"
+  VIEW="$(dashboard --json)"
   PENDING="$(python3 - "$VIEW" "$ASK_ID" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
@@ -125,7 +126,7 @@ fi
 
 echo "STEP the same assignment continues after Allow once"
 for _ in $(seq 1 40); do
-  VIEW="$(cli agents-dashboard --json)"
+  VIEW="$(dashboard --json)"
   if python3 - "$VIEW" "$ASK_ID" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
@@ -173,7 +174,7 @@ else
   STEPS_LATER=0
 fi
 python3 -c 'import sys; a,b=int(sys.argv[1]),int(sys.argv[2]); assert a==b, (a,b)' "$STEPS_AFTER" "$STEPS_LATER"
-FINAL="$(cli agents-dashboard --json)"
+FINAL="$(dashboard --json)"
 python3 - "$FINAL" "$LONG_ID" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
@@ -222,7 +223,7 @@ for _ in $(seq 1 40); do
     break
   fi
   if [[ "$CLICKED" == 0 ]]; then
-    VIEW="$(cli agents-dashboard --json 2>/dev/null || true)"
+    VIEW="$(dashboard --json 2>/dev/null || true)"
     PENDING="$(python3 - "$VIEW" "$AGAIN_ID" <<'PY' || true
 import json, sys
 raw = sys.argv[1]
@@ -251,7 +252,7 @@ PY
   sleep 0.5
 done
 test -f "$WORKDIR/out.txt"
-RESTORED="$(cli agents-dashboard --json)"
+RESTORED="$(dashboard --json)"
 python3 - "$RESTORED" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
