@@ -2275,6 +2275,10 @@ pub(crate) enum NotAdmitted {
     Full,
 }
 
+/// Prefix of a development pane's tool identity: see
+/// [`ViewPane::tool_identity`].
+pub(crate) const DEVELOPMENT_TOOL_IDENTITY: &str = "dev:";
+
 /// Who a live view pane is: see [`ViewRuntime::origin`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PaneOrigin<'a> {
@@ -2964,16 +2968,18 @@ impl Default for ViewIncarnation {
 }
 
 impl ViewPane {
-    /// The plugin identity this pane's tools are registered and granted
-    /// under (stint 1733). A pane that owns its declared id uses that id; a
-    /// development copy declaring a bundled plugin's id is qualified by its
-    /// pane, `<id>:<pane>`, so the bundled plugin's tool names never resolve
-    /// to it. `:` never appears in a plugin id (`validate_plugin_id`).
+    /// The plugin identity this pane's tools are registered, named and
+    /// granted under (stint 1733): the broker package of every call to them.
+    /// A pane that owns its declared id uses that id. A development copy
+    /// declaring a bundled plugin's id is `dev:<id>:<pane>`: `:` never appears
+    /// in a plugin id (`validate_plugin_id`), and a bundled instance's
+    /// qualified name `<id>:<pane>` has one colon, so the two never match,
+    /// even for an overlay that reuses the covered pane's id.
     pub(crate) fn tool_identity(&self) -> String {
         if self.runtime.origin().owns_declared_id() {
             return self.manifest_id.clone();
         }
-        format!("{}:{}", self.manifest_id, self.id)
+        format!("{DEVELOPMENT_TOOL_IDENTITY}{}:{}", self.manifest_id, self.id)
     }
 
     pub(crate) fn semantic_state(&self) -> SemanticPaneState {

@@ -409,6 +409,17 @@ pub struct PermissionEntry {
     pub summary: String,
 }
 
+/// Capability rows a launch planned to auto-grant, written only by
+/// [`PermissionMonitor::commit_capability_mint`] once the guest has started
+/// (stint 1733). Dropping it writes nothing.
+#[derive(Debug)]
+#[must_use = "commit the mint once the guest has started, or drop it to write nothing"]
+pub struct CapabilityMint {
+    plugin: super::principal::PluginInstance,
+    workspace_root: std::path::PathBuf,
+    capability_ids: Vec<String>,
+}
+
 /// Who is asking to change a stored permission. No caller is the human:
 /// `allow` and `reset` always file Needs you, and only a desktop click
 /// applies them (stints 1264, 1271, 1285).
@@ -4176,11 +4187,28 @@ impl PermissionMonitor {
         declared: &std::collections::HashSet<crate::app::permissions::Capability>,
         allowed_hosts: Vec<String>,
     ) -> crate::app::permissions::PluginPermissions {
+        let (permissions, mint) =
+            self.plan_plugin_permissions(plugin, workspace_root, declared, allowed_hosts);
+        self.commit_capability_mint(mint);
+        permissions
+    }
+
+    /// [`Self::materialize_plugin_permissions`] without writing: the rows the
+    /// auto-grant would add come back as a [`CapabilityMint`] for the caller to
+    /// commit once the guest has started, so a failed start leaves none
+    /// (stint 1733).
+    pub fn plan_plugin_permissions(
+        &self,
+        plugin: &super::principal::PluginInstance,
+        workspace_root: &Path,
+        declared: &std::collections::HashSet<crate::app::permissions::Capability>,
+        allowed_hosts: Vec<String>,
+    ) -> (crate::app::permissions::PluginPermissions, CapabilityMint) {
         let ids: Vec<String> = declared
             .iter()
             .map(|cap| cap.as_str().to_string())
             .collect();
-        let (granted, blocked) = self.materialize_capability_ids(plugin, workspace_root, &ids);
+        let (granted, blocked, mint) = self.plan_capability_ids(plugin, workspace_root, &ids);
         let mut capabilities = std::collections::HashSet::new();
         let mut blocked_caps = std::collections::HashSet::new();
         for id in granted {
@@ -4193,12 +4221,13 @@ impl PermissionMonitor {
                 blocked_caps.insert(cap);
             }
         }
-        crate::app::permissions::PluginPermissions {
+        let permissions = crate::app::permissions::PluginPermissions {
             capabilities,
             blocked: blocked_caps,
             is_builtin: false,
             allowed_hosts,
-        }
+        };
+        (permissions, mint)
     }
 
     /// Raw WASM capability ids, same auto-grant rule as manifest capabilities.
@@ -4211,12 +4240,77 @@ impl PermissionMonitor {
         std::collections::HashSet<String>,
         std::collections::HashSet<String>,
     ) {
-        let ids: Vec<String> = declared.iter().cloned().collect();
-        let (granted, blocked) = self.materialize_capability_ids(plugin, workspace_root, &ids);
-        (granted.into_iter().collect(), blocked.into_iter().collect())
+        let (granted, blocked, mint) = self.plan_wasm_sets(plugin, workspace_root, declared);
+        self.commit_capability_mint(mint);
+        (granted, blocked)
     }
 
-    fn materialize_capability_ids(
+    /// [`Self::materialize_wasm_sets`] without writing; see
+    /// [`Self::plan_plugin_permissions`].
+    pub fn plan_wasm_sets(
+        &self,
+        plugin: &super::principal::PluginInstance,
+        workspace_root: &Path,
+        declared: &std::collections::HashSet<String>,
+    ) -> (
+        std::collections::HashSet<String>,
+        std::collections::HashSet<String>,
+        CapabilityMint,
+    ) {
+        let ids: Vec<String> = declared.iter().cloned().collect();
+        let (granted, blocked, mint) = self.plan_capability_ids(plugin, workspace_root, &ids);
+        (
+            granted.into_iter().collect(),
+            blocked.into_iter().collect(),
+            mint,
+        )
+    }
+
+    /// Write the rows `mint` planned: each capability still undecided is
+    /// allowed for the plugin in its workspace. A decision stored since the
+    /// plan stands.
+    pub fn commit_capability_mint(&self, mint: CapabilityMint) {
+        if mint.capability_ids.is_empty() {
+            return;
+        }
+        let principal = super::principal::Principal::Plugin(mint.plugin.clone());
+        let plugin_id = mint.plugin.plugin_id.as_str();
+        let ws = crate::platform::path::canonical_or_self(&mint.workspace_root);
+        let now = self.now_secs();
+        let mut store = self.store();
+        let mut dirty = false;
+        for capability_id in &mint.capability_ids {
+            if stored_capability_decision(&store, plugin_id, &ws, capability_id, now).is_some() {
+                continue;
+            }
+            store.upsert_capability(
+                plugin_id,
+                &mint.workspace_root,
+                capability_id,
+                Decision::Allow,
+                GrantSource::Workspace,
+            );
+            dirty = true;
+            super::principal::AdmissionTrace {
+                principal: &principal,
+                effect: capability_id,
+                resource_class: "capability",
+                decision: "allow",
+                mechanism: "manifest_mint",
+                call_id: "",
+                outcome_ref: "",
+            }
+            .emit();
+        }
+        if dirty {
+            store.save();
+        }
+    }
+
+    /// The launch set for `declared` from stored rows, without writing:
+    /// granted, blocked, and the non-sensitive capabilities with no stored
+    /// decision, granted here and minted by [`Self::commit_capability_mint`].
+    fn plan_capability_ids(
         &self,
         plugin: &super::principal::PluginInstance,
         workspace_root: &Path,
@@ -4224,6 +4318,7 @@ impl PermissionMonitor {
     ) -> (
         std::collections::HashSet<String>,
         std::collections::HashSet<String>,
+        CapabilityMint,
     ) {
         let plugin_id = plugin.plugin_id.as_str();
         let principal = super::principal::Principal::Plugin(plugin.clone());
@@ -4243,70 +4338,61 @@ impl PermissionMonitor {
         let now = self.now_secs();
         let mut granted = std::collections::HashSet::new();
         let mut blocked = std::collections::HashSet::new();
-        let mut dirty = false;
-        {
-            let mut store = self.store();
-            for capability_id in declared {
-                match stored_capability_decision(&store, plugin_id, &ws, capability_id, now) {
-                    Some(Decision::Deny) => {
-                        trace(capability_id, "deny", "launch_row");
-                        blocked.insert(capability_id.clone());
-                    }
-                    Some(Decision::Allow) => {
-                        trace(capability_id, "allow", "launch_row");
-                        granted.insert(capability_id.clone());
-                    }
-                    Some(Decision::Ask) => trace(capability_id, "ask", "launch_row"),
-                    None if declared_capability_needs_click(capability_id) => {
-                        trace(capability_id, "ask", "withheld_sensitive");
-                    }
-                    None => {
-                        store.upsert_capability(
-                            plugin_id,
-                            workspace_root,
-                            capability_id,
-                            Decision::Allow,
-                            GrantSource::Workspace,
-                        );
-                        granted.insert(capability_id.clone());
-                        dirty = true;
-                        trace(capability_id, "allow", "manifest_mint");
-                    }
+        let mut mint = CapabilityMint {
+            plugin: plugin.clone(),
+            workspace_root: workspace_root.to_path_buf(),
+            capability_ids: Vec::new(),
+        };
+        let store = self.store();
+        for capability_id in declared {
+            match stored_capability_decision(&store, plugin_id, &ws, capability_id, now) {
+                Some(Decision::Deny) => {
+                    trace(capability_id, "deny", "launch_row");
+                    blocked.insert(capability_id.clone());
                 }
-            }
-            let declared_set: std::collections::HashSet<&str> =
-                declared.iter().map(String::as_str).collect();
-            let extras: Vec<(String, Decision)> = store
-                .records()
-                .iter()
-                .filter(|record| {
-                    record.actor_type == ActorType::Plugin
-                        && record.actor_id == plugin_id
-                        && record.target_type == TargetType::Capability
-                        && record.workspace_root.as_deref() == Some(ws.as_path())
-                        && !declared_set.contains(record.target_id.as_str())
-                        && record.expires_at.is_none_or(|expires| now < expires)
-                        && (record.binding_schema < 1 || record.decision == Decision::Deny)
-                })
-                .map(|record| (record.target_id.clone(), record.decision))
-                .collect();
-            for (capability_id, decision) in extras {
-                trace(&capability_id, decision.as_str(), "undeclared_launch_row");
-                match decision {
-                    Decision::Allow => {
-                        granted.insert(capability_id);
-                    }
-                    Decision::Deny => {
-                        blocked.insert(capability_id);
-                    }
-                    Decision::Ask => {}
+                Some(Decision::Allow) => {
+                    trace(capability_id, "allow", "launch_row");
+                    granted.insert(capability_id.clone());
                 }
-            }
-            if dirty {
-                store.save();
+                Some(Decision::Ask) => trace(capability_id, "ask", "launch_row"),
+                None if declared_capability_needs_click(capability_id) => {
+                    trace(capability_id, "ask", "withheld_sensitive");
+                }
+                None => {
+                    granted.insert(capability_id.clone());
+                    mint.capability_ids.push(capability_id.clone());
+                }
             }
         }
-        (granted, blocked)
+        let declared_set: std::collections::HashSet<&str> =
+            declared.iter().map(String::as_str).collect();
+        let extras: Vec<(String, Decision)> = store
+            .records()
+            .iter()
+            .filter(|record| {
+                record.actor_type == ActorType::Plugin
+                    && record.actor_id == plugin_id
+                    && record.target_type == TargetType::Capability
+                    && record.workspace_root.as_deref() == Some(ws.as_path())
+                    && !declared_set.contains(record.target_id.as_str())
+                    && record.expires_at.is_none_or(|expires| now < expires)
+                    && (record.binding_schema < 1 || record.decision == Decision::Deny)
+            })
+            .map(|record| (record.target_id.clone(), record.decision))
+            .collect();
+        for (capability_id, decision) in extras {
+            trace(&capability_id, decision.as_str(), "undeclared_launch_row");
+            match decision {
+                Decision::Allow => {
+                    granted.insert(capability_id);
+                }
+                Decision::Deny => {
+                    blocked.insert(capability_id);
+                }
+                Decision::Ask => {}
+            }
+        }
+        (granted, blocked, mint)
     }
 
     /// `reset` and `allow` widen. An agent files Needs you and changes nothing.

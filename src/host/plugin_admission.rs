@@ -487,6 +487,16 @@ fn mint<'start>(
     }
 }
 
+/// How a launch named its plugin (stint 1733).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenedBy {
+    /// By plugin or view id: a bundled id means the bundled copy.
+    Id,
+    /// By an explicit folder or component path: a development copy may
+    /// declare a bundled id and runs in its own pane.
+    Path,
+}
+
 /// The admission check for one profile.
 #[derive(Debug, Clone)]
 pub(crate) struct PluginAdmission {
@@ -567,6 +577,57 @@ impl PluginAdmission {
                 Err(refusal.to_string())
             }
         }
+    }
+
+    /// Start `plugin` the way it was opened: see [`Self::start_opened_by_id`].
+    pub(crate) fn start_opened<T>(
+        &self,
+        opened: OpenedBy,
+        plugin: &ResolvedPlugin,
+        start: impl FnOnce(AdmittedPlugin<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        match opened {
+            OpenedBy::Id => self.start_opened_by_id(plugin, start),
+            OpenedBy::Path => self.start_live_plugin(plugin, start),
+        }
+    }
+
+    /// [`Self::start_live_plugin`] for an open by plugin id (Cmd+P, `view
+    /// open <id>`, a contributed view). A bundled id opened by id names the
+    /// bundled plugin, so it starts only as the verified bundled copy: a link
+    /// or other tree at its install root is refused, never admitted by folder
+    /// trust under the bundled name (stint 1733). Explicit path opens of a
+    /// development copy use [`Self::start_live_plugin`].
+    pub(crate) fn start_opened_by_id<T>(
+        &self,
+        plugin: &ResolvedPlugin,
+        start: impl FnOnce(AdmittedPlugin<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let bundled_id = crate::cli::install_host::is_bundled_plugin_id(&plugin.owner);
+        let not_bundled = || {
+            let refusal = Refusal::ShadowsBundled {
+                id: plugin.owner.clone(),
+                dir: plugin.root.clone(),
+            };
+            log::info!("plugin_admission: refused id open: {refusal}");
+            Err(refusal.to_string())
+        };
+        if bundled_id {
+            match self.subject_for(plugin) {
+                Ok(None) => {}
+                Ok(Some(_)) => return not_bundled(),
+                Err(refusal) => {
+                    log::info!("plugin_admission: refused: {refusal}");
+                    return Err(refusal.to_string());
+                }
+            }
+        }
+        self.start_live_plugin(plugin, |admitted| {
+            if bundled_id && !admitted.origin.is_bundled() {
+                return not_bundled();
+            }
+            start(admitted)
+        })
     }
 
     /// What `plugin` needs: nothing (`None`: a verified bundle), the profile

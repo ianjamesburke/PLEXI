@@ -1591,7 +1591,7 @@ fn a_folder_copy_of_permissions_carries_a_development_origin() {
     assert!(!origin.is_bundled(), "identical bytes are not provenance");
     assert_eq!(
         view_pane(&h, dev_pane).tool_identity(),
-        format!("permissions:{dev_pane}")
+        format!("dev:permissions:{dev_pane}")
     );
     assert_eq!(view_pane(&h, bundled).tool_identity(), "permissions");
 }
@@ -1635,13 +1635,13 @@ fn a_dev_copy_publishes_its_tools_only_under_a_pane_qualified_name() {
     assert!(
         dev_tools
             .iter()
-            .all(|(plugin, _)| *plugin == format!("chess:{dev_pane}")),
+            .all(|(plugin, _)| *plugin == format!("dev:chess:{dev_pane}")),
         "{dev_tools:?}"
     );
     let tool = dev_tools[0].1.clone();
     let alone = names(&h);
     assert!(
-        alone.contains(&format!("chess:{dev_pane}__{tool}")),
+        alone.contains(&format!("dev:chess:{dev_pane}__{tool}")),
         "{alone:?}"
     );
     assert!(
@@ -1657,7 +1657,7 @@ fn a_dev_copy_publishes_its_tools_only_under_a_pane_qualified_name() {
     let both = names(&h);
     assert!(both.contains(&format!("chess__{tool}")), "{both:?}");
     assert!(
-        both.contains(&format!("chess:{dev_pane}__{tool}")),
+        both.contains(&format!("dev:chess:{dev_pane}__{tool}")),
         "{both:?}"
     );
 }
@@ -1860,4 +1860,105 @@ fn a_failed_instantiation_after_review_leaves_no_import_grants() {
         store_before,
         "no legacy grant"
     );
+}
+
+/// The pane holding window focus.
+fn focused_pane(h: &crate::testing::HostHarness) -> crate::spatial::tiling::PaneId {
+    let window = &h.app.windows[h.app.active_window];
+    window
+        .focused_pane
+        .and_then(|tile| window.tree.tiles.get_pane(&tile).copied())
+        .expect("a focused pane")
+}
+
+/// Codex 3309 round 1: bundled-id reuse needs a bundled origin, never a path
+/// match. After the profile install of Logs is swapped for a link to a
+/// running dev copy, the registry's cached entry resolves to the dev pane's
+/// entry; opening Logs by id still focuses the bundled pane.
+#[test]
+fn bundled_id_reuse_never_focuses_a_dev_pane_through_a_swapped_install() {
+    let (mut h, plugins) = harness_with_bundled(&["logs"]);
+    let bundled = open_id(&mut h, "logs");
+    let dev = tempfile::tempdir().unwrap();
+    let dev_logs = extract_bundled("logs", dev.path());
+    h.trust_plugin_folder(dev.path());
+    let dev_pane = open_path(&mut h, &dev_logs);
+    assert_eq!(focused_pane(&h), dev_pane);
+
+    let install = plugins.join("logs");
+    std::fs::rename(&install, plugins.join("logs.moved")).unwrap();
+    std::os::unix::fs::symlink(&dev_logs, &install).unwrap();
+    let cached = h
+        .app
+        .registries
+        .view_for_root(&h.workspace_root())
+        .get("logs")
+        .expect("the cached bundled entry")
+        .bin_path
+        .clone();
+    assert_eq!(
+        crate::platform::path::canonical_or_self(&cached),
+        guest_origin(&h, dev_pane).entry(),
+        "the cached entry now resolves to the dev pane's entry"
+    );
+
+    let workspace = h.workspace_root();
+    let focused = h
+        .app
+        .launch_view_by_id_with_layout("logs", None, &[], Some(workspace))
+        .expect("logs by id");
+    assert_eq!(focused, Some(bundled), "the bundled pane, never the dev one");
+    assert_eq!(focused_pane(&h), bundled);
+}
+
+/// Codex 3309 round 1: a fresh id open of a bundled id starts only the
+/// verified bundled copy. A link at its install root to a trusted dev tree
+/// is refused, not admitted by folder trust under the bundled name.
+#[test]
+fn a_fresh_id_open_of_a_bundled_id_never_starts_a_linked_dev_tree() {
+    let (mut h, plugins) = harness_with_bundled(&["logs"]);
+    let dev = tempfile::tempdir().unwrap();
+    let dev_logs = extract_bundled("logs", dev.path());
+    h.trust_plugin_folder(dev.path());
+    let install = plugins.join("logs");
+    std::fs::rename(&install, plugins.join("logs.moved")).unwrap();
+    std::os::unix::fs::symlink(&dev_logs, &install).unwrap();
+    let starts = guest_starts_for_test();
+    let workspace = h.workspace_root();
+    let error = h
+        .app
+        .launch_view_by_id_with_layout("logs", Some("split_h".to_string()), &[], Some(workspace))
+        .unwrap_err();
+    assert!(error.contains("bundled with Plexi"), "{error}");
+    assert_eq!(guest_starts_for_test(), starts, "no guest");
+}
+
+/// Codex 3309 round 1: a manifest-backed WASM plugin admitted by folder
+/// trust that fails to instantiate leaves none of its manifest capability
+/// rows behind.
+#[test]
+fn a_manifest_wasm_plugin_that_fails_to_start_keeps_no_capability_rows() {
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+    let mut h = crate::testing::HostHarness::new();
+    let folder = tempfile::tempdir().unwrap();
+    let dir = folder.path().join("t1733-unlinkable");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("component.wasm"),
+        "(component (import \"plexi:platform/host-state@9.9.9\" (instance (export \"t1733\" (func)))))",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("manifest.toml"),
+        "schema_version = 2\n\n[plugin]\nid = \"t1733-unlinkable\"\nname = \"t\"\nversion = \"0.0.1\"\n\n[plugin.capabilities]\ncapabilities = [\"timer\"]\n\n[runtime]\nkind = \"wasm\"\nentry = \"component.wasm\"\n\n[[contributes.views]]\nid = \"t1733-unlinkable.main\"\ndefault = true\n",
+    )
+    .unwrap();
+    h.trust_plugin_folder(folder.path());
+    let error = h
+        .app
+        .launch_view_by_path_with_layout(&dir.to_string_lossy(), None, None, &[])
+        .unwrap_err();
+    assert!(error.contains("load"), "{error}");
+    assert_eq!(capability_rows(h.profile_dir(), "t1733-unlinkable"), 0);
 }

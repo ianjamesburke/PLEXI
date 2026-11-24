@@ -244,6 +244,9 @@ pub(crate) enum OriginQuery<'a> {
     Builtin,
     /// The guest started from this entry file.
     Entry(&'a Path),
+    /// The guest admitted as the bundled copy of its id. Bundled-id reuse
+    /// never matches by path (stint 1733).
+    Bundled,
     /// Any pane with the id, whatever runs it. Tests only.
     #[cfg(test)]
     Any,
@@ -473,9 +476,9 @@ pub(crate) fn restore_assistant_pane(
 }
 
 /// Shared construction site for a live CPython-WASM runtime, run inside an
-/// admitted start. Materializes the manifest's capability rows here, after
-/// admission decided the start, so a refused plugin keeps none (stint 1733);
-/// then fills the launch-time fields only the caller knows (workspace root,
+/// admitted start. Plans the manifest's capability rows and writes them only
+/// once the guest has started, so a refused or failed start keeps none
+/// (stint 1733); fills the launch-time fields only the caller knows (workspace root,
 /// live context root, launch args, theme) and launches. Both a fresh open
 /// (`open_python_wasm_view_pane`) and a workspace restore (`restore_view_pane`)
 /// call this, so there is exactly one place that builds the runtime.
@@ -494,7 +497,7 @@ fn build_python_runtime(
     ),
     String,
 > {
-    let permissions = gate_plugin_permissions_in_profile(
+    let (permissions, mints) = plan_plugin_permissions_in_profile(
         profile_dir,
         admitted.owner(),
         &workspace_root,
@@ -514,6 +517,7 @@ fn build_python_runtime(
     config.theme = theme.to_theme_map();
     let runtime = crate::host::wasm_python::LivePythonPane::launch(admitted, config)
         .map_err(|error| error.to_string())?;
+    mints.commit();
     Ok((runtime, permissions))
 }
 
@@ -758,7 +762,9 @@ pub(crate) fn restore_view_pane_in_profile(
                         &workspace_root,
                         &installed.manifest.capabilities.capabilities,
                         installed.manifest.capabilities.allowed_hosts.clone(),
-                    )?;
+                    )?
+                    .1
+                    .commit();
                 }
                 installed => {
                     let reason = if installed.is_some() {
@@ -1248,6 +1254,7 @@ impl PlexiApp {
     fn open_python_wasm_view_pane(
         &mut self,
         target_win: usize,
+        opened: crate::host::plugin_admission::OpenedBy,
         resolved: crate::app::registry::ResolvedPlugin,
         workspace_root: PathBuf,
         layout: Option<&str>,
@@ -1263,7 +1270,7 @@ impl PlexiApp {
         let colors = self.colors;
         let profile_dir = crate::config::config_dir();
         let (mut runtime, permissions) = crate::host::plugin_admission::PluginAdmission::current()
-            .start_live_plugin(&resolved, |admitted| {
+            .start_opened(opened, &resolved, |admitted| {
                 build_python_runtime(
                     admitted,
                     config,
@@ -1472,6 +1479,7 @@ impl PlexiApp {
     fn open_installed_wasm_view_pane(
         &mut self,
         target_win: usize,
+        opened: crate::host::plugin_admission::OpenedBy,
         installed: crate::app::registry::InstalledPlugin,
         workspace_root: PathBuf,
         layout: Option<&str>,
@@ -1516,13 +1524,15 @@ impl PlexiApp {
         let store = StateStore::persistent(wasm_state_path(&plugin_id, &workspace_root))
             .map_err(|e| format!("open wasm state for {plugin_id}: {e}"))?;
         let snapshot = store.snapshot();
-        // Capability rows are minted only inside the admitted start, so a
-        // refused plugin keeps none (stint 1733).
+        // Capability rows are planned inside the admitted start and written
+        // only once the component starts, so a refused or failed start keeps
+        // none (stint 1733).
         let (app, permissions, remembered_grants, remembered_blocks) =
-            crate::host::plugin_admission::PluginAdmission::current().start_live_plugin(
+            crate::host::plugin_admission::PluginAdmission::current().start_opened(
+                opened,
                 &resolved,
                 |admitted| {
-                    let mut permissions = wasm_manifest_permissions(
+                    let (mut permissions, mut mints) = wasm_manifest_permissions(
                         &config_dir,
                         &plugin_id,
                         &workspace_root,
@@ -1534,8 +1544,14 @@ impl PlexiApp {
                         .retain(|cap| !permissions.blocked.contains(cap));
                     let wasm_declared =
                         wasm_runtime_capabilities_from_permissions(&permissions, &workspace_root);
-                    let (remembered_grants, remembered_blocks) =
-                        gate_wasm_sets(&plugin_id, &workspace_root, &wasm_declared);
+                    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&config_dir)
+                        .map_err(|error| error.to_string())?;
+                    let (remembered_grants, remembered_blocks, mint) = monitor.plan_wasm_sets(
+                        &crate::broker::principal::PluginInstance::new(&plugin_id, None),
+                        &workspace_root,
+                        &wasm_declared,
+                    );
+                    mints.add(monitor, mint);
                     let grants = Grants {
                         state: true,
                         pipes: permissions.capabilities.contains(&Capability::PipeOpen),
@@ -1544,8 +1560,13 @@ impl PlexiApp {
                             .capabilities
                             .contains(&Capability::AudioPlayback),
                     };
-                    let app = WasmView::load_with_grants(admitted, store, grants)
-                        .map_err(|e| format!("load {}: {e}", installed.bin_path.display()))?;
+                    // Rows are written once the component has instantiated,
+                    // still under the admission lock (stint 1733).
+                    let app = WasmView::load_with_grants_then(admitted, store, grants, || {
+                        mints.commit();
+                        Ok(())
+                    })
+                    .map_err(|e| format!("load {}: {e}", installed.bin_path.display()))?;
                     Ok((app, permissions, remembered_grants, remembered_blocks))
                 },
             )?;
@@ -2878,6 +2899,9 @@ impl PlexiApp {
             (OriginQuery::Entry(_), crate::host::pane::PaneOrigin::Guest(guest)) => {
                 wanted.as_deref() == Some(guest.entry())
             }
+            (OriginQuery::Bundled, crate::host::pane::PaneOrigin::Guest(guest)) => {
+                guest.is_bundled()
+            }
             #[cfg(test)]
             (OriginQuery::Any, _) => true,
             _ => false,
@@ -2957,10 +2981,17 @@ impl PlexiApp {
             .view_for_context(caller_context_id, &self.router);
         let on_launch = view.on_launch_for(id);
         let entry = view.get(id)?.bin_path.clone();
+        // A bundled id names the bundled plugin: only a pane admitted as the
+        // bundled copy satisfies it, whatever its cached entry resolves to now.
+        let origin = if crate::cli::install_host::is_bundled_plugin_id(id) {
+            OriginQuery::Bundled
+        } else {
+            OriginQuery::Entry(&entry)
+        };
         self.focus_for_on_launch(
             on_launch,
             id,
-            OriginQuery::Entry(&entry),
+            origin,
             caller_context_id,
             args,
             cwd_override,
@@ -3455,6 +3486,7 @@ impl PlexiApp {
                     .unwrap_or_else(|| cwd.clone());
                 self.open_installed_wasm_view_pane(
                     target_win,
+                    crate::host::plugin_admission::OpenedBy::Id,
                     installed.clone(),
                     workspace_root,
                     hint.as_deref(),
@@ -3474,6 +3506,7 @@ impl PlexiApp {
                 // granted; its parsed manifest drives the launch (stint 1733).
                 self.open_python_wasm_view_pane(
                     target_win,
+                    crate::host::plugin_admission::OpenedBy::Id,
                     resolve_owned_plugin_dir(&installed.plugin_dir, id)?,
                     workspace_root,
                     hint.as_deref(),
@@ -3723,6 +3756,7 @@ impl PlexiApp {
         if installed.manifest.manifest_type == crate::app::registry::ManifestType::Wasm {
             let pane_id = self.open_installed_wasm_view_pane(
                 self.active_window,
+                crate::host::plugin_admission::OpenedBy::Path,
                 installed,
                 workspace_root,
                 layout_hint.as_deref(),
@@ -3736,6 +3770,7 @@ impl PlexiApp {
             return self
                 .open_python_wasm_view_pane(
                     self.active_window,
+                    crate::host::plugin_admission::OpenedBy::Path,
                     resolved,
                     workspace_root,
                     layout_hint.as_deref(),
@@ -4414,56 +4449,94 @@ fn new_scratch_note_path() -> PathBuf {
     crate::notes::global_notes_dir().join(filename)
 }
 
-/// Validate the whole manifest before minting any grants, for launch and restore.
+/// Rows a launch will mint once its guest has started (stint 1733).
+/// Dropping it writes nothing.
+#[derive(Default)]
+#[must_use = "commit once the guest has started, or drop to write nothing"]
+struct PendingMints(
+    Vec<(
+        std::sync::Arc<crate::broker::gate::PermissionMonitor>,
+        crate::broker::gate::CapabilityMint,
+    )>,
+);
+
+impl PendingMints {
+    fn add(
+        &mut self,
+        monitor: std::sync::Arc<crate::broker::gate::PermissionMonitor>,
+        mint: crate::broker::gate::CapabilityMint,
+    ) {
+        self.0.push((monitor, mint));
+    }
+
+    /// Write the planned rows: the guest started.
+    fn commit(self) {
+        for (monitor, mint) in self.0 {
+            monitor.commit_capability_mint(mint);
+        }
+    }
+}
+
+/// Validate the whole manifest before minting any grants, for launch and
+/// restore. The rows come back planned, to commit once the guest starts.
 fn wasm_manifest_permissions(
     profile_dir: &std::path::Path,
     plugin_id: &str,
     workspace_root: &std::path::Path,
     capability_strings: &[String],
     allowed_hosts: Vec<String>,
-) -> Result<crate::app::permissions::PluginPermissions, String> {
+) -> Result<(crate::app::permissions::PluginPermissions, PendingMints), String> {
     let declared = crate::app::permissions::parse_capability_strings(capability_strings)
         .map_err(|error| format!("manifest lists {error}"))?;
-    let mut permissions = crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
-        .map_err(|error| error.to_string())?
-        .materialize_plugin_permissions(
-            &crate::broker::principal::PluginInstance::new(plugin_id, None),
-            workspace_root,
-            &declared,
-            allowed_hosts,
-        );
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
+        .map_err(|error| error.to_string())?;
+    let (mut permissions, mint) = monitor.plan_plugin_permissions(
+        &crate::broker::principal::PluginInstance::new(plugin_id, None),
+        workspace_root,
+        &declared,
+        allowed_hosts,
+    );
+    let mut mints = PendingMints::default();
+    mints.add(monitor, mint);
     apply_media_release_gate(plugin_id, &mut permissions);
-    Ok(permissions)
+    Ok((permissions, mints))
 }
 
-fn gate_plugin_permissions_in_profile(
+/// A Python plugin's launch set, with the rows it would mint planned, to
+/// commit once the guest starts (stint 1733).
+fn plan_plugin_permissions_in_profile(
     profile_dir: &std::path::Path,
     plugin_id: &str,
     workspace_root: &std::path::Path,
     capability_strings: &[String],
     allowed_hosts: Vec<String>,
-) -> crate::app::permissions::PluginPermissions {
+) -> (crate::app::permissions::PluginPermissions, PendingMints) {
     let declared = capability_strings
         .iter()
         .filter_map(|capability| {
             crate::app::permissions::Capability::try_from(capability.as_str()).ok()
         })
         .collect();
+    let mut mints = PendingMints::default();
     // Outside the host nothing is granted (stint 1291).
     let mut permissions = match crate::broker::gate::PermissionMonitor::for_profile(profile_dir) {
-        Ok(monitor) => monitor.materialize_plugin_permissions(
-            &crate::broker::principal::PluginInstance::new(plugin_id, None),
-            workspace_root,
-            &declared,
-            allowed_hosts,
-        ),
+        Ok(monitor) => {
+            let (permissions, mint) = monitor.plan_plugin_permissions(
+                &crate::broker::principal::PluginInstance::new(plugin_id, None),
+                workspace_root,
+                &declared,
+                allowed_hosts,
+            );
+            mints.add(monitor, mint);
+            permissions
+        }
         Err(error) => {
             log::error!("plugin::{plugin_id}: launched with no grants: {error}");
             crate::app::permissions::PluginPermissions::default()
         }
     };
     apply_media_release_gate(plugin_id, &mut permissions);
-    permissions
+    (permissions, mints)
 }
 
 /// The one release policy for protocol media operations: unless the
@@ -4788,7 +4861,14 @@ mod tests {
         let workspace_root = h.workspace_root();
         let pane_id = h
             .app
-            .open_installed_wasm_view_pane(0, installed, workspace_root, None, Vec::new())
+            .open_installed_wasm_view_pane(
+                0,
+                crate::host::plugin_admission::OpenedBy::Id,
+                installed,
+                workspace_root,
+                None,
+                Vec::new(),
+            )
             .expect("launch without timer consent");
         let view = h.app.windows[0]
             .panes
@@ -4968,6 +5048,49 @@ default = true
     #[test]
     fn restore_wasm_manifest_timer_does_not_bypass_sensitive_review() {
         restore_wasm_timer_case("sysmon", true, "matching");
+    }
+
+    /// Codex 3309 round 1: a Python start that fails after admission leaves
+    /// none of the manifest capability rows it planned.
+    #[test]
+    fn a_python_start_that_fails_keeps_no_capability_rows() {
+        let h = HostHarness::new();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("t1733-py");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("manifest.toml"),
+            "schema_version = 2\n\n[plugin]\nid = \"t1733-py\"\nname = \"t\"\nversion = \"0.0.1\"\n\n[plugin.capabilities]\ncapabilities = [\"fs.read\"]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"t1733-py.main\"\ndefault = true\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("main.py"), "def init(size, args):\n    return []\n").unwrap();
+        let resolved = crate::app::registry::resolve_plugin_dir(&root).unwrap();
+        let config = python_launch_config(&resolved).unwrap();
+        // An entry outside its root fails the runtime launch after planning.
+        let elsewhere = dir.path().join("main.py");
+        let admitted = crate::host::plugin_admission::AdmittedPlugin::for_test(
+            "t1733-py",
+            crate::app::registry::ManifestType::Python,
+            &resolved.root,
+            &elsewhere,
+        );
+        let result = build_python_runtime(
+            admitted,
+            config,
+            h.profile_dir(),
+            h.workspace_root(),
+            h.workspace_root(),
+            Vec::new(),
+            &crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default()),
+        );
+        assert!(result.is_err(), "the start fails");
+        let rows = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir())
+            .unwrap()
+            .list_entries()
+            .into_iter()
+            .filter(|entry| entry.actor_id.ends_with("t1733-py"))
+            .count();
+        assert_eq!(rows, 0);
     }
 
     #[test]

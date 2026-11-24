@@ -310,11 +310,37 @@ impl ToolRegistry {
                     .push((pane_id, tool.clone()));
             }
         }
-        for (name, mut owners) in owners_by_name {
+        let qualify = |map: &mut HashMap<String, (u64, String, AiTool)>,
+                       name: &str,
+                       pane_id: u64,
+                       tool: AiTool| {
+            let qualified = format!("{name}@{pane_id}");
+            let mut exposed = tool.clone();
+            exposed.name = qualified.clone();
+            map.insert(qualified, (pane_id, tool.name, exposed));
+        };
+        for (name, owners) in owners_by_name {
+            // A development copy's tool is always addressed by its pane, so a
+            // bundled plugin's bare tool name never resolves to it and it
+            // never takes that name from the bundled pane (stint 1733).
+            let (development, mut owners): (Vec<_>, Vec<_>) =
+                owners.into_iter().partition(|(pane_id, _)| {
+                    self.entries.get(pane_id).is_some_and(|entry| {
+                        entry
+                            .plugin_id
+                            .starts_with(crate::host::pane::DEVELOPMENT_TOOL_IDENTITY)
+                    })
+                });
+            for (pane_id, tool) in development {
+                qualify(&mut map, &name, pane_id, tool);
+            }
             owners.sort_by_key(|(pane_id, _)| *pane_id);
             if owners.len() == 1 {
                 let (pane_id, tool) = owners.pop().unwrap();
                 map.insert(name, (pane_id, tool.name.clone(), tool));
+                continue;
+            }
+            if owners.is_empty() {
                 continue;
             }
             let panes: Vec<u64> = owners.iter().map(|(pane_id, _)| *pane_id).collect();
@@ -323,10 +349,7 @@ impl ToolRegistry {
                 name = crate::host::guest_text::shown(&name)
             );
             for (pane_id, tool) in owners {
-                let qualified = format!("{name}@{pane_id}");
-                let mut exposed = tool.clone();
-                exposed.name = qualified.clone();
-                map.insert(qualified, (pane_id, tool.name, exposed));
+                qualify(&mut map, &name, pane_id, tool);
             }
         }
         map
@@ -1409,8 +1432,20 @@ impl ToolDispatcher {
         ))
     }
 
+    /// The broker package and instance of a plugin tool. A development
+    /// copy's calls carry its registered `dev:<id>:<pane>` identity, never a
+    /// package parsed from the exposed name, so they never match a bundled
+    /// instance's grant (stint 1733). Other panes keep the name-derived
+    /// package their stored grants are keyed by.
     fn provider_of(&self, name: &str) -> (String, u64) {
         if let Some((pane, provider_name, _)) = self.tools.get(name) {
+            if let Some(identity) = self
+                .provider_apps
+                .get(pane)
+                .filter(|identity| identity.starts_with(crate::host::pane::DEVELOPMENT_TOOL_IDENTITY))
+            {
+                return (identity.clone(), *pane);
+            }
             let package = name
                 .split_once("__")
                 .map(|(app, _)| app.split(':').next().unwrap_or(app).to_string())
@@ -1963,6 +1998,53 @@ mod tests {
         assert!(
             snap.contains_key("unique_b"),
             "non-conflicting tool from pane 20 must remain visible"
+        );
+    }
+
+    /// Stint 1733: a development copy's overlay on a genuine instance's pane
+    /// reuses that pane id but never its names or its broker package: its
+    /// tools are always pane-addressed under `dev:<id>:<pane>`, the bundled
+    /// names stay with the genuine pane, and a call carries the dev identity.
+    #[test]
+    fn a_dev_overlay_never_takes_a_genuine_instances_names_or_package() {
+        let mut reg = ToolRegistry::new();
+        let register = |reg: &mut ToolRegistry, pane: u64, identity: &str| {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            reg.register(
+                pane,
+                ViewInstanceKey::detached(),
+                identity.to_string(),
+                vec![make_tool("chess.play")],
+                PluginEventSender::Channel(tx),
+                origin(70, pane),
+            );
+        };
+        register(&mut reg, 7, "chess");
+        register(&mut reg, 8, "chess");
+        // The dev overlay covers pane 7; the genuine registration is shelved.
+        register(&mut reg, 7, "dev:chess:7");
+
+        let namespaced = reg.namespaced_snapshot_for_caller(70);
+        assert_eq!(namespaced["chess__chess.play"].0, 8, "{namespaced:?}");
+        assert_eq!(namespaced["dev:chess:7__chess.play"].0, 7);
+        assert!(!namespaced.contains_key("chess:7__chess.play"));
+        let bare = reg.snapshot_for_caller(70);
+        assert_eq!(bare["chess.play"].0, 8, "the bare name stays with the genuine pane");
+        assert_eq!(bare["chess.play@7"].0, 7);
+
+        let dispatcher = ToolDispatcher::from_parts(
+            DispatchScope::new(0, "agent:t1733", PathBuf::from("/tmp"), 70),
+            crate::broker::gate::PermissionMonitor::ephemeral(),
+            namespaced,
+            &reg,
+        );
+        assert_eq!(
+            dispatcher.provider_of("dev:chess:7__chess.play"),
+            ("dev:chess:7".to_string(), 7)
+        );
+        assert_eq!(
+            dispatcher.provider_of("chess__chess.play"),
+            ("chess".to_string(), 8)
         );
     }
 
