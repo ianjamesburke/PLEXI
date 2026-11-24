@@ -47,10 +47,15 @@ fn client_reply_streams() -> &'static StreamMap {
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Drop old registrations whose other end has gone. A stream whose peer is
+/// still connected is kept however old it is: a person can answer a waiting
+/// choice long after it was posted, and the answer goes only to this stream
+/// (Codex 3290 r4).
 fn prune_expired(map: &mut HashMap<String, (Instant, IpcStream)>) {
     let now = Instant::now();
-    map.retain(|_, (registered_at, _)| {
+    map.retain(|_, (registered_at, stream)| {
         now.saturating_duration_since(*registered_at) <= SWEEP_MAX_AGE
+            || crate::platform::ipc::peer_connected(stream)
     });
 }
 
@@ -79,6 +84,16 @@ impl ReplyRegistry {
             .unwrap_or_else(|e| e.into_inner());
         prune_expired(&mut guard);
         guard.insert(response_file.into(), (Instant::now(), stream));
+    }
+
+    /// Test only: a registration made `age` ago.
+    #[cfg(test)]
+    pub(crate) fn register_aged(response_file: &str, stream: IpcStream, age: Duration) {
+        let at = Instant::now().checked_sub(age).expect("a representable past instant");
+        host_reply_streams()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(response_file.to_string(), (at, stream));
     }
 
     /// Take the registered stream for `response_file`, if any.
@@ -566,6 +581,31 @@ pub(crate) fn sweep_stale(profile_dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Codex 3290 r4 L2: a waiting choice answered after the prune window
+    /// still reaches its client. Another registration prunes old entries,
+    /// but a stream whose client is still connected stays; a dead one goes.
+    /// The client reads its connection as the CLI does.
+    #[cfg(unix)]
+    #[test]
+    fn a_live_waiter_outlives_the_prune_window() {
+        let token = format!("live-waiter-{}", uuid::Uuid::new_v4());
+        let dead = format!("dead-waiter-{}", uuid::Uuid::new_v4());
+        let (host_side, client_side) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (dead_host, dead_client) = std::os::unix::net::UnixStream::pair().unwrap();
+        let old = SWEEP_MAX_AGE + Duration::from_secs(60);
+        ReplyRegistry::register_aged(&token, host_side, old);
+        ReplyRegistry::register_aged(&dead, dead_host, old);
+        drop(dead_client);
+        register_client_stream(token.clone(), client_side);
+        // Any later reply-bearing request prunes the registry.
+        let (other, _other_client) = std::os::unix::net::UnixStream::pair().unwrap();
+        ReplyRegistry::register(format!("other-{}", uuid::Uuid::new_v4()), other);
+        assert_eq!(ReplyRegistry::connected(&dead), None, "a dead waiter is pruned");
+        assert!(write_response(&token, b"talk"), "the late answer had no stream");
+        assert_eq!(poll_string(&token, Some(Duration::from_secs(2))).unwrap(), "talk");
+        assert!(!std::path::Path::new(&token).exists());
+    }
 
     /// A peer that keeps the connection open and writes one byte every
     /// 100 ms, until the reader goes away.
