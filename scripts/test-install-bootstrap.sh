@@ -3,32 +3,64 @@
 # PLEXI_GITHUB_REPO_API replaces api.github.com; the downloaded "installer" records its argv.
 set -euo pipefail
 
+# No real credential enters the harness. Inherited tokens are kept unexported,
+# only to scan the buffered output for them before it is released.
+inherited_tokens=()
+for var in GITHUB_TOKEN GH_TOKEN; do
+  [[ -n "${!var:-}" ]] && inherited_tokens+=("${!var}")
+done
+unset GITHUB_TOKEN GH_TOKEN
+dummy_token="bootstrap-test-token"
+
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 root="$(mktemp -d)"
 hits="$root/hits"
 argv="$root/argv"
 port_file="$root/port"
+out="$root/out"
 pid=""
 fail=0
 case "$(uname -s)" in Darwin) host_os=macos ;; *) host_os=linux ;; esac
 case "$(uname -m)" in arm64|aarch64) host_arch=arm64 ;; *) host_arch=x64 ;; esac
 platform="$host_os-$host_arch"
 
+# True when file $1 contains any of the remaining arguments.
+contains_any() {
+  local text token
+  text="$(<"$1")"
+  shift
+  for token in "$@"; do
+    [[ -n "$token" && "$text" == *"$token"* ]] && return 0
+  done
+  return 1
+}
+
+# All output is buffered and released only if it holds no inherited token.
+exec 3>&1 4>&2 >"$out" 2>&1
 cleanup() {
+  local rc=$?
   if [[ -n "$pid" ]]; then
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
   fi
+  exec 1>&3 2>&4
+  if (( ${#inherited_tokens[@]} )) && contains_any "$out" "${inherited_tokens[@]}"; then
+    echo "FAIL harness output contains an inherited GITHUB_TOKEN or GH_TOKEN value; output withheld"
+    rc=1
+  else
+    cat "$out"
+  fi
   rm -rf "$root"
+  exit "$rc"
 }
 trap cleanup EXIT
 
-python3 - "$port_file" "$hits" "plexi-installer-$platform" <<'PY' &
+python3 - "$port_file" "$hits" "plexi-installer-$platform" "$dummy_token" <<'PY' &
 import hashlib, json, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-port_file, hit_log, installer_asset = sys.argv[1], sys.argv[2], sys.argv[3]
+port_file, hit_log, installer_asset, dummy_token = sys.argv[1:5]
 INSTALLER = b"""#!/bin/sh
 : > "$PLEXI_BOOTSTRAP_ARGV_OUT"
 for arg in "$@"; do
@@ -137,7 +169,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         with open(hit_log, "a", encoding="utf-8") as fh:
-            fh.write(self.path + " " + self.headers.get("Authorization", "") + "\n")
+            fh.write(self.path + "\n")
 
     def _send(self, body, content_type="application/json"):
         data = body if isinstance(body, bytes) else body.encode()
@@ -150,8 +182,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         parts = [p for p in parsed.path.split("/") if p]
+        # Records which credential arrived, never its value.
+        auth = self.headers.get("Authorization")
+        kind = "none" if auth is None else "dummy" if auth == "Bearer " + dummy_token else "other"
         with open(hit_log, "a", encoding="utf-8") as fh:
-            fh.write("AUTH " + self.headers.get("Authorization", "") + "\n")
+            fh.write("AUTH " + kind + "\n")
         if parts[:2] == ["fixtures", "truncated"]:
             self.send_response(504)
             self.send_header("Content-Length", "100")
@@ -333,14 +368,33 @@ else
 fi
 
 : >"$hits"
-if ! env -u PLEXI_BOOTSTRAP_TAG GITHUB_TOKEN=bootstrap-test-token PLEXI_GITHUB_REPO_API="$base/fixtures/reported" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha >/dev/null 2>&1; then
+if ! env -u PLEXI_BOOTSTRAP_TAG GITHUB_TOKEN="$dummy_token" PLEXI_GITHUB_REPO_API="$base/fixtures/reported" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha >/dev/null 2>&1; then
   echo "FAIL bootstrap token fixture"
   fail=1
-elif ! grep -Fq 'AUTH Bearer bootstrap-test-token' "$hits"; then
+elif ! grep -Fxq 'AUTH dummy' "$hits"; then
   echo "FAIL bootstrap did not send GITHUB_TOKEN"
   fail=1
 else
   echo "PASS bootstrap sends GITHUB_TOKEN"
+fi
+
+: >"$hits"
+env -u PLEXI_BOOTSTRAP_TAG PLEXI_GITHUB_REPO_API="$base/fixtures/reported" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha >/dev/null 2>&1 || true
+if grep -Eq '^AUTH (dummy|other)$' "$hits" || ! grep -Fxq 'AUTH none' "$hits"; then
+  echo "FAIL bootstrap sent a credential the harness did not set"
+  fail=1
+else
+  echo "PASS inherited GITHUB_TOKEN and GH_TOKEN never reach the bootstrap"
+fi
+
+# The output gate in cleanup: a line holding a token is caught, a clean one is not.
+printf '/fixtures/reported/releases Bearer leak-sentinel-1711\n' >"$root/leak"
+printf '/fixtures/reported/releases\n' >"$root/clean"
+if contains_any "$root/leak" leak-sentinel-1711 && ! contains_any "$root/clean" leak-sentinel-1711 && ! contains_any "$root/clean" ""; then
+  echo "PASS output gate catches a token line"
+else
+  echo "FAIL output gate missed a token line"
+  fail=1
 fi
 
 if err="$(env -u PLEXI_BOOTSTRAP_TAG PLEXI_GITHUB_REPO_API="$base/fixtures/rate-limit" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha 2>&1)"; then
@@ -361,9 +415,9 @@ for args in "--channel alpha" "--channel beta" "--channel stable" "--tag v0.3.5-
   # shellcheck disable=SC2086
   env -u PLEXI_BOOTSTRAP_TAG PLEXI_GITHUB_REPO_API="$base/fixtures/reported" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" $args >/dev/null 2>&1 || true
 done
-if grep -Eq '^/fixtures/[^ ]+/releases(\?[^ ]*)? ' "$hits"; then
+if grep -Eq '^/fixtures/[^ ]+/releases(\?[^ ]*)?$' "$hits"; then
   echo "FAIL bootstrap read the paginated release list"
-  grep -E '^/fixtures/[^ ]+/releases(\?[^ ]*)? ' "$hits" | head -3
+  grep -E '^/fixtures/[^ ]+/releases(\?[^ ]*)?$' "$hits" | head -3
   fail=1
 else
   echo "PASS bootstrap never reads the paginated release list"
