@@ -356,7 +356,7 @@ pub fn append_audit(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| SealError::Io(error.to_string()))?;
     }
-    mark_profile_sealed(host, &dir).map_err(SealError::Io)?;
+    require_sealed_profile(host, &dir).map_err(SealError::Io)?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -757,6 +757,18 @@ fn update_seal_state(
     dir: &Path,
     mutate: impl FnOnce(&mut SealState),
 ) -> Result<(), String> {
+    update_seal_state_with(host, dir, true, mutate)
+}
+
+/// With `replace_untrusted` false, an untrusted or missing-with-sealed-files
+/// state is returned as an error and left exactly as found, so the fault
+/// stays visible to the next verification.
+fn update_seal_state_with(
+    host: &HostProcess,
+    dir: &Path,
+    replace_untrusted: bool,
+    mutate: impl FnOnce(&mut SealState),
+) -> Result<(), String> {
     if dir.as_os_str().is_empty() {
         return Ok(());
     }
@@ -775,6 +787,7 @@ fn update_seal_state(
             needs_you_tip: None,
         },
         SealStateStatus::KeyUnreadable(error) => return Err(error),
+        SealStateStatus::Untrusted(reason) if !replace_untrusted => return Err(reason),
         SealStateStatus::Untrusted(reason) => {
             let path = seal_state_path(dir);
             if path.exists() {
@@ -842,7 +855,16 @@ pub(crate) fn store_needs_you_tip(
     })
 }
 
-pub(crate) fn mark_profile_sealed(host: &HostProcess, dir: &Path) -> Result<(), String> {
+/// Make sure the seal state exists before a sealed file is written. A fresh
+/// profile gets one; a profile whose state is missing or untrusted while
+/// sealed files exist is an integrity fault and is returned unchanged.
+pub(crate) fn require_sealed_profile(host: &HostProcess, dir: &Path) -> Result<(), String> {
+    update_seal_state_with(host, dir, false, |state| {
+        state.sealed = true;
+    })
+}
+
+fn mark_profile_sealed(host: &HostProcess, dir: &Path) -> Result<(), String> {
     update_seal_state(host, dir, |state| {
         state.sealed = true;
     })
@@ -1336,6 +1358,24 @@ mod tests {
         let error = write_sealed(TEST_HOST, &grants, b"records = []\n").unwrap_err();
         assert!(error.contains("rename"), "{error}");
         assert!(seal_state_path(dir.path()).is_file());
+    }
+
+    #[test]
+    fn a_save_never_erases_a_missing_seal_state_fault() {
+        let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let audit = dir.path().join("permission-audit.jsonl");
+        write_sealed(TEST_HOST, &dir.path().join("grants.toml"), b"records = []\n").unwrap();
+        append_audit(TEST_HOST, &audit, &serde_json::json!({"kind": "seed"})).unwrap();
+        std::fs::remove_file(&audit).unwrap();
+        std::fs::remove_file(seal_state_path(dir.path())).unwrap();
+
+        let error = crate::broker::needs_you_store::save(TEST_HOST, dir.path(), &[]).unwrap_err();
+        assert!(error.contains("seal-state.json is missing"), "{error}");
+        assert!(!seal_state_path(dir.path()).exists(), "the fault was erased");
+        assert!(needs_you_tip_lookup(TEST_HOST, dir.path()).is_err());
+        assert!(append_audit(TEST_HOST, &audit, &serde_json::json!({"kind": "x"})).is_err());
+        assert!(!audit.exists(), "a deleted audit log must not restart quietly");
     }
 
     #[test]
