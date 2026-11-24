@@ -296,7 +296,7 @@ impl SubscriptionRecord {
             &self.subscriber_id,
             &self.plugin_id,
         );
-        if let Err(stale) = self.permit.check(&target) {
+        if let Err(stale) = self.permit.commit(&target, &record.event).map(drop) {
             log::info!(
                 "plugin_timeline: subscription {} delivers nothing: {stale}",
                 self.subscription_id
@@ -1123,7 +1123,9 @@ impl PluginTimeline {
                 &d.subscriber_id,
                 &d.plugin_id,
             );
-            match d.permit.check(&target) {
+            // The drain is the commit: a revoke that finished first withholds
+            // it. The recipient's socket write comes after, outside the lock.
+            match d.permit.commit(&target, &d.event).map(drop) {
                 Ok(()) => taken.push(d),
                 Err(stale) => log::info!(
                     "plugin_timeline: withheld delivery {} of '{}' to {:?} '{}': {stale}",
@@ -1214,13 +1216,11 @@ mod tests {
     /// A fixture's permit, minted for its subscriber and publisher as they
     /// stand when it is added.
     fn permitted(mut sub: SubscriptionRecord) -> SubscriptionRecord {
-        sub.permit = crate::broker::permit::mint_host(
-            "test",
-            crate::broker::permit::DeliverEvents::target(
-                sub.subscriber_type,
-                &sub.subscriber_id,
-                &sub.plugin_id,
-            ),
+        sub.permit = crate::broker::permit::delivery_fixture(
+            sub.subscriber_type,
+            &sub.subscriber_id,
+            &sub.plugin_id,
+            &sub.event_names,
         );
         sub
     }
@@ -1238,13 +1238,11 @@ mod tests {
             duration: GrantDuration::Session,
             subscriber_context_id: CTX,
             created_at: "2026-06-11T00:00:00Z".to_string(),
-            permit: crate::broker::permit::mint_host(
-                "test",
-                crate::broker::permit::DeliverEvents::target(
-                    ActorType::Agent,
-                    "chess-opponent",
-                    "chess",
-                ),
+            permit: crate::broker::permit::delivery_fixture(
+                ActorType::Agent,
+                "chess-opponent",
+                "chess",
+                &["move.played".to_string()],
             ),
         }
     }
@@ -1525,7 +1523,7 @@ mod tests {
             .unwrap();
         let mut sub = subscription(PayloadMode::Summary, TriggerMode::Conversation);
         sub.event_names = vec!["game.ended".to_string()];
-        t.add_subscription(sub);
+        t.add_subscription(permitted(sub));
 
         // Non-matching event name → no delivery.
         let out = t

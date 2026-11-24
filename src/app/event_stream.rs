@@ -501,13 +501,11 @@ mod tests {
                 duration: crate::broker::GrantDuration::Session,
                 subscriber_context_id: CONTEXT,
                 created_at: "test".into(),
-                permit: crate::broker::permit::mint_host(
-                    "test",
-                    crate::broker::permit::DeliverEvents::target(
-                        ActorType::External,
-                        &key,
-                        "probe-1285",
-                    ),
+                permit: crate::broker::permit::delivery_fixture(
+                    ActorType::External,
+                    &key,
+                    "probe-1285",
+                    &["tick".to_string()],
                 ),
             });
             timeline

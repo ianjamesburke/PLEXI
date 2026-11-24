@@ -430,31 +430,52 @@ pub(crate) fn write_json_response(response_file: &str, value: serde_json::Value)
     }
 }
 
-/// Write a sensitive JSON response (`plexi secret get` value reply) strictly
-/// over the registered socket stream in [`ReplyRegistry`], never touching the
-/// filesystem even if no stream is registered.
-pub(crate) fn write_stream_only_json_response(
+/// A sensitive JSON reply (the `plexi secret get` value) staged for its
+/// waiting socket stream: the stream is taken from [`ReplyRegistry`] and the
+/// body serialized, so a permit can commit the hand-over without holding its
+/// lock across the blocking write in [`StagedReply::send`]. It never touches
+/// the filesystem, even when no stream is registered.
+pub(crate) struct StagedReply {
+    response_file: String,
+    stream: IpcStream,
+    json: String,
+}
+
+pub(crate) fn stage_stream_only_json_response(
     response_file: &str,
     value: serde_json::Value,
-) -> bool {
-    let Some(stream) = ReplyRegistry::take(response_file) else {
-        log::error!(
-            "rpc: refused to write stream-only response to filesystem for {response_file:?}"
-        );
-        return false;
-    };
+) -> Option<StagedReply> {
     let json = match serde_json::to_string(&value) {
         Ok(json) => json,
         Err(e) => {
             log::error!("rpc: could not serialize stream-only response for {response_file:?}: {e}");
-            return false;
+            return None;
         }
     };
-    match write_to_registered_stream(stream, json.as_bytes()) {
-        Ok(()) => true,
-        Err(e) => {
-            log::warn!("rpc: stream-only write failed for {response_file:?}: {e}");
-            false
+    let Some(stream) = ReplyRegistry::take(response_file) else {
+        log::error!(
+            "rpc: refused to write stream-only response to filesystem for {response_file:?}"
+        );
+        return None;
+    };
+    Some(StagedReply {
+        response_file: response_file.to_string(),
+        stream,
+        json,
+    })
+}
+
+impl StagedReply {
+    pub(crate) fn send(self) -> bool {
+        match write_to_registered_stream(self.stream, self.json.as_bytes()) {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!(
+                    "rpc: stream-only write failed for {:?}: {e}",
+                    self.response_file
+                );
+                false
+            }
         }
     }
 }

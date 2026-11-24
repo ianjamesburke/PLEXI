@@ -632,6 +632,7 @@ pub struct VerifiedCaller {
     pub(crate) authority: Option<std::sync::Arc<super::pane_authority::LivePaneAuthority>>,
 }
 
+#[derive(Clone, Copy)]
 pub struct AdmitRequest<'a> {
     pub call_id: &'a str,
     pub tool: &'a str,
@@ -645,6 +646,31 @@ pub struct AdmitRequest<'a> {
     pub package_id: &'a str,
     pub instance_id: u64,
     pub target_type: TargetType,
+}
+
+/// The exact question the broker allowed, under the posture it was decided
+/// with. A permit carries it to its effect, where [`PermissionMonitor::commit`]
+/// asks it again (stint 1716, `.stint/runs/codex-3306/design.md`).
+#[derive(Clone, Debug)]
+pub(crate) struct Approved {
+    request: PermissionRequest,
+    posture: Option<crate::broker::PermissionPosture>,
+}
+
+/// The broker's answer to one use ([`PermissionMonitor::admit_for_use`]).
+pub(crate) enum UseDecision {
+    /// Allowed; a once grant it rested on is already claimed for this use.
+    /// `fingerprint` and `resource_id` are the binding's, for the audit.
+    Allowed {
+        approved: Box<Approved>,
+        grant_id: String,
+        fingerprint: String,
+        resource_id: String,
+    },
+    Required {
+        pending_request_id: String,
+    },
+    Denied,
 }
 
 /// The broker's answer to a live plugin start ([`PermissionMonitor::begin_plugin_start`]).
@@ -921,7 +947,11 @@ impl PermissionMonitor {
                     faults.push(fault);
                 }
             }
-            *self.store() = loaded;
+            {
+                // A permit's commit must not straddle the reset.
+                let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+                *self.store() = loaded;
+            }
             for fault in &faults {
                 self.raise_integrity(fault);
             }
@@ -1138,6 +1168,120 @@ impl PermissionMonitor {
         debug_assert!(req.principal.actor_type() == ActorType::Plugin);
         debug_assert!(req.target_type == TargetType::Capability);
         self.admit_inner(req, None, Some(disclosure))
+    }
+
+    /// Decide one use and, on allow, claim a once grant it rests on for one
+    /// fresh use id, under the admission lock every revoke takes. An ask is
+    /// filed as [`Self::admit`] files it.
+    pub(crate) fn admit_for_use(
+        &self,
+        req: AdmitRequest<'_>,
+        posture: Option<&crate::broker::PermissionPosture>,
+    ) -> UseDecision {
+        let Ok(fingerprint) = fingerprint_args(req.input_json) else {
+            return UseDecision::Denied;
+        };
+        if req.workspace_root.as_os_str().is_empty() {
+            return UseDecision::Denied;
+        }
+        let request = PermissionRequest::exact(&self.exact_binding(&req, fingerprint));
+        // Two rounds at most: an allow can land between releasing the lock
+        // and filing the ask, and then the second round finds it.
+        for _ in 0..2 {
+            // A deny or an ask goes through the ordinary admission below,
+            // which records the denial or files the ask.
+            if let Ok(mut claimed) = self.admit_questions(vec![request.clone()], posture) {
+                let (approved, grant_id) = claimed.remove(0);
+                return UseDecision::Allowed {
+                    fingerprint: approved.request.args_fingerprint.clone(),
+                    resource_id: approved.request.resource_id.clone().unwrap_or_default(),
+                    approved: Box::new(approved),
+                    grant_id,
+                };
+            }
+            match self.admit_inner(req, posture, None) {
+                Admission::Required { pending_request_id } => {
+                    return UseDecision::Required { pending_request_id }
+                }
+                Admission::Denied { .. } => return UseDecision::Denied,
+                Admission::Proceed { .. } => continue,
+            }
+        }
+        UseDecision::Denied
+    }
+
+    /// Decide every question of one effect together under the admission
+    /// lock. When all allow, each once grant one rests on (with no standing
+    /// row covering it) is claimed for one fresh use id; otherwise the
+    /// strictest decision is returned and nothing is claimed or filed.
+    pub(crate) fn admit_questions(
+        &self,
+        requests: Vec<PermissionRequest>,
+        posture: Option<&crate::broker::PermissionPosture>,
+    ) -> Result<Vec<(Approved, String)>, Decision> {
+        let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+        let now = self.now_secs();
+        let mut store = self.store();
+        let strictest = requests
+            .iter()
+            .map(|request| store.evaluate_at(request, posture, now))
+            .fold(Decision::Allow, |worst, next| match (worst, next) {
+                (Decision::Deny, _) | (_, Decision::Deny) => Decision::Deny,
+                (Decision::Ask, _) | (_, Decision::Ask) => Decision::Ask,
+                _ => Decision::Allow,
+            });
+        if strictest != Decision::Allow {
+            return Err(strictest);
+        }
+        let use_id = format!("use-{}", uuid::Uuid::new_v4());
+        Ok(requests
+            .into_iter()
+            .map(|mut request| {
+                let standing = store.decide_at_commit(&request, posture, now) == Decision::Allow;
+                let grant_id = if standing {
+                    store
+                        .records()
+                        .iter()
+                        .find(|r| r.decision == Decision::Allow && r.matches(&request, now))
+                        .map(|r| r.grant_id.clone())
+                        .unwrap_or_default()
+                } else {
+                    let claimed = store.claim_once(&request, now, &use_id).unwrap_or_default();
+                    request.operation_id = use_id.clone();
+                    claimed
+                };
+                let approved = Approved {
+                    request,
+                    posture: posture.cloned(),
+                };
+                (approved, grant_id)
+            })
+            .collect())
+    }
+
+    /// Ask an approved question again at its effect. Standing rows or this
+    /// use's own claim must still allow it; it never prompts or files a
+    /// request. The returned guard holds off revoke and reset until the
+    /// caller has handed the effect over: keep it out of blocking waits.
+    pub(crate) fn commit(
+        &self,
+        approved: &Approved,
+    ) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+        let guard = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+        let now = self.now_secs();
+        let request = &approved.request;
+        match self
+            .store()
+            .decide_at_commit(request, approved.posture.as_ref(), now)
+        {
+            Decision::Allow => Ok(guard),
+            decision => Err(format!(
+                "{} on {} is no longer allowed ({})",
+                request.actor_id,
+                request.target_id,
+                decision.as_str()
+            )),
+        }
     }
 
     /// Decide a live plugin start (stint 1398). When the stored decision
@@ -4012,19 +4156,6 @@ impl PermissionMonitor {
             record.bound_operation_id = operation_id.map(str::to_string);
             log::info!("permission_monitor: consumed once-grant {grant_id}");
         }
-    }
-
-    /// Whether `grant_id` still allows: present, `Allow`, and unexpired. A
-    /// once grant this use already claimed still stands for it; a revoked one
-    /// is gone. Read under the store lock that revocation takes, so a check
-    /// after a revoke observes it (stint 1716).
-    pub(crate) fn grant_stands(&self, grant_id: &str) -> bool {
-        let now = self.now_secs();
-        self.store().records().iter().any(|record| {
-            record.grant_id == grant_id
-                && record.decision == Decision::Allow
-                && record.expires_at.is_none_or(|expires| now < expires)
-        })
     }
 
     /// Save the store's durable rows: the one writer of the profile's grants.

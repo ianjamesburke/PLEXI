@@ -1289,50 +1289,36 @@ impl AgentHost {
     pub fn attach(&mut self, def: AgentDefinition) {
         let mut subscription_ids = Vec::new();
         for sub in &def.subscriptions {
-            let mut granted = true;
-            // The rows each allow rests on; the delivery permit binds them,
-            // so revoking one stops this agent's deliveries (stint 1716).
-            let mut supporting = Vec::new();
-            for event in &sub.events {
-                let target = format!("{}::{}", sub.app, event);
-                let req = PermissionRequest::exact(&crate::broker::ExactBinding::event_stream(
-                    ActorType::Agent,
-                    &def.id,
-                    ActorScope::User,
-                    &target,
-                    &self.workspace_root,
-                    None,
-                ));
-                // Subscriptions deliberately evaluate WITHOUT the agent's own
-                // posture: an agent must not self-grant event access from its
-                // settings file. Only user/workspace/managed grants count.
-                let store = self.monitor.store();
-                let decision = store.evaluate(&req, None);
-                supporting.extend(store.supporting_allows(&req));
-                drop(store);
-                if decision != Decision::Allow {
+            // Subscriptions deliberately admit WITHOUT the agent's own
+            // posture: an agent must not self-grant event access from its
+            // settings file. Only user/workspace/managed grants count. The
+            // permit asks each member's question again at delivery (stint 1716).
+            let coverage = match crate::host::event_subscriptions::admit_stream_members(
+                &self.monitor,
+                None,
+                Some(&self.workspace_root),
+                &sub.app,
+                &crate::broker::principal::Principal::agent(&def.id),
+                ActorScope::User,
+                None,
+                &sub.events,
+            ) {
+                Ok(coverage) => coverage,
+                Err(decision) => {
                     log::info!(
-                        "agent[{}]: subscription to '{target}' not granted ({}) — skipping",
+                        "agent[{}]: subscription to '{}' not granted ({}) — skipping",
                         def.id,
+                        sub.app,
                         decision.as_str()
                     );
-                    granted = false;
-                }
-            }
-            if !granted {
-                continue;
-            }
-            let permit = match crate::broker::permit::mint_unbound(
-                "agent-runtime",
-                crate::broker::permit::DeliverEvents::target(ActorType::Agent, &def.id, &sub.app),
-                crate::broker::permit::Grants::live(Arc::clone(&self.monitor), supporting),
-            ) {
-                Ok(permit) => permit,
-                Err(error) => {
-                    log::info!("agent[{}]: subscription to '{}' refused: {error}", def.id, sub.app);
                     continue;
                 }
             };
+            let permit = crate::broker::permit::mint_unbound(
+                "agent-runtime",
+                crate::broker::permit::DeliverEvents::target(ActorType::Agent, &def.id, &sub.app),
+                coverage,
+            );
             let subscription_id = format!("agent-sub-{}", uuid::Uuid::new_v4());
             self.timeline.lock().unwrap().add_subscription(
                 crate::host::plugin_timeline::SubscriptionRecord {
@@ -2493,13 +2479,11 @@ default_tier = "low"
                     payload: None,
                     state_ref: None,
                     created_at: "2026-01-01T00:00:00Z".to_string(),
-                    permit: crate::broker::permit::mint_host(
-                        "test",
-                        crate::broker::permit::DeliverEvents::target(
-                            ActorType::Agent,
-                            "chess-opponent",
-                            "chess",
-                        ),
+                    permit: crate::broker::permit::delivery_fixture(
+                        ActorType::Agent,
+                        "chess-opponent",
+                        "chess",
+                        &["turn.ready".to_string()],
                     ),
                 }
             };

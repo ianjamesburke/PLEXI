@@ -195,9 +195,11 @@ mod tests {
                 trigger_mode: TriggerMode::Conversation,
                 duration: GrantDuration::Session,
                 created_at: "test".into(),
-                permit: crate::broker::permit::mint_host(
-                    "test",
-                    crate::broker::permit::DeliverEvents::target(ActorType::Agent, name, PUBLISHER),
+                permit: crate::broker::permit::delivery_fixture(
+                    ActorType::Agent,
+                    name,
+                    PUBLISHER,
+                    &[STREAM.to_string()],
                 ),
             });
         }

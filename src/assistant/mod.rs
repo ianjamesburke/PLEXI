@@ -1147,23 +1147,29 @@ impl AssistantView {
             log::info!("assistant: already subscribed to '{target}'");
             return;
         }
-        let (decision, supporting) = self.event_stream_support(app, event);
-        if decision != Decision::Allow {
-            log::info!("assistant: subscription to '{target}' not allowed ({})", decision.as_str());
-            return;
-        }
-        let permit = match crate::broker::permit::mint_unbound(
-            "assistant",
-            crate::broker::permit::DeliverEvents::target(ActorType::Agent, ASSISTANT_ACTOR_ID, app),
-            crate::broker::permit::Grants::live(Arc::clone(&self.monitor), supporting),
+        let event_names = vec![event.to_string()];
+        let posture = self.active_posture();
+        let coverage = match crate::host::event_subscriptions::admit_stream_members(
+            &self.monitor,
+            Some(&posture),
+            Some(&self.workspace_root),
+            app,
+            &crate::broker::principal::Principal::agent(ASSISTANT_ACTOR_ID),
+            ActorScope::User,
+            Some(self.monitor.session_id()),
+            &event_names,
         ) {
-            Ok(permit) => permit,
-            Err(error) => {
-                log::info!("assistant: subscription to '{target}' refused: {error}");
+            Ok(coverage) => coverage,
+            Err(decision) => {
+                log::info!("assistant: subscription to '{target}' not allowed ({})", decision.as_str());
                 return;
             }
         };
-        let event_names = vec![event.to_string()];
+        let permit = crate::broker::permit::mint_unbound(
+            "assistant",
+            crate::broker::permit::DeliverEvents::target(ActorType::Agent, ASSISTANT_ACTOR_ID, app),
+            coverage,
+        );
         let subscription_id = crate::host::event_subscriptions::record_subscription(
             &self.timeline,
             app,
@@ -1392,14 +1398,9 @@ impl AssistantView {
     }
 
     fn event_stream_decision(&self, app: &str, event: &str) -> Decision {
-        self.event_stream_support(app, event).0
-    }
-
-    /// The decision for one exact stream and the grant rows an allow rests on.
-    fn event_stream_support(&self, app: &str, event: &str) -> (Decision, Vec<String>) {
         let event_names = vec![event.to_string()];
         let posture = self.active_posture();
-        crate::host::event_subscriptions::evaluate_subscription_supported(
+        crate::host::event_subscriptions::evaluate_subscription(
             &self.grants(),
             Some(&posture),
             Some(&self.workspace_root),
@@ -7040,6 +7041,9 @@ enabled = ["allowed.tool"]
             let mut first = test_plugin_with_timeline(ws.path(), timeline.clone());
             record_stream_allow(&first, "chess::move.played");
             first.subscribe_stream("chess", "move.played");
+            // Re-recording the same Always row replaces it; the live
+            // subscription still delivers (stint 1716).
+            record_stream_allow(&first, "chess::move.played");
         }
         assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
         // An event lands while no pane is open: queued against the leaked sub.
