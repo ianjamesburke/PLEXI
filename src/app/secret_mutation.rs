@@ -21,9 +21,11 @@ impl PlexiApp {
         };
         self.run_secret_request(
             tool,
-            name,
-            global,
-            root,
+            super::SecretAsk {
+                name,
+                global,
+                workspace_root: root,
+            },
             origin,
             response_file,
             move |request, monitor| {

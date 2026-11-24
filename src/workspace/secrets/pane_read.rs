@@ -43,6 +43,14 @@ impl SecretScope {
     }
 }
 
+/// What the host knows about the asker beyond its actor: the worker posture a
+/// pane carries, or the host-stamped class of a caller outside every pane.
+#[derive(Default, Clone, Copy)]
+pub struct ReadOrigin<'a> {
+    pub posture: Option<&'a PermissionPosture>,
+    pub outside: Option<&'a str>,
+}
+
 /// Admit `secret.get` for `actor`, then read `name` the way `plexi secret get`
 /// does: the workspace account first, then `plexi:user:<name>`.
 #[cfg(test)]
@@ -54,8 +62,16 @@ pub fn read_pane_secret(
     scope: &SecretScope,
     global_root: &Path,
 ) -> Result<super::folder::ReadResult, String> {
-    read_pane_secret_with_posture(monitor, store, actor, name, scope, global_root, None, None)
-        .map(|read| read.result)
+    read_pane_secret_with_posture(
+        monitor,
+        store,
+        actor,
+        name,
+        scope,
+        global_root,
+        ReadOrigin::default(),
+    )
+    .map(|read| read.result)
 }
 
 /// As [`read_pane_secret`], evaluating the immutable posture carried by the
@@ -67,9 +83,9 @@ pub fn read_pane_secret_with_posture(
     name: &str,
     scope: &SecretScope,
     global_root: &Path,
-    posture: Option<&PermissionPosture>,
-    outside: Option<&str>,
+    origin: ReadOrigin<'_>,
 ) -> Result<super::folder::GrantedRead, String> {
+    let ReadOrigin { posture, outside } = origin;
     let accounts = match scope {
         SecretScope::Workspace { id, .. } => {
             let account = super::keychain_workspace_name(id, name);

@@ -1508,8 +1508,7 @@ fn a_covered_worker_deny_beats_an_exact_stored_allow() {
             "KEY_1673",
             &scope,
             &crate::config::config_dir(),
-            None,
-            None,
+            crate::workspace::secrets::ReadOrigin::default(),
         )
         .unwrap()
         .result

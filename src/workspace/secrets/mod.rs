@@ -77,7 +77,7 @@ pub use folder_store::backend_label;
 pub use pane_read::read_pane_secret;
 #[cfg(test)]
 pub use pane_read::SECRET_GET_TOOL;
-pub use pane_read::{read_pane_secret_with_posture, SecretScope};
+pub use pane_read::{read_pane_secret_with_posture, ReadOrigin, SecretScope};
 pub use resolver::{
     resolve, resolve_terminal_env, resolve_with_source, ResolveOutcome, ResolveWithSourceOutcome,
     WorkspaceConfig, WorkspaceSecrets,

@@ -121,9 +121,11 @@ impl PlexiApp {
     ) {
         self.run_secret_request(
             "secret.get",
-            name,
-            global,
-            workspace_root,
+            SecretAsk {
+                name,
+                global,
+                workspace_root,
+            },
             origin,
             response_file,
             |request, monitor| {
@@ -135,13 +137,16 @@ impl PlexiApp {
     fn run_secret_request(
         &self,
         tool: &'static str,
-        name: &str,
-        global: bool,
-        workspace_root: Option<&Path>,
+        ask: SecretAsk<'_>,
         origin: &RequestOrigin,
         response_file: &str,
         work: impl FnOnce(SecretRequest, Arc<PermissionMonitor>) + Send + 'static,
     ) {
+        let SecretAsk {
+            name,
+            global,
+            workspace_root,
+        } = ask;
         let reply_path = PathBuf::from(response_file);
         let profile = crate::config::config_dir();
         if reply_path.parent() != Some(profile.join("rpc").as_path()) {
@@ -253,6 +258,13 @@ impl PlexiApp {
     }
 }
 
+/// The secret a socket request names, as the CLI sent it.
+pub(super) struct SecretAsk<'a> {
+    pub(super) name: &'a str,
+    pub(super) global: bool,
+    pub(super) workspace_root: Option<&'a Path>,
+}
+
 enum Subject {
     Pane(AdmittedScope),
     Outside(&'static str),
@@ -312,8 +324,10 @@ impl SecretRequest {
             &self.name,
             &self.scope,
             &self.profile,
-            self.posture.as_ref(),
-            self.subject.outside(),
+            crate::workspace::secrets::ReadOrigin {
+                posture: self.posture.as_ref(),
+                outside: self.subject.outside(),
+            },
         );
         let body = match result.map(|read| (read.result, read.approved)) {
             Ok((ReadResult::Value(value), Some(approved))) => {
