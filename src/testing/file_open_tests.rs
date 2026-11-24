@@ -460,6 +460,7 @@ fn install_plugin(h: &mut HostHarness, id: &str, extra: &str) -> tempfile::TempD
     std::fs::write(dir.join("main.py"), "#!/usr/bin/env python3\n").unwrap();
     let registry = crate::app::registry::PluginRegistry::load_with_global(tmp.path(), &global);
     assert!(registry.get(id).is_some(), "{id} loads");
+    h.trust_plugin_folder(&global);
     let root = h.app.router.get(0).root.clone();
     h.app.registries.set_view_for_test(&root, registry);
     tmp
@@ -1235,6 +1236,7 @@ fn an_explicit_view_of_a_plugin_without_a_default_view_opens() {
     std::fs::write(dir.join("main.py"), "#!/usr/bin/env python3\n").unwrap();
     let registry = crate::app::registry::PluginRegistry::load_with_global(tmp.path(), &global);
     assert!(registry.get("notes").is_some(), "notes loads");
+    h.trust_plugin_folder(&global);
     let context_root = h.app.router.get(0).root.clone();
     h.app.registries.set_view_for_test(&context_root, registry);
     std::fs::write(root.join("a.txt"), "outline").unwrap();

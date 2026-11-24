@@ -275,6 +275,27 @@ fn install_one_with_ref_policy(
     target_root: &Path,
     ref_policy: GitRefPolicy,
 ) -> Result<InstallOutcome, String> {
+    // The shared install boundary (stint 1398): every caller inherits the
+    // source decision, and a refused source is never fetched.
+    if let SourceSpec::Git(url) = source {
+        crate::host::plugin_admission::admit_install_source(
+            crate::host::plugin_admission::InstallSource::Git(url),
+        )
+        .map_err(|refusal| refusal.to_string())?;
+    }
+    install_one_admitted(cloner, provision, source, git_ref, target_root, ref_policy)
+}
+
+/// Install a source the boundary already admitted. Only the admission
+/// boundaries call this (and tests of the fetch mechanics behind them).
+fn install_one_admitted(
+    cloner: &dyn Cloner,
+    provision: &dyn Provision,
+    source: &SourceSpec,
+    git_ref: Option<&str>,
+    target_root: &Path,
+    ref_policy: GitRefPolicy,
+) -> Result<InstallOutcome, String> {
     match source {
         SourceSpec::Git(url) => {
             install_one_git(cloner, provision, url, git_ref, target_root, ref_policy)
@@ -589,6 +610,30 @@ fn apply_pack_with(
     target_root: &Path,
     refresh_local: bool,
 ) -> Vec<InstallOutcome> {
+    // One refused source refuses the whole pack before anything is fetched
+    // or written, so a pack is never half-applied (stint 1398).
+    if let Err(refusal) = admit_pack_sources(pack) {
+        let error = refusal.to_string();
+        return pack
+            .plugins
+            .iter()
+            .map(|entry| InstallOutcome {
+                id: entry.id.clone(),
+                status: InstallStatus::Failed(error.clone()),
+            })
+            .collect();
+    }
+    apply_admitted_pack(cloner, provision, pack, target_root, refresh_local)
+}
+
+/// Apply a pack whose sources the boundary already admitted.
+fn apply_admitted_pack(
+    cloner: &dyn Cloner,
+    provision: &dyn Provision,
+    pack: &Pack,
+    target_root: &Path,
+    refresh_local: bool,
+) -> Vec<InstallOutcome> {
     let mut outcomes = Vec::with_capacity(pack.plugins.len());
     let installed = installed_versions(target_root);
     for entry in &pack.plugins {
@@ -602,6 +647,25 @@ fn apply_pack_with(
         ));
     }
     outcomes
+}
+
+/// `plugin install local:<name>` over a copy that is not the shipped one
+/// replaces it with the shipped one: the recovery a refused launch names
+/// (stint 1398). `None` when nothing is there or it is already the bundle.
+pub(crate) fn repair_changed_bundled(name: &str, target_root: &Path) -> Option<InstallOutcome> {
+    if !is_bundled_plugin_id(name) {
+        return None;
+    }
+    let dest = target_root.join(name);
+    let meta = std::fs::symlink_metadata(&dest).ok()?;
+    if !meta.file_type().is_symlink() && matches_bundled_plugin(name, &dest) {
+        return None;
+    }
+    log::info!(
+        "install: replacing changed copy of bundled {name} at {}",
+        dest.display()
+    );
+    Some(refresh_one_local(&UvProvisioner, name, name, target_root))
 }
 
 /// Replace an installed `local:` plugin with the copy embedded in this binary.
@@ -677,7 +741,7 @@ fn apply_pack_entry(
         SourceSpec::Git(_) => Some(entry.version.as_str()),
         SourceSpec::Local(_) => None,
     };
-    match install_one_with_ref_policy(
+    match install_one_admitted(
         cloner,
         provision,
         &source,
@@ -735,6 +799,11 @@ pub fn update_plugin_dir(cloner: &dyn Cloner, id: &str, dest: &Path) -> Result<(
     if !dest.join(".git").exists() {
         return Err("not a git checkout (likely bundled core plugin)".to_string());
     }
+    let source = dest.display().to_string();
+    crate::host::plugin_admission::admit_install_source(
+        crate::host::plugin_admission::InstallSource::Git(&source),
+    )
+    .map_err(|refusal| refusal.to_string())?;
     cloner.pull(dest)?;
     log::info!("update: {id} at {}", dest.display());
     Ok(())
@@ -1008,13 +1077,72 @@ fn is_installer_written_root_entry(name: &str) -> bool {
     name == ".venv" || crate::app::package::HOST_METADATA_FILES.contains(&name)
 }
 
+/// What `scripts/package.py` leaves out of a packaged plugin, in its
+/// `shutil.ignore_patterns` order. Both sides of the bundled comparison skip
+/// exactly these, at any depth (stint 1398).
+pub(crate) const PACKAGER_EXCLUDES: [&str; 4] = ["__pycache__", "*.pyc", ".venv", ".DS_Store"];
+
+/// True when the packager keeps an entry named `name` (see [`PACKAGER_EXCLUDES`]).
+fn packaged(name: &str) -> bool {
+    PACKAGER_EXCLUDES
+        .iter()
+        .all(|pattern| match pattern.strip_prefix('*') {
+            Some(suffix) => !name.ends_with(suffix),
+            None => name != *pattern,
+        })
+}
+
+/// Python bytecode: a `.pyc` file or anything under `__pycache__`. The
+/// packager drops it, but unlike Finder metadata or a venv it is code the
+/// guest's importer runs, so the comparison treats it apart.
+fn is_bytecode(rel: &Path) -> bool {
+    rel.extension().is_some_and(|ext| ext == "pyc")
+        || rel
+            .components()
+            .any(|part| part.as_os_str() == "__pycache__")
+}
+
+/// An excluded entry that is not code (Finder metadata, a venv): skipped on
+/// both sides of the comparison.
+fn non_code_exclude(name: &str) -> bool {
+    !packaged(name) && !is_bytecode(Path::new(name))
+}
+
+/// True when this binary embeds a plugin named `id` (a top-level folder of
+/// `plugins/` with a manifest), so `local:<id>` installs it. Such ids are
+/// reserved: no workspace or folder plugin may take one (stint 1398).
+pub(crate) fn is_bundled_plugin_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.contains(['/', '\\'])
+        && EMBEDDED_APPS
+            .get_file(format!("{id}/manifest.toml"))
+            .is_some()
+}
+
+/// The embedded plugin id equal to `id` ignoring ASCII case, the exact match
+/// first. Plugin ids are ASCII, so case is the only way two of them can name
+/// one folder on a case-insensitive volume.
+pub(crate) fn bundled_id_ignoring_case(id: &str) -> Option<String> {
+    if is_bundled_plugin_id(id) {
+        return Some(id.to_string());
+    }
+    EMBEDDED_APPS
+        .dirs()
+        .filter_map(|dir| dir.path().file_name()?.to_str())
+        .find(|name| name.eq_ignore_ascii_case(id) && is_bundled_plugin_id(name))
+        .map(str::to_string)
+}
+
 /// Host-derived provenance: true when `plugin_dir` holds exactly the plugin
 /// this binary embeds as `local:<name>`. Same files, identical bytes, nothing
-/// extra, no symlinks. Package content identity is not enough here because it
-/// skips `.pyc` files and caches, which the guest's importer would still load.
-/// A manifest id or package claim cannot satisfy this. It covers the plugin
-/// folder only, not the SDK or stdlib a guest also imports. The walk stops at
-/// the first difference, so its cost is bounded by the embedded tree.
+/// extra, no symlinks. The selection follows the packager's
+/// [`PACKAGER_EXCLUDES`] (stint 1398): Finder metadata and venvs are skipped on
+/// both sides. Bytecode is code the importer runs, so it is never skipped on
+/// disk: an embedded `.pyc` may be absent (the packager drops it), but a `.pyc`
+/// present must be one the binary embeds, byte for byte. A manifest id or package
+/// claim cannot satisfy this. It covers the plugin folder only, not the SDK or
+/// stdlib a guest also imports, and it is a scan-time answer only. The walk
+/// stops at the first difference, so its cost is bounded by the embedded tree.
 pub(crate) fn matches_bundled_plugin(name: &str, plugin_dir: &Path) -> bool {
     let Some(bundled) = EMBEDDED_APPS.get_dir(name) else {
         log::warn!("bundled_check: no embedded plugin '{name}'");
@@ -1025,10 +1153,11 @@ pub(crate) fn matches_bundled_plugin(name: &str, plugin_dir: &Path) -> bool {
     collect_embedded(bundled, Path::new(name), &mut files, &mut dirs);
     let outcome =
         compare_with_embedded(plugin_dir, Path::new(""), &files, &dirs).and_then(|matched| {
-            if matched == files.len() {
+            let required = files.keys().filter(|rel| !is_bytecode(rel)).count();
+            if matched == required {
                 Ok(())
             } else {
-                Err(format!("{} bundled file(s) missing", files.len() - matched))
+                Err(format!("{} bundled file(s) missing", required - matched))
             }
         });
     match outcome {
@@ -1056,6 +1185,13 @@ fn collect_embedded<'a>(
         let Ok(rel) = entry.path().strip_prefix(root) else {
             continue;
         };
+        if rel
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(non_code_exclude)
+        {
+            continue;
+        }
         match entry {
             include_dir::DirEntry::Dir(child) => {
                 dirs.insert(rel.to_path_buf());
@@ -1069,6 +1205,7 @@ fn collect_embedded<'a>(
 }
 
 /// Count the bundled files found under `rel`, or name the first difference.
+/// Entries the packager leaves out are skipped here as in `collect_embedded`.
 fn compare_with_embedded(
     root: &Path,
     rel: &Path,
@@ -1082,7 +1219,9 @@ fn compare_with_embedded(
         let entry = entry.map_err(|e| format!("read {}: {e}", dir.display()))?;
         let name = entry.file_name();
         let child = rel.join(&name);
-        if rel.as_os_str().is_empty() && name.to_str().is_some_and(is_installer_written_root_entry)
+        if name.to_str().is_some_and(non_code_exclude)
+            || (rel.as_os_str().is_empty()
+                && name.to_str().is_some_and(is_installer_written_root_entry))
         {
             continue;
         }
@@ -1109,7 +1248,9 @@ fn compare_with_embedded(
         if actual != *expected {
             return Err(format!("changed file {}", child.display()));
         }
-        matched += 1;
+        if !is_bytecode(&child) {
+            matched += 1;
+        }
     }
     Ok(matched)
 }
@@ -1248,6 +1389,19 @@ pub fn examples_pack_ids() -> std::collections::HashSet<String> {
         .unwrap_or_default()
 }
 
+/// Admit every source a pack names before any is fetched (stint 1398): one
+/// git entry refuses the whole pack, so nothing is half-applied.
+fn admit_pack_sources(pack: &Pack) -> Result<(), crate::host::plugin_admission::Refusal> {
+    use crate::host::plugin_admission::{admit_install_source, InstallSource};
+    for entry in &pack.plugins {
+        match parse_source_spec(&entry.source) {
+            Ok(SourceSpec::Local(name)) => admit_install_source(InstallSource::Bundled(&name))?,
+            _ => admit_install_source(InstallSource::Git(&entry.source))?,
+        }
+    }
+    Ok(())
+}
+
 /// Read `<workspace_root>/<channel_dir>/plugins.toml` and install declared plugins into the
 /// workspace-scoped plugins dir (`<workspace_root>/<channel_dir>/plugins/`).
 pub fn apply_workspace_pack(
@@ -1276,7 +1430,35 @@ pub fn apply_workspace_pack(
         workspace_apps.display(),
         pack.plugins.len()
     );
-    Ok(apply_pack(cloner, &pack, &workspace_apps, false))
+    // A workspace never owns a bundled plugin's id (stint 1398), so a copy of
+    // one here could never be opened by id: report the conflict instead of
+    // installing it. The bundled plugin is already in the profile.
+    let (bundled, installable): (Vec<_>, Vec<_>) = pack
+        .plugins
+        .iter()
+        .cloned()
+        .partition(|entry| crate::cli::install_host::is_bundled_plugin_id(&entry.id));
+    let mut outcomes: Vec<InstallOutcome> = bundled
+        .iter()
+        .map(|entry| {
+            let error = format!(
+                "'{}' is bundled with Plexi and already in your profile; a workspace copy \
+                 would never be opened by id. Remove it from {channel_dir}/plugins.toml.",
+                entry.id
+            );
+            log::info!("install: workspace pack conflict: {error}");
+            InstallOutcome {
+                id: entry.id.clone(),
+                status: InstallStatus::Failed(error),
+            }
+        })
+        .collect();
+    let remaining = Pack {
+        plugins: installable,
+        ..pack
+    };
+    outcomes.extend(apply_pack(cloner, &remaining, &workspace_apps, false));
+    Ok(outcomes)
 }
 
 /// Return the set of plugin IDs declared in `<workspace_root>/<channel_dir>/plugins.toml`.
@@ -1299,6 +1481,36 @@ pub fn workspace_manifest_ids(workspace_root: &Path) -> std::collections::HashSe
 pub(crate) mod test_support {
     use super::*;
     use std::sync::Mutex;
+
+    /// The fetch mechanics behind the admission boundary, for tests of git
+    /// install behaviour that stays in the code until third-party installs
+    /// open (stint 1398). Production callers go through `install_one`.
+    pub fn install_one_admitted(
+        cloner: &dyn Cloner,
+        source: &SourceSpec,
+        git_ref: Option<&str>,
+        target_root: &Path,
+    ) -> Result<InstallOutcome, String> {
+        super::install_one_admitted(
+            cloner,
+            &UvProvisioner,
+            source,
+            git_ref,
+            target_root,
+            GitRefPolicy::Strict,
+        )
+    }
+
+    /// `apply_pack` behind the admission boundary; see [`install_one_admitted`].
+    pub(crate) fn apply_pack_admitted(
+        cloner: &dyn Cloner,
+        provision: &dyn Provision,
+        pack: &Pack,
+        target_root: &Path,
+        refresh_local: bool,
+    ) -> Vec<InstallOutcome> {
+        apply_admitted_pack(cloner, provision, pack, target_root, refresh_local)
+    }
 
     /// Extract this binary's embedded `local:<name>` plugin under `target_root`
     /// the way the installer does, without provisioning a venv.
@@ -1586,7 +1798,7 @@ mod install_tests {
     fn install_clone_writes_plugin_dir_with_manifest_id() {
         let target = tmp();
         let cloner = MockCloner::new();
-        let outcome = install_one(
+        let outcome = test_support::install_one_admitted(
             &cloner,
             &SourceSpec::Git("https://example.com/foo.git".into()),
             None,
@@ -1603,7 +1815,7 @@ mod install_tests {
         let target = tmp();
         let cloner = MockCloner::new();
         // First install: succeeds.
-        install_one(
+        test_support::install_one_admitted(
             &cloner,
             &SourceSpec::Git("https://example.com/foo.git".into()),
             None,
@@ -1611,7 +1823,7 @@ mod install_tests {
         )
         .expect("first install should succeed");
         // Second install: must error with a clear message.
-        let err = install_one(
+        let err = test_support::install_one_admitted(
             &cloner,
             &SourceSpec::Git("https://example.com/foo.git".into()),
             None,
@@ -1632,7 +1844,7 @@ mod install_tests {
             MANIFEST_SCHEMA_VERSION + 1
         );
         let cloner = MockCloner::new().with_manifest("https://example.com/future.git", &manifest);
-        let err = install_one(
+        let err = test_support::install_one_admitted(
             &cloner,
             &SourceSpec::Git("https://example.com/future.git".into()),
             None,
@@ -1650,7 +1862,7 @@ mod install_tests {
     fn install_passes_ref_to_checkout_when_set() {
         let target = tmp();
         let cloner = MockCloner::new();
-        install_one(
+        test_support::install_one_admitted(
             &cloner,
             &SourceSpec::Git("https://example.com/bar.git".into()),
             Some("v1.0.0"),
@@ -1667,7 +1879,7 @@ mod install_tests {
         let target = tmp();
         let cloner = MockCloner::new();
         cloner.fail_next_checkout("git checkout missing failed");
-        let err = install_one(
+        let err = test_support::install_one_admitted(
             &cloner,
             &SourceSpec::Git("https://example.com/strict.git".into()),
             Some("missing"),
@@ -1750,11 +1962,13 @@ mod pack_tests {
         let cloner = MockCloner::new();
         let pack = pack_with(&[("foo", "github:owner/foo", "0.0.1")]);
 
-        let first = apply_pack(&cloner, &pack, target.path(), false);
+        let first =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
         assert!(matches!(first[0].status, InstallStatus::Installed(_)));
 
         // Second apply: same id at same version → AlreadyAtVersion.
-        let second = apply_pack(&cloner, &pack, target.path(), false);
+        let second =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
         assert!(matches!(second[0].status, InstallStatus::AlreadyAtVersion));
     }
 
@@ -1769,7 +1983,8 @@ mod pack_tests {
         let cloner = MockCloner::new();
         let pack = pack_with(&[("logs", "local:logs", "bundled")]);
 
-        let first = apply_pack(&cloner, &pack, target.path(), false);
+        let first =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
         assert!(matches!(first[0].status, InstallStatus::Installed(_)));
 
         // Simulate a stale profile: drift the installed copy from the
@@ -1783,7 +1998,8 @@ mod pack_tests {
         // Without refresh: untouched (skipped or up-to-date — the installed
         // manifest's real version never equals the pack's "bundled", which is
         // precisely why version comparison can't drive core-plugin updates).
-        let plain = apply_pack(&cloner, &pack, target.path(), false);
+        let plain =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
         assert!(matches!(
             plain[0].status,
             InstallStatus::AlreadyAtVersion | InstallStatus::SkippedOtherVersion { .. }
@@ -1793,7 +2009,8 @@ mod pack_tests {
             .contains("stale drift"));
 
         // With refresh: replaced wholesale from the embedded tree.
-        let refreshed = apply_pack(&cloner, &pack, target.path(), true);
+        let refreshed =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), true);
         assert!(
             matches!(refreshed[0].status, InstallStatus::Refreshed(_)),
             "expected Refreshed, got {:?}",
@@ -1818,7 +2035,8 @@ mod pack_tests {
             ("beta", "github:owner/beta", "v1"),
         ]);
 
-        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
+        let outcomes =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
         assert_eq!(outcomes.len(), 2);
         // Exactly one failure, one install — order depends on apply_pack
         // iteration, just count by status.
@@ -1842,7 +2060,8 @@ mod pack_tests {
         let target = tempfile::tempdir().unwrap();
         let cloner = MockCloner::new();
         let pack = pack_with(&[("ok", "github:owner/ok", "v1"), ("bad", "ftp://nope", "v1")]);
-        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
+        let outcomes =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
         let bad = outcomes.iter().find(|o| o.id == "bad").unwrap();
         match &bad.status {
             InstallStatus::Failed(msg) => assert!(msg.contains("unknown source scheme")),
@@ -1880,7 +2099,8 @@ mod pack_tests {
         let cloner = TimedOutFetch(MockCloner::new());
         let pack = pack_with(&[("slow", "github:owner/slow", "0.0.1")]);
 
-        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
+        let outcomes =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
 
         assert!(
             matches!(&outcomes[0].status, InstallStatus::Failed(msg) if msg.contains("did not finish within")),
@@ -1908,7 +2128,8 @@ mod pack_tests {
             "`uv pip install` could not be stopped".into(),
         ));
 
-        let outcomes = apply_pack_with(&cloner, &stuck, &pack, target.path(), false);
+        let outcomes =
+            test_support::apply_pack_admitted(&cloner, &stuck, &pack, target.path(), false);
 
         assert!(
             matches!(&outcomes[0].status, InstallStatus::Failed(msg) if msg.contains("could not be stopped")),
@@ -1919,7 +2140,8 @@ mod pack_tests {
 
         let target = tempfile::tempdir().unwrap();
         let missing = Stuck(VenvError::Unavailable("could not start uv".into()));
-        let outcomes = apply_pack_with(&cloner, &missing, &pack, target.path(), false);
+        let outcomes =
+            test_support::apply_pack_admitted(&cloner, &missing, &pack, target.path(), false);
         assert!(
             matches!(outcomes[0].status, InstallStatus::Installed(_)),
             "got {:?}",
@@ -1936,7 +2158,8 @@ mod pack_tests {
         cloner.fail_next_checkout_fatally("git fetch 0.0.1 could not be stopped");
         let pack = pack_with(&[("stuck", "github:owner/stuck", "0.0.1")]);
 
-        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
+        let outcomes =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
 
         assert!(
             matches!(&outcomes[0].status, InstallStatus::Failed(msg) if msg.contains("could not be stopped")),
@@ -1978,7 +2201,8 @@ mod pack_tests {
         cloner.fail_next_checkout("git checkout 0.0.1 failed");
         let pack = pack_with(&[("fallback", "github:owner/fallback", "0.0.1")]);
 
-        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
+        let outcomes =
+            test_support::apply_pack_admitted(&cloner, &UvProvisioner, &pack, target.path(), false);
 
         assert_eq!(cloner.checkouts.lock().unwrap().as_slice(), ["0.0.1"]);
         assert!(
@@ -2376,39 +2600,6 @@ mod workspace_pack_tests {
     use super::*;
 
     #[test]
-    fn apply_workspace_pack_installs_into_channel_apps_dir() {
-        let ws = tempfile::tempdir().unwrap();
-        let channel_dir = crate::config::workspace_channel_dir();
-        let plexi_dir = ws.path().join(&channel_dir);
-        std::fs::create_dir_all(&plexi_dir).unwrap();
-        std::fs::write(
-            plexi_dir.join("plugins.toml"),
-            "schema_version = 2\n\n[[plugin]]\nid = \"my-tool\"\nsource = \"github:org/my-tool\"\nversion = \"v1.0.0\"\n",
-        )
-        .unwrap();
-
-        let cloner = MockCloner::new();
-        let outcomes = apply_workspace_pack(ws.path(), &cloner).expect("should succeed");
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].id, "my-tool");
-        assert!(
-            matches!(outcomes[0].status, InstallStatus::Installed(_)),
-            "expected Installed, got {:?}",
-            outcomes[0].status
-        );
-
-        let workspace_apps = crate::app::registry::workspace_plugins_dir(ws.path());
-        assert!(
-            workspace_apps
-                .join("my-tool")
-                .join("manifest.toml")
-                .exists(),
-            "plugin should be present in workspace plugins dir at {}",
-            workspace_apps.display()
-        );
-    }
-
-    #[test]
     fn apply_workspace_pack_errors_when_no_apps_toml() {
         let ws = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
@@ -2445,29 +2636,5 @@ mod workspace_pack_tests {
         let ws = tempfile::tempdir().unwrap();
         let ids = workspace_manifest_ids(ws.path());
         assert!(ids.is_empty());
-    }
-
-    #[test]
-    fn apply_workspace_pack_idempotent_on_second_run() {
-        let ws = tempfile::tempdir().unwrap();
-        let channel_dir = crate::config::workspace_channel_dir();
-        let plexi_dir = ws.path().join(&channel_dir);
-        std::fs::create_dir_all(&plexi_dir).unwrap();
-        // MockCloner writes version "0.0.1" by default — pack must match for AlreadyAtVersion.
-        std::fs::write(
-            plexi_dir.join("plugins.toml"),
-            "schema_version = 2\n\n[[plugin]]\nid = \"my-tool\"\nsource = \"github:org/my-tool\"\nversion = \"0.0.1\"\n",
-        )
-        .unwrap();
-
-        let cloner = MockCloner::new();
-        apply_workspace_pack(ws.path(), &cloner).unwrap();
-        let second = apply_workspace_pack(ws.path(), &cloner).unwrap();
-        assert_eq!(second.len(), 1);
-        assert!(
-            matches!(second[0].status, InstallStatus::AlreadyAtVersion),
-            "second apply should be no-op, got {:?}",
-            second[0].status
-        );
     }
 }

@@ -64,6 +64,10 @@ pub enum TargetType {
     McpTool,
     FileScope,
     Secret,
+    /// Loading one plugin tree that is not bundled with Plexi (stint 1398).
+    /// A profile install binds the plugin id in that profile (not its
+    /// content; stint 1279); a plugin folder binds the folder. Never bound to
+    /// a pane or context.
     Package,
     ModelPointer,
     UndoCheckpoint,
@@ -504,8 +508,12 @@ impl GrantRecord {
         // A CLI operation grant is bound to package content and the operation
         // binding, not to the pane that asked: a remembered grant must survive a
         // restart that reassigns pane and context ids. A remembered plugin
-        // capability decision is plugin-wide in the same way (stint 1489).
-        let pane_bound = self.target_type != TargetType::CliOperation && !self.plugin_wide();
+        // capability decision is plugin-wide in the same way (stint 1489), and
+        // so is permission to load plugin code (stint 1398).
+        let pane_bound = !matches!(
+            self.target_type,
+            TargetType::CliOperation | TargetType::Package
+        ) && !self.plugin_wide();
         if self.package_id != req.package_id
             || (pane_bound
                 && (self.instance_id != req.instance_id || self.context_id != req.context_id))
@@ -1034,6 +1042,7 @@ impl GrantStore {
         let mut data = parse_legacy_grant_store(&body).ok()?;
         fill_capability_grant_ids(&mut data.records);
         drop_once_grants(&mut data.records);
+        drop_plugin_admissions(&mut data.records);
         log::info!(
             "grant_store: migrated legacy unsealed grants.toml records={}",
             data.records.len()
@@ -1443,6 +1452,17 @@ impl GrantStore {
         // A deny record always wins over an allow record for the same cap.
         allowed.retain(|c| !denied.contains(c));
         (allowed, denied)
+    }
+}
+
+/// Plugin admission (stint 1398) never existed in unsealed grant files, so a
+/// legacy record allowing plugin code can only be forged; it is dropped.
+fn drop_plugin_admissions(records: &mut Vec<GrantRecord>) {
+    let before = records.len();
+    records.retain(|record| record.target_type != TargetType::Package);
+    let dropped = before - records.len();
+    if dropped > 0 {
+        log::info!("grant_store: refused {dropped} legacy plugin admission record(s)");
     }
 }
 

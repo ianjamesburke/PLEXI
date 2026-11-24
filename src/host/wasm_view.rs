@@ -852,16 +852,47 @@ impl WasmView {
 
     /// Load an installed/manifest-backed component with explicit host-interface
     /// grants derived from the manifest and remembered user decisions.
-    pub fn load_with_grants(
+    ///
+    /// Only an [`AdmittedPlugin`](crate::host::plugin_admission::AdmittedPlugin)
+    /// starts one, and the plugin id and component come from it alone (stint
+    /// 1398). The permit is spent at instantiation.
+    pub(crate) fn load_with_grants(
+        admitted: crate::host::plugin_admission::AdmittedPlugin<'_>,
+        state: StateStore,
+        grants: Grants,
+    ) -> wasmtime::Result<Self> {
+        let plugin_id = admitted.owner().to_string();
+        if admitted.kind() != crate::app::registry::ManifestType::Wasm {
+            return Err(wasmtime::Error::msg(format!(
+                "plugin '{plugin_id}' was admitted as a Python plugin, not a WASM component"
+            )));
+        }
+        let (engine, component) = Self::engine_and_component(admitted.entry())?;
+        log::info!("plugin::{plugin_id}: manifest wasm grants {grants:?}");
+        let start = admitted.commit();
+        let view = Self::instantiate(plugin_id, &engine, &component, &grants, state);
+        drop(start);
+        view
+    }
+
+    /// [`Self::load_with_grants`] straight from a fixture component, for tests
+    /// of the runtime. Compiled out of non-test builds.
+    #[cfg(test)]
+    pub(crate) fn load_with_grants_for_test(
         plugin_id: impl Into<String>,
         path: &Path,
         state: StateStore,
         grants: Grants,
     ) -> wasmtime::Result<Self> {
         let plugin_id = plugin_id.into();
-        let (engine, component) = Self::engine_and_component(path)?;
-        log::info!("plugin::{plugin_id}: manifest wasm grants {grants:?}");
-        Self::instantiate(plugin_id, &engine, &component, &grants, state)
+        let root = path.parent().unwrap_or(path);
+        let admitted = crate::host::plugin_admission::AdmittedPlugin::for_test(
+            &plugin_id,
+            crate::app::registry::ManifestType::Wasm,
+            root,
+            path,
+        );
+        Self::load_with_grants(admitted, state, grants)
     }
 
     fn instantiate(
@@ -1299,7 +1330,7 @@ mod tests {
         // Do not rebuild this negative fixture.
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/sysmon-pre-justify.wasm");
-        let error = WasmView::load_with_grants(
+        let error = WasmView::load_with_grants_for_test(
             "com.plexi.old-sysmon",
             &path,
             StateStore::ephemeral(),
@@ -1331,7 +1362,7 @@ mod tests {
     fn missing_capability_is_not_reported_as_an_older_sdk() {
         let dir = tempfile::tempdir().unwrap();
         let _profile = crate::config::set_test_profile_dir(dir.path().to_path_buf());
-        let error = WasmView::load_with_grants(
+        let error = WasmView::load_with_grants_for_test(
             "com.plexi.ungranted-sysmon",
             &fixture(),
             StateStore::ephemeral(),
@@ -1462,7 +1493,7 @@ mod tests {
             "pong manifest must declare pipe.open and gpu.render"
         );
 
-        WasmView::load_with_grants(
+        WasmView::load_with_grants_for_test(
             "com.plexi.pong",
             &pong_fixture(),
             StateStore::ephemeral(),

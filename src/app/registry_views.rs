@@ -18,7 +18,8 @@
 //! distinct runtime ownership" rule from the stint.
 //!
 //! Every view is produced by [`crate::app::registry::PluginRegistry::load`] (or
-//! `load_with_global` for the global-dir override tests need) — this module
+//! `load_with_global` for the global-dir override tests need). Views are
+//! discovery metadata only (stint 1398) — this module
 //! never reimplements discovery, shadowing, or conflict handling; it only
 //! decides which root to scan and when to rescan it.
 
@@ -43,9 +44,13 @@ pub(crate) struct RegistryViews {
 
 impl RegistryViews {
     pub(crate) fn new() -> Self {
+        Self::with_global(&crate::app::registry::plugins_dir())
+    }
+
+    fn with_global(global_dir: &Path) -> Self {
         Self {
             views: HashMap::new(),
-            global_dir: crate::app::registry::plugins_dir(),
+            global_dir: global_dir.to_path_buf(),
             core_only: false,
         }
     }
@@ -54,11 +59,7 @@ impl RegistryViews {
     /// tests stage a fake global plugins dir instead of the real profile.
     #[cfg(test)]
     pub(crate) fn new_with_global(global_dir: &Path) -> Self {
-        Self {
-            views: HashMap::new(),
-            global_dir: global_dir.to_path_buf(),
-            core_only: false,
-        }
+        Self::with_global(global_dir)
     }
 
     pub(crate) fn set_core_only(&mut self, core_only: bool) {

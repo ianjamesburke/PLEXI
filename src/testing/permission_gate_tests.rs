@@ -1106,6 +1106,7 @@ fn second_chess_pane_routes_by_instance() {
     assert_eq!(chess_panes(&h).len(), 1, "one chess pane per context");
 
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/chess");
+    h.app.trust_plugin_path_for_test(&path.to_string_lossy());
     let second = h
         .app
         .launch_view_by_path_forced(&path.to_string_lossy(), Some(h.workspace_root()), &[])
@@ -2107,9 +2108,12 @@ fn permission_changes(mon: &PermissionMonitor) -> Vec<String> {
         .collect()
 }
 
+/// Every permission row except plugin-folder trust, which these tests set up
+/// to launch fixtures (stint 1398) and never act on.
 fn entry_kinds(mon: &PermissionMonitor) -> Vec<(String, String)> {
     mon.list_entries()
         .into_iter()
+        .filter(|entry| entry.tool != crate::host::plugin_admission::TRUST_FOLDER_TOOL)
         .map(|entry| (entry.id, entry.kind))
         .collect()
 }
@@ -2153,6 +2157,7 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
 
     let root = tempfile::tempdir().unwrap();
     let dir = crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
+    h.app.trust_plugin_path_for_test(&dir.to_string_lossy());
     let before = h.state().open_panes;
     let focused = h
         .app

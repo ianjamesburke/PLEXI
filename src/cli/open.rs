@@ -500,28 +500,12 @@ pub fn open_cli(
         );
     }
 
-    // If type_id looks like a path to a plugin directory (contains manifest.toml), open by path.
-    let path = std::path::Path::new(type_id);
-    let resolved = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir().unwrap_or_default().join(path)
-    };
-    if resolved.join("manifest.toml").exists() {
+    if let Some(resolved) = open_target_path(type_id, &std::env::current_dir().unwrap_or_default())
+    {
         let abs_path = resolved.to_string_lossy().to_string();
-        log::info!("open:cli: detected path with manifest.toml, opening from path={abs_path}");
-        return open_view_by_path(&abs_path, args, layout, from_pane_id);
-    }
-
-    // A `.wasm` file is a sandboxed component plugin launched through the same
-    // path-spawn flow as a local plugin dir (the run primitive, G6).
-    // The CLI never reviews or remembers its imports (stint 1291): the host
-    // asks in its window before the component gets any.
-    if resolved.extension().and_then(|e| e.to_str()) == Some("wasm") && resolved.is_file() {
-        let abs_path = resolved.to_string_lossy().to_string();
-        log::info!(
-            "open:cli: detected .wasm component, opening from path={abs_path}; import review is the host's"
-        );
+        // The CLI never reviews or remembers a component's imports (stint
+        // 1291): the host asks in its window before the component gets any.
+        log::info!("open:cli: opening from path={abs_path}");
         return open_view_by_path(&abs_path, args, layout, from_pane_id);
     }
 
@@ -533,6 +517,27 @@ pub fn open_cli(
         extra_args: args,
         ..Default::default()
     })
+}
+
+/// The plugin path `type_id` names, or `None` when it is an id. Only a path
+/// form (a separator, `.`, `..` or an absolute path) can name a plugin
+/// directory, so a bare id resolves as an id even beside a same-named folder
+/// (stint 1398). A `.wasm` component file opens by path.
+fn open_target_path(type_id: &str, cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(type_id);
+    let path_form = type_id.contains(std::path::MAIN_SEPARATOR)
+        || type_id.contains('/')
+        || matches!(type_id, "." | "..")
+        || path.is_absolute();
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    let plugin_dir = path_form && resolved.join("manifest.toml").exists();
+    let component =
+        resolved.extension().and_then(|e| e.to_str()) == Some("wasm") && resolved.is_file();
+    (plugin_dir || component).then_some(resolved)
 }
 
 /// Open a plugin from a local directory path (replaces the old `plugin run` command).
@@ -1032,5 +1037,42 @@ mod agent_boot_tests {
             "an omitted --worktree must not be sent: {payload}"
         );
         assert_eq!(code, 0);
+    }
+}
+
+#[cfg(test)]
+mod open_target_tests {
+    use super::open_target_path;
+
+    /// Stint 1398: a bare id opens by id even when the current folder holds a
+    /// same-named plugin directory; only a path form (`./name`, `.`, an
+    /// absolute path) opens a folder, so a checkout cannot turn `plexi view
+    /// open chess` into a launch of its own `chess/` folder.
+    #[test]
+    fn a_bare_id_is_an_id_even_beside_a_same_named_plugin_folder() {
+        let cwd = tempfile::tempdir().unwrap();
+        let folder = cwd.path().join("chess");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("manifest.toml"), "").unwrap();
+        std::fs::write(cwd.path().join("manifest.toml"), "").unwrap();
+        std::fs::write(cwd.path().join("app.wasm"), b"\0asm").unwrap();
+        assert_eq!(open_target_path("chess", cwd.path()), None);
+        assert_eq!(
+            open_target_path("./chess", cwd.path()),
+            Some(cwd.path().join("./chess"))
+        );
+        assert_eq!(
+            open_target_path(".", cwd.path()),
+            Some(cwd.path().join("."))
+        );
+        let absolute = folder.to_string_lossy().into_owned();
+        assert_eq!(
+            open_target_path(&absolute, cwd.path()),
+            Some(folder.clone())
+        );
+        assert_eq!(
+            open_target_path("app.wasm", cwd.path()),
+            Some(cwd.path().join("app.wasm"))
+        );
     }
 }

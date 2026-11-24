@@ -103,6 +103,7 @@ fn fetch(port: u16, path: &str) -> String {
 }
 
 fn launch(h: &mut HostHarness, dir: &std::path::Path) -> PaneId {
+    h.app.trust_plugin_path_for_test(&dir.to_string_lossy());
     h.app
         .launch_view_by_path_with_layout_no_review_modal(&dir.to_string_lossy(), None, None, &[])
         .expect("launch probe")
@@ -785,7 +786,7 @@ fn relaunch_retires_the_old_guests_asks() {
     guest_fetch(&mut h, pane, port, "/old");
     let old = wait_for_prompt(&mut h, pane, "net.http");
 
-    python(&mut h, pane).relaunch().expect("relaunch");
+    python(&mut h, pane).relaunch_for_test().expect("relaunch");
     assert!(python(&mut h, pane).consent.waiting.is_empty());
     assert!(
         monitor().show_pending(&old).is_none(),

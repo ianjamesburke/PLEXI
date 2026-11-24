@@ -1036,6 +1036,8 @@ default = true
 
     let mut h = HostHarness::new();
     h.app
+        .trust_plugin_path_for_test(&plugin_dir.to_string_lossy());
+    h.app
         .launch_view_by_path_with_layout(&plugin_dir.to_string_lossy(), None, None, &[])
         .expect("launch fixture plugin");
     let pane_id = *h
@@ -1377,6 +1379,9 @@ fn plugin_rename_044_installed_layout_restores_live_python_view() {
     let old = profile.join("apps");
     std::fs::create_dir_all(&old).unwrap();
     let plugin_dir = write_restore_fixture_plugin(&old, "legacy");
+    harness
+        .app
+        .trust_plugin_path_for_test(&plugin_dir.to_string_lossy());
     let pane_id = harness
         .app
         .launch_view_by_path_with_layout_no_review_modal(
@@ -1397,6 +1402,11 @@ fn plugin_rename_044_installed_layout_restores_live_python_view() {
     // layout keys intentionally retain their 0.4.4 spelling.
     std::fs::write(plugin_dir.join("manifest.toml"),
         "schema_version = 1\n[app]\nid = 'legacy'\nname = 'Legacy'\ntype = 'app'\nentry = 'main.py'\nversion = '0.4.4'\n[runtime]\npython_compat = true\n").unwrap();
+    // The migrated copy is a profile install, so its restore waits for an
+    // allow of exactly that copy (stint 1398); allow it as a click does.
+    crate::app::plugin_migration::migrate(&profile).unwrap();
+    crate::host::plugin_admission::PluginAdmission::new(&profile, &profile.join("plugins"))
+        .allow_copy_for_test("legacy", &profile.join("plugins/legacy"));
     let restored = HostHarness::from_profile_dir(&profile);
     let pane = restored.app.windows[restored.app.active_window].panes[&pane_id]
         .as_view()
@@ -1420,6 +1430,7 @@ fn workspace_saved_with_a_hidden_pane_restores_it_visible_and_focusable() {
     let profile = h.profile_dir().to_path_buf();
     let launch = |h: &mut HostHarness, id: &str| {
         let dir = write_restore_fixture_plugin(tmp.path(), id);
+        h.app.trust_plugin_path_for_test(&dir.to_string_lossy());
         h.app
             .launch_view_by_path_with_layout_no_review_modal(
                 &dir.to_string_lossy(),
@@ -1502,10 +1513,12 @@ fn workspace_saved_with_a_hidden_pane_restores_it_visible_and_focusable() {
 #[test]
 fn saved_python_view_pane_restores_as_that_view() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let plugin_dir = write_restore_fixture_plugin(tmp.path(), "todo");
+    let plugin_dir = write_restore_fixture_plugin(tmp.path(), "restore-probe");
 
     let mut h = HostHarness::new();
     let saved_profile = h.profile_dir().to_path_buf();
+    h.app
+        .trust_plugin_path_for_test(&plugin_dir.to_string_lossy());
     let pane_id = h
         .app
         .launch_view_by_path_with_layout_no_review_modal(
@@ -1540,7 +1553,7 @@ fn saved_python_view_pane_restores_as_that_view() {
 
     assert_eq!(
         record.plugin_id.as_deref(),
-        Some("todo"),
+        Some("restore-probe"),
         "plugin_id must be the manifest id, not the runtime kind"
     );
     assert_eq!(record.runtime_kind.as_deref(), Some("python-wasm"));
@@ -1552,7 +1565,11 @@ fn saved_python_view_pane_restores_as_that_view() {
     else {
         panic!("expected a Python launch spec, got {launch:?}");
     };
-    assert_eq!(recorded_dir, &plugin_dir);
+    // The launch records the resolved (canonical) plugin root.
+    assert_eq!(
+        recorded_dir,
+        &crate::platform::path::canonical_or_self(&plugin_dir)
+    );
     assert!(args.is_empty());
 
     let restored_harness = HostHarness::from_profile_dir(&saved_profile);
@@ -1574,7 +1591,7 @@ fn saved_python_view_pane_restores_as_that_view() {
         .as_view()
         .expect("restored pane is a view pane");
     assert_eq!(restored.id, pane_id, "restore must keep the saved pane id");
-    assert_eq!(restored.manifest_id, "todo");
+    assert_eq!(restored.manifest_id, "restore-probe");
     assert!(matches!(restored.runtime, ViewRuntime::Python(_)));
     assert_eq!(
         restored.runtime.state_paths(),
@@ -6032,6 +6049,8 @@ fn python_peer_receives_pipe_closed_when_the_other_end_closes() {
     )
     .expect("write receiver main.py");
     let mut h = HostHarness::new();
+    h.app
+        .trust_plugin_path_for_test(&receiver_dir.path().to_string_lossy());
     let receiver = h
         .app
         .launch_view_by_path_with_layout_no_review_modal(
@@ -6121,6 +6140,8 @@ fn a_refused_python_open_drops_its_waiting_sends() {
     let (a, a_inbox) = add_pipe_test_pane(&mut h, win);
     let (b, b_inbox) = add_pipe_test_pane(&mut h, win);
     open_directed_test_pipe(&mut h, a, &a_inbox, b, PIPE);
+    h.app
+        .trust_plugin_path_for_test(&opener_dir.path().to_string_lossy());
 
     let opener = h
         .app
@@ -6188,6 +6209,7 @@ fn write_pipe_probe_app(dir: &std::path::Path, id: &str, capabilities: &[&str], 
 }
 
 fn launch_pipe_probe(h: &mut HostHarness, dir: &std::path::Path, args: &[String]) -> u64 {
+    h.app.trust_plugin_path_for_test(&dir.to_string_lossy());
     h.app
         .launch_view_by_path_with_layout_no_review_modal(&dir.to_string_lossy(), None, None, args)
         .expect("launch probe plugin")
@@ -7198,6 +7220,8 @@ fn python_relaunch_retires_the_old_guests_directed_pipes() {
     // asynchronously so its open still finds the receiver. Hidden frames
     // only, so no render pass prunes the stub's tile.
     let receiver = h.app.host.alloc_pane_id();
+    h.app
+        .trust_plugin_path_for_test(&sender_dir.path().to_string_lossy());
     let sender = h
         .app
         .launch_view_by_path_with_layout_no_review_modal(
@@ -9378,6 +9402,8 @@ fn text_input_keeps_the_draft_while_the_guest_echo_is_in_flight() {
 fn escape_leaving_todo_form_field_cancels_form_without_closing_or_reclaiming_pane() {
     let mut h = HostHarness::new();
     let plugin_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/todo");
+    h.app
+        .trust_plugin_path_for_test(&plugin_dir.to_string_lossy());
     h.app
         .launch_view_by_path_with_layout(&plugin_dir.to_string_lossy(), None, None, &[])
         .expect("launch todo");
@@ -11799,6 +11825,8 @@ fn guest_title_log_and_stderr_text_are_escaped_and_capped() {
     .expect("write main.py");
     let mut h = HostHarness::new();
     h.app
+        .trust_plugin_path_for_test(&tmp.path().to_string_lossy());
+    h.app
         .launch_view_by_path_with_layout(&tmp.path().to_string_lossy(), None, None, &[])
         .expect("launch guest-text-probe");
     let pane_id = *h.state().open_panes.last().expect("pane appears");
@@ -11903,6 +11931,7 @@ fn write_guest_text_fixture(dir: &std::path::Path, id: &str, body: &str) {
 }
 
 fn launch_guest_text_fixture(h: &mut HostHarness, dir: &std::path::Path) -> PaneId {
+    h.app.trust_plugin_path_for_test(&dir.to_string_lossy());
     h.app
         .launch_view_by_path_with_layout(&dir.to_string_lossy(), None, None, &[])
         .expect("launch fixture");
@@ -12251,6 +12280,8 @@ fn hot_reload_serviced_while_window_hidden() {
     write_hidden_axis_probe(tmp.path(), "v1");
     let mut h = HostHarness::new();
     h.app
+        .trust_plugin_path_for_test(&tmp.path().to_string_lossy());
+    h.app
         .launch_view_by_path_with_layout(&tmp.path().to_string_lossy(), None, None, &[])
         .expect("launch hidden-axis-probe");
     let pane_id = *h.state().open_panes.last().expect("pane appears");
@@ -12291,6 +12322,40 @@ fn hot_reload_serviced_while_window_hidden() {
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
+    // Stint 1398: the folder was trusted once; an edit reloads with no new ask.
+    assert!(
+        crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir())
+            .unwrap()
+            .list_pending()
+            .is_empty(),
+        "an edit in a trusted folder asks nothing"
+    );
+
+    // Reload is a launch: once the folder's trust is revoked, the next reload
+    // is refused and asks again, and the edited code never runs.
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+    let trust = monitor
+        .list_entries()
+        .into_iter()
+        .find(|entry| {
+            entry.tool == crate::host::plugin_admission::TRUST_FOLDER_TOOL && entry.kind == "allow"
+        })
+        .expect("the folder trust row");
+    assert!(monitor.revoke_grant_id(&trust.id).unwrap(), "trust revoked");
+    write_hidden_axis_probe(tmp.path(), "v3");
+    assert!(
+        !h.app.reload_view_pane(pane_id, "test edit after revoke"),
+        "a reload from an untrusted folder is refused"
+    );
+    h.run_hidden_frames(3);
+    assert_ne!(python_pane_title(&h, pane_id).as_deref(), Some("v3"));
+    assert!(
+        monitor
+            .list_pending()
+            .iter()
+            .any(|pending| pending.tool == crate::host::plugin_admission::TRUST_FOLDER_TOOL),
+        "the refused reload asks for the folder again"
+    );
 }
 
 /// Stint 0759: a WASM Python pane's first frame commit depends on
@@ -12304,6 +12369,8 @@ fn new_wasm_view_pane_reaches_running_while_window_hidden() {
     let tmp = tempfile::tempdir().expect("plugin dir");
     write_hidden_axis_probe(tmp.path(), "v1");
     let mut h = HostHarness::new();
+    h.app
+        .trust_plugin_path_for_test(&tmp.path().to_string_lossy());
     h.app
         .launch_view_by_path_with_layout(&tmp.path().to_string_lossy(), None, None, &[])
         .expect("launch hidden-axis-probe");
@@ -12342,6 +12409,8 @@ fn set_timer_fires_while_window_hidden() {
     write_hidden_axis_probe(tmp.path(), "v1");
     let mut h = HostHarness::new();
     h.app
+        .trust_plugin_path_for_test(&tmp.path().to_string_lossy());
+    h.app
         .launch_view_by_path_with_layout(&tmp.path().to_string_lossy(), None, None, &[])
         .expect("launch hidden-axis-probe");
     let pane_id = *h.state().open_panes.last().expect("pane appears");
@@ -12374,6 +12443,8 @@ fn future_timer_keeps_a_hidden_pane_wake_scheduled() {
     )
     .expect("give the timer a future deadline");
     let mut h = HostHarness::new();
+    h.app
+        .trust_plugin_path_for_test(&tmp.path().to_string_lossy());
     let pane_id = h
         .app
         .launch_view_by_path_with_layout_no_review_modal(
@@ -18850,6 +18921,7 @@ fn launch_http_probe(h: &mut HostHarness, dir: &std::path::Path, allowed_hosts: 
             )
             .expect("remember net.http");
     }
+    h.app.trust_plugin_path_for_test(&dir.to_string_lossy());
     h.app
         .launch_view_by_path_with_layout_no_review_modal(&dir.to_string_lossy(), None, None, &[])
         .expect("launch http probe")
@@ -19000,6 +19072,8 @@ fn python_plugin_without_pipe_open_cannot_open_or_send_a_directed_pipe() {
     write_directed_pipe_sender_plugin_with(sender_dir.path(), "[]");
 
     let mut h = HostHarness::new();
+    h.app
+        .trust_plugin_path_for_test(&receiver_dir.path().to_string_lossy());
     let receiver_pane_id = h
         .app
         .launch_view_by_path_with_layout_no_review_modal(
@@ -19025,6 +19099,8 @@ fn python_plugin_without_pipe_open_cannot_open_or_send_a_directed_pipe() {
         }
     };
     wait_for_title(&mut h, receiver_pane_id, "receiver:ready");
+    h.app
+        .trust_plugin_path_for_test(&sender_dir.path().to_string_lossy());
 
     let sender_pane_id = h
         .app
@@ -19072,6 +19148,8 @@ fn real_python_apps_open_and_exchange_directed_pipe_end_to_end() {
     write_directed_pipe_sender_plugin(sender_dir.path());
 
     let mut h = HostHarness::new();
+    h.app
+        .trust_plugin_path_for_test(&receiver_dir.path().to_string_lossy());
     let receiver_pane_id = h
         .app
         .launch_view_by_path_with_layout_no_review_modal(
@@ -19097,6 +19175,8 @@ fn real_python_apps_open_and_exchange_directed_pipe_end_to_end() {
     }
 
     let sender_args = vec![receiver_pane_id.to_string()];
+    h.app
+        .trust_plugin_path_for_test(&sender_dir.path().to_string_lossy());
     let sender_pane_id = h
         .app
         .launch_view_by_path_with_layout_no_review_modal(
@@ -19171,7 +19251,7 @@ fn insert_wasm_fixture_pane(h: &mut HostHarness, win_idx: usize, pane_id: u64, f
     use crate::host::wasm_view::{Grants, StateStore, WasmView};
     let wasm_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(format!("tests/wasm-fixtures/{fixture}.wasm"));
-    let app = WasmView::load_with_grants(
+    let app = WasmView::load_with_grants_for_test(
         fixture,
         &wasm_path,
         StateStore::ephemeral(),
@@ -19297,6 +19377,8 @@ fn an_open_whose_target_cannot_be_told_is_undone_and_refused() {
     let receiver_dir = tempfile::tempdir().expect("receiver dir");
     write_directed_pipe_receiver_plugin(receiver_dir.path());
     let mut h = HostHarness::new();
+    h.app
+        .trust_plugin_path_for_test(&receiver_dir.path().to_string_lossy());
     let receiver = h
         .app
         .launch_view_by_path_with_layout_no_review_modal(
@@ -19463,6 +19545,8 @@ fn python_and_wasm_views_open_exchange_refuse_and_close_directed_pipes() {
     let mut h = HostHarness::new();
     let win = h.app.active_window;
     let wasm = h.app.host.alloc_pane_id();
+    h.app
+        .trust_plugin_path_for_test(&python_dir.path().to_string_lossy());
     let python = h
         .app
         .launch_view_by_path_with_layout_no_review_modal(
@@ -23580,6 +23664,8 @@ fn python_view_pane_receives_focus_and_visibility_events_in_order() {
     write_presence_probe(dir_a.path(), "presence-probe-a");
     write_presence_probe(dir_b.path(), "presence-probe-b");
     let mut h = HostHarness::new();
+    h.app
+        .trust_plugin_path_for_test(&dir_a.path().to_string_lossy());
 
     h.app
         .launch_view_by_path_with_layout(&dir_a.path().to_string_lossy(), None, None, &[])
@@ -23589,6 +23675,8 @@ fn python_view_pane_receives_focus_and_visibility_events_in_order() {
 
     // B opens and takes focus: A loses it, B starts from scratch.
     let before = h.state().open_panes;
+    h.app
+        .trust_plugin_path_for_test(&dir_b.path().to_string_lossy());
     h.app
         .launch_view_by_path_with_layout(&dir_b.path().to_string_lossy(), None, None, &[])
         .expect("launch probe b");

@@ -306,9 +306,14 @@ pub(crate) struct ContextCloseState {
 pub(crate) struct PendingRawWasmLaunch {
     /// Fresh per review (stint 1498); the consent guard arms on it.
     pub request_id: u64,
+    /// The owner the component resolved to when the review was queued. The
+    /// start re-resolves and must find the same owner (stint 1398).
     pub plugin_id: String,
+    /// The launch intent: this component, opened by path.
     pub wasm_path: PathBuf,
+    /// The scope the reviewed imports are granted for.
     pub workspace_root: PathBuf,
+    /// The imports the person reviews; recorded only inside an admitted start.
     pub missing_capabilities: Vec<String>,
     pub launch_args: Vec<String>,
 }

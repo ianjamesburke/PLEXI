@@ -216,6 +216,23 @@ fn pane_send_ask_options() -> Vec<QueueOption> {
     options
 }
 
+/// Choices for loading plugin code (stint 1398): allowed until the copy or
+/// folder changes hands, or denied. There is no once.
+fn plugin_admission_ask_options() -> Vec<QueueOption> {
+    vec![
+        QueueOption {
+            key: "allow_always".to_string(),
+            label: "Allow".to_string(),
+            recommended: false,
+        },
+        QueueOption {
+            key: "deny".to_string(),
+            label: "Deny".to_string(),
+            recommended: false,
+        },
+    ]
+}
+
 /// Choices for a typed CLI operation. The remembered choice is bound to the
 /// operation, workspace, package and program, and says how long it lasts.
 fn cli_operation_ask_options() -> Vec<QueueOption> {
@@ -673,7 +690,12 @@ impl PlexiApp {
             let is_cli_operation = pending
                 .tool
                 .starts_with(crate::broker::gate::CLI_OPERATION_TOOL_PREFIX);
-            let cmd_text = if is_cli_operation {
+            let is_plugin_admission = matches!(
+                pending.tool.as_str(),
+                crate::host::plugin_admission::LOAD_INSTALLED_TOOL
+                    | crate::host::plugin_admission::TRUST_FOLDER_TOOL
+            );
+            let cmd_text = if is_cli_operation || is_plugin_admission {
                 // The summary is already a full sentence naming plugin, workspace,
                 // program and ambient authority; a tool-name prefix adds nothing.
                 pending.input_summary.clone()
@@ -704,6 +726,13 @@ impl PlexiApp {
                         "{} wants to run a program on this computer",
                         self.approval_actor_label(&pending.actor_id)
                     )
+                } else if pending.tool == crate::host::plugin_admission::TRUST_FOLDER_TOOL {
+                    "A plugin folder wants to load in Plexi".to_string()
+                } else if is_plugin_admission {
+                    format!(
+                        "Plugin {} is not bundled with Plexi and wants to load",
+                        crate::host::guest_text::shown(&pending.actor_id)
+                    )
                 } else {
                     format!(
                         "{} wants to use {}",
@@ -716,6 +745,8 @@ impl PlexiApp {
                     pane_send_ask_options()
                 } else if is_cli_operation {
                     cli_operation_ask_options()
+                } else if is_plugin_admission {
+                    plugin_admission_ask_options()
                 } else {
                     default_ask_options()
                 },

@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 pub fn install_cli(spec: &str, assume_yes: bool) -> i32 {
     use crate::cli::marketplace::InstallPlan;
     let (source_str, git_ref) = crate::cli::install_host::split_source_and_ref(spec);
+    if let Err(refusal) = admit_install_spec(&source_str) {
+        eprintln!("error: {refusal}");
+        return 1;
+    }
     let resolved = if is_bare_id(&source_str) {
         // A bare id resolves only through the hosted marketplace catalog. A
         // free/licensed plugin installs from its CDN artifact (or a declared github
@@ -66,8 +70,22 @@ pub fn install_cli(spec: &str, assume_yes: bool) -> i32 {
     };
     let target_root = crate::app::registry::plugins_dir();
     let cloner = crate::cli::install_host::GitCloner::default();
-    match crate::cli::install_host::install_one(&cloner, &source, git_ref.as_deref(), &target_root)
-    {
+    let repaired = match &source {
+        crate::app::packs::SourceSpec::Local(name) => {
+            crate::cli::install_host::repair_changed_bundled(name, &target_root)
+        }
+        crate::app::packs::SourceSpec::Git(_) => None,
+    };
+    let result = match repaired {
+        Some(outcome) => Ok(outcome),
+        None => crate::cli::install_host::install_one(
+            &cloner,
+            &source,
+            git_ref.as_deref(),
+            &target_root,
+        ),
+    };
+    match result {
         Ok(outcome) => match outcome.status {
             crate::cli::install_host::InstallStatus::Installed(path) => {
                 println!("installed '{}' at {}", outcome.id, path.display());
@@ -105,6 +123,22 @@ pub fn install_cli(spec: &str, assume_yes: bool) -> i32 {
             eprintln!("error: {e}");
             1
         }
+    }
+}
+
+/// Admit a `plugin install <spec>` source before anything is resolved or
+/// fetched (stint 1398): `local:<name>` is bundled; a bare id goes to the
+/// marketplace; everything else is a git source.
+pub(crate) fn admit_install_spec(
+    source_str: &str,
+) -> Result<(), crate::host::plugin_admission::Refusal> {
+    use crate::host::plugin_admission::{admit_install_source, InstallSource};
+    match crate::app::packs::parse_source_spec(source_str) {
+        Ok(crate::app::packs::SourceSpec::Local(name)) => {
+            admit_install_source(InstallSource::Bundled(&name))
+        }
+        _ if is_bare_id(source_str) => admit_install_source(InstallSource::Marketplace(source_str)),
+        _ => admit_install_source(InstallSource::Git(source_str)),
     }
 }
 

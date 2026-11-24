@@ -270,13 +270,13 @@ pub struct PackageReport {
 /// presence. See `docs/wasm-runtime.md`'s "Security Model" section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustLabel {
-    /// The plugin id is in the bundled core pack — ships with Plexi itself.
+    /// Byte-identical to the plugin built into this Plexi.
     FirstPartyCore,
-    /// A Python plugin from outside the core pack.
+    /// Any other Python plugin.
     PythonUnreviewed,
     /// A Python plugin that has passed marketplace review.
     ReviewedNative,
-    /// A WASM component from outside the core pack.
+    /// Any other WASM component.
     SandboxedWasm,
 }
 
@@ -292,9 +292,9 @@ impl TrustLabel {
     }
 }
 
-/// Classify a validated package/dir for the trust sheet. `core_ids` is the
-/// bundled first-party core pack id set
-/// (see `crate::cli::install_host::core_pack_ids`).
+/// Classify a validated package/dir for the trust sheet. `verified_bundle` is
+/// true only when the files were compared with the copy built into this binary
+/// (`crate::cli::install_host::matches_bundled_plugin`): an id proves nothing.
 ///
 /// `marketplace_reviewed` is a host-side flag set by the install flow when it
 /// has external proof from a trusted source (e.g. a marketplace server). It is
@@ -304,10 +304,10 @@ impl TrustLabel {
 /// when that flow ships.
 pub fn trust_label(
     report: &PackageReport,
-    core_ids: &[&str],
+    verified_bundle: bool,
     marketplace_reviewed: bool,
 ) -> TrustLabel {
-    if core_ids.contains(&report.id.as_str()) {
+    if verified_bundle {
         TrustLabel::FirstPartyCore
     } else {
         match report.runtime {
@@ -1712,20 +1712,14 @@ values = ["hi"]
     #[test]
     fn trust_label_core_id_is_first_party() {
         let r = report("welcome", PackageRuntime::Python);
-        assert_eq!(
-            trust_label(&r, &["welcome", "snake"], false),
-            TrustLabel::FirstPartyCore
-        );
+        assert_eq!(trust_label(&r, true, false), TrustLabel::FirstPartyCore);
         assert_eq!(TrustLabel::FirstPartyCore.display_str(), "Bundled");
     }
 
     #[test]
     fn trust_label_python_entry_is_python_unreviewed() {
         let r = report("third-party", PackageRuntime::Python);
-        assert_eq!(
-            trust_label(&r, &["welcome"], false),
-            TrustLabel::PythonUnreviewed
-        );
+        assert_eq!(trust_label(&r, false, false), TrustLabel::PythonUnreviewed);
         assert_eq!(
             TrustLabel::PythonUnreviewed.display_str(),
             "Unreviewed Python plugin"
@@ -1735,10 +1729,7 @@ values = ["hi"]
     #[test]
     fn trust_label_marketplace_reviewed_python_is_python_reviewed() {
         let r = report("marketplace-app", PackageRuntime::Python);
-        assert_eq!(
-            trust_label(&r, &["welcome"], true),
-            TrustLabel::ReviewedNative
-        );
+        assert_eq!(trust_label(&r, false, true), TrustLabel::ReviewedNative);
         assert_eq!(
             TrustLabel::ReviewedNative.display_str(),
             "Reviewed Python plugin — human-reviewed"
@@ -1746,12 +1737,12 @@ values = ["hi"]
     }
 
     #[test]
-    fn trust_label_reviewed_core_id_still_first_party() {
+    fn trust_label_verified_bundle_overrides_marketplace_review() {
         let r = report("welcome", PackageRuntime::Python);
         assert_eq!(
-            trust_label(&r, &["welcome"], true),
+            trust_label(&r, true, true),
             TrustLabel::FirstPartyCore,
-            "core id overrides marketplace_reviewed flag"
+            "a verified bundle overrides marketplace_reviewed flag"
         );
     }
 
@@ -1773,7 +1764,7 @@ values = ["hi"]
     #[test]
     fn trust_label_wasm_entry_is_component() {
         let r = report("third-party-wasm", PackageRuntime::Wasm);
-        assert_eq!(trust_label(&r, &[], false), TrustLabel::SandboxedWasm);
+        assert_eq!(trust_label(&r, false, false), TrustLabel::SandboxedWasm);
         assert_eq!(
             TrustLabel::SandboxedWasm.display_str(),
             "Sandboxed WASM — scoped host imports are capability-gated"
@@ -1788,13 +1779,13 @@ values = ["hi"]
         let report = validate_package(&pkg).expect("valid package");
         // Without marketplace attestation: unreviewed.
         assert_eq!(
-            trust_label(&report, &[], false),
+            trust_label(&report, false, false),
             TrustLabel::PythonUnreviewed,
             "package without marketplace attestation must be unreviewed"
         );
         // With marketplace attestation: reviewed.
         assert_eq!(
-            trust_label(&report, &[], true),
+            trust_label(&report, false, true),
             TrustLabel::ReviewedNative,
             "marketplace_reviewed=true must yield ReviewedNative"
         );

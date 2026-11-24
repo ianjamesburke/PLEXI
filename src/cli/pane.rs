@@ -1581,6 +1581,14 @@ pub(super) fn open_github_ephemeral(
     }
     let owner = parts[0];
     let repo = parts[1].trim_end_matches(".git");
+    // Third-party installs are off (stint 1398): refuse before any cache is
+    // created, reused or cloned.
+    if let Err(refusal) = crate::host::plugin_admission::admit_install_source(
+        crate::host::plugin_admission::InstallSource::Git(source),
+    ) {
+        eprintln!("error: {refusal}");
+        return 1;
+    }
 
     let cache_dir = crate::config::config_dir()
         .join("github-cache")
@@ -1688,6 +1696,50 @@ pub(super) fn open_github_ephemeral(
     ) {
         Ok(_) => 0,
         Err(code) => code,
+    }
+}
+
+#[cfg(test)]
+mod github_open_tests {
+    use super::*;
+
+    /// Stint 1398: third-party off covers `plexi open github:owner/repo`.
+    /// The source is refused before any cache is created, reused or cloned.
+    #[test]
+    fn github_open_is_refused_before_any_cache_or_clone() {
+        // No inherited host socket: a regression must not reach a real host.
+        let _env = crate::cli::test_env::socket_env_guard();
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        // A cache already present would be reused without a clone; it must
+        // not be reused either.
+        let cached = profile.path().join("github-cache/someone/cached");
+        std::fs::create_dir_all(&cached).unwrap();
+        let logs = crate::testing::test_log::capture();
+        assert_eq!(
+            open_github_ephemeral("github:someone/cached", None, None, None),
+            1
+        );
+        let lines = logs.records();
+        assert!(
+            !lines.iter().any(|(_, line)| line.contains("reusing cache")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|(_, line)| line.contains("install refused")),
+            "{lines:?}"
+        );
+
+        assert_eq!(
+            open_github_ephemeral("github:someone/fresh", None, None, None),
+            1
+        );
+        assert!(
+            !profile.path().join("github-cache/someone/fresh").exists(),
+            "no cache directory is created"
+        );
     }
 }
 

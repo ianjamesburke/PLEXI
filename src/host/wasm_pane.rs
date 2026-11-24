@@ -2036,6 +2036,11 @@ pub struct LiveWasmPane {
 }
 
 impl LiveWasmPane {
+    /// The component file this pane runs: the pane's host-owned origin.
+    pub(crate) fn wasm_path(&self) -> &std::path::Path {
+        &self.wasm_path
+    }
+
     /// Build a live pane. `init` is deferred to the first `ui` call, when the
     /// egui region size is known. `snapshot` is the persisted state to restore.
     pub fn new(

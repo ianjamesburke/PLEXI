@@ -629,6 +629,16 @@ pub struct AdmitRequest<'a> {
     pub target_type: TargetType,
 }
 
+/// The broker's answer to a live plugin start ([`PermissionMonitor::begin_plugin_start`]).
+pub enum PluginStartDecision<'m> {
+    /// Allowed now; the admission lock is held until the guard drops.
+    Allowed(std::sync::MutexGuard<'m, ()>),
+    /// An ask waits in the Plexi window.
+    Required { pending_request_id: String },
+    /// A stored denial, or a request that cannot be decided.
+    Denied,
+}
+
 pub enum Admission {
     Proceed {
         grant_id: String,
@@ -1112,6 +1122,85 @@ impl PermissionMonitor {
         self.admit_inner(req, None, Some(disclosure))
     }
 
+    /// Decide a live plugin start (stint 1398). When the stored decision
+    /// allows it, the admission lock is returned held: every revoke takes the
+    /// same lock, so none lands between this evaluation and the start the
+    /// caller commits while holding the guard. Otherwise the lock is released
+    /// before the ask is filed (filing audits and must not run under it).
+    pub fn begin_plugin_start(
+        &self,
+        req: AdmitRequest<'_>,
+        disclosure: &str,
+    ) -> PluginStartDecision<'_> {
+        debug_assert!(req.target_type == TargetType::Package);
+        let Ok(fingerprint) = fingerprint_args(req.input_json) else {
+            return PluginStartDecision::Denied;
+        };
+        if req.workspace_root.as_os_str().is_empty() {
+            return PluginStartDecision::Denied;
+        }
+        let binding = self.exact_binding(&req, fingerprint);
+        let request = PermissionRequest::exact(&binding);
+        // Two rounds at most: an allow can land between releasing the lock
+        // and filing the ask, and then the second round finds it.
+        for _ in 0..2 {
+            let guard = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+            let now = self.now_secs();
+            match self.store().evaluate_at(&request, None, now) {
+                Decision::Allow => return PluginStartDecision::Allowed(guard),
+                Decision::Deny => return PluginStartDecision::Denied,
+                Decision::Ask => drop(guard),
+            }
+            match self.admit_inner(
+                AdmitRequest {
+                    call_id: req.call_id,
+                    tool: req.tool,
+                    input_json: req.input_json,
+                    principal: req.principal,
+                    actor_scope: req.actor_scope,
+                    trust_origin: req.trust_origin,
+                    workspace_root: req.workspace_root,
+                    context_id: req.context_id,
+                    package_id: req.package_id,
+                    instance_id: req.instance_id,
+                    target_type: req.target_type,
+                },
+                None,
+                Some(disclosure),
+            ) {
+                Admission::Required { pending_request_id } => {
+                    return PluginStartDecision::Required { pending_request_id }
+                }
+                Admission::Denied { .. } => return PluginStartDecision::Denied,
+                Admission::Proceed { .. } => continue,
+            }
+        }
+        PluginStartDecision::Denied
+    }
+
+    /// The exact binding a request is decided on.
+    fn exact_binding(&self, req: &AdmitRequest<'_>, fingerprint: String) -> ExactBinding {
+        let (resource_scope, resource_id) = resource_of(req.tool, req.input_json);
+        ExactBinding {
+            actor_type: req.principal.actor_type(),
+            actor_id: req.principal.actor_id().to_string(),
+            actor_scope: req.actor_scope,
+            trust_origin: req.trust_origin.to_string(),
+            workspace_root: req.workspace_root.to_path_buf(),
+            target_type: req.target_type,
+            target_id: req.tool.to_string(),
+            resource_scope,
+            resource_id,
+            args_fingerprint: fingerprint,
+            session_id: Some(self.session_id.clone()),
+            package_id: req.package_id.to_string(),
+            instance_id: Some(req.instance_id),
+            context_id: Some(req.context_id),
+            call_id: req.call_id.to_string(),
+            operation_id: operation_id_of(req.input_json),
+        }
+    }
+
     fn admit_inner(
         &self,
         req: AdmitRequest<'_>,
@@ -1143,25 +1232,7 @@ impl PermissionMonitor {
                 code: "permission_denied",
             };
         }
-        let (resource_scope, resource_id) = resource_of(req.tool, req.input_json);
-        let binding = ExactBinding {
-            actor_type: req.principal.actor_type(),
-            actor_id: req.principal.actor_id().to_string(),
-            actor_scope: req.actor_scope,
-            trust_origin: req.trust_origin.to_string(),
-            workspace_root: req.workspace_root.to_path_buf(),
-            target_type: req.target_type,
-            target_id: req.tool.to_string(),
-            resource_scope,
-            resource_id,
-            args_fingerprint: fingerprint,
-            session_id: Some(self.session_id.clone()),
-            package_id: req.package_id.to_string(),
-            instance_id: Some(req.instance_id),
-            context_id: Some(req.context_id),
-            call_id: req.call_id.to_string(),
-            operation_id: operation_id_of(req.input_json),
-        };
+        let binding = self.exact_binding(&req, fingerprint);
         let request = PermissionRequest::exact(&binding);
         self.expire_soft_grants();
         let now = self.now_secs();
@@ -1380,6 +1451,19 @@ impl PermissionMonitor {
             );
             return Err("an outside process can be decided once or for this session".to_string());
         }
+        // Plugin code is allowed for one exact copy or folder, or not at all
+        // (stint 1398); a once or session load has no meaning for a scan.
+        if pending.binding.target_type == TargetType::Package
+            && matches!(
+                choice,
+                ApprovalChoice::Once | ApprovalChoice::Session | ApprovalChoice::AllowTool
+            )
+        {
+            return Err(
+                "loading a plugin is allowed or denied, never once: choose Allow or Deny"
+                    .to_string(),
+            );
+        }
         if matches!(choice, ApprovalChoice::Deny | ApprovalChoice::DenyAlways) {
             let grant_id = if choice == ApprovalChoice::DenyAlways {
                 let evidence = evidence.ok_or("deny always needs the person's decision")?;
@@ -1444,6 +1528,12 @@ impl PermissionMonitor {
                 Some(self.session_id().to_string()),
                 None,
             ),
+            // A plugin allow or folder trust stands until revoked or reset.
+            // It is keyed to the plugin id or folder, not to content (stint
+            // 1279 owns content binding).
+            ApprovalChoice::Always if pending.binding.target_type == TargetType::Package => {
+                (GrantDuration::PackageIdentity, None, None)
+            }
             ApprovalChoice::Always => (
                 GrantDuration::Always,
                 None,
@@ -1456,7 +1546,9 @@ impl PermissionMonitor {
         let plugin_capability = is_plugin_capability(&pending.binding);
         let mut binding = pending.binding.clone();
         binding.session_id = session_id.clone();
-        if plugin_capability && choice == ApprovalChoice::Always {
+        if (plugin_capability && choice == ApprovalChoice::Always)
+            || binding.target_type == TargetType::Package
+        {
             binding.instance_id = None;
             binding.context_id = None;
         }
@@ -8222,6 +8314,78 @@ mod tests {
             let audit = dir.path().join("permission-audit.jsonl");
             assert!(audit.is_file(), "adopt starts an authenticated audit tip");
             crate::broker::seal::verify_audit(TEST_HOST, &audit).expect("new audit tip verifies");
+        });
+    }
+
+    /// Stint 1398: plugin admission did not exist when grants were unsealed,
+    /// so a legacy file can only carry a plugin-load or folder-trust allow if
+    /// someone wrote it. Adoption drops both and keeps every other grant.
+    #[test]
+    fn legacy_adoption_never_adopts_a_plugin_admission() {
+        crate::broker::host_key::without_mac_key(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let ws = tempfile::tempdir().unwrap();
+            let admission = |tool: &str, actor_type: ActorType, actor_id: &str| {
+                let binding = ExactBinding {
+                    actor_type,
+                    actor_id: actor_id.to_string(),
+                    actor_scope: ActorScope::User,
+                    trust_origin: "host".to_string(),
+                    workspace_root: ws.path().to_path_buf(),
+                    target_type: TargetType::Package,
+                    target_id: tool.to_string(),
+                    resource_scope: super::super::ResourceScope::Workspace,
+                    resource_id: None,
+                    args_fingerprint: fingerprint_args("{}").unwrap(),
+                    session_id: None,
+                    package_id: String::new(),
+                    instance_id: None,
+                    context_id: None,
+                    call_id: String::new(),
+                    operation_id: String::new(),
+                };
+                GrantRecord::from_binding(
+                    &binding,
+                    Decision::Allow,
+                    GrantDuration::PackageIdentity,
+                    GrantSource::User,
+                    &format!("grant_{tool}"),
+                )
+            };
+            write_legacy_grants(
+                dir.path(),
+                vec![
+                    GrantRecord::plugin_capability(
+                        "assistant",
+                        ws.path(),
+                        crate::app::permissions::Capability::FsRead,
+                        Decision::Allow,
+                    ),
+                    admission(
+                        crate::host::plugin_admission::LOAD_INSTALLED_TOOL,
+                        ActorType::Plugin,
+                        "planted",
+                    ),
+                    admission(
+                        crate::host::plugin_admission::TRUST_FOLDER_TOOL,
+                        ActorType::User,
+                        crate::broker::principal::LOCAL_USER_ID,
+                    ),
+                ],
+                "",
+            );
+            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+            let records = monitor.store().records().to_vec();
+            assert!(
+                records.iter().any(|record| record.target_id == "fs.read"),
+                "other grants are kept: {records:?}"
+            );
+            assert!(
+                records
+                    .iter()
+                    .all(|record| record.target_type != TargetType::Package),
+                "no plugin admission is adopted: {records:?}"
+            );
         });
     }
 
