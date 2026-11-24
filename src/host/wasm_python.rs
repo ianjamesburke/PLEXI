@@ -1523,6 +1523,14 @@ pub(crate) struct PanePresence {
     pub focused: bool,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum PythonFramePhase {
+    Booting,
+    Initializing,
+    Rendering,
+}
+
 pub struct LivePythonPane {
     presence: PanePresence,
     config: PythonLaunchConfig,
@@ -6095,6 +6103,16 @@ impl LivePythonPane {
     #[cfg(test)]
     pub fn has_rendered_tree(&self) -> bool {
         self.tree.is_some()
+    }
+    #[cfg(test)]
+    pub(crate) fn first_frame_phase(&self) -> PythonFramePhase {
+        if self.ready {
+            PythonFramePhase::Rendering
+        } else if self.runtime.has_started() {
+            PythonFramePhase::Initializing
+        } else {
+            PythonFramePhase::Booting
+        }
     }
     #[cfg(test)]
     pub fn error(&self) -> Option<&str> {

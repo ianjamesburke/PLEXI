@@ -4571,9 +4571,11 @@ mod tests {
                 );
                 continue;
             }
+            let started = Instant::now();
             let report = run_scene(&path, &out, false);
+            let elapsed = started.elapsed().as_secs_f64();
             println!(
-                "scene_suite: {} — {}",
+                "scene_suite: {} — {} ({elapsed:.1}s)",
                 report.scene,
                 if report.passed { "ok" } else { "FAILED" }
             );
