@@ -77,8 +77,9 @@ pub use pane_read::read_pane_secret;
 #[cfg(test)]
 pub use pane_read::SECRET_GET_TOOL;
 pub use pane_read::{read_pane_secret_with, ReadTarget, SecretScope};
+pub(crate) use resolver::resolve_interactive;
 pub use resolver::{
-    resolve, resolve_terminal_env, resolve_with_source, ResolveOutcome, ResolveWithSourceOutcome,
+    resolve_terminal_env, resolve_with_source, ResolveOutcome, ResolveWithSourceOutcome,
     WorkspaceConfig, WorkspaceSecrets,
 };
 

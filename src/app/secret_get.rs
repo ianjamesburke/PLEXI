@@ -270,7 +270,13 @@ impl PlexiApp {
                     serde_json::json!({"status":"denied","reason":"revoked"}),
                 );
             } else {
-                match ask.target_for(tool, name, discovery_root.as_deref()) {
+                match ask.discover_target(
+                    tool,
+                    name,
+                    discovery_root.as_deref(),
+                    &subject.principal(),
+                    &monitor,
+                ) {
                     Ok(target) => work(
                         SecretRequest {
                             subject,
@@ -283,10 +289,7 @@ impl PlexiApp {
                         },
                         monitor,
                     ),
-                    Err(error) => {
-                        log::info!("{tool}: scope unavailable: {error}");
-                        stream_reply(&reply, serde_json::json!({"status":"error","error":error}));
-                    }
+                    Err(denial) => stream_reply(&reply, denial),
                 }
             }
             repaint.request_repaint();
@@ -302,6 +305,20 @@ impl PlexiApp {
                 serde_json::json!({"status":"error","error":"Could not start the secret worker."}),
             );
         }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum TargetError {
+    #[error("{0}")]
+    Unavailable(String),
+    #[error("The discovered workspace {} is outside the pane context {}. Run from the workspace's own pane.", workspace.display(), pane.display())]
+    OutsidePane { workspace: PathBuf, pane: PathBuf },
+}
+
+impl From<String> for TargetError {
+    fn from(error: String) -> Self {
+        Self::Unavailable(error)
     }
 }
 
@@ -366,12 +383,39 @@ impl SecretAsk {
         Ok(())
     }
 
+    fn discover_target(
+        self,
+        tool: &str,
+        name: String,
+        discovery_root: Option<&Path>,
+        principal: &Principal,
+        monitor: &PermissionMonitor,
+    ) -> Result<SecretTarget, serde_json::Value> {
+        self.target_for(tool, name, discovery_root).map_err(|error| {
+            log::info!("{tool}: scope unavailable: {error}");
+            if let TargetError::OutsidePane { pane, .. } = &error {
+                monitor.note_denial(
+                    principal.actor_id(),
+                    tool,
+                    &format!("environment@{}", pane.display()),
+                    "",
+                    "context_scope_violation",
+                );
+                serde_json::json!({
+                    "status":"denied", "error_code":"permission_denied", "reason":error.to_string()
+                })
+            } else {
+                serde_json::json!({"status":"error","error":error.to_string()})
+            }
+        })
+    }
+
     fn target_for(
         self,
         tool: &str,
         name: String,
         discovery_root: Option<&Path>,
-    ) -> Result<SecretTarget, String> {
+    ) -> Result<SecretTarget, TargetError> {
         let scope: Result<SecretScope, String> = match self {
             Self::Bundle { cwd, command } => {
                 return Bundle::discover(cwd, command, discovery_root).map(|bundle| SecretTarget::Bundle(Box::new(bundle)));
@@ -410,17 +454,20 @@ impl SecretAsk {
                     .max_by_key(|path| path.components().count());
                 let path = match (nearest, folders.as_slice()) {
                     (Some(path), _) | (None, [path]) => path.clone(),
-                    (_, []) => return Err(format!("secret '{name}' not found")),
+                    (_, []) => return Err(format!("secret '{name}' not found").into()),
                     _ => {
                         return Err(format!(
                             "secret '{name}' is set on more than one folder; pass --folder"
-                        ))
+                        )
+                        .into())
                     }
                 };
                 if path.to_str().is_none()
                     || crate::workspace::secrets::canonical_folder(&path)? != path
                 {
-                    return Err("The stored folder no longer has a canonical UTF-8 path.".into());
+                    return Err(TargetError::Unavailable(
+                        "The stored folder no longer has a canonical UTF-8 path.".into(),
+                    ));
                 }
                 Ok(SecretScope::Folder { path })
             }
@@ -478,12 +525,12 @@ struct SecretRequest {
 
 struct LiveStore<'a> {
     inner: &'a dyn NonDestructiveStore,
-    token: &'a str,
+    connected: &'a (dyn Fn() -> bool + Sync),
 }
 
 impl LiveStore<'_> {
     fn check_client(&self) -> bool {
-        let live = crate::rpc::ReplyRegistry::connected(self.token) == Some(true);
+        let live = (self.connected)();
         if !live {
             log::info!("secret_get: client gone before the store read");
         }
@@ -521,6 +568,10 @@ impl NonDestructiveStore for LiveStore<'_> {
 }
 
 impl SecretRequest {
+    fn client_connected(&self) -> bool {
+        crate::rpc::ReplyRegistry::connected(&self.reply_path.to_string_lossy()) == Some(true)
+    }
+
     fn admit(&self, monitor: &PermissionMonitor, req: AdmitRequest<'_>) -> Option<UseDecision> {
         let tool = req.tool;
         let deadline = std::time::Instant::now() + crate::workspace::secrets::APPROVAL_TIMEOUT;
@@ -647,7 +698,7 @@ impl SecretRequest {
             monitor,
             &LiveStore {
                 inner: store,
-                token: &self.reply_path.to_string_lossy(),
+                connected: &|| self.client_connected(),
             },
             &actor,
             crate::workspace::secrets::ReadTarget {
@@ -1134,6 +1185,7 @@ mod list_tests {
                 .unwrap();
             let reply = read_client(client, kind);
             assert_eq!(reply["status"], "values");
+            assert_eq!(reply["cwd"], serde_json::json!(root));
             let values = reply["values"].as_array().unwrap();
             assert!(values
                 .iter()
@@ -1190,6 +1242,7 @@ mod list_tests {
         let discover = |cwd: &std::path::Path, authority: Option<&std::path::Path>| {
             super::SecretAsk::DiscoverFolder(cwd.into())
                 .target_for("secret.read", name.clone(), authority)
+                .map_err(|error| error.to_string())
                 .map(|target| match target {
                     super::SecretTarget::One { scope, .. } => scope.label(),
                     _ => unreachable!(),

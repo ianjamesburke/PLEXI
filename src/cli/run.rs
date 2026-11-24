@@ -1032,8 +1032,10 @@ pub fn run_command_for_root_from_pane(
             secrets,
         } => (scope, run, steps, on_load, secrets),
     };
-    let mut resolved = Vec::new();
-    if !secret_keys.is_empty() {
+    let approved_cwd;
+    let (cwd, resolved) = if secret_keys.is_empty() {
+        (cwd, Vec::new())
+    } else {
         let request = serde_json::json!({"type":"run_secrets","command":command_name,"cwd":cwd,"workspace_root":ws_root});
         let bundle = match super::workspace::request_bundle(&format!("run {command_name}"), request)
         {
@@ -1047,8 +1049,9 @@ pub fn run_command_for_root_from_pane(
         run_snippet = definition.run;
         steps = definition.steps;
         on_load = definition.on_load;
-        resolved = bundle.values;
-    }
+        approved_cwd = bundle.cwd;
+        (approved_cwd.as_path(), bundle.values)
+    };
     log::info!(
         "cli: running command '{command_name}' from scope={} (steps={}, on_load={})",
         scope.as_str(),

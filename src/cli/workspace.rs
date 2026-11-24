@@ -372,6 +372,10 @@ fn receive_secret<T>(
     payload: Value,
     decode: impl FnOnce(Result<String, crate::rpc::PollError>) -> T,
 ) -> Result<T, i32> {
+    #[cfg(all(test, unix))]
+    if let Some(reply) = secret_set_tests::BUNDLE_RESPONSE.take() {
+        return Ok(decode(Ok(reply(&payload))));
+    }
     let (token, stream) = super::send_request_connected(payload, "secret-response", label)
         .map_err(|_| no_secret_reply(label))?;
     let timeout = crate::workspace::secrets::APPROVAL_TIMEOUT + Duration::from_secs(10);
@@ -880,22 +884,11 @@ pub fn folder_secret_read(name: &str, folder: Option<&Path>) -> i32 {
     }
 }
 
-#[derive(serde::Deserialize)]
-pub(super) struct BundleReply {
-    pub values: Vec<crate::protocol::BundleValue>,
-    #[serde(flatten)]
-    pub definition: Option<crate::protocol::BundleDefinition>,
-}
-
-pub(super) fn request_bundle(label: &str, request: Value) -> Result<BundleReply, i32> {
-    #[derive(serde::Deserialize)]
-    #[serde(tag = "status", rename_all = "snake_case")]
-    enum Reply {
-        Values(BundleReply),
-        Missing { names: Vec<String> },
-        Denied { reason: Option<String> },
-        Error { error: String },
-    }
+pub(super) fn request_bundle(
+    label: &str,
+    request: Value,
+) -> Result<crate::protocol::ApprovedBundle, i32> {
+    use crate::protocol::SecretBundleReply as Reply;
     let body = receive_secret(label, request, |reply| reply.map(zeroize::Zeroizing::new))?
         .map_err(|_| {
             eprintln!(
@@ -952,12 +945,12 @@ pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
         Err(code) => return code,
     };
     let pane_env = crate::host::shell::build_env_with_secrets(
-        Some(&cwd),
+        Some(&bundle.cwd),
         crate::host::shell::SecretPolicy::NONE,
     );
     log::info!(
         "folder_secrets: exec cwd={} program={}",
-        cwd.display(),
+        bundle.cwd.display(),
         command[0]
     );
     #[expect(
@@ -965,7 +958,7 @@ pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
         reason = "foreground: the command owns the terminal and its exit code is passed through"
     )]
     let mut child = std::process::Command::new(&command[0]);
-    child.args(&command[1..]).current_dir(cwd);
+    child.args(&command[1..]).current_dir(&bundle.cwd);
     child.envs(pane_env);
     for entry in &bundle.values {
         child.env(&entry.name, &entry.value.0);
@@ -986,6 +979,81 @@ mod secret_set_tests {
     use super::folder_secret_grant;
     use std::fs;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    type BundleResponse = Box<dyn FnOnce(&serde_json::Value) -> String>;
+    #[cfg(unix)]
+    thread_local! {
+        pub(super) static BUNDLE_RESPONSE: std::cell::Cell<Option<BundleResponse>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bundle_child_uses_canonical_reply_cwd() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(dir.path().join("profile"));
+        let _enabled =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        let approved = dir.path().canonicalize().unwrap().join("approved");
+        let other = dir.path().join("other");
+        fs::create_dir(&approved).unwrap();
+        fs::create_dir(&other).unwrap();
+        let commands = crate::cli::ensure_commands_file(Some(&approved));
+        fs::write(
+            commands,
+            "[commands]\nbuild = { run = 'pwd', secrets = ['TEST'] }",
+        )
+        .unwrap();
+        let snippet = "pwd -P > \"$1\"";
+        for kind in ["folder_secret_exec", "run_secrets"] {
+            let output = dir.path().join(format!("{kind}.cwd"));
+            let args = [output.to_str().unwrap().to_owned()];
+            let link = dir.path().join(kind);
+            symlink(&approved, &link).unwrap();
+            let other = other.clone();
+            BUNDLE_RESPONSE.set(Some(Box::new(move |wire| {
+                assert_eq!(wire["type"], kind);
+                let cwd = std::path::Path::new(wire["cwd"].as_str().unwrap());
+                let canonical = cwd.canonicalize().unwrap();
+                fs::remove_file(cwd).unwrap();
+                symlink(other, cwd).unwrap();
+                serde_json::json!({
+                    "status": "values", "cwd": canonical, "values": [],
+                    "run": snippet, "steps": [], "on_load": []
+                })
+                .to_string()
+            })));
+            let code = if kind == "folder_secret_exec" {
+                let command = [
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    snippet.into(),
+                    "--".into(),
+                    args[0].clone(),
+                ];
+                super::folder_secret_exec(&link, &command)
+            } else {
+                crate::cli::run::run_command_for_root(
+                    Some(&approved),
+                    &link,
+                    "build",
+                    &args,
+                    super::OutputMode::Text,
+                )
+                .exit_code
+            };
+            assert_eq!(code, 0, "{kind}");
+            let observed = fs::read_to_string(&output).unwrap();
+            assert_eq!(
+                std::path::Path::new(observed.trim_end()),
+                approved,
+                "{kind}"
+            );
+        }
+    }
 
     #[test]
     fn secret_commands_require_a_final_reply() {

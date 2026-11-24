@@ -218,7 +218,7 @@ impl std::fmt::Debug for SecretInput {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BundleDefinition {
     pub run: String,
     pub steps: Vec<String>,
@@ -229,6 +229,23 @@ pub struct BundleDefinition {
 pub struct BundleValue {
     pub name: String,
     pub value: SecretInput,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ApprovedBundle {
+    pub cwd: std::path::PathBuf,
+    pub values: Vec<BundleValue>,
+    #[serde(flatten)]
+    pub definition: Option<BundleDefinition>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SecretBundleReply {
+    Values(ApprovedBundle),
+    Missing { names: Vec<String> },
+    Denied { reason: Option<String> },
+    Error { error: String },
 }
 
 /// App-to-host requests — go to `route_command`.
