@@ -267,27 +267,24 @@ pub(crate) enum Basis {
     TrustedFolder,
 }
 
-/// Permission to start one live guest, minted only by
-/// [`PluginAdmission::start_live_plugin`] and consumed by the live Python and
-/// WASM constructors, which take the plugin's id, root and entry only from it.
-/// Private fields, no `Clone`, no deserialisation; its lifetime ends with the
-/// synchronous start. While it lives the broker's admission lock is held for a
-/// granted start, so a revoke cannot land between the decision and the start.
-pub(crate) struct AdmittedPlugin<'start> {
+/// Who a live guest is, as the host verified it when the guest started (stint
+/// 1733): owner, runtime, canonical root and entry, and why it was admitted.
+/// Fixed at construction and never re-read from disk, so a later link change
+/// or edit cannot change who the host takes a running guest to be. Only a
+/// spent permit produces one; every identity decision about a live guest
+/// (bridge, tool names, pane reuse) reads this value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GuestOrigin {
     owner: String,
     kind: ManifestType,
     root: PathBuf,
     entry: PathBuf,
     basis: Basis,
-    _commit: Option<std::sync::MutexGuard<'start, ()>>,
 }
 
-impl AdmittedPlugin<'_> {
+impl GuestOrigin {
     pub(crate) fn owner(&self) -> &str {
         &self.owner
-    }
-    pub(crate) fn kind(&self) -> ManifestType {
-        self.kind
     }
     pub(crate) fn root(&self) -> &Path {
         &self.root
@@ -295,10 +292,57 @@ impl AdmittedPlugin<'_> {
     pub(crate) fn entry(&self) -> &Path {
         &self.entry
     }
-    /// Why this start was admitted, for tests that assert the basis.
+
+    /// Why this guest was admitted, for tests that assert or reuse it.
     #[cfg(test)]
     pub(crate) fn basis(&self) -> Basis {
         self.basis
+    }
+
+    /// Whether this guest is the copy bundled with Plexi, verified at its
+    /// designated profile root when it started. Not content binding: stint
+    /// 1279 replaces this with a binding to the bytes the guest runs.
+    pub(crate) fn is_bundled(&self) -> bool {
+        self.basis == Basis::Bundled
+    }
+
+    /// Whether this guest may act under its declared id: the bundled copy,
+    /// or any plugin whose id is not reserved for a bundled one. A folder
+    /// copy declaring a bundled id runs in its own pane but never speaks as
+    /// the bundled plugin.
+    pub(crate) fn owns_declared_id(&self) -> bool {
+        self.is_bundled() || !crate::cli::install_host::is_bundled_plugin_id(&self.owner)
+    }
+}
+
+/// Permission to start one live guest, minted only by
+/// [`PluginAdmission::start_live_plugin`] and consumed by the live Python and
+/// WASM constructors, which take the plugin's identity only from it. Private
+/// fields, no `Clone`, no deserialisation; its lifetime ends with the
+/// synchronous start. While it lives the broker's admission lock is held for a
+/// granted start, so a revoke cannot land between the decision and the start.
+pub(crate) struct AdmittedPlugin<'start> {
+    origin: GuestOrigin,
+    _commit: Option<std::sync::MutexGuard<'start, ()>>,
+}
+
+impl AdmittedPlugin<'_> {
+    pub(crate) fn owner(&self) -> &str {
+        &self.origin.owner
+    }
+    pub(crate) fn kind(&self) -> ManifestType {
+        self.origin.kind
+    }
+    pub(crate) fn root(&self) -> &Path {
+        &self.origin.root
+    }
+    pub(crate) fn entry(&self) -> &Path {
+        &self.origin.entry
+    }
+    /// Why this start was admitted, for tests that assert the basis.
+    #[cfg(test)]
+    pub(crate) fn basis(&self) -> Basis {
+        self.origin.basis
     }
 
     /// Spend the permit at the start it was minted for. Every live guest start
@@ -310,27 +354,23 @@ impl AdmittedPlugin<'_> {
     {
         log::info!(
             "plugin_admission: starting {} from {} ({:?})",
-            shown(&self.owner),
-            self.entry.display(),
-            self.basis
+            shown(&self.origin.owner),
+            self.origin.entry.display(),
+            self.origin.basis
         );
         #[cfg(test)]
         GUEST_STARTS.with(|starts| starts.set(starts.get() + 1));
         CommittedStart {
-            owner: self.owner,
-            root: self.root,
-            entry: self.entry,
+            origin: self.origin,
             _commit: self._commit,
         }
     }
 }
 
-/// What a spent permit names: the id, root and entry the guest runs. Drop it
-/// once the guest has started; that ends the start's hold on the admission lock.
+/// What a spent permit names: the origin of the guest it starts. Drop it once
+/// the guest has started; that ends the start's hold on the admission lock.
 pub(crate) struct CommittedStart<'start> {
-    pub owner: String,
-    pub root: PathBuf,
-    pub entry: PathBuf,
+    pub origin: GuestOrigin,
     _commit: Option<std::sync::MutexGuard<'start, ()>>,
 }
 
@@ -436,11 +476,13 @@ fn mint<'start>(
     commit: Option<std::sync::MutexGuard<'start, ()>>,
 ) -> AdmittedPlugin<'start> {
     AdmittedPlugin {
-        owner: plugin.owner.clone(),
-        kind: plugin.kind,
-        root: plugin.root.clone(),
-        entry: plugin.entry.clone(),
-        basis,
+        origin: GuestOrigin {
+            owner: plugin.owner.clone(),
+            kind: plugin.kind,
+            root: plugin.root.clone(),
+            entry: plugin.entry.clone(),
+            basis,
+        },
         _commit: commit,
     }
 }
@@ -569,13 +611,41 @@ impl AdmittedPlugin<'static> {
     /// A permit for tests that build a live guest directly from a fixture,
     /// outside any route. Compiled out of every non-test build.
     pub(crate) fn for_test(owner: &str, kind: ManifestType, root: &Path, entry: &Path) -> Self {
+        Self::with_basis_for_test(owner, kind, root, entry, Basis::TrustedFolder)
+    }
+
+    /// [`Self::for_test`] admitted on `basis`, for runtime tests whose subject
+    /// is what the origin's basis grants.
+    pub(crate) fn with_basis_for_test(
+        owner: &str,
+        kind: ManifestType,
+        root: &Path,
+        entry: &Path,
+        basis: Basis,
+    ) -> Self {
+        Self {
+            origin: GuestOrigin::for_test(owner, kind, root, entry, basis),
+            _commit: None,
+        }
+    }
+}
+
+#[cfg(test)]
+impl GuestOrigin {
+    /// An origin for a guest a test builds outside any route.
+    pub(crate) fn for_test(
+        owner: &str,
+        kind: ManifestType,
+        root: &Path,
+        entry: &Path,
+        basis: Basis,
+    ) -> Self {
         Self {
             owner: owner.to_string(),
             kind,
             root: root.to_path_buf(),
             entry: entry.to_path_buf(),
-            basis: Basis::TrustedFolder,
-            _commit: None,
+            basis,
         }
     }
 }

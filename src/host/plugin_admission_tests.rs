@@ -411,7 +411,7 @@ fn pane_tree(h: &crate::testing::HostHarness, pane: crate::spatial::tiling::Pane
         .and_then(|pane| pane.as_view())
         .and_then(|view| match &view.runtime {
             crate::host::pane::ViewRuntime::Python(runtime) => Some(
-                crate::platform::path::canonical_or_self(runtime.plugin_dir()),
+                crate::platform::path::canonical_or_self(runtime.origin().root()),
             ),
             _ => None,
         })
@@ -679,7 +679,9 @@ fn open_every_maintained_plugin(seed: fn(&str, &Path)) {
         if guests == 1 {
             started += 1;
             assert!(
-                h.app.locate_view_instance(id, None).is_some(),
+                h.app
+                    .locate_view_instance(id, None, crate::pane_ops::create::OriginQuery::Any)
+                    .is_some(),
                 "{id} has a pane"
             );
         } else {
@@ -1250,7 +1252,10 @@ fn a_buried_pane_is_revealed_only_for_its_own_origin() {
         win.panes
             .get(&pane)
             .and_then(|pane| pane.as_view())
-            .and_then(|view| view.runtime.origin_entry())
+            .and_then(|view| match view.runtime.origin() {
+                crate::host::pane::PaneOrigin::Guest(origin) => Some(origin.entry().to_path_buf()),
+                crate::host::pane::PaneOrigin::Builtin => None,
+            })
             .expect("a guest pane")
     };
     let bundled_entry =

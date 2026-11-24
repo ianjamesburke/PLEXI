@@ -19274,7 +19274,6 @@ fn insert_wasm_fixture_pane(h: &mut HostHarness, win_idx: usize, pane_id: u64, f
         fixture,
         StateStore::ephemeral().snapshot(),
         Vec::new(),
-        wasm_path,
     );
     live.set_pane_id(pane_id);
     live.set_context_id(h.app.windows[win_idx].context_id);

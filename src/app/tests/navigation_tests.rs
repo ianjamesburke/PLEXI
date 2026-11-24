@@ -1251,7 +1251,14 @@ fn focus_planted(h: &mut HostHarness, id: &str, context: u64) -> Option<PaneId> 
         .view_for_context(context, &h.app.router)
         .on_launch_for(id);
     h.app
-        .focus_for_on_launch(policy, id, None, context, &[], None)
+        .focus_for_on_launch(
+            policy,
+            id,
+            crate::pane_ops::create::OriginQuery::Any,
+            context,
+            &[],
+            None,
+        )
 }
 
 /// `focus_existing`: relaunching a plugin that is already open in a *different*

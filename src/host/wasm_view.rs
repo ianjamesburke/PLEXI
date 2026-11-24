@@ -751,6 +751,9 @@ impl gpu::Host for HostCtx {
 // ─── WasmView ───────────────────────────────────────────────────────────────
 
 pub struct WasmView {
+    /// Who this component is, as admission verified it when it started
+    /// (stint 1733); never re-read from disk.
+    origin: crate::host::plugin_admission::GuestOrigin,
     store: Store<HostCtx>,
     lifecycle: LifecycleGuest,
     // Some only when the component exports `audio-rt-process` (audio/full worlds).
@@ -847,7 +850,14 @@ impl WasmView {
         let (engine, component) = Self::engine_and_component(path)?;
         let grants = grants_from_component(&engine, &component);
         log::info!("plugin::{plugin_id}: ephemeral run grants {grants:?}");
-        Self::instantiate(plugin_id, &engine, &component, &grants, state)
+        let origin = crate::host::plugin_admission::GuestOrigin::for_test(
+            &plugin_id,
+            crate::app::registry::ManifestType::Wasm,
+            path.parent().unwrap_or(path),
+            path,
+            crate::host::plugin_admission::Basis::TrustedFolder,
+        );
+        Self::instantiate(origin, &engine, &component, &grants, state)
     }
 
     /// Load an installed/manifest-backed component with explicit host-interface
@@ -861,6 +871,20 @@ impl WasmView {
         state: StateStore,
         grants: Grants,
     ) -> wasmtime::Result<Self> {
+        Self::load_with_grants_then(admitted, state, grants, || Ok(()))
+    }
+
+    /// [`Self::load_with_grants`], running `started` once the component has
+    /// instantiated and before the start releases the admission lock. A
+    /// record that must exist only for a guest that really started (the
+    /// imports a review just allowed) is written there, so a failed
+    /// instantiation leaves nothing behind and no revoke lands in between.
+    pub(crate) fn load_with_grants_then(
+        admitted: crate::host::plugin_admission::AdmittedPlugin<'_>,
+        state: StateStore,
+        grants: Grants,
+        started: impl FnOnce() -> Result<(), String>,
+    ) -> wasmtime::Result<Self> {
         let plugin_id = admitted.owner().to_string();
         if admitted.kind() != crate::app::registry::ManifestType::Wasm {
             return Err(wasmtime::Error::msg(format!(
@@ -870,9 +894,10 @@ impl WasmView {
         let (engine, component) = Self::engine_and_component(admitted.entry())?;
         log::info!("plugin::{plugin_id}: manifest wasm grants {grants:?}");
         let start = admitted.commit();
-        let view = Self::instantiate(plugin_id, &engine, &component, &grants, state);
+        let view = Self::instantiate(start.origin.clone(), &engine, &component, &grants, state)?;
+        started().map_err(wasmtime::Error::msg)?;
         drop(start);
-        view
+        Ok(view)
     }
 
     /// [`Self::load_with_grants`] straight from a fixture component, for tests
@@ -896,12 +921,13 @@ impl WasmView {
     }
 
     fn instantiate(
-        plugin_id: String,
+        origin: crate::host::plugin_admission::GuestOrigin,
         engine: &Engine,
         component: &Component,
         grants: &Grants,
         state: StateStore,
     ) -> wasmtime::Result<Self> {
+        let plugin_id = origin.owner().to_string();
         if let Some(found) = foreign_sdk_package(engine, component) {
             let package = host_wit_package();
             log::info!("plugin::{plugin_id}: incompatible SDK {found} (host WIT {package})");
@@ -981,10 +1007,16 @@ impl WasmView {
             audio.is_some()
         );
         Ok(WasmView {
+            origin,
             store,
             lifecycle,
             audio,
         })
+    }
+
+    /// Who this component is, as admission verified it when it started.
+    pub(crate) fn origin(&self) -> &crate::host::plugin_admission::GuestOrigin {
+        &self.origin
     }
 
     pub fn init(
