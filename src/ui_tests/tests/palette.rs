@@ -1299,6 +1299,7 @@ fn palette_enter_after_focus_approval_runs_no_row() {
 #[test]
 fn palette_commands_stop() {
     let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+    root_context_in_workspace(&mut h);
     add_focused_pane(&mut h);
     h.step();
     h.harness()
@@ -1344,4 +1345,150 @@ fn palette_commands_stop() {
         h.with_app(|app| app.show_shortcuts),
         "Enter ran the selected Keyboard shortcuts row"
     );
+}
+
+// ── Stint 1392: the Files stop ──
+
+/// Root the active context in the harness's own workspace, so the Files
+/// stop walks a tempdir rather than the system temp dir.
+fn root_context_in_workspace(h: &mut PlexiUiHarness) -> std::path::PathBuf {
+    let root = h.workspace_root().to_path_buf();
+    h.with_app_mut(|app| {
+        let idx = app.router.active_idx();
+        app.router.get_mut(idx).root = root.clone();
+    });
+    root
+}
+
+/// Step until `done` holds; the Files source and previews answer from
+/// worker threads, so this waits on the wall clock.
+fn wait_for_palette(h: &mut PlexiUiHarness, what: &str, done: impl Fn(&PlexiApp) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        h.step();
+        if h.with_app(&done) {
+            h.run_steps(2);
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+fn palette_preview(app: &PlexiApp) -> Option<crate::host::picker::PreviewStatus> {
+    app.host
+        .picker(crate::host::picker::PickerId::Palette)
+        .and_then(|picker| picker.preview().cloned())
+}
+
+fn open_files_stop(h: &mut PlexiUiHarness) {
+    h.step();
+    h.harness()
+        .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::P);
+    h.run_steps(2);
+    h.harness().key_press(egui::Key::Tab);
+    h.step();
+    assert_eq!(palette_picker(h).1, "files");
+}
+
+fn seed_files_workspace(root: &std::path::Path) {
+    std::fs::create_dir_all(root.join("docs")).expect("mkdir docs");
+    std::fs::create_dir_all(root.join("assets")).expect("mkdir assets");
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(
+        root.join("docs/notes.md"),
+        "# Release notes\n\nPalette files preview body line.\n\n- Cmd+P, Tab, type, Enter\n- Text and images preview\n",
+    )
+    .expect("write notes");
+    std::fs::write(
+        root.join("src/main.rs"),
+        "fn main() {\n    println!(\"hi\");\n}\n",
+    )
+    .expect("write main");
+    let photo = image::RgbaImage::from_fn(160, 96, |x, y| {
+        image::Rgba([(x * 255 / 160) as u8, (y * 255 / 96) as u8, 180, 255])
+    });
+    photo
+        .save(root.join("assets/photo.png"))
+        .expect("write photo");
+}
+
+/// Stint 1392: Tab from Commands lists the active context's files with an
+/// always-on preview: text, an image, the empty state, and no preview half
+/// below the compact modal width.
+#[test]
+fn palette_files_stop_with_preview() {
+    use crate::host::picker::{PreviewBody, PreviewStatus};
+    let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+    let root = root_context_in_workspace(&mut h);
+    seed_files_workspace(&root);
+    open_files_stop(&mut h);
+
+    type_palette_text(&mut h, "notes");
+    wait_for_palette(&mut h, "text preview", |app| {
+        matches!(
+            palette_preview(app),
+            Some(PreviewStatus::Ready(PreviewBody::Text { .. }))
+        )
+    });
+    let selected = palette_picker(&h).2.expect("a selected file");
+    assert!(selected.ends_with("docs/notes.md"), "{selected}");
+    h.harness().get_by_label("notes.md");
+    assert!(
+        h.harness()
+            .query_all_by_label_contains("Palette files preview body line")
+            .next()
+            .is_some(),
+        "the text preview shows the file's body"
+    );
+    h.save_screenshot(&evidence_png!("_text"))
+        .expect("render failed");
+
+    h.with_app_mut(|app| app.set_palette_query("photo"));
+    wait_for_palette(&mut h, "image preview", |app| {
+        matches!(
+            palette_preview(app),
+            Some(PreviewStatus::Ready(PreviewBody::Image {
+                width: 160,
+                height: 96
+            }))
+        )
+    });
+    h.save_screenshot(&evidence_png!("_image"))
+        .expect("render failed");
+
+    h.with_app_mut(|app| app.set_palette_query("zzzqqq"));
+    wait_for_palette(&mut h, "empty answer", |app| {
+        app.host
+            .picker(crate::host::picker::PickerId::Palette)
+            .is_some_and(|picker| !picker.is_loading() && picker.rows().is_empty())
+    });
+    h.harness().get_by_label("No matching files");
+    h.save_screenshot(&evidence_png!("_empty"))
+        .expect("render failed");
+
+    // Narrow: below the compact modal width the preview half is dropped.
+    let mut narrow = PlexiUiHarness::new_sized(600.0, 800.0);
+    let root = root_context_in_workspace(&mut narrow);
+    seed_files_workspace(&root);
+    open_files_stop(&mut narrow);
+    type_palette_text(&mut narrow, "notes");
+    wait_for_palette(&mut narrow, "narrow rows", |app| {
+        matches!(
+            palette_preview(app),
+            Some(PreviewStatus::Ready(PreviewBody::Text { .. }))
+        )
+    });
+    narrow.harness().get_by_label("notes.md");
+    assert!(
+        narrow
+            .harness()
+            .query_all_by_label_contains("Palette files preview body line")
+            .next()
+            .is_none(),
+        "no preview half below the compact modal width"
+    );
+    narrow
+        .save_screenshot(&evidence_png!("_narrow"))
+        .expect("render failed");
 }

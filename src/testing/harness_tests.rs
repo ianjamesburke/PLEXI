@@ -26193,3 +26193,61 @@ fn agent_mesh_gate_queued_palette_open_shows_denial() {
         .any(|n| n.body.contains("experiments enable agent_mesh")));
     assert!(h.app.pending_user_commands.is_empty());
 }
+
+/// Stint 1392: with no Explorer anywhere, Cmd+P, Tab, a typed name and Enter
+/// open the file through the host's one open resolver (the builtin text
+/// editor for Markdown). The file comes from the palette's own index of the
+/// active context root.
+#[test]
+fn palette_opens_a_file_with_no_explorer_open() {
+    let mut h = HostHarness::new();
+    let root = h.workspace_root();
+    std::fs::create_dir_all(root.join("docs")).expect("mkdir");
+    std::fs::write(root.join("docs/readme.md"), "# hello").expect("seed doc");
+    std::fs::write(root.join("other.txt"), "x").expect("seed other");
+    let doc = root
+        .join("docs/readme.md")
+        .canonicalize()
+        .expect("canonical doc");
+    let explorers = |h: &HostHarness| {
+        h.app
+            .windows
+            .iter()
+            .flat_map(|win| win.panes.values())
+            .filter_map(Pane::as_view)
+            .filter(|view| view.runtime.type_id() == "file_browser")
+            .count()
+    };
+    h.run_frames(2);
+    assert_eq!(explorers(&h), 0);
+
+    h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
+    h.run_frames(2);
+    assert!(h.app.command_palette_open());
+    h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+    h.run_frames(1);
+    frame_with_events(&mut h, vec![egui::Event::Text("readme".into())]);
+    let want = format!("files:{}", doc.display());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.app.palette_selected_key().as_deref() != Some(want.as_str()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the Files stop never selected {want}: {:?}",
+            h.app.palette_selected_key()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.run_frames(1);
+    }
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert!(
+        !h.app.command_palette_open(),
+        "Enter ran the row and closed"
+    );
+    assert!(
+        h.app.find_open_text_editor_pane_any_window(&doc).is_some(),
+        "the file opened in the text editor"
+    );
+    assert_eq!(explorers(&h), 0, "no Explorer was opened to reach it");
+}
