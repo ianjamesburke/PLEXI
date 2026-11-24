@@ -800,7 +800,9 @@ fn agent_adapter_admission_matrix() {
     let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
     let ws = tempfile::tempdir().unwrap();
     let ws = ws.path();
-    let pane = super::principal::Principal::Pane(super::principal::PanePrincipal::for_test(4));
+    // A pane lifetime holds no standing grant, so the grant-state matrix
+    // drives the pane.send family through a named requester.
+    let pane = super::principal::Principal::agent("agent:matrix-sender").unwrap();
     let checked = verify(
         Runtime::Agent,
         &[

@@ -6751,9 +6751,7 @@ mod tests {
     #[test]
     fn allowing_a_stored_secret_denial_once_is_refused_and_keeps_the_denial() {
         let monitor = PermissionMonitor::ephemeral();
-        let principal = crate::broker::principal::Principal::Pane(
-            crate::broker::principal::PanePrincipal::for_test(7),
-        );
+        let principal = crate::broker::principal::Principal::agent("agent:secret-reader").unwrap();
         let req = AdmitRequest {
             call_id: "first",
             tool: "secret.get",
@@ -10542,7 +10540,7 @@ mod tests {
         let monitor = PermissionMonitor::ephemeral();
         let workspace = tempfile::tempdir().unwrap();
 
-        let caller = super::super::principal::Principal::Pane(PanePrincipal::for_test(1));
+        let caller = super::super::principal::Principal::agent("agent:clip-caller").unwrap();
         let admit_clip = |call_id: &str, clip_id: &str, preset: &str| {
             let input = serde_json::json!({
                 "clip_id": clip_id,
