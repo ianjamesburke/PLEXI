@@ -438,19 +438,23 @@ pub(super) fn handle_events_subscribe(
 mod tests {
     use super::*;
 
-    /// Codex 3290 r2: an outside process's subscription is registered under
-    /// the key its connection bound before the request was enqueued. When the
-    /// client goes away after registration but before reading the reply, the
-    /// connection clears that exact key: no subscription and no delivery is
-    /// left behind.
+    /// Codex 3290 r2/r3: an outside process's subscription is registered
+    /// under the key its connection bound before the request was enqueued.
+    /// The client goes away after registration, with a delivery already
+    /// queued, and the connection ends before it consumes the reply: it
+    /// clears exactly that key, so no subscription and no delivery remain.
+    /// The interleaving is fixed: the disconnect reader's wake is the
+    /// barrier, the worker is joined before the reply is offered, and the
+    /// reply finding no receiver proves it was never consumed.
     #[test]
     fn an_outside_subscription_cancelled_before_its_reply_leaves_nothing() {
         use std::io::BufRead as _;
+        const CONTEXT: u64 = 1_285_000;
         let ctx = egui::Context::default();
         let wake = Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx));
         let (subscribe, subscribe_rx) =
             UiMailbox::<HostSubscribeRequest>::channel(wake.clone(), "event_subscribe");
-        let (host, _host_rx) =
+        let (host, host_rx) =
             UiMailbox::<crate::app::socket_caller::PaneIpcMessage>::channel(wake, "pane_ipc");
         let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
         let lines = BufReader::new(server.try_clone().unwrap()).lines();
@@ -469,11 +473,22 @@ mod tests {
             "the key is bound before enqueue"
         );
         let key = request.subscriber_override.clone().unwrap();
-        // Registered as the host registers an outside caller, with one
-        // delivery already queued for it.
+        // Registered as the host registers an outside caller, and one event
+        // delivered to it before the client is gone.
         {
             let global = plugin_timeline::global();
             let mut timeline = global.lock().unwrap();
+            timeline
+                .declare_streams(
+                    CONTEXT,
+                    "probe-1285",
+                    vec![crate::protocol::EventStreamDecl {
+                        name: "tick".into(),
+                        schema: json!({"type": "object"}),
+                        description: None,
+                    }],
+                )
+                .unwrap();
             timeline.add_subscription(plugin_timeline::SubscriptionRecord {
                 subscription_id: format!("sub-{key}"),
                 subscriber_type: ActorType::External,
@@ -484,29 +499,70 @@ mod tests {
                 trigger_mode: TriggerMode::Conversation,
                 resource_id: None,
                 duration: crate::broker::GrantDuration::Session,
-                subscriber_context_id: 0,
+                subscriber_context_id: CONTEXT,
                 created_at: "test".into(),
                 admitted: None,
             });
+            timeline
+                .record_event(
+                    CONTEXT,
+                    "probe-1285",
+                    1,
+                    plugin_timeline::EmittedEvent {
+                        event: "tick".into(),
+                        actor: crate::protocol::PluginEventActor::System,
+                        actor_id: None,
+                        caused_by: None,
+                        summary: "tick".into(),
+                        resource_id: "r".into(),
+                        resource_scope: None,
+                        revision_after: "1".into(),
+                        payload: Some(json!({})),
+                        state_ref: None,
+                        revision_before: None,
+                        rollback_token: None,
+                        changed_resources: vec![],
+                        suggested_trigger: None,
+                    },
+                )
+                .unwrap();
+            assert!(
+                timeline.has_deliveries_for(ActorType::External, &key),
+                "fixture: a delivery is queued for the subscriber"
+            );
         }
         drop(client);
-        request
-            .reply
-            .send(HostSubscribeReply::Ok {
-                subscription_id: format!("sub-{key}"),
-                subscriber_type: ActorType::External,
-                subscriber_id: key.clone(),
-            })
-            .unwrap();
+        // Barrier: the disconnect reader saw the client go and woke the host.
+        match host_rx.recv().unwrap() {
+            crate::app::socket_caller::PaneIpcMessage::Request { request, .. } => {
+                assert!(matches!(*request, HostRequest::Wake))
+            }
+            other => panic!("expected the disconnect wake, got {other:?}"),
+        }
         worker.join().unwrap();
+        assert!(
+            request
+                .reply
+                .send(HostSubscribeReply::Ok {
+                    subscription_id: format!("sub-{key}"),
+                    subscriber_type: ActorType::External,
+                    subscriber_id: key.clone(),
+                })
+                .is_err(),
+            "the connection consumed its reply"
+        );
         let global = plugin_timeline::global();
         let timeline = global.lock().unwrap();
         assert!(
             !timeline.subscriptions().iter().any(|sub| sub.subscriber_id == key),
             "a subscription outlived its connection"
         );
-        assert!(!timeline.has_deliveries_for(ActorType::External, &key));
+        assert!(
+            !timeline.has_deliveries_for(ActorType::External, &key),
+            "a delivery outlived its connection"
+        );
     }
+
     #[test]
     fn pane_consumer_queued_match_survives_close_before_snapshot() {
         use crate::host::pane_lifecycle::{PaneLifecycleEvent, Provenance, Source};

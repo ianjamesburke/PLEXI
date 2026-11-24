@@ -1620,38 +1620,55 @@ fn own_pane_operations_from_another_pane_reach_no_effect() {
     assert_eq!(asked["error_code"], "permission_denied", "{asked}");
 }
 
-/// Codex 3290 r1 P2: the dashboard's follow and cancel take the caller. A
-/// pane follows only its own context's workspace and cancels only a run it
-/// started.
+/// Codex 3290 r1/r3: the dashboard's cancel takes the caller. Another pane's
+/// cancel leaves a live run it did not start running; the owning pane's
+/// ordinary cancel (the frame `plexi agents-dashboard cancel` sends)
+/// finishes it. Follow is checked through the stream in
+/// `app::tests::misc_tests::dashboard_follow_stream_serves_only_the_callers_workspace`.
 #[test]
-fn dashboard_follow_and_cancel_are_scoped_to_the_caller() {
-    let _dashboard =
-        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentsDashboard]);
+fn dashboard_cancel_stops_only_the_callers_own_run() {
+    let _experiments = crate::release::set_test_experiments(&[
+        crate::release::ReleaseFeature::AgentsDashboard,
+        crate::release::ReleaseFeature::AgentMesh,
+    ]);
     let mut h = HostHarness::new();
-    let pane = h.add_focused_terminal();
-    let caller = h.app.classify_socket_peer(Some(&pane_witness(&h, pane)));
+    let owner = h.add_focused_terminal();
+    let other = h.add_focused_terminal();
     let root = h.workspace_root();
     h.app.set_context_root(root.clone(), None);
-    let caller = match caller {
-        SocketCaller::Pane(_) => h.app.classify_socket_peer(Some(&pane_witness(&h, pane))),
-        other => panic!("{other:?}"),
-    };
-    assert!(h.app.admit_dashboard_workspace(&caller, &root.to_string_lossy()).is_ok());
-    let elsewhere = tempfile::tempdir().unwrap();
-    let refused = h
-        .app
-        .admit_dashboard_workspace(&caller, &elsewhere.path().to_string_lossy())
-        .unwrap_err();
-    assert_eq!(refused.code, "permission_denied");
-
-    let peer = pane_witness(&h, pane);
-    let cancel = send(
-        &mut h,
-        serde_json::json!({"type": "agents_dashboard", "op": "cancel",
-            "payload": {"workspace": root, "run": "run_not_mine"}}),
-        Some(peer),
+    let host = crate::agent::runs::AgentsCaller::Host { ceiling: Vec::new() };
+    let created = crate::agent::runs::handle_request(
+        "create_agent",
+        &serde_json::json!({"workspace": root, "name": "worker", "grants": ["agents.ping=ask"]}),
+        &host,
     );
-    assert_eq!(cancel["error_code"], "permission_denied", "{cancel}");
+    assert_eq!(created["ok"], true, "{created}");
+    let (owner_peer, other_peer) = (pane_witness(&h, owner), pane_witness(&h, other));
+    let started = send(
+        &mut h,
+        serde_json::json!({"type": "agents_api", "op": "spawn_run",
+            "payload": {"workspace": root, "agent": "worker", "admission": "adm-dash"}}),
+        Some(owner_peer.clone()),
+    );
+    assert_eq!(started["ok"], true, "{started}");
+    let run = started["run"]["id"].as_str().unwrap().to_string();
+    let active = |run: &str| {
+        crate::agent::runs::handle_request(
+            "show_run",
+            &serde_json::json!({"workspace": root, "id": run}),
+            &crate::agent::runs::AgentsCaller::Host { ceiling: Vec::new() },
+        )["run"]["active"]
+            .as_bool()
+            .unwrap()
+    };
+    let cancel = serde_json::json!({"type": "agents_dashboard", "op": "cancel",
+        "payload": {"workspace": root, "run": run}});
+    let foreign = send(&mut h, cancel.clone(), Some(other_peer));
+    assert_eq!(foreign["error_code"], "permission_denied", "{foreign}");
+    assert!(active(&run), "another pane's cancel stopped the run");
+    let own = send(&mut h, cancel, Some(owner_peer));
+    assert_eq!(own["ok"], true, "{own}");
+    assert!(!active(&run), "the owner's cancel left the run running");
 }
 
 /// Design 1285 section 4, condition 3: with the dashboard experiment off,

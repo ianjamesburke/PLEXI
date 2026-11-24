@@ -1949,3 +1949,94 @@ fn file_open_peer_walk_is_stamped_by_the_listener_not_the_wire() {
         other => panic!("expected a socket file_open, got {other:?}"),
     }
 }
+
+/// Codex 3290 r2/r3, through the real follow stream: a pane following its
+/// own context's workspace gets the projection of that workspace only (no
+/// pending request filed for another workspace), and a pane naming another
+/// workspace is refused before anything is served.
+#[cfg(unix)]
+#[test]
+fn dashboard_follow_stream_serves_only_the_callers_workspace() {
+    use std::io::{BufRead as _, Write as _};
+    let _dashboard =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentsDashboard]);
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let root = h.workspace_root();
+    h.app.set_context_root(root.clone(), None);
+    let elsewhere = tempfile::tempdir().unwrap();
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    for (workspace, marker) in [(root.clone(), "own-1285"), (elsewhere.path().to_path_buf(), "foreign-1285")] {
+        let admission = monitor.admit(crate::broker::gate::AdmitRequest {
+            call_id: &format!("follow-{marker}"),
+            tool: "agents.review",
+            input_json: &serde_json::json!({"marker": marker}).to_string(),
+            principal: &crate::broker::principal::Principal::agent("agent:worker"),
+            actor_scope: crate::broker::ActorScope::Workspace,
+            trust_origin: "host",
+            workspace_root: &crate::platform::path::canonical_or_self(&workspace),
+            context_id: 0,
+            package_id: "agents",
+            instance_id: 0,
+            target_type: crate::broker::TargetType::HostTool,
+        });
+        assert!(matches!(admission, crate::broker::gate::Admission::Required { .. }));
+    }
+    let peer = crate::broker::caller::PeerWitness::for_live_pids(&[h.shell_pid(pane)]);
+    let follow = |h: &mut crate::testing::HostHarness, workspace: &std::path::Path| {
+        let ctx = egui::Context::default();
+        let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx));
+        let (subscribe, _subscribe_rx) = crate::app::ui_mailbox::UiMailbox::<
+            crate::host::event_subscriptions::HostSubscribeRequest,
+        >::channel(wake.clone(), "event_subscribe");
+        let (publish, _publish_rx) = crate::app::ui_mailbox::UiMailbox::<
+            crate::host::event_subscriptions::HostPublishRequest,
+        >::channel(wake, "event_publish");
+        let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
+        let line = serde_json::json!({"type": "command_view_follow", "workspace": workspace});
+        writeln!(client, "{line}").unwrap();
+        let mailbox = h.ipc_tx.clone();
+        let peer = peer.clone();
+        let profile = tempfile::tempdir().unwrap();
+        let profile_path = profile.path().to_path_buf();
+        // The stream thread reads the same profile as the host (the test
+        // profile is per thread).
+        let host_profile = crate::config::config_dir();
+        let worker = std::thread::spawn(move || {
+            let _profile = crate::config::set_test_profile_dir(host_profile);
+            handle_socket_connection(&profile_path, server, mailbox, subscribe, publish, Some(peer))
+        });
+        client
+            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .unwrap();
+        let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
+        let mut lines = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while lines.len() < 2 && std::time::Instant::now() < deadline {
+            h.run_frames(1);
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => lines.push(serde_json::from_str::<serde_json::Value>(&line).unwrap()),
+                Err(_) => {}
+            }
+        }
+        drop(reader);
+        drop(client);
+        h.run_frames(1);
+        worker.join().unwrap();
+        drop(profile);
+        lines
+    };
+    let own = follow(&mut h, &root);
+    assert_eq!(own.len(), 2, "{own:?}");
+    assert_eq!(own[0]["type"], "subscribed", "{own:?}");
+    let projection = own[1].to_string();
+    assert!(projection.contains("own-1285"), "{projection}");
+    assert!(!projection.contains("foreign-1285"), "another workspace leaked: {projection}");
+    let foreign = follow(&mut h, elsewhere.path());
+    assert_eq!(foreign[0]["type"], "error", "{foreign:?}");
+    assert_eq!(foreign[0]["error_code"], "permission_denied", "{foreign:?}");
+    assert_eq!(foreign.len(), 1, "nothing served after the refusal: {foreign:?}");
+}

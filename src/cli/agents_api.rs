@@ -224,21 +224,41 @@ mod tests {
             let socket_path = dir.path().join("notify.sock");
             let listener = UnixListener::bind(&socket_path).unwrap();
             env.set(&socket_path);
+            let expected_workspace = workspace.path().to_path_buf();
             let host = std::thread::spawn(move || {
+                use std::io::Write as _;
                 let (stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
-                BufReader::new(stream).read_line(&mut line).unwrap();
+                reader.read_line(&mut line).unwrap();
                 let request: crate::protocol::HostRequest = serde_json::from_str(&line)
                     .unwrap_or_else(|error| panic!("the host cannot read {line}: {error}"));
-                let crate::protocol::HostRequest::AgentsDashboard { op, response_file, .. } = request
+                let crate::protocol::HostRequest::AgentsDashboard {
+                    op,
+                    payload,
+                    response_file,
+                } = request
                 else {
                     panic!("not a dashboard request: {line}");
                 };
-                crate::rpc::write_json_response(&response_file, serde_json::json!({"ok": true}));
-                op
+                assert_eq!(
+                    std::path::PathBuf::from(payload["workspace"].as_str().unwrap()),
+                    expected_workspace
+                );
+                // Answer on the connection, as the host does; never a file.
+                let mut stream = stream;
+                stream.write_all(br#"{"ok":true}"#).unwrap();
+                drop(stream);
+                (op, payload, response_file)
             });
             assert_eq!(run_cli(), 0, "{op}");
-            assert_eq!(host.join().unwrap(), op);
+            let (sent_op, payload, response_file) = host.join().unwrap();
+            assert_eq!(sent_op, op);
+            assert_eq!(payload["run"].as_str(), run, "{payload}");
+            assert!(
+                !std::path::Path::new(&response_file).exists(),
+                "the reply took the file fallback"
+            );
             drop(env);
         }
     }
