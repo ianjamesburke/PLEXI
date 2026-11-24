@@ -514,7 +514,31 @@ fn permission_inventory_and_needs_you_lists_are_scoped_to_the_caller() {
             })
             .unwrap()
     };
-    let own = file(&format!("pane:{pane}"), "own");
+    // A pane reads what its own terminal incarnation filed, never by number
+    // (stint 1743): the same pane number without the key is not its record.
+    let key = h
+        .origin_from_pane(pane)
+        .socket_caller()
+        .and_then(|caller| caller.pane())
+        .map(|pane| pane.authority.durable_key().to_string())
+        .unwrap();
+    let own = monitor
+        .file_needs_you_with_details(
+            NeedsYouFile {
+                kind: NeedsYouKind::Question,
+                actor: format!("pane:{pane}"),
+                resource: "r".into(),
+                summary: "s".into(),
+                expires_at: None,
+                run_tag: Some("own".to_string()),
+            },
+            Some(crate::broker::gate::NeedsYouDetails {
+                pane_incarnation: Some(key),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let numbered = file(&format!("pane:{pane}"), "numbered");
     let other = file("pane:999999", "other");
     let listed = send(&mut h, serde_json::json!({"type": "list_needs_you"}), Some(peer.clone()));
     let ids: Vec<_> = listed["items"]
@@ -525,6 +549,7 @@ fn permission_inventory_and_needs_you_lists_are_scoped_to_the_caller() {
         .collect();
     assert!(ids.contains(&own.as_str()), "{listed}");
     assert!(!ids.contains(&other.as_str()), "{listed}");
+    assert!(!ids.contains(&numbered.as_str()), "{listed}");
     let inventory = send(&mut h, serde_json::json!({"type": "list_permissions"}), Some(peer));
     assert_eq!(inventory["permissions"], serde_json::json!([]), "{inventory}");
 }
