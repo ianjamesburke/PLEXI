@@ -34,9 +34,10 @@ fi
 if [[ -z "${BIN_PATH:-}" ]]; then
   BIN_PATH="$(command -v "$BIN")"
 fi
-BIN_NAME="$(basename "$BIN_PATH")"
 REAL_HOME="${HOME}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN_PATH="$(python3 "$ROOT/scripts/require_test_hook_binary.py" --installed -- "$BIN_PATH")" || exit $?
+BIN_NAME="$(basename "$BIN_PATH")"
 TMP_HOME="$(mktemp -d "${TMPDIR:-/tmp}/plexi-cloud-e2e-home.XXXXXX")"
 export HOME="${TMP_HOME}"
 unset PLEXI_SOCKET
