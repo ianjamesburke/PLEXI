@@ -245,8 +245,14 @@ fn workspace_pack_with_a_git_entry_clones_nothing() {
         let crate::cli::install_host::InstallStatus::Failed(error) = &outcome.status else {
             panic!("{} must be refused: {:?}", outcome.id, outcome.status);
         };
-        assert!(error.contains("github:someone/remote"), "{error}");
+        let expected = if outcome.id == "todo" {
+            "bundled with Plexi"
+        } else {
+            "github:someone/remote"
+        };
+        assert!(error.contains(expected), "{}: {error}", outcome.id);
     }
+    assert_eq!(outcomes.len(), 2);
     assert!(cloner.clones.lock().unwrap().is_empty(), "nothing fetched");
     assert!(
         !rig.repo_plugins().join("todo").exists(),
@@ -755,4 +761,29 @@ fn a_packaged_profile_opens_every_maintained_plugin_without_asking() {
 #[test]
 fn an_embedded_seed_without_bytecode_opens_every_maintained_plugin_without_asking() {
     open_every_maintained_plugin(|id, plugins| strip_bytecode(&extract_bundled(id, plugins)));
+}
+
+/// A workspace pack naming a bundled plugin (`local:<name>`) would install a
+/// copy discovery never lets the workspace own. The conflict is reported at
+/// install time and nothing is written.
+#[test]
+fn a_workspace_pack_naming_a_bundled_plugin_reports_the_conflict() {
+    let rig = Rig::new();
+    let channel = rig.repo.path().join(crate::config::workspace_channel_dir());
+    std::fs::write(
+        channel.join("plugins.toml"),
+        "schema_version = 2\n\n[[plugin]]\nid = \"todo\"\nsource = \"local:todo\"\nversion = \"bundled\"\n",
+    )
+    .unwrap();
+    let outcomes =
+        crate::cli::install_host::apply_workspace_pack(rig.repo.path(), &MockCloner::new())
+            .expect("the pack is read");
+    let [outcome] = outcomes.as_slice() else {
+        panic!("{outcomes:?}");
+    };
+    let crate::cli::install_host::InstallStatus::Failed(error) = &outcome.status else {
+        panic!("todo must be reported, not installed: {:?}", outcome.status);
+    };
+    assert!(error.contains("bundled with Plexi"), "{error}");
+    assert!(!rig.repo_plugins().join("todo").exists(), "nothing written");
 }

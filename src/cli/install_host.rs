@@ -1397,7 +1397,35 @@ pub fn apply_workspace_pack(
         workspace_apps.display(),
         pack.plugins.len()
     );
-    Ok(apply_pack(cloner, &pack, &workspace_apps, false))
+    // A workspace never owns a bundled plugin's id (stint 1398), so a copy of
+    // one here could never be opened by id: report the conflict instead of
+    // installing it. The bundled plugin is already in the profile.
+    let (bundled, installable): (Vec<_>, Vec<_>) = pack
+        .plugins
+        .iter()
+        .cloned()
+        .partition(|entry| crate::cli::install_host::is_bundled_plugin_id(&entry.id));
+    let mut outcomes: Vec<InstallOutcome> = bundled
+        .iter()
+        .map(|entry| {
+            let error = format!(
+                "'{}' is bundled with Plexi and already in your profile; a workspace copy \
+                 would never be opened by id. Remove it from {channel_dir}/plugins.toml.",
+                entry.id
+            );
+            log::info!("install: workspace pack conflict: {error}");
+            InstallOutcome {
+                id: entry.id.clone(),
+                status: InstallStatus::Failed(error),
+            }
+        })
+        .collect();
+    let remaining = Pack {
+        plugins: installable,
+        ..pack
+    };
+    outcomes.extend(apply_pack(cloner, &remaining, &workspace_apps, false));
+    Ok(outcomes)
 }
 
 /// Return the set of plugin IDs declared in `<workspace_root>/<channel_dir>/plugins.toml`.
@@ -2539,38 +2567,6 @@ mod workspace_pack_tests {
     use super::*;
 
     #[test]
-    fn apply_workspace_pack_installs_into_channel_apps_dir() {
-        let ws = tempfile::tempdir().unwrap();
-        let channel_dir = crate::config::workspace_channel_dir();
-        let plexi_dir = ws.path().join(&channel_dir);
-        std::fs::create_dir_all(&plexi_dir).unwrap();
-        std::fs::write(
-            plexi_dir.join("plugins.toml"),
-            // Git entries are refused while third-party installs are off
-            // (stint 1398); a bundled source installs.
-            "schema_version = 2\n\n[[plugin]]\nid = \"todo\"\nsource = \"local:todo\"\nversion = \"bundled\"\n",
-        )
-        .unwrap();
-
-        let cloner = MockCloner::new();
-        let outcomes = apply_workspace_pack(ws.path(), &cloner).expect("should succeed");
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].id, "todo");
-        assert!(
-            matches!(outcomes[0].status, InstallStatus::Installed(_)),
-            "expected Installed, got {:?}",
-            outcomes[0].status
-        );
-
-        let workspace_apps = crate::app::registry::workspace_plugins_dir(ws.path());
-        assert!(
-            workspace_apps.join("todo").join("manifest.toml").exists(),
-            "plugin should be present in workspace plugins dir at {}",
-            workspace_apps.display()
-        );
-    }
-
-    #[test]
     fn apply_workspace_pack_errors_when_no_apps_toml() {
         let ws = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
@@ -2607,36 +2603,5 @@ mod workspace_pack_tests {
         let ws = tempfile::tempdir().unwrap();
         let ids = workspace_manifest_ids(ws.path());
         assert!(ids.is_empty());
-    }
-
-    #[test]
-    fn apply_workspace_pack_idempotent_on_second_run() {
-        let ws = tempfile::tempdir().unwrap();
-        let channel_dir = crate::config::workspace_channel_dir();
-        let plexi_dir = ws.path().join(&channel_dir);
-        std::fs::create_dir_all(&plexi_dir).unwrap();
-        // The pack version must match the installed manifest's for
-        // AlreadyAtVersion; git entries are refused (stint 1398).
-        let version = installed_versions(&std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/plugins"
-        )))
-        .remove("todo")
-        .expect("bundled todo has a version");
-        std::fs::write(
-            plexi_dir.join("plugins.toml"),
-            format!("schema_version = 2\n\n[[plugin]]\nid = \"todo\"\nsource = \"local:todo\"\nversion = \"{version}\"\n"),
-        )
-        .unwrap();
-
-        let cloner = MockCloner::new();
-        apply_workspace_pack(ws.path(), &cloner).unwrap();
-        let second = apply_workspace_pack(ws.path(), &cloner).unwrap();
-        assert_eq!(second.len(), 1);
-        assert!(
-            matches!(second[0].status, InstallStatus::AlreadyAtVersion),
-            "second apply should be no-op, got {:?}",
-            second[0].status
-        );
     }
 }
