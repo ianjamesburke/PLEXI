@@ -2014,12 +2014,6 @@ impl PermissionMonitor {
                 );
                 ApprovalChoice::Session
             }
-            ApprovalChoice::DenyAlways if pending.binding.actor.kind() == ActorType::Pane => {
-                log::info!(
-                    "permission_monitor: DenyAlways on {pending_id} held as a denial for this request: a pane lifetime is not remembered"
-                );
-                ApprovalChoice::Deny
-            }
             other => other,
         };
         // Plugin code is allowed for one exact copy or folder, or not at all
