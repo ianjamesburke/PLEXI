@@ -2924,7 +2924,8 @@ impl PlexiApp {
 
     /// Resolve a registry plugin's `[launch] on_launch` policy (#0336) against
     /// the open panes running its entry before spawning. Builtins never reach
-    /// here: they are resolved first and always open fresh (stint 1733). Returns `Some(existing_pane_id)` when the
+    /// here: they are resolved first and always open fresh (stint 1733).
+    /// Returns `Some(existing_pane_id)` when the
     /// launch was satisfied by focusing a live instance — the caller must then
     /// NOT spawn, and must report *that* pane id (never a predicted one).
     /// Returns `None` when no instance matched and the caller should spawn.
