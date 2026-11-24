@@ -6,7 +6,7 @@ use crate::host::picker::{
     preview::PreviewLoader,
     usage::PaletteUsage,
     PickerCommand, PickerEffect, PickerId, PickerRow, PreviewStatus, RowAction, RowKey,
-    COMMANDS_SOURCE, FILES_SOURCE, PALETTE_STOPS,
+    AGENTS_SOURCE, COMMANDS_SOURCE, FILES_SOURCE, PALETTE_STOPS,
 };
 use crate::ui::{
     hints::{HintBar, HintGroup},
@@ -134,14 +134,17 @@ impl CommandRowId {
             | CommandRowId::UpdateReady(_) => RowAction {
                 id: "run",
                 label: "run",
+                chord: Some("Enter"),
             },
             CommandRowId::Focus(_) | CommandRowId::Unavailable(_) => RowAction {
                 id: "focus",
                 label: "focus",
+                chord: Some("Enter"),
             },
             CommandRowId::View(_) | CommandRowId::Builtin(_) | CommandRowId::Note(_) => RowAction {
                 id: "open",
                 label: "open",
+                chord: Some("Enter"),
             },
         }
     }
@@ -182,16 +185,14 @@ enum PaletteTarget {
 const OPEN_FILE: RowAction = RowAction {
     id: "open",
     label: "open",
+    chord: Some("Enter"),
 };
 
-impl PaletteTarget {
-    fn action(&self) -> RowAction {
-        match self {
-            PaletteTarget::Command(id) => id.action(),
-            PaletteTarget::File(_) => OPEN_FILE,
-        }
-    }
-}
+const RESET_RANKING: RowAction = RowAction {
+    id: "reset_ranking",
+    label: "Reset ranking",
+    chord: None,
+};
 
 fn command_targets(
     targets: std::collections::HashMap<RowKey, CommandRowId>,
@@ -210,6 +211,7 @@ pub(crate) struct PaletteAnswer {
     generation: u64,
     pips: std::collections::HashMap<RowKey, ListRowPips>,
     targets: std::collections::HashMap<RowKey, PaletteTarget>,
+    agent_targets: std::collections::HashMap<RowKey, crate::app::palette_agents::AgentTarget>,
 }
 
 /// The palette's background sources: the Files index, the preview loader
@@ -255,7 +257,9 @@ fn file_row(hit: FileHit) -> PickerRow {
         score: hit.score,
         pinned: false,
         unavailable: None,
-        actions: vec![OPEN_FILE],
+        actions: vec![OPEN_FILE, RESET_RANKING],
+        attention: None,
+        inline_preview: None,
         usage: hit.usage,
         modified: hit.modified,
         preview: Some(hit.preview),
@@ -423,6 +427,8 @@ impl PaletteEntry {
             score,
             pinned: matches!(id, CommandRowId::UpdateReady(_)),
             unavailable,
+            attention: None,
+            inline_preview: None,
             actions: vec![id.action()],
             usage: None,
             modified: None,
@@ -1549,6 +1555,7 @@ impl PlexiApp {
             .usage
             .start(crate::host::picker::usage::usage_path());
         self.palette_input.reset(query);
+        self.begin_palette_agents_session();
         self.apply_palette_command(PickerCommand::Open {
             stop: PALETTE_STOPS[0].id,
             query: query.to_owned(),
@@ -1568,9 +1575,18 @@ impl PlexiApp {
     /// so no source I/O runs on the draw path. `Activate` comes before
     /// `Closed`; the row runs after the close, with focus synchronized once.
     pub(crate) fn apply_palette_command(&mut self, command: PickerCommand) {
+        let was_showing_actions = self
+            .host
+            .picker(PickerId::Palette)
+            .is_some_and(|picker| picker.showing_actions());
         let effects = self
             .host
             .apply(HostAction::Picker(PickerId::Palette, command));
+        if let Some(picker) = self.host.picker(PickerId::Palette) {
+            if picker.is_open() && picker.showing_actions() != was_showing_actions {
+                self.palette_input.draft = picker.field_text().to_owned();
+            }
+        }
         if effects.is_empty() {
             return;
         }
@@ -1586,17 +1602,34 @@ impl PlexiApp {
                     text.chars().count()
                 ),
                 PickerEffect::Activate { stamp, row, action } => {
-                    self.palette_sources.usage.record(row.as_str());
-                    // Owned before `Closed` drops the answer it came from.
-                    let target = self
+                    // Own the target before Closed releases its answer and session.
+                    let answer = self
                         .palette_answer
                         .as_ref()
-                        .filter(|answer| answer.generation == stamp.generation)
-                        .and_then(|answer| answer.targets.get(&row))
-                        .cloned();
-                    match target {
-                        Some(target) if target.action().id == action => {
-                            activation = Some(target);
+                        .filter(|answer| answer.generation == stamp.generation);
+                    if row.source() == AGENTS_SOURCE {
+                        if let Some(target) = answer
+                            .and_then(|answer| answer.agent_targets.get(&row))
+                            .cloned()
+                        {
+                            self.palette_sources.usage.record(row.as_str());
+                            self.queue_palette_agent_activation(target, action);
+                        } else {
+                            log::warn!("palette: no target for an activated agent row");
+                        }
+                        continue;
+                    }
+                    match answer.and_then(|answer| answer.targets.get(&row)).cloned() {
+                        Some(PaletteTarget::Command(id)) if id.action().id == action => {
+                            self.palette_sources.usage.record(row.as_str());
+                            activation = Some(PaletteTarget::Command(id));
+                        }
+                        Some(PaletteTarget::File(path)) if OPEN_FILE.id == action => {
+                            self.palette_sources.usage.record(row.as_str());
+                            activation = Some(PaletteTarget::File(path));
+                        }
+                        Some(PaletteTarget::File(_)) if RESET_RANKING.id == action => {
+                            self.palette_sources.usage.reset(row.as_str());
                         }
                         Some(_) => log::warn!("palette: row has no action '{action}'"),
                         None => log::warn!("palette: no target for an activated row"),
@@ -1610,6 +1643,7 @@ impl PlexiApp {
                     sources.root = None;
                     sources.asked = None;
                     sources.texture = None;
+                    self.palette_agents = Default::default();
                 }
             }
         }
@@ -1778,6 +1812,7 @@ impl PlexiApp {
                 generation,
                 pips: std::collections::HashMap::new(),
                 targets,
+                agent_targets: Default::default(),
             });
             self.apply_palette_command(PickerCommand::Rows {
                 generation,
@@ -1794,6 +1829,7 @@ impl PlexiApp {
         self.drain_palette_opens();
         self.palette_sources.usage.poll();
         self.drain_palette_previews();
+        self.service_palette_agent_activation();
         let Some((source, query, generation)) = self
             .host
             .picker(PickerId::Palette)
@@ -1826,12 +1862,24 @@ impl PlexiApp {
                     generation,
                     pips,
                     targets: command_targets(targets),
+                    agent_targets: Default::default(),
                 });
                 rows
             }
             FILES_SOURCE => {
                 self.answer_palette_files(generation, &query);
                 return;
+            }
+            AGENTS_SOURCE => {
+                self.refresh_palette_agents();
+                let (rows, agent_targets) = self.palette_agent_rows(&query);
+                self.palette_answer = Some(PaletteAnswer {
+                    generation,
+                    pips: Default::default(),
+                    targets: Default::default(),
+                    agent_targets,
+                });
+                rows
             }
             other => {
                 log::warn!("palette: no source '{other}'");
@@ -1873,6 +1921,8 @@ impl PlexiApp {
                 score: None,
                 pinned: false,
                 unavailable: None,
+                attention: None,
+                inline_preview: None,
                 actions: vec![CommandRowId::View(id.clone()).action()],
                 usage: None,
                 modified: None,
@@ -1884,6 +1934,7 @@ impl PlexiApp {
                 generation,
                 pips: std::collections::HashMap::new(),
                 targets: command_targets(targets),
+                agent_targets: Default::default(),
             });
         }
         self.apply_palette_command(PickerCommand::Rows {
@@ -2107,6 +2158,14 @@ impl PlexiApp {
                 return true;
             }
         }
+        let command = picker_key(event, self.palette_input.composing);
+        // Zoom In is a global binding. Cmd+Enter belongs to the picker
+        // while this focus owner is active.
+        if command == Some(PickerCommand::ShowActions) {
+            self.claimed_host_key_releases.insert(egui::Key::Enter);
+            self.apply_palette_command(PickerCommand::ShowActions);
+            return true;
+        }
         if let Some(actions) = self.palette_host_actions(event) {
             for action in actions {
                 log::debug!("palette: input {index} -> host {action:?}");
@@ -2123,7 +2182,7 @@ impl PlexiApp {
             }
             return true;
         }
-        match picker_key(event, self.palette_input.composing) {
+        match command {
             Some(command) => {
                 log::debug!("palette: input {index} -> {command:?}");
                 self.apply_palette_command(command);
@@ -2316,7 +2375,7 @@ impl PlexiApp {
         let query = self
             .host
             .picker(PickerId::Palette)
-            .map(|picker| picker.query().to_owned());
+            .map(|picker| picker.field_text().to_owned());
         if !self.palette_input.composing && query.as_deref() != Some(&self.palette_input.draft) {
             let draft = self.palette_input.draft.clone();
             log::debug!("palette: field committed {} char(s)", draft.chars().count());
@@ -2331,7 +2390,14 @@ impl PlexiApp {
             .map(|(index, event)| (index, Step::Input(event)))
             .collect();
         if let Some(at) = activation_at {
-            if let Some(hit) = rows.clicked {
+            if let Some((hit, opening, action)) = rows.action {
+                steps.push((
+                    at,
+                    Step::Picker(PickerCommand::ClickAction(hit, opening, action)),
+                ));
+            } else if let Some(stop) = rows.stop {
+                steps.push((at, Step::Picker(PickerCommand::SetStop(stop))));
+            } else if let Some(hit) = rows.clicked {
                 steps.push((at, Step::Picker(PickerCommand::Click(hit))));
             } else if dismissed {
                 steps.push((at, Step::Picker(PickerCommand::Close)));
@@ -2511,13 +2577,18 @@ impl PlexiApp {
         // 0.8: the palette is a launcher, not a workspace — filling nearly
         // the whole screen height read as massive.
         let max_list_h = ((ctx.content_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
-        let enter_label = picker
-            .selected()
-            .and_then(|key| picker.rows().iter().find(|row| row.key == *key))
-            .and_then(|row| row.actions.first())
-            .map_or("open", |action| action.label);
+        let showing_actions = picker.showing_actions();
+        let enter_label = if showing_actions {
+            picker.selected_action()
+        } else {
+            picker.selected_row().and_then(|row| row.actions.first())
+        }
+        .map_or("open", |action| action.label);
+        let has_actions = picker
+            .selected_row()
+            .is_some_and(|row| row.unavailable.is_none() && !row.actions.is_empty());
         let stops = picker.stops();
-        let next_stop = (stops.len() > 1).then(|| {
+        let next_stop = (!showing_actions && stops.len() > 1).then(|| {
             let active = stops
                 .iter()
                 .position(|stop| stop.id == picker.active_stop().id)
@@ -2556,6 +2627,8 @@ impl PlexiApp {
             .own_scroll()
             .width(width)
             .show(ctx, &colors, |ui| {
+                let stop = crate::ui::picker::stops(ui, picker, &colors);
+                ui.add_space(style::SPACE_XS);
                 crate::ui::picker::field(
                     ui,
                     picker,
@@ -2597,6 +2670,7 @@ impl PlexiApp {
                 } else {
                     rows = crate::ui::picker::results(ui, picker, max_list_h, &pips, &colors);
                 }
+                rows.stop = stop;
                 ui.add_space(style::SPACE_SM);
                 let mut hints = vec![
                     HintGroup::alternatives(&[&["\u{2318}", "j"], &["\u{2318}", "k"]], "navigate"),
@@ -2605,7 +2679,13 @@ impl PlexiApp {
                 if let Some(next) = next_stop.as_deref() {
                     hints.push(HintGroup::new(&["tab"], next));
                 }
-                hints.push(HintGroup::new(&["esc"], "dismiss"));
+                if !showing_actions && has_actions {
+                    hints.push(HintGroup::new(&["cmd", "enter"], "actions"));
+                }
+                hints.push(HintGroup::new(
+                    &["esc"],
+                    if showing_actions { "back" } else { "dismiss" },
+                ));
                 HintBar::new(&hints).show(ui, &colors);
                 #[cfg(test)]
                 {
@@ -5050,6 +5130,80 @@ mod tests {
             answer.targets.get(&CommandRowId::Note(note.clone()).key()),
             Some(&PaletteTarget::Command(CommandRowId::Note(note)))
         );
+    }
+
+    #[test]
+    fn reset_ranking_forgets_the_row() {
+        use crate::host::picker::{
+            files::file_key,
+            usage::{load_usage, usage_path, UsageBook, UsageWriter},
+        };
+        use std::time::{Duration, Instant, SystemTime};
+
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        let root = h.workspace_root().canonicalize().expect("workspace root");
+        let file = root.join("reset-me.txt");
+        let other = root.join("keep-me.txt");
+        std::fs::write(&file, "reset this ranking").expect("seed file");
+        std::fs::write(&other, "keep this ranking").expect("seed other file");
+        let key = file_key(&file).expect("file key");
+        let other_key = file_key(&other).expect("other key");
+        let path = usage_path();
+        let mut seeded = UsageBook::default();
+        seeded.record(key.as_str(), SystemTime::now());
+        seeded.record(other_key.as_str(), SystemTime::now());
+        let writer = UsageWriter::spawn(path.clone(), Duration::ZERO).expect("seed usage writer");
+        writer.submit(seeded.clone());
+        drop(writer);
+
+        h.app.open_command_palette("reset-me");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while h.app.palette_sources.usage.book().get(key.as_str()).is_none() {
+            assert!(Instant::now() < deadline, "usage did not load");
+            h.run_frames(1);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+        loop {
+            h.run_frames(1);
+            let picker = h.app.host.picker(PickerId::Palette).expect("palette");
+            if !picker.is_loading() && picker.selected() == Some(&key) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the Files row was never selected");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+        let picker = h.app.host.picker(PickerId::Palette).expect("palette");
+        assert_eq!(
+            picker
+                .visible_actions()
+                .iter()
+                .map(|action| action.label)
+                .collect::<Vec<_>>(),
+            ["open", "Reset ranking"]
+        );
+        h.press_key(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+        assert!(!h.app.command_palette_open());
+        let book = h.app.palette_sources.usage.book();
+        assert_eq!(book.get(key.as_str()), None);
+        assert_eq!(book.get(other_key.as_str()), seeded.get(other_key.as_str()));
+        assert!(h.app.palette_sources.queued_opens.is_empty());
+        assert!(h.app.palette_sources.preparing.is_empty());
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let saved = load_usage(&path).expect("read saved usage");
+            if saved.get(key.as_str()).is_none() {
+                assert_eq!(saved.get(other_key.as_str()), seeded.get(other_key.as_str()));
+                break;
+            }
+            assert!(Instant::now() < deadline, "reset never reached disk");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// Sources run in \`App::logic\`: an edit only starts a new generation,

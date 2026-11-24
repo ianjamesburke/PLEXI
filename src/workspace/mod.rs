@@ -135,6 +135,8 @@ pub struct SavedAgentSession {
     pub fleet_done_unseen: bool,
     #[serde(default)]
     pub fleet_since: u64,
+    #[serde(default)]
+    pub last_interaction_at: u64,
     pub harness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_name: Option<String>,
@@ -1863,6 +1865,7 @@ mod tests {
                 fleet_dismissed: false,
                 fleet_done_unseen: false,
                 fleet_since: 0,
+                last_interaction_at: 0,
                 harness: "claude".to_string(),
                 config_name: Some("implementer".to_string()),
                 permission_posture: None,

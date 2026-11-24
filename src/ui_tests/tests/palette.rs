@@ -335,23 +335,11 @@ fn keys_for_pane(keys: &[String], pane_id: u64) -> Vec<&String> {
         .collect()
 }
 
-/// Stint 1621: with default config (`agents.palette_agent_results` unset,
-/// so no agent rows), an agent pane is still an ordinary pane row,
-/// findable by its name in both the active-context unpack and the
-/// inactive-context search pierce.
+/// Agent panes are findable by name in the active and inactive contexts.
 #[test]
 fn palette_finds_agent_pane_by_name_with_default_config() {
     let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
     let (active_id, inactive_id, inactive_ctx) = seed_palette_agent_panes(&mut h);
-    assert_eq!(
-        h.with_app(|app| app
-            .config
-            .agents
-            .as_ref()
-            .and_then(|a| a.palette_agent_results)),
-        None,
-        "the harness runs default agents config"
-    );
 
     let keys = palette_result_keys(&mut h, "");
     assert_eq!(
@@ -393,18 +381,10 @@ fn palette_finds_agent_pane_by_name_with_default_config() {
     }
 }
 
-/// Stint 1391: agents and files have their own stops. Even with the
-/// retired `agents.palette_agent_results` set, an agent pane is listed
-/// once, as a pane row, and no row comes from another stop's source.
+/// Commands still finds pane destinations through its own source.
 #[test]
 fn commands_stop_never_lists_files_or_agents() {
     let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
-    h.with_app_mut(|app| {
-        app.config
-            .agents
-            .get_or_insert_with(Default::default)
-            .palette_agent_results = Some(true)
-    });
     let (active_id, inactive_id, _) = seed_palette_agent_panes(&mut h);
 
     for (query, pane_id) in [
@@ -1294,8 +1274,7 @@ fn palette_enter_after_focus_approval_runs_no_row() {
 }
 
 /// Stint 1391: Cmd+P opens on the Commands stop with today's rows and
-/// the first row selected; Tab and Shift+Tab keep the query (one stop
-/// today, so the stop stays put); Enter runs the selected row.
+/// the first row selected; Tab and Shift+Tab keep the query. Enter runs the selected row.
 #[test]
 fn palette_commands_stop() {
     let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
@@ -1491,4 +1470,89 @@ fn palette_files_stop_with_preview() {
     narrow
         .save_screenshot(&evidence_png!("_narrow"))
         .expect("render failed");
+}
+
+#[test]
+fn palette_agents_stop_with_preview() {
+    let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+    add_focused_pane(&mut h);
+    h.with_app_mut(|app| {
+        let id = app.host.alloc_pane_id();
+        let mut term = TerminalPane::fixture(
+            id,
+            app.ctx.clone(),
+            app.pty_event_tx.clone(),
+            egui_term::BackendSettings {
+                shell: "/bin/sh".into(),
+                ..Default::default()
+            },
+            14.0,
+        )
+        .unwrap();
+        term.agent_role = Some("release-reviewer".into());
+        term.agent_harness = Some("codex".into());
+        let win = &mut app.windows[app.active_window];
+        win.panes
+            .insert(id, Pane::Terminal(Box::new(term)))
+            .unwrap();
+        let agent_tile = win.tree.tiles.insert_pane(id);
+        let root = win.tree.root.expect("fixture pane is laid out");
+        win.tree.root = Some(
+            win.tree
+                .tiles
+                .insert_horizontal_tile(vec![root, agent_tile]),
+        );
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+                .unwrap();
+        monitor
+            .file_needs_you(crate::broker::gate::NeedsYouFile {
+                kind: crate::broker::gate::NeedsYouKind::Question,
+                actor: format!("pane:{id}"),
+                resource: format!("pane:{id}"),
+                summary: "Ship the release today?".into(),
+                expires_at: None,
+                run_tag: None,
+            })
+            .unwrap();
+    });
+    reopen_palette(&mut h);
+    for _ in 0..2 {
+        h.harness().key_press(egui::Key::Tab);
+        h.run_steps(2);
+    }
+    assert_eq!(palette_picker(&h).1, "agents");
+    assert!(h
+        .harness()
+        .query_all_by_label("release-reviewer")
+        .next()
+        .is_some());
+    h.harness()
+        .get_by_label("Waiting for you: Ship the release today?");
+
+    deliver(
+        &mut h,
+        vec![
+            egui::Event::Paste("reviewer".into()),
+            press(egui::Key::Enter, egui::Modifiers::COMMAND),
+        ],
+    );
+    h.run_steps(2);
+    h.harness().get_by_label("Close pane");
+    h.harness()
+        .get_by_label("Waiting for you: Ship the release today?");
+    type_palette_text(&mut h, "close");
+    h.run_steps(2);
+    assert!(h.harness().query_by_label("Focus").is_none());
+    h.harness().key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(palette_picker(&h).0, "reviewer");
+    h.harness()
+        .get_by_label("Waiting for you: Ship the release today?");
+    assert!(h
+        .harness()
+        .query_all_by_label("release-reviewer")
+        .next()
+        .is_some());
+    h.save_screenshot(&evidence_png!()).expect("render failed");
 }

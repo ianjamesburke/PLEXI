@@ -14,6 +14,24 @@ impl PlexiApp {
         Self::find_pane_in_tile(&win.tree, win.focused_pane?)
     }
 
+    pub(crate) fn record_agent_interaction(&mut self, pane_id: u64, kind: &str) {
+        let Some(terminal) = self
+            .windows
+            .iter_mut()
+            .find_map(|window| window.panes.get_mut(&pane_id)?.as_terminal_mut())
+        else {
+            return;
+        };
+        let now = crate::platform::clock::now_millis() as u64;
+        if terminal.last_interaction_at != now {
+            terminal.last_interaction_at = now;
+            if terminal.is_agent_pane() {
+                log::info!("agents: interaction pane={pane_id} kind={kind}");
+                self.mark_workspace_dirty();
+            }
+        }
+    }
+
     pub(crate) fn mark_agent_seen(&mut self, pane_id: u64) {
         let mut changed = false;
         for win in &mut self.windows {
@@ -137,11 +155,19 @@ impl PlexiApp {
     }
 
     pub(crate) fn agent_inputs(&self) -> Vec<AgentInput> {
-        let mut input = Vec::new();
         let needs_you =
             crate::broker::gate::PermissionMonitor::loaded(&crate::config::config_dir())
                 .map(|m| m.open_needs_you())
                 .unwrap_or_default();
+        self.agent_inputs_with_needs_you(&needs_you, true)
+    }
+
+    pub(crate) fn agent_inputs_with_needs_you(
+        &self,
+        needs_you: &[crate::broker::gate::NeedsYouRecord],
+        include_history_and_tails: bool,
+    ) -> Vec<AgentInput> {
+        let mut input = Vec::new();
         for win in &self.windows {
             let context_name = self
                 .router
@@ -161,10 +187,13 @@ impl PlexiApp {
                 let question = report
                     .and_then(|a| a.detail.clone())
                     .filter(|s| !s.is_empty());
+                let pane_actor = format!("pane:{pane_id}");
                 let human_record = needs_you.iter().find(|n| {
                     n.kind != crate::broker::gate::NeedsYouKind::AgentDone
-                        && (n.resource == format!("pane:{pane_id}")
-                            || n.actor == format!("pane:{pane_id}")
+                        && (n.details.as_ref().and_then(|d| d.pane_id) == Some(pane_id)
+                            || n.resource == pane_actor
+                            || n.actor == pane_actor
+                            || n.run_tag.as_deref() == Some(&pane_actor)
                             || n.run_tag
                                 .as_ref()
                                 .zip(t.agent_session_id.as_ref())
@@ -278,6 +307,9 @@ impl PlexiApp {
                     role,
                     harness,
                     pane_name: t.name.clone(),
+                    definition_id: t.agent_role.clone(),
+                    ask_id: human_record.map(|record| record.id.clone()),
+                    last_interaction_at: t.last_interaction_at,
                     parent_title,
                     context_name: context_name.clone(),
                     state: state.clone(),
@@ -289,7 +321,9 @@ impl PlexiApp {
                     done_unseen: t.fleet_done_unseen,
                     blocked_on,
                     failure_detail,
-                    tail: if matches!(state, AgentState::Failed | AgentState::ExitedUnreported) {
+                    tail: if !include_history_and_tails {
+                        None
+                    } else if matches!(state, AgentState::Failed | AgentState::ExitedUnreported) {
                         effective_detail.map(|reason| {
                             format!(
                                 "{}: {reason}",
@@ -311,6 +345,9 @@ impl PlexiApp {
                     events,
                 });
             }
+        }
+        if !include_history_and_tails {
+            return input;
         }
         let live_ids: std::collections::HashSet<_> = input.iter().map(|r| r.pane_id).collect();
         for record in self.fleet_history.borrow().iter().rev().take(50) {
@@ -335,6 +372,9 @@ impl PlexiApp {
                 role,
                 harness,
                 pane_name: record.pane_name.clone(),
+                definition_id: record.config_name.clone(),
+                ask_id: None,
+                last_interaction_at: 0,
                 parent_title: None,
                 context_name: record.context_name.clone(),
                 state: record.last_state.clone(),

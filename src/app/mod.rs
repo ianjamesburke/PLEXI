@@ -40,6 +40,7 @@ pub(crate) mod notification_image;
 mod notifications;
 pub mod package;
 pub mod packs;
+pub(crate) mod palette_agents;
 pub(crate) mod pane_status;
 pub(crate) mod pane_wait;
 pub mod permissions;
@@ -379,6 +380,8 @@ pub struct PlexiApp {
     pub(crate) palette_answer: Option<crate::overlays::command_palette::PaletteAnswer>,
     /// The palette's background sources: Files index, previews, usage.
     pub(crate) palette_sources: crate::overlays::command_palette::PaletteSources,
+    pub(crate) palette_agents: palette_agents::PaletteAgents,
+    pub(crate) palette_agent_activation: Option<palette_agents::AgentActivation>,
     /// The palette's input owner: its ordered field, last presented hit
     /// geometry and the input its session claimed.
     pub(crate) palette_input: crate::ui::picker::PickerInput,
@@ -1968,6 +1971,8 @@ impl PlexiApp {
                     palette_commands: Vec::new(),
                     palette_answer: None,
                     palette_sources: Default::default(),
+                    palette_agents: Default::default(),
+                    palette_agent_activation: None,
                     palette_input: Default::default(),
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
@@ -2267,6 +2272,8 @@ impl PlexiApp {
             palette_commands: Vec::new(),
             palette_answer: None,
             palette_sources: Default::default(),
+            palette_agents: Default::default(),
+            palette_agent_activation: None,
             palette_input: Default::default(),
             context_visit_history: Vec::new(),
             renaming_pane: None,
@@ -3225,6 +3232,8 @@ impl PlexiApp {
             palette_commands: Vec::new(),
             palette_answer: None,
             palette_sources: Default::default(),
+            palette_agents: Default::default(),
+            palette_agent_activation: None,
             palette_input: Default::default(),
             context_visit_history: Vec::new(),
             renaming_pane: None,
@@ -6458,6 +6467,7 @@ pub(crate) fn restore_workspace(
                                 pane.fleet_dismissed = session.fleet_dismissed;
                                 pane.fleet_done_unseen = session.fleet_done_unseen;
                                 pane.fleet_since = session.fleet_since;
+                                pane.last_interaction_at = session.last_interaction_at;
                                 pane.ephemeral = session.ephemeral;
                                 pane.parent_pane_id = session.parent_pane_id;
                                 pane.spawned_by = session.spawned_by.clone().or(pane.spawned_by);

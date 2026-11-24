@@ -2025,6 +2025,7 @@ impl PlexiApp {
             verdict.option_key
         );
         self.attention_queue.verdicts.push(verdict);
+        self.record_agent_interaction(overlay.pane_id, "answer");
         self.attention_queue.decision_overlay = None;
         self.sync_attention_queue_layer();
         self.sync_attention_queue();

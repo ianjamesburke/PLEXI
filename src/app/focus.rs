@@ -605,6 +605,9 @@ impl PlexiApp {
             }
             self.last_logged_focus = current_focus;
             self.focus_started_at = current_focus.map(|_| now);
+            if let Some(pane_id) = self.fleet_focused_pane() {
+                self.record_agent_interaction(pane_id, "focus");
+            }
             // Start a journal checkpoint for the new focus segment.
             if let Some((window_id, tile_id)) = current_focus {
                 self.write_focus_journal_checkpoint(window_id, tile_id, now);
@@ -1458,6 +1461,7 @@ impl PlexiApp {
             log::info!("pane focus: leaving pinned parent={parent} for pane={pane_id}");
         }
         self.mark_agent_seen(pane_id);
+        self.record_agent_interaction(pane_id, "focus");
         let old_focus = self.windows[self.active_window].focused_pane;
         let old_window_id = self.windows[self.active_window].window_id;
         // Clear any stale zoom on the destination window — a programmatic focus
