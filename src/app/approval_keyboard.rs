@@ -158,6 +158,31 @@ impl PlexiApp {
         }
     }
 
+    /// A fresh key press before the focused request armed (stint 1735): the
+    /// guard's own refusal is recorded so the press is answered, not
+    /// swallowed. Escape and chords are not decisions.
+    fn refuse_unarmed_press(&mut self, id: &str, owned: &PlexiInput, now: Instant) {
+        let pressed = owned.events().iter().any(|event| {
+            matches!(event,
+                egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
+                    if *key != egui::Key::Escape
+                        && !(modifiers.command || modifiers.ctrl || modifiers.alt)
+            )
+        });
+        if !pressed {
+            return;
+        }
+        if let Err(refusal) = self.approval_keyboard.witness(
+            id,
+            "early press",
+            false,
+            now,
+            self.synthetic_input_frame,
+        ) {
+            self.approval_keyboard.last_error = Some((id.to_string(), refusal.into()));
+        }
+    }
+
     pub(super) fn leave_approval(&mut self) {
         self.approval_keyboard.leave_focus();
         self.focus_stack.dismiss(FocusKind::ApprovalBanner);
@@ -248,6 +273,7 @@ impl PlexiApp {
             return KeyDisposition::Consumed;
         }
         if !self.approval_keyboard.armed(now) {
+            self.refuse_unarmed_press(&id, &owned, now);
             return KeyDisposition::Consumed;
         }
         // Exact modifiers and fresh presses only: held keys cannot become consent.
@@ -350,6 +376,7 @@ impl PlexiApp {
     ) {
         use crate::broker::gate::NeedsYouKind as K;
         if !self.approval_keyboard.armed(now) {
+            self.refuse_unarmed_press(&record.id, owned, now);
             return;
         }
         let Some(key) = owned.events().iter().find_map(|event| match event {
@@ -512,6 +539,18 @@ mod tests {
             now + ARM_DELAY - Duration::from_millis(1),
         );
         assert_eq!(monitor.list_pending().len(), 2);
+        // Stint 1735: the early press is refused by the guard, not swallowed.
+        assert_eq!(
+            h.app
+                .approval_keyboard
+                .last_error
+                .as_ref()
+                .map(|(id, error)| (id.as_str(), error.to_string())),
+            Some((
+                first.as_str(),
+                "Wait a moment, then press again.".to_string()
+            ))
+        );
         h.app.approval_key_at(
             &mut input(egui::Key::Escape, egui::Modifiers::NONE),
             now + ARM_DELAY,
