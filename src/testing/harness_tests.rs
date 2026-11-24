@@ -1077,7 +1077,10 @@ default = true
     // The exact envelope check `plexi pane state` runs must read this failed
     // guest's response as a SUCCESS — guest failure is payload, not transport.
     assert!(
-        crate::cli::pane::pane_state_envelope_error(&response).is_none(),
+        matches!(
+            crate::cli::reply::HostReply::decode(Ok(response.to_string())),
+            crate::cli::reply::HostReply::Payload(_)
+        ),
         "failed-guest pane state must not trip the CLI error envelope: response={response}"
     );
     assert!(

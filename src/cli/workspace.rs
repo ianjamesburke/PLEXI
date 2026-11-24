@@ -1,5 +1,6 @@
 use super::open::read_secret_from_stdin;
 use super::print_tip;
+use super::reply::OutputMode;
 use std::io::{self, Write};
 
 pub fn workspace_init() -> i32 {
@@ -63,7 +64,7 @@ pub fn workspace_init() -> i32 {
     }
 }
 
-pub fn workspace_clean_cli(dry_run: bool) -> i32 {
+pub fn workspace_clean_cli(dry_run: bool, mode: OutputMode) -> i32 {
     log::info!("workspace_clean:cli: dry_run={dry_run}");
     let content = match super::request(
         serde_json::json!({
@@ -72,6 +73,7 @@ pub fn workspace_clean_cli(dry_run: bool) -> i32 {
         }),
         "workspace-clean-response",
         "workspace clean",
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
@@ -83,10 +85,6 @@ pub fn workspace_clean_cli(dry_run: bool) -> i32 {
             return 1;
         }
     };
-    if let Some(err) = value.get("error").and_then(|v| v.as_str()) {
-        eprintln!("error: {err}");
-        return 1;
-    }
     let paths = value
         .get("paths")
         .and_then(|v| v.as_array())
@@ -145,7 +143,18 @@ fn host_caller_context() -> Option<Option<std::path::PathBuf>> {
                 std::time::Duration::from_secs(3),
             )
             .ok()?;
-            if reply.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            match super::reply::HostReply::decode(Ok(reply.to_string())) {
+                super::reply::HostReply::Payload(_) => {}
+                super::reply::HostReply::Refused(refusal) => {
+                    log::info!(
+                        "secret scope: host refused caller context: {}",
+                        refusal.coded_reason()
+                    );
+                    return None;
+                }
+                super::reply::HostReply::Transport(_) => return None,
+            }
+            if !super::reply::acknowledged(&reply) {
                 return None;
             }
             Some(
@@ -518,15 +527,17 @@ pub(crate) fn reconcile_secrets_before_read(command: &str) {
 pub fn workspace_secret_list(
     global: bool,
     context: Option<&super::ContextTarget>,
-    json: bool,
+    mode: OutputMode,
 ) -> i32 {
-    log::info!("secret_list:cli: global={global} json={json}");
+    log::info!("secret_list:cli: global={global} json={}", mode.is_json());
     if let Some(context) = context {
-        return explicit_context_secret_list(context, json);
+        return explicit_context_secret_list(context, mode);
     }
     let result = std::env::current_dir()
         .map_err(|error| format!("current directory: {error}"))
-        .and_then(|cwd| write_secret_list(&cwd, global, json, &mut std::io::stdout().lock()));
+        .and_then(|cwd| {
+            write_secret_list(&cwd, global, mode.is_json(), &mut std::io::stdout().lock())
+        });
     match result {
         Ok(()) => 0,
         Err(error) => {
@@ -537,11 +548,12 @@ pub fn workspace_secret_list(
     }
 }
 
-fn explicit_context_secret_list(context: &super::ContextTarget, json: bool) -> i32 {
+fn explicit_context_secret_list(context: &super::ContextTarget, mode: OutputMode) -> i32 {
     let reply = match super::request(
         serde_json::json!({"type": "pane_secret_list", "context": context.as_str()}),
         "secret-list-context",
         "context secret inventory",
+        mode,
     ) {
         Ok(reply) => reply,
         Err(code) => return code,
@@ -549,11 +561,8 @@ fn explicit_context_secret_list(context: &super::ContextTarget, json: bool) -> i
     let result = serde_json::from_str::<serde_json::Value>(&reply)
         .map_err(|e| e.to_string())
         .and_then(|body| {
-            if let Some(error) = body.get("error").and_then(|v| v.as_str()) {
-                return Err(error.to_string());
-            }
             let inventory = serde_json::from_value(body).map_err(|e| e.to_string())?;
-            write_secret_inventory(&inventory, json, &mut std::io::stdout().lock())
+            write_secret_inventory(&inventory, mode.is_json(), &mut std::io::stdout().lock())
         });
     match result {
         Ok(()) => 0,
@@ -684,13 +693,13 @@ fn pane_secret_get(friendly: &str, global: bool) -> i32 {
         "global": global,
         "workspace_root": workspace_root,
     });
-    let reply = match super::request_with(
+    let reply = match super::request_reply(
         payload,
         "secret-get-response",
         "secret get",
         std::time::Duration::from_secs(120),
     ) {
-        Ok(content) => content,
+        Ok(reply) => reply,
         Err(code) => {
             log::info!("secret_get:cli: host gate unreachable from a pane; refusing");
             eprintln!(
@@ -699,6 +708,10 @@ fn pane_secret_get(friendly: &str, global: bool) -> i32 {
             println!("permission_denied");
             return code.max(1);
         }
+    };
+    let reply = match reply.payload_or_report("secret get", OutputMode::Text) {
+        Ok(reply) => reply,
+        Err(code) => return code,
     };
     let reply: serde_json::Value = match serde_json::from_str(&reply) {
         Ok(value) => value,
@@ -734,18 +747,8 @@ fn pane_secret_get(friendly: &str, global: bool) -> i32 {
             eprintln!("error: {}", secret_not_set(friendly));
             1
         }
-        Some("denied") => {
-            println!("permission_denied");
-            1
-        }
         _ => {
-            eprintln!(
-                "error: {}",
-                reply
-                    .get("error")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("secret get failed")
-            );
+            eprintln!("error: unrecognized secret get response status");
             1
         }
     }

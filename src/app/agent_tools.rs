@@ -447,7 +447,7 @@ mod tests {
         else {
             panic!("expected agent message");
         };
-        let pane_id = pane_id.resolve().unwrap();
+        let pane_id = pane_id.resolve(crate::cli::OutputMode::Text).unwrap();
         std::process::exit(crate::cli::agent::agent_tool_cli(json!({
             "type":"agent_message", "pane_id":pane_id, "text":text, "wait":wait,
         })));

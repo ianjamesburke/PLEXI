@@ -507,7 +507,7 @@ impl ContextTarget {
     /// 1. Numeric ID -> returns immediately without a socket round-trip.
     /// 2. Queries the host's context list (`list_contexts`) over the command socket,
     ///    then applies exact name match -> unique prefix match -> ambiguity/not-found error.
-    pub fn resolve(&self) -> Result<u64, i32> {
+    pub fn resolve(&self, mode: OutputMode) -> Result<u64, i32> {
         let q = self.as_str().trim();
         if let Some(id) = self.numeric_id() {
             log::info!("cli:target: context target {q:?} resolved directly as numeric id={id}");
@@ -517,8 +517,8 @@ impl ContextTarget {
             serde_json::json!({ "type": "list_contexts" }),
             "list-contexts-target-resolve",
             "context target lookup",
+            mode,
         )?;
-        check_reply_error(&content)?;
         let entries: Vec<serde_json::Value> = serde_json::from_str(&content).map_err(|e| {
             log::warn!("cli:target: failed to parse list_contexts response: {e}");
             eprintln!("error: failed to parse context list from host: {e}");
@@ -551,7 +551,7 @@ impl PaneTarget {
     /// 1. Numeric ID -> returns immediately without a socket round-trip.
     /// 2. Queries the host's pane list (`list_panes`) over the command socket,
     ///    then applies exact name match -> unique prefix match -> ambiguity/not-found error.
-    pub fn resolve(&self) -> Result<u64, i32> {
+    pub fn resolve(&self, mode: OutputMode) -> Result<u64, i32> {
         let q = self.as_str().trim();
         if let Some(id) = self.numeric_id() {
             log::info!("cli:target: pane target {q:?} resolved directly as numeric id={id}");
@@ -561,8 +561,8 @@ impl PaneTarget {
             serde_json::json!({ "type": "list_panes" }),
             "list-panes-target-resolve",
             "pane target lookup",
+            mode,
         )?;
-        check_reply_error(&content)?;
         let entries: Vec<serde_json::Value> = serde_json::from_str(&content).map_err(|e| {
             log::warn!("cli:target: failed to parse list_panes response: {e}");
             eprintln!("error: failed to parse pane list from host: {e}");
@@ -607,16 +607,22 @@ impl PaneTarget {
     }
 }
 
-pub fn resolve_opt_context_target(target: Option<&ContextTarget>) -> Result<Option<u64>, i32> {
+pub fn resolve_opt_context_target(
+    target: Option<&ContextTarget>,
+    mode: OutputMode,
+) -> Result<Option<u64>, i32> {
     match target {
-        Some(t) => t.resolve().map(Some),
+        Some(t) => t.resolve(mode).map(Some),
         None => Ok(None),
     }
 }
 
-pub fn resolve_opt_pane_target(target: Option<&PaneTarget>) -> Result<Option<u64>, i32> {
+pub fn resolve_opt_pane_target(
+    target: Option<&PaneTarget>,
+    mode: OutputMode,
+) -> Result<Option<u64>, i32> {
     match target {
-        Some(t) => t.resolve().map(Some),
+        Some(t) => t.resolve(mode).map(Some),
         None => Ok(None),
     }
 }
@@ -627,7 +633,8 @@ pub mod help;
 pub mod introspect;
 mod pane_caller;
 mod queued_spawn;
-mod reply;
+pub(crate) mod reply;
+pub(crate) use reply::OutputMode;
 pub mod registry;
 pub mod setup;
 pub mod skill_draft;
@@ -694,15 +701,8 @@ pub(super) fn print_tip(msg: &str) {
     }
 }
 
-/// Prints JSON to stdout, pretty-printed by serde. Content that is not JSON
-/// at all is passed through verbatim — the host's reply is never withheld
-/// from the caller.
+/// Pretty-print a JSON payload, or pass plain text through verbatim.
 pub(super) fn print_json_output(json_str: &str) -> i32 {
-    let json_str = match reply::HostReply::decode(json_str).payload_or_report() {
-        Ok(payload) => payload,
-        Err(code) => return code,
-    };
-    let json_str = json_str.as_str();
     match serde_json::from_str::<serde_json::Value>(json_str) {
         Ok(v) => match serde_json::to_string_pretty(&v) {
             Ok(pretty) => {
@@ -718,37 +718,6 @@ pub(super) fn print_json_output(json_str: &str) -> i32 {
             print!("{json_str}");
             0
         }
-    }
-}
-
-#[cfg(test)]
-mod reply_error_tests {
-    use super::reply_error;
-
-    /// A host-reported failure must be detectable so the CLI can exit nonzero —
-    /// the poll succeeds here, because the transport worked.
-    #[test]
-    fn error_field_is_surfaced() {
-        assert_eq!(
-            reply_error(r#"{"error":"no parent context for id=Some(9)"}"#).as_deref(),
-            Some("no parent context for id=Some(9)")
-        );
-    }
-
-    #[test]
-    fn successful_response_has_no_error() {
-        assert_eq!(
-            reply_error(r#"{"context_id":76,"windows":[],"panes":[317,318]}"#),
-            None
-        );
-    }
-
-    /// Unparseable output is not an error here: the poll owns transport
-    /// failures, and swallowing an unexpected-but-valid shape would hide the
-    /// response from the caller.
-    #[test]
-    fn unparseable_output_is_not_treated_as_an_error() {
-        assert_eq!(reply_error("not json at all"), None);
     }
 }
 
@@ -1167,30 +1136,11 @@ pub(super) fn command_socket_available() -> bool {
     command_socket_available_from(has_override, std::env::var_os("PLEXI_SOCKET").is_some())
 }
 
-/// Poll an RPC response file with the standard CLI error reporting: timeout
-/// and read failures print `error: ...` to stderr and yield exit code 1.
-/// `label` names the command in the timeout message.
-pub(super) fn poll_rpc(response_file: &str, label: &str) -> Result<String, i32> {
-    poll_rpc_with(response_file, label, crate::rpc::DEFAULT_TIMEOUT)
-}
-
-pub(super) fn poll_rpc_with(
+pub(super) fn poll_reply(
     response_file: &str,
-    label: &str,
-    timeout: std::time::Duration,
-) -> Result<String, i32> {
-    match crate::rpc::poll_string(response_file, Some(timeout)) {
-        Ok(content) => Ok(content),
-        Err(crate::rpc::PollError::TimedOut) => {
-            eprintln!("error: timed out waiting for {label} response");
-            Err(1)
-        }
-        Err(e) => {
-            log::warn!("{label}:cli: {e}");
-            eprintln!("error: {e}");
-            Err(1)
-        }
-    }
+    timeout: Option<std::time::Duration>,
+) -> reply::HostReply {
+    reply::HostReply::decode(crate::rpc::poll_string(response_file, timeout))
 }
 
 /// Mint a response file for `prefix`, inject it into `payload`, and send the
@@ -1235,8 +1185,9 @@ pub(super) fn request(
     payload: serde_json::Value,
     prefix: &str,
     label: &str,
+    mode: OutputMode,
 ) -> Result<String, i32> {
-    request_with(payload, prefix, label, crate::rpc::DEFAULT_TIMEOUT)
+    request_with(payload, prefix, label, crate::rpc::DEFAULT_TIMEOUT, mode)
 }
 
 /// [`request`] with an explicit poll window, for verbs the host answers on its
@@ -1246,35 +1197,20 @@ pub(super) fn request_with(
     prefix: &str,
     label: &str,
     timeout: std::time::Duration,
+    mode: OutputMode,
 ) -> Result<String, i32> {
-    // macOS cannot recover LOCAL_PEERPID after the client disconnects, even
-    // while this CLI process is alive. Hold the connection through the reply.
+    request_reply(payload, prefix, label, timeout)?.payload_or_report(label, mode)
+}
+
+pub(super) fn request_reply(
+    payload: serde_json::Value,
+    prefix: &str,
+    label: &str,
+    timeout: std::time::Duration,
+) -> Result<reply::HostReply, i32> {
+    // Keep the connection alive through the reply for peer attribution.
     let (response_file, _stream) = send_request_connected(payload, prefix, label)?;
-    poll_rpc_with(&response_file, label, timeout)
-}
-
-/// The host's top-level `error` string, if the reply is JSON and carries one.
-///
-/// A reply that does not parse is not an error here: transport failures are
-/// already owned by [`poll_rpc`], and swallowing a valid-but-unexpected shape
-/// would hide the response from the caller.
-pub(super) fn reply_error(content: &str) -> Option<String> {
-    match reply::HostReply::decode(content) {
-        reply::HostReply::Refused { reason, .. } => Some(reason),
-        reply::HostReply::Payload(_) => None,
-    }
-}
-
-/// Surface a host-reported `error` as `error: <msg>` on stderr with exit code 1.
-/// The shared postlude for commands whose success payload carries no `error`.
-pub(super) fn check_reply_error(content: &str) -> Result<(), i32> {
-    match reply_error(content) {
-        Some(msg) => {
-            eprintln!("error: {msg}");
-            Err(1)
-        }
-        None => Ok(()),
-    }
+    Ok(poll_reply(&response_file, Some(timeout)))
 }
 
 /// Spawn-queue writer gate (stint 0532): outside a Plexi pane, a spawn
@@ -2107,10 +2043,12 @@ pub(super) fn queue_spawn_and_wait(
 /// queue-file write as success: the host may reject the plugin after it drains
 /// the file (for example when the CPython bundle is unavailable).
 pub(super) fn queued_spawn_pane_id(content: &str) -> Result<u64, String> {
-    if let Some(error) = reply_error(content) {
-        return Err(error);
-    }
-    serde_json::from_str::<serde_json::Value>(content)
+    let content = match reply::HostReply::decode(Ok(content.to_owned())) {
+        reply::HostReply::Payload(content) => content,
+        reply::HostReply::Refused(refusal) => return Err(refusal.coded_reason()),
+        reply::HostReply::Transport(error) => return Err(error.to_string()),
+    };
+    serde_json::from_str::<serde_json::Value>(&content)
         .ok()
         .and_then(|reply| reply.get("pane_id").and_then(serde_json::Value::as_u64))
         .ok_or_else(|| format!("spawn response carried no pane id: {content}"))
@@ -2157,6 +2095,7 @@ pub use completions::{complete_open_cli, complete_run_cli, completions_cli};
 pub use config_cli::{
     config_check, config_edit, config_get, config_list, config_reset, config_set,
 };
+pub(crate) use context_cli::ContextSpawnPlacement;
 pub use context_cli::{
     context_current_cli, context_describe_cli, context_list_cli, context_new_cli, context_open_cli,
     context_push_cli, context_set_root_cli, context_sub_cli, context_zoom_cli,
@@ -2182,6 +2121,7 @@ pub use open::{
     mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli, parse_prefix,
     AgentBootRequest, OpenPrefix, PaneNewCliArgs,
 };
+pub(crate) use pane::PaneDragEndpoint;
 pub use pane::{
     pane_capture_cli, pane_click_cli, pane_click_node_cli, pane_close_cli, pane_drag_cli,
     pane_drop_cli, pane_focus_cli, pane_heartbeat_cli, pane_info_cli, pane_key_cli,
@@ -2428,6 +2368,7 @@ mod spawn_gate_tests {
 pub fn host_action_cli(
     mut payload: serde_json::Value,
     identity: Option<(&str, Option<u64>, &str)>,
+    mode: OutputMode,
 ) -> i32 {
     if let Some((field, explicit, env)) = identity {
         let id = explicit.or_else(|| std::env::var(env).ok()?.parse().ok());
@@ -2437,12 +2378,8 @@ pub fn host_action_cli(
         };
         payload[field] = id.into();
     }
-    match request(payload, "host-action", "host action") {
+    match request(payload, "host-action", "host action", mode) {
         Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
-            Ok(reply) if reply.get("error").is_some() => {
-                eprintln!("error: {}", reply["error"].as_str().unwrap_or(&content));
-                1
-            }
             Ok(_) => {
                 println!("{content}");
                 0

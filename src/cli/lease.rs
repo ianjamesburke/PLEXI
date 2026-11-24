@@ -1,5 +1,6 @@
 //! Host-arbitrated, process-owned resource admission.
 use super::args::LeaseCmd;
+use super::reply::OutputMode;
 use serde_json::json;
 
 pub(crate) fn dispatch(cmd: LeaseCmd) -> i32 {
@@ -19,12 +20,13 @@ pub(crate) fn dispatch(cmd: LeaseCmd) -> i32 {
         "max": max, "holder_pid": holder_pid}),
         "lease",
         "lease",
+        OutputMode::Json,
     ) {
         Ok(content) => {
             println!("{content}");
             match serde_json::from_str::<serde_json::Value>(&content) {
                 Ok(reply) if reply["status"] == "paused" => 2,
-                Ok(reply) if reply.get("error").is_none() => 0,
+                Ok(_) => 0,
                 _ => 1,
             }
         }

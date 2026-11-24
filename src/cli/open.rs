@@ -1,4 +1,5 @@
 use super::pane::open_github_ephemeral;
+use super::reply::{HostReply, OutputMode};
 use super::send_to_socket;
 use crate::app::launch_spec::PaneLaunchSpec;
 use std::io;
@@ -12,13 +13,12 @@ pub(super) fn wait_for_response(response_file: &str) -> i32 {
 }
 
 fn wait_for_response_with_id(response_file: &str) -> (i32, Option<u64>) {
-    let content = match super::poll_rpc(response_file, "pane") {
+    let content = match super::poll_reply(response_file, Some(crate::rpc::DEFAULT_TIMEOUT))
+        .payload_or_report("pane", OutputMode::Text)
+    {
         Ok(content) => content,
         Err(code) => return (code, None),
     };
-    if let Err(code) = super::check_reply_error(&content) {
-        return (code, None);
-    }
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
         if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
             println!("{pid}");
@@ -80,8 +80,32 @@ pub struct AgentBootOutcome {
 ///
 /// Exit codes: 0 booted, 2 boot timeout (the pane exists and the caller should
 /// close it), 1 anything else.
-pub fn agent_boot_outcome(response: &str) -> AgentBootOutcome {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(response) else {
+fn agent_boot_outcome(reply: HostReply) -> AgentBootOutcome {
+    let response = match reply {
+        HostReply::Payload(response) => response,
+        HostReply::Refused(refusal) => {
+            let mut stderr = vec![refusal.stderr_line()];
+            if let Some(pane_id) = refusal.fields["pane_id"]
+                .as_u64()
+                .filter(|_| refusal.timed_out)
+            {
+                stderr.push(format!("pane id: {pane_id}"));
+            }
+            return AgentBootOutcome {
+                stdout: None,
+                stderr,
+                exit_code: if refusal.timed_out { 2 } else { 1 },
+            };
+        }
+        HostReply::Transport(error) => {
+            return AgentBootOutcome {
+                stdout: None,
+                stderr: vec![format!("error: {error}")],
+                exit_code: 1,
+            };
+        }
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&response) else {
         return AgentBootOutcome {
             stdout: None,
             stderr: vec![format!("error: unreadable spawn response: {response}")],
@@ -89,23 +113,6 @@ pub fn agent_boot_outcome(response: &str) -> AgentBootOutcome {
         };
     };
     let pane_id = value.get("pane_id").and_then(serde_json::Value::as_u64);
-    if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
-        let timed_out = value
-            .get("timeout")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        let mut stderr = vec![format!("error: {error}")];
-        // The pane outlives a boot timeout, so the caller needs its id to
-        // close it. stdout stays empty either way.
-        if let Some(pane_id) = pane_id.filter(|_| timed_out) {
-            stderr.push(format!("pane id: {pane_id}"));
-        }
-        return AgentBootOutcome {
-            stdout: None,
-            stderr,
-            exit_code: if timed_out { 2 } else { 1 },
-        };
-    }
     match pane_id {
         Some(pane_id) => AgentBootOutcome {
             stdout: Some(pane_id.to_string()),
@@ -124,11 +131,7 @@ pub fn agent_boot_outcome(response: &str) -> AgentBootOutcome {
 
 /// Wait out an agent boot and report it under the `--agent` stdout contract.
 fn wait_for_agent_boot(response_file: &str, agent: &AgentBootRequest) -> i32 {
-    let content = match super::poll_rpc_with(response_file, "pane", agent.poll_timeout()) {
-        Ok(content) => content,
-        Err(code) => return code,
-    };
-    let outcome = agent_boot_outcome(&content);
+    let outcome = agent_boot_outcome(super::poll_reply(response_file, Some(agent.poll_timeout())));
     for line in &outcome.stderr {
         eprintln!("{line}");
     }
@@ -156,6 +159,7 @@ pub struct PaneNewCliArgs<'a> {
     pub worktree: Option<&'a str>,
     pub result_schema: Option<&'a str>,
     pub on_load: &'a [String],
+    pub mode: OutputMode,
 }
 
 /// Unified pane spawning. All CLI spawn paths funnel through here.
@@ -179,6 +183,7 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
         worktree,
         result_schema,
         on_load,
+        mode,
     } = args;
     let parsed_result_schema = match result_schema {
         Some(spec) => {
@@ -290,7 +295,7 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
             None => wait_for_response_with_id(&response_file),
         };
         if code == 0 && !on_load.is_empty() {
-            return super::run::run_on_load_steps(on_load, created_pane_id).exit_code;
+            return super::run::run_on_load_steps(on_load, created_pane_id, mode).exit_code;
         }
         return code;
     }
@@ -349,7 +354,7 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
             Ok(pane_id) => {
                 println!("{pane_id}");
                 if !on_load.is_empty() {
-                    return super::run::run_on_load_steps(on_load, Some(pane_id)).exit_code;
+                    return super::run::run_on_load_steps(on_load, Some(pane_id), mode).exit_code;
                 }
                 0
             }
@@ -855,16 +860,24 @@ mod tests {
 
 #[cfg(test)]
 mod agent_boot_tests {
-    use super::{agent_boot_outcome, pane_new_cli, AgentBootRequest, PaneNewCliArgs};
+    use super::{agent_boot_outcome, pane_new_cli, AgentBootRequest, HostReply, PaneNewCliArgs};
     use crate::cli::test_env::socket_env_guard;
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn empty_spawn_response_is_a_transport_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let reply = dir.path().join("empty-reply");
+        std::fs::write(&reply, []).unwrap();
+        assert_eq!(super::wait_for_response(reply.to_str().unwrap()), 1);
+    }
 
     /// A booted agent prints its pane id and nothing else. Everything a caller
     /// pipes into the next command depends on this line being alone.
     #[test]
     fn booted_agent_prints_only_the_pane_id() {
-        let outcome = agent_boot_outcome(r#"{"pane_id":42}"#);
+        let outcome = agent_boot_outcome(HostReply::decode(Ok(r#"{"pane_id":42}"#.to_owned())));
 
         assert_eq!(outcome.stdout.as_deref(), Some("42"));
         assert!(outcome.stderr.is_empty());
@@ -875,8 +888,9 @@ mod agent_boot_tests {
     /// caller — on stderr, where it cannot be mistaken for a success value.
     #[test]
     fn boot_timeout_exits_two_with_the_pane_id_on_stderr() {
-        let outcome =
-            agent_boot_outcome(r#"{"ok":false,"timeout":true,"pane_id":42,"error":"timed out"}"#);
+        let outcome = agent_boot_outcome(HostReply::decode(Ok(
+            r#"{"ok":false,"timeout":true,"pane_id":42,"error":"timed out"}"#.to_owned(),
+        )));
 
         assert_eq!(outcome.stdout, None, "stdout must stay empty on timeout");
         assert_eq!(outcome.stderr, vec!["error: timed out", "pane id: 42"]);
@@ -887,9 +901,9 @@ mod agent_boot_tests {
     /// so it takes the ordinary failure code.
     #[test]
     fn vanished_pane_exits_one_without_a_cleanup_id() {
-        let outcome = agent_boot_outcome(
-            r#"{"ok":false,"timeout":false,"pane_id":42,"error":"pane closed"}"#,
-        );
+        let outcome = agent_boot_outcome(HostReply::decode(Ok(
+            r#"{"ok":false,"timeout":false,"pane_id":42,"error":"pane closed"}"#.to_owned(),
+        )));
 
         assert_eq!(outcome.stdout, None);
         assert_eq!(outcome.stderr, vec!["error: pane closed"]);
@@ -898,7 +912,9 @@ mod agent_boot_tests {
 
     #[test]
     fn spawn_error_exits_one() {
-        let outcome = agent_boot_outcome(r#"{"error":"context 'x' does not exist"}"#);
+        let outcome = agent_boot_outcome(HostReply::decode(Ok(
+            r#"{"error":"context 'x' does not exist"}"#.to_owned(),
+        )));
 
         assert_eq!(outcome.stdout, None);
         assert_eq!(outcome.exit_code, 1);
@@ -907,7 +923,7 @@ mod agent_boot_tests {
     /// A reply the CLI cannot read must never be mistaken for a pane id.
     #[test]
     fn unreadable_reply_exits_one_with_empty_stdout() {
-        let outcome = agent_boot_outcome("not json at all");
+        let outcome = agent_boot_outcome(HostReply::decode(Ok("not json at all".to_owned())));
 
         assert_eq!(outcome.stdout, None);
         assert_eq!(outcome.exit_code, 1);

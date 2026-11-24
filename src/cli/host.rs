@@ -18,8 +18,11 @@
 //! adopt an inherited `PLEXI_CHANNEL`, which would let `host start/stop/status`
 //! silently target the wrong channel's profile when invoked from inside a pane.
 
+use super::reply::OutputMode;
 #[cfg(windows)]
 mod windows_launch;
+
+use super::reply::HostReply;
 
 #[cfg(windows)]
 use crate::platform::ipc;
@@ -518,9 +521,13 @@ fn query_ready_status(socket_path: &Path, profile_dir: &Path, deadline: Instant)
         return None;
     }
     let remaining = deadline.saturating_duration_since(Instant::now());
-    let content = match crate::rpc::poll_string(&response_file, Some(remaining)) {
-        Ok(content) => content,
-        Err(e) => {
+    let content = match super::poll_reply(&response_file, Some(remaining)) {
+        HostReply::Payload(content) => content,
+        HostReply::Refused(refusal) => {
+            log::debug!("host: readiness refused for {socket_path:?}: {}", refusal.coded_reason());
+            return None;
+        }
+        HostReply::Transport(e) => {
             log::debug!("host: readiness response failed for {socket_path:?}: {e}");
             return None;
         }
@@ -575,16 +582,18 @@ pub(crate) fn forward_host_launch(
         socket_path.display()
     );
     let remaining = deadline.saturating_duration_since(Instant::now());
-    let content = crate::rpc::poll_string(&response_file, Some(remaining))
-        .map_err(|e| format!("no answer from {}: {e}", socket_path.display()))?;
+    let content = match super::poll_reply(&response_file, Some(remaining)) {
+        HostReply::Payload(content) => content,
+        HostReply::Refused(refusal) => return Err(refusal.coded_reason()),
+        HostReply::Transport(error) => {
+            return Err(format!("no answer from {}: {error}", socket_path.display()));
+        }
+    };
     match serde_json::from_str::<serde_json::Value>(&content) {
-        Ok(reply) => match reply.get("error").and_then(|e| e.as_str()) {
-            Some(error) => Err(error.to_string()),
-            None if root.is_none() && reply.get("ok").and_then(|v| v.as_bool()) != Some(true) => {
-                Err("live host did not acknowledge show_host".to_string())
-            }
-            None => Ok(()),
-        },
+        Ok(reply) if root.is_none() && !super::reply::acknowledged(&reply) => {
+            Err("live host did not acknowledge show_host".to_string())
+        }
+        Ok(_) => Ok(()),
         Err(e) => Err(format!("unreadable answer: {e}")),
     }
 }
@@ -1479,32 +1488,28 @@ pub(crate) fn host_stop_in(profile: &Path, channel: Option<String>) -> StopOutco
 
     // The host answers on this connection just before it exits, with its
     // real outcome (stint 1430). A host from before that change closes the
-    // connection without a word when it exits; that is reported at once as
-    // "exit status unknown" once the process is gone. A host that cannot
-    // answer (`ok: false`) or never closes falls through to termination.
+    // connection without a word when it exits. An explicit refusal ends the
+    // request before the process fallback.
     let grace = match crate::rpc::request_on_stream(
         profile,
         serde_json::json!({ "type": "shutdown" }),
         "host-stop",
         HOST_STOP_REPLY_TIMEOUT,
     ) {
-        Ok(crate::rpc::StreamReply::Json(reply)) if is_exit_report(&reply) => {
-            log::info!("host_stop: host replied {reply}");
-            wait_for_shutdown(pid, &socket_path, Duration::from_secs(5));
-            return stop_outcome_from_reply(&reply);
-        }
-        // The host's admission entry refused this caller (stint 1285): the
-        // host is healthy and said no, so nothing here may kill it.
-        Ok(crate::rpc::StreamReply::Json(reply)) if is_policy_refusal(&reply) => {
-            log::info!("host_stop: host refused this caller: {reply}");
-            return StopOutcome::Failed(format!(
-                "the host refused to stop for this caller: {}",
-                reply["error"].as_str().unwrap_or("permission denied")
-            ));
-        }
-        Ok(crate::rpc::StreamReply::Json(reply)) => {
-            log::warn!("host_stop: host refused the shutdown request: {reply}");
-            Duration::ZERO
+        Ok(crate::rpc::StreamReply::Json(value)) => {
+            match HostReply::decode(Ok(value.to_string())) {
+                HostReply::Payload(_) if super::reply::acknowledged(&value) => {
+                    log::info!("host_stop: host replied {value}");
+                    wait_for_shutdown(pid, &socket_path, Duration::from_secs(5));
+                    return stop_outcome_from_reply(&value);
+                }
+                HostReply::Refused(refusal) => {
+                    return StopOutcome::Failed(format!(
+                        "the host refused to stop: {}", refusal.coded_reason()
+                    ));
+                }
+                _ => Duration::ZERO,
+            }
         }
         Ok(crate::rpc::StreamReply::Closed) => {
             log::info!("host_stop: host closed the connection without a reply");
@@ -1563,22 +1568,6 @@ fn wait_for_shutdown(pid: Option<u32>, socket_path: &Path, limit: Duration) -> b
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-}
-
-/// A refusal from the host's socket admission entry (`socket_policy`), as
-/// opposed to a host that could not read the request.
-fn is_policy_refusal(reply: &serde_json::Value) -> bool {
-    matches!(
-        reply["error_code"].as_str(),
-        Some("permission_denied" | "approval_required" | "not_on_socket")
-    )
-}
-
-/// An answer to the shutdown request that reports the host's exit. Anything
-/// else (`ok: false`: a parse error, a removed request) means the host is
-/// still running and must be handled as no reply.
-fn is_exit_report(reply: &serde_json::Value) -> bool {
-    reply.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
 }
 
 /// The outcome a host's exit reply describes (`stop_reply` in
@@ -1829,8 +1818,17 @@ fn running_build_info_in(profile: &Path) -> Option<serde_json::Value> {
         crate::rpc::DEFAULT_TIMEOUT,
     )
     .ok()?;
-    let content =
-        crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)).ok()?;
+    let content = match super::poll_reply(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)) {
+        HostReply::Payload(content) => content,
+        HostReply::Refused(refusal) => {
+            log::info!("host: build info refused: {}", refusal.coded_reason());
+            return None;
+        }
+        HostReply::Transport(error) => {
+            log::debug!("host: build info unavailable: {error}");
+            return None;
+        }
+    };
     serde_json::from_str(&content).ok()
 }
 
@@ -2023,27 +2021,16 @@ pub fn host_log_cli(source: &str, message: &str) -> i32 {
     }
     crate::rpc::register_client_stream(response_file.clone(), stream);
 
-    match crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)) {
-        Ok(reply) => match super::reply::HostReply::decode(&reply).payload_or_report() {
-            Ok(_) => 0,
-            Err(code) => code,
-        },
-        Err(crate::rpc::PollError::TimedOut) => {
-            eprintln!("error: timed out waiting for host log acknowledgement");
-            1
-        }
-        Err(e) => {
-            eprintln!("error: {e}");
-            1
-        }
-    }
+    super::poll_reply(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT))
+        .payload_or_report("host log", OutputMode::Text)
+        .map_or_else(|code| code, |_| 0)
 }
 
 /// `plexi host key <key>` — inject a synthetic key into the host-level input
 /// path. This deliberately targets the host rather than a pane, so a chord
 /// such as `cmd+1` exercises numbered context switching without writing bytes
 /// into a focused terminal's PTY.
-pub fn host_key_cli(key: &str) -> i32 {
+pub fn host_key_cli(key: &str, mode: OutputMode) -> i32 {
     log::info!(
         "host_key:cli: key={key:?} key_chars={}",
         key.chars().count()
@@ -2055,18 +2042,12 @@ pub fn host_key_cli(key: &str) -> i32 {
         }),
         "host-key-response",
         "host key",
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
     };
     match serde_json::from_str::<serde_json::Value>(&content) {
-        Ok(reply) if reply.get("error").is_some() => {
-            eprintln!(
-                "error: {}",
-                reply["error"].as_str().unwrap_or("host key failed")
-            );
-            1
-        }
         Ok(_) => 0,
         Err(error) => {
             eprintln!("error: malformed host key response: {error}");
@@ -2078,7 +2059,7 @@ pub fn host_key_cli(key: &str) -> i32 {
 /// `plexi host screenshot [--pane <id>] [--output <path>]` — capture the
 /// live host window (optionally cropped to one pane) through the real
 /// render pipeline. Prints the written PNG path on success.
-pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
+pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>, mode: OutputMode) -> i32 {
     let output_path = match output {
         Some(path) => path.to_string(),
         None => {
@@ -2103,18 +2084,12 @@ pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
         "screenshot-response",
         "screenshot",
         Duration::from_secs(10),
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
     };
     match serde_json::from_str::<serde_json::Value>(&content) {
-        Ok(v) if v.get("error").is_some() => {
-            eprintln!(
-                "error: {}",
-                v["error"].as_str().unwrap_or("screenshot failed")
-            );
-            1
-        }
         Ok(v) => {
             println!(
                 "{} ({}x{})",
@@ -2733,7 +2708,7 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         };
         assert_eq!(reply["ok"], false);
         assert!(
-            !is_exit_report(&reply),
+            !crate::cli::reply::acknowledged(&reply),
             "an ok:false reply is not an exit report"
         );
     }

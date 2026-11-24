@@ -1,3 +1,4 @@
+use super::reply::{HostReply, OutputMode};
 use super::{print_json_output, print_tip, send_to_socket};
 
 pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
@@ -55,55 +56,6 @@ pub fn current_pane_id(explicit: Option<u64>, command: &str) -> Result<u64, i32>
     }
 }
 
-fn wait_for_response_bytes(response_file: &str, label: &str) -> Result<Vec<u8>, i32> {
-    match crate::rpc::poll_bytes(response_file, Some(crate::rpc::DEFAULT_TIMEOUT)) {
-        Ok(content) => Ok(content),
-        Err(crate::rpc::PollError::TimedOut) => {
-            eprintln!("error: timed out waiting for {label} response");
-            Err(1)
-        }
-        Err(e) => {
-            log::warn!("{label}:cli: {e}");
-            eprintln!("error: {e}");
-            Err(1)
-        }
-    }
-}
-
-fn wait_for_slot_read_response(response_file: &str) -> Result<Vec<u8>, i32> {
-    match crate::rpc::poll_slot_reply(response_file, Some(crate::rpc::DEFAULT_TIMEOUT)) {
-        Ok(crate::rpc::SlotReply::Data(content)) => Ok(content),
-        Ok(crate::rpc::SlotReply::Err(content)) => {
-            if let Some(err) = response_error(&content) {
-                eprintln!("error: {err}");
-            } else {
-                eprintln!("error: invalid slot read error response");
-            }
-            Err(1)
-        }
-        Err(crate::rpc::PollError::TimedOut) => {
-            eprintln!("error: timed out waiting for pane slot read response");
-            Err(1)
-        }
-        Err(e) => {
-            log::warn!("pane_slot_read:cli: {e}");
-            eprintln!("error: {e}");
-            Err(1)
-        }
-    }
-}
-
-fn response_error(content: &[u8]) -> Option<String> {
-    let value = serde_json::from_slice::<serde_json::Value>(content).ok()?;
-    if value.get("ok").and_then(|v| v.as_bool()) != Some(false) {
-        return None;
-    }
-    value
-        .get("error")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-}
-
 /// Terse success ack for `pane slot write`, printed to stdout with other CLI payloads.
 fn slot_write_ack(name: &str, bytes: usize, append: bool) -> String {
     let verb = if append { "+<-" } else { "<-" };
@@ -117,6 +69,7 @@ pub fn pane_slot_write_cli(
     append: bool,
     replace: bool,
     pane_id: Option<u64>,
+    mode: OutputMode,
 ) -> i32 {
     if name.trim().is_empty() {
         eprintln!("error: slot name empty");
@@ -140,7 +93,7 @@ pub fn pane_slot_write_cli(
         "pane_slot_write:cli: pane_id={resolved_pane_id} slot={name:?} bytes={} append={append} replace={replace}",
         bytes.len()
     );
-    let response_file = match super::send_request(
+    if let Err(code) = super::request(
         serde_json::json!({
             "type": "slot_write",
             "pane_id": resolved_pane_id,
@@ -151,17 +104,9 @@ pub fn pane_slot_write_cli(
         }),
         "pane-slot-write-response",
         "pane slot write",
+        mode,
     ) {
-        Ok(response_file) => response_file,
-        Err(code) => return code,
-    };
-    let content = match wait_for_response_bytes(&response_file, "pane slot write") {
-        Ok(content) => content,
-        Err(code) => return code,
-    };
-    if let Some(err) = response_error(&content) {
-        eprintln!("error: {err}");
-        return 1;
+        return code;
     }
     println!("{}", slot_write_ack(name, bytes.len(), append));
     0
@@ -186,7 +131,11 @@ pub fn pane_slot_read_cli(name: &str, pane_id: Option<u64>) -> i32 {
         Ok(response_file) => response_file,
         Err(code) => return code,
     };
-    let content = match wait_for_slot_read_response(&response_file) {
+    let reply = HostReply::decode_slot(crate::rpc::poll_slot_reply(
+        &response_file,
+        Some(crate::rpc::DEFAULT_TIMEOUT),
+    ));
+    let content = match reply.payload_or_report("pane slot read", OutputMode::Text) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -204,59 +153,16 @@ pub fn pane_slot_read_cli(name: &str, pane_id: Option<u64>) -> i32 {
 /// then branches on the host's reason, never on a client-side stall.
 const SLOT_WAIT_REPLY_MARGIN: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// What a `pane slot wait` reply means to the caller. The three variants are
-/// the command's three exit codes; nothing else may reach the shell.
-#[derive(Debug, PartialEq)]
-enum SlotWaitOutcome {
-    /// Slot matched: these raw bytes go to stdout, exit 0.
-    Matched(Vec<u8>),
-    /// The host expired the wait: exit 2 with an empty stdout, so a caller
-    /// can branch on the exit code alone.
-    TimedOut(String),
-    /// Usage or plumbing failure: exit 1.
-    Failed(String),
-}
-
-impl SlotWaitOutcome {
-    fn exit_code(&self) -> i32 {
-        match self {
-            SlotWaitOutcome::Matched(_) => 0,
-            SlotWaitOutcome::Failed(_) => 1,
-            SlotWaitOutcome::TimedOut(_) => 2,
-        }
-    }
-}
-
-/// Map a host reply to the caller's outcome. Pure so the exit-code contract is
-/// testable without a host or a socket.
-fn slot_wait_outcome(
+fn slot_wait_payload(
     reply: Result<crate::rpc::SlotReply, crate::rpc::PollError>,
-) -> SlotWaitOutcome {
-    match reply {
-        Ok(crate::rpc::SlotReply::Data(content)) => SlotWaitOutcome::Matched(content),
-        Ok(crate::rpc::SlotReply::Err(content)) => {
-            let Ok(value) = serde_json::from_slice::<serde_json::Value>(&content) else {
-                return SlotWaitOutcome::Failed("invalid slot wait error response".to_string());
-            };
-            let message = value
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("slot wait failed")
-                .to_string();
-            if value.get("timeout").and_then(|v| v.as_bool()) == Some(true) {
-                SlotWaitOutcome::TimedOut(message)
-            } else {
-                SlotWaitOutcome::Failed(message)
-            }
+    label: &str,
+) -> Result<Vec<u8>, i32> {
+    match HostReply::decode_slot(reply) {
+        HostReply::Refused(refusal) if refusal.timed_out => {
+            refusal.report(OutputMode::Text);
+            Err(2)
         }
-        // The host answers every wait within its own deadline, so reaching
-        // the client deadline means the request never landed — a plumbing
-        // failure, not the caller's condition failing to hold.
-        Err(crate::rpc::PollError::TimedOut) => SlotWaitOutcome::Failed(
-            "no response from host within the slot wait window — the host may not be running"
-                .to_string(),
-        ),
-        Err(e) => SlotWaitOutcome::Failed(e.to_string()),
+        outcome => outcome.payload_or_report(label, OutputMode::Text),
     }
 }
 
@@ -293,59 +199,51 @@ pub fn pane_slot_wait_cli(name: &str, pane_id: Option<u64>, until: &str, timeout
         Err(code) => return code,
     };
     let deadline = std::time::Duration::from_secs_f64(timeout) + SLOT_WAIT_REPLY_MARGIN;
-    let outcome = slot_wait_outcome(crate::rpc::poll_slot_reply(&response_file, Some(deadline)));
-    match &outcome {
-        SlotWaitOutcome::Matched(content) => {
-            use std::io::Write as _;
-            if let Err(e) = std::io::stdout().write_all(content) {
-                eprintln!("error: could not write stdout: {e}");
-                return 1;
-            }
-        }
-        SlotWaitOutcome::TimedOut(message) | SlotWaitOutcome::Failed(message) => {
-            eprintln!("error: {message}");
-        }
+    let content = match slot_wait_payload(
+        crate::rpc::poll_slot_reply(&response_file, Some(deadline)),
+        "pane slot wait",
+    ) {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    use std::io::Write as _;
+    if let Err(e) = std::io::stdout().write_all(&content) {
+        eprintln!("error: could not write stdout: {e}");
+        return 1;
     }
-    outcome.exit_code()
+    0
 }
 
 /// `plexi pane slot list [pane_id]`
-pub fn pane_slot_list_cli(pane_id: Option<u64>) -> i32 {
+pub fn pane_slot_list_cli(pane_id: Option<u64>, mode: OutputMode) -> i32 {
     let resolved_pane_id = match current_pane_id(pane_id, "pane slot list") {
         Ok(id) => id,
         Err(code) => return code,
     };
     log::info!("pane_slot_list:cli: pane_id={resolved_pane_id}");
-    let response_file = match super::send_request(
+    let content = match super::request(
         serde_json::json!({
             "type": "slot_list",
             "pane_id": resolved_pane_id,
         }),
         "pane-slot-list-response",
         "pane slot list",
+        mode,
     ) {
-        Ok(response_file) => response_file,
-        Err(code) => return code,
-    };
-    let content = match wait_for_response_bytes(&response_file, "pane slot list") {
         Ok(content) => content,
         Err(code) => return code,
     };
-    if let Some(err) = response_error(&content) {
-        eprintln!("error: {err}");
-        return 1;
-    }
-    print_json_output(&String::from_utf8_lossy(&content))
+    print_json_output(&content)
 }
 
 /// `plexi pane slot delete <name> [pane_id]`
-pub fn pane_slot_delete_cli(name: &str, pane_id: Option<u64>) -> i32 {
+pub fn pane_slot_delete_cli(name: &str, pane_id: Option<u64>, mode: OutputMode) -> i32 {
     let resolved_pane_id = match current_pane_id(pane_id, "pane slot delete") {
         Ok(id) => id,
         Err(code) => return code,
     };
     log::info!("pane_slot_delete:cli: pane_id={resolved_pane_id} slot={name:?}");
-    let response_file = match super::send_request(
+    if let Err(code) = super::request(
         serde_json::json!({
             "type": "slot_delete",
             "pane_id": resolved_pane_id,
@@ -353,23 +251,15 @@ pub fn pane_slot_delete_cli(name: &str, pane_id: Option<u64>) -> i32 {
         }),
         "pane-slot-delete-response",
         "pane slot delete",
+        mode,
     ) {
-        Ok(response_file) => response_file,
-        Err(code) => return code,
-    };
-    let content = match wait_for_response_bytes(&response_file, "pane slot delete") {
-        Ok(content) => content,
-        Err(code) => return code,
-    };
-    if let Some(err) = response_error(&content) {
-        eprintln!("error: {err}");
-        return 1;
+        return code;
     }
     0
 }
 
 /// `plexi pane message send <pane_id> <payload> [--submit]`
-pub fn pane_message_send_cli(pane_id: u64, payload: &str, submit: bool) -> i32 {
+pub fn pane_message_send_cli(pane_id: u64, payload: &str, submit: bool, mode: OutputMode) -> i32 {
     log::info!(
         "pane_message_send:cli: pane_id={pane_id} bytes={} submit={submit}",
         payload.len()
@@ -383,11 +273,9 @@ pub fn pane_message_send_cli(pane_id: u64, payload: &str, submit: bool) -> i32 {
         }),
         "pane-message-send-response",
         "pane message send",
+        mode,
     ) {
-        Ok(content) => match super::check_reply_error(&content) {
-            Ok(()) => print_json_output(&content),
-            Err(code) => code,
-        },
+        Ok(content) => print_json_output(&content),
         Err(code) => code,
     }
 }
@@ -426,25 +314,12 @@ pub fn pane_message_recv_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> 
     } else {
         crate::rpc::DEFAULT_TIMEOUT
     };
-    let outcome = slot_wait_outcome(crate::rpc::poll_slot_reply(&response_file, Some(deadline)));
-    match &outcome {
-        SlotWaitOutcome::Matched(content) => {
-            return print_json_output(&String::from_utf8_lossy(content));
-        }
-        SlotWaitOutcome::TimedOut(message) | SlotWaitOutcome::Failed(message) => {
-            eprintln!("error: {message}");
-        }
-    }
-    outcome.exit_code()
-}
-
-/// Format an error message with its typed `error_code` prefix (if not already present).
-fn format_coded_error(error_code: Option<&str>, message: &str) -> String {
-    match error_code {
-        Some(code) if !code.is_empty() && !message.starts_with(code) => {
-            format!("{code}: {message}")
-        }
-        _ => message.to_string(),
+    match slot_wait_payload(
+        crate::rpc::poll_slot_reply(&response_file, Some(deadline)),
+        "pane message recv",
+    ) {
+        Ok(content) => print_json_output(&String::from_utf8_lossy(&content)),
+        Err(code) => code,
     }
 }
 
@@ -477,30 +352,12 @@ impl PaneResultReadOutcome {
 pub fn pane_result_read_outcome(
     reply: Result<crate::rpc::SlotReply, crate::rpc::PollError>,
 ) -> PaneResultReadOutcome {
-    match reply {
-        Ok(crate::rpc::SlotReply::Data(content)) => PaneResultReadOutcome::Validated(content),
-        Ok(crate::rpc::SlotReply::Err(content)) => {
-            let Ok(value) = serde_json::from_slice::<serde_json::Value>(&content) else {
-                return PaneResultReadOutcome::Failed(
-                    "invalid pane result error response".to_string(),
-                );
-            };
-            let error_code = value
-                .get("error_code")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            let raw_msg = value
-                .get("error")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("pane result read failed");
-            let timed_out = value
-                .get("timeout")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            let formatted = format_coded_error(
-                (!error_code.is_empty()).then_some(error_code),
-                raw_msg,
-            );
+    match HostReply::decode_slot(reply) {
+        HostReply::Payload(content) => PaneResultReadOutcome::Validated(content),
+        HostReply::Refused(refusal) => {
+            let formatted = refusal.coded_reason();
+            let error_code = refusal.code.as_deref().unwrap_or("");
+            let timed_out = refusal.timed_out;
             if error_code == "no_result_yet" || error_code == "timeout" || timed_out {
                 let code = if !error_code.is_empty() {
                     error_code.to_string()
@@ -520,11 +377,11 @@ pub fn pane_result_read_outcome(
                 PaneResultReadOutcome::Failed(formatted)
             }
         }
-        Err(crate::rpc::PollError::TimedOut) => PaneResultReadOutcome::Failed(
+        HostReply::Transport(crate::rpc::PollError::TimedOut) => PaneResultReadOutcome::Failed(
             "no response from host within the pane result wait window — the host may not be running"
                 .to_string(),
         ),
-        Err(e) => PaneResultReadOutcome::Failed(e.to_string()),
+        HostReply::Transport(e) => PaneResultReadOutcome::Failed(e.to_string()),
     }
 }
 
@@ -582,17 +439,15 @@ pub fn pane_result_read_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> i
 /// Sends a `list_panes` command to PLEXI_SOCKET. The host writes a JSON array
 /// to a response file; this function polls for it and prints it to stdout.
 /// Returns 0 on success, 1 on error.
-pub fn pane_layout_cli() -> i32 {
+pub fn pane_layout_cli(mode: OutputMode) -> i32 {
     log::info!("pane_layout:cli: requesting workspace snapshot");
     match super::request(
         serde_json::json!({"type":"workspace_snapshot"}),
         "pane-layout-response",
         "pane layout",
+        mode,
     ) {
-        Ok(content) => match super::check_reply_error(&content) {
-            Ok(()) => print_json_output(&content),
-            Err(code) => code,
-        },
+        Ok(content) => print_json_output(&content),
         Err(code) => code,
     }
 }
@@ -628,7 +483,7 @@ pub fn pane_list_cli(context: Option<u64>, current: bool) -> i32 {
 
     log::info!("pane_list:cli: sending via socket context_id={context_id:?}");
 
-    match super::request(payload, "pane-list-response", "pane list") {
+    match super::request(payload, "pane-list-response", "pane list", OutputMode::Json) {
         Ok(content) => print_json_output(&content),
         Err(code) => code,
     }
@@ -763,7 +618,7 @@ pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
 }
 
 /// `plexi pane tree [--context [ID]] [--json]`
-pub fn pane_tree_cli(context: Option<u64>, current: bool, json: bool) -> i32 {
+pub fn pane_tree_cli(context: Option<u64>, current: bool, mode: OutputMode) -> i32 {
     let context_id: Option<u64> = if current {
         let raw = match std::env::var("PLEXI_CONTEXT_ID") {
             Ok(v) => v,
@@ -792,9 +647,7 @@ pub fn pane_tree_cli(context: Option<u64>, current: bool, json: bool) -> i32 {
         payload["context_id"] = serde_json::json!(cid);
     }
 
-    let content = match super::request(payload, "pane-tree-response", "pane tree")
-        .and_then(|content| super::reply::HostReply::decode(&content).payload_or_report())
-    {
+    let content = match super::request(payload, "pane-tree-response", "pane tree", mode) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -805,7 +658,7 @@ pub fn pane_tree_cli(context: Option<u64>, current: bool, json: bool) -> i32 {
             return 1;
         }
     };
-    println!("{}", format_pane_tree(&panes, json));
+    println!("{}", format_pane_tree(&panes, mode.is_json()));
     0
 }
 
@@ -840,7 +693,7 @@ pub fn pane_self_cli() -> i32 {
 /// When `steps` is `Some(n)`, walks back N steps in focus history.
 /// Merges in client-side fields (socket, channel) and pretty-prints the result
 /// as JSON. Returns 0 on success, 1 on error.
-pub fn pane_info_cli(pane_id: Option<u64>, previous: Option<u64>) -> i32 {
+pub fn pane_info_cli(pane_id: Option<u64>, previous: Option<u64>, mode: OutputMode) -> i32 {
     let socket_path = match super::resolve_command_socket() {
         Some(path) => path,
         None => {
@@ -867,15 +720,11 @@ pub fn pane_info_cli(pane_id: Option<u64>, previous: Option<u64>) -> i32 {
         })
     };
 
-    let content = match super::request(payload, "pane-info-response", "pane info") {
+    let content = match super::request(payload, "pane-info-response", "pane info", mode) {
         Ok(content) => content,
         Err(code) => return code,
     };
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-        if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
-            eprintln!("error: {err}");
-            return 1;
-        }
         let mut obj = v;
         obj["socket"] = serde_json::Value::String(socket_path.to_string_lossy().into_owned());
         let channel = crate::config::build_channel().unwrap_or_else(|| "main".to_string());
@@ -917,9 +766,6 @@ pub fn close_pane_outcome(response: &str) -> (Option<String>, Option<String>, i3
             1,
         );
     };
-    if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
-        return (None, Some(format!("error: {err}")), 1);
-    }
     if let Some(wt) = v.get("worktree") {
         if wt.get("action").and_then(|a| a.as_str()) == Some("retained") {
             let path = wt.get("path").and_then(|p| p.as_str()).unwrap_or("");
@@ -944,7 +790,7 @@ pub fn close_pane_outcome(response: &str) -> (Option<String>, Option<String>, i3
 /// on stdout. When a pane closes itself (`PLEXI_PANE_ID == pane_id`), sends
 /// fire-and-forget so the CLI exits cleanly before the PTY receives SIGHUP
 /// (the host still reclaims or retains the worktree on close).
-pub fn pane_close_cli(pane_id: u64) -> i32 {
+pub fn pane_close_cli(pane_id: u64, mode: OutputMode) -> i32 {
     let self_pane = std::env::var("PLEXI_PANE_ID")
         .ok()
         .and_then(|s| s.parse::<u64>().ok());
@@ -958,7 +804,7 @@ pub fn pane_close_cli(pane_id: u64) -> i32 {
         "type": "close_pane",
         "pane_id": pane_id,
     });
-    let content = match super::request(payload, "close-pane-response", "pane close") {
+    let content = match super::request(payload, "close-pane-response", "pane close", mode) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -1006,36 +852,13 @@ pub fn pane_send_with_operation_cli(
         "operation_id": operation_id,
         "generated_operation_id": generated_operation_id,
     });
-    if submit {
-        // The host settles, presses Enter and confirms before answering, all
-        // within its own ceiling. This window sits above that so the caller
-        // sees the host's typed outcome rather than a client-side timeout.
-        let content = match super::request_with(
-            payload,
-            "send-to-pane-response",
-            "pane send",
-            SUBMIT_REPLY_WINDOW,
-        ) {
-            Ok(content) => content,
-            Err(code) => {
-                eprintln!(
-                    "pane send outcome unknown; reconcile operation {operation_id} before retrying"
-                );
-                return code;
-            }
-        };
-        report_duplicate_pane_send(&content);
-        let outcome = submit_outcome(&content);
-        outcome.report();
-        return outcome.exit_code();
-    }
-    let content = match super::request_with(
+    let reply = match super::request_reply(
         payload,
         "send-to-pane-response",
         "pane send",
         SUBMIT_REPLY_WINDOW,
     ) {
-        Ok(content) => content,
+        Ok(reply) => reply,
         Err(code) => {
             eprintln!(
                 "pane send outcome unknown; reconcile operation {operation_id} before retrying"
@@ -1043,8 +866,34 @@ pub fn pane_send_with_operation_cli(
             return code;
         }
     };
-    if let Err(code) = super::check_reply_error(&content) {
+    if let HostReply::Refused(refusal) = reply {
+        let code = refusal.report(OutputMode::Text);
+        if submit {
+            for line in refusal.fields["input_line"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+            {
+                eprintln!("  {line}");
+            }
+        }
         return code;
+    }
+    let transport_failed = matches!(reply, HostReply::Transport(_));
+    let content = match reply.payload_or_report("pane send", OutputMode::Text) {
+        Ok(content) => content,
+        Err(code) => {
+            if transport_failed {
+                eprintln!(
+                    "pane send outcome unknown; reconcile operation {operation_id} before retrying"
+                );
+            }
+            return code;
+        }
+    };
+    if submit {
+        return report_submit(&content);
     }
     report_duplicate_pane_send(&content);
     0
@@ -1066,6 +915,7 @@ pub fn pane_heartbeat_cli(
     text: Option<&str>,
     while_idle_only: Option<bool>,
     off: bool,
+    mode: OutputMode,
 ) -> i32 {
     let every_ms = match every.map(parse_heartbeat_duration) {
         Some(Ok(duration)) => Some(duration.as_millis() as u64),
@@ -1079,11 +929,9 @@ pub fn pane_heartbeat_cli(
         serde_json::json!({"type":"pane_heartbeat", "pane_id":pane_id, "every_ms":every_ms, "text":text, "while_idle_only":while_idle_only, "off":off}),
         "pane-heartbeat-response",
         "pane heartbeat",
+        mode,
     ) {
-        Ok(content) => match super::check_reply_error(&content) {
-            Ok(()) => print_json_output(&content),
-            Err(code) => code,
-        },
+        Ok(content) => print_json_output(&content),
         Err(code) => code,
     }
 }
@@ -1115,95 +963,27 @@ fn parse_heartbeat_duration(value: &str) -> Result<std::time::Duration, String> 
 // submit confirmation. Leave room for the typed host result to arrive.
 const SUBMIT_REPLY_WINDOW: std::time::Duration = std::time::Duration::from_secs(40);
 
-/// What the host said about a `--submit`, in the two shapes a caller branches on.
-#[derive(Debug, PartialEq, Eq)]
-enum SubmitOutcome {
-    /// Typed and confirmed submitted. `retried` tells a clean submit from one
-    /// the host had to heal.
-    Confirmed { retried: bool },
-    /// Typed, but the host could not confirm the prompt left the input line.
-    /// `input_line` is what the pane actually showed.
-    Unconfirmed {
-        message: String,
-        input_line: Vec<String>,
-    },
-}
-
-impl SubmitOutcome {
-    /// Zero only when the text was both typed *and* confirmed submitted.
-    /// Everything else — an unconfirmed submit, a refused pane, a malformed
-    /// reply — is one failure from the caller's side: the prompt may not have
-    /// been delivered.
-    fn exit_code(&self) -> i32 {
-        match self {
-            SubmitOutcome::Confirmed { .. } => 0,
-            SubmitOutcome::Unconfirmed { .. } => 1,
+fn report_submit(content: &str) -> i32 {
+    report_duplicate_pane_send(content);
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(content) {
+        if super::reply::acknowledged(&value) {
+            if value["retried"] == true {
+                print_tip(
+                    "the prompt was still parked as a collapsed paste; a second Enter submitted it",
+                );
+            }
+            return 0;
         }
     }
-
-    fn report(&self) {
-        match self {
-            SubmitOutcome::Confirmed { retried } => {
-                if *retried {
-                    print_tip(
-                        "the prompt was still parked as a collapsed paste; a second Enter submitted it",
-                    );
-                }
-            }
-            SubmitOutcome::Unconfirmed {
-                message,
-                input_line,
-            } => {
-                eprintln!("error: {message}");
-                for line in input_line {
-                    eprintln!("  {line}");
-                }
-            }
-        }
-    }
-}
-
-/// Map the host's submit reply to the caller's outcome. Pure so the exit-code
-/// contract is testable without a host or a socket.
-fn submit_outcome(reply: &str) -> SubmitOutcome {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(reply) else {
-        return SubmitOutcome::Unconfirmed {
-            message: format!("invalid submit response from host: {reply}"),
-            input_line: Vec::new(),
-        };
-    };
-    let retried = value
-        .get("retried")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
-        return SubmitOutcome::Confirmed { retried };
-    }
-    SubmitOutcome::Unconfirmed {
-        message: value
-            .get("error")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("submission not confirmed")
-            .to_string(),
-        input_line: value
-            .get("input_line")
-            .and_then(serde_json::Value::as_array)
-            .map(|lines| {
-                lines
-                    .iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default(),
-    }
+    eprintln!("error: submission not confirmed");
+    1
 }
 
 /// `plexi pane key <pane_id> <key>`
 ///
 /// Sends `key_pane` command to PLEXI_SOCKET. Waits for response.
 /// Returns 0 on success, 1 on error.
-pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
+pub fn pane_key_cli(pane_id: u64, key: &str, mode: OutputMode) -> i32 {
     log::info!(
         "pane_key:cli: pane_id={pane_id} key={key:?} key_chars={}",
         key.chars().count()
@@ -1216,12 +996,13 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
         }),
         "pane-key-response",
         "pane key",
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
     };
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-        if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if super::reply::acknowledged(&v) {
             // Native view panes report whether the plugin's key handler consumed
             // the key — surface a miss so driving agents don't assume the
             // key acted.
@@ -1244,15 +1025,11 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
             }
             return 0;
         }
-        if let Some(msg) = host_error_text(&content) {
-            eprintln!("error: {msg}");
-            return 1;
-        }
     }
     0
 }
 
-pub fn pane_drop_cli(pane_id: u64, path_or_url: &str) -> i32 {
+pub fn pane_drop_cli(pane_id: u64, path_or_url: &str, mode: OutputMode) -> i32 {
     let content = match super::request(
         serde_json::json!({
             "type": "drop_file",
@@ -1261,47 +1038,26 @@ pub fn pane_drop_cli(pane_id: u64, path_or_url: &str) -> i32 {
         }),
         "pane-drop-response",
         "pane drop",
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
     };
-    if let Err(code) = super::check_reply_error(&content) {
-        return code;
-    }
     print_json_output(&content)
 }
 
 /// Send a `click_pane`/`click_pane_node` request and report the host's answer,
 /// shared by the pixel, node-targeted, and drag `plexi pane click` variants.
 /// Returns 0 on success, 1 on error.
-fn click_request(payload: serde_json::Value, prefix: &str, log_prefix: &str) -> i32 {
-    let content = match super::request(payload, prefix, "pane click") {
-        Ok(content) => content,
-        Err(code) => return code,
-    };
-    if let Some(msg) = host_error_text(&content) {
-        log::warn!("{log_prefix}: host reported error: {msg}");
-        eprintln!("error: {msg}");
-        return 1;
-    }
-    0
-}
-
-/// Host `error` text, with `error_code` prefixed when the reply carries one.
-fn host_error_text(content: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(content).ok()?;
-    let msg = value.get("error")?.as_str()?;
-    match value.get("error_code").and_then(|code| code.as_str()) {
-        Some(code) if !code.is_empty() && !msg.contains(code) => Some(format!("{code}: {msg}")),
-        _ => Some(msg.to_string()),
-    }
+fn click_request(payload: serde_json::Value, prefix: &str, mode: OutputMode) -> i32 {
+    super::request(payload, prefix, "pane click", mode).map_or_else(|code| code, |_| 0)
 }
 
 /// `plexi pane click <pane_id> <x> <y> [--button left]`
 ///
 /// Sends `click_pane` command to PLEXI_SOCKET. Waits for response.
 /// Returns 0 on success, 1 on error.
-pub fn pane_click_cli(pane_id: u64, x: f32, y: f32, button: &str) -> i32 {
+pub fn pane_click_cli(pane_id: u64, x: f32, y: f32, button: &str, mode: OutputMode) -> i32 {
     log::info!("pane_click:cli: pane_id={pane_id} x={x} y={y} button={button}");
     click_request(
         serde_json::json!({
@@ -1312,7 +1068,7 @@ pub fn pane_click_cli(pane_id: u64, x: f32, y: f32, button: &str) -> i32 {
             "button": button,
         }),
         "pane-click-response",
-        "pane_click:cli",
+        mode,
     )
 }
 
@@ -1320,7 +1076,7 @@ pub fn pane_click_cli(pane_id: u64, x: f32, y: f32, button: &str) -> i32 {
 ///
 /// Sends `click_pane_node` command to PLEXI_SOCKET. Waits for response.
 /// Returns 0 once the host delivered the activation, 1 on any refusal.
-pub fn pane_click_node_cli(pane_id: u64, node_ref: &str) -> i32 {
+pub fn pane_click_node_cli(pane_id: u64, node_ref: &str, mode: OutputMode) -> i32 {
     log::info!("pane_click_node:cli: pane_id={pane_id} node_ref={node_ref}");
     click_request(
         serde_json::json!({
@@ -1329,7 +1085,7 @@ pub fn pane_click_node_cli(pane_id: u64, node_ref: &str) -> i32 {
             "node_ref": node_ref,
         }),
         "pane-click-node-response",
-        "pane_click_node:cli",
+        mode,
     )
 }
 
@@ -1345,6 +1101,11 @@ fn parse_pane_coords(flag: &str, value: &str) -> Result<[f32; 2], String> {
     }
 }
 
+pub(crate) struct PaneDragEndpoint<'a> {
+    pub coords: Option<&'a str>,
+    pub node: Option<&'a str>,
+}
+
 /// `plexi pane drag <pane_id> --from x,y --to x,y [--steps N] [--button left]`
 /// (or `--from-node`/`--to-node` with node refs from `plexi pane state`).
 ///
@@ -1353,17 +1114,17 @@ fn parse_pane_coords(flag: &str, value: &str) -> Result<[f32; 2], String> {
 /// Returns 0 on success, 1 on error.
 pub fn pane_drag_cli(
     pane_id: u64,
-    from: Option<&str>,
-    from_node: Option<&str>,
-    to: Option<&str>,
-    to_node: Option<&str>,
+    from: PaneDragEndpoint<'_>,
+    to: PaneDragEndpoint<'_>,
     steps: u32,
     button: &str,
+    mode: OutputMode,
 ) -> i32 {
     let parse = |flag: &str, value: Option<&str>| -> Result<Option<[f32; 2]>, String> {
         value.map(|v| parse_pane_coords(flag, v)).transpose()
     };
-    let (from, to) = match (parse("from", from), parse("to", to)) {
+    let (from_node, to_node) = (from.node, to.node);
+    let (from, to) = match (parse("from", from.coords), parse("to", to.coords)) {
         (Ok(f), Ok(t)) => (f, t),
         (Err(e), _) | (_, Err(e)) => {
             eprintln!("error: {e}");
@@ -1394,7 +1155,7 @@ pub fn pane_drag_cli(
             "button": button,
         }),
         "pane-drag-response",
-        "pane_drag:cli",
+        mode,
     )
 }
 
@@ -1409,6 +1170,7 @@ pub fn pane_capture_cli(
     full_output: bool,
     from_cursor: Option<u64>,
     plain: bool,
+    mode: OutputMode,
 ) -> i32 {
     let resolved_pane_id = match current_pane_id(pane_id, "pane capture") {
         Ok(id) => id,
@@ -1429,7 +1191,7 @@ pub fn pane_capture_cli(
         req["from_cursor"] = serde_json::Value::Number(serde_json::Number::from(cursor));
     }
 
-    let content = match super::request(req, "pane-capture-response", "pane capture") {
+    let content = match super::request(req, "pane-capture-response", "pane capture", mode) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -1459,9 +1221,6 @@ struct CaptureReply {
 fn parse_capture_reply(content: &str) -> Result<CaptureReply, String> {
     let value: serde_json::Value = serde_json::from_str(content)
         .map_err(|error| format!("invalid pane capture response: {error}"))?;
-    if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
-        return Err(error.to_string());
-    }
     serde_json::from_value(value).map_err(|error| format!("invalid pane capture response: {error}"))
 }
 
@@ -1475,7 +1234,7 @@ fn plain_capture_body(lines: &[String]) -> String {
 }
 
 /// `plexi pane status <id>`
-pub fn pane_status_cli(pane_id: u64) -> i32 {
+pub fn pane_status_cli(pane_id: u64, mode: OutputMode) -> i32 {
     log::info!("pane_status:cli: pane_id={pane_id}");
     let content = match super::request(
         serde_json::json!({
@@ -1484,6 +1243,7 @@ pub fn pane_status_cli(pane_id: u64) -> i32 {
         }),
         "pane-status-response",
         "pane status",
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
@@ -1498,9 +1258,6 @@ pub fn pane_status_cli(pane_id: u64) -> i32 {
 fn validate_status_reply(content: &str) -> Result<(), String> {
     let value: serde_json::Value = serde_json::from_str(content)
         .map_err(|error| format!("invalid pane status response: {error}"))?;
-    if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
-        return Err(error.to_string());
-    }
     for field in [
         "verdict",
         "confidence",
@@ -1525,7 +1282,7 @@ fn validate_status_reply(content: &str) -> Result<(), String> {
 /// carries `claimed_state` (the pane's agent-authored `status` slot) and
 /// `observed_state` (host-derived liveness), always together — see
 /// `HostRequest::GetPaneState`. Returns 0 on success, 1 on error.
-pub fn pane_state_cli(pane_id: u64, stale_after_secs: Option<u64>) -> i32 {
+pub fn pane_state_cli(pane_id: u64, stale_after_secs: Option<u64>, mode: OutputMode) -> i32 {
     log::info!("pane_state:cli: pane_id={pane_id} stale_after_secs={stale_after_secs:?}");
 
     let content = match super::request(
@@ -1536,25 +1293,12 @@ pub fn pane_state_cli(pane_id: u64, stale_after_secs: Option<u64>) -> i32 {
         }),
         "pane-state-response",
         "pane state",
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
     };
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-        if let Some(err) = pane_state_envelope_error(&v) {
-            eprintln!("error: {err}");
-            return 1;
-        }
-    }
     print_json_output(&content)
-}
-
-/// The pane-state transport envelope signals failure with a top-level `error`
-/// string. Successful responses never carry a top-level `error` key — guest
-/// failure detail is nested under `failure` (see the `get_pane_state` handler)
-/// — so a success can never be misread as a transport failure here.
-pub(crate) fn pane_state_envelope_error(value: &serde_json::Value) -> Option<&str> {
-    value.get("error").and_then(|e| e.as_str())
 }
 
 /// `plexi open <type_id> [args...] [--layout=X]`
@@ -1766,9 +1510,12 @@ mod slot_write_tests {
     #[test]
     fn empty_slot_name_exits_nonzero() {
         // Must fail before any socket contact — no PLEXI_PANE_ID needed.
-        assert_eq!(pane_slot_write_cli("", Some("x"), false, true, Some(7)), 1);
         assert_eq!(
-            pane_slot_write_cli("   ", Some("x"), false, true, Some(7)),
+            pane_slot_write_cli("", Some("x"), false, true, Some(7), OutputMode::Text),
+            1
+        );
+        assert_eq!(
+            pane_slot_write_cli("   ", Some("x"), false, true, Some(7), OutputMode::Text),
             1
         );
     }
@@ -1827,7 +1574,7 @@ mod capture_and_status_tests {
                 "cursor": 44,
                 "missed": false,
             }),
-            || pane_capture_cli(Some(42), 50, false, Some(39), true),
+            || pane_capture_cli(Some(42), 50, false, Some(39), true, OutputMode::Text),
         );
         assert_eq!(code, 0);
         assert_eq!(payload["type"], "capture_pane");
@@ -1840,7 +1587,7 @@ mod capture_and_status_tests {
     fn capture_host_error_exits_one() {
         let (code, _) =
             capture_payload_and_answer(serde_json::json!({"error": "pane 42 not found"}), || {
-                pane_capture_cli(Some(42), 50, false, None, true)
+                pane_capture_cli(Some(42), 50, false, None, true, OutputMode::Text)
             });
         assert_eq!(code, 1);
     }
@@ -1857,7 +1604,7 @@ mod capture_and_status_tests {
                 "status_bar_truncated": false,
                 "last_buffer_line": "⏺ Bash(cargo test)",
             }),
-            || pane_status_cli(42),
+            || pane_status_cli(42, OutputMode::Text),
         );
         assert_eq!(code, 0);
         assert_eq!(payload["type"], "pane_status");
@@ -1868,7 +1615,7 @@ mod capture_and_status_tests {
     fn status_host_and_malformed_errors_exit_one() {
         let (host_error, _) =
             capture_payload_and_answer(serde_json::json!({"error": "pane 42 not found"}), || {
-                pane_status_cli(42)
+                pane_status_cli(42, OutputMode::Text)
             });
         assert_eq!(host_error, 1);
         assert!(validate_status_reply("{}")
@@ -1892,44 +1639,25 @@ mod slot_wait_tests {
     }
 
     #[test]
-    fn matching_value_exits_zero_and_carries_raw_bytes() {
-        let outcome = slot_wait_outcome(Ok(SlotReply::Data(b"done: ok".to_vec())));
-        assert_eq!(outcome.exit_code(), 0);
-        assert_eq!(outcome, SlotWaitOutcome::Matched(b"done: ok".to_vec()));
-    }
-
-    #[test]
-    fn host_timeout_reply_exits_two() {
-        let body = br#"{"ok":false,"timeout":true,"error":"timed out waiting for slot 'status'"}"#;
-        let outcome = slot_wait_outcome(Ok(SlotReply::Err(body.to_vec())));
-        assert_eq!(outcome.exit_code(), 2);
-        assert!(matches!(outcome, SlotWaitOutcome::TimedOut(_)));
-    }
-
-    #[test]
-    fn host_error_reply_exits_one() {
-        let body = br#"{"ok":false,"error":"pane 42 not found"}"#;
-        let outcome = slot_wait_outcome(Ok(SlotReply::Err(body.to_vec())));
-        assert_eq!(outcome.exit_code(), 1);
+    fn raw_slot_bytes_are_opaque() {
+        let data = br#"{"ok":false,"error":"user slot data"}"#.to_vec();
         assert_eq!(
-            outcome,
-            SlotWaitOutcome::Failed("pane 42 not found".to_string())
+            slot_wait_payload(Ok(SlotReply::Data(data.clone())), "slot wait"),
+            Ok(data)
         );
     }
 
     #[test]
-    fn client_side_poll_timeout_is_a_plumbing_failure_not_a_wait_timeout() {
-        // The host always answers inside its own deadline, so an unanswered
-        // response file means the request never landed. Reporting that as 2
-        // would tell the caller its condition failed when nothing watched it.
-        let outcome = slot_wait_outcome(Err(PollError::TimedOut));
-        assert_eq!(outcome.exit_code(), 1);
-    }
-
-    #[test]
-    fn unparseable_error_reply_exits_one() {
-        let outcome = slot_wait_outcome(Ok(SlotReply::Err(b"not json".to_vec())));
-        assert_eq!(outcome.exit_code(), 1);
+    fn only_host_timeout_exits_two() {
+        let body = br#"{"ok":false,"timeout":true,"error":"timed out waiting for slot"}"#;
+        assert_eq!(
+            slot_wait_payload(Ok(SlotReply::Err(body.to_vec())), "slot wait"),
+            Err(2)
+        );
+        assert_eq!(
+            slot_wait_payload(Err(PollError::TimedOut), "slot wait"),
+            Err(1)
+        );
     }
 
     #[test]
@@ -1950,57 +1678,11 @@ mod submit_tests {
     use std::os::unix::net::UnixListener;
 
     #[test]
-    fn confirmed_reply_exits_zero() {
-        let outcome = submit_outcome(r#"{"ok":true,"retried":false}"#);
-        assert_eq!(outcome, SubmitOutcome::Confirmed { retried: false });
-        assert_eq!(outcome.exit_code(), 0);
-    }
-
-    /// A healed submit still succeeded. The retry is reported, not penalised —
-    /// the prompt reached the agent either way.
-    #[test]
-    fn confirmed_after_retry_still_exits_zero() {
-        let outcome = submit_outcome(r#"{"ok":true,"retried":true}"#);
-        assert_eq!(outcome, SubmitOutcome::Confirmed { retried: true });
-        assert_eq!(outcome.exit_code(), 0);
-    }
-
-    #[test]
-    fn unconfirmed_reply_exits_one_and_carries_the_observed_input_line() {
-        let outcome = submit_outcome(
-            r#"{"error":"submission not confirmed on pane 7","input_line":["> echo hi","[Pasted text #1] paste again to expand"],"retried":true}"#,
-        );
-        assert_eq!(
-            outcome,
-            SubmitOutcome::Unconfirmed {
-                message: "submission not confirmed on pane 7".to_string(),
-                input_line: vec![
-                    "> echo hi".to_string(),
-                    "[Pasted text #1] paste again to expand".to_string(),
-                ],
-            }
-        );
-        assert_eq!(outcome.exit_code(), 1);
-    }
-
-    /// A refusal (view pane, submit already in flight, pane gone) carries no
-    /// input line and is still a non-zero exit: nothing was submitted.
-    #[test]
-    fn refusal_reply_exits_one() {
-        let outcome = submit_outcome(
-            r#"{"error":"pane 7 is a view pane; --submit only applies to terminal panes"}"#,
-        );
-        assert_eq!(outcome.exit_code(), 1);
-        assert!(matches!(outcome, SubmitOutcome::Unconfirmed { .. }));
-    }
-
-    /// Never report success on a reply we could not read. An unparseable answer
-    /// means the submission state is unknown, which the caller must treat as
-    /// unconfirmed.
-    #[test]
-    fn unparseable_reply_exits_one() {
-        assert_eq!(submit_outcome("not json").exit_code(), 1);
-        assert_eq!(submit_outcome(r#"{"ok":false}"#).exit_code(), 1);
+    fn submit_requires_an_explicit_acknowledgement() {
+        assert_eq!(report_submit(r#"{"ok":true,"retried":false}"#), 0);
+        assert_eq!(report_submit(r#"{"ok":true,"retried":true}"#), 0);
+        assert_eq!(report_submit("not json"), 1);
+        assert_eq!(report_submit("{}"), 1);
     }
 
     /// The flag has to reach the host, and the plain verb has to keep sending
@@ -2102,7 +1784,7 @@ mod pane_message_tests {
                 tx.send(payload).ok();
             });
 
-            let code = pane_message_send_cli(42, "hello mailbox", submit);
+            let code = pane_message_send_cli(42, "hello mailbox", submit, OutputMode::Text);
             let payload = rx
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .expect("host listener never received the message send payload");
@@ -2179,10 +1861,13 @@ mod pane_message_tests {
         assert!(err2.is_none());
         assert!(out2.is_none());
 
-        let (out3, err3, code3) = close_pane_outcome(r#"{"error":"pane 9 not found"}"#);
+        let (out3, err3, code3) = close_pane_outcome("not JSON");
         assert_eq!(code3, 1);
         assert!(out3.is_none());
-        assert_eq!(err3.as_deref(), Some("error: pane 9 not found"));
+        assert_eq!(
+            err3.as_deref(),
+            Some("error: invalid JSON from host: not JSON")
+        );
     }
 }
 
@@ -2320,8 +2005,8 @@ mod pane_result_tests {
         env.set(&socket_path);
 
         // Numeric targets resolve without any socket connection.
-        assert_eq!(ContextTarget::from("42").resolve(), Ok(42));
-        assert_eq!(PaneTarget::from("99").resolve(), Ok(99));
+        assert_eq!(ContextTarget::from("42").resolve(OutputMode::Text), Ok(42));
+        assert_eq!(PaneTarget::from("99").resolve(OutputMode::Text), Ok(99));
 
         let handle = std::thread::spawn(move || {
             for step in 0..10 {
@@ -2371,30 +2056,47 @@ mod pane_result_tests {
         });
 
         // ContextTarget over socket: exact, unique prefix, ambiguous prefix, unknown name
-        assert_eq!(ContextTarget::from("sprint-alpha").resolve(), Ok(2));
-        assert_eq!(ContextTarget::from("ma").resolve(), Ok(1));
-        assert_eq!(ContextTarget::from("sprint-").resolve(), Err(1));
-        assert_eq!(ContextTarget::from("no-such-ctx").resolve(), Err(1));
+        assert_eq!(
+            ContextTarget::from("sprint-alpha").resolve(OutputMode::Text),
+            Ok(2)
+        );
+        assert_eq!(ContextTarget::from("ma").resolve(OutputMode::Text), Ok(1));
+        assert_eq!(
+            ContextTarget::from("sprint-").resolve(OutputMode::Text),
+            Err(1)
+        );
+        assert_eq!(
+            ContextTarget::from("no-such-ctx").resolve(OutputMode::Text),
+            Err(1)
+        );
 
         // PaneTarget over socket: exact, unique prefix, ambiguous prefix
-        assert_eq!(PaneTarget::from("worker-0890").resolve(), Ok(10));
-        assert_eq!(PaneTarget::from("worker-").resolve(), Err(1));
+        assert_eq!(
+            PaneTarget::from("worker-0890").resolve(OutputMode::Text),
+            Ok(10)
+        );
+        assert_eq!(
+            PaneTarget::from("worker-").resolve(OutputMode::Text),
+            Err(1)
+        );
 
         // End-to-end `plexi context unpark <name>` (via unique prefix "sprint-a" -> context 2)
-        let unpark_ctx = resolve_opt_context_target(Some(&ContextTarget::from("sprint-a")))
-            .expect("resolve sprint-a");
+        let unpark_ctx =
+            resolve_opt_context_target(Some(&ContextTarget::from("sprint-a")), OutputMode::Text)
+                .expect("resolve sprint-a");
         assert_eq!(unpark_ctx, Some(2));
         assert_eq!(
             host_action_cli(
                 serde_json::json!({ "type": "context_park", "parked": false }),
                 Some(("context_id", unpark_ctx, "PLEXI_CONTEXT_ID")),
+                OutputMode::Text,
             ),
             0
         );
 
         // End-to-end `plexi pane focus <name>` (via unique prefix "tester" -> pane 12)
         let focus_pane = PaneTarget::from("tester")
-            .resolve()
+            .resolve(OutputMode::Text)
             .expect("resolve tester");
         assert_eq!(focus_pane, 12);
         assert_eq!(pane_focus_cli(focus_pane), 0);

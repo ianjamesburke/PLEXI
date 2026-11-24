@@ -6308,6 +6308,7 @@ steps = [
                 "play",
                 &[],
                 Some(invoker),
+                crate::cli::OutputMode::Text,
             )
         });
 
@@ -6711,7 +6712,13 @@ split = true
             h.app.windows[0].panes[&pane_id].as_view().unwrap().name,
             "BetaAdded"
         );
-        let cli_removed = crate::cli::run_command_for_root(Some(&ws_root), &ws_root, "beta", &[]);
+        let cli_removed = crate::cli::run_command_for_root(
+            Some(&ws_root),
+            &ws_root,
+            "beta",
+            &[],
+            crate::cli::OutputMode::Text,
+        );
         assert_eq!(cli_removed.exit_code, 1);
         assert_eq!(cli_removed.total_steps, 0);
     }
@@ -6764,7 +6771,13 @@ split = true
             "the palette refusal is shown, not only logged"
         );
 
-        let cli = crate::cli::run_command_for_root(Some(&ws_root), &ws_root, "old", &[]);
+        let cli = crate::cli::run_command_for_root(
+            Some(&ws_root),
+            &ws_root,
+            "old",
+            &[],
+            crate::cli::OutputMode::Text,
+        );
         assert_eq!(
             cli.exit_code, 2,
             "plexi run refuses the single-line form too"
@@ -6882,6 +6895,7 @@ steps = [
                 "cli_anchor",
                 &[],
                 Some(step_right_id),
+                crate::cli::OutputMode::Text,
             )
         });
 
