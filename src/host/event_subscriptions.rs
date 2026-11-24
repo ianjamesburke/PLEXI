@@ -1773,6 +1773,103 @@ mod tests {
         assert!(matches!(rx2.recv().unwrap(), HostSubscribeReply::Ok { .. }));
     }
 
+    /// The rows `actor` holds in the service's live store.
+    fn grant_ids_of(svc: &HostSubscriptionService, actor: &str) -> Vec<String> {
+        svc.monitor()
+            .store()
+            .records()
+            .iter()
+            .filter(|record| record.actor_id == actor)
+            .map(|record| record.grant_id.clone())
+            .collect()
+    }
+
+    /// Stint 1716, one grant store: an Always grant the person gives through
+    /// a subscription consent lands in the permission monitor's store, and
+    /// revoking it there stops the open subscription's deliveries at once,
+    /// with the pane and its scope revision unchanged.
+    #[test]
+    fn an_always_subscription_grant_revoked_through_the_monitor_stops_delivery() {
+        let timeline = timeline_with_stream();
+        let mut svc =
+            HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
+        let admitted = pane_scope(7, &[]);
+        let (mut req, rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
+        let consent = svc
+            .classify_subscribe_request(req)
+            .expect("no grant yet: consent is asked");
+        svc.resolve_consent(consent, ConsentChoice::AllowAlways);
+        assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+        let granted = grant_ids_of(&svc, "pane:7");
+        assert_eq!(granted.len(), 1, "the Always row is in the monitor's store");
+
+        emit(&timeline, "probe.tick");
+        assert_eq!(delivered(&timeline), vec!["probe.tick"], "positive control");
+        emit(&timeline, "probe.tick");
+        let revision = admitted.authority.scope().revision;
+        assert!(svc.monitor().revoke_grant_id(&granted[0]).unwrap());
+        assert!(!admitted.authority.is_revoked());
+        assert_eq!(admitted.authority.scope().revision, revision);
+        assert_eq!(
+            delivered(&timeline),
+            Vec::<String>::new(),
+            "queued item withheld"
+        );
+        emit(&timeline, "probe.tick");
+        assert_eq!(
+            delivered(&timeline),
+            Vec::<String>::new(),
+            "nothing routed after"
+        );
+
+        // The next subscribe asks again.
+        let (mut req, _rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.subscriber_authority = SubscriberAuthority::Pane(admitted);
+        assert!(svc.classify_subscribe_request(req).is_some());
+    }
+
+    /// Stint 1497 with one grant store: a seal-key rotation resets grants.
+    /// The service reads the monitor's store, so after the reset the open
+    /// subscription delivers nothing and the next subscribe asks again,
+    /// both when the store is reloaded in place (the Keychain-prompt
+    /// recovery) and when the host starts again on the reset profile.
+    #[test]
+    fn a_seal_reset_drops_subscription_grants_and_asks_again() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::broker::gate::PermissionMonitor::reload_for_test(dir.path());
+        let timeline = timeline_with_stream();
+        let mut svc = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
+        let admitted = pane_scope(7, &[]);
+        let (mut req, rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
+        let consent = svc.classify_subscribe_request(req).expect("asks first");
+        svc.resolve_consent(consent, ConsentChoice::AllowAlways);
+        assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+        emit(&timeline, "probe.tick");
+
+        crate::broker::seal::reset_unverified_profile(
+            &crate::broker::custody::HostProcess::for_test(),
+            dir.path(),
+        )
+        .unwrap();
+        // As `reload_after_keychain_prompt` does: the same monitor's store is
+        // replaced by the reset file.
+        *svc.monitor().store() = GrantStore::load_or_default(dir.path()).unwrap();
+        assert!(grant_ids_of(&svc, "pane:7").is_empty(), "grants were reset");
+        assert_eq!(delivered(&timeline), Vec::<String>::new(), "dropped");
+        let (mut req, _rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
+        assert!(svc.classify_subscribe_request(req).is_some(), "asks again");
+
+        // A host start on the reset profile opens the same one store.
+        crate::broker::gate::PermissionMonitor::reload_for_test(dir.path());
+        let svc2 = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
+        let (mut req, _rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        req.subscriber_authority = SubscriberAuthority::Pane(admitted);
+        assert!(svc2.classify_subscribe_request(req).is_some(), "asks after restart");
+    }
+
     /// End-to-end: subscribe (full payload) → emit → the delivery carries the
     /// structured payload, then disconnect cleanup drops the subscription and
     /// any queued deliveries.
