@@ -4,15 +4,10 @@
 //! is not the grant file and not `secrets.json`, and pane environment
 //! construction does not receive its path. The journal is HMAC-SHA256 sealed
 //! with the host permission MAC (`seal::mac_key_bytes`), the same key that
-//! seals grants. The last-MAC tip lives in the host seal store, keyed by a
-//! hash of this profile's host directory. A journal that fails the MAC, is
-//! deleted while the tip remembers it, or carries a resolution is quarantined.
-//! Loading it never writes a grant.
-//!
-//! A legacy `<profile>/host/seal.key` is not a second custody path. When it
-//! verifies the journal, the journal is rewritten with the host key and the
-//! file is removed. When it does not, the file is removed and the journal is
-//! untrusted.
+//! seals grants. The signed profile seal state remembers the last MAC.
+//! Invalid MACs and pre-resolved items trigger quarantine. A missing journal
+//! with a remembered MAC raises an integrity finding. Loading never writes
+//! a grant and ignores any leftover `host/seal.key`.
 
 use super::custody::HostProcess;
 use super::gate::{ContinuationRecord, NeedsYouDetails, NeedsYouKind};
@@ -23,7 +18,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const SCHEMA: u32 = 1;
-const KEY_LEN: usize = 32;
 const MAC_LEN: usize = 32;
 
 /// `<profile>/host`. The host writes it; a pane is not given this path.
@@ -119,48 +113,23 @@ struct DiskContinuationsOwned {
     records: Vec<ContinuationRecord>,
 }
 
-/// Bytes of a pre-host-store `seal.key`: the HMAC key plus the last MAC tip.
-struct LegacyKey {
-    key: [u8; KEY_LEN],
-    last_mac: [u8; MAC_LEN],
-}
-
 const TIP_PREFIX: &str = "plexi:host:needs-you-journal-tip:";
 
 pub(crate) fn load(host: &HostProcess, profile: &Path) -> LoadedQueue {
     let journal = journal_path(profile);
-    let legacy_path = legacy_key_path(profile);
-    if is_symlink(&journal) || is_symlink(&legacy_path) || is_symlink(&host_private_dir(profile)) {
+    if is_symlink(&journal) || is_symlink(&host_private_dir(profile)) {
         return LoadedQueue::Untrusted("host queue path is a symlink".to_string());
     }
     let tip = match read_tip(host, profile) {
         Ok(tip) => tip,
         Err(error) => return LoadedQueue::Untrusted(error),
     };
-    let legacy = match read_legacy_key(&legacy_path) {
-        Ok(key) => key,
-        Err(error) => {
-            let _ = discard_legacy_key(profile);
-            return LoadedQueue::Untrusted(error);
-        }
-    };
     if !journal_is_file(&journal) {
         if tip_is_set(&tip) {
             if let Err(error) = super::seal::existing_mac_key(host, profile) {
                 return LoadedQueue::Untrusted(error);
             }
-            let _ = discard_legacy_key(profile);
             return missing_journal();
-        }
-        if let Some(legacy) = legacy {
-            if legacy.last_mac.iter().any(|byte| *byte != 0) {
-                if let Err(error) = store_tip(host, profile, &legacy.last_mac) {
-                    return LoadedQueue::Untrusted(error);
-                }
-                let _ = discard_legacy_key(profile);
-                return missing_journal();
-            }
-            let _ = discard_legacy_key(profile);
         }
         return LoadedQueue::Empty;
     }
@@ -175,22 +144,13 @@ pub(crate) fn load(host: &HostProcess, profile: &Path) -> LoadedQueue {
         }
     };
     let Some((body, mac)) = split_mac(&raw) else {
-        let _ = discard_legacy_key(profile);
         return LoadedQueue::Untrusted("queue file has no seal".to_string());
     };
     if host_key
         .as_ref()
         .is_some_and(|key| ct_eq(&hmac_sha256(key, body), &mac))
     {
-        let _ = discard_legacy_key(profile);
         return parse_journal(body);
-    }
-    if let Some(legacy) = legacy {
-        if ct_eq(&hmac_sha256(&legacy.key, body), &mac) {
-            return migrate_legacy(host, profile, body);
-        }
-        let _ = discard_legacy_key(profile);
-        return LoadedQueue::Untrusted("queue seal does not match".to_string());
     }
     if host_key.is_none() {
         LoadedQueue::Untrusted("queue file has no host seal key".to_string())
@@ -203,20 +163,6 @@ fn missing_journal() -> LoadedQueue {
     LoadedQueue::Untrusted(
         "needs-you queue file is missing; the host seal still remembers one".to_string(),
     )
-}
-
-fn migrate_legacy(host: &HostProcess, profile: &Path, body: &[u8]) -> LoadedQueue {
-    let loaded = parse_journal(body);
-    let LoadedQueue::Items(items) = &loaded else {
-        let _ = discard_legacy_key(profile);
-        return loaded;
-    };
-    if let Err(error) = save(host, profile, items) {
-        log::error!("needs_you: could not move the journal onto the host seal key: {error}");
-        return LoadedQueue::Untrusted(error);
-    }
-    log::info!("needs_you: migrated journal seal onto the host seal key");
-    loaded
 }
 
 fn parse_journal(body: &[u8]) -> LoadedQueue {
@@ -258,7 +204,6 @@ pub(crate) fn save(
     let journal = host_dir.join("needs-you.json");
     write_private(&journal, &file_bytes)?;
     store_tip(host, profile, &mac)?;
-    discard_legacy_key(profile)?;
     log::info!(
         "needs_you: persisted {} open items to {}",
         items.len(),
@@ -479,10 +424,6 @@ fn journal_path(profile: &Path) -> PathBuf {
     host_private_dir(profile).join("needs-you.json")
 }
 
-fn legacy_key_path(profile: &Path) -> PathBuf {
-    host_private_dir(profile).join("seal.key")
-}
-
 pub(super) fn tip_account(profile: &Path) -> String {
     let canon = super::seal::canonical_profile_dir(profile).join("host");
     let hash = hex_encode(&Sha256::digest(canon.to_string_lossy().as_bytes()));
@@ -523,54 +464,6 @@ fn ensure_host_dir(profile: &Path) -> Result<PathBuf, String> {
     fs::create_dir_all(&host).map_err(|error| format!("create {}: {error}", host.display()))?;
     tighten(&host, 0o700)?;
     Ok(host)
-}
-
-fn read_legacy_key(path: &Path) -> Result<Option<LegacyKey>, String> {
-    if is_symlink(path) {
-        return Err(format!("seal key {} is a symlink", path.display()));
-    }
-    let meta = match fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("stat {}: {error}", path.display())),
-    };
-    if !meta.file_type().is_file() {
-        return Err(format!("seal key {} is not a file", path.display()));
-    }
-    if !is_private(&meta) {
-        return Err(format!(
-            "seal key {} is readable outside the host user",
-            path.display()
-        ));
-    }
-    let bytes = fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
-    if bytes.len() != KEY_LEN + MAC_LEN && bytes.len() != KEY_LEN {
-        return Err(format!("seal key {} has the wrong length", path.display()));
-    }
-    let mut key = [0u8; KEY_LEN];
-    key.copy_from_slice(&bytes[..KEY_LEN]);
-    let mut last_mac = [0u8; MAC_LEN];
-    if bytes.len() == KEY_LEN + MAC_LEN {
-        last_mac.copy_from_slice(&bytes[KEY_LEN..]);
-    }
-    Ok(Some(LegacyKey { key, last_mac }))
-}
-
-fn discard_legacy_key(profile: &Path) -> Result<(), String> {
-    let path = legacy_key_path(profile);
-    if is_symlink(&path) {
-        return Err(format!("seal key {} is a symlink", path.display()));
-    }
-    match fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("stat {}: {error}", path.display())),
-        Ok(_) => {
-            fs::remove_file(&path)
-                .map_err(|error| format!("remove {}: {error}", path.display()))?;
-            log::info!("needs_you: removed legacy seal key {}", path.display());
-            Ok(())
-        }
-    }
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -619,19 +512,6 @@ fn tighten(path: &Path, mode: u32) -> Result<(), String> {
         let _ = (path, mode);
     }
     Ok(())
-}
-
-fn is_private(meta: &fs::Metadata) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        meta.permissions().mode() & 0o077 == 0
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = meta;
-        true
-    }
 }
 
 fn is_symlink(path: &Path) -> bool {
@@ -778,79 +658,75 @@ mod tests {
     fn journal_hmac_uses_the_host_permission_mac() {
         let dir = tempfile::tempdir().unwrap();
         save(TEST_HOST, dir.path(), &[sample_item()]).unwrap();
-        assert!(!legacy_key_path(dir.path()).exists());
+        assert!(!host_private_dir(dir.path()).join("seal.key").exists());
         let key = crate::broker::seal::existing_mac_key(TEST_HOST, dir.path())
             .unwrap()
             .unwrap();
         let raw = fs::read(journal_path(dir.path())).unwrap();
         let (body, mac) = split_mac(&raw).unwrap();
         assert!(ct_eq(&hmac_sha256(&key, body), &mac));
+        // A stale entry that cannot be read as a key must not affect load or save.
+        fs::create_dir(host_private_dir(dir.path()).join("seal.key")).unwrap();
         match load(TEST_HOST, dir.path()) {
             LoadedQueue::Items(items) => assert_eq!(items[0].id, "req_1"),
             other => panic!("sealed journal did not load: {other:?}"),
         }
+        save(TEST_HOST, dir.path(), &[]).unwrap();
     }
 
     #[test]
-    fn legacy_seal_key_migrates_onto_the_host_mac_and_is_removed() {
+    fn legacy_needs_you_key_is_never_read() {
         let dir = tempfile::tempdir().unwrap();
-        let legacy = [9u8; KEY_LEN];
-        write_legacy_journal(dir.path(), &[sample_item()], &legacy);
-        match load(TEST_HOST, dir.path()) {
-            LoadedQueue::Items(items) => assert_eq!(items[0].id, "req_1"),
-            other => panic!("legacy journal must migrate: {other:?}"),
-        }
-        assert!(!legacy_key_path(dir.path()).exists());
-        let key = crate::broker::seal::existing_mac_key(TEST_HOST, dir.path())
+        save(TEST_HOST, dir.path(), &[]).unwrap();
+        write_legacy_journal(dir.path(), &[sample_item()], &[9; 32]);
+        let original = fs::read(journal_path(dir.path())).unwrap();
+        assert!(matches!(load(TEST_HOST, dir.path()),
+            LoadedQueue::Untrusted(reason) if reason == "queue seal does not match"));
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(dir.path()).unwrap();
+        let items = monitor.list_needs_you();
+        assert!(items.iter().all(|item| item.id != "req_1"));
+        assert!(items
+            .iter()
+            .any(|item| item.kind == NeedsYouKind::Integrity));
+        let quarantined = fs::read_dir(host_private_dir(dir.path()))
             .unwrap()
-            .unwrap();
-        assert_ne!(key.as_slice(), legacy.as_slice());
-        match load(TEST_HOST, dir.path()) {
-            LoadedQueue::Items(items) => assert_eq!(items[0].id, "req_1"),
-            other => panic!("migrated journal must reload: {other:?}"),
-        }
+            .map(Result::unwrap)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("needs-you.json.untrusted-")
+            })
+            .expect("quarantined journal");
+        assert_eq!(fs::read(quarantined.path()).unwrap(), original);
     }
 
     #[test]
-    fn a_legacy_key_that_does_not_verify_is_removed() {
+    fn a_legacy_only_profile_takes_the_normal_integrity_path() {
         let dir = tempfile::tempdir().unwrap();
-        ensure_host_dir(dir.path()).unwrap();
-        write_private(
-            journal_path(dir.path()).as_path(),
-            b"not a sealed journal\n",
-        )
-        .unwrap();
-        write_private(&legacy_key_path(dir.path()), &[7u8; KEY_LEN + MAC_LEN]).unwrap();
-        match load(TEST_HOST, dir.path()) {
-            LoadedQueue::Untrusted(reason) => {
-                assert!(
-                    reason.contains("no seal") || reason.contains("does not match"),
-                    "{reason}"
-                );
-            }
-            other => panic!("bad legacy key must not load: {other:?}"),
-        }
-        assert!(!legacy_key_path(dir.path()).exists());
+        write_legacy_journal(dir.path(), &[sample_item()], &[7; 32]);
+        let LoadedQueue::Untrusted(with_key) = load(TEST_HOST, dir.path()) else {
+            panic!("legacy-only journal was not rejected");
+        };
+        fs::remove_file(host_private_dir(dir.path()).join("seal.key")).unwrap();
+        assert!(
+            matches!(load(TEST_HOST, dir.path()), LoadedQueue::Untrusted(reason) if reason == with_key)
+        );
+        assert!(super::super::seal::existing_mac_key(TEST_HOST, dir.path())
+            .unwrap()
+            .is_none());
     }
 
     #[test]
-    fn a_deleted_legacy_journal_stays_untrusted_after_the_key_file_is_removed() {
+    fn a_legacy_tip_cannot_report_a_missing_journal() {
         let dir = tempfile::tempdir().unwrap();
-        let legacy = [4u8; KEY_LEN];
-        write_legacy_journal(dir.path(), &[sample_item()], &legacy);
+        write_legacy_journal(dir.path(), &[], &[4; 32]);
         fs::remove_file(journal_path(dir.path())).unwrap();
-        match load(TEST_HOST, dir.path()) {
-            LoadedQueue::Untrusted(reason) => assert!(reason.contains("missing"), "{reason}"),
-            other => panic!("deleted journal must be untrusted: {other:?}"),
-        }
-        assert!(!legacy_key_path(dir.path()).exists());
-        match load(TEST_HOST, dir.path()) {
-            LoadedQueue::Untrusted(reason) => assert!(reason.contains("missing"), "{reason}"),
-            other => panic!("host tip must remember the deleted journal: {other:?}"),
-        }
+        assert!(matches!(load(TEST_HOST, dir.path()), LoadedQueue::Empty));
+        assert_eq!(read_tip(TEST_HOST, dir.path()).unwrap(), None);
     }
 
-    fn write_legacy_journal(profile: &Path, items: &[RestoredItem], key: &[u8; KEY_LEN]) {
+    fn write_legacy_journal(profile: &Path, items: &[RestoredItem], key: &[u8; 32]) {
         let host = ensure_host_dir(profile).unwrap();
         let disk: Vec<DiskItem> = items.iter().map(DiskItem::from).collect();
         let body = serde_json::to_vec(&DiskQueue {

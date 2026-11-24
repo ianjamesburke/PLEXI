@@ -51,23 +51,8 @@ pub(super) fn ensure_context_state_ignore(root: &std::path::Path) {
 }
 
 fn auto_init_workspace(root: &std::path::Path) {
-    // Guard: never init at home dir, filesystem root, or inside a Plexi profile dir.
-    let home = dirs::home_dir();
-    let root_str = root.to_string_lossy();
-    let is_home_or_root =
-        root == std::path::Path::new("/") || home.as_ref().map(|h| root == *h).unwrap_or(false);
-    let is_inside_profile = home
-        .as_ref()
-        .map(|h| {
-            let prefix = format!("{}/.plexi", h.to_string_lossy());
-            root_str.starts_with(&prefix)
-        })
-        .unwrap_or(false);
-    if is_home_or_root || is_inside_profile {
-        log::info!(
-            "auto_init_workspace: skipping home/root/profile path {}",
-            root.display()
-        );
+    if let Err(error) = crate::host::anchor::check_workspace_init_root(root) {
+        log::info!("auto_init_workspace: {error}");
         return;
     }
 

@@ -686,7 +686,6 @@ pub(crate) fn has_any_profile_seal_files(dir: &Path) -> bool {
         || dir.join("permission-audit.jsonl").exists()
         || host.join("seal-state.json").exists()
         || host.join("needs-you.json").exists()
-        || host.join("seal.key").exists()
         || host.join("continuations.json").exists()
 }
 
@@ -700,13 +699,7 @@ fn has_sealed_files_on_disk(dir: &Path) -> bool {
         return true;
     }
     let needs_you = dir.join("host").join("needs-you.json");
-    let legacy_seal_key = dir.join("host").join("seal.key");
-    if !legacy_seal_key.exists()
-        && std::fs::read_to_string(&needs_you).is_ok_and(|text| text.contains("\n#mac "))
-    {
-        return true;
-    }
-    false
+    std::fs::read_to_string(&needs_you).is_ok_and(|text| text.contains("\n#mac "))
 }
 
 fn write_seal_state(host: &HostProcess, dir: &Path, state: &SealState) -> Result<(), String> {

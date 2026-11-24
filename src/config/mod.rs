@@ -1,8 +1,10 @@
 pub mod edit;
+pub(crate) mod profile_home;
 mod profile_name;
 pub(crate) mod test_hooks;
 pub mod watcher;
 
+pub(crate) use profile_home::profile_home;
 pub use profile_name::{ProfileName, ProfileSelection};
 
 use serde::{Deserialize, Serialize};
@@ -1969,14 +1971,10 @@ fn channel_binary_basename(basename: &str) -> &str {
 }
 
 /// Maps a binary basename to its config directory name.
-/// `plexi` → `.plexi`; `plexi-<suffix>` → `.plexi-<suffix>`.
+/// A bare binary and the stable channel aliases use the unsuffixed directory.
 fn channel_suffix_from_basename(basename: &str) -> String {
-    let basename = channel_binary_basename(basename);
-    if let Some(suffix) = basename.strip_prefix("plexi-").filter(|s| !s.is_empty()) {
-        format!(".plexi-{suffix}")
-    } else {
-        ".plexi".to_string()
-    }
+    let channel = channel_from_basename(basename).unwrap_or("stable");
+    plexi_distribution::host_presence::profile_dir_name(channel)
 }
 
 /// The channel named by the running binary itself, if any: `plexi-alpha` →
@@ -2281,8 +2279,8 @@ pub fn config_dir() -> PathBuf {
     }
     #[cfg(not(test))]
     {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
+        profile_home()
+            .expect("channel profile directory unavailable")
             .join(config_dir_name())
     }
 }
@@ -2311,10 +2309,15 @@ pub fn shared_dir() -> PathBuf {
     }
     #[cfg(not(test))]
     {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(SHARED_DIR_NAME)
+        shared_dir_on_disk()
     }
+}
+
+/// Also locates the pre-fetched, read-only development bundle cache in tests.
+pub(crate) fn shared_dir_on_disk() -> PathBuf {
+    profile_home()
+        .expect("shared profile directory unavailable")
+        .join(SHARED_DIR_NAME)
 }
 
 const SHARED_DIR_NAME: &str = ".plexi";

@@ -1604,9 +1604,9 @@ pub enum PluginCmd {
   State and behavior probes:
     PLEXI_CHANNEL=alpha plexi view render . --state fixtures/state.json
     PLEXI_CHANNEL=alpha plexi view render . --png --output render-output/shot.png
-    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi pane action <pane-id> <handler-id>
-    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi pane key <pane-id> <key>
-    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi pane state <pane-id>
+    plexi-alpha pane action <pane-id> <handler-id>
+    plexi-alpha pane key <pane-id> <key>
+    plexi-alpha pane state <pane-id>
 
   Logs:
     Inspect ~/.plexi-alpha/plexi.log or the matching ~/.plexi-pr-N/plexi.log.

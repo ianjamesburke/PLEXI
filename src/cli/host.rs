@@ -238,7 +238,15 @@ pub(crate) struct HostTarget {
 }
 
 impl HostTarget {
-    fn resolve(channel: Option<String>, profile: Option<String>, home: &Path) -> Self {
+    fn for_invocation() -> Result<Self, String> {
+        Ok(Self::resolve(
+            crate::config::build_channel(),
+            crate::config::explicit_profile().map(str::to_owned),
+            &crate::config::profile_home()?,
+        ))
+    }
+
+    pub(super) fn resolve(channel: Option<String>, profile: Option<String>, home: &Path) -> Self {
         let dir_name = match profile.as_deref() {
             Some(profile) => crate::config::named_profile_dir_name(profile),
             None => host_presence::profile_dir_name(channel.as_deref().unwrap_or("stable")),
@@ -322,13 +330,7 @@ const SPAWN_QUEUE_DIR: &str = "spawn-queue";
 /// stop, restart, log, uninstall) and its trace use only a target returned
 /// here, so nothing connects, traces or signals through a linked profile.
 pub(crate) fn host_target() -> Result<HostTarget, String> {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let target = HostTarget::resolve(
-        crate::config::build_channel(),
-        crate::config::explicit_profile().map(str::to_string),
-        &home,
-    )
-    .validated()?;
+    let target = HostTarget::for_invocation()?.validated()?;
     log::info!(
         "host: target profile={:?} channel={:?} dir={:?} socket={:?}",
         target.profile,
@@ -355,7 +357,7 @@ fn cli_host_target() -> Result<HostTarget, i32> {
 /// integrity account through one would reach another profile. Interior data
 /// symlinks are unlinked by `remove_dir_all`. A missing entry is fine.
 pub(crate) fn ensure_real_profile_dir(profile: &Path) -> Result<(), String> {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let home = crate::config::profile_home()?;
     // Unit-test profiles are injected tempdirs outside the account home.
     #[cfg(test)]
     let home = if profile.starts_with(&home) {
@@ -3204,6 +3206,51 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
     }
 
     // ── HostTarget ──────────────────────────────────────────────────────
+
+    #[test]
+    fn launcher_and_cli_resolve_the_same_profile() {
+        // Check release addresses before validation would inspect a real profile.
+        #[cfg(unix)]
+        if let Ok(channel) = std::env::var("PLEXI_1288_TEST_CHANNEL") {
+            let _channel = crate::config::set_test_channel(&channel);
+            crate::config::set_profile(crate::config::ProfileSelection::parse("review").unwrap());
+            let home = dirs::home_dir().unwrap();
+            let (target, expected_home) = if crate::config::is_test_channel(Some(&channel)) {
+                (host_target().unwrap(), home)
+            } else {
+                let account = crate::config::profile_home::login_home_dir().unwrap();
+                assert_ne!(account, home);
+                (HostTarget::for_invocation().unwrap(), account)
+            };
+            assert_eq!(target.dir(), expected_home.join(".plexi-review"));
+            assert_eq!(crate::cli::resolve_command_socket(), Some(target.socket()));
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let env = tmp.path().to_path_buf();
+        let account = tmp.path().join("account");
+        #[cfg(unix)]
+        for channel in ["alpha", option_env!("PLEXI_BUILD_TEST_CHANNEL").unwrap_or("pr-1288")] {
+            const TEST_NAME: &str = "cli::host::tests::launcher_and_cli_resolve_the_same_profile";
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST_NAME])
+                .env("PLEXI_1288_TEST_CHANNEL", channel)
+                .env("HOME", &env)
+                .env_remove("PLEXI_SOCKET")
+                .status()
+                .unwrap();
+            assert!(status.success(), "profile resolution failed for {channel}");
+        }
+        for (test_channel, expected) in [(true, &env), (false, &account)] {
+            let home = crate::config::profile_home::profile_home_from(
+                test_channel, Some(env.clone()), Some(account.clone()),
+            ).unwrap();
+            let target = HostTarget::resolve(Some("pr-1288".into()), None, &home);
+            let cli = crate::cli::resolve_command_socket_from(None, Some("pr-1288"), None, None, || home);
+            assert_eq!(target.dir(), expected.join(".plexi-pr-1288"));
+            assert_eq!(cli, Some(target.socket()));
+        }
+    }
 
     #[test]
     fn host_target_depends_only_on_its_arguments() {
