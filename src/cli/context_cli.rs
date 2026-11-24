@@ -96,7 +96,12 @@ pub fn context_new_cli(
     // Every creation waits for the host's authoritative name. Sub-context
     // callers get the structured response; top-level creation stays quiet on
     // success and prints only the collision note.
-    match super::request(payload, "context-new-response", "context-new") {
+    let request = if explicit_parent.is_some() {
+        super::request_json_output
+    } else {
+        super::request
+    };
+    match request(payload, "context-new-response", "context-new") {
         Ok(content) => {
             let response: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
             if explicit_parent.is_some() {

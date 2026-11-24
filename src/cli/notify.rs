@@ -166,7 +166,8 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
 
     let timeout =
         (wait_timeout_secs > 0).then(|| std::time::Duration::from_secs(wait_timeout_secs));
-    let reply = super::poll_reply(&response_file, timeout);
+    let reply =
+        super::reply::HostReply::decode_choice(crate::rpc::poll_bytes(&response_file, timeout));
     if matches!(
         reply,
         super::reply::HostReply::Transport(crate::rpc::PollError::TimedOut)

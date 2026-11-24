@@ -57,6 +57,20 @@ impl HostReply {
         }
     }
 
+    pub(super) fn decode_choice(reply: Result<Vec<u8>, PollError>) -> Self {
+        let reply = reply.and_then(|bytes| {
+            String::from_utf8(bytes).map_err(|error| {
+                PollError::Unreadable(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            })
+        });
+        match reply {
+            // A choice key can contain only whitespace. Zero bytes still
+            // mean there is no reply body.
+            Ok(key) if !key.is_empty() && key.trim().is_empty() => Self::Payload(key),
+            reply => Self::decode(reply),
+        }
+    }
+
     /// A verb with a plain-text acknowledgement uses every other text as its refusal reason.
     pub(super) fn expect_text_ack(self, expected: &str) -> Self {
         match self {
@@ -212,6 +226,26 @@ mod tests {
         assert_eq!(refusal.json_body().as_bytes(), body);
     }
 
+    #[test]
+    fn choice_replies_distinguish_whitespace_from_empty_or_invalid_bodies() {
+        use crate::rpc::PollError;
+
+        assert!(matches!(
+            HostReply::decode_choice(Ok(b" ".to_vec())),
+            HostReply::Payload(key) if key == " "
+        ));
+        assert!(matches!(
+            HostReply::decode_choice(Ok(Vec::new())),
+            HostReply::Transport(PollError::Unreadable(error))
+                if error.kind() == std::io::ErrorKind::UnexpectedEof
+        ));
+        assert!(matches!(
+            HostReply::decode_choice(Ok(vec![0xff])),
+            HostReply::Transport(PollError::Unreadable(error))
+                if error.kind() == std::io::ErrorKind::InvalidData
+        ));
+    }
+
     /// Codex 3290 r4 S1: real CLI entries against a host that refuses, on
     /// the connection. Each exits nonzero; none reports the refusal as its
     /// result. `context new` used to exit 0 here.
@@ -268,7 +302,7 @@ mod waiter_tests {
     use std::os::unix::net::UnixListener;
     use std::process::{Command, Output};
 
-    use crate::cli::{agents_api, notify, open, pane, plugin, workspace};
+    use crate::cli::{agents_api, context_cli, notify, open, pane, plugin, workspace};
 
     const CHILD: &str = "cli::reply::waiter_tests::run_waiter";
     const REFUSAL: &str = r#"{"error_code":"permission_denied","error":"fixture refused the request","pane_id":42,"state":"succeeded","status":"value","value":"fixture value"}"#;
@@ -282,9 +316,11 @@ mod waiter_tests {
         let _channel = crate::config::set_test_channel("reply-fixture");
         let _profile =
             crate::config::set_test_profile_dir(std::env::current_dir().unwrap().join("profile"));
-        if entry == "dashboard cancel" {
+        if entry.starts_with("dashboard cancel") {
             std::fs::create_dir_all(crate::config::workspace_channel_dir()).unwrap();
         }
+        let json = entry.ends_with(" json");
+        crate::cli::set_request_json_output(json);
         crate::cli::set_command_socket_override(std::env::var_os("PLEXI_SOCKET").unwrap().into());
         let spawn = open::PaneNewCliArgs {
             name: Some("fixture"),
@@ -323,9 +359,30 @@ mod waiter_tests {
                     kind: None,
                 },
             ),
+            "notify choice" => notify::notify_cli(notify::NotifyCliArgs {
+                title: "fixture",
+                choices: &[crate::cli::parse_notify_choice(" :Continue").unwrap()],
+                wait_for_response: true,
+                wait_timeout_secs: 1,
+                ..Default::default()
+            }),
             "notify dismiss" => notify::dismiss_notify_cli("fixture"),
             "pane tree json" => pane::pane_tree_cli(None, false, true),
-            "dashboard cancel" => agents_api::command_view_cancel_cli("run_fixture"),
+            "context new json" => {
+                context_cli::context_new_cli(Some("fixture"), None, None, &[], false, "right", None)
+            }
+            "context new child" => context_cli::context_new_cli(
+                Some("fixture"),
+                None,
+                Some("parent"),
+                &[],
+                false,
+                "right",
+                None,
+            ),
+            "dashboard cancel" | "dashboard cancel json" => {
+                agents_api::command_view_cancel_cli("run_fixture", json)
+            }
             _ => panic!("unknown waiter {entry}"),
         };
         std::process::exit(code);
@@ -467,6 +524,36 @@ mod waiter_tests {
         REFUSAL,
         true
     );
+    refusal_test!(
+        context_new_json_keeps_refusal_body,
+        "context new json",
+        REFUSAL,
+        true
+    );
+    refusal_test!(
+        context_new_child_keeps_refusal_body,
+        "context new child",
+        REFUSAL,
+        true
+    );
+    refusal_test!(
+        dashboard_cancel_json_keeps_refusal_body,
+        "dashboard cancel json",
+        REFUSAL,
+        true
+    );
+
+    #[test]
+    fn notify_wait_accepts_a_whitespace_choice_key() {
+        let (output, request) = run_against_host("notify choice", " ", false);
+        assert_eq!(request["options"][0]["value"], " ");
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert_eq!(
+            output.stdout.strip_prefix(b"\nrunning 1 test\n"),
+            Some(&b""[..]),
+            "{output:?}"
+        );
+    }
 
     #[test]
     fn submit_refusal_keeps_the_observed_input_line_on_stderr() {

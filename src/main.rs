@@ -433,6 +433,7 @@ fn main() -> eframe::Result {
             }
             if let Some(cmd) = cli.command {
                 let json = cli.json;
+                cli::set_request_json_output(json);
                 let resolve_pane = |t: &cli::PaneTarget| -> u64 {
                     t.resolve().unwrap_or_else(|code| cli::trace::exit(code))
                 };
@@ -682,7 +683,7 @@ fn main() -> eframe::Result {
                                 cli::trace::exit(cli::command_view_cli("open", json))
                             }
                             Some(AgentsDashboardCmd::Cancel { run }) => {
-                                cli::trace::exit(cli::command_view_cancel_cli(&run))
+                                cli::trace::exit(cli::command_view_cancel_cli(&run, json))
                             }
                             Some(AgentsDashboardCmd::Resolve { id: _ }) => {
                                 cli::trace::exit(cli::command_view_refused("resolve"))

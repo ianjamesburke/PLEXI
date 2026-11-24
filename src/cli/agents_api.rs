@@ -30,22 +30,22 @@ pub fn command_view_cli(op: &str, json_out: bool) -> i32 {
     )
 }
 
-pub fn command_view_cancel_cli(run: &str) -> i32 {
+pub fn command_view_cancel_cli(run: &str, json: bool) -> i32 {
     let workspace = match crate::cli::agent::resolve_workspace_cwd() {
         Ok(root) => root,
         Err(code) => return code,
     };
-    command_view_cancel_in(&workspace, run)
+    command_view_cancel_in(&workspace, run, json)
 }
 
 /// `plexi agents-dashboard cancel` for `workspace`: the whole entry past
 /// finding the workspace.
-fn command_view_cancel_in(workspace: &std::path::Path, run: &str) -> i32 {
+fn command_view_cancel_in(workspace: &std::path::Path, run: &str, json: bool) -> i32 {
     log::info!("command_view:cli: cancel run={run}");
     send_dashboard(
         dashboard_frame(workspace, "cancel", Some(run)),
         "agents-dashboard cancel",
-        false,
+        json,
     )
 }
 
@@ -231,7 +231,7 @@ mod tests {
             // Cancel goes through its own entry, so a wrong operation built
             // there fails here (Codex 3290 r4).
             let run_cli = move || match run {
-                Some(run) => super::command_view_cancel_in(&path, run),
+                Some(run) => super::command_view_cancel_in(&path, run, false),
                 None => super::send_dashboard(
                     super::dashboard_frame(&path, "list", None),
                     "agents-dashboard",

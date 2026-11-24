@@ -1503,12 +1503,13 @@ fn try_query_live_plugin_tools_for_info(
         return None;
     }
     let payload = build_list_plugin_tools_payload(Some(plugin_id), None);
-    let content = super::request_with(
+    let content = super::request_reply(
         payload,
         "app-tools-response",
         "plugin tools",
         std::time::Duration::from_secs(2),
     )
+    .and_then(|reply| reply.payload_or_report("plugin tools", false))
     .ok()?;
     let reply: serde_json::Value = serde_json::from_str(&content).ok()?;
     if !super::reply::acknowledged(&reply) {

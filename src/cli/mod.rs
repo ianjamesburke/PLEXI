@@ -1180,6 +1180,13 @@ pub(super) fn request(
     request_with(payload, prefix, label, crate::rpc::DEFAULT_TIMEOUT)
 }
 
+static REQUEST_JSON_OUTPUT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Set the invocation's global output mode for the shared request helpers.
+pub(crate) fn set_request_json_output(json: bool) {
+    let _ = REQUEST_JSON_OUTPUT.set(json);
+}
+
 /// [`request`] with an explicit poll window, for verbs the host answers on its
 /// own longer deadline.
 pub(super) fn request_with(
@@ -1188,7 +1195,8 @@ pub(super) fn request_with(
     label: &str,
     timeout: std::time::Duration,
 ) -> Result<String, i32> {
-    request_reply(payload, prefix, label, timeout)?.payload_or_report(label, false)
+    let json = REQUEST_JSON_OUTPUT.get().copied().unwrap_or(false);
+    request_reply(payload, prefix, label, timeout)?.payload_or_report(label, json)
 }
 
 pub(super) fn request_json_output(
