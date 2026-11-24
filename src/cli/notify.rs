@@ -43,10 +43,16 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
     // the kernel's account of this process; nothing here names a pane
     // (stint 1285). An explicit context or window scope needs a caller in a
     // pane: outside one, say so before sending (the host refuses it too).
+    // A set-but-garbled pane or context variable is corrupt state, not an
+    // outside caller: fail loudly before sending, as alpha did.
+    let (context_id, _pane_id) = match (caller_env_id("PLEXI_CONTEXT_ID"), caller_env_id("PLEXI_PANE_ID")) {
+        (Ok(context), Ok(pane)) => (context, pane),
+        (Err(code), _) | (_, Err(code)) => return code,
+    };
     if matches!(
         scope,
         Some(crate::protocol::NotifyScope::Window | crate::protocol::NotifyScope::Context)
-    ) && std::env::var_os("PLEXI_CONTEXT_ID").is_none()
+    ) && context_id.is_none()
     {
         let scope_name = if scope == Some(crate::protocol::NotifyScope::Window) {
             "window"
@@ -179,11 +185,14 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
     let timeout =
         (wait_timeout_secs > 0).then(|| std::time::Duration::from_secs(wait_timeout_secs));
     match crate::rpc::poll_string(&response_file, timeout) {
-        Ok(key) => {
-            log::info!("notify:cli: response received chars={}", key.trim().chars().count());
-            print!("{}", key.trim());
-            0
-        }
+        Ok(reply) => match super::reply::HostReply::decode(&reply).payload_or_report() {
+            Ok(key) => {
+                log::info!("notify:cli: response received chars={}", key.trim().chars().count());
+                print!("{}", key.trim());
+                0
+            }
+            Err(code) => code,
+        },
         Err(crate::rpc::PollError::TimedOut) => {
             log::info!("notify:cli: choice wait timed out after {wait_timeout_secs}s");
             2
@@ -196,7 +205,21 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
     }
 }
 
+/// A pane-identity variable: absent, or a number. Anything else is refused.
+fn caller_env_id(key: &str) -> Result<Option<u64>, i32> {
+    match std::env::var(key) {
+        Ok(value) => value.parse::<u64>().map(Some).map_err(|_| {
+            eprintln!("error: {key} is not a valid number: {value}");
+            1
+        }),
+        Err(_) => Ok(None),
+    }
+}
+
 pub fn dismiss_notify_cli(notify_id: &str) -> i32 {
+    if let Err(code) = caller_env_id("PLEXI_CONTEXT_ID").and(caller_env_id("PLEXI_PANE_ID")) {
+        return code;
+    }
     let Some(socket_path) = super::resolve_command_socket() else {
         eprintln!("{}", super::NO_COMMAND_SOCKET);
         return 1;
@@ -424,6 +447,60 @@ mod notify_tests {
             payload["response_file"].as_str().is_some(),
             "blocking choice must include a response file: {payload}"
         );
+    }
+
+    /// Codex 3290 r4 S1: a waiting choice the host refuses (here an explicit
+    /// scope it cannot place) is reported as a refusal and exits nonzero; the
+    /// refusal is never printed as the chosen key. The reply arrives on the
+    /// connection, as the host sends it.
+    #[test]
+    fn a_refused_waiting_choice_is_not_a_chosen_key() {
+        let env = socket_env_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("notify.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind notify socket");
+        env.set(&socket_path);
+        let handle = std::thread::spawn(move || {
+            use std::io::Write;
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            stream.write_all(&[0x06]).unwrap();
+            stream
+                .write_all(br#"{"ok":false,"error_code":"scope_unresolvable","error":"no context"}"#)
+                .unwrap();
+        });
+        let choices = vec![("talk".to_string(), "Talk".to_string(), None)];
+        let code = notify_cli(NotifyCliArgs {
+            title: "Ready",
+            body: "b",
+            choices: &choices,
+            wait_for_response: true,
+            display_timeout_secs: 1,
+            wait_timeout_secs: 5,
+            ..Default::default()
+        });
+        handle.join().unwrap();
+        assert_eq!(code, 1, "a refusal exits nonzero");
+    }
+
+    /// Codex 3290 r4 S1: a garbled pane variable is refused before anything
+    /// is sent, as alpha refused it.
+    #[test]
+    fn a_malformed_pane_variable_is_refused_before_sending() {
+        let env = socket_env_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("notify.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        env.set(&socket_path);
+        env.set_pane_id("not-a-number");
+        let code = notify_cli(NotifyCliArgs { title: "T", body: "B", ..Default::default() });
+        assert_eq!(code, 1);
+        assert!(listener.accept().is_err(), "a garbled identity reached the host");
+        assert_eq!(super::dismiss_notify_cli("n"), 1);
+        assert!(listener.accept().is_err());
     }
 
     #[test]

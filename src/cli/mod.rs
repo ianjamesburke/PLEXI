@@ -627,6 +627,7 @@ pub mod help;
 pub mod introspect;
 mod pane_caller;
 mod queued_spawn;
+mod reply;
 pub mod registry;
 pub mod setup;
 pub mod skill_draft;
@@ -697,6 +698,11 @@ pub(super) fn print_tip(msg: &str) {
 /// at all is passed through verbatim — the host's reply is never withheld
 /// from the caller.
 pub(super) fn print_json_output(json_str: &str) -> i32 {
+    let json_str = match reply::HostReply::decode(json_str).payload_or_report() {
+        Ok(payload) => payload,
+        Err(code) => return code,
+    };
+    let json_str = json_str.as_str();
     match serde_json::from_str::<serde_json::Value>(json_str) {
         Ok(v) => match serde_json::to_string_pretty(&v) {
             Ok(pretty) => {
@@ -1253,11 +1259,10 @@ pub(super) fn request_with(
 /// already owned by [`poll_rpc`], and swallowing a valid-but-unexpected shape
 /// would hide the response from the caller.
 pub(super) fn reply_error(content: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(content)
-        .ok()?
-        .get("error")?
-        .as_str()
-        .map(str::to_string)
+    match reply::HostReply::decode(content) {
+        reply::HostReply::Refused { reason, .. } => Some(reason),
+        reply::HostReply::Payload(_) => None,
+    }
 }
 
 /// Surface a host-reported `error` as `error: <msg>` on stderr with exit code 1.
