@@ -3056,7 +3056,16 @@ mod tests {
     }
 
     impl BrokerDecision {
+        /// Open and armed, so a refusal in a test can only come from the
+        /// input being synthetic, never from how fast the test ran.
         fn new() -> Self {
+            let mut f = Self::just_opened();
+            f.h.app.arm_decision_overlay_for_test();
+            f
+        }
+
+        /// The overlay as a person first sees it, inside the arm delay.
+        fn just_opened() -> Self {
             let mut h = HostHarness::new();
             let pane_id = h.add_focused_terminal();
             let root = tempfile::tempdir().unwrap();
@@ -3511,6 +3520,24 @@ mod tests {
             overlay.options[option_idx].key, key,
             "option order changed; digits would target the wrong choice"
         );
+    }
+
+    #[test]
+    fn armed_overlay_takes_a_physical_approval_at_once() {
+        let mut f = BrokerDecision::new();
+        f.physical_key(egui::Key::Num1);
+        f.assert_decided(crate::broker::gate::ApprovalChoice::Once);
+    }
+
+    #[test]
+    fn approval_inside_the_arm_delay_is_held_and_can_be_retried() {
+        let mut f = BrokerDecision::just_opened();
+        f.physical_key(egui::Key::Num2);
+        f.assert_undecided("physical approval inside the arm delay");
+        f.release_keys();
+        f.h.app.arm_decision_overlay_for_test();
+        f.physical_key(egui::Key::Num2);
+        f.assert_decided(crate::broker::gate::ApprovalChoice::Always);
     }
 
     #[test]
