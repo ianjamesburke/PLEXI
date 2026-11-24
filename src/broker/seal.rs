@@ -1,33 +1,11 @@
 //! Integrity for permission files.
 //!
-//! `grants.toml` is HMAC-SHA256 sealed. The audit log is an append-only hash
-//! chain. The MAC key and the audit tip live in the host seal store
-//! (`host_key`), never in `secrets.json` and never under a workspace id an
-//! agent can pass to `plexi secret get`. Agent panes never receive the key.
-//! A bad or missing MAC is not a grant.
+//! The per-profile host key authenticates grants, permissions and the audit
+//! chain tip in `host/seal-state.json`. An unsigned decision file or an
+//! audit with no authenticated tip is quarantined, including on first launch.
 //!
-//! A profile that has never been sealed is the exception. Pre-seal builds
-//! wrote `grants.toml` and `permission-audit.jsonl` with no MAC. Those files
-//! are adopted once, then sealed. Adopt is allowed only when all three of
-//! these host-store records are absent:
-//!
-//! - the permission MAC key (`permission-mac`)
-//! - this profile's seal marker (`plexi:host:permission-seal:` plus the
-//!   profile directory hash)
-//! - this profile's audit tip
-//!
-//! Stripping `# plexi-mac:` clears none of them, so a sealed profile still
-//! quarantines. The MAC key is one item for the whole host seal store: the
-//! first profile that seals also closes legacy adopt for every other profile
-//! on that store. Deleting the key is not enough on its own; the marker and
-//! the tip still mean "sealed". A keychain or Secret Service read error
-//! refuses adopt as well.
-//!
-//! That read error is not a bad MAC. The host deletes the unreadable seal item,
-//! creates a new key, and reseals the profile. Grants and audit lines that
-//! cannot be checked under the new key are reset and loaded empty; they are
-//! not quarantined as tampering and startup does not leave them unloaded.
-//! Only a key that was actually read, and whose MAC does not match, is tampering.
+//! If an existing key is unreadable, recovery rotates it and resets the
+//! decisions that cannot be verified.
 //! If the old item cannot be removed without a keychain prompt, the files stay
 //! where they are and no integrity alert is filed.
 
@@ -496,98 +474,6 @@ pub fn reject_untrusted_audit(host: &HostProcess, path: &Path, reason: &str) {
         quarantine(path);
     }
     clear_audit_tip(host, path);
-}
-
-/// True when `reason` is the pre-seal audit failure: a log with lines and no tip.
-pub(crate) fn unauthenticated_audit(reason: &str) -> bool {
-    reason == UNAUTHENTICATED_AUDIT
-}
-
-/// Body of a file that has no MAC line. Absent, empty, and sealed files are `None`.
-pub(crate) fn legacy_unsealed_body(path: &Path) -> Option<String> {
-    let bytes = std::fs::read(path).ok()?;
-    if bytes.is_empty() {
-        return None;
-    }
-    let text = String::from_utf8(bytes).ok()?;
-    if text.rfind(MAC_PREFIX).is_some() {
-        return None;
-    }
-    Some(text)
-}
-
-/// No MAC key, no seal marker, and no audit tip for `dir`.
-///
-/// A read error is sealed. Legacy adopt must not run when the host store
-/// cannot prove the profile is untouched.
-pub(crate) fn profile_never_sealed(host: &HostProcess, dir: &Path) -> bool {
-    if !has_any_profile_seal_files(dir) {
-        return true;
-    }
-    match existing_mac_key(host, dir) {
-        Ok(None) => {}
-        Ok(Some(_)) => return false,
-        Err(error) => {
-            log::error!(
-                "permission_seal: host mac key unreadable; not adopting legacy files in {}: {error}",
-                dir.display()
-            );
-            return false;
-        }
-    }
-    match read_seal_state(host, dir) {
-        SealStateStatus::Absent => true,
-        SealStateStatus::Trusted(state) => {
-            !state.sealed && state.audit_tip.is_none() && state.needs_you_tip.is_none()
-        }
-        SealStateStatus::KeyUnreadable(error) => {
-            log::error!(
-                "permission_seal: seal state unreadable; not adopting legacy files in {}: {error}",
-                dir.display()
-            );
-            false
-        }
-        SealStateStatus::Untrusted(error) => {
-            log::error!(
-                "permission_seal: seal state untrusted; not adopting legacy files in {}: {error}",
-                dir.display()
-            );
-            false
-        }
-    }
-}
-
-/// Replace a pre-seal audit log with one authenticated migration line.
-///
-/// Does not quarantine. A profile that already has a tip is left untouched
-/// and returns an error so the caller keeps the tamper path.
-pub(crate) fn adopt_legacy_audit(host: &HostProcess, path: &Path) -> Result<(), String> {
-    if tip_lookup(host, path)?.is_some() {
-        return Err("audit tip already exists".to_string());
-    }
-    if path.exists() {
-        let raw = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
-        let lines = content_lines(&raw);
-        if !lines.is_empty() {
-            log::info!(
-                "permission_seal: replaced legacy unsealed audit {} ({} lines)",
-                path.display(),
-                lines.len()
-            );
-        }
-        std::fs::remove_file(path).map_err(|error| error.to_string())?;
-    }
-    let fact = serde_json::json!({
-        "kind": "legacy_migration",
-        "actor": "host",
-        "decision": "migrated legacy unsealed permission-audit.jsonl",
-    });
-    append_audit(host, path, &fact).map_err(|error| error.to_string())?;
-    log::info!(
-        "permission_seal: started authenticated audit tip for {}",
-        path.display()
-    );
-    Ok(())
 }
 
 /// Drop the MAC key from every pane. Agent panes also lose any value that

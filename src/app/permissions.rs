@@ -634,11 +634,6 @@ impl PermissionStore {
     /// [`Self::integrity_fault`] names it. A signed file that does not parse is
     /// backed up and also returns empty.
     ///
-    /// A pre-seal file with no MAC is adopted in memory when
-    /// [`crate::broker::seal::profile_never_sealed`] is true. It is not
-    /// quarantined and it does not create a host key; the grant import seals
-    /// the profile and retires this file.
-    ///
     /// Host only: a process that never ran host start gets
     /// [`crate::broker::custody::NotHostProcess`].
     pub fn load_or_default(
@@ -652,9 +647,6 @@ impl PermissionStore {
         config_dir: &Path,
     ) -> Self {
         let path = config_dir.join("permissions.toml");
-        if let Some(store) = Self::adopt_legacy_unsealed(host, config_dir, &path) {
-            return store;
-        }
         let loaded = crate::broker::seal::load_toml::<PermissionStoreData>(host, &path);
         if loaded.key_unreadable {
             log::info!(
@@ -693,30 +685,6 @@ impl PermissionStore {
             store.save();
         }
         store
-    }
-
-    fn adopt_legacy_unsealed(
-        host: &crate::broker::custody::HostProcess,
-        config_dir: &Path,
-        path: &Path,
-    ) -> Option<Self> {
-        let body = crate::broker::seal::legacy_unsealed_body(path)?;
-        if !crate::broker::seal::profile_never_sealed(host, config_dir) {
-            return None;
-        }
-        let mut data = toml::from_str::<PermissionStoreData>(&body).ok()?;
-        log::info!("permission_store: migrated legacy unsealed permissions.toml");
-        let migrated = Self::migrate_raw_path_keys(&mut data);
-        if migrated > 0 {
-            log::info!(
-                "permission_store: migrated {migrated} entries to canonical workspace paths"
-            );
-        }
-        Some(Self {
-            file: TomlStore::at(path.to_path_buf(), STORE_LABEL, data),
-            untrusted: None,
-            custody: Some(*host),
-        })
     }
 
     /// Set when the file on disk was refused. The in-memory entries are empty.

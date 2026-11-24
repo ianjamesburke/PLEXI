@@ -1483,7 +1483,8 @@ mod tests {
             let evidence = std::path::PathBuf::from(
                 std::env::var(EVIDENCE_ENV).expect("fixture evidence path"),
             );
-            let env = crate::cli::host::restart_coordinator_env(std::env::vars().collect(), None);
+            let env =
+                crate::cli::host::restart_coordinator_env(std::env::vars_os().collect(), None);
             let mut command = std::process::Command::new("/bin/sleep");
             command
                 .arg("600")

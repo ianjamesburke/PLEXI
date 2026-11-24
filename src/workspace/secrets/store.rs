@@ -7,6 +7,7 @@
 //!
 //! [`super::system_store`] is the only selector for a real backend.
 
+use crate::config::test_hooks::KEYCHAIN_PATH;
 use zeroize::Zeroizing;
 
 #[cfg(all(target_os = "macos", not(test)))]
@@ -170,13 +171,7 @@ fn keychain_error_message(stage: KeychainStage, status: i32) -> String {
     }
 }
 
-/// `PLEXI_KEYCHAIN_PATH` is the installed-binary e2e hook. It is not a user
-/// setting. It names one keychain file that is the whole domain for user
-/// secrets and the file the host seal key uses (`broker::host_key`), so both
-/// read it through this one parser.
-pub(crate) const KEYCHAIN_PATH_ENV: &str = "PLEXI_KEYCHAIN_PATH";
-
-/// The one parser for [`KEYCHAIN_PATH_ENV`]. Unset is no override. Set, it
+/// Parse the test keychain path. Unset is no override. Set, it
 /// must be a non-empty UTF-8 path with no surrounding whitespace; anything
 /// else is an error before any keychain is touched, never a fallback to the
 /// default keychain.
@@ -188,12 +183,12 @@ pub(crate) fn parse_keychain_path(
     };
     let Some(text) = raw.to_str() else {
         return Err(format!(
-            "{KEYCHAIN_PATH_ENV} is not valid UTF-8; unset it or name one keychain file"
+            "{KEYCHAIN_PATH} is not valid UTF-8; unset it or name one keychain file"
         ));
     };
     if text.is_empty() || text.trim() != text {
         return Err(format!(
-            "{KEYCHAIN_PATH_ENV} is set but empty or padded with whitespace ({text:?}); unset it or name one keychain file"
+            "{KEYCHAIN_PATH} is set but empty or padded with whitespace ({text:?}); unset it or name one keychain file"
         ));
     }
     Ok(Some(std::path::PathBuf::from(text)))
@@ -202,7 +197,7 @@ pub(crate) fn parse_keychain_path(
 /// [`parse_keychain_path`] applied to this process's environment.
 #[cfg(all(target_os = "macos", not(test)))]
 pub(crate) fn keychain_path_override() -> Result<Option<std::path::PathBuf>, String> {
-    parse_keychain_path(std::env::var_os(KEYCHAIN_PATH_ENV).as_deref())
+    parse_keychain_path(KEYCHAIN_PATH.value().as_deref())
 }
 
 /// `PLEXI_KEYCHAIN_PASSWORD` must be non-empty whenever the path hook is set.
@@ -211,7 +206,7 @@ pub(crate) fn keychain_path_override() -> Result<Option<std::path::PathBuf>, Str
 pub(super) fn explicit_keychain_password(value: Option<&str>) -> Result<&str, &'static str> {
     match value {
         Some(password) if !password.is_empty() => Ok(password),
-        _ => Err("PLEXI_KEYCHAIN_PASSWORD is required when PLEXI_KEYCHAIN_PATH is set"),
+        _ => Err("a non-empty test keychain password is required when a test keychain path is set"),
     }
 }
 
@@ -886,7 +881,7 @@ mod tests {
         );
         for bad in ["", " ", " /tmp/t.keychain-db", "/tmp/t.keychain-db\n"] {
             let error = parse_keychain_path(Some(OsStr::new(bad))).unwrap_err();
-            assert!(error.contains(KEYCHAIN_PATH_ENV), "{error}");
+            assert!(error.contains(KEYCHAIN_PATH.name), "{error}");
         }
         #[cfg(unix)]
         {

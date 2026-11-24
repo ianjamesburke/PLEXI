@@ -808,9 +808,6 @@ impl PermissionMonitor {
             }
             log::error!("permission_monitor: mac key recovery failed: {error}");
         }
-        // Snapshot before the grant load. Adopting a legacy file creates the
-        // MAC key, and a later check would then look sealed.
-        let never_sealed = super::seal::profile_never_sealed(host, dir);
         let store = GrantStore::load_sealed(host, dir);
         let mut faults = store.integrity_faults().to_vec();
         // `AgentHost::production` and `HostSubscriptionService::new` load the
@@ -832,11 +829,6 @@ impl PermissionMonitor {
                 log::info!(
                     "permission_monitor: audit could not be checked because the seal key is unreadable ({reason})"
                 );
-            } else if never_sealed
-                && super::seal::unauthenticated_audit(&reason)
-                && super::seal::adopt_legacy_audit(host, &audit).is_ok()
-            {
-                log::info!("permission_monitor: migrated legacy unsealed permission-audit.jsonl");
             } else {
                 faults.push(super::seal::IntegrityFault {
                     file: "permission-audit.jsonl".to_string(),
@@ -8484,137 +8476,78 @@ mod tests {
         );
     }
 
-    #[test]
-    fn legacy_unsealed_grants_are_adopted_once() {
+    /// First launch may encounter the files either before or just after
+    /// provisioning the profile key. Neither case authenticates a decision.
+    fn with_first_load_profiles(check: impl Fn(&Path)) {
         crate::broker::host_key::without_mac_key(|| {
-            let dir = tempfile::tempdir().unwrap();
-            let ws = tempfile::tempdir().unwrap();
-            let records = vec![
-                GrantRecord::event_stream_allow(
-                    ActorType::Agent,
-                    "assistant",
-                    ActorScope::User,
-                    "chess::*",
-                    ws.path(),
-                    GrantDuration::Always,
-                    GrantSource::User,
-                    None,
-                ),
-                GrantRecord::event_stream_allow(
-                    ActorType::Agent,
-                    "agent:default",
-                    ActorScope::User,
-                    "host.events.subscribe",
-                    ws.path(),
-                    GrantDuration::Always,
-                    GrantSource::User,
-                    None,
-                ),
-            ];
-            write_legacy_grants(dir.path(), records, "[[records]]\nactor_id = \"skipped\"\n");
-            write_legacy_permissions(dir.path(), ws.path());
-            std::fs::write(
-                dir.path().join("permission-audit.jsonl"),
-                "{\"kind\":\"grant\",\"decision\":\"allow\"}\n",
-            )
-            .unwrap();
+            let new_profile = tempfile::tempdir().unwrap();
+            check(new_profile.path());
 
-            let preloaded = GrantStore::load_or_default(dir.path()).unwrap();
-            assert!(
-                preloaded.integrity_faults().is_empty(),
-                "{:?}",
-                preloaded.integrity_faults()
-            );
-            assert_legacy_grants_kept(&preloaded);
-            assert!(
-                dir.path().join("grants.toml").is_file(),
-                "adopt must not quarantine grants.toml"
-            );
-            let sealed = std::fs::read_to_string(dir.path().join("grants.toml")).unwrap();
-            assert!(
-                sealed.contains("# plexi-mac:"),
-                "adopted grants must be sealed: {sealed}"
-            );
-            assert!(
-                !dir.path().join("permissions.toml").is_file(),
-                "a readable legacy permissions.toml is imported"
-            );
-            assert_no_untrusted(dir.path());
-            crate::broker::seal::verify_audit(
-                TEST_HOST,
-                &dir.path().join("permission-audit.jsonl"),
-            )
-            .expect("legacy audit is replaced with an authenticated tip");
-
-            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
-            assert!(
-                monitor.open_needs_you().is_empty(),
-                "legacy adopt files no integrity item: {:?}",
-                monitor.open_needs_you()
-            );
-            assert_legacy_grants_kept(&monitor.store());
-
-            crate::broker::host_key::delete(crate::broker::host_key::MAC_ITEM).unwrap();
-            crate::broker::host_key::delete(&crate::broker::seal::mac_account(dir.path())).unwrap();
-            strip_mac(&dir.path().join("grants.toml"));
-            let tampered = PermissionMonitor::open_profile(dir.path()).unwrap();
-            assert!(
-                tampered.store().records().is_empty(),
-                "seal marker and audit tip block adopt after the mac key is removed"
-            );
-            assert_grants_quarantined(dir.path(), &tampered);
-            assert!(
-                dir.path().join("permission-audit.jsonl").is_file(),
-                "the authenticated audit stays in place"
-            );
-            crate::broker::seal::verify_audit(
-                TEST_HOST,
-                &dir.path().join("permission-audit.jsonl"),
-            )
-            .expect("audit tip still matches");
+            let keyed_profile = tempfile::tempdir().unwrap();
+            crate::broker::seal::mac_key_bytes(TEST_HOST, keyed_profile.path()).unwrap();
+            check(keyed_profile.path());
         });
     }
 
     #[test]
-    fn legacy_unsealed_grants_without_an_audit_log_are_adopted() {
-        crate::broker::host_key::without_mac_key(|| {
-            let dir = tempfile::tempdir().unwrap();
-            let ws = tempfile::tempdir().unwrap();
+    fn anchors_unsigned_grants_are_quarantined_on_first_load() {
+        with_first_load_profiles(|dir| {
             write_legacy_grants(
-                dir.path(),
+                dir,
                 vec![GrantRecord::plugin_capability(
-                    "assistant",
-                    ws.path(),
+                    "sample",
+                    dir,
                     crate::app::permissions::Capability::FsRead,
                     Decision::Allow,
                 )],
-                "",
             );
-            assert!(!dir.path().join("permission-audit.jsonl").exists());
-
-            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
-            assert!(
-                monitor.open_needs_you().is_empty(),
-                "{:?}",
-                monitor.open_needs_you()
-            );
-            assert!(monitor
-                .store()
-                .records()
-                .iter()
-                .any(|record| { record.actor_id == "assistant" && record.target_id == "fs.read" }));
-            assert_no_untrusted(dir.path());
-            let audit = dir.path().join("permission-audit.jsonl");
-            assert!(audit.is_file(), "adopt starts an authenticated audit tip");
-            crate::broker::seal::verify_audit(TEST_HOST, &audit).expect("new audit tip verifies");
+            let store = GrantStore::load_or_default(dir).unwrap();
+            assert!(store.records().is_empty());
+            assert_eq!(store.integrity_faults()[0].reason, "missing mac");
+            let monitor = PermissionMonitor::open_profile(dir).unwrap();
+            assert_grants_quarantined(dir, &monitor);
         });
     }
 
-    /// Stint 1398: plugin admission did not exist when grants were unsealed,
-    /// so a legacy file can only carry a plugin-load or folder-trust allow if
-    /// someone wrote it. Adoption drops both and keeps every other grant.
     #[test]
-    fn legacy_adoption_never_adopts_a_plugin_admission() {
+    fn anchors_unsigned_permissions_are_quarantined_on_first_load() {
+        use crate::app::permissions::{Capability, PermissionStore};
+        with_first_load_profiles(|dir| {
+            write_legacy_permissions(dir, dir);
+            let store = PermissionStore::load_or_default(dir).unwrap();
+            assert_eq!(store.get("sample", dir, Capability::FsWrite), None);
+            assert_eq!(store.integrity_fault().unwrap().reason, "missing mac");
+            assert!(!dir.join("permissions.toml").exists());
+            assert!(dir_names(dir)
+                .iter()
+                .any(|name| name.starts_with("permissions.toml.untrusted-")));
+            let monitor = PermissionMonitor::open_profile(dir).unwrap();
+            assert!(integrity_resources(&monitor).contains(&"permissions.toml".to_owned()));
+        });
+    }
+
+    #[test]
+    fn anchors_unsigned_audit_is_quarantined_on_first_open() {
+        crate::broker::host_key::without_mac_key(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let file = "permission-audit.jsonl";
+            let original = b"{\"kind\":\"grant\",\"decision\":\"allow\"}\n";
+            std::fs::write(dir.path().join(file), original).unwrap();
+            let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+            assert!(integrity_resources(&monitor).contains(&file.to_owned()));
+            let quarantine = dir_names(dir.path())
+                .into_iter()
+                .find(|name| name.starts_with("permission-audit.jsonl.untrusted-"))
+                .unwrap();
+            assert_eq!(
+                std::fs::read(dir.path().join(quarantine)).unwrap(),
+                original
+            );
+        });
+    }
+
+    #[test]
+    fn anchors_unsigned_plugin_admissions_and_capabilities_are_refused() {
         crate::broker::host_key::without_mac_key(|| {
             let dir = tempfile::tempdir().unwrap();
             let ws = tempfile::tempdir().unwrap();
@@ -8665,20 +8598,10 @@ mod tests {
                         crate::broker::principal::LOCAL_USER_ID,
                     ),
                 ],
-                "",
             );
             let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
-            let records = monitor.store().records().to_vec();
-            assert!(
-                records.iter().any(|record| record.target_id == "fs.read"),
-                "other grants are kept: {records:?}"
-            );
-            assert!(
-                records
-                    .iter()
-                    .all(|record| record.target_type != TargetType::Package),
-                "no plugin admission is adopted: {records:?}"
-            );
+            assert!(monitor.store().records().is_empty());
+            assert_grants_quarantined(dir.path(), &monitor);
         });
     }
 
@@ -8948,7 +8871,6 @@ mod tests {
                 crate::app::permissions::Capability::FsRead,
                 Decision::Allow,
             )],
-            "",
         );
         std::fs::write(
             dir.path().join("permission-audit.jsonl"),
@@ -9381,15 +9303,8 @@ mod tests {
         crate::broker::integrity::mark_clean_shutdown(dir);
     }
 
-    fn write_legacy_grants(dir: &Path, records: Vec<GrantRecord>, extra: &str) {
-        let mut body = toml::to_string_pretty(&super::super::GrantStoreData { records }).unwrap();
-        if !extra.is_empty() {
-            body.push('\n');
-            body.push_str(extra);
-            if !extra.ends_with('\n') {
-                body.push('\n');
-            }
-        }
+    fn write_legacy_grants(dir: &Path, records: Vec<GrantRecord>) {
+        let body = toml::to_string_pretty(&super::super::GrantStoreData { records }).unwrap();
         assert!(
             !body.contains("# plexi-mac:"),
             "fixture must be unsealed: {body}"
@@ -9401,34 +9316,6 @@ mod tests {
         let key = format!("sample::{}::fs.write", workspace.display());
         let body = format!("[entries]\n\"{key}\" = \"green\"\n");
         std::fs::write(dir.join("permissions.toml"), body).unwrap();
-    }
-
-    fn assert_legacy_grants_kept(store: &GrantStore) {
-        let records = store.records();
-        assert!(
-            records
-                .iter()
-                .any(|record| { record.actor_id == "assistant" && record.target_id == "chess::*" }),
-            "assistant chess grant dropped: {records:?}"
-        );
-        assert!(
-            records.iter().any(|record| {
-                record.actor_id == "agent:default" && record.target_id == "host.events.subscribe"
-            }),
-            "agent subscribe grant dropped: {records:?}"
-        );
-        assert!(
-            records.iter().any(|record| {
-                record.actor_id == "sample"
-                    && record.target_id == "fs.write"
-                    && record.decision == Decision::Allow
-            }),
-            "legacy permissions.toml entry was not imported: {records:?}"
-        );
-        assert!(
-            records.iter().all(|record| record.actor_id != "skipped"),
-            "malformed record was kept: {records:?}"
-        );
     }
 
     fn seal_one_grant(dir: &Path) {

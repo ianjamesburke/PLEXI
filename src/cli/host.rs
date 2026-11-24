@@ -29,6 +29,7 @@ use crate::platform::ipc;
 use crate::platform::ipc::IpcStream;
 use plexi_distribution::host_presence::{self, endpoint_in, Presence};
 use serde::Deserialize;
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -168,20 +169,25 @@ const STRIP_VARS: &[&str] = &[
     crate::workspace::BACKGROUND_SESSION_ENV,
 ];
 
+type HostEnv = Vec<(OsString, OsString)>;
+
 /// Pure env-filter used to build the launched child's environment. Takes the
-/// parent env as a plain `Vec` (rather than reading `std::env::vars()`
+/// parent env as a plain `Vec` (rather than reading `std::env::vars_os()`
 /// directly) so it is deterministically testable without mutating real
 /// process env.
-pub(crate) fn filter_child_env(
-    parent_env: Vec<(String, String)>,
-    channel: Option<&str>,
-) -> Vec<(String, String)> {
-    let mut env: Vec<(String, String)> = parent_env
+pub(crate) fn filter_child_env(parent_env: HostEnv, channel: Option<&str>) -> HostEnv {
+    let keep_test_hooks = crate::config::is_test_channel(channel);
+    let mut env: HostEnv = parent_env
         .into_iter()
-        .filter(|(k, _)| !STRIP_VARS.contains(&k.as_str()))
+        .filter(|(key, _)| {
+            key.to_str().is_none_or(|name| {
+                !STRIP_VARS.contains(&name)
+                    && (keep_test_hooks || !crate::config::test_hooks::is_hook(name))
+            })
+        })
         .collect();
     if let Some(c) = channel {
-        env.push(("PLEXI_CHANNEL".to_string(), c.to_string()));
+        env.push(("PLEXI_CHANNEL".into(), c.into()));
     }
     env
 }
@@ -189,22 +195,22 @@ pub(crate) fn filter_child_env(
 /// Constructs launch env from explicit boot flags after stripping all
 /// inherited Plexi routing and boot-mode state.
 pub(crate) fn host_child_env(
-    parent_env: Vec<(String, String)>,
+    parent_env: HostEnv,
     channel: Option<&str>,
     ephemeral: bool,
     background: bool,
-) -> Vec<(String, String)> {
+) -> HostEnv {
     let mut env = filter_child_env(parent_env, channel);
     if ephemeral {
         env.push((
-            crate::workspace::EPHEMERAL_SESSION_ENV.to_string(),
-            "1".to_string(),
+            crate::workspace::EPHEMERAL_SESSION_ENV.into(),
+            "1".into(),
         ));
     }
     if background {
         env.push((
-            crate::workspace::BACKGROUND_SESSION_ENV.to_string(),
-            "1".to_string(),
+            crate::workspace::BACKGROUND_SESSION_ENV.into(),
+            "1".into(),
         ));
     }
     env
@@ -349,6 +355,40 @@ fn cli_host_target() -> Result<HostTarget, i32> {
 /// integrity account through one would reach another profile. Interior data
 /// symlinks are unlinked by `remove_dir_all`. A missing entry is fine.
 pub(crate) fn ensure_real_profile_dir(profile: &Path) -> Result<(), String> {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    // Unit-test profiles are injected tempdirs outside the account home.
+    #[cfg(test)]
+    let home = if profile.starts_with(&home) {
+        home
+    } else {
+        profile.parent().unwrap_or(profile).to_owned()
+    };
+    ensure_real_profile_below(&home, profile).inspect_err(|error| log::warn!("host: {error}"))
+}
+
+/// Walk from the home down before inspecting the endpoint. Canonicalizing the
+/// profile first would erase the link we need to refuse.
+fn ensure_real_profile_below(home: &Path, profile: &Path) -> Result<(), String> {
+    let relative = profile.strip_prefix(home).map_err(|_| {
+        format!(
+            "refusing to address a host outside {} at {}. Select a profile under your home directory.",
+            home.display(),
+            profile.display()
+        )
+    })?;
+    let mut path = home.to_owned();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(format!(
+                "refusing to address a host through {}. Select a profile under your home directory.",
+                profile.display()
+            ));
+        };
+        path.push(name);
+        ensure_real_directory(&path)?;
+    }
+    ensure_real_directory(&profile.join("host"))?;
+    ensure_real_directory(&profile.join(SPAWN_QUEUE_DIR))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -356,10 +396,6 @@ pub(crate) fn ensure_real_profile_dir(profile: &Path) -> Result<(), String> {
         match std::fs::symlink_metadata(&endpoint) {
             // A hard link names another profile's listening socket too.
             Ok(meta) if meta.file_type().is_symlink() || meta.nlink() != 1 => {
-                log::error!(
-                    "host: refusing linked host endpoint {endpoint:?} (links={})",
-                    meta.nlink()
-                );
                 return Err(format!(
                     "refusing to address a host through linked host endpoint {}",
                     endpoint.display()
@@ -370,25 +406,26 @@ pub(crate) fn ensure_real_profile_dir(profile: &Path) -> Result<(), String> {
             Err(error) => return Err(format!("inspect {}: {error}", endpoint.display())),
         }
     }
-    for path in [
-        profile.to_path_buf(),
-        profile.join("host"),
-        profile.join(SPAWN_QUEUE_DIR),
-    ] {
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
-                log::error!("host: refusing profile through non-directory {path:?}");
-                return Err(format!(
-                    "refusing to address a host through non-directory profile path {}",
-                    path.display()
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("inspect {}: {error}", path.display())),
-        }
-    }
     Ok(())
+}
+
+fn ensure_real_directory(path: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(format!(
+            "refusing to address a host through symlink {}; replace the link with a real directory and retry",
+            path.display()
+        )),
+        Ok(meta) if !meta.is_dir() => Err(format!(
+            "refusing to address a host through non-directory profile path {}; replace it with a directory and retry",
+            path.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "cannot inspect {} ({error}). Check its permissions and retry.",
+            path.display()
+        )),
+    }
 }
 
 /// Resolve the canonical installed target, falling back only to this executable
@@ -879,7 +916,7 @@ pub fn host_start_cli(
     }
 
     let child_env = host_child_env(
-        std::env::vars().collect(),
+        std::env::vars_os().collect(),
         target.channel.as_deref(),
         ephemeral,
         background,
@@ -1041,7 +1078,7 @@ pub(crate) fn spawn_restart_coordinator(
 fn spawn_detached_host(
     binary: &Path,
     args: &[String],
-    child_env: &[(String, String)],
+    child_env: &[(OsString, OsString)],
 ) -> std::io::Result<LaunchedHost> {
     #[expect(
         clippy::disallowed_methods,
@@ -1062,7 +1099,7 @@ fn spawn_detached_host(
 fn spawn_detached_host(
     binary: &Path,
     args: &[String],
-    child_env: &[(String, String)],
+    child_env: &[(OsString, OsString)],
 ) -> std::io::Result<LaunchedHost> {
     windows_launch::spawn(binary, args, child_env).map(|pid| LaunchedHost { pid })
 }
@@ -1161,16 +1198,13 @@ fn uninstall_accepts_absent_socket_beyond_unix_path_limit() {
 /// Build the independently reparented restart coordinator with precisely the
 /// environment a normal `host start` would inherit. In particular, it cannot
 /// carry the old host's cleanup marker or a pane identity into the quit sweep.
-pub(crate) fn restart_coordinator_env(
-    parent_env: Vec<(String, String)>,
-    channel: Option<&str>,
-) -> Vec<(String, String)> {
+pub(crate) fn restart_coordinator_env(parent_env: HostEnv, channel: Option<&str>) -> HostEnv {
     filter_child_env(parent_env, channel)
 }
 
 fn restart_coordinator_command(
     exe: &Path,
-    parent_env: Vec<(String, String)>,
+    parent_env: HostEnv,
     target: &HostTarget,
 ) -> std::process::Command {
     #[expect(
@@ -1226,7 +1260,7 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
         }
     };
     if own_host {
-        let mut child = restart_coordinator_command(&exe, std::env::vars().collect(), &target);
+        let mut child = restart_coordinator_command(&exe, std::env::vars_os().collect(), &target);
         match spawn_restart_coordinator(&mut child) {
             Ok(coordinator_pid) => {
                 log::info!(
@@ -2592,10 +2626,23 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
 
         let error = target.validated().unwrap_err();
 
-        assert!(error.contains("non-directory"), "{error}");
+        assert!(error.contains("symlink"), "{error}");
         assert!(
             matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
             "validation contacted the linked profile's host"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn anchors_intermediate_profile_symlink_is_refused() {
+        let home = tempfile::tempdir().unwrap();
+        let link = home.path().join("channel");
+        std::os::unix::fs::symlink(home.path(), &link).unwrap();
+        let error = ensure_real_profile_below(home.path(), &link.join("nested")).unwrap_err();
+        assert!(
+            error.contains(&link.display().to_string()) && error.contains("symlink"),
+            "{error}"
         );
     }
 
@@ -2982,48 +3029,82 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         assert!(placement_to_layout(&spec).is_err());
     }
 
+    #[test]
+    fn anchors_release_child_env_strips_test_overrides() {
+        let parent = test_hook_env();
+        // Even a value that cannot be decoded must be discarded by name.
+        #[cfg(unix)]
+        let parent = {
+            use std::os::unix::ffi::OsStringExt;
+            let mut parent = parent;
+            parent[0].1 = OsString::from_vec(vec![0xff]);
+            parent
+        };
+        let child = filter_child_env(parent, Some("alpha"));
+        assert_eq!(child, [("PLEXI_CHANNEL".into(), "alpha".into())]);
+    }
+
+    fn test_hook_env() -> HostEnv {
+        crate::config::test_hooks::TEST_HOOKS
+            .iter()
+            .map(|hook| (hook.name.into(), "fixture".into()))
+            .collect()
+    }
+
+    #[cfg(plexi_test_channel)]
+    #[test]
+    fn anchors_matching_pr_child_env_preserves_test_overrides() {
+        let channel = env!("PLEXI_BUILD_TEST_CHANNEL");
+        let parent = test_hook_env();
+        let child = filter_child_env(parent.clone(), Some(channel));
+        assert!(parent.iter().all(|entry| child.contains(entry)));
+    }
+
     // ── filter_child_env ─────────────────────────────────────────────────
 
     #[test]
     fn filter_child_env_strips_pane_scoped_vars_and_sets_channel() {
         let parent = vec![
-            ("PLEXI_SOCKET".to_string(), "/tmp/x.sock".to_string()),
-            ("PLEXI_PANE_ID".to_string(), "7".to_string()),
+            ("PLEXI_SOCKET".into(), "/tmp/x.sock".into()),
+            ("PLEXI_PANE_ID".into(), "7".into()),
             (
-                crate::host::process_cleanup::SESSION_ENV.to_string(),
-                "parent-host".to_string(),
+                crate::host::process_cleanup::SESSION_ENV.into(),
+                "parent-host".into(),
             ),
-            ("PLEXI_CONTEXT_ID".to_string(), "3".to_string()),
-            ("PLEXI_CONTEXT_NAME".to_string(), "work".to_string()),
+            ("PLEXI_CONTEXT_ID".into(), "3".into()),
+            ("PLEXI_CONTEXT_NAME".into(), "work".into()),
             (
-                "PLEXI_CONTEXT_DESCRIPTION".to_string(),
-                "work context".to_string(),
+                "PLEXI_CONTEXT_DESCRIPTION".into(),
+                "work context".into(),
             ),
-            ("PLEXI_CONTEXT_ROOT".to_string(), "/tmp".to_string()),
-            ("PLEXI_CONTEXT_DEPTH".to_string(), "1".to_string()),
-            ("PLEXI_RUNNING".to_string(), "1".to_string()),
-            ("PLEXI_CALL_CREDENTIAL".to_string(), "secret".to_string()),
-            ("PLEXI_AGENT_SPAWNED".to_string(), "1".to_string()),
-            ("PLEXI_AGENT_HARNESS".to_string(), "codex".to_string()),
-            ("PLEXI_AGENT_ROLE".to_string(), "worker".to_string()),
-            ("PLEXI_PARENT_PANE".to_string(), "6".to_string()),
-            ("PLEXI_EPHEMERAL".to_string(), "1".to_string()),
-            ("PLEXI_RESUME_COMMAND".to_string(), "resume".to_string()),
-            ("PLEXI_HOST_MCP_PORT".to_string(), "9999".to_string()),
-            ("PLEXI_HOST_MCP_TOKEN".to_string(), "secret".to_string()),
-            ("PLEXI_CHANNEL".to_string(), "beta".to_string()), // must be overridden, not inherited
+            ("PLEXI_CONTEXT_ROOT".into(), "/tmp".into()),
+            ("PLEXI_CONTEXT_DEPTH".into(), "1".into()),
+            ("PLEXI_RUNNING".into(), "1".into()),
+            ("PLEXI_CALL_CREDENTIAL".into(), "secret".into()),
+            ("PLEXI_AGENT_SPAWNED".into(), "1".into()),
+            ("PLEXI_AGENT_HARNESS".into(), "codex".into()),
+            ("PLEXI_AGENT_ROLE".into(), "worker".into()),
+            ("PLEXI_PARENT_PANE".into(), "6".into()),
+            ("PLEXI_EPHEMERAL".into(), "1".into()),
+            ("PLEXI_RESUME_COMMAND".into(), "resume".into()),
+            ("PLEXI_HOST_MCP_PORT".into(), "9999".into()),
+            ("PLEXI_HOST_MCP_TOKEN".into(), "secret".into()),
+            ("PLEXI_CHANNEL".into(), "beta".into()), // must be overridden, not inherited
             (
-                crate::workspace::EPHEMERAL_SESSION_ENV.to_string(),
-                "1".to_string(), // must not cascade into later host starts
+                crate::workspace::EPHEMERAL_SESSION_ENV.into(),
+                "1".into(), // must not cascade into later host starts
             ),
             (
-                crate::workspace::BACKGROUND_SESSION_ENV.to_string(),
-                "1".to_string(), // must not cascade into later host starts
+                crate::workspace::BACKGROUND_SESSION_ENV.into(),
+                "1".into(), // must not cascade into later host starts
             ),
-            ("PATH".to_string(), "/usr/bin".to_string()),
+            ("PATH".into(), "/usr/bin".into()),
         ];
         let env = filter_child_env(parent, Some("alpha"));
-        let map: std::collections::HashMap<_, _> = env.into_iter().collect();
+        let map: std::collections::HashMap<_, _> = env
+            .iter()
+            .map(|(key, value)| (key.to_str().unwrap(), value.to_str().unwrap()))
+            .collect();
         assert_eq!(map.get(crate::workspace::EPHEMERAL_SESSION_ENV), None);
         assert_eq!(map.get(crate::workspace::BACKGROUND_SESSION_ENV), None);
         assert_eq!(map.get("PLEXI_SOCKET"), None);
@@ -3044,13 +3125,13 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
         assert_eq!(map.get("PLEXI_RESUME_COMMAND"), None);
         assert_eq!(map.get("PLEXI_HOST_MCP_PORT"), None);
         assert_eq!(map.get("PLEXI_HOST_MCP_TOKEN"), None);
-        assert_eq!(map.get("PLEXI_CHANNEL"), Some(&"alpha".to_string()));
-        assert_eq!(map.get("PATH"), Some(&"/usr/bin".to_string()));
+        assert_eq!(map.get("PLEXI_CHANNEL"), Some(&"alpha"));
+        assert_eq!(map.get("PATH"), Some(&"/usr/bin"));
     }
 
     #[test]
     fn filter_child_env_leaves_channel_unset_for_main() {
-        let parent = vec![("PLEXI_CHANNEL".to_string(), "beta".to_string())];
+        let parent = vec![("PLEXI_CHANNEL".into(), "beta".into())];
         let env = filter_child_env(parent, None);
         assert!(
             env.iter().all(|(k, _)| k != "PLEXI_CHANNEL"),
@@ -3062,18 +3143,18 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
     fn restart_coordinator_command_scrubs_host_marker_and_pane_identity() {
         let parent = vec![
             (
-                crate::host::process_cleanup::SESSION_ENV.to_string(),
-                "old-host".to_string(),
+                crate::host::process_cleanup::SESSION_ENV.into(),
+                "old-host".into(),
             ),
-            ("PLEXI_SOCKET".to_string(), "/tmp/notify.sock".to_string()),
-            ("PLEXI_PANE_ID".to_string(), "7".to_string()),
-            ("PLEXI_CONTEXT_ROOT".to_string(), "/work".to_string()),
-            ("PLEXI_AGENT_SPAWNED".to_string(), "1".to_string()),
-            ("PLEXI_CALL_CREDENTIAL".to_string(), "secret".to_string()),
-            ("PLEXI_CHANNEL".to_string(), "beta".to_string()),
-            ("PATH".to_string(), "/usr/bin".to_string()),
+            ("PLEXI_SOCKET".into(), "/tmp/notify.sock".into()),
+            ("PLEXI_PANE_ID".into(), "7".into()),
+            ("PLEXI_CONTEXT_ROOT".into(), "/work".into()),
+            ("PLEXI_AGENT_SPAWNED".into(), "1".into()),
+            ("PLEXI_CALL_CREDENTIAL".into(), "secret".into()),
+            ("PLEXI_CHANNEL".into(), "beta".into()),
+            ("PATH".into(), "/usr/bin".into()),
         ];
-        let target = HostTarget::resolve(Some("alpha".to_string()), None, Path::new("/home"));
+        let target = HostTarget::resolve(Some("alpha".into()), None, Path::new("/home"));
         let command = restart_coordinator_command(Path::new("/bin/true"), parent, &target);
         let env: std::collections::HashMap<_, _> = command
             .get_envs()
@@ -3102,8 +3183,8 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
     #[test]
     fn child_env_adds_background_only_when_explicit() {
         let inherited = vec![(
-            crate::workspace::BACKGROUND_SESSION_ENV.to_string(),
-            "1".to_string(),
+            crate::workspace::BACKGROUND_SESSION_ENV.into(),
+            "1".into(),
         )];
         let foreground = host_child_env(inherited.clone(), Some("alpha"), false, false);
         assert!(foreground

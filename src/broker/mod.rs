@@ -923,10 +923,7 @@ struct GrantStoreData {
 /// `<config_dir>/grants.toml`. A still-present `permissions.toml` is imported
 /// once into this file and then retired. Enforcement reads this store only.
 ///
-/// The file is HMAC-sealed. A missing or bad MAC drops every record and does
-/// not import the legacy file, unless this profile has never been sealed.
-/// That one-time adopt keeps readable records, skips malformed ones, and
-/// seals the file. See `seal::profile_never_sealed`.
+/// Only authenticated records are imported or loaded.
 #[derive(Debug)]
 pub struct GrantStore {
     file: TomlStore<GrantStoreData>,
@@ -966,12 +963,6 @@ impl GrantStore {
     /// also returns empty. A trusted or absent grants file imports
     /// `permissions.toml` once, seals the result, and retires the legacy file.
     ///
-    /// A pre-seal `grants.toml` (no MAC line, and [`seal::profile_never_sealed`])
-    /// is adopted instead: readable records are kept, malformed ones are
-    /// skipped, the file is sealed, and a legacy audit log is given an
-    /// authenticated tip. That path does not quarantine and does not record
-    /// an integrity fault.
-    ///
     /// Host only: a process that never ran host start gets [`custody::NotHostProcess`].
     ///
     /// Test-only: the host's one store is the permission monitor's; nothing
@@ -1000,9 +991,6 @@ impl GrantStore {
                 };
             }
             log::error!("grant_store: mac key recovery failed: {error}");
-        }
-        if let Some(store) = Self::adopt_legacy_unsealed(host, config_dir) {
-            return store;
         }
         let path = config_dir.join("grants.toml");
         let existed = path.is_file();
@@ -1034,41 +1022,6 @@ impl GrantStore {
         }
         store.import_and_retire_legacy(host, config_dir, loaded.trusted);
         store
-    }
-
-    /// One-time adopt of a pre-seal `grants.toml`. `None` leaves the caller
-    /// on the fail-closed path.
-    fn adopt_legacy_unsealed(host: &custody::HostProcess, config_dir: &Path) -> Option<Self> {
-        let path = config_dir.join("grants.toml");
-        let body = seal::legacy_unsealed_body(&path)?;
-        if !seal::profile_never_sealed(host, config_dir) {
-            return None;
-        }
-        let mut data = parse_legacy_grant_store(&body).ok()?;
-        fill_capability_grant_ids(&mut data.records);
-        drop_once_grants(&mut data.records);
-        drop_plugin_admissions(&mut data.records);
-        log::info!(
-            "grant_store: migrated legacy unsealed grants.toml records={}",
-            data.records.len()
-        );
-        let mut store = Self {
-            file: TomlStore::at(path, STORE_LABEL, data),
-            untrusted: Vec::new(),
-            custody: Some(*host),
-        };
-        store.import_and_retire_legacy(host, config_dir, true);
-        if let Err(error) = store.try_save() {
-            log::error!("grant_store: legacy grants.toml could not be sealed: {error}");
-            return Some(store);
-        }
-        let audit = config_dir.join("permission-audit.jsonl");
-        if let Err(error) = seal::adopt_legacy_audit(host, &audit) {
-            log::error!("grant_store: legacy permission-audit.jsonl was not sealed: {error}");
-        } else {
-            crate::broker::integrity::note_saved_file(&audit);
-        }
-        Some(store)
     }
 
     fn import_and_retire_legacy(
@@ -1500,53 +1453,6 @@ impl GrantStore {
         allowed.retain(|c| !denied.contains(c));
         (allowed, denied)
     }
-}
-
-/// Plugin admission (stint 1398) never existed in unsealed grant files, so a
-/// legacy record allowing plugin code can only be forged; it is dropped.
-fn drop_plugin_admissions(records: &mut Vec<GrantRecord>) {
-    let before = records.len();
-    records.retain(|record| record.target_type != TargetType::Package);
-    let dropped = before - records.len();
-    if dropped > 0 {
-        log::info!("grant_store: refused {dropped} legacy plugin admission record(s)");
-    }
-}
-
-fn parse_legacy_grant_store(raw: &str) -> Result<GrantStoreData, String> {
-    let value: toml::Value = toml::from_str(raw).map_err(|error| error.to_string())?;
-    let table = value
-        .as_table()
-        .ok_or_else(|| "legacy grants.toml is not a table".to_string())?;
-    let Some(records_value) = table.get("records") else {
-        return Err("legacy grants.toml has no records array".to_string());
-    };
-    let records = records_value
-        .as_array()
-        .ok_or_else(|| "legacy grants.toml records is not an array".to_string())?;
-    let mut kept = Vec::new();
-    let mut skipped = 0usize;
-    for (idx, item) in records.iter().enumerate() {
-        let raw_record = match toml::to_string(item) {
-            Ok(raw_record) => raw_record,
-            Err(error) => {
-                skipped += 1;
-                log::info!("grant_store: skipped malformed legacy grant record {idx}: {error}");
-                continue;
-            }
-        };
-        match toml::from_str::<GrantRecord>(&raw_record) {
-            Ok(record) => kept.push(record),
-            Err(error) => {
-                skipped += 1;
-                log::info!("grant_store: skipped malformed legacy grant record {idx}: {error}");
-            }
-        }
-    }
-    if skipped > 0 && kept.is_empty() {
-        return Err("legacy grants.toml had no readable records".to_string());
-    }
-    Ok(GrantStoreData { records: kept })
 }
 
 fn fill_capability_grant_ids(records: &mut [GrantRecord]) {

@@ -7,6 +7,16 @@ fn git(args: &[&str]) -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
 }
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(plexi_test_channel)");
+    println!("cargo:rerun-if-env-changed=PLEXI_BUILD_TEST_CHANNEL");
+    if std::env::var("PLEXI_BUILD_TEST_CHANNEL")
+        .ok()
+        .as_deref()
+        .and_then(|value| value.strip_prefix("pr-"))
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    {
+        println!("cargo:rustc-cfg=plexi_test_channel");
+    }
     let channel = std::fs::read_to_string(".channel").unwrap_or_default();
     let title = match channel.trim() { "alpha" => "Plexi Alpha", "beta" => "Plexi Beta", _ => "Plexi" };
     println!("cargo:rustc-env=PLEXI_APP_TITLE={title}");

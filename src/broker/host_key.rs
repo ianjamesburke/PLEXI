@@ -1,13 +1,10 @@
 //! Host seal key custody.
 //!
-//! The permission MAC and the audit-chain tip are not user secrets. They are
-//! never written to `secrets.json` and they are not readable with
+//! The per-profile permission MAC key is a host credential. It is
+//! never written to `secrets.json` and is not readable with
 //! `plexi secret get`. The account namespace `plexi:host:*` is reserved.
 //!
 //! `get` / `set` / `add_new` / `delete` store the account string unchanged.
-//! The Needs you journal tip is `plexi:host:needs-you-journal-tip:` plus the
-//! sha256 of the profile host directory. The permission MAC those callers
-//! share is `seal::mac_key_bytes` / `seal::existing_mac_key`.
 //!
 //! - Tests use a process-local mock. They do not open a keychain or a session bus.
 //! - Linux stores the key only in Secret Service. If that service is missing,
@@ -17,8 +14,9 @@
 //!   that accepts and never handshakes must not hold `host start` until its
 //!   own deadline.
 //! - macOS stores it in the keychain under service `plexi-host-seal`.
-//!   `PLEXI_KEYCHAIN_PATH` selects a throwaway keychain file and never falls
-//!   back to the login keychain. The `security` tool is not the creating
+//!   In a numbered PR build, `PLEXI_KEYCHAIN_PATH` selects a throwaway
+//!   keychain file without falling back to the login keychain.
+//!   The `security` tool is not the creating
 //!   binary, so a direct keychain read does not yield the key. Startup
 //!   disables keychain prompts so `host start` cannot block on Allow. A
 //!   read that fails with an auth or ACL status (`errSecAuthFailed` -25293
@@ -507,7 +505,7 @@ fn restore_mac_process(snapshot: &MacProcessSnapshot) {
 
 /// Run `body` with the permission MAC absent, then put the previous key back.
 ///
-/// The in-memory seal store is process-global. Legacy-adopt tests need a
+/// The in-memory seal store is process-global. First-launch tests need a
 /// profile whose host has never created that key, including when an earlier
 /// test already did.
 #[cfg(test)]
@@ -1014,7 +1012,8 @@ fn pr_isolation_active() -> bool {
     #[cfg(not(test))]
     let compiled = option_env!("PLEXI_BUILD_TEST_CHANNEL").map(str::to_string);
     let runtime = crate::config::build_channel();
-    let explicit = explicit_keychain_override(std::env::var_os("PLEXI_KEYCHAIN_PATH").as_deref());
+    let explicit =
+        explicit_keychain_override(crate::config::test_hooks::KEYCHAIN_PATH.value().as_deref());
     #[cfg(test)]
     // with_pr_channel_seal_isolation models a PR without an explicit keychain.
     // Do not let an outer subprocess-safety override change this fixture.
@@ -1790,7 +1789,7 @@ mod mac {
                 log::info!("permission_seal: macOS host keychain {}", path.display());
                 SecKeychain::open(&path).map_err(|error| {
                     format!(
-                        "PLEXI_KEYCHAIN_PATH {} could not be opened ({error}). \
+                        "test keychain {} could not be opened ({error}). \
                          The host seal key is not written to the login keychain.",
                         path.display()
                     )
