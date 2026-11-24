@@ -375,7 +375,7 @@ pub(crate) const TABLE: &[Line] = &[
     na(R::Agent, F::FsRead, "the harness reads files natively; no brokered read tool exists"),
     line(R::Agent, F::FsWrite, &["host.files.edit"], EXACT),
     na(R::Agent, F::Network, "the harness makes network calls natively; no brokered network tool exists"),
-    na(R::Agent, F::Secrets, "no production admit call site for secret.get or secret.read (resource_of only reserves the names)"),
+    line(R::Agent, F::Secrets, &["secret.get", "secret.read", "secret.set", "secret.delete"], EXACT),
     na(R::Agent, F::CliExec, "the harness executes in its own PTY; typed CLI operations are plugin-only (TargetType::CliOperation)"),
     na(R::Agent, F::Ai, "agents use their own provider; no brokered ai tool for agents"),
     na(R::Agent, F::Clipboard, "no brokered clipboard tool for agents"),
@@ -498,6 +498,7 @@ pub(crate) const DRIVEN: &[(Runtime, Family, &str)] = &[
     (R::Wasm, F::Panes, "wasm_runtime_admission_matrix"),
     (R::Wasm, F::Notify, "wasm_runtime_admission_matrix"),
     (R::Agent, F::FsWrite, "agent_adapter_admission_matrix"),
+    (R::Agent, F::Secrets, "agent_adapter_admission_matrix"),
     (R::Agent, F::Panes, "agent_adapter_admission_matrix"),
     (R::Agent, F::PluginTools, "agent_adapter_admission_matrix"),
     (R::Python, F::Events, "event_subscription_admission_matrix"),
@@ -789,10 +790,10 @@ fn every_registry_capability_is_probed_or_explained() {
 
 // ── CLI/agent adapter driver ─────────────────────────────────────────────────
 
-/// The three agent call sites that reach `PermissionMonitor::admit*` today,
+/// Agent call sites that reach `PermissionMonitor::admit*`,
 /// with the request shape each production caller builds: `host.files.edit`
 /// (`host::changes::admit_edit`), `pane.send` (`App` pane-send handling in
-/// `app/lifecycle.rs`) and a plugin connector tool (`app::plugin_call`).
+/// `app/lifecycle.rs`), secret workers and a plugin connector tool (`app::plugin_call`).
 #[test]
 fn agent_adapter_admission_matrix() {
     let profile = tempfile::tempdir().unwrap();
@@ -801,11 +802,29 @@ fn agent_adapter_admission_matrix() {
     let ws = ws.path();
     let checked = verify(
         Runtime::Agent,
-        &[Family::FsWrite, Family::Panes, Family::PluginTools],
+        &[
+            Family::FsWrite,
+            Family::Panes,
+            Family::PluginTools,
+            Family::Secrets,
+        ],
         ws,
         |family, tool, state| {
             let monitor = PermissionMonitor::ephemeral();
+            let secret_scope = if tool == "secret.get" {
+                crate::workspace::secrets::SecretScope::Global
+            } else {
+                crate::workspace::secrets::SecretScope::Folder { path: ws.into() }
+            };
+            let secret_input = secret_scope.input(tool, "MATRIX", None).to_string();
             let (target_type, actor_scope, actor_id, package_id, input) = match family {
+                Family::Secrets => (
+                    TargetType::Secret,
+                    ActorScope::User,
+                    "pane:4",
+                    "",
+                    secret_input.as_str(),
+                ),
                 Family::FsWrite => (
                     TargetType::HostTool,
                     ActorScope::User,
@@ -837,9 +856,13 @@ fn agent_adapter_admission_matrix() {
                         input_json: input,
                         principal: &super::principal::Principal::agent(actor_id),
                         actor_scope,
-                        trust_origin: "host",
+                        trust_origin: if tool == "secret.read" {
+                            super::SECRET_SOCKET_ORIGIN
+                        } else {
+                            "host"
+                        },
                         workspace_root: ws,
-                        context_id: 1,
+                        context_id: if family == Family::Secrets { 0 } else { 1 },
                         package_id,
                         instance_id: 0,
                         target_type,
@@ -850,7 +873,7 @@ fn agent_adapter_admission_matrix() {
             (outcome, Mech::MonitorAdmit)
         },
     );
-    assert_eq!(checked, 30);
+    assert_eq!(checked, 70);
 }
 
 // ── Event subscription driver (all runtimes) ─────────────────────────────────

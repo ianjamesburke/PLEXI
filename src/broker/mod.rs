@@ -149,13 +149,22 @@ impl GrantDuration {
     }
 }
 
-pub(crate) fn workspace_secret_tool(tool: &str) -> bool {
-    matches!(tool, "secret.get" | "secret.set" | "secret.delete")
+pub(crate) const SECRET_SOCKET_ORIGIN: &str = "host.command_socket";
+
+pub(crate) fn command_secret_tool(tool: &str) -> bool {
+    matches!(
+        tool,
+        "secret.get" | "secret.read" | "secret.set" | "secret.delete"
+    )
 }
 
 impl TargetType {
-    fn is_workspace_secret(self, tool: &str) -> bool {
-        self == Self::Secret && workspace_secret_tool(tool)
+    fn is_live_secret(self, tool: &str, trust_origin: &str) -> bool {
+        // The Secrets view and folder sheet also use secret.read. Their
+        // desktop grant is claimed on retry, while socket calls own their click.
+        self == Self::Secret
+            && command_secret_tool(tool)
+            && (tool != "secret.read" || trust_origin == SECRET_SOCKET_ORIGIN)
     }
 }
 
@@ -163,7 +172,9 @@ impl GrantRecord {
     fn is_secret_once(&self) -> bool {
         self.duration == GrantDuration::Once
             && self.decision == Decision::Allow
-            && self.target_type.is_workspace_secret(&self.target_id)
+            && self
+                .target_type
+                .is_live_secret(&self.target_id, &self.trust_origin)
     }
 
     /// A row that says the person decided it can only be written with the
@@ -186,7 +197,7 @@ impl GrantRecord {
         if self.actor_type == ActorType::External
             && self.target_type == TargetType::Secret
             && self.decision == Decision::Allow
-            && workspace_secret_tool(&self.target_id)
+            && command_secret_tool(&self.target_id)
         {
             return self.duration == GrantDuration::Once;
         }

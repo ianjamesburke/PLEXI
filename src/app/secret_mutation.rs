@@ -1,4 +1,4 @@
-//! Workspace and global mutations on the host's secret worker.
+//! Admitted mutations on the host's secret worker.
 use super::*;
 use crate::broker::gate::{AdmitRequest, UseDecision};
 use crate::protocol::SecretInput;
@@ -8,8 +8,7 @@ impl PlexiApp {
     pub(in crate::app) fn serve_secret_mutation(
         &self,
         name: &str,
-        global: bool,
-        root: Option<&Path>,
+        ask: SecretAsk,
         origin: &RequestOrigin,
         response_file: &str,
         set: Option<(SecretInput, Option<String>)>,
@@ -21,11 +20,8 @@ impl PlexiApp {
         };
         self.run_secret_request(
             tool,
-            super::SecretAsk {
-                name,
-                global,
-                workspace_root: root,
-            },
+            name,
+            ask,
             origin,
             response_file,
             move |request, monitor| {
@@ -57,9 +53,15 @@ impl SecretRequest {
                 },
                 root,
             ),
+            SecretScope::Folder { path } => (SecretTarget::Folder(path.clone()), path),
             SecretScope::Global => (SecretTarget::Global, &self.profile),
         };
-        let mut input = self.scope.input(&self.name, self.subject.outside());
+        if matches!(self.scope, SecretScope::Folder { .. })
+            && set.is_some_and(|(value, _)| value.0.is_empty())
+        {
+            return Err("empty value, nothing stored".into());
+        }
+        let mut input = self.scope.input(tool, &self.name, self.subject.outside());
         let mutation = match set {
             Some((value, Some(canonical))) => {
                 input["route_name"] = canonical.as_str().into();
@@ -114,13 +116,7 @@ impl SecretRequest {
             let _commit = monitor.commit(&approved)?;
             self.subject.current()?;
         }
-        let result = mutate_secret(
-            crate::workspace::secrets::system_store(),
-            monitor,
-            &target,
-            &self.name,
-            mutation,
-        );
+        let result = mutate_secret(self.scope.store(), monitor, &target, &self.name, mutation);
         monitor
             .note_outcome(
                 principal.actor_id(),
@@ -135,6 +131,10 @@ impl SecretRequest {
             )
             .map_err(|_| "Could not audit the mutation outcome. Refresh before retrying.")?;
         result?;
-        Ok(Some(serde_json::json!({"status":"ok", "target":target})))
+        let mut reply = serde_json::json!({"status":"ok", "target":target});
+        if set.is_some() && matches!(target, SecretTarget::Folder(_)) {
+            reply["backend"] = crate::workspace::secrets::backend_label().into();
+        }
+        Ok(Some(reply))
     }
 }

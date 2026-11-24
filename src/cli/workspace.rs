@@ -182,26 +182,22 @@ pub(crate) fn active_pane_context_root() -> Option<std::path::PathBuf> {
 /// authority over context B, including when B is nested inside A's directory.
 pub(crate) fn enforce_pane_context_scope(
     target_dir: &std::path::Path,
-    explicit_folder: bool,
     op: &str,
 ) -> Result<(), String> {
     let Some(ctx_root) = active_pane_context_root() else {
         return Ok(());
     };
-    check_pane_context_scope(ctx_root, target_dir, explicit_folder, Some(op))
+    check_pane_context_scope(ctx_root, target_dir, Some(op))
 }
 
 /// A host preflight supplies the verified root without performing CLI denial logging.
 pub(crate) fn check_pane_context_scope(
     ctx_root: PathBuf,
     target_dir: &Path,
-    explicit_folder: bool,
     cli_op: Option<&str>,
 ) -> Result<(), String> {
     let target_canon = crate::platform::path::canonical_or_self(target_dir);
-    let denied = if explicit_folder {
-        target_canon != ctx_root
-    } else if !target_canon.starts_with(&ctx_root) {
+    let denied = if !target_canon.starts_with(&ctx_root) {
         true
     } else if target_canon != ctx_root {
         let nested_ws = secret_workspace_root(&target_canon, Some(&ctx_root))
@@ -391,7 +387,7 @@ fn send_secret(op: &str, name: &str, payload: Value) -> Result<Value, i32> {
         HostReply::decode(body)
     });
     let unconfirmed = || {
-        if op == "get" {
+        if matches!(op, "get" | "read") {
             eprintln!("No value was received from Plexi");
         } else {
             eprintln!("Plexi did not confirm the outcome");
@@ -419,8 +415,12 @@ fn send_secret(op: &str, name: &str, payload: Value) -> Result<Value, i32> {
 
 fn secret_result(op: &str, name: &str, reply: Value) -> Result<Value, i32> {
     match (reply["status"].as_str(), op) {
-        (Some("value"), "get") if reply["value"].is_string() => Ok(reply),
-        (Some("ok"), "set" | "delete") => Ok(reply),
+        (Some("value"), "get" | "read") if reply["value"].is_string() => Ok(reply),
+        (Some("ok"), "set" | "delete" | "rm") => Ok(reply),
+        (Some("not_found"), "read") => {
+            eprintln!("error: secret '{name}' not found");
+            Err(1)
+        }
         (Some("not_found"), _) => {
             eprintln!("error: {}", secret_not_set(name));
             Err(1)
@@ -730,44 +730,17 @@ fn actor_from_flags(
     }
 }
 
-fn resolve_secret_folder(
-    name: &str,
-    folder: Option<&std::path::Path>,
-) -> Result<std::path::PathBuf, i32> {
-    if let Some(folder) = folder {
-        return crate::workspace::secrets::canonical_folder(folder).map_err(|err| {
-            eprintln!("error: {err}");
-            1
-        });
-    }
-    let cwd = match std::env::current_dir() {
-        Ok(cwd) => cwd,
-        Err(err) => {
-            eprintln!("error: current directory: {err}");
-            return Err(1);
-        }
-    };
-    let store = crate::workspace::secrets::folder_store();
-    let matches: Vec<_> = crate::workspace::secrets::list_folder_secrets(store)
-        .into_iter()
-        .filter(|meta| meta.name == name && cwd.starts_with(&meta.folder))
-        .collect();
-    if matches.len() == 1 {
-        return Ok(matches[0].folder.clone());
-    }
-    let named: Vec<_> = crate::workspace::secrets::list_folder_secrets(store)
-        .into_iter()
-        .filter(|meta| meta.name == name)
-        .collect();
-    if named.len() == 1 {
-        return Ok(named[0].folder.clone());
-    }
-    if named.is_empty() {
-        eprintln!("error: secret '{name}' not found");
-    } else {
-        eprintln!("error: secret '{name}' is set on more than one folder; pass --folder");
-    }
-    Err(1)
+/// Relative flags belong to the caller's cwd. The host canonicalizes the
+/// absolute path before checking the caller's authority.
+fn secret_folder_path(path: &Path) -> Result<String, i32> {
+    let absolute = std::path::absolute(path).map_err(|error| {
+        eprintln!("error: folder {}: {error}", path.display());
+        1
+    })?;
+    absolute.into_os_string().into_string().map_err(|_| {
+        eprintln!("error: folder path must be valid UTF-8");
+        1
+    })
 }
 
 fn folder_feature_available() -> bool {
@@ -798,77 +771,51 @@ pub fn folder_secret_set(
         eprintln!("error: --folder cannot be combined with --alias");
         return 1;
     }
-    if let Err(err) = enforce_pane_context_scope(folder, true, "secret.set") {
-        eprintln!("error: {err}");
-        println!("permission_denied");
+    let folder = match secret_folder_path(folder) {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    if !crate::workspace::secrets::manager::valid_env_name(name) {
+        eprintln!("error: secret name '{name}' is not an environment variable name");
         return 1;
     }
     let value = match read_secret_value(name, from_env) {
         Ok(value) => value,
         Err(code) => return code,
     };
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    {
-        match crate::workspace::secrets::set_folder_secret(
-            crate::workspace::secrets::folder_store(),
-            name,
-            folder,
-            value.as_str(),
-        ) {
-            Ok(canon) => {
-                println!(
-                    "Stored '{name}' for {} ({})",
-                    canon.display(),
-                    crate::workspace::secrets::backend_label()
-                );
-                0
-            }
-            Err(err) => {
-                eprintln!("error: {err}");
-                1
-            }
+    let request = serde_json::json!({"type":"folder_secret_set", "name":name, "folder":folder, "value":value.as_str()});
+    match send_secret("set", name, request) {
+        Ok(reply) => {
+            let (Some(path), Some(backend)) = (
+                reply["target"]["Folder"].as_str(),
+                reply["backend"].as_str(),
+            ) else {
+                eprintln!("error: secret set reply is missing the folder or backend");
+                return 1;
+            };
+            println!("Stored '{name}' for {path} ({backend})");
+            0
         }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        let _ = (name, folder, value);
-        eprintln!("error: keychain not available on this platform");
-        1
+        Err(code) => code,
     }
 }
 
 /// `plexi secret rm NAME --folder <path>`.
-pub fn folder_secret_rm(name: &str, folder: &std::path::Path) -> i32 {
+pub fn folder_secret_rm(name: &str, folder: &Path) -> i32 {
     if !folder_feature_available() {
         return 1;
     }
-    if let Err(err) = enforce_pane_context_scope(folder, true, "secret.rm") {
-        eprintln!("error: {err}");
-        println!("permission_denied");
-        return 1;
-    }
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    {
-        match crate::workspace::secrets::remove_folder_secret(
-            crate::workspace::secrets::folder_store(),
-            name,
-            folder,
-        ) {
-            Ok(()) => {
-                println!("Removed '{name}'");
-                0
-            }
-            Err(err) => {
-                eprintln!("error: {err}");
-                1
-            }
+    let folder = match secret_folder_path(folder) {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    let request = serde_json::json!({"type":"folder_secret_rm", "name":name, "folder":folder});
+    match send_secret("rm", name, request) {
+        Ok(_) => {
+            println!("Removed '{name}'");
+            0
         }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        let _ = (name, folder);
-        eprintln!("error: keychain not available on this platform");
-        1
+        Err(code) => code,
     }
 }
 
@@ -876,8 +823,7 @@ pub fn folder_secret_rm(name: &str, folder: &std::path::Path) -> i32 {
 ///
 /// The CLI holds no authority to allow a read, so it refuses every valid
 /// request with `permission_denied` without discovering a folder or opening a
-/// secret store. A human Allow is `PermissionMonitor::approve_pending` on the
-/// read's pending request, through the host's folder approval sheet.
+/// secret store. The host admits a read on its own pending request in Needs you.
 pub fn folder_secret_grant(
     name: &str,
     agent: Option<&str>,
@@ -901,93 +847,27 @@ pub fn folder_secret_grant(
     1
 }
 
-/// `plexi secret read NAME --agent <id>`.
-pub fn folder_secret_read(
-    name: &str,
-    agent: Option<&str>,
-    app: Option<&str>,
-    folder: Option<&std::path::Path>,
-) -> i32 {
+/// Read one folder account through the host's command socket.
+pub fn folder_secret_read(name: &str, folder: Option<&Path>) -> i32 {
     if !folder_feature_available() {
         return 1;
     }
-    let actor = match actor_from_flags(agent, app) {
-        Ok(actor) => actor,
-        Err(code) => return code,
-    };
-    let folder = match resolve_secret_folder(name, folder) {
+    let folder = match folder.map(secret_folder_path).transpose() {
         Ok(folder) => folder,
         Err(code) => return code,
     };
-    if let Err(err) = enforce_pane_context_scope(&folder, true, "secret.read") {
-        eprintln!("error: {err}");
-        println!("permission_denied");
-        return 1;
-    }
-    // A pane must not learn the pending id. Filing one here would let the
-    // pane approve its own read. The tester shell is not a pane agent, so
-    // its read still reaches the host gate.
-    if super::pane_caller::caller_is_pane_agent() {
-        let resource = format!("{name}@{}", folder.display());
-        let call_id = format!("secret-read-{}", uuid::Uuid::new_v4());
-        let actor_id = std::env::var("PLEXI_PANE_ID")
-            .ok()
-            .filter(|id| !id.is_empty())
-            .map(|id| format!("pane:{id}"))
-            .unwrap_or_else(|| "pane:ancestor".to_string());
-        audit_folder_denial(&actor_id, &resource, &call_id);
-        println!("permission_denied");
-        return 1;
-    }
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    {
-        let result = match crate::workspace::secrets::read_through_host_gate(&actor, name, &folder)
-        {
-            Some(proxied) => proxied,
-            // No in-process fallback (stint 1291): only the host admits a read.
-            None => {
-                crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-                    .map_err(|error| error.to_string())
-                    .and_then(|monitor| {
-                        crate::workspace::secrets::read_folder_secret(
-                            &monitor,
-                            crate::workspace::secrets::folder_store(),
-                            &actor,
-                            name,
-                            &folder,
-                        )
-                    })
-            }
-        };
-        match result {
-            Ok(crate::workspace::secrets::ReadResult::Value(value)) => {
-                println!("{}", value.as_str());
-                0
-            }
-            Ok(crate::workspace::secrets::ReadResult::PermissionRequired { pending_id }) => {
-                println!("permission_required");
-                println!("pending_request_id={pending_id}");
-                2
-            }
-            Ok(crate::workspace::secrets::ReadResult::Denied) => {
-                println!("permission_denied");
-                1
-            }
-            Ok(crate::workspace::secrets::ReadResult::NotFound) => {
-                eprintln!("error: secret '{name}' not found");
-                1
-            }
-            Err(err) => {
-                eprintln!("error: {err}");
-                1
-            }
+    let cwd = match secret_folder_path(Path::new(".")) {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    let request =
+        serde_json::json!({"type":"folder_secret_read", "name":name, "folder":folder, "cwd":cwd});
+    match send_secret("read", name, request) {
+        Ok(reply) => {
+            println!("{}", reply["value"].as_str().expect("validated read reply"));
+            0
         }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        let _ = (name, actor, folder);
-        eprintln!("error: keychain not available on this platform");
-        1
+        Err(code) => code,
     }
 }
 
@@ -1052,7 +932,7 @@ mod secret_set_tests {
     fn secret_commands_require_a_final_reply() {
         let pending =
             serde_json::json!({"status":"permission_required","pending_request_id":"old"});
-        for op in ["get", "set", "delete"] {
+        for op in ["get", "set", "delete", "read", "rm"] {
             assert_eq!(
                 super::secret_result(op, "KEY", pending.clone()),
                 Err(1),
@@ -1397,7 +1277,7 @@ mod secret_root_tests {
         }
         assert_eq!(secret_workspace_root(&cwd, Some(&context)), None);
         let _pane = set_test_pane_context_root(&context);
-        assert!(enforce_pane_context_scope(&cwd, false, "secret.workspace").is_ok());
+        assert!(enforce_pane_context_scope(&cwd, "secret.workspace").is_ok());
         crate::workspace::secrets::init_workspace(&context, &channel).unwrap();
         for op in ["get", "set", "delete"] {
             assert_eq!(

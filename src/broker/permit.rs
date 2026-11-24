@@ -80,7 +80,8 @@ impl SecretRelease {
             crate::workspace::secrets::SecretScope::Workspace { id, root } => {
                 format!("{name}@workspace:{id}:{}", root.display())
             }
-            crate::workspace::secrets::SecretScope::Global => format!("{name}@global"),
+            crate::workspace::secrets::SecretScope::Folder { .. }
+            | crate::workspace::secrets::SecretScope::Global => format!("{name}@{}", scope.label()),
         }
     }
 }

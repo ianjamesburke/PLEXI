@@ -432,7 +432,7 @@ Same-user native processes are not isolated from each other. A process running a
 | `delete` | Delete a stored secret |
 | `rm` | Remove a folder-scoped secret |
 | `grant` | Ask for an allow on a folder secret. This command does not record one |
-| `read` | Read a folder secret as an agent or plugin. Without a grant this prints `permission_required` and writes an audit row that names the secret but not its value |
+| `read` | Read a folder secret after approval in the Plexi window |
 | `exec` | Run a command with the environment a new terminal pane in `--cwd` receives, including folder secrets for that directory |
 
 ### `plexi secret set`
@@ -508,14 +508,12 @@ Returns `permission_denied` and writes an audit row with the secret name and fol
 
 ### `plexi secret read`
 
-Read a folder secret as an agent or plugin. Without a grant this prints `permission_required` and writes an audit row that names the secret but not its value
+Read a folder secret after approval in the Plexi window
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes | Environment variable name |
-| `--agent` | string | no | Agent id. Stored as `agent:<id>` |
-| `--plugin` | string | no | Plugin id. Stored as `plugin:<id>` |
-| `--folder` | string | no | Directory the secret was bound to. Required when the name exists in more than one folder |
+| `--folder` | string | no | Directory holding the secret. Defaults to the nearest enclosing match, or the only matching folder available to the caller |
 
 ### `plexi secret exec`
 

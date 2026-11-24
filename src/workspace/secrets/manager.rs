@@ -8,7 +8,11 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SecretTarget {
     Global,
-    Workspace { id: String, root: PathBuf },
+    Workspace {
+        id: String,
+        root: PathBuf,
+    },
+    /// The canonical directory selected before admission.
     Folder(PathBuf),
 }
 
@@ -27,9 +31,7 @@ impl SecretTarget {
             Self::Workspace { root, .. } => crate::platform::path::canonical_or_self(root)
                 .display()
                 .to_string(),
-            Self::Folder(folder) => crate::platform::path::canonical_or_self(folder)
-                .display()
-                .to_string(),
+            Self::Folder(folder) => format!("folder:{}", folder.display()),
         };
         format!("{name}@{scope}")
     }
@@ -50,10 +52,10 @@ impl SecretTarget {
                 if !crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets) {
                     return Err("Folder secrets experiment is off.".into());
                 }
-                Ok(super::folder::account_name(
-                    &super::canonical_folder(folder)?,
-                    name,
-                ))
+                if super::canonical_folder(folder)? != *folder {
+                    return Err("The selected folder changed. Refresh before retrying.".into());
+                }
+                Ok(super::folder::account_name(folder, name))
             }
         }
     }
@@ -115,7 +117,7 @@ pub fn secret_inventory(cwd: &Path, global_only: bool) -> Result<Vec<SecretEntry
 pub fn secret_inventory_report(cwd: &Path, global_only: bool) -> Result<SecretInventory, String> {
     let mut skipped = Vec::new();
     let allowed = global_only
-        || crate::cli::workspace::enforce_pane_context_scope(cwd, false, "secret.list").is_ok();
+        || crate::cli::workspace::enforce_pane_context_scope(cwd, "secret.list").is_ok();
     let pane_root = crate::cli::workspace::active_pane_context_root();
     if !allowed {
         if let Some(root) = &pane_root {
@@ -298,15 +300,17 @@ pub fn mutate_secret(
     monitor.note_secret_mutation(&call_id, &resource, operation, "requested")?;
     let result = match value {
         Some(value) => match target {
-            SecretTarget::Folder(folder) => {
-                super::set_folder_secret(store, name, folder, value).map(|_| ())
+            SecretTarget::Folder(_) => {
+                super::folder::set_folder_account(store, &account, name, value)
             }
             _ => store
                 .set(&account, value)
                 .map_err(|_| "Secret store write failed; value was not saved.".to_string()),
         },
         None => match target {
-            SecretTarget::Folder(folder) => super::remove_folder_secret(store, name, folder),
+            SecretTarget::Folder(folder) => {
+                super::folder::remove_folder_account(store, &account, name, folder)
+            }
             _ => match store.delete(&account) {
                 Ok(super::DeleteOutcome::Deleted) => Ok(()),
                 Ok(super::DeleteOutcome::NoMatchReported) => Err(format!(

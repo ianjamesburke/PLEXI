@@ -629,6 +629,9 @@ const SOCKET_OPERATIONS: &[(Op, VerbPolicy)] = {
         (Request("secret_get"), Protected),
         (Request("secret_set"), Protected),
         (Request("secret_delete"), Protected),
+        (Request("folder_secret_read"), Protected),
+        (Request("folder_secret_set"), Protected),
+        (Request("folder_secret_rm"), Protected),
         (Request("call_plugin_tool"), Protected),
         (Request("list_plugin_tools"), Protected),
         (Request("set_context_root"), Protected),
@@ -1093,7 +1096,14 @@ fn socket_operations_admit_by_caller_class() {
             let expected = if matches!(caller, Caller::Unidentified)
                 && matches!(
                     op,
-                    Op::Request("secret_get" | "secret_set" | "secret_delete")
+                    Op::Request(
+                        "secret_get"
+                            | "secret_set"
+                            | "secret_delete"
+                            | "folder_secret_read"
+                            | "folder_secret_set"
+                            | "folder_secret_rm"
+                    )
                 ) {
                 None
             } else {

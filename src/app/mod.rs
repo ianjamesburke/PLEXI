@@ -951,7 +951,10 @@ pub(crate) fn handle_socket_line_in(
             let secret_token = match &mut cmd {
                 crate::protocol::HostRequest::SecretGet { response_file, .. }
                 | crate::protocol::HostRequest::SecretSet { response_file, .. }
-                | crate::protocol::HostRequest::SecretDelete { response_file, .. } => {
+                | crate::protocol::HostRequest::SecretDelete { response_file, .. }
+                | crate::protocol::HostRequest::FolderSecretRead { response_file, .. }
+                | crate::protocol::HostRequest::FolderSecretSet { response_file, .. }
+                | crate::protocol::HostRequest::FolderSecretRm { response_file, .. } => {
                     Some(response_file)
                 }
                 _ => None,
