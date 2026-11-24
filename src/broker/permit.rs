@@ -259,6 +259,13 @@ pub(crate) fn delivery_fixture(
     plugin_id: &str,
     events: &[String],
 ) -> Permit<DeliverEvents> {
+    // An outside subscriber is keyed per connection in the timeline; its stored
+    // grants are held by the one outside principal.
+    let subscriber = match subscriber_type {
+        super::ActorType::External => crate::broker::principal::Principal::External,
+        _ => crate::broker::principal::Principal::from_actor(subscriber_type, subscriber_id, None)
+            .expect("fixture subscriber is a requester"),
+    };
     let monitor = PermissionMonitor::ephemeral();
     let workspace = std::path::Path::new("/tmp/permit-fixture");
     let questions = events
@@ -268,12 +275,7 @@ pub(crate) fn delivery_fixture(
             monitor
                 .store()
                 .record(super::GrantRecord::event_stream_allow(
-                    &crate::broker::principal::Principal::from_actor(
-                        subscriber_type,
-                        subscriber_id,
-                        None,
-                    )
-                    .unwrap(),
+                    &subscriber,
                     super::ActorScope::User,
                     &target,
                     workspace,
@@ -282,12 +284,7 @@ pub(crate) fn delivery_fixture(
                     None,
                 ));
             super::PermissionRequest::exact(&super::ExactBinding::event_stream(
-                &crate::broker::principal::Principal::from_actor(
-                    subscriber_type,
-                    subscriber_id,
-                    None,
-                )
-                .unwrap(),
+                &subscriber,
                 super::ActorScope::User,
                 &target,
                 workspace,
