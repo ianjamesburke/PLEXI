@@ -3349,6 +3349,60 @@
         },
         {
           "additionalProperties": false,
+          "description": "Release the environment for this folder on the requesting connection.",
+          "properties": {
+            "cwd": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "folder_secret_exec",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "cwd",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Release the approved command definition and its required environment.",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "cwd": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "run_secrets",
+              "type": "string"
+            },
+            "workspace_root": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "command",
+            "cwd",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Read one folder account on the original connection after host admission.",
           "properties": {
             "cwd": {

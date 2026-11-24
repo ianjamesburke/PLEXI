@@ -629,6 +629,8 @@ const SOCKET_OPERATIONS: &[(Op, VerbPolicy)] = {
         (Request("secret_get"), Protected),
         (Request("secret_set"), Protected),
         (Request("secret_delete"), Protected),
+        (Request("folder_secret_exec"), Protected),
+        (Request("run_secrets"), Protected),
         (Request("folder_secret_read"), Protected),
         (Request("folder_secret_set"), Protected),
         (Request("folder_secret_rm"), Protected),
@@ -1100,6 +1102,8 @@ fn socket_operations_admit_by_caller_class() {
                         "secret_get"
                             | "secret_set"
                             | "secret_delete"
+                            | "folder_secret_exec"
+                            | "run_secrets"
                             | "folder_secret_read"
                             | "folder_secret_set"
                             | "folder_secret_rm"

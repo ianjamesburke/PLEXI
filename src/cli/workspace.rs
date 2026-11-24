@@ -367,11 +367,13 @@ fn no_secret_reply(label: &str) -> i32 {
     1
 }
 
-fn send_secret(op: &str, name: &str, payload: Value) -> Result<Value, i32> {
-    use super::reply::HostReply;
-    let label = format!("secret {op}");
-    let (token, stream) = super::send_request_connected(payload, "secret-response", &label)
-        .map_err(|_| no_secret_reply(&label))?;
+fn receive_secret<T>(
+    label: &str,
+    payload: Value,
+    decode: impl FnOnce(Result<String, crate::rpc::PollError>) -> T,
+) -> Result<T, i32> {
+    let (token, stream) = super::send_request_connected(payload, "secret-response", label)
+        .map_err(|_| no_secret_reply(label))?;
     let timeout = crate::workspace::secrets::APPROVAL_TIMEOUT + Duration::from_secs(10);
     let reply = std::thread::scope(|scope| {
         let (done, timer) = std::sync::mpsc::channel::<()>();
@@ -384,8 +386,15 @@ fn send_secret(op: &str, name: &str, payload: Value) -> Result<Value, i32> {
         });
         let body = crate::rpc::read_secret_reply(&token, stream, timeout);
         drop(done);
-        HostReply::decode(body)
+        body
     });
+    Ok(decode(reply))
+}
+
+fn send_secret(op: &str, name: &str, payload: Value) -> Result<Value, i32> {
+    use super::reply::HostReply;
+    let label = format!("secret {op}");
+    let reply = receive_secret(&label, payload, HostReply::decode)?;
     let unconfirmed = || {
         if matches!(op, "get" | "read") {
             eprintln!("No value was received from Plexi");
@@ -871,11 +880,58 @@ pub fn folder_secret_read(name: &str, folder: Option<&Path>) -> i32 {
     }
 }
 
-/// Run `command` with the environment [`crate::host::shell::build_env`] builds
-/// for a new terminal pane whose cwd is `cwd`.
-///
-/// Refused when this process is a pane agent. The command is not started, so
-/// a pane in folder A cannot print folder B's secrets with `--cwd`.
+#[derive(serde::Deserialize)]
+pub(super) struct BundleReply {
+    pub values: Vec<crate::protocol::BundleValue>,
+    #[serde(flatten)]
+    pub definition: Option<crate::protocol::BundleDefinition>,
+}
+
+pub(super) fn request_bundle(label: &str, request: Value) -> Result<BundleReply, i32> {
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "status", rename_all = "snake_case")]
+    enum Reply {
+        Values(BundleReply),
+        Missing { names: Vec<String> },
+        Denied { reason: Option<String> },
+        Error { error: String },
+    }
+    let body = receive_secret(label, request, |reply| reply.map(zeroize::Zeroizing::new))?
+        .map_err(|_| {
+            eprintln!(
+                "No environment was received from Plexi for {label}. Check the host connection."
+            );
+            1
+        })?;
+    match serde_json::from_str(&body) {
+        Ok(Reply::Values(bundle)) => Ok(bundle),
+        Ok(Reply::Missing { names }) => {
+            for name in names {
+                eprintln!("Missing required secret '{name}'. Set it with plexi secret set {name}.");
+            }
+            Err(1)
+        }
+        Ok(Reply::Denied { reason }) => {
+            eprintln!(
+                "{label}: request denied ({}). Review the request in Plexi.",
+                reason.as_deref().unwrap_or("permission denied")
+            );
+            Err(1)
+        }
+        Ok(Reply::Error { error }) => {
+            eprintln!("{label}: {error}");
+            Err(1)
+        }
+        Err(_) => {
+            eprintln!(
+                "No environment was received from Plexi for {label}. Check the host connection."
+            );
+            Err(1)
+        }
+    }
+}
+
+/// Run the program with the environment released on this invocation's connection.
 pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
     if !folder_feature_available() {
         return 1;
@@ -884,19 +940,21 @@ pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
         eprintln!("error: secret exec needs a command");
         return 1;
     }
-    if super::pane_caller::caller_is_pane_agent() {
-        let resource = format!("exec@{}", cwd.display());
-        let call_id = format!("secret-exec-{}", uuid::Uuid::new_v4());
-        let actor = std::env::var("PLEXI_PANE_ID")
-            .ok()
-            .filter(|id| !id.is_empty())
-            .map(|id| format!("pane:{id}"))
-            .unwrap_or_else(|| "pane:ancestor".to_string());
-        audit_folder_denial(&actor, &resource, &call_id);
-        println!("permission_denied");
-        return 1;
-    }
-    let pane_env = crate::host::shell::build_env(Some(cwd));
+    let cwd = match secret_folder_path(cwd) {
+        Ok(folder) => std::path::PathBuf::from(folder),
+        Err(code) => return code,
+    };
+    let bundle = match request_bundle(
+        "secret exec",
+        serde_json::json!({"type":"folder_secret_exec","cwd":cwd}),
+    ) {
+        Ok(bundle) => bundle,
+        Err(code) => return code,
+    };
+    let pane_env = crate::host::shell::build_env_with_secrets(
+        Some(&cwd),
+        crate::host::shell::SecretPolicy::NONE,
+    );
     log::info!(
         "folder_secrets: exec cwd={} program={}",
         cwd.display(),
@@ -908,8 +966,9 @@ pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
     )]
     let mut child = std::process::Command::new(&command[0]);
     child.args(&command[1..]).current_dir(cwd);
-    for (key, value) in &pane_env {
-        child.env(key, value);
+    child.envs(pane_env);
+    for entry in &bundle.values {
+        child.env(&entry.name, &entry.value.0);
     }
     match child.status() {
         Ok(status) => status.code().unwrap_or(1),

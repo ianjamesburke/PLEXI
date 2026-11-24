@@ -16,8 +16,10 @@ use crate::workspace::secrets::{
 use std::sync::Arc;
 use zeroize::Zeroizing;
 
+mod bundle;
 #[path = "secret_mutation.rs"]
 mod mutation;
+use bundle::Bundle;
 
 impl PlexiApp {
     pub(crate) fn serve_secret_list(
@@ -151,7 +153,9 @@ impl PlexiApp {
             origin,
             response_file,
             |request, monitor| {
-                request.read_and_release(&monitor, request.scope.store());
+                if let SecretTarget::One { scope, .. } = &request.target {
+                    request.read_and_release(&monitor, scope.store());
+                }
             },
         );
     }
@@ -196,13 +200,16 @@ impl PlexiApp {
                 let scope = AdmittedScope::of(&pane.authority);
                 let authority = self.pane_context_authority_root(id);
                 let target = match &ask {
-                    SecretAsk::Folder(path) | SecretAsk::Workspace(Some(path)) => Some(path),
+                    SecretAsk::Folder(path)
+                    | SecretAsk::Workspace(Some(path))
+                    | SecretAsk::Bundle { cwd: path, .. } => Some(path),
                     SecretAsk::DiscoverFolder(_) => authority.as_ref(),
                     SecretAsk::Global | SecretAsk::Workspace(None) => None,
                 };
                 if target.is_some_and(|root| {
                     authority.as_ref() != Some(root) || !self.pane_may_access_context_root(id, root)
-                }) || (matches!(ask, SecretAsk::DiscoverFolder(_)) && authority.is_none())
+                }) || matches!(&ask, SecretAsk::Bundle { command: Some((_, Some(root))), .. } if Some(root) != authority.as_ref())
+                    || (matches!(ask, SecretAsk::DiscoverFolder(_)) && authority.is_none())
                 {
                     let prefix = if ask.is_folder() && tool != crate::workspace::secrets::SECRET_READ_TOOL {
                         "folder:"
@@ -263,14 +270,13 @@ impl PlexiApp {
                     serde_json::json!({"status":"denied","reason":"revoked"}),
                 );
             } else {
-                match ask.scope_for(tool, &name, discovery_root.as_deref()) {
-                    Ok(scope) => work(
+                match ask.target_for(tool, name, discovery_root.as_deref()) {
+                    Ok(target) => work(
                         SecretRequest {
                             subject,
                             peer,
                             repaint: repaint.clone(),
-                            name,
-                            scope,
+                            target,
                             profile,
                             posture,
                             reply_path: reply,
@@ -306,6 +312,10 @@ pub(super) enum SecretAsk {
     Workspace(Option<PathBuf>),
     Folder(PathBuf),
     DiscoverFolder(PathBuf),
+    Bundle {
+        cwd: PathBuf,
+        command: Option<(String, Option<PathBuf>)>,
+    },
 }
 
 impl SecretAsk {
@@ -322,6 +332,20 @@ impl SecretAsk {
     }
 
     fn validate(&mut self, name: &str) -> Result<(), String> {
+        if let Self::Bundle { cwd, command } = self {
+            let feature = crate::release::ReleaseFeature::FolderSecrets;
+            if command.is_none() && !crate::release::feature_enabled(feature) {
+                return Err(crate::release::feature_unavailable_message(feature));
+            }
+            *cwd = crate::workspace::secrets::canonical_folder(cwd)?;
+            if let Some((_, Some(root))) = command {
+                *root = crate::workspace::secrets::canonical_folder(root)?;
+            }
+            if cwd.to_str().is_none() {
+                return Err("The canonical working directory must be valid UTF-8.".into());
+            }
+            return Ok(());
+        }
         if self.is_folder() {
             let feature = crate::release::ReleaseFeature::FolderSecrets;
             if !crate::release::feature_enabled(feature) {
@@ -342,18 +366,24 @@ impl SecretAsk {
         Ok(())
     }
 
-    fn scope_for(
+    fn target_for(
         self,
         tool: &str,
-        name: &str,
+        name: String,
         discovery_root: Option<&Path>,
-    ) -> Result<SecretScope, String> {
-        match self {
+    ) -> Result<SecretTarget, String> {
+        let scope: Result<SecretScope, String> = match self {
+            Self::Bundle { cwd, command } => {
+                return Bundle::discover(cwd, command, discovery_root).map(SecretTarget::Bundle);
+            }
             Self::Global => Ok(SecretScope::Global),
             Self::Workspace(root) => {
                 if let Some(root) = root {
                     if let Some(cfg) = crate::workspace::secrets::WorkspaceConfig::load(&root)? {
-                        return Ok(SecretScope::Workspace { id: cfg.id, root });
+                        return Ok(SecretTarget::One {
+                            name,
+                            scope: SecretScope::Workspace { id: cfg.id, root },
+                        });
                     }
                 }
                 if tool == "secret.get" {
@@ -394,8 +424,17 @@ impl SecretAsk {
                 }
                 Ok(SecretScope::Folder { path })
             }
-        }
+        };
+        Ok(SecretTarget::One {
+            name,
+            scope: scope?,
+        })
     }
+}
+
+enum SecretTarget {
+    One { name: String, scope: SecretScope },
+    Bundle(Bundle),
 }
 
 enum Subject {
@@ -431,8 +470,7 @@ struct SecretRequest {
     subject: Subject,
     peer: Option<PeerHop>,
     repaint: egui::Context,
-    name: String,
-    scope: SecretScope,
+    target: SecretTarget,
     profile: PathBuf,
     posture: Option<crate::broker::PermissionPosture>,
     reply_path: PathBuf,
@@ -493,7 +531,10 @@ impl SecretRequest {
             Admission::Denied { .. } => return Some(UseDecision::Denied),
             Admission::Proceed { .. } => None,
             Admission::Required { pending_request_id } => {
-                log::info!("{tool}: parked pending={pending_request_id}");
+                log::info!(
+                    "{tool}: parked pending={pending_request_id} {}",
+                    self.bundle_label()
+                );
                 self.repaint.request_repaint();
                 Some(pending_request_id)
             }
@@ -541,7 +582,10 @@ impl SecretRequest {
             };
             let claim = monitor.admit_for_use_if(req, posture, Some(&current));
             if matches!(claim, UseDecision::Allowed { .. }) {
-                log::info!("{tool}: effect started pending={pending:?}");
+                log::info!(
+                    "{tool}: claimed pending={pending:?} {}",
+                    self.bundle_label()
+                );
                 return Some(claim);
             }
             break stop.get().unwrap_or("denied");
@@ -563,6 +607,26 @@ impl SecretRequest {
         None
     }
 
+    fn release_permit(
+        &self,
+        monitor: &Arc<PermissionMonitor>,
+        target: &str,
+        approved: crate::broker::gate::Approved,
+    ) -> Result<Permit<SecretRelease>, String> {
+        match &self.subject {
+            Subject::Pane(scope) => {
+                let coverage = Coverage::new(monitor.clone(), vec![(target.to_owned(), approved)]);
+                mint_pane::<SecretRelease>(scope.clone(), target.to_owned(), coverage)
+            }
+            Subject::Outside(class) => crate::broker::permit::mint_external_secret(
+                class,
+                target.to_owned(),
+                monitor.clone(),
+                approved,
+            ),
+        }
+    }
+
     /// Read under the broker gate and reply. A value leaves only through
     /// [`release_secret`], under the permit minted from the broker's approval
     /// of this read.
@@ -571,6 +635,9 @@ impl SecretRequest {
         monitor: &std::sync::Arc<crate::broker::gate::PermissionMonitor>,
         store: &dyn NonDestructiveStore,
     ) {
+        let SecretTarget::One { name, scope } = &self.target else {
+            return;
+        };
         let principal = self.subject.principal();
         let actor = SecretActor {
             kind: principal.actor_type(),
@@ -584,8 +651,8 @@ impl SecretRequest {
             },
             &actor,
             crate::workspace::secrets::ReadTarget {
-                name: &self.name,
-                scope: &self.scope,
+                name,
+                scope,
                 global_root: &self.profile,
             },
             self.subject.outside(),
@@ -596,22 +663,18 @@ impl SecretRequest {
         };
         let body = match result.map(|read| (read.result, read.approved)) {
             Ok((ReadResult::Value(value), Some(approved))) => {
-                let target = SecretRelease::target(&self.name, &self.scope);
-                let permit = match &self.subject {
-                    Subject::Pane(scope) => {
-                        let coverage =
-                            Coverage::new(monitor.clone(), vec![(target.clone(), approved)]);
-                        mint_pane::<SecretRelease>(scope.clone(), target.clone(), coverage)
-                    }
-                    Subject::Outside(class) => crate::broker::permit::mint_external_secret(
-                        class,
-                        target.clone(),
-                        monitor.clone(),
-                        approved,
-                    ),
-                };
+                let target = SecretRelease::target(name, scope);
+                let permit = self.release_permit(monitor, &target, approved);
                 match permit {
-                    Ok(permit) => return release_secret(permit, &target, &self.reply_path, &value),
+                    Ok(permit) => {
+                        return release_secret(
+                            permit,
+                            &target,
+                            &self.reply_path,
+                            "secret.get",
+                            || serde_json::json!({"status":"value","value":value.as_str()}),
+                        )
+                    }
                     Err(error) => {
                         log::info!("secret_get: {} withheld after read: {error}", actor.id);
                         serde_json::json!({"status": "denied"})
@@ -629,28 +692,26 @@ impl SecretRequest {
 /// Commit the approved read before staging a value on the waiting stream.
 /// Pane releases also check the admitted incarnation and scope revision.
 /// The blocking write runs after the commit guard has been dropped.
-fn release_secret(permit: Permit<SecretRelease>, target: &str, reply_path: &Path, value: &str) {
+fn release_secret<T: serde::Serialize>(
+    permit: Permit<SecretRelease>,
+    target: &str,
+    reply_path: &Path,
+    label: &str,
+    body: impl FnOnce() -> T,
+) {
     let token = reply_path.to_string_lossy();
     let staged = match permit.commit(target, target) {
-        Ok(_commit) => crate::rpc::stage_stream_only_json_response(
-            &token,
-            serde_json::json!({"status": "value", "value": value}),
-        ),
+        Ok(_commit) => crate::rpc::stage_stream_only_json_response(&token, body()),
         Err(error) => {
-            log::info!("secret_get: release withheld: {error}");
+            log::info!("{label}: release withheld: {error}");
             stream_reply(reply_path, serde_json::json!({"status": "denied"}));
             return;
         }
     };
-    log::info!("secret_get: released {target}");
     if staged.is_some_and(crate::rpc::StagedReply::send) {
-        log::info!("secret_get: value reply sent");
+        log::info!("{label}: released {target}");
     } else {
-        log::info!("secret_get: value reply lost");
-        log::error!(
-            "secret_get: value reply for {} failed",
-            reply_path.display()
-        );
+        log::error!("{label}: reply on original connection failed for {target}");
     }
 }
 
@@ -965,6 +1026,160 @@ mod list_tests {
     }
 
     #[test]
+    fn bundle_pane_scope_and_missing_names() {
+        let mut h = HostHarness::new();
+        let ws = h.workspace_root();
+        write_agent_role(
+            &ws,
+            "bundle-reader",
+            "[permissions]\ndefault_posture = \"ask\"",
+        );
+        let (pane, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "bundle-reader",
+                "pi",
+                "sleep 30",
+                "Bundle reader",
+                None,
+                true,
+                None,
+                Some(ws),
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let peer = PeerWitness::for_live_pids(&[h.terminal_backend(pane).child_pid()]);
+        let _on =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        let root = h.workspace_root().canonicalize().unwrap();
+        let config =
+            secrets::init_workspace(&root, &crate::config::workspace_channel_dir()).unwrap();
+        let ancestor = format!("ANCESTOR_{}", uuid::Uuid::new_v4().simple());
+        secrets::set_folder_secret(
+            secrets::folder_store(),
+            &ancestor,
+            root.parent().unwrap(),
+            "ancestor-canary",
+        )
+        .unwrap();
+        secrets::set_folder_secret(secrets::folder_store(), "LOCAL", &root, "local-canary")
+            .unwrap();
+        secrets::write_terminal_env_inject(&root, "REQUIRED", true).unwrap();
+        let commands = crate::cli::ensure_commands_file(Some(&root));
+        std::fs::write(
+            commands,
+            "[commands]\nbuild = { run = 'true', secrets = ['REQUIRED'] }",
+        )
+        .unwrap();
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        for kind in ["folder_secret_exec", "run_secrets"] {
+            let mut wire = serde_json::json!({"type":kind, "cwd":root});
+            if kind == "run_secrets" {
+                wire["command"] = "build".into();
+                wire["workspace_root"] = serde_json::json!(root);
+            }
+            let mut wrong = wire.clone();
+            wrong["cwd"] = serde_json::json!(root.parent());
+            let denied = send(&mut h, wrong, Some(peer.clone()));
+            assert_eq!(denied["error_code"], "permission_denied");
+            assert!(
+                std::fs::read_to_string(h.profile_dir().join("permission-audit.jsonl"))
+                    .unwrap()
+                    .contains("context_scope_violation")
+            );
+            let (client, card) = live_secret(&mut h, wire.clone(), &peer);
+            assert_eq!(card.actor_id, format!("pane:{pane}"));
+            assert!(card.input_summary.contains("REQUIRED"));
+            assert!(!card.input_summary.contains(&ancestor));
+            assert!(card.input_summary.contains(if kind == "run_secrets" {
+                "build"
+            } else {
+                "LOCAL"
+            }));
+            assert!(monitor
+                .approve_pending(&card.pending_request_id, ApprovalChoice::Session)
+                .is_err());
+            monitor
+                .approve_pending(&card.pending_request_id, ApprovalChoice::Once)
+                .unwrap();
+            assert_eq!(
+                read_client(client, kind),
+                serde_json::json!({"status":"missing","names":["REQUIRED"]})
+            );
+            super::worker_test::join();
+            let account = secrets::keychain_workspace_name(&config.id, "REQUIRED");
+            secrets::system_store()
+                .set(&account, "terminal-canary")
+                .unwrap();
+            let outside = PeerWitness::for_live_pids(&[std::process::id()]);
+            let (client, granted) = live_secret(&mut h, wire.clone(), &outside);
+            assert!(granted.input_summary.contains("REQUIRED"));
+            let (denied, other) = live_secret(&mut h, wire.clone(), &outside);
+            assert_eq!(other.resource_id, granted.resource_id);
+            assert_ne!(other.pending_request_id, granted.pending_request_id);
+            monitor
+                .approve_pending(&other.pending_request_id, ApprovalChoice::Deny)
+                .unwrap();
+            assert_eq!(read_client(denied, kind)["status"], "denied");
+            assert_eq!(
+                super::worker_test::join().0,
+                usize::from(kind == "folder_secret_exec")
+            );
+            assert_eq!(monitor.open_needs_you().len(), 1);
+            monitor
+                .approve_pending(&granted.pending_request_id, ApprovalChoice::Once)
+                .unwrap();
+            let reply = read_client(client, kind);
+            assert_eq!(reply["status"], "values");
+            let values = reply["values"].as_array().unwrap();
+            assert!(values
+                .iter()
+                .any(|item| item["name"] == "REQUIRED" && item["value"] == "terminal-canary"));
+            if kind == "run_secrets" {
+                assert_eq!(reply["run"], "true");
+                assert_eq!(values.len(), 1);
+            } else {
+                assert!(values
+                    .iter()
+                    .any(|item| item["name"] == ancestor && item["value"] == "ancestor-canary"));
+                assert!(values
+                    .iter()
+                    .any(|item| item["name"] == "LOCAL" && item["value"] == "local-canary"));
+            }
+            let (_, logs) = super::worker_test::join();
+            for canary in ["terminal-canary", "ancestor-canary", "local-canary"] {
+                assert!(!logs.join("\n").contains(canary));
+                assert!(!granted.input_summary.contains(canary));
+                assert!(
+                    !std::fs::read_to_string(h.profile_dir().join("permission-audit.jsonl"))
+                        .unwrap()
+                        .contains(canary)
+                );
+            }
+            secrets::system_store().delete(&account).unwrap();
+            let (cancel, next) = live_secret(&mut h, wire, &peer);
+            drop(cancel);
+            super::worker_test::join();
+            assert!(monitor.open_needs_you().is_empty());
+            assert!(monitor
+                .approve_pending(&next.pending_request_id, ApprovalChoice::Once)
+                .is_err());
+        }
+        secrets::remove_folder_secret(secrets::folder_store(), &ancestor, root.parent().unwrap())
+            .unwrap();
+        let retired_gate = h.profile_dir().join("folder-secret-gate.sock");
+        assert_eq!(
+            std::os::unix::net::UnixStream::connect(retired_gate)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound,
+        );
+    }
+
+    #[test]
     fn folder_discovery_selects_only_visible_bindings() {
         let base = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();
@@ -974,8 +1189,11 @@ mod list_tests {
         let name = format!("DISCOVERY_{}", uuid::Uuid::new_v4().simple());
         let discover = |cwd: &std::path::Path, authority: Option<&std::path::Path>| {
             super::SecretAsk::DiscoverFolder(cwd.into())
-                .scope_for("secret.read", &name, authority)
-                .map(|scope| scope.label())
+                .target_for("secret.read", name.clone(), authority)
+                .map(|target| match target {
+                    super::SecretTarget::One { scope, .. } => scope.label(),
+                    _ => unreachable!(),
+                })
         };
         let missing = format!("secret '{name}' not found");
         assert_eq!(discover(&root, None), Err(missing.clone()));
@@ -1129,7 +1347,8 @@ mod list_tests {
             permit,
             "unbacked",
             std::path::Path::new(&unbacked),
-            secret_val,
+            "secret.get",
+            || serde_json::json!({"status":"value","value":secret_val}),
         );
         assert!(
             !std::path::Path::new(&unbacked).exists(),
@@ -1831,8 +2050,10 @@ mod release_tests {
             subject: Subject::Pane(AdmittedScope::of(&store.pane)),
             peer: None,
             repaint: Default::default(),
-            name: "TOKEN_1716".into(),
-            scope: SecretScope::Global,
+            target: super::SecretTarget::One {
+                name: "TOKEN_1716".into(),
+                scope: SecretScope::Global,
+            },
             profile: store.profile.path().to_path_buf(),
             posture: None,
             reply_path: PathBuf::from(reply),
@@ -2033,6 +2254,15 @@ mod cli_tests {
             crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
         let folder = std::path::Path::new(".");
         let code = match op.as_str() {
+            "exec" => crate::cli::workspace::folder_secret_exec(
+                folder,
+                &[
+                    "sh".into(),
+                    "-c".into(),
+                    "test \"$LOCAL\" = host-canary && test \"$EXTRA\" = terminal-canary".into(),
+                ],
+            ),
+            "run" => crate::cli::run::run_command("build", &[], crate::cli::OutputMode::Text),
             "folder-read" => crate::cli::workspace::folder_secret_read(name, Some(folder)),
             "folder-discover" => crate::cli::workspace::folder_secret_read(name, None),
             "folder-set" => crate::cli::workspace::folder_secret_set(
@@ -2127,6 +2357,34 @@ mod cli_tests {
                 "{stderr}"
             );
         }
+    }
+
+    #[test]
+    fn bundle_cli_requires_a_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(dir.path().into());
+        let root = dir.path().join("work");
+        fs::create_dir(&root).unwrap();
+        let path = crate::cli::ensure_commands_file(Some(&root));
+        fs::write(
+            path,
+            "[commands]\nbuild = { run = 'touch unexpected', secrets = ['REQUIRED'] }",
+        )
+        .unwrap();
+        for op in ["exec", "run"] {
+            let result = cli(op, dir.path())
+                .env("SECRET_TEST_SOCKET", dir.path().join("missing.sock"))
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert_eq!(result.status.code(), Some(1));
+            let stderr = String::from_utf8(result.stderr).unwrap();
+            assert!(
+                stderr.contains("start Plexi") && stderr.contains("missing.sock"),
+                "{stderr}"
+            );
+        }
+        assert!(!root.join("unexpected").exists());
     }
 
     #[test]
@@ -2228,6 +2486,10 @@ mod cli_tests {
         }
 
         fn accept(&mut self, value: Option<&str>) -> String {
+            self.accept_before_dispatch(value, || {})
+        }
+
+        fn accept_before_dispatch(&mut self, value: Option<&str>, before: impl FnOnce()) -> String {
             let mut stream = None;
             until(|| {
                 stream = match self.listener.accept() {
@@ -2252,6 +2514,7 @@ mod cli_tests {
             BufReader::new(&stream).read_line(&mut line).unwrap();
             let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
             assert_eq!(frame["value"].as_str(), value);
+            before();
             self.h
                 .dispatch_live_secret(&line, &peer, &mut stream)
                 .pending_request_id
@@ -2358,6 +2621,97 @@ mod cli_tests {
         assert!(!secrets::list_folder_secrets(secrets::folder_store())
             .iter()
             .any(|m| m.name == f.name));
+    }
+
+    #[test]
+    fn bundle_cli_executes_only_the_approved_definition() {
+        let mut f = Fixture::new(None);
+        let _on =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        let root = f.h.workspace_root().canonicalize().unwrap();
+        let cfg = secrets::init_workspace(&root, &crate::config::workspace_channel_dir()).unwrap();
+        secrets::set_folder_secret(secrets::folder_store(), "LOCAL", &root, "host-canary").unwrap();
+        secrets::write_terminal_env_inject(&root, "EXTRA", true).unwrap();
+        secrets::system_store()
+            .set(
+                &secrets::keychain_workspace_name(&cfg.id, "EXTRA"),
+                "terminal-canary",
+            )
+            .unwrap();
+        let path = crate::cli::ensure_commands_file(Some(&root));
+        let definition = "[commands]\nbuild = { run = 'test -n \"$EXTRA\" && touch approved', secrets = ['EXTRA'] }";
+        fs::write(&path, definition).unwrap();
+        let logs = crate::testing::test_log::capture_with_debug();
+        let mut evidence = String::new();
+        for op in ["exec", "run"] {
+            if op == "run" {
+                fs::write(&path, definition.replace("touch approved", "touch initial")).unwrap();
+            }
+            let a = f.command(op).current_dir(&root).spawn().unwrap();
+            let first = f.accept_before_dispatch(None, || {
+                if op == "run" {
+                    fs::write(&path, definition).unwrap();
+                }
+            });
+            let b = f.command(op).current_dir(&root).spawn().unwrap();
+            let second = f.accept(None);
+            assert_ne!(first, second);
+            let cards = f.monitor.open_needs_you();
+            assert_eq!(cards.len(), 2);
+            for card in cards {
+                assert!(
+                    card.summary.contains("EXTRA") && card.summary.contains(root.to_str().unwrap())
+                );
+                assert!(card
+                    .summary
+                    .contains(if op == "exec" { "LOCAL" } else { "build" }));
+                evidence.push_str(&card.summary);
+            }
+            if op == "run" {
+                fs::write(&path, definition.replace("touch approved", "touch changed")).unwrap();
+            }
+            f.decide(&second, ApprovalChoice::Deny);
+            finish(b, 1);
+            let (count, lines) = join();
+            assert_eq!(count, usize::from(op == "exec")); // exec enumerates account names only.
+            evidence.push_str(&lines.join("\n"));
+            f.decide(&first, ApprovalChoice::Once);
+            finish(a, 0);
+            evidence.push_str(&join().1.join("\n"));
+            assert!(f.monitor.open_needs_you().is_empty());
+            let interrupted = f.command(op).current_dir(&root).spawn().unwrap();
+            let ask = f.accept(None);
+            assert_eq!(
+                unsafe { libc::kill(interrupted.id() as _, libc::SIGINT) },
+                0
+            );
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(
+                interrupted.wait_with_output().unwrap().status.signal(),
+                Some(libc::SIGINT)
+            );
+            assert_eq!(join().0, usize::from(op == "exec"));
+            assert!(f.monitor.open_needs_you().is_empty());
+            assert!(f
+                .monitor
+                .approve_pending(&ask, ApprovalChoice::Once)
+                .is_err());
+        }
+        assert!(!root.join("initial").exists());
+        assert!(root.join("approved").is_file());
+        assert!(!root.join("changed").exists());
+        evidence.push_str(&logs.lines().join("\n"));
+        evidence.push_str(
+            &fs::read_to_string(f.h.profile_dir().join("permission-audit.jsonl")).unwrap(),
+        );
+        if let Ok(entries) = fs::read_dir(f.h.profile_dir().join("rpc")) {
+            for entry in entries {
+                evidence.push_str(&fs::read_to_string(entry.unwrap().path()).unwrap());
+            }
+        }
+        for canary in ["host-canary", "terminal-canary"] {
+            assert!(!evidence.contains(canary));
+        }
     }
 
     fn prompt_on_tty(mut command: Command) -> Child {
