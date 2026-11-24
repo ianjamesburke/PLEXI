@@ -1142,10 +1142,17 @@ impl AssistantView {
     /// only while a grant allows it. The delivery permit binds the grant rows
     /// the allow rests on, so revoking one stops delivery (stint 1716).
     fn subscribe_stream(&mut self, app: &str, event: &str) {
+        let _ = self.subscribe_stream_allowed(app, event, false);
+    }
+
+    /// [`Self::subscribe_stream`]; `allowed_once` when the person just allowed
+    /// this one registration on the sheet, which creates and claims the once
+    /// grant for it (stint 1716).
+    fn subscribe_stream_allowed(&mut self, app: &str, event: &str, allowed_once: bool) -> bool {
         let target = format!("{app}::{event}");
         if self.live_subs.iter().any(|(t, _)| *t == target) {
             log::info!("assistant: already subscribed to '{target}'");
-            return;
+            return true;
         }
         let event_names = vec![event.to_string()];
         let posture = self.active_posture();
@@ -1158,11 +1165,12 @@ impl AssistantView {
             ActorScope::User,
             Some(self.monitor.session_id()),
             &event_names,
+            allowed_once,
         ) {
             Ok(coverage) => coverage,
             Err(decision) => {
                 log::info!("assistant: subscription to '{target}' not allowed ({})", decision.as_str());
-                return;
+                return false;
             }
         };
         let permit = crate::broker::permit::mint_unbound(
@@ -1185,6 +1193,7 @@ impl AssistantView {
         );
         log::info!("assistant: subscribed to '{target}' ({subscription_id})");
         self.live_subs.push((target, subscription_id));
+        true
     }
 
     /// Remove live subscription(s) for one target. Returns how many.
@@ -3179,8 +3188,15 @@ impl AssistantView {
                 "permission_denied: the user denied the subscription to {target}. {}",
                 crate::cli::introspect::permission_undo_text()
             ))
+        } else if !self.subscribe_stream_allowed(
+            &app,
+            &event,
+            choice == PermissionChoice::AllowOnce,
+        ) {
+            ToolCallResult::err(format!(
+                "permission_denied: the subscription to {target} is not allowed."
+            ))
         } else {
-            self.subscribe_stream(&app, &event);
             let _ = self.audit.append(&AuditEvent::now(
                 &self.audit_actor(),
                 "subscribe",
@@ -7398,6 +7414,31 @@ enabled = ["allowed.tool"]
             empty_assistant, 0,
             "a cancelled turn must not commit an empty assistant bubble"
         );
+    }
+
+    /// Stint 1716: Allow Once on the stream sheet creates and claims the once
+    /// grant for this one registration, so events are delivered.
+    #[test]
+    fn subscribe_sheet_allow_once_delivers_events() {
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        let mut app = test_plugin_with_timeline(ws.path(), timeline.clone());
+        // The stream's own sheet: the host call parks until the person decides.
+        let (reply, result_rx) = std::sync::mpsc::sync_channel(1);
+        app.handle_host_call(
+            HOST_TOOL_SUBSCRIBE,
+            r#"{"plugin": "chess", "event": "move.played"}"#,
+            reply,
+        );
+        assert!(app.pending_subscribe.is_some(), "the stream sheet is up");
+        app.resolve_permission(PermissionChoice::AllowOnce);
+        let result = result_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("subscribe must complete");
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert_eq!(app.live_subs.len(), 1);
+        assert_eq!(emit_move(&timeline, PluginEventActor::User, None, None), 1);
+        assert_eq!(emit_move(&timeline, PluginEventActor::User, None, None), 1);
     }
 
     #[test]

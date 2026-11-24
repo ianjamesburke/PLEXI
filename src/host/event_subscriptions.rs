@@ -161,6 +161,8 @@ pub fn evaluate_subscription(
 
 /// Admit a subscription to exactly `event_names` in the profile's live
 /// store, claiming any once grant a member rests on for this registration.
+/// `allowed_once` means a person just allowed this one registration: a once
+/// grant is created, already claimed, only for members nothing else allows.
 /// The coverage pairs each admitted member with its approved question; the
 /// delivery permit asks it again at every commit (stint 1716).
 #[allow(clippy::too_many_arguments)]
@@ -173,6 +175,7 @@ pub(crate) fn admit_stream_members(
     actor_scope: ActorScope,
     session_id: Option<&str>,
     event_names: &[String],
+    allowed_once: bool,
 ) -> Result<crate::broker::permit::Coverage, Decision> {
     let targets = subscription_targets(publisher_plugin_id, event_names);
     let trace = |target: &str, decision: Decision, mechanism: &str| {
@@ -206,7 +209,23 @@ pub(crate) fn admit_stream_members(
             ))
         })
         .collect();
-    let admitted = monitor.admit_questions(questions, posture);
+    let once_row = |request: &PermissionRequest| {
+        GrantRecord::event_stream_allow(
+            request.actor_type,
+            &request.actor_id,
+            request.actor_scope,
+            &request.target_id,
+            workspace,
+            GrantDuration::Once,
+            GrantSource::Session,
+            request.session_id.clone(),
+        )
+    };
+    let admitted = if allowed_once {
+        monitor.admit_questions_allowed_once(questions, posture, &once_row)
+    } else {
+        monitor.admit_questions(questions, posture)
+    };
     let decision = admitted.as_ref().err().copied().unwrap_or(Decision::Allow);
     for target in &targets {
         trace(target, decision, "broker_admission");
@@ -888,6 +907,7 @@ impl HostSubscriptionService {
                 ActorScope::User,
                 None,
                 &req.event_names,
+                false,
             )
         };
         match admitted {
@@ -1104,23 +1124,6 @@ impl HostSubscriptionService {
                     });
                     return;
                 }
-                if choice == ConsentChoice::AllowOnce {
-                    // One registration: a once row per member, claimed by the
-                    // admission below and revocable while it lives. Memory only.
-                    let mut store = self.monitor.store();
-                    for target in subscription_targets(&plugin_id, &event_names) {
-                        store.record(GrantRecord::event_stream_allow(
-                            subscriber_type,
-                            &broker_actor_id,
-                            ActorScope::User,
-                            &target,
-                            &workspace_root,
-                            GrantDuration::Once,
-                            GrantSource::Session,
-                            None,
-                        ));
-                    }
-                }
                 let admitted = admit_stream_members(
                     &self.monitor,
                     posture.as_ref(),
@@ -1130,6 +1133,7 @@ impl HostSubscriptionService {
                     ActorScope::User,
                     None,
                     &event_names,
+                    choice == ConsentChoice::AllowOnce,
                 )
                 .map_err(|decision| {
                     format!(
@@ -2361,6 +2365,34 @@ mod tests {
         emit(&timeline, "probe.tick");
         assert_eq!(take("pane-2"), ["probe.tick"], "narrowed to A");
         assert_eq!(take("pane-1"), ["probe.tick"]);
+    }
+
+    /// Stint 1716 (round 3): with Always A on file, Allow Once for A+B
+    /// creates and claims a once grant only for B. Nothing is left for A, so
+    /// after Always A is revoked an A-only subscription asks again.
+    #[test]
+    fn a_once_consent_leaves_no_unclaimed_grant_behind() {
+        let timeline = timeline_with_stream();
+        declare(&timeline, "probe.late");
+        let mut store = GrantStore::default();
+        let always = allow_grant("pane:7", "event-probe::probe.tick");
+        let always_id = always.grant_id.clone();
+        store.record(always);
+        let mut svc = HostSubscriptionService::new_for_test(store, Arc::clone(&timeline));
+        let subscribe = |svc: &mut HostSubscriptionService, events: &[&str]| {
+            let names = events.iter().map(|e| e.to_string()).collect();
+            let (mut req, rx) = subscribe_request(names, PayloadMode::Full, None);
+            req.subscriber_authority = SubscriberAuthority::Pane(pane_scope(7, &[]));
+            (svc.classify_subscribe_request(req), rx)
+        };
+        let (consent, rx) = subscribe(&mut svc, &["probe.tick", "probe.late"]);
+        svc.resolve_consent(consent.expect("B asks"), ConsentChoice::AllowOnce);
+        assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+        assert!(svc.monitor().revoke_grant_id(&always_id).unwrap());
+        assert!(
+            subscribe(&mut svc, &["probe.tick"]).0.is_some(),
+            "an A-only subscription asks; no leftover once grant admits it"
+        );
     }
 
     /// Stint 1716 (design-3306 once): a once consent authorizes one

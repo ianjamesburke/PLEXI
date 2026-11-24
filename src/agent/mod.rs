@@ -1302,6 +1302,7 @@ impl AgentHost {
                 ActorScope::User,
                 None,
                 &sub.events,
+                false,
             ) {
                 Ok(coverage) => coverage,
                 Err(decision) => {

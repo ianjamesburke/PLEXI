@@ -1219,9 +1219,47 @@ impl PermissionMonitor {
         requests: Vec<PermissionRequest>,
         posture: Option<&crate::broker::PermissionPosture>,
     ) -> Result<Vec<(Approved, String)>, Decision> {
+        self.admit_locked(requests, posture, None)
+    }
+
+    /// [`Self::admit_questions`] after a person allowed this one use: under
+    /// the same lock, a once row (from `once_row`) is created only for each
+    /// question nothing allows yet, already claimed for this use, so no row
+    /// is left for a later registration to claim silently.
+    pub(crate) fn admit_questions_allowed_once(
+        &self,
+        requests: Vec<PermissionRequest>,
+        posture: Option<&crate::broker::PermissionPosture>,
+        once_row: &dyn Fn(&PermissionRequest) -> GrantRecord,
+    ) -> Result<Vec<(Approved, String)>, Decision> {
+        self.admit_locked(requests, posture, Some(once_row))
+    }
+
+    fn admit_locked(
+        &self,
+        mut requests: Vec<PermissionRequest>,
+        posture: Option<&crate::broker::PermissionPosture>,
+        once_row: Option<&dyn Fn(&PermissionRequest) -> GrantRecord>,
+    ) -> Result<Vec<(Approved, String)>, Decision> {
         let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
         let now = self.now_secs();
         let mut store = self.store();
+        let use_id = format!("use-{}", uuid::Uuid::new_v4());
+        if let Some(once_row) = once_row {
+            for request in requests.iter_mut() {
+                if store.evaluate_at(request, posture, now) == Decision::Ask {
+                    let mut row = once_row(request);
+                    row.consumed = true;
+                    row.bound_operation_id = Some(use_id.clone());
+                    log::info!(
+                        "permission_monitor: once-grant {} claimed for {use_id} at consent",
+                        row.grant_id
+                    );
+                    store.record(row);
+                    request.operation_id = use_id.clone();
+                }
+            }
+        }
         let strictest = requests
             .iter()
             .map(|request| store.evaluate_at(request, posture, now))
@@ -1233,7 +1271,6 @@ impl PermissionMonitor {
         if strictest != Decision::Allow {
             return Err(strictest);
         }
-        let use_id = format!("use-{}", uuid::Uuid::new_v4());
         Ok(requests
             .into_iter()
             .map(|mut request| {
