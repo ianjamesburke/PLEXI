@@ -433,22 +433,22 @@ fn main() -> eframe::Result {
             }
             if let Some(cmd) = cli.command {
                 let json = cli.json;
-                cli::set_request_json_output(json);
+                let mode = cli::OutputMode::from(json);
                 let resolve_pane = |t: &cli::PaneTarget| -> u64 {
-                    t.resolve().unwrap_or_else(|code| cli::trace::exit(code))
+                    t.resolve(mode).unwrap_or_else(|code| cli::trace::exit(code))
                 };
                 let resolve_opt_pane = |t: Option<&cli::PaneTarget>| -> Option<u64> {
-                    cli::resolve_opt_pane_target(t).unwrap_or_else(|code| cli::trace::exit(code))
+                    cli::resolve_opt_pane_target(t, mode).unwrap_or_else(|code| cli::trace::exit(code))
                 };
                 let current_pane = |t: Option<&cli::PaneTarget>, command: &str| -> u64 {
                     let explicit = resolve_opt_pane(t);
                     cli::current_pane_id(explicit, command).unwrap_or_else(|code| cli::trace::exit(code))
                 };
                 let resolve_ctx = |t: &cli::ContextTarget| -> u64 {
-                    t.resolve().unwrap_or_else(|code| cli::trace::exit(code))
+                    t.resolve(mode).unwrap_or_else(|code| cli::trace::exit(code))
                 };
                 let resolve_opt_ctx = |t: Option<&cli::ContextTarget>| -> Option<u64> {
-                    cli::resolve_opt_context_target(t).unwrap_or_else(|code| cli::trace::exit(code))
+                    cli::resolve_opt_context_target(t, mode).unwrap_or_else(|code| cli::trace::exit(code))
                 };
                 if !matches!(&cmd, Commands::Debug { .. } | Commands::Skill { .. }) {
                     cli::trace::begin(&tokens, &owners, lifecycle_socket.clone());
@@ -653,20 +653,20 @@ fn main() -> eframe::Result {
                     },
                     Commands::Permissions { cmd } => match cmd {
                         PermissionsCmd::List => {
-                            cli::trace::exit(cli::permissions_cli("list", None, None, json))
+                            cli::trace::exit(cli::permissions_cli("list", None, None, mode))
                         }
                         PermissionsCmd::Reset { id } => {
-                            cli::trace::exit(cli::permissions_cli("reset", Some(&id), None, true))
+                            cli::trace::exit(cli::permissions_cli("reset", Some(&id), None, cli::OutputMode::Json))
                         }
                         PermissionsCmd::Revoke { id } => {
-                            cli::trace::exit(cli::permissions_cli("revoke", Some(&id), None, true))
+                            cli::trace::exit(cli::permissions_cli("revoke", Some(&id), None, cli::OutputMode::Json))
                         }
                         PermissionsCmd::Allow { id, duration } => {
                             cli::trace::exit(cli::permissions_cli(
                                 "allow",
                                 Some(&id),
                                 duration.as_deref(),
-                                true,
+                                cli::OutputMode::Json,
                             ))
                         }
                     },
@@ -680,10 +680,10 @@ fn main() -> eframe::Result {
                         }
                         match cmd {
                             Some(AgentsDashboardCmd::Open) => {
-                                cli::trace::exit(cli::command_view_cli("open", json))
+                                cli::trace::exit(cli::command_view_cli("open", mode))
                             }
                             Some(AgentsDashboardCmd::Cancel { run }) => {
-                                cli::trace::exit(cli::command_view_cancel_cli(&run, json))
+                                cli::trace::exit(cli::command_view_cancel_cli(&run, mode))
                             }
                             Some(AgentsDashboardCmd::Resolve { id: _ }) => {
                                 cli::trace::exit(cli::command_view_refused("resolve"))
@@ -691,20 +691,20 @@ fn main() -> eframe::Result {
                             Some(AgentsDashboardCmd::Allow { tool: _ }) => {
                                 cli::trace::exit(cli::command_view_refused("allow"))
                             }
-                            None => cli::trace::exit(cli::command_view_cli("list", json)),
+                            None => cli::trace::exit(cli::command_view_cli("list", mode)),
                         }
                     }
                     Commands::Run {
                         command,
                         extra_args,
                     } => match command {
-                        Some(cmd) => cli::trace::exit(cli::run_command(&cmd, &extra_args)),
+                        Some(cmd) => cli::trace::exit(cli::run_command(&cmd, &extra_args, mode)),
                         None => cli::trace::exit(cli::run_list_commands(json)),
                     },
                     Commands::Workspace { cmd } => match cmd {
                         WorkspaceCmd::Init => cli::trace::exit(cli::workspace_init()),
                         WorkspaceCmd::Clean { dry_run } => {
-                            cli::trace::exit(cli::workspace_clean_cli(dry_run))
+                            cli::trace::exit(cli::workspace_clean_cli(dry_run, mode))
                         }
                     },
                     Commands::Routine { cmd } => match cmd {
@@ -807,7 +807,7 @@ fn main() -> eframe::Result {
                                 &name,
                                 cwd.as_deref(),
                                 initial_message,
-                                json,
+                                mode,
                             ))
                         }
                         AgentCmd::Spawn {
@@ -826,7 +826,7 @@ fn main() -> eframe::Result {
                                 ephemeral,
                                 from,
                                 cwd.as_deref(),
-                                json,
+                                mode,
                             ))
                         }
                         AgentCmd::Done {
@@ -847,11 +847,11 @@ fn main() -> eframe::Result {
                         }
                         AgentCmd::Wait { pane_ids, timeout } => {
                             let resolved: Vec<u64> = pane_ids.iter().map(resolve_pane).collect();
-                            cli::trace::exit(cli::agent_wait_cli(&resolved, timeout, json))
+                            cli::trace::exit(cli::agent_wait_cli(&resolved, timeout, mode))
                         }
                         AgentCmd::Ask { question, pane_id } => {
                             let pane_id = resolve_opt_pane(pane_id.as_ref());
-                            cli::trace::exit(cli::agent_ask_cli(&question, pane_id))
+                            cli::trace::exit(cli::agent_ask_cli(&question, pane_id, mode))
                         }
                         AgentCmd::Report {
                             state,
@@ -872,20 +872,20 @@ fn main() -> eframe::Result {
                             blocked,
                             working,
                             idle,
-                        } => cli::trace::exit(cli::agent_status_cli(blocked, working, idle)),
+                        } => cli::trace::exit(cli::agent_status_cli(blocked, working, idle, mode)),
                         AgentCmd::Next => {
-                            cli::trace::exit(cli::agent_next_cli(json));
+                            cli::trace::exit(cli::agent_next_cli(mode));
                         }
                         AgentCmd::Fleet { cmd, filter } => match cmd {
                             Some(cli::args::AgentFleetCmd::Dismiss { target, all_failed }) => {
                                 cli::trace::exit(cli::agent_fleet_dismiss_cli(
                                     target.as_deref(),
                                     all_failed,
-                                    json,
+                                    mode,
                                 ));
                             }
                             None => {
-                                cli::trace::exit(cli::agent_fleet_cli(json, filter));
+                                cli::trace::exit(cli::agent_fleet_cli(mode, filter));
                             }
                         },
                         AgentCmd::History { limit } => {
@@ -894,16 +894,16 @@ fn main() -> eframe::Result {
                         AgentCmd::Open { name, cwd } => cli::trace::exit(cli::agent_open_cli(
                             &name,
                             cwd.as_deref(),
-                            json,
+                            mode,
                         )),
                         AgentCmd::NewChat { name, cwd } => cli::trace::exit(
-                            cli::agent_new_chat_cli(&name, cwd.as_deref(), json),
+                            cli::agent_new_chat_cli(&name, cwd.as_deref(), mode),
                         ),
                         AgentCmd::Reopen { target, subcontext } => cli::trace::exit(
-                            cli::agent_reopen_cli(&target, subcontext.as_deref(), json),
+                            cli::agent_reopen_cli(&target, subcontext.as_deref(), mode),
                         ),
                         AgentCmd::Team { cmd } => {
-                            cli::trace::exit(cli::agent_team_dispatch(cmd, json))
+                            cli::trace::exit(cli::agent_team_dispatch(cmd, mode))
                         }
                         AgentCmd::HookEvent { agent } => {
                             cli::trace::exit(cli::agent_hook_event_cli(agent.as_deref()))
@@ -977,7 +977,7 @@ fn main() -> eframe::Result {
                             global,
                         } => cli::trace::exit(cli::workspace_secret_get(&friendly_name, global)),
                         SecretCmd::List { global, context } => cli::trace::exit(
-                            cli::workspace_secret_list(global, context.as_ref(), json),
+                            cli::workspace_secret_list(global, context.as_ref(), mode),
                         ),
                         SecretCmd::Delete {
                             friendly_name,
@@ -1017,7 +1017,7 @@ fn main() -> eframe::Result {
                         cmd: FileCmd::Open(args),
                     } => {
                         let from = resolve_opt_pane(args.from.as_ref());
-                        cli::trace::exit(cli::file_open_cli(&args, from, json))
+                        cli::trace::exit(cli::file_open_cli(&args, from, mode))
                     }
                     Commands::View { cmd } => match cmd {
                         ViewCmd::List => cli::trace::exit(cli::view_list(json)),
@@ -1255,7 +1255,7 @@ fn main() -> eframe::Result {
                         PluginCmd::Info { id } => cli::trace::exit(cli::plugin_info(&id)),
                         PluginCmd::State { cmd } => match cmd {
                             PluginStateCmd::Get { plugin, scope } => {
-                                cli::trace::exit(cli::plugin_state::get(&plugin, scope.as_deref()))
+                                cli::trace::exit(cli::plugin_state::get(&plugin, scope.as_deref(), mode))
                             }
                             PluginStateCmd::Set {
                                 plugin,
@@ -1265,6 +1265,7 @@ fn main() -> eframe::Result {
                                 &plugin,
                                 file.as_deref(),
                                 scope.as_deref(),
+                                mode,
                             )),
                         },
                         PluginCmd::Validate { path } => {
@@ -1309,7 +1310,7 @@ fn main() -> eframe::Result {
                                 &plugin_id,
                                 &tool,
                                 &input,
-                                json,
+                                mode,
                                 pane,
                                 wait_approved,
                             ))
@@ -1319,7 +1320,7 @@ fn main() -> eframe::Result {
                             cli::trace::exit(cli::plugin_tools_cli(
                                 plugin.as_deref(),
                                 context,
-                                json,
+                                mode,
                             ))
                         }
                     },
@@ -1355,9 +1356,9 @@ fn main() -> eframe::Result {
                         HostCmd::Status => cli::trace::exit(cli::host_status_cli(json)),
                         HostCmd::Screenshot { pane, output } => {
                             let pane = resolve_opt_pane(pane.as_ref());
-                            cli::trace::exit(cli::host_screenshot_cli(pane, output.as_deref()))
+                            cli::trace::exit(cli::host_screenshot_cli(pane, output.as_deref(), mode))
                         }
-                        HostCmd::Key { key } => cli::trace::exit(cli::host_key_cli(&key)),
+                        HostCmd::Key { key } => cli::trace::exit(cli::host_key_cli(&key, mode)),
                     },
                     Commands::Notify { cmd, post } => {
                         if let Some(NotifyCmd::Dismiss { notify_id }) = cmd {
@@ -1446,7 +1447,7 @@ fn main() -> eframe::Result {
                             display_timeout_secs: timeout,
                             wait_timeout_secs: wait_timeout,
                             scope: parsed_scope,
-                            json,
+                            mode,
                         }));
                     }
                     Commands::Pane { cmd } => match cmd {
@@ -1460,9 +1461,9 @@ fn main() -> eframe::Result {
                                 "pane_action:cli: pane_id={pane_id} action={action:?} argc={}",
                                 args.len()
                             );
-                            cli::trace::exit(cli::pane_action_cli(pane_id, &action, &args));
+                            cli::trace::exit(cli::pane_action_cli(pane_id, &action, &args, mode));
                         }
-                        PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
+                        PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli(mode)),
                         PaneCmd::Name { first, second } => {
                             let (pane_id, name) = match second {
                                 Some(title) => {
@@ -1480,7 +1481,7 @@ fn main() -> eframe::Result {
                                 Some(s) => {
                                     let target = cli::ContextTarget::from(s.to_string());
                                     let id = target
-                                        .resolve()
+                                        .resolve(mode)
                                         .unwrap_or_else(|code| cli::trace::exit(code));
                                     (Some(id), false)
                                 }
@@ -1494,12 +1495,12 @@ fn main() -> eframe::Result {
                                 Some(s) => {
                                     let target = cli::ContextTarget::from(s.to_string());
                                     let id = target
-                                        .resolve()
+                                        .resolve(mode)
                                         .unwrap_or_else(|code| cli::trace::exit(code));
                                     (Some(id), false)
                                 }
                             };
-                            cli::trace::exit(cli::pane_tree_cli(context_id, current, json))
+                            cli::trace::exit(cli::pane_tree_cli(context_id, current, mode))
                         }
                         PaneCmd::Focus {
                             pane_id,
@@ -1512,21 +1513,22 @@ fn main() -> eframe::Result {
                                 None => cli::host_action_cli(
                                     serde_json::json!({"type":"focus_history", "forward":forward}),
                                     None,
+                                    mode,
                                 ),
                             })
                         }
                         PaneCmd::Zoom { pane_id } => {
                             let pane_id = current_pane(pane_id.as_ref(), "pane zoom");
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_zoom", "pane_id":pane_id}), None))
+                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_zoom", "pane_id":pane_id}), None, mode))
                         }
                         PaneCmd::Swap { pane_id, direction } => {
                             let pane_id = current_pane(pane_id.as_ref(), "pane swap");
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_swap", "direction":direction, "pane_id":pane_id}), None))
+                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_swap", "direction":direction, "pane_id":pane_id}), None, mode))
                         }
                         PaneCmd::Close { pane_id } => {
                             let id = current_pane(pane_id.as_ref(), "pane close");
                             log::info!("pane_close:cli: pane_id={id}");
-                            cli::trace::exit(cli::pane_close_cli(id));
+                            cli::trace::exit(cli::pane_close_cli(id, mode));
                         }
                         PaneCmd::Send {
                             pane_id,
@@ -1563,14 +1565,14 @@ fn main() -> eframe::Result {
                         }
                         PaneCmd::Key { pane_id, key } => {
                             let pane_id = resolve_pane(&pane_id);
-                            cli::trace::exit(cli::pane_key_cli(pane_id, &key))
+                            cli::trace::exit(cli::pane_key_cli(pane_id, &key, mode))
                         }
                         PaneCmd::Drop {
                             pane_id,
                             path_or_url,
                         } => {
                             let pane_id = resolve_pane(&pane_id);
-                            cli::trace::exit(cli::pane_drop_cli(pane_id, &path_or_url))
+                            cli::trace::exit(cli::pane_drop_cli(pane_id, &path_or_url, mode))
                         }
                         PaneCmd::Click {
                             pane_id,
@@ -1581,13 +1583,14 @@ fn main() -> eframe::Result {
                         } => {
                             let pane_id = resolve_pane(&pane_id);
                             cli::trace::exit(match node {
-                                Some(node_ref) => cli::pane_click_node_cli(pane_id, &node_ref),
+                                Some(node_ref) => cli::pane_click_node_cli(pane_id, &node_ref, mode),
                                 None => match (x, y) {
                                     (Some(x), Some(y)) => cli::pane_click_cli(
                                         pane_id,
                                         x,
                                         y,
                                         button.as_deref().unwrap_or("left"),
+                                        mode,
                                     ),
                                     _ => {
                                         eprintln!(
@@ -1610,18 +1613,23 @@ fn main() -> eframe::Result {
                             let pane_id = resolve_pane(&pane_id);
                             cli::trace::exit(cli::pane_drag_cli(
                                 pane_id,
-                                from.as_deref(),
-                                from_node.as_deref(),
-                                to.as_deref(),
-                                to_node.as_deref(),
+                                cli::PaneDragEndpoint {
+                                    coords: from.as_deref(),
+                                    node: from_node.as_deref(),
+                                },
+                                cli::PaneDragEndpoint {
+                                    coords: to.as_deref(),
+                                    node: to_node.as_deref(),
+                                },
                                 steps,
                                 &button,
+                                mode,
                             ))
                         }
                         PaneCmd::Self_ => cli::trace::exit(cli::pane_self_cli()),
                         PaneCmd::Info { pane_id, previous } => {
                             let pane_id = resolve_opt_pane(pane_id.as_ref());
-                            cli::trace::exit(cli::pane_info_cli(pane_id, previous))
+                            cli::trace::exit(cli::pane_info_cli(pane_id, previous, mode))
                         }
                         PaneCmd::Capture {
                             pane_id,
@@ -1637,6 +1645,7 @@ fn main() -> eframe::Result {
                                 full_output,
                                 from_cursor,
                                 plain,
+                                mode,
                             ))
                         }
                         PaneCmd::Wait { pane_id, until, timeout } => {
@@ -1649,15 +1658,15 @@ fn main() -> eframe::Result {
                         }
                         PaneCmd::Status { pane_id } => {
                             let pane_id = current_pane(pane_id.as_ref(), "pane status");
-                            cli::trace::exit(cli::pane_status_cli(pane_id))
+                            cli::trace::exit(cli::pane_status_cli(pane_id, mode))
                         }
                         PaneCmd::Heartbeat { pane_id, every, text, while_idle_only, off } => {
                             let pane_id = current_pane(pane_id.as_ref(), "pane heartbeat");
-                            cli::trace::exit(cli::pane_heartbeat_cli(pane_id, every.as_deref(), text.as_deref(), while_idle_only.then_some(true), off))
+                            cli::trace::exit(cli::pane_heartbeat_cli(pane_id, every.as_deref(), text.as_deref(), while_idle_only.then_some(true), off, mode))
                         }
                         PaneCmd::State { pane_id, stale_after } => {
                             let pane_id = current_pane(pane_id.as_ref(), "pane state");
-                            cli::trace::exit(cli::pane_state_cli(pane_id, stale_after))
+                            cli::trace::exit(cli::pane_state_cli(pane_id, stale_after, mode))
                         }
                         PaneCmd::Slot { cmd } => match cmd {
                             PaneSlotCmd::Write {
@@ -1674,6 +1683,7 @@ fn main() -> eframe::Result {
                                     append,
                                     replace,
                                     pane_id,
+                                    mode,
                                 ));
                             }
                             PaneSlotCmd::Read {
@@ -1704,7 +1714,7 @@ fn main() -> eframe::Result {
                             } => {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
-                                cli::trace::exit(cli::pane_slot_list_cli(resolved))
+                                cli::trace::exit(cli::pane_slot_list_cli(resolved, mode))
                             }
                             PaneSlotCmd::Delete {
                                 name,
@@ -1713,7 +1723,7 @@ fn main() -> eframe::Result {
                             } => {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
-                                cli::trace::exit(cli::pane_slot_delete_cli(&name, resolved))
+                                cli::trace::exit(cli::pane_slot_delete_cli(&name, resolved, mode))
                             }
                         },
                         PaneCmd::Message { cmd } => match cmd {
@@ -1725,6 +1735,7 @@ fn main() -> eframe::Result {
                                 let pane_id = resolve_pane(&pane_id);
                                 cli::trace::exit(cli::pane_message_send_cli(
                                     pane_id, &payload, submit,
+                                    mode,
                                 ))
                             }
                             PaneMessageCmd::Recv {
@@ -1832,6 +1843,7 @@ fn main() -> eframe::Result {
                                 worktree: worktree.as_deref(),
                                 result_schema: result_schema.as_deref(),
                                 on_load: &on_load,
+                                mode,
                                 ..Default::default()
                             }));
                         }
@@ -1892,7 +1904,7 @@ fn main() -> eframe::Result {
                             rollback_token: rollback_token.as_deref(),
                             changed_resources: &changed_resources,
                         })),
-                        EventsCmd::List => cli::trace::exit(cli::events_list_cli(json)),
+                        EventsCmd::List => cli::trace::exit(cli::events_list_cli(mode)),
                         EventsCmd::McpConfig => cli::trace::exit(cli::events_mcp_config_cli()),
                     },
                     Commands::CompleteOpen { prefix } => {
@@ -1987,9 +1999,9 @@ fn main() -> eframe::Result {
                                 path.as_deref(),
                                 parent.as_deref(),
                                 &window,
-                                focus,
                                 dir,
-                                from,
+                                cli::ContextSpawnPlacement { focus, from },
+                                mode,
                             ))
                         }
                         ContextCmd::Sub {
@@ -2008,23 +2020,23 @@ fn main() -> eframe::Result {
                                 agents,
                                 &command,
                                 layout,
-                                focus,
-                                from,
+                                cli::ContextSpawnPlacement { focus, from },
+                                mode,
                             ))
                         }
                         ContextCmd::Open { path } => {
-                            cli::trace::exit(cli::context_open_cli(path.as_deref()))
+                            cli::trace::exit(cli::context_open_cli(path.as_deref(), mode))
                         }
                         ContextCmd::SetRoot { path } => {
-                            cli::trace::exit(cli::context_set_root_cli(path.as_deref()))
+                            cli::trace::exit(cli::context_set_root_cli(path.as_deref(), mode))
                         }
-                        ContextCmd::Current => cli::trace::exit(cli::context_current_cli()),
+                        ContextCmd::Current => cli::trace::exit(cli::context_current_cli(mode)),
                         ContextCmd::Describe { text } => {
-                            cli::trace::exit(cli::context_describe_cli(&text))
+                            cli::trace::exit(cli::context_describe_cli(&text, mode))
                         }
                         ContextCmd::Zoom { context_id } => {
                             let context_id = resolve_ctx(&context_id);
-                            cli::trace::exit(cli::context_zoom_cli(context_id))
+                            cli::trace::exit(cli::context_zoom_cli(context_id, mode))
                         }
                         ContextCmd::ZoomOut => cli::trace::exit(cli::context_zoom_out_cli()),
                         ContextCmd::Push { name, pane_id } => {
@@ -2036,6 +2048,7 @@ fn main() -> eframe::Result {
                             cli::trace::exit(cli::host_action_cli(
                                 serde_json::json!({"type":"context_rename", "name":name}),
                                 Some(("context_id", context_id, "PLEXI_CONTEXT_ID")),
+                                mode,
                             ))
                         }
                         ContextCmd::Close { context_id } => {
@@ -2043,6 +2056,7 @@ fn main() -> eframe::Result {
                             cli::trace::exit(cli::host_action_cli(
                                 serde_json::json!({"type":"context_close"}),
                                 Some(("context_id", context_id, "PLEXI_CONTEXT_ID")),
+                                mode,
                             ))
                         }
                         ContextCmd::Park { ref context_id }
@@ -2052,6 +2066,7 @@ fn main() -> eframe::Result {
                             cli::trace::exit(cli::host_action_cli(
                                 serde_json::json!({"type":"context_park", "parked":parked}),
                                 Some(("context_id", context_id, "PLEXI_CONTEXT_ID")),
+                                mode,
                             ))
                         }
                         ContextCmd::List => cli::trace::exit(cli::context_list_cli()),
@@ -2079,6 +2094,7 @@ fn main() -> eframe::Result {
                         ConfigCmd::Reload => cli::trace::exit(cli::host_action_cli(
                             serde_json::json!({"type":"reload_config"}),
                             None,
+                            mode,
                         )),
                         ConfigCmd::Check { scope } => {
                             cli::trace::exit(cli::config_check(scope.scope()));

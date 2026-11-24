@@ -1,5 +1,6 @@
 //! CLI front end for the Agents API and Agents dashboard.
 
+use super::reply::OutputMode;
 use serde_json::{json, Value};
 
 pub fn command_view_follow_cli() -> i32 {
@@ -8,13 +9,16 @@ pub fn command_view_follow_cli() -> i32 {
         Err(code) => return code,
     };
     log::info!("command_view:cli: follow workspace={}", workspace.display());
-    super::events::stream_control_line(json!({
-        "type": "command_view_follow",
-        "workspace": workspace,
-    }))
+    super::events::stream_control_line(
+        json!({
+            "type": "command_view_follow",
+            "workspace": workspace,
+        }),
+        OutputMode::Text,
+    )
 }
 
-pub fn command_view_cli(op: &str, json_out: bool) -> i32 {
+pub fn command_view_cli(op: &str, mode: OutputMode) -> i32 {
     let workspace = match crate::cli::agent::resolve_workspace_cwd() {
         Ok(root) => root,
         Err(code) => return code,
@@ -26,26 +30,26 @@ pub fn command_view_cli(op: &str, json_out: bool) -> i32 {
     send_dashboard(
         dashboard_frame(&workspace, op, None),
         "agents-dashboard",
-        json_out,
+        mode,
     )
 }
 
-pub fn command_view_cancel_cli(run: &str, json: bool) -> i32 {
+pub fn command_view_cancel_cli(run: &str, mode: OutputMode) -> i32 {
     let workspace = match crate::cli::agent::resolve_workspace_cwd() {
         Ok(root) => root,
         Err(code) => return code,
     };
-    command_view_cancel_in(&workspace, run, json)
+    command_view_cancel_in(&workspace, run, mode)
 }
 
 /// `plexi agents-dashboard cancel` for `workspace`: the whole entry past
 /// finding the workspace.
-fn command_view_cancel_in(workspace: &std::path::Path, run: &str, json: bool) -> i32 {
+fn command_view_cancel_in(workspace: &std::path::Path, run: &str, mode: OutputMode) -> i32 {
     log::info!("command_view:cli: cancel run={run}");
     send_dashboard(
         dashboard_frame(workspace, "cancel", Some(run)),
         "agents-dashboard cancel",
-        json,
+        mode,
     )
 }
 
@@ -59,15 +63,14 @@ fn dashboard_frame(workspace: &std::path::Path, op: &str, run: Option<&str>) -> 
 }
 
 /// Send one dashboard request and print the host's answer; 0 when it is ok.
-fn send_dashboard(frame: Value, label: &str, json: bool) -> i32 {
-    let content = match super::request_reply(
+fn send_dashboard(frame: Value, label: &str, mode: OutputMode) -> i32 {
+    let content = match super::request_with(
         frame,
         &label.replace(' ', "-"),
         label,
         std::time::Duration::from_secs(20),
-    )
-    .and_then(|reply| reply.payload_or_report(label, json))
-    {
+        mode,
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -101,7 +104,7 @@ pub fn command_view_refused(kind: &str) -> i32 {
     1
 }
 
-pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i32 {
+pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, mode: OutputMode) -> i32 {
     use crate::cli::args::AgentTeamCmd;
     let cwd = match std::env::current_dir() {
         Ok(path) => path,
@@ -111,7 +114,7 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i
         }
     };
     let workspace = crate::app::registry::resolve_workspace_root(&cwd);
-    let (payload, json_out, timeout) = match cmd {
+    let (payload, timeout) = match cmd {
         AgentTeamCmd::Show { name } => {
             match crate::agent::team::load(workspace.as_deref(), &name) {
                 Ok(mut team) => {
@@ -124,7 +127,7 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i
                             |path| path.display().to_string()
                         )
                     );
-                    if json {
+                    if mode.is_json() {
                         println!("{}", serde_json::json!({"name":name,"team":team}));
                     } else {
                         match toml::to_string_pretty(&team) {
@@ -167,19 +170,17 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i
                     "state_dir": crate::config::config_dir(), "name":name, "question":question,
                     "out":out, "options":options, "timeout":timeout,
                 }}),
-                json,
                 timeout,
             )
         }
     };
-    let body = match super::request_reply(
+    let body = match super::request_with(
         payload,
         "agent-team",
         "agent team run",
         std::time::Duration::from_secs(timeout + 20),
-    )
-    .and_then(|reply| reply.payload_or_report("agent team run", json_out))
-    {
+        mode,
+    ) {
         Ok(body) => body,
         Err(code) => return code,
     };
@@ -190,7 +191,7 @@ pub fn agent_team_dispatch(cmd: crate::cli::args::AgentTeamCmd, json: bool) -> i
             return 1;
         }
     };
-    if json_out {
+    if mode.is_json() {
         println!("{body}");
     } else {
         println!("{}", team_run_text(&value));
@@ -215,6 +216,7 @@ pub(crate) fn team_run_text(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::OutputMode;
     use crate::cli::test_env::socket_env_guard;
     use std::io::{BufRead as _, BufReader};
     use std::os::unix::net::UnixListener;
@@ -231,11 +233,11 @@ mod tests {
             // Cancel goes through its own entry, so a wrong operation built
             // there fails here (Codex 3290 r4).
             let run_cli = move || match run {
-                Some(run) => super::command_view_cancel_in(&path, run, false),
+                Some(run) => super::command_view_cancel_in(&path, run, OutputMode::Text),
                 None => super::send_dashboard(
                     super::dashboard_frame(&path, "list", None),
                     "agents-dashboard",
-                    false,
+                    OutputMode::Text,
                 ),
             };
             let env = socket_env_guard();

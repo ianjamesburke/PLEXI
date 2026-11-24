@@ -1,3 +1,5 @@
+use super::reply::OutputMode;
+
 /// Parse the `--scope` flag into an explicit wire scope.
 ///
 /// `None` (flag absent) stays `None` so the host applies
@@ -28,7 +30,7 @@ pub struct NotifyCliArgs<'a> {
     pub wait_timeout_secs: u64,
     pub scope: Option<crate::protocol::NotifyScope>,
     /// `--json`: a refusal's body is the command's stdout.
-    pub json: bool,
+    pub mode: OutputMode,
 }
 
 pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
@@ -40,7 +42,7 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
         display_timeout_secs,
         wait_timeout_secs,
         scope,
-        json,
+        mode,
     } = args;
     // The host attaches the notification to the caller's own context from
     // the kernel's account of this process; nothing here names a pane
@@ -175,7 +177,7 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
         log::info!("notify:cli: choice wait timed out after {wait_timeout_secs}s");
         return 2;
     }
-    match reply.payload_or_report("notify", json) {
+    match reply.payload_or_report("notify", mode) {
         Ok(key) => {
             print!("{}", key.trim());
             0
@@ -212,7 +214,7 @@ pub fn dismiss_notify_cli(notify_id: &str) -> i32 {
         .and_then(|reply| {
             reply
                 .expect_text_ack("dismissed")
-                .payload_or_report("notify dismiss", false)
+                .payload_or_report("notify dismiss", OutputMode::Text)
         })
         .map_or_else(|code| code, |_| 0)
 }

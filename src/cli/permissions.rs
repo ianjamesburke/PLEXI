@@ -5,12 +5,18 @@
 //! you item and change nothing until a click in the Plexi window approves it.
 //! `revoke` narrows and applies directly.
 
+use super::reply::OutputMode;
 /// Exit code when the request was filed and waits for a click in the Plexi
 /// window (same meaning as `secret get`'s `permission_required`).
 const EXIT_WAITING_FOR_APPROVAL: i32 = 2;
 
 /// `plexi permissions list [--json]`, and `reset` / `revoke` / `allow <id>`.
-pub fn permissions_cli(op: &str, id: Option<&str>, duration: Option<&str>, json: bool) -> i32 {
+pub fn permissions_cli(
+    op: &str,
+    id: Option<&str>,
+    duration: Option<&str>,
+    mode: OutputMode,
+) -> i32 {
     let response_file = crate::rpc::response_file("permissions", "json");
     let payload = serde_json::json!({
         "type": "permissions",
@@ -31,7 +37,7 @@ pub fn permissions_cli(op: &str, id: Option<&str>, duration: Option<&str>, json:
     };
     if let super::reply::HostReply::Refused(refusal) = &content {
         if refusal.fields["status"] == "needs_you" {
-            refusal.report(json);
+            refusal.report(mode);
             let item = refusal.fields["needs_you_id"].as_str().unwrap_or("");
             eprintln!(
                 "Filed Needs you item {item}. Nothing changed yet: approve it in the Plexi window \
@@ -40,7 +46,7 @@ pub fn permissions_cli(op: &str, id: Option<&str>, duration: Option<&str>, json:
             return EXIT_WAITING_FOR_APPROVAL;
         }
     }
-    let content = match content.payload_or_report("permissions", json) {
+    let content = match content.payload_or_report("permissions", mode) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -51,7 +57,7 @@ pub fn permissions_cli(op: &str, id: Option<&str>, duration: Option<&str>, json:
             return 1;
         }
     };
-    if op == "list" && !json {
+    if op == "list" && !mode.is_json() {
         print_table(&value);
     } else {
         println!("{value}");

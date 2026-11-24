@@ -1,3 +1,4 @@
+use super::reply::OutputMode;
 use std::io::{self, Write};
 
 pub(crate) const SCAFFOLD_METADATA_FILE: &str = "plexi.scaffold.toml";
@@ -1503,13 +1504,13 @@ fn try_query_live_plugin_tools_for_info(
         return None;
     }
     let payload = build_list_plugin_tools_payload(Some(plugin_id), None);
-    let content = super::request_reply(
+    let content = super::request_with(
         payload,
         "app-tools-response",
         "plugin tools",
         std::time::Duration::from_secs(2),
+        OutputMode::Text,
     )
-    .and_then(|reply| reply.payload_or_report("plugin tools", false))
     .ok()?;
     let reply: serde_json::Value = serde_json::from_str(&content).ok()?;
     if !super::reply::acknowledged(&reply) {
@@ -2084,7 +2085,7 @@ pub fn plugin_update_cli(id: Option<&str>) -> i32 {
 /// Sends a `send_pane_action` message to the host over PLEXI_SOCKET.
 /// The host delivers a `PlexiEvent::Action { action, args }` to the target view pane.
 /// Returns 0 on success, 1 on error.
-pub fn pane_action_cli(pane_id: u64, action: &str, args: &[String]) -> i32 {
+pub fn pane_action_cli(pane_id: u64, action: &str, args: &[String], mode: OutputMode) -> i32 {
     log::info!(
         "pane_action:cli: pane_id={pane_id} action={action:?} argc={}",
         args.len()
@@ -2099,7 +2100,7 @@ pub fn pane_action_cli(pane_id: u64, action: &str, args: &[String]) -> i32 {
         payload["args"] = serde_json::json!(args);
     }
 
-    super::request(payload, "app-action-response", "pane action")
+    super::request(payload, "app-action-response", "pane action", mode)
         .map_or_else(|code| code, |_| 0)
 }
 
@@ -2115,7 +2116,7 @@ pub fn plugin_call_cli(
     plugin_id: &str,
     tool: &str,
     input: &str,
-    json: bool,
+    mode: OutputMode,
     target_pane: Option<u64>,
     wait_approved: bool,
 ) -> i32 {
@@ -2147,7 +2148,7 @@ pub fn plugin_call_cli(
             payload["call_credential"] = serde_json::json!(credential);
         }
     }
-    let content = match super::request_reply(
+    let content = match super::request_with(
         payload,
         "app-call-response",
         "plugin call",
@@ -2158,15 +2159,14 @@ pub fn plugin_call_cli(
             } else {
                 std::time::Duration::ZERO
             },
-    )
-    .and_then(|reply| reply.payload_or_report("plugin call", json))
-    {
+        mode,
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };
     match serde_json::from_str::<serde_json::Value>(&content) {
         Ok(reply) => {
-            if json {
+            if mode.is_json() {
                 println!("{reply}");
                 return 0;
             }
@@ -2187,21 +2187,17 @@ pub fn plugin_call_cli(
 /// `plexi plugin tools [--plugin <plugin_id>] [--context <context_id>] [--json]` —
 /// snapshot the live tool registry exposed by running view panes in the resolved
 /// context.
-pub fn plugin_tools_cli(plugin_id: Option<&str>, context_id: Option<u64>, json: bool) -> i32 {
-    log::info!("plugin_tools:cli: plugin={plugin_id:?} context={context_id:?} json={json}");
+pub fn plugin_tools_cli(plugin_id: Option<&str>, context_id: Option<u64>, mode: OutputMode) -> i32 {
+    log::info!(
+        "plugin_tools:cli: plugin={plugin_id:?} context={context_id:?} json={}",
+        mode.is_json()
+    );
     let payload = build_list_plugin_tools_payload(plugin_id, context_id);
-    let content = match super::request_reply(
-        payload,
-        "app-tools-response",
-        "plugin tools",
-        crate::rpc::DEFAULT_TIMEOUT,
-    )
-    .and_then(|reply| reply.payload_or_report("plugin tools", json))
-    {
+    let content = match super::request(payload, "app-tools-response", "plugin tools", mode) {
         Ok(content) => content,
         Err(code) => return code,
     };
-    if json {
+    if mode.is_json() {
         return super::print_json_output(&content);
     }
     let reply: serde_json::Value = match serde_json::from_str(&content) {
@@ -2258,14 +2254,13 @@ pub fn needs_you_cli(op: &str, id: Option<&str>, approve: Option<bool>) -> i32 {
         }
     };
     log::info!("needs_you:cli: op={op} id={id:?} approve={approve:?}");
-    let content = match super::request_reply(
+    let content = match super::request_with(
         payload,
         "needs-you",
         "needs-you",
         std::time::Duration::from_secs(15),
-    )
-    .and_then(|reply| reply.payload_or_report("needs-you", true))
-    {
+        OutputMode::Json,
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -2287,14 +2282,13 @@ pub fn needs_you_api_cli(op: &str, payload: serde_json::Value) -> i32 {
         "response_file": response_file,
     });
     log::info!("needs_you:cli: api op={op}");
-    let content = match super::request_reply(
+    let content = match super::request_with(
         request,
         "needs-you",
         "needs-you",
         std::time::Duration::from_secs(15),
-    )
-    .and_then(|reply| reply.payload_or_report("needs-you", true))
-    {
+        OutputMode::Json,
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -2325,14 +2319,13 @@ pub fn assistant_permission_cli(op: &str, id: Option<&str>, choice: Option<&str>
         }
     };
     log::info!("assistant_permission:cli: op={op} id={id:?}");
-    let content = match super::request_reply(
+    let content = match super::request_with(
         payload,
         "assistant-permission",
         "assistant permission",
         std::time::Duration::from_secs(15),
-    )
-    .and_then(|reply| reply.payload_or_report("assistant permission", true))
-    {
+        OutputMode::Json,
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -2366,11 +2359,11 @@ pub fn assistant_tool_cli(name: &str, input_json: &str) -> i32 {
     };
     if let super::reply::HostReply::Refused(refusal) = &content {
         if refusal.code.as_deref() == Some("permission_required") {
-            refusal.report(true);
+            refusal.report(OutputMode::Json);
             return 2;
         }
     }
-    let content = match content.payload_or_report("assistant tool", true) {
+    let content = match content.payload_or_report("assistant tool", OutputMode::Json) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -2472,14 +2465,13 @@ pub fn assistant_send_cli(
         client: client.map(str::trim).filter(|client| !client.is_empty()),
         kind: kind.map(str::trim).filter(|kind| !kind.is_empty()),
     });
-    let content = match super::request_reply(
+    let content = match super::request_with(
         payload,
         "assistant-send",
         "assistant send",
         std::time::Duration::from_secs(120),
-    )
-    .and_then(|reply| reply.payload_or_report("assistant send", true))
-    {
+        OutputMode::Json,
+    ) {
         Ok(content) => content,
         Err(code) => return code,
     };

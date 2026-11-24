@@ -1,5 +1,6 @@
 use super::open::read_secret_from_stdin;
 use super::print_tip;
+use super::reply::OutputMode;
 use std::io::{self, Write};
 
 pub fn workspace_init() -> i32 {
@@ -63,7 +64,7 @@ pub fn workspace_init() -> i32 {
     }
 }
 
-pub fn workspace_clean_cli(dry_run: bool) -> i32 {
+pub fn workspace_clean_cli(dry_run: bool, mode: OutputMode) -> i32 {
     log::info!("workspace_clean:cli: dry_run={dry_run}");
     let content = match super::request(
         serde_json::json!({
@@ -72,6 +73,7 @@ pub fn workspace_clean_cli(dry_run: bool) -> i32 {
         }),
         "workspace-clean-response",
         "workspace clean",
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
@@ -525,15 +527,17 @@ pub(crate) fn reconcile_secrets_before_read(command: &str) {
 pub fn workspace_secret_list(
     global: bool,
     context: Option<&super::ContextTarget>,
-    json: bool,
+    mode: OutputMode,
 ) -> i32 {
-    log::info!("secret_list:cli: global={global} json={json}");
+    log::info!("secret_list:cli: global={global} json={}", mode.is_json());
     if let Some(context) = context {
-        return explicit_context_secret_list(context, json);
+        return explicit_context_secret_list(context, mode);
     }
     let result = std::env::current_dir()
         .map_err(|error| format!("current directory: {error}"))
-        .and_then(|cwd| write_secret_list(&cwd, global, json, &mut std::io::stdout().lock()));
+        .and_then(|cwd| {
+            write_secret_list(&cwd, global, mode.is_json(), &mut std::io::stdout().lock())
+        });
     match result {
         Ok(()) => 0,
         Err(error) => {
@@ -544,15 +548,13 @@ pub fn workspace_secret_list(
     }
 }
 
-fn explicit_context_secret_list(context: &super::ContextTarget, json: bool) -> i32 {
-    let reply = match super::request_reply(
+fn explicit_context_secret_list(context: &super::ContextTarget, mode: OutputMode) -> i32 {
+    let reply = match super::request(
         serde_json::json!({"type": "pane_secret_list", "context": context.as_str()}),
         "secret-list-context",
         "context secret inventory",
-        crate::rpc::DEFAULT_TIMEOUT,
-    )
-    .and_then(|reply| reply.payload_or_report("context secret inventory", json))
-    {
+        mode,
+    ) {
         Ok(reply) => reply,
         Err(code) => return code,
     };
@@ -560,7 +562,7 @@ fn explicit_context_secret_list(context: &super::ContextTarget, json: bool) -> i
         .map_err(|e| e.to_string())
         .and_then(|body| {
             let inventory = serde_json::from_value(body).map_err(|e| e.to_string())?;
-            write_secret_inventory(&inventory, json, &mut std::io::stdout().lock())
+            write_secret_inventory(&inventory, mode.is_json(), &mut std::io::stdout().lock())
         });
     match result {
         Ok(()) => 0,
@@ -707,7 +709,7 @@ fn pane_secret_get(friendly: &str, global: bool) -> i32 {
             return code.max(1);
         }
     };
-    let reply = match reply.payload_or_report("secret get", false) {
+    let reply = match reply.payload_or_report("secret get", OutputMode::Text) {
         Ok(reply) => reply,
         Err(code) => return code,
     };

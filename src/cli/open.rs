@@ -1,5 +1,5 @@
 use super::pane::open_github_ephemeral;
-use super::reply::HostReply;
+use super::reply::{HostReply, OutputMode};
 use super::send_to_socket;
 use crate::app::launch_spec::PaneLaunchSpec;
 use std::io;
@@ -14,7 +14,7 @@ pub(super) fn wait_for_response(response_file: &str) -> i32 {
 
 fn wait_for_response_with_id(response_file: &str) -> (i32, Option<u64>) {
     let content = match super::poll_reply(response_file, Some(crate::rpc::DEFAULT_TIMEOUT))
-        .payload_or_report("pane", false)
+        .payload_or_report("pane", OutputMode::Text)
     {
         Ok(content) => content,
         Err(code) => return (code, None),
@@ -159,6 +159,7 @@ pub struct PaneNewCliArgs<'a> {
     pub worktree: Option<&'a str>,
     pub result_schema: Option<&'a str>,
     pub on_load: &'a [String],
+    pub mode: OutputMode,
 }
 
 /// Unified pane spawning. All CLI spawn paths funnel through here.
@@ -182,6 +183,7 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
         worktree,
         result_schema,
         on_load,
+        mode,
     } = args;
     let parsed_result_schema = match result_schema {
         Some(spec) => {
@@ -293,7 +295,7 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
             None => wait_for_response_with_id(&response_file),
         };
         if code == 0 && !on_load.is_empty() {
-            return super::run::run_on_load_steps(on_load, created_pane_id).exit_code;
+            return super::run::run_on_load_steps(on_load, created_pane_id, mode).exit_code;
         }
         return code;
     }
@@ -352,7 +354,7 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
             Ok(pane_id) => {
                 println!("{pane_id}");
                 if !on_load.is_empty() {
-                    return super::run::run_on_load_steps(on_load, Some(pane_id)).exit_code;
+                    return super::run::run_on_load_steps(on_load, Some(pane_id), mode).exit_code;
                 }
                 0
             }

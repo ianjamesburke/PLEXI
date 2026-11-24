@@ -1,5 +1,6 @@
 //! Host-arbitrated, process-owned resource admission.
 use super::args::LeaseCmd;
+use super::reply::OutputMode;
 use serde_json::json;
 
 pub(crate) fn dispatch(cmd: LeaseCmd) -> i32 {
@@ -14,11 +15,12 @@ pub(crate) fn dispatch(cmd: LeaseCmd) -> i32 {
             return 1;
         }
     };
-    match super::request_json_output(
+    match super::request(
         json!({"type": "resource_lease", "op": op, "name": name,
         "max": max, "holder_pid": holder_pid}),
         "lease",
         "lease",
+        OutputMode::Json,
     ) {
         Ok(content) => {
             println!("{content}");

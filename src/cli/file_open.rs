@@ -6,6 +6,7 @@
 //! (`src/app/file_open.rs`).
 
 use super::args::FileOpenArgs;
+use super::reply::OutputMode;
 use crate::protocol::HostRequest;
 
 /// The request both spellings send. `response_file` is filled in by the
@@ -33,13 +34,13 @@ struct Outcome {
     exit_code: i32,
 }
 
-fn outcome(reply: super::reply::HostReply, json: bool) -> Outcome {
+fn outcome(reply: super::reply::HostReply, mode: OutputMode) -> Outcome {
     use super::reply::HostReply;
     let reply = match reply {
         HostReply::Payload(reply) => reply,
         HostReply::Refused(refusal) => {
             return Outcome {
-                stdout: json.then(|| refusal.json_body().to_owned()),
+                stdout: mode.is_json().then(|| refusal.json_body().to_owned()),
                 stderr: Some(refusal.stderr_line()),
                 exit_code: 1,
             }
@@ -59,23 +60,23 @@ fn outcome(reply: super::reply::HostReply, json: bool) -> Outcome {
             exit_code: 1,
         };
     };
-    let printed_json = json.then(|| value.to_string());
+    let printed_json = mode.is_json().then(|| value.to_string());
     let pane_id = value.get("pane_id").and_then(serde_json::Value::as_u64);
     Outcome {
         stdout: printed_json.or_else(|| pane_id.map(|id| id.to_string())),
         stderr: pane_id
             .is_none()
             .then(|| "opened with the system default application".to_string())
-            .filter(|_| !json),
+            .filter(|_| !mode.is_json()),
         exit_code: 0,
     }
 }
 
-pub fn file_open_cli(args: &FileOpenArgs, from_pane_id: Option<u64>, json: bool) -> i32 {
+pub fn file_open_cli(args: &FileOpenArgs, from_pane_id: Option<u64>, mode: OutputMode) -> i32 {
     let cwd = match std::env::current_dir() {
         Ok(cwd) => match cwd.into_os_string().into_string() {
             Ok(cwd) => Some(cwd),
-            Err(raw) => return print_outcome(&unrepresentable_cwd(&raw, json)),
+            Err(raw) => return print_outcome(&unrepresentable_cwd(&raw, mode)),
         },
         Err(error) => {
             log::warn!("file_open:cli: current directory unreadable: {error}");
@@ -105,7 +106,7 @@ pub fn file_open_cli(args: &FileOpenArgs, from_pane_id: Option<u64>, json: bool)
         Ok(reply) => reply,
         Err(code) => return code,
     };
-    print_outcome(&outcome(reply, json))
+    print_outcome(&outcome(reply, mode))
 }
 
 fn print_outcome(outcome: &Outcome) -> i32 {
@@ -121,13 +122,13 @@ fn print_outcome(outcome: &Outcome) -> i32 {
 /// The refusal when this process's working directory has no exact UTF-8
 /// form: a lossy spelling could resolve PATH against another folder. It is
 /// the host's refusal shape, so `--json` callers branch on `error_code`.
-fn unrepresentable_cwd(raw: &std::ffi::OsStr, json: bool) -> Outcome {
+fn unrepresentable_cwd(raw: &std::ffi::OsStr, mode: OutputMode) -> Outcome {
     let error = format!(
         "the current directory {raw:?} is not valid UTF-8, so it cannot be sent exactly; \
          pass an absolute PATH from a UTF-8 directory"
     );
     let reply = serde_json::json!({"error": error, "error_code": "unrepresentable_path"});
-    outcome(super::reply::HostReply::decode(Ok(reply.to_string())), json)
+    outcome(super::reply::HostReply::decode(Ok(reply.to_string())), mode)
 }
 
 #[cfg(test)]
@@ -204,7 +205,7 @@ mod tests {
         assert_eq!(
             outcome(
                 super::super::reply::HostReply::decode(Ok(receipt.to_owned())),
-                false
+                OutputMode::Text
             ),
             Outcome {
                 stdout: Some("27".into()),
@@ -214,7 +215,7 @@ mod tests {
         );
         let json = outcome(
             super::super::reply::HostReply::decode(Ok(receipt.to_owned())),
-            true,
+            OutputMode::Json,
         );
         assert_eq!(json.exit_code, 0);
         assert_eq!(
@@ -226,7 +227,7 @@ mod tests {
         assert_eq!(
             outcome(
                 super::super::reply::HostReply::decode(Ok(refusal.to_owned())),
-                false
+                OutputMode::Text
             ),
             Outcome {
                 stdout: None,
@@ -236,7 +237,7 @@ mod tests {
         );
         let json = outcome(
             super::super::reply::HostReply::decode(Ok(refusal.to_owned())),
-            true,
+            OutputMode::Json,
         );
         assert_eq!(json.exit_code, 1);
         assert!(json
@@ -266,7 +267,7 @@ mod tests {
             payload
         });
         let args = parse(&["plexi", "open", "notes/today.md"]).unwrap();
-        assert_eq!(file_open_cli(&args, None, false), 0);
+        assert_eq!(file_open_cli(&args, None, OutputMode::Text), 0);
         let payload = server.join().unwrap();
         assert_eq!(payload["type"], "file_open");
         assert_eq!(payload["path"], "notes/today.md");
@@ -280,12 +281,12 @@ mod tests {
     fn a_non_utf8_cwd_is_a_typed_refusal_and_json_on_stdout() {
         use std::os::unix::ffi::OsStrExt;
         let raw = std::ffi::OsStr::from_bytes(b"/tmp/caf\xe9");
-        let json = unrepresentable_cwd(raw, true);
+        let json = unrepresentable_cwd(raw, OutputMode::Json);
         assert_eq!(json.exit_code, 1);
         let reply: serde_json::Value =
             serde_json::from_str(json.stdout.as_deref().expect("json on stdout")).unwrap();
         assert_eq!(reply["error_code"], "unrepresentable_path");
-        let plain = unrepresentable_cwd(raw, false);
+        let plain = unrepresentable_cwd(raw, OutputMode::Text);
         assert_eq!((plain.stdout, plain.exit_code), (None, 1));
         assert!(plain.stderr.unwrap().contains("unrepresentable_path"));
     }

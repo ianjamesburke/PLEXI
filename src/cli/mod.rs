@@ -507,7 +507,7 @@ impl ContextTarget {
     /// 1. Numeric ID -> returns immediately without a socket round-trip.
     /// 2. Queries the host's context list (`list_contexts`) over the command socket,
     ///    then applies exact name match -> unique prefix match -> ambiguity/not-found error.
-    pub fn resolve(&self) -> Result<u64, i32> {
+    pub fn resolve(&self, mode: OutputMode) -> Result<u64, i32> {
         let q = self.as_str().trim();
         if let Some(id) = self.numeric_id() {
             log::info!("cli:target: context target {q:?} resolved directly as numeric id={id}");
@@ -517,6 +517,7 @@ impl ContextTarget {
             serde_json::json!({ "type": "list_contexts" }),
             "list-contexts-target-resolve",
             "context target lookup",
+            mode,
         )?;
         let entries: Vec<serde_json::Value> = serde_json::from_str(&content).map_err(|e| {
             log::warn!("cli:target: failed to parse list_contexts response: {e}");
@@ -550,7 +551,7 @@ impl PaneTarget {
     /// 1. Numeric ID -> returns immediately without a socket round-trip.
     /// 2. Queries the host's pane list (`list_panes`) over the command socket,
     ///    then applies exact name match -> unique prefix match -> ambiguity/not-found error.
-    pub fn resolve(&self) -> Result<u64, i32> {
+    pub fn resolve(&self, mode: OutputMode) -> Result<u64, i32> {
         let q = self.as_str().trim();
         if let Some(id) = self.numeric_id() {
             log::info!("cli:target: pane target {q:?} resolved directly as numeric id={id}");
@@ -560,6 +561,7 @@ impl PaneTarget {
             serde_json::json!({ "type": "list_panes" }),
             "list-panes-target-resolve",
             "pane target lookup",
+            mode,
         )?;
         let entries: Vec<serde_json::Value> = serde_json::from_str(&content).map_err(|e| {
             log::warn!("cli:target: failed to parse list_panes response: {e}");
@@ -605,16 +607,22 @@ impl PaneTarget {
     }
 }
 
-pub fn resolve_opt_context_target(target: Option<&ContextTarget>) -> Result<Option<u64>, i32> {
+pub fn resolve_opt_context_target(
+    target: Option<&ContextTarget>,
+    mode: OutputMode,
+) -> Result<Option<u64>, i32> {
     match target {
-        Some(t) => t.resolve().map(Some),
+        Some(t) => t.resolve(mode).map(Some),
         None => Ok(None),
     }
 }
 
-pub fn resolve_opt_pane_target(target: Option<&PaneTarget>) -> Result<Option<u64>, i32> {
+pub fn resolve_opt_pane_target(
+    target: Option<&PaneTarget>,
+    mode: OutputMode,
+) -> Result<Option<u64>, i32> {
     match target {
-        Some(t) => t.resolve().map(Some),
+        Some(t) => t.resolve(mode).map(Some),
         None => Ok(None),
     }
 }
@@ -626,6 +634,7 @@ pub mod introspect;
 mod pane_caller;
 mod queued_spawn;
 pub(crate) mod reply;
+pub(crate) use reply::OutputMode;
 pub mod registry;
 pub mod setup;
 pub mod skill_draft;
@@ -1176,15 +1185,9 @@ pub(super) fn request(
     payload: serde_json::Value,
     prefix: &str,
     label: &str,
+    mode: OutputMode,
 ) -> Result<String, i32> {
-    request_with(payload, prefix, label, crate::rpc::DEFAULT_TIMEOUT)
-}
-
-static REQUEST_JSON_OUTPUT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-/// Set the invocation's global output mode for the shared request helpers.
-pub(crate) fn set_request_json_output(json: bool) {
-    let _ = REQUEST_JSON_OUTPUT.set(json);
+    request_with(payload, prefix, label, crate::rpc::DEFAULT_TIMEOUT, mode)
 }
 
 /// [`request`] with an explicit poll window, for verbs the host answers on its
@@ -1194,17 +1197,9 @@ pub(super) fn request_with(
     prefix: &str,
     label: &str,
     timeout: std::time::Duration,
+    mode: OutputMode,
 ) -> Result<String, i32> {
-    let json = REQUEST_JSON_OUTPUT.get().copied().unwrap_or(false);
-    request_reply(payload, prefix, label, timeout)?.payload_or_report(label, json)
-}
-
-pub(super) fn request_json_output(
-    payload: serde_json::Value,
-    prefix: &str,
-    label: &str,
-) -> Result<String, i32> {
-    request_reply(payload, prefix, label, crate::rpc::DEFAULT_TIMEOUT)?.payload_or_report(label, true)
+    request_reply(payload, prefix, label, timeout)?.payload_or_report(label, mode)
 }
 
 pub(super) fn request_reply(
@@ -2100,6 +2095,7 @@ pub use completions::{complete_open_cli, complete_run_cli, completions_cli};
 pub use config_cli::{
     config_check, config_edit, config_get, config_list, config_reset, config_set,
 };
+pub(crate) use context_cli::ContextSpawnPlacement;
 pub use context_cli::{
     context_current_cli, context_describe_cli, context_list_cli, context_new_cli, context_open_cli,
     context_push_cli, context_set_root_cli, context_sub_cli, context_zoom_cli,
@@ -2125,6 +2121,7 @@ pub use open::{
     mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli, parse_prefix,
     AgentBootRequest, OpenPrefix, PaneNewCliArgs,
 };
+pub(crate) use pane::PaneDragEndpoint;
 pub use pane::{
     pane_capture_cli, pane_click_cli, pane_click_node_cli, pane_close_cli, pane_drag_cli,
     pane_drop_cli, pane_focus_cli, pane_heartbeat_cli, pane_info_cli, pane_key_cli,
@@ -2371,6 +2368,7 @@ mod spawn_gate_tests {
 pub fn host_action_cli(
     mut payload: serde_json::Value,
     identity: Option<(&str, Option<u64>, &str)>,
+    mode: OutputMode,
 ) -> i32 {
     if let Some((field, explicit, env)) = identity {
         let id = explicit.or_else(|| std::env::var(env).ok()?.parse().ok());
@@ -2380,7 +2378,7 @@ pub fn host_action_cli(
         };
         payload[field] = id.into();
     }
-    match request(payload, "host-action", "host action") {
+    match request(payload, "host-action", "host action", mode) {
         Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
             Ok(_) => {
                 println!("{content}");

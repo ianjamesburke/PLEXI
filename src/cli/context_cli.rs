@@ -1,15 +1,23 @@
+use super::reply::OutputMode;
 use super::validate::resolve_path;
 use super::{print_json_output, print_tip, send_to_socket};
+
+#[derive(Default)]
+pub(crate) struct ContextSpawnPlacement {
+    pub focus: bool,
+    pub from: Option<u64>,
+}
 
 pub fn context_new_cli(
     name: Option<&str>,
     path: Option<&str>,
     parent: Option<&str>,
     windows: &[String],
-    focus: bool,
     direction: &str,
-    from: Option<u64>,
+    placement: ContextSpawnPlacement,
+    mode: OutputMode,
 ) -> i32 {
+    let ContextSpawnPlacement { focus, from } = placement;
     let explicit_root = match resolve_path(path) {
         Ok(p) => Some(p),
         Err(e) => {
@@ -96,12 +104,12 @@ pub fn context_new_cli(
     // Every creation waits for the host's authoritative name. Sub-context
     // callers get the structured response; top-level creation stays quiet on
     // success and prints only the collision note.
-    let request = if explicit_parent.is_some() {
-        super::request_json_output
+    let mode = if explicit_parent.is_some() {
+        OutputMode::Json
     } else {
-        super::request
+        mode
     };
-    match request(payload, "context-new-response", "context-new") {
+    match super::request(payload, "context-new-response", "context-new", mode) {
         Ok(content) => {
             let response: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
             if explicit_parent.is_some() {
@@ -151,9 +159,10 @@ pub fn context_sub_cli(
     agents: u32,
     commands: &[String],
     layout: Option<crate::protocol::SubContextLayout>,
-    focus: bool,
-    from: Option<u64>,
+    placement: ContextSpawnPlacement,
+    mode: OutputMode,
 ) -> i32 {
+    let ContextSpawnPlacement { focus, from } = placement;
     let panes = match expand_pane_commands(agents, commands) {
         Ok(p) => p,
         Err(e) => {
@@ -214,7 +223,7 @@ pub fn context_sub_cli(
     if let Some(ap) = anchor_pane {
         payload["anchor_pane"] = serde_json::Value::from(ap);
     }
-    match super::request(payload, "context-sub-response", "context-sub") {
+    match super::request(payload, "context-sub-response", "context-sub", mode) {
         Ok(content) => {
             println!("{content}");
             0
@@ -228,7 +237,7 @@ pub fn context_sub_cli(
 /// Zoom into a sub-context by its numeric context_id. The host answers, so an
 /// id naming no live context is an `error:` on stderr and exit 1 rather than a
 /// silent success.
-pub fn context_zoom_cli(context_id: u64) -> i32 {
+pub fn context_zoom_cli(context_id: u64, mode: OutputMode) -> i32 {
     log::info!("context_zoom_cli: context_id={context_id}");
     super::request(
         serde_json::json!({
@@ -237,6 +246,7 @@ pub fn context_zoom_cli(context_id: u64) -> i32 {
         }),
         "context-zoom-response",
         "context zoom",
+        mode,
     )
     .map_or_else(|code| code, |_| 0)
 }
@@ -251,8 +261,8 @@ pub fn context_zoom_out_cli() -> i32 {
 }
 
 /// Mutations report host rejection, never transport-only success.
-fn context_mutation(payload: serde_json::Value, label: &str) -> i32 {
-    match super::request(payload, "context-response", label) {
+fn context_mutation(payload: serde_json::Value, label: &str, mode: OutputMode) -> i32 {
+    match super::request(payload, "context-response", label, mode) {
         Ok(content) => {
             println!("{content}");
             0
@@ -264,7 +274,7 @@ fn context_mutation(payload: serde_json::Value, label: &str) -> i32 {
 /// `plexi context open [path]`
 ///
 /// Focuses the context with matching root, or creates one. Uses CWD if path omitted.
-pub fn context_open_cli(path: Option<&str>) -> i32 {
+pub fn context_open_cli(path: Option<&str>, mode: OutputMode) -> i32 {
     let root = match resolve_path(path) {
         Ok(p) => p,
         Err(e) => {
@@ -275,6 +285,7 @@ pub fn context_open_cli(path: Option<&str>) -> i32 {
     context_mutation(
         serde_json::json!({"type":"focus_context", "root":root}),
         "context open",
+        mode,
     )
 }
 
@@ -283,7 +294,7 @@ pub fn context_open_cli(path: Option<&str>) -> i32 {
 /// Sets the root of the caller's own context. The frame names it from the
 /// pane's environment; the host checks it against the calling pane (stint
 /// 1285). Uses CWD if path omitted.
-pub fn context_set_root_cli(path: Option<&str>) -> i32 {
+pub fn context_set_root_cli(path: Option<&str>, mode: OutputMode) -> i32 {
     let root = match resolve_path(path) {
         Ok(p) => p,
         Err(e) => {
@@ -296,7 +307,7 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
         "context_set_root_cli: root={} frame={payload}",
         root.display()
     );
-    let rc = context_mutation(payload, "context set-root");
+    let rc = context_mutation(payload, "context set-root", mode);
     if rc == 0 {
         print_tip(
             "you can also press \u{21E7}\u{2318}I to set the context root from the focused pane",
@@ -321,7 +332,7 @@ fn set_root_frame(root: &std::path::Path, context_id: Option<u64>) -> serde_json
 ///
 /// Sets the description of the caller's context (PLEXI_CONTEXT_ID), falling
 /// back to the active context.
-pub fn context_describe_cli(text: &str) -> i32 {
+pub fn context_describe_cli(text: &str, mode: OutputMode) -> i32 {
     let context_id = caller_context_id();
     log::info!("context_describe_cli: context_id={context_id:?}");
     let mut payload = serde_json::json!({
@@ -331,7 +342,7 @@ pub fn context_describe_cli(text: &str) -> i32 {
     if let Some(cid) = context_id {
         payload["context_id"] = serde_json::Value::from(cid);
     }
-    context_mutation(payload, "context describe")
+    context_mutation(payload, "context describe", mode)
 }
 
 /// `plexi context push [name] [--pane-id <id>]`
@@ -369,7 +380,7 @@ fn caller_context_id() -> Option<u64> {
 /// The host answers with the context that currently owns the pane (the same
 /// truth `pane info` reports). `PLEXI_CONTEXT_ID` is spawn-time only: a pane
 /// moved by `context push` keeps its stale stamp, so it is never the answer.
-pub fn context_current_cli() -> i32 {
+pub fn context_current_cli(mode: OutputMode) -> i32 {
     let pane_id = match std::env::var("PLEXI_PANE_ID") {
         Ok(v) => match v.parse::<u64>() {
             Ok(n) => n,
@@ -388,6 +399,7 @@ pub fn context_current_cli() -> i32 {
         serde_json::json!({ "type": "get_pane_info", "pane_id": pane_id }),
         "pane-info-response",
         "context current",
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
@@ -429,10 +441,11 @@ fn render_current_context(reply: &str) -> Result<String, String> {
 pub fn context_list_cli() -> i32 {
     log::info!("context_list:cli: sending via socket");
 
-    match super::request_json_output(
+    match super::request(
         serde_json::json!({ "type": "list_contexts" }),
         "context-list-response",
         "context list",
+        OutputMode::Json,
     ) {
         Ok(content) => print_json_output(&content),
         Err(code) => code,

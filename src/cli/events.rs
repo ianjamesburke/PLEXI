@@ -15,7 +15,7 @@
 //! The host identifies the caller from the socket; there is deliberately no
 //! flag or field for the subscriber/emitter identity.
 
-use super::reply::HostReply;
+use super::reply::{HostReply, OutputMode};
 use crate::platform::ipc::{self, IpcStream};
 use crate::rpc::PollError;
 use std::io::{BufRead, BufReader, Write};
@@ -63,17 +63,16 @@ fn connect_and_send(payload: &serde_json::Value) -> Result<IpcStream, i32> {
 
 /// Send one control line and stream every NDJSON line the host returns to
 /// stdout until the connection closes. Returns the process exit code.
-pub(crate) fn stream_control_line(payload: serde_json::Value) -> i32 {
+pub(crate) fn stream_control_line(payload: serde_json::Value, mode: OutputMode) -> i32 {
     let stream = match connect_and_send(&payload) {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let json = payload["json"] == true;
     let reader = BufReader::new(stream);
     let stdout = std::io::stdout();
     for line in reader.lines() {
         let reply = HostReply::decode(line.map_err(PollError::Unreadable));
-        let line = match reply.payload_or_report("event stream", json) {
+        let line = match reply.payload_or_report("event stream", mode) {
             Ok(line) => line,
             Err(code) => return code,
         };
@@ -116,7 +115,7 @@ pub fn events_subscribe_cli(
         "trigger_mode": trigger_mode,
         "resource_id": resource,
     });
-    stream_control_line(req)
+    stream_control_line(req, OutputMode::Text)
 }
 
 /// How long a publish reply may take before `declare` tells the caller it is
@@ -339,12 +338,12 @@ pub fn events_emit_cli(args: EmitArgs) -> i32 {
 }
 
 /// `plexi events list` — print declared streams once and exit.
-pub fn events_list_cli(json: bool) -> i32 {
+pub fn events_list_cli(mode: OutputMode) -> i32 {
     let req = serde_json::json!({
         "type": "events_list",
-        "json": json,
+        "json": mode.is_json(),
     });
-    stream_control_line(req)
+    stream_control_line(req, mode)
 }
 
 /// `plexi events mcp-config` — print the host MCP server config block.

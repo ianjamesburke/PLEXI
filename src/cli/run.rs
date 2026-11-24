@@ -1,3 +1,4 @@
+use super::reply::OutputMode;
 use super::{is_executable, print_tip, PlexiCommands, UserCommandScope, PLUGIN_ID};
 use std::process::Command;
 
@@ -430,11 +431,14 @@ fn layout_from_flags(
 }
 
 /// Dispatch a parsed `ParsedStep::PlexiCli` in-process where possible, falling
-/// back to spawning the current binary for uncommon subcommands.
+/// back to spawning the current binary for uncommon subcommands. In-process
+/// requests inherit the enclosing invocation's mode unless the verb reads
+/// its own flag, as `pane tree` does.
 pub fn dispatch_cli_step(
     argv: &[String],
     cwd: Option<&std::path::Path>,
     env_vars: &[(String, String)],
+    mode: OutputMode,
 ) -> i32 {
     use crate::cli::args::{Cli, Commands, PaneCmd, ViewCmd};
     use clap::Parser;
@@ -491,7 +495,7 @@ pub fn dispatch_cli_step(
                 let layout = layout_from_flags(down, left, up, right, tab, window, overlay)
                     .unwrap_or("split_h");
                 let effective_cwd = step_cwd.or_else(|| cwd.map(|p| p.display().to_string()));
-                let from_id = match crate::cli::resolve_opt_pane_target(from.as_ref()) {
+                let from_id = match crate::cli::resolve_opt_pane_target(from.as_ref(), mode) {
                     Ok(id) => id,
                     Err(code) => return code,
                 };
@@ -508,6 +512,7 @@ pub fn dispatch_cli_step(
                     worktree: worktree.as_deref(),
                     result_schema: result_schema.as_deref(),
                     on_load: &on_load,
+                    mode,
                     ..Default::default()
                 })
             }
@@ -515,7 +520,7 @@ pub fn dispatch_cli_step(
                 let (context_id, current) = match context.as_deref() {
                     None => (None, false),
                     Some("current") => (None, true),
-                    Some(s) => match crate::cli::ContextTarget::from(s.to_string()).resolve() {
+                    Some(s) => match crate::cli::ContextTarget::from(s.to_string()).resolve(mode) {
                         Ok(id) => (Some(id), false),
                         Err(code) => return code,
                     },
@@ -526,16 +531,16 @@ pub fn dispatch_cli_step(
                 let (context_id, current) = match context.as_deref() {
                     None => (None, false),
                     Some("current") => (None, true),
-                    Some(s) => match crate::cli::ContextTarget::from(s.to_string()).resolve() {
+                    Some(s) => match crate::cli::ContextTarget::from(s.to_string()).resolve(mode) {
                         Ok(id) => (Some(id), false),
                         Err(code) => return code,
                     },
                 };
-                crate::cli::pane_tree_cli(context_id, current, parsed.json)
+                crate::cli::pane_tree_cli(context_id, current, OutputMode::from(parsed.json))
             }
             PaneCmd::Name { first, second } => {
                 let (pane_id, name) = match second {
-                    Some(title) => match crate::cli::PaneTarget::from(first).resolve() {
+                    Some(title) => match crate::cli::PaneTarget::from(first).resolve(mode) {
                         Ok(id) => (Some(id), title),
                         Err(code) => return code,
                     },
@@ -546,18 +551,19 @@ pub fn dispatch_cli_step(
             PaneCmd::Focus {
                 pane_id, forward, ..
             } => match pane_id {
-                Some(target) => match target.resolve() {
+                Some(target) => match target.resolve(mode) {
                     Ok(id) => crate::cli::pane_focus_cli(id),
                     Err(code) => code,
                 },
                 None => crate::cli::host_action_cli(
                     serde_json::json!({"type":"focus_history", "forward":forward}),
                     None,
+                    mode,
                 ),
             },
             PaneCmd::Close { pane_id } => {
                 let id = match pane_id {
-                    Some(target) => match target.resolve() {
+                    Some(target) => match target.resolve(mode) {
                         Ok(id) => id,
                         Err(code) => return code,
                     },
@@ -574,7 +580,7 @@ pub fn dispatch_cli_step(
                         }
                     },
                 };
-                crate::cli::pane_close_cli(id)
+                crate::cli::pane_close_cli(id, mode)
             }
             PaneCmd::Send {
                 pane_id,
@@ -582,7 +588,7 @@ pub fn dispatch_cli_step(
                 submit,
                 paste,
                 operation_id,
-            } => match pane_id.resolve() {
+            } => match pane_id.resolve(mode) {
                 Ok(id) => crate::cli::pane::pane_send_with_operation_cli(
                     id,
                     &text,
@@ -596,12 +602,12 @@ pub fn dispatch_cli_step(
                 pane_id,
                 text,
                 enter,
-            } => match pane_id.resolve() {
+            } => match pane_id.resolve(mode) {
                 Ok(id) => crate::cli::pane_send_cli(id, &text, enter, false),
                 Err(code) => code,
             },
-            PaneCmd::Key { pane_id, key } => match pane_id.resolve() {
-                Ok(id) => crate::cli::pane_key_cli(id, &key),
+            PaneCmd::Key { pane_id, key } => match pane_id.resolve(mode) {
+                Ok(id) => crate::cli::pane_key_cli(id, &key, mode),
                 Err(code) => code,
             },
             PaneCmd::Capture {
@@ -611,11 +617,11 @@ pub fn dispatch_cli_step(
                 from_cursor,
                 plain,
             } => {
-                let pid = match crate::cli::resolve_opt_pane_target(pane_id.as_ref()) {
+                let pid = match crate::cli::resolve_opt_pane_target(pane_id.as_ref(), mode) {
                     Ok(id) => id,
                     Err(code) => return code,
                 };
-                crate::cli::pane_capture_cli(pid, lines, full_output, from_cursor, plain)
+                crate::cli::pane_capture_cli(pid, lines, full_output, from_cursor, plain, mode)
             }
             _ => spawn_plexi_subcommand(argv, cwd, env_vars),
         },
@@ -636,7 +642,7 @@ pub fn dispatch_cli_step(
                     from,
                 },
         }) => {
-            let from_id = match crate::cli::resolve_opt_pane_target(from.as_ref()) {
+            let from_id = match crate::cli::resolve_opt_pane_target(from.as_ref(), mode) {
                 Ok(id) => id.or(default_from_pane_id),
                 Err(code) => return code,
             };
@@ -742,12 +748,13 @@ pub fn execute_steps(
     extra_args: &[String],
     cwd: Option<&std::path::Path>,
     env_vars: &[(String, String)],
+    mode: OutputMode,
 ) -> StepRunReport {
     run_steps_with(
         steps,
         extra_args,
         |_step_num, _rendered, parsed| match parsed {
-            ParsedStep::PlexiCli(argv) => dispatch_cli_step(argv, cwd, env_vars),
+            ParsedStep::PlexiCli(argv) => dispatch_cli_step(argv, cwd, env_vars, mode),
             ParsedStep::Shell(snippet) => run_shell_snippet(snippet, extra_args, cwd, env_vars),
         },
     )
@@ -755,13 +762,17 @@ pub fn execute_steps(
 
 /// Execute per-pane `on_load` steps after a pane is spawned. If `pane_id` is
 /// known, it is passed both as `$1` and as `PLEXI_PANE_ID` for child steps.
-pub fn run_on_load_steps(steps: &[String], pane_id: Option<u64>) -> StepRunReport {
+pub fn run_on_load_steps(
+    steps: &[String],
+    pane_id: Option<u64>,
+    mode: OutputMode,
+) -> StepRunReport {
     let extra_args: Vec<String> = pane_id.map(|id| vec![id.to_string()]).unwrap_or_default();
     let env_vars: Vec<(String, String)> = pane_id
         .map(|id| vec![("PLEXI_PANE_ID".to_string(), id.to_string())])
         .unwrap_or_default();
     let cwd = std::env::current_dir().ok();
-    execute_steps(steps, &extra_args, cwd.as_deref(), &env_vars)
+    execute_steps(steps, &extra_args, cwd.as_deref(), &env_vars, mode)
 }
 
 /// Format the output of `plexi run` / `plexi run --json` for a given workspace root.
@@ -913,7 +924,7 @@ pub fn run_list_commands(json: bool) -> i32 {
 
 /// Entry point for `plexi run <command_name>`.
 /// Returns the exit code.
-pub fn run_command(command_name: &str, extra_args: &[String]) -> i32 {
+pub fn run_command(command_name: &str, extra_args: &[String], mode: OutputMode) -> i32 {
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => {
@@ -922,7 +933,7 @@ pub fn run_command(command_name: &str, extra_args: &[String]) -> i32 {
         }
     };
     let ws_root = super::resolve_commands_workspace_root(&cwd);
-    run_command_for_root(ws_root.as_deref(), &cwd, command_name, extra_args).exit_code
+    run_command_for_root(ws_root.as_deref(), &cwd, command_name, extra_args, mode).exit_code
 }
 
 /// Execute a named command against an explicit `workspace_root` and `cwd`,
@@ -932,8 +943,9 @@ pub fn run_command_for_root(
     cwd: &std::path::Path,
     command_name: &str,
     extra_args: &[String],
+    mode: OutputMode,
 ) -> StepRunReport {
-    run_command_for_root_from_pane(ws_root, cwd, command_name, extra_args, None)
+    run_command_for_root_from_pane(ws_root, cwd, command_name, extra_args, None, mode)
 }
 
 /// Execute a named command against an explicit `workspace_root`, `cwd`, and
@@ -945,6 +957,7 @@ pub fn run_command_for_root_from_pane(
     command_name: &str,
     extra_args: &[String],
     invoker_pane_id: Option<u64>,
+    mode: OutputMode,
 ) -> StepRunReport {
     let fail = |code: i32| StepRunReport {
         exit_code: code,
@@ -1158,7 +1171,7 @@ pub fn run_command_for_root_from_pane(
                 env_vars.push(("PLEXI_PANE_ID".to_string(), pane_id.to_string()));
             }
         }
-        let report = execute_steps(&all_steps, extra_args, Some(cwd), &env_vars);
+        let report = execute_steps(&all_steps, extra_args, Some(cwd), &env_vars, mode);
         if report.exit_code == 0 {
             print_tip("run `plexi run` to see all available commands.");
         }
@@ -1216,7 +1229,9 @@ pub fn run_command_for_root_from_pane(
 
 #[cfg(test)]
 mod command_parse_tests {
-    use super::{format_list_commands_for_root, resolve_command_target, ResolvedRunTarget};
+    use super::{
+        format_list_commands_for_root, resolve_command_target, OutputMode, ResolvedRunTarget,
+    };
     use crate::cli::{CommandEntry, PlexiCommands, UserCommandScope};
 
     #[test]
@@ -1457,7 +1472,7 @@ steps = []
             format!("touch '{}'", marker3.display()),
         ];
 
-        let report = super::execute_steps(&steps, &[], Some(dir.path()), &[]);
+        let report = super::execute_steps(&steps, &[], Some(dir.path()), &[], OutputMode::Text);
         assert_eq!(report.exit_code, 1);
         assert_eq!(report.total_steps, 3);
         assert_eq!(report.completed_steps, 1);

@@ -1,4 +1,4 @@
-use super::reply::HostReply;
+use super::reply::{HostReply, OutputMode};
 use super::{print_json_output, print_tip, send_to_socket};
 
 pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
@@ -69,6 +69,7 @@ pub fn pane_slot_write_cli(
     append: bool,
     replace: bool,
     pane_id: Option<u64>,
+    mode: OutputMode,
 ) -> i32 {
     if name.trim().is_empty() {
         eprintln!("error: slot name empty");
@@ -103,6 +104,7 @@ pub fn pane_slot_write_cli(
         }),
         "pane-slot-write-response",
         "pane slot write",
+        mode,
     ) {
         return code;
     }
@@ -133,7 +135,7 @@ pub fn pane_slot_read_cli(name: &str, pane_id: Option<u64>) -> i32 {
         &response_file,
         Some(crate::rpc::DEFAULT_TIMEOUT),
     ));
-    let content = match reply.payload_or_report("pane slot read", false) {
+    let content = match reply.payload_or_report("pane slot read", OutputMode::Text) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -157,10 +159,10 @@ fn slot_wait_payload(
 ) -> Result<Vec<u8>, i32> {
     match HostReply::decode_slot(reply) {
         HostReply::Refused(refusal) if refusal.timed_out => {
-            refusal.report(false);
+            refusal.report(OutputMode::Text);
             Err(2)
         }
-        outcome => outcome.payload_or_report(label, false),
+        outcome => outcome.payload_or_report(label, OutputMode::Text),
     }
 }
 
@@ -213,7 +215,7 @@ pub fn pane_slot_wait_cli(name: &str, pane_id: Option<u64>, until: &str, timeout
 }
 
 /// `plexi pane slot list [pane_id]`
-pub fn pane_slot_list_cli(pane_id: Option<u64>) -> i32 {
+pub fn pane_slot_list_cli(pane_id: Option<u64>, mode: OutputMode) -> i32 {
     let resolved_pane_id = match current_pane_id(pane_id, "pane slot list") {
         Ok(id) => id,
         Err(code) => return code,
@@ -226,6 +228,7 @@ pub fn pane_slot_list_cli(pane_id: Option<u64>) -> i32 {
         }),
         "pane-slot-list-response",
         "pane slot list",
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
@@ -234,7 +237,7 @@ pub fn pane_slot_list_cli(pane_id: Option<u64>) -> i32 {
 }
 
 /// `plexi pane slot delete <name> [pane_id]`
-pub fn pane_slot_delete_cli(name: &str, pane_id: Option<u64>) -> i32 {
+pub fn pane_slot_delete_cli(name: &str, pane_id: Option<u64>, mode: OutputMode) -> i32 {
     let resolved_pane_id = match current_pane_id(pane_id, "pane slot delete") {
         Ok(id) => id,
         Err(code) => return code,
@@ -248,6 +251,7 @@ pub fn pane_slot_delete_cli(name: &str, pane_id: Option<u64>) -> i32 {
         }),
         "pane-slot-delete-response",
         "pane slot delete",
+        mode,
     ) {
         return code;
     }
@@ -255,7 +259,7 @@ pub fn pane_slot_delete_cli(name: &str, pane_id: Option<u64>) -> i32 {
 }
 
 /// `plexi pane message send <pane_id> <payload> [--submit]`
-pub fn pane_message_send_cli(pane_id: u64, payload: &str, submit: bool) -> i32 {
+pub fn pane_message_send_cli(pane_id: u64, payload: &str, submit: bool, mode: OutputMode) -> i32 {
     log::info!(
         "pane_message_send:cli: pane_id={pane_id} bytes={} submit={submit}",
         payload.len()
@@ -269,6 +273,7 @@ pub fn pane_message_send_cli(pane_id: u64, payload: &str, submit: bool) -> i32 {
         }),
         "pane-message-send-response",
         "pane message send",
+        mode,
     ) {
         Ok(content) => print_json_output(&content),
         Err(code) => code,
@@ -434,12 +439,13 @@ pub fn pane_result_read_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> i
 /// Sends a `list_panes` command to PLEXI_SOCKET. The host writes a JSON array
 /// to a response file; this function polls for it and prints it to stdout.
 /// Returns 0 on success, 1 on error.
-pub fn pane_layout_cli() -> i32 {
+pub fn pane_layout_cli(mode: OutputMode) -> i32 {
     log::info!("pane_layout:cli: requesting workspace snapshot");
     match super::request(
         serde_json::json!({"type":"workspace_snapshot"}),
         "pane-layout-response",
         "pane layout",
+        mode,
     ) {
         Ok(content) => print_json_output(&content),
         Err(code) => code,
@@ -477,7 +483,7 @@ pub fn pane_list_cli(context: Option<u64>, current: bool) -> i32 {
 
     log::info!("pane_list:cli: sending via socket context_id={context_id:?}");
 
-    match super::request_json_output(payload, "pane-list-response", "pane list") {
+    match super::request(payload, "pane-list-response", "pane list", OutputMode::Json) {
         Ok(content) => print_json_output(&content),
         Err(code) => code,
     }
@@ -612,7 +618,7 @@ pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
 }
 
 /// `plexi pane tree [--context [ID]] [--json]`
-pub fn pane_tree_cli(context: Option<u64>, current: bool, json: bool) -> i32 {
+pub fn pane_tree_cli(context: Option<u64>, current: bool, mode: OutputMode) -> i32 {
     let context_id: Option<u64> = if current {
         let raw = match std::env::var("PLEXI_CONTEXT_ID") {
             Ok(v) => v,
@@ -641,14 +647,7 @@ pub fn pane_tree_cli(context: Option<u64>, current: bool, json: bool) -> i32 {
         payload["context_id"] = serde_json::json!(cid);
     }
 
-    let content = match super::request_reply(
-        payload,
-        "pane-tree-response",
-        "pane tree",
-        crate::rpc::DEFAULT_TIMEOUT,
-    )
-    .and_then(|reply| reply.payload_or_report("pane tree", json))
-    {
+    let content = match super::request(payload, "pane-tree-response", "pane tree", mode) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -659,7 +658,7 @@ pub fn pane_tree_cli(context: Option<u64>, current: bool, json: bool) -> i32 {
             return 1;
         }
     };
-    println!("{}", format_pane_tree(&panes, json));
+    println!("{}", format_pane_tree(&panes, mode.is_json()));
     0
 }
 
@@ -694,7 +693,7 @@ pub fn pane_self_cli() -> i32 {
 /// When `steps` is `Some(n)`, walks back N steps in focus history.
 /// Merges in client-side fields (socket, channel) and pretty-prints the result
 /// as JSON. Returns 0 on success, 1 on error.
-pub fn pane_info_cli(pane_id: Option<u64>, previous: Option<u64>) -> i32 {
+pub fn pane_info_cli(pane_id: Option<u64>, previous: Option<u64>, mode: OutputMode) -> i32 {
     let socket_path = match super::resolve_command_socket() {
         Some(path) => path,
         None => {
@@ -721,7 +720,7 @@ pub fn pane_info_cli(pane_id: Option<u64>, previous: Option<u64>) -> i32 {
         })
     };
 
-    let content = match super::request(payload, "pane-info-response", "pane info") {
+    let content = match super::request(payload, "pane-info-response", "pane info", mode) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -791,7 +790,7 @@ pub fn close_pane_outcome(response: &str) -> (Option<String>, Option<String>, i3
 /// on stdout. When a pane closes itself (`PLEXI_PANE_ID == pane_id`), sends
 /// fire-and-forget so the CLI exits cleanly before the PTY receives SIGHUP
 /// (the host still reclaims or retains the worktree on close).
-pub fn pane_close_cli(pane_id: u64) -> i32 {
+pub fn pane_close_cli(pane_id: u64, mode: OutputMode) -> i32 {
     let self_pane = std::env::var("PLEXI_PANE_ID")
         .ok()
         .and_then(|s| s.parse::<u64>().ok());
@@ -805,7 +804,7 @@ pub fn pane_close_cli(pane_id: u64) -> i32 {
         "type": "close_pane",
         "pane_id": pane_id,
     });
-    let content = match super::request(payload, "close-pane-response", "pane close") {
+    let content = match super::request(payload, "close-pane-response", "pane close", mode) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -868,7 +867,7 @@ pub fn pane_send_with_operation_cli(
         }
     };
     if let HostReply::Refused(refusal) = reply {
-        let code = refusal.report(false);
+        let code = refusal.report(OutputMode::Text);
         if submit {
             for line in refusal.fields["input_line"]
                 .as_array()
@@ -882,7 +881,7 @@ pub fn pane_send_with_operation_cli(
         return code;
     }
     let transport_failed = matches!(reply, HostReply::Transport(_));
-    let content = match reply.payload_or_report("pane send", false) {
+    let content = match reply.payload_or_report("pane send", OutputMode::Text) {
         Ok(content) => content,
         Err(code) => {
             if transport_failed {
@@ -916,6 +915,7 @@ pub fn pane_heartbeat_cli(
     text: Option<&str>,
     while_idle_only: Option<bool>,
     off: bool,
+    mode: OutputMode,
 ) -> i32 {
     let every_ms = match every.map(parse_heartbeat_duration) {
         Some(Ok(duration)) => Some(duration.as_millis() as u64),
@@ -929,6 +929,7 @@ pub fn pane_heartbeat_cli(
         serde_json::json!({"type":"pane_heartbeat", "pane_id":pane_id, "every_ms":every_ms, "text":text, "while_idle_only":while_idle_only, "off":off}),
         "pane-heartbeat-response",
         "pane heartbeat",
+        mode,
     ) {
         Ok(content) => print_json_output(&content),
         Err(code) => code,
@@ -982,7 +983,7 @@ fn report_submit(content: &str) -> i32 {
 ///
 /// Sends `key_pane` command to PLEXI_SOCKET. Waits for response.
 /// Returns 0 on success, 1 on error.
-pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
+pub fn pane_key_cli(pane_id: u64, key: &str, mode: OutputMode) -> i32 {
     log::info!(
         "pane_key:cli: pane_id={pane_id} key={key:?} key_chars={}",
         key.chars().count()
@@ -995,6 +996,7 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
         }),
         "pane-key-response",
         "pane key",
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
@@ -1027,7 +1029,7 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
     0
 }
 
-pub fn pane_drop_cli(pane_id: u64, path_or_url: &str) -> i32 {
+pub fn pane_drop_cli(pane_id: u64, path_or_url: &str, mode: OutputMode) -> i32 {
     let content = match super::request(
         serde_json::json!({
             "type": "drop_file",
@@ -1036,6 +1038,7 @@ pub fn pane_drop_cli(pane_id: u64, path_or_url: &str) -> i32 {
         }),
         "pane-drop-response",
         "pane drop",
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
@@ -1046,15 +1049,15 @@ pub fn pane_drop_cli(pane_id: u64, path_or_url: &str) -> i32 {
 /// Send a `click_pane`/`click_pane_node` request and report the host's answer,
 /// shared by the pixel, node-targeted, and drag `plexi pane click` variants.
 /// Returns 0 on success, 1 on error.
-fn click_request(payload: serde_json::Value, prefix: &str) -> i32 {
-    super::request(payload, prefix, "pane click").map_or_else(|code| code, |_| 0)
+fn click_request(payload: serde_json::Value, prefix: &str, mode: OutputMode) -> i32 {
+    super::request(payload, prefix, "pane click", mode).map_or_else(|code| code, |_| 0)
 }
 
 /// `plexi pane click <pane_id> <x> <y> [--button left]`
 ///
 /// Sends `click_pane` command to PLEXI_SOCKET. Waits for response.
 /// Returns 0 on success, 1 on error.
-pub fn pane_click_cli(pane_id: u64, x: f32, y: f32, button: &str) -> i32 {
+pub fn pane_click_cli(pane_id: u64, x: f32, y: f32, button: &str, mode: OutputMode) -> i32 {
     log::info!("pane_click:cli: pane_id={pane_id} x={x} y={y} button={button}");
     click_request(
         serde_json::json!({
@@ -1065,6 +1068,7 @@ pub fn pane_click_cli(pane_id: u64, x: f32, y: f32, button: &str) -> i32 {
             "button": button,
         }),
         "pane-click-response",
+        mode,
     )
 }
 
@@ -1072,7 +1076,7 @@ pub fn pane_click_cli(pane_id: u64, x: f32, y: f32, button: &str) -> i32 {
 ///
 /// Sends `click_pane_node` command to PLEXI_SOCKET. Waits for response.
 /// Returns 0 once the host delivered the activation, 1 on any refusal.
-pub fn pane_click_node_cli(pane_id: u64, node_ref: &str) -> i32 {
+pub fn pane_click_node_cli(pane_id: u64, node_ref: &str, mode: OutputMode) -> i32 {
     log::info!("pane_click_node:cli: pane_id={pane_id} node_ref={node_ref}");
     click_request(
         serde_json::json!({
@@ -1081,6 +1085,7 @@ pub fn pane_click_node_cli(pane_id: u64, node_ref: &str) -> i32 {
             "node_ref": node_ref,
         }),
         "pane-click-node-response",
+        mode,
     )
 }
 
@@ -1096,6 +1101,11 @@ fn parse_pane_coords(flag: &str, value: &str) -> Result<[f32; 2], String> {
     }
 }
 
+pub(crate) struct PaneDragEndpoint<'a> {
+    pub coords: Option<&'a str>,
+    pub node: Option<&'a str>,
+}
+
 /// `plexi pane drag <pane_id> --from x,y --to x,y [--steps N] [--button left]`
 /// (or `--from-node`/`--to-node` with node refs from `plexi pane state`).
 ///
@@ -1104,17 +1114,17 @@ fn parse_pane_coords(flag: &str, value: &str) -> Result<[f32; 2], String> {
 /// Returns 0 on success, 1 on error.
 pub fn pane_drag_cli(
     pane_id: u64,
-    from: Option<&str>,
-    from_node: Option<&str>,
-    to: Option<&str>,
-    to_node: Option<&str>,
+    from: PaneDragEndpoint<'_>,
+    to: PaneDragEndpoint<'_>,
     steps: u32,
     button: &str,
+    mode: OutputMode,
 ) -> i32 {
     let parse = |flag: &str, value: Option<&str>| -> Result<Option<[f32; 2]>, String> {
         value.map(|v| parse_pane_coords(flag, v)).transpose()
     };
-    let (from, to) = match (parse("from", from), parse("to", to)) {
+    let (from_node, to_node) = (from.node, to.node);
+    let (from, to) = match (parse("from", from.coords), parse("to", to.coords)) {
         (Ok(f), Ok(t)) => (f, t),
         (Err(e), _) | (_, Err(e)) => {
             eprintln!("error: {e}");
@@ -1145,6 +1155,7 @@ pub fn pane_drag_cli(
             "button": button,
         }),
         "pane-drag-response",
+        mode,
     )
 }
 
@@ -1159,6 +1170,7 @@ pub fn pane_capture_cli(
     full_output: bool,
     from_cursor: Option<u64>,
     plain: bool,
+    mode: OutputMode,
 ) -> i32 {
     let resolved_pane_id = match current_pane_id(pane_id, "pane capture") {
         Ok(id) => id,
@@ -1179,7 +1191,7 @@ pub fn pane_capture_cli(
         req["from_cursor"] = serde_json::Value::Number(serde_json::Number::from(cursor));
     }
 
-    let content = match super::request(req, "pane-capture-response", "pane capture") {
+    let content = match super::request(req, "pane-capture-response", "pane capture", mode) {
         Ok(content) => content,
         Err(code) => return code,
     };
@@ -1222,7 +1234,7 @@ fn plain_capture_body(lines: &[String]) -> String {
 }
 
 /// `plexi pane status <id>`
-pub fn pane_status_cli(pane_id: u64) -> i32 {
+pub fn pane_status_cli(pane_id: u64, mode: OutputMode) -> i32 {
     log::info!("pane_status:cli: pane_id={pane_id}");
     let content = match super::request(
         serde_json::json!({
@@ -1231,6 +1243,7 @@ pub fn pane_status_cli(pane_id: u64) -> i32 {
         }),
         "pane-status-response",
         "pane status",
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
@@ -1269,7 +1282,7 @@ fn validate_status_reply(content: &str) -> Result<(), String> {
 /// carries `claimed_state` (the pane's agent-authored `status` slot) and
 /// `observed_state` (host-derived liveness), always together — see
 /// `HostRequest::GetPaneState`. Returns 0 on success, 1 on error.
-pub fn pane_state_cli(pane_id: u64, stale_after_secs: Option<u64>) -> i32 {
+pub fn pane_state_cli(pane_id: u64, stale_after_secs: Option<u64>, mode: OutputMode) -> i32 {
     log::info!("pane_state:cli: pane_id={pane_id} stale_after_secs={stale_after_secs:?}");
 
     let content = match super::request(
@@ -1280,6 +1293,7 @@ pub fn pane_state_cli(pane_id: u64, stale_after_secs: Option<u64>) -> i32 {
         }),
         "pane-state-response",
         "pane state",
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
@@ -1496,9 +1510,12 @@ mod slot_write_tests {
     #[test]
     fn empty_slot_name_exits_nonzero() {
         // Must fail before any socket contact — no PLEXI_PANE_ID needed.
-        assert_eq!(pane_slot_write_cli("", Some("x"), false, true, Some(7)), 1);
         assert_eq!(
-            pane_slot_write_cli("   ", Some("x"), false, true, Some(7)),
+            pane_slot_write_cli("", Some("x"), false, true, Some(7), OutputMode::Text),
+            1
+        );
+        assert_eq!(
+            pane_slot_write_cli("   ", Some("x"), false, true, Some(7), OutputMode::Text),
             1
         );
     }
@@ -1557,7 +1574,7 @@ mod capture_and_status_tests {
                 "cursor": 44,
                 "missed": false,
             }),
-            || pane_capture_cli(Some(42), 50, false, Some(39), true),
+            || pane_capture_cli(Some(42), 50, false, Some(39), true, OutputMode::Text),
         );
         assert_eq!(code, 0);
         assert_eq!(payload["type"], "capture_pane");
@@ -1570,7 +1587,7 @@ mod capture_and_status_tests {
     fn capture_host_error_exits_one() {
         let (code, _) =
             capture_payload_and_answer(serde_json::json!({"error": "pane 42 not found"}), || {
-                pane_capture_cli(Some(42), 50, false, None, true)
+                pane_capture_cli(Some(42), 50, false, None, true, OutputMode::Text)
             });
         assert_eq!(code, 1);
     }
@@ -1587,7 +1604,7 @@ mod capture_and_status_tests {
                 "status_bar_truncated": false,
                 "last_buffer_line": "⏺ Bash(cargo test)",
             }),
-            || pane_status_cli(42),
+            || pane_status_cli(42, OutputMode::Text),
         );
         assert_eq!(code, 0);
         assert_eq!(payload["type"], "pane_status");
@@ -1598,7 +1615,7 @@ mod capture_and_status_tests {
     fn status_host_and_malformed_errors_exit_one() {
         let (host_error, _) =
             capture_payload_and_answer(serde_json::json!({"error": "pane 42 not found"}), || {
-                pane_status_cli(42)
+                pane_status_cli(42, OutputMode::Text)
             });
         assert_eq!(host_error, 1);
         assert!(validate_status_reply("{}")
@@ -1767,7 +1784,7 @@ mod pane_message_tests {
                 tx.send(payload).ok();
             });
 
-            let code = pane_message_send_cli(42, "hello mailbox", submit);
+            let code = pane_message_send_cli(42, "hello mailbox", submit, OutputMode::Text);
             let payload = rx
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .expect("host listener never received the message send payload");
@@ -1988,8 +2005,8 @@ mod pane_result_tests {
         env.set(&socket_path);
 
         // Numeric targets resolve without any socket connection.
-        assert_eq!(ContextTarget::from("42").resolve(), Ok(42));
-        assert_eq!(PaneTarget::from("99").resolve(), Ok(99));
+        assert_eq!(ContextTarget::from("42").resolve(OutputMode::Text), Ok(42));
+        assert_eq!(PaneTarget::from("99").resolve(OutputMode::Text), Ok(99));
 
         let handle = std::thread::spawn(move || {
             for step in 0..10 {
@@ -2039,30 +2056,47 @@ mod pane_result_tests {
         });
 
         // ContextTarget over socket: exact, unique prefix, ambiguous prefix, unknown name
-        assert_eq!(ContextTarget::from("sprint-alpha").resolve(), Ok(2));
-        assert_eq!(ContextTarget::from("ma").resolve(), Ok(1));
-        assert_eq!(ContextTarget::from("sprint-").resolve(), Err(1));
-        assert_eq!(ContextTarget::from("no-such-ctx").resolve(), Err(1));
+        assert_eq!(
+            ContextTarget::from("sprint-alpha").resolve(OutputMode::Text),
+            Ok(2)
+        );
+        assert_eq!(ContextTarget::from("ma").resolve(OutputMode::Text), Ok(1));
+        assert_eq!(
+            ContextTarget::from("sprint-").resolve(OutputMode::Text),
+            Err(1)
+        );
+        assert_eq!(
+            ContextTarget::from("no-such-ctx").resolve(OutputMode::Text),
+            Err(1)
+        );
 
         // PaneTarget over socket: exact, unique prefix, ambiguous prefix
-        assert_eq!(PaneTarget::from("worker-0890").resolve(), Ok(10));
-        assert_eq!(PaneTarget::from("worker-").resolve(), Err(1));
+        assert_eq!(
+            PaneTarget::from("worker-0890").resolve(OutputMode::Text),
+            Ok(10)
+        );
+        assert_eq!(
+            PaneTarget::from("worker-").resolve(OutputMode::Text),
+            Err(1)
+        );
 
         // End-to-end `plexi context unpark <name>` (via unique prefix "sprint-a" -> context 2)
-        let unpark_ctx = resolve_opt_context_target(Some(&ContextTarget::from("sprint-a")))
-            .expect("resolve sprint-a");
+        let unpark_ctx =
+            resolve_opt_context_target(Some(&ContextTarget::from("sprint-a")), OutputMode::Text)
+                .expect("resolve sprint-a");
         assert_eq!(unpark_ctx, Some(2));
         assert_eq!(
             host_action_cli(
                 serde_json::json!({ "type": "context_park", "parked": false }),
                 Some(("context_id", unpark_ctx, "PLEXI_CONTEXT_ID")),
+                OutputMode::Text,
             ),
             0
         );
 
         // End-to-end `plexi pane focus <name>` (via unique prefix "tester" -> pane 12)
         let focus_pane = PaneTarget::from("tester")
-            .resolve()
+            .resolve(OutputMode::Text)
             .expect("resolve tester");
         assert_eq!(focus_pane, 12);
         assert_eq!(pane_focus_cli(focus_pane), 0);

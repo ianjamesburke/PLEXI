@@ -3,6 +3,29 @@
 use crate::rpc::{PollError, SlotReply};
 use serde_json::Value;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum OutputMode {
+    #[default]
+    Text,
+    Json,
+}
+
+impl OutputMode {
+    pub(crate) fn is_json(self) -> bool {
+        self == Self::Json
+    }
+}
+
+impl From<bool> for OutputMode {
+    fn from(json: bool) -> Self {
+        if json {
+            Self::Json
+        } else {
+            Self::Text
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum HostReply<T = String> {
     Payload(T),
@@ -40,10 +63,14 @@ impl Refusal {
         self.body.trim()
     }
 
-    pub(crate) fn report(&self, json: bool) -> i32 {
+    pub(crate) fn report(&self, mode: OutputMode) -> i32 {
+        self.report_with(mode, |body| println!("{body}"))
+    }
+
+    fn report_with(&self, mode: OutputMode, print_body: impl FnOnce(&str)) -> i32 {
         eprintln!("{}", self.stderr_line());
-        if json {
-            println!("{}", self.json_body());
+        if mode.is_json() {
+            print_body(self.json_body());
         }
         1
     }
@@ -141,10 +168,10 @@ impl HostReply<Vec<u8>> {
 }
 
 impl<T> HostReply<T> {
-    pub(crate) fn payload_or_report(self, label: &str, json: bool) -> Result<T, i32> {
+    pub(crate) fn payload_or_report(self, label: &str, mode: OutputMode) -> Result<T, i32> {
         match self {
             Self::Payload(payload) => Ok(payload),
-            Self::Refused(refusal) => Err(refusal.report(json)),
+            Self::Refused(refusal) => Err(refusal.report(mode)),
             Self::Transport(PollError::TimedOut) => {
                 eprintln!("error: timed out waiting for {label} response");
                 Err(1)
@@ -165,7 +192,32 @@ pub(super) fn acknowledged(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::HostReply;
+    use super::{HostReply, OutputMode};
+
+    #[test]
+    fn refusal_stdout_mode_is_independent_of_call_order() {
+        let body = r#"{"error_code":"permission_denied","error":"fixture refused"}"#;
+        let HostReply::Refused(refusal) = HostReply::decode(Ok(body.to_owned())) else {
+            panic!("expected a refusal");
+        };
+
+        for modes in [
+            [OutputMode::Text, OutputMode::Json],
+            [OutputMode::Json, OutputMode::Text],
+        ] {
+            for mode in modes {
+                let mut stdout = Vec::new();
+                assert_eq!(
+                    refusal.report_with(mode, |body| stdout.push(body.to_owned())),
+                    1
+                );
+                match mode {
+                    OutputMode::Text => assert!(stdout.is_empty()),
+                    OutputMode::Json => assert_eq!(stdout, [body]),
+                }
+            }
+        }
+    }
 
     #[test]
     fn a_refusal_is_never_a_payload() {
@@ -183,7 +235,7 @@ mod tests {
                 "{body}"
             );
             assert_eq!(
-                HostReply::decode(Ok(body.to_string())).payload_or_report("test", true),
+                HostReply::decode(Ok(body.to_string())).payload_or_report("test", OutputMode::Json),
                 Err(1),
                 "{body}"
             );
@@ -259,16 +311,16 @@ mod tests {
                     Some("/tmp"),
                     None,
                     &[],
-                    false,
                     "right",
-                    None,
+                    Default::default(),
+                    OutputMode::Text,
                 )
             }),
             ("agent status", || {
-                crate::cli::agent::agent_status_cli(false, false, false)
+                crate::cli::agent::agent_status_cli(false, false, false, OutputMode::Text)
             }),
             ("pane tree", || {
-                crate::cli::pane::pane_tree_cli(None, false, true)
+                crate::cli::pane::pane_tree_cli(None, false, OutputMode::Json)
             }),
             ("context list", crate::cli::context_cli::context_list_cli),
         ];
@@ -302,6 +354,7 @@ mod waiter_tests {
     use std::os::unix::net::UnixListener;
     use std::process::{Command, Output};
 
+    use super::OutputMode;
     use crate::cli::{agents_api, context_cli, notify, open, pane, plugin, workspace};
 
     const CHILD: &str = "cli::reply::waiter_tests::run_waiter";
@@ -319,8 +372,7 @@ mod waiter_tests {
         if entry.starts_with("dashboard cancel") {
             std::fs::create_dir_all(crate::config::workspace_channel_dir()).unwrap();
         }
-        let json = entry.ends_with(" json");
-        crate::cli::set_request_json_output(json);
+        let mode = OutputMode::from(entry.ends_with(" json"));
         crate::cli::set_command_socket_override(std::env::var_os("PLEXI_SOCKET").unwrap().into());
         let spawn = open::PaneNewCliArgs {
             name: Some("fixture"),
@@ -334,11 +386,11 @@ mod waiter_tests {
             "slot read" => pane::pane_slot_read_cli("result", Some(42)),
             "slot wait" => pane::pane_slot_wait_cli("result", Some(42), ".*", 1.0),
             "slot write" => {
-                pane::pane_slot_write_cli("result", Some("data"), false, false, Some(42))
+                pane::pane_slot_write_cli("result", Some("data"), false, false, Some(42), mode)
             }
-            "slot list" => pane::pane_slot_list_cli(Some(42)),
-            "slot delete" => pane::pane_slot_delete_cli("result", Some(42)),
-            "close" => pane::pane_close_cli(42),
+            "slot list" => pane::pane_slot_list_cli(Some(42), mode),
+            "slot delete" => pane::pane_slot_delete_cli("result", Some(42), mode),
+            "close" => pane::pane_close_cli(42, mode),
             "submit" => pane::pane_send_cli(42, "fixture", true, false),
             "boot" => open::pane_new_cli(open::PaneNewCliArgs {
                 agent: Some(&boot),
@@ -364,24 +416,31 @@ mod waiter_tests {
                 choices: &[crate::cli::parse_notify_choice(" :Continue").unwrap()],
                 wait_for_response: true,
                 wait_timeout_secs: 1,
+                mode,
                 ..Default::default()
             }),
             "notify dismiss" => notify::dismiss_notify_cli("fixture"),
-            "pane tree json" => pane::pane_tree_cli(None, false, true),
-            "context new json" => {
-                context_cli::context_new_cli(Some("fixture"), None, None, &[], false, "right", None)
-            }
+            "pane tree json" => pane::pane_tree_cli(None, false, mode),
+            "context new json" => context_cli::context_new_cli(
+                Some("fixture"),
+                None,
+                None,
+                &[],
+                "right",
+                Default::default(),
+                mode,
+            ),
             "context new child" => context_cli::context_new_cli(
                 Some("fixture"),
                 None,
                 Some("parent"),
                 &[],
-                false,
                 "right",
-                None,
+                Default::default(),
+                mode,
             ),
             "dashboard cancel" | "dashboard cancel json" => {
-                agents_api::command_view_cancel_cli("run_fixture", json)
+                agents_api::command_view_cancel_cli("run_fixture", mode)
             }
             _ => panic!("unknown waiter {entry}"),
         };

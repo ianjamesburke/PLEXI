@@ -16,6 +16,7 @@
 //! no `--context` flag, so the only reachable files are the calling context's
 //! own state files for a plugin that declared `[state]`.
 
+use super::reply::OutputMode;
 use crate::host::state_scope::{StateFormat, StateScope};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -49,7 +50,7 @@ fn caller_label() -> String {
 }
 
 /// Resolve current scope from the host in a pane, or the filesystem outside one.
-fn cli_context_root() -> Result<PathBuf, String> {
+fn cli_context_root(mode: OutputMode) -> Result<PathBuf, String> {
     let root = match std::env::var_os("PLEXI_PANE_ID") {
         Some(pane) => {
             let pane_id = pane
@@ -60,6 +61,7 @@ fn cli_context_root() -> Result<PathBuf, String> {
                 serde_json::json!({"type":"get_pane_info", "pane_id":pane_id}),
                 "app-state-scope",
                 "plugin state scope",
+                mode,
             )
             .map_err(|code| {
                 format!("cannot query current scope for pane {pane_id} (exit {code})")
@@ -101,9 +103,9 @@ fn file_context_root(cwd: &Path) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-fn cli_registry() -> Result<crate::app::registry::PluginRegistry, String> {
+fn cli_registry(mode: OutputMode) -> Result<crate::app::registry::PluginRegistry, String> {
     let root = if std::env::var_os("PLEXI_PANE_ID").is_some() {
-        cli_context_root()?
+        cli_context_root(mode)?
     } else {
         std::env::current_dir().map_err(|error| format!("plugin state cwd: {error}"))?
     };
@@ -120,6 +122,7 @@ fn resolve(
     plugin_id: &str,
     scope_raw: Option<&str>,
     registry: &crate::app::registry::PluginRegistry,
+    mode: OutputMode,
 ) -> Result<ResolvedState, String> {
     let installed = registry
         .get(plugin_id)
@@ -154,7 +157,7 @@ fn resolve(
     };
     let format = installed.state_format;
     let context_root = match scope {
-        StateScope::Context => cli_context_root()?,
+        StateScope::Context => cli_context_root(mode)?,
         StateScope::Global => PathBuf::new(),
     };
     let path = crate::host::state_scope::state_file(scope, plugin_id, format, &context_root)?;
@@ -182,8 +185,8 @@ fn empty_document(format: StateFormat) -> &'static str {
 }
 
 /// `plexi plugin state get <plugin> [--scope ...]`
-pub fn get(plugin_id: &str, scope: Option<&str>) -> i32 {
-    let registry = match cli_registry() {
+pub fn get(plugin_id: &str, scope: Option<&str>, mode: OutputMode) -> i32 {
+    let registry = match cli_registry(mode) {
         Ok(registry) => registry,
         Err(error) => {
             log::info!("app_state: registry rejected: {error}");
@@ -191,7 +194,7 @@ pub fn get(plugin_id: &str, scope: Option<&str>) -> i32 {
             return 1;
         }
     };
-    let resolved = match resolve(plugin_id, scope, &registry) {
+    let resolved = match resolve(plugin_id, scope, &registry, mode) {
         Ok(resolved) => resolved,
         Err(error) => {
             log::info!(
@@ -261,7 +264,7 @@ pub fn get(plugin_id: &str, scope: Option<&str>) -> i32 {
 /// Replaces the document wholesale. Reads `FILE` when given, else stdin. There
 /// is deliberately no partial/merge update — get/set proves the capability, and
 /// the right merge semantics are clearer once something real is using it.
-pub fn set(plugin_id: &str, file: Option<&Path>, scope: Option<&str>) -> i32 {
+pub fn set(plugin_id: &str, file: Option<&Path>, scope: Option<&str>, mode: OutputMode) -> i32 {
     let input: Box<dyn Read> = match file {
         Some(path) => match std::fs::File::open(path) {
             Ok(file) => Box::new(file),
@@ -272,7 +275,7 @@ pub fn set(plugin_id: &str, file: Option<&Path>, scope: Option<&str>) -> i32 {
         },
         None => Box::new(std::io::stdin()),
     };
-    let registry = match cli_registry() {
+    let registry = match cli_registry(mode) {
         Ok(registry) => registry,
         Err(error) => {
             log::info!("app_state: registry rejected: {error}");
@@ -280,7 +283,7 @@ pub fn set(plugin_id: &str, file: Option<&Path>, scope: Option<&str>) -> i32 {
             return 1;
         }
     };
-    set_from(plugin_id, input, scope, &registry)
+    set_from(plugin_id, input, scope, &registry, mode)
 }
 
 /// `set` with its input factored out so tests can drive it without a real stdin.
@@ -289,8 +292,9 @@ fn set_from(
     mut input: impl Read,
     scope: Option<&str>,
     registry: &crate::app::registry::PluginRegistry,
+    mode: OutputMode,
 ) -> i32 {
-    let resolved = match resolve(plugin_id, scope, registry) {
+    let resolved = match resolve(plugin_id, scope, registry, mode) {
         Ok(resolved) => resolved,
         Err(error) => {
             log::info!(
@@ -383,7 +387,7 @@ mod tests {
             .skipped_reason("test.state")
             .expect("fixture skipped")
             .error;
-        let error = match super::resolve("test.state", None, &registry) {
+        let error = match super::resolve("test.state", None, &registry, OutputMode::Text) {
             Err(error) => error,
             Ok(_) => panic!("skipped plugin must fail resolution"),
         };
@@ -530,7 +534,7 @@ mod tests {
         let env = socket_env_guard();
         env.set_pane_id("18446744073709551615");
         env.set_context_root(root.path());
-        let result = cli_context_root();
+        let result = cli_context_root(OutputMode::Text);
         drop(env);
         assert!(
             result.is_err(),
@@ -583,7 +587,7 @@ mod tests {
         env.set_pane_id(&pane.to_string());
         env.set(&socket);
         env.set_context_root(&stale);
-        let actual = cli_context_root();
+        let actual = cli_context_root(OutputMode::Text);
         drop(env);
         server.join().unwrap();
         assert_eq!(actual.unwrap(), current.path());
@@ -601,7 +605,8 @@ mod tests {
                     "test.state",
                     &br#"{"items":["buy milk"]}"#[..],
                     None,
-                    &registry
+                    &registry,
+                    OutputMode::Text
                 ),
                 0,
                 "a valid document must be accepted"
@@ -619,11 +624,12 @@ mod tests {
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
             assert_eq!(
-                set_from("test.state", &b"{}"[..], None, &registry),
+                set_from("test.state", &b"{}"[..], None, &registry, OutputMode::Text),
                 1,
                 "a plugin that declared no [state] must be refused"
             );
-            let error = resolve("test.state", None, &registry).expect_err("must be refused");
+            let error = resolve("test.state", None, &registry, OutputMode::Text)
+                .expect_err("must be refused");
             assert!(
                 error.contains("declares no [state] section"),
                 "the refusal must name the reason, got: {error}"
@@ -636,14 +642,20 @@ mod tests {
         let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
-            let error =
-                resolve("test.state", Some("global"), &registry).expect_err("must be refused");
+            let error = resolve("test.state", Some("global"), &registry, OutputMode::Text)
+                .expect_err("must be refused");
             assert!(
                 error.contains("does not declare the 'global' scope"),
                 "the refusal must name the declared set, got: {error}"
             );
             assert_eq!(
-                set_from("test.state", &b"{}"[..], Some("global"), &registry),
+                set_from(
+                    "test.state",
+                    &b"{}"[..],
+                    Some("global"),
+                    &registry,
+                    OutputMode::Text
+                ),
                 1
             );
         });
@@ -655,11 +667,26 @@ mod tests {
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
             assert_eq!(
-                set_from("test.state", &b"not json at all"[..], None, &registry),
+                set_from(
+                    "test.state",
+                    &b"not json at all"[..],
+                    None,
+                    &registry,
+                    OutputMode::Text
+                ),
                 1
             );
             // A JSON array parses, but a state document is an object.
-            assert_eq!(set_from("test.state", &b"[1,2,3]"[..], None, &registry), 1);
+            assert_eq!(
+                set_from(
+                    "test.state",
+                    &b"[1,2,3]"[..],
+                    None,
+                    &registry,
+                    OutputMode::Text
+                ),
+                1
+            );
         });
         assert!(
             !root
@@ -676,7 +703,13 @@ mod tests {
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
             assert_eq!(
-                set_from("../../etc/passwd", &b"{}"[..], None, &registry),
+                set_from(
+                    "../../etc/passwd",
+                    &b"{}"[..],
+                    None,
+                    &registry,
+                    OutputMode::Text
+                ),
                 1,
                 "a traversal plugin id must never be writable"
             );
@@ -703,7 +736,10 @@ mod tests {
         let root = tempdir().expect("context root");
         let missing = root.path().join("no-such-context");
         with_context_root(&missing, || {
-            assert_eq!(set_from("test.state", &b"{}"[..], None, &registry), 1);
+            assert_eq!(
+                set_from("test.state", &b"{}"[..], None, &registry, OutputMode::Text),
+                1
+            );
         });
         assert!(
             !missing.exists(),
@@ -720,7 +756,13 @@ mod tests {
         let document = "- [ ] buy milk\n- [x] ship 0645\n";
         with_context_root(root.path(), || {
             assert_eq!(
-                set_from("test.state", document.as_bytes(), None, &registry),
+                set_from(
+                    "test.state",
+                    document.as_bytes(),
+                    None,
+                    &registry,
+                    OutputMode::Text
+                ),
                 0
             );
         });
@@ -743,7 +785,7 @@ mod tests {
             .expect("symlink app_states");
         with_context_root(root.path(), || {
             assert_eq!(
-                set_from("test.state", &b"{}"[..], None, &registry),
+                set_from("test.state", &b"{}"[..], None, &registry, OutputMode::Text),
                 1,
                 "a redirected app_states directory must be refused, not followed"
             );
@@ -759,7 +801,8 @@ mod tests {
         let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
-            let resolved = resolve("test.state", None, &registry).expect("resolves");
+            let resolved =
+                resolve("test.state", None, &registry, OutputMode::Text).expect("resolves");
             assert!(!resolved.path.exists(), "fixture starts with no state file");
             assert_eq!(empty_document(resolved.format), "{}\n");
         });

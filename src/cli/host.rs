@@ -18,6 +18,7 @@
 //! adopt an inherited `PLEXI_CHANNEL`, which would let `host start/stop/status`
 //! silently target the wrong channel's profile when invoked from inside a pane.
 
+use super::reply::OutputMode;
 #[cfg(windows)]
 mod windows_launch;
 
@@ -2021,7 +2022,7 @@ pub fn host_log_cli(source: &str, message: &str) -> i32 {
     crate::rpc::register_client_stream(response_file.clone(), stream);
 
     super::poll_reply(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT))
-        .payload_or_report("host log", false)
+        .payload_or_report("host log", OutputMode::Text)
         .map_or_else(|code| code, |_| 0)
 }
 
@@ -2029,7 +2030,7 @@ pub fn host_log_cli(source: &str, message: &str) -> i32 {
 /// path. This deliberately targets the host rather than a pane, so a chord
 /// such as `cmd+1` exercises numbered context switching without writing bytes
 /// into a focused terminal's PTY.
-pub fn host_key_cli(key: &str) -> i32 {
+pub fn host_key_cli(key: &str, mode: OutputMode) -> i32 {
     log::info!(
         "host_key:cli: key={key:?} key_chars={}",
         key.chars().count()
@@ -2041,6 +2042,7 @@ pub fn host_key_cli(key: &str) -> i32 {
         }),
         "host-key-response",
         "host key",
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
@@ -2057,7 +2059,7 @@ pub fn host_key_cli(key: &str) -> i32 {
 /// `plexi host screenshot [--pane <id>] [--output <path>]` — capture the
 /// live host window (optionally cropped to one pane) through the real
 /// render pipeline. Prints the written PNG path on success.
-pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
+pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>, mode: OutputMode) -> i32 {
     let output_path = match output {
         Some(path) => path.to_string(),
         None => {
@@ -2082,6 +2084,7 @@ pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
         "screenshot-response",
         "screenshot",
         Duration::from_secs(10),
+        mode,
     ) {
         Ok(content) => content,
         Err(code) => return code,
