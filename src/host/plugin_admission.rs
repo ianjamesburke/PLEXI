@@ -173,6 +173,44 @@ pub(crate) fn reserved_id(id: &str, plugin_dir: &Path) -> Result<(), Refusal> {
     Ok(())
 }
 
+/// The refusal for a profile copy of a bundled id whose files differ from the
+/// shipped copy, naming the command that repairs it.
+fn changed_bundled(id: &str, dir: &Path) -> Refusal {
+    Refusal::NotAPlugin {
+        id: id.to_string(),
+        dir: dir.to_path_buf(),
+        error: format!(
+            "it uses the id of a plugin bundled with Plexi but differs from the copy shipped \
+             with this version; `{} plugin install local:{id}` replaces it with the shipped copy",
+            crate::cli::setup::cli_name()
+        ),
+    }
+}
+
+/// A profile record may own a bundled id, and so its views, only from the
+/// designated install root `<profile plugins>/<id>`: a real folder (not a
+/// link) holding the shipped files. Checked before the registry indexes it, so
+/// a link or a duplicate record can never supply the owner.
+pub(crate) fn verify_reserved_profile_entry(
+    id: &str,
+    entry_dir: &Path,
+    profile_plugins: &Path,
+) -> Result<(), Refusal> {
+    if !crate::cli::install_host::is_bundled_plugin_id(id) {
+        return Ok(());
+    }
+    let is_link = std::fs::symlink_metadata(entry_dir)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(true);
+    if entry_dir != profile_plugins.join(id) || is_link {
+        return reserved_id(id, entry_dir);
+    }
+    if crate::cli::install_host::matches_bundled_plugin(id, entry_dir) {
+        return Ok(());
+    }
+    Err(changed_bundled(id, entry_dir))
+}
+
 /// A local folder may install under a bundled plugin's id only when it is that
 /// plugin, byte for byte: anything else would replace a working bundled copy
 /// with one that is refused at launch.
@@ -494,17 +532,7 @@ impl PluginAdmission {
             {
                 return Ok(None);
             }
-            return Err(Refusal::NotAPlugin {
-                id: plugin.owner.clone(),
-                dir: plugin.root.clone(),
-                error: format!(
-                    "it uses the id of a plugin bundled with Plexi but differs from the copy \
-                     shipped with this version; `{} plugin install local:{}` replaces it with \
-                     the shipped copy",
-                    crate::cli::setup::cli_name(),
-                    plugin.owner
-                ),
-            });
+            return Err(changed_bundled(&plugin.owner, &plugin.root));
         }
         Ok(Some(Subject::Copy {
             id: plugin.owner.clone(),

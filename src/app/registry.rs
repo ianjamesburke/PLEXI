@@ -821,13 +821,17 @@ impl PluginRegistry {
             match self.load_plugin(&entry_dir) {
                 Ok(installed) => {
                     let id = installed.manifest.id.clone();
-                    // A local scan source never owns a bundled id, whatever its
-                    // path resolves to (a link to the bundled install included);
-                    // that is decided by source before admission classifies the
-                    // destination (stint 1398).
-                    let reserved = (source != RegistrySource::Global)
-                        .then(|| crate::host::plugin_admission::reserved_id(&id, &entry_dir).err())
-                        .flatten();
+                    // A bundled id, and the views it contributes, is indexed only
+                    // from the designated, verified profile root. A local source
+                    // never owns one, whatever its path resolves to (stint 1398).
+                    let reserved = if source == RegistrySource::Global {
+                        crate::host::plugin_admission::verify_reserved_profile_entry(
+                            &id, &entry_dir, dir,
+                        )
+                        .err()
+                    } else {
+                        crate::host::plugin_admission::reserved_id(&id, &entry_dir).err()
+                    };
                     if let Some(refusal) = reserved {
                         skipped.push(SkippedPlugin {
                             id: Some(id),

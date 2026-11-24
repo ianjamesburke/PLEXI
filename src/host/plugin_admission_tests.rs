@@ -162,7 +162,7 @@ fn a_bundled_id_in_the_profile_runs_only_as_the_shipped_copy() {
 
     std::fs::write(todo.join("main.py"), "print('not bundled')\n").unwrap();
     let error = rig.start(&todo).unwrap_err();
-    assert!(error.contains("plexi plugin install local:todo"), "{error}");
+    assert!(error.contains("plugin install local:todo"), "{error}");
     assert!(rig.pending_ask().is_none(), "no click can lift it");
 }
 
@@ -1335,4 +1335,84 @@ fn the_refusal_hint_repairs_a_changed_bundled_copy() {
     assert!(error.contains("plugin install local:todo"), "{error}");
     assert_eq!(crate::cli::install_cli("local:todo", true), 0);
     assert_eq!(rig.start(&todo), Ok(Basis::Bundled), "repaired");
+}
+
+/// Round 3, registry: a link at the profile's bundled id cannot supply the
+/// owner, even to a trusted development tree. The id and its views stay out of
+/// the index and no guest starts.
+#[test]
+fn a_profile_link_cannot_own_a_bundled_id_or_its_views() {
+    let mut h = crate::testing::HostHarness::new();
+    let plugins = h.profile_dir().join("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    let dev = tempfile::tempdir().unwrap();
+    let tree = extract_bundled("todo", dev.path());
+    std::fs::write(tree.join("main.py"), "print('linked')\n").unwrap();
+    h.trust_plugin_folder(dev.path());
+    std::os::unix::fs::symlink(&tree, plugins.join("todo")).unwrap();
+    h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(&plugins);
+    let root = h.workspace_root();
+    let view = h.app.registries.view_for_root(&root);
+    assert!(view.get("todo").is_none(), "a link owns nothing");
+    assert!(
+        view.list().iter().all(|plugin| plugin
+            .contributes
+            .views
+            .iter()
+            .all(|v| v.id != "todo.main")),
+        "nor its views"
+    );
+    let starts = guest_starts_for_test();
+    assert!(h
+        .app
+        .launch_view_by_id_with_layout("todo", None, &[], None)
+        .is_err());
+    assert_eq!(guest_starts_for_test(), starts, "no guest");
+}
+
+/// Round 3, registry: a duplicate global record declaring a bundled id never
+/// displaces the verified record, whichever the directory scan meets last.
+#[test]
+fn a_duplicate_global_record_cannot_own_a_bundled_id() {
+    let rig = Rig::new();
+    let genuine = extract_bundled("todo", &rig.plugins());
+    for name in ["0-duplicate", "zz-duplicate"] {
+        let duplicate = rig.plugins().join(name);
+        std::fs::create_dir_all(&duplicate).unwrap();
+        for file in ["manifest.toml"] {
+            std::fs::copy(genuine.join(file), duplicate.join(file)).unwrap();
+        }
+        let entry = crate::app::registry::PluginRegistry::empty()
+            .load_plugin(&genuine)
+            .unwrap()
+            .manifest
+            .entry;
+        std::fs::write(duplicate.join(entry), "print('duplicate')\n").unwrap();
+    }
+    let registry = rig.load();
+    let todo = registry.get("todo").expect("the verified owner");
+    assert_eq!(
+        crate::platform::path::canonical_or_self(&todo.plugin_dir),
+        crate::platform::path::canonical_or_self(&genuine)
+    );
+}
+
+/// A changed copy at the bundled root is not indexed; its load error names the
+/// repair, and it can still be uninstalled.
+#[test]
+fn a_changed_bundled_copy_reports_its_repair_and_can_be_uninstalled() {
+    let rig = Rig::new();
+    let _profile = crate::config::set_test_profile_dir(rig.profile.path().to_path_buf());
+    let todo = extract_bundled("todo", &rig.plugins());
+    std::fs::write(todo.join("main.py"), "print('changed')\n").unwrap();
+    let registry = rig.load();
+    assert!(registry.get("todo").is_none());
+    let skipped = registry.skipped_reason("todo").expect("reported");
+    assert!(
+        skipped.error.contains("plugin install local:todo"),
+        "{}",
+        skipped.error
+    );
+    assert_eq!(crate::cli::plugin::plugin_uninstall("todo", true), 0);
+    assert!(!todo.exists());
 }

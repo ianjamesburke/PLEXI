@@ -738,11 +738,21 @@ fn scaffold_wasm_view(plugin_dir: &std::path::Path, name: &str) -> io::Result<()
 pub fn plugin_uninstall(id: &str, assume_yes: bool) -> i32 {
     let cwd = std::env::current_dir().unwrap_or_default();
     let registry = crate::app::registry::PluginRegistry::load(&cwd);
-    let Some(installed) = registry.get(id) else {
-        eprintln!("error: {}", plugin_lookup_error(&registry, id));
-        return 1;
+    // A changed copy of a bundled plugin is not indexed (stint 1398) but is
+    // still installed at its own root, so it can still be removed.
+    let designated = crate::app::registry::plugins_dir().join(id);
+    let plugin_dir = match registry.get(id) {
+        Some(installed) => installed.plugin_dir.clone(),
+        None if crate::cli::install_host::is_bundled_plugin_id(id)
+            && std::fs::symlink_metadata(&designated).is_ok() =>
+        {
+            designated
+        }
+        None => {
+            eprintln!("error: {}", plugin_lookup_error(&registry, id));
+            return 1;
+        }
     };
-    let plugin_dir = installed.plugin_dir.clone();
     let target_root = match plugin_dir.parent() {
         Some(p) => p.to_path_buf(),
         None => {
