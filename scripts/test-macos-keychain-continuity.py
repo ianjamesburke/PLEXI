@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -54,21 +55,37 @@ def wait_ready(binary, env):
     raise AssertionError("host did not become ready")
 
 
+QUESTION = "Signing continuity acceptance question"
+
+
+def seed_command(binary, root):
+    """A pane command that asks the question as that pane, then keeps the pane open.
+
+    The host places a socket caller by process ancestry, so only a process
+    inside the pane may report for it."""
+    script, output = root / "seed-question.sh", root / "seed-question.out"
+    report = [binary, "agent", "report", "--state", "blocked", "--agent", "signing-continuity", "--event", "AskQuestion", "--detail", QUESTION]
+    script.write_text(f"#!/bin/sh\n{shlex.join(map(str, report))} >{shlex.quote(str(output))} 2>&1\necho \"exit=$?\" >>{shlex.quote(str(output))}\nexec /bin/sleep 600\n")
+    script.chmod(0o755)
+    return script, output
+
+
 def start_and_stop(binary, env, seed=False):
-    run([binary, "host", "start", "--ephemeral", "--pane", f"cwd={env['HOME']}", "--timeout-secs", "90"], env, timeout=120)
+    pane = f"cwd={env['HOME']}"
+    if seed:
+        script, seed_output = seed_command(binary, Path(env["HOME"]).parent)
+        pane += f",cmd={script}"
+    run([binary, "host", "start", "--ephemeral", "--pane", pane, "--timeout-secs", "90"], env, timeout=120)
     try:
-        status = wait_ready(binary, env)
-        if seed:
-            panes = json.loads(run([binary, "pane", "list"], env).stdout)
-            caller = dict(env, PLEXI_SOCKET=status["socket"], PLEXI_PANE_ID=str(panes[0]["id"]))
-            run([binary, "agent", "report", "--state", "blocked", "--agent", "signing-continuity", "--event", "AskQuestion", "--detail", "Signing continuity acceptance question"], caller)
+        wait_ready(binary, env)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             items = json.loads(run([binary, "needs-you", "list", "--json"], env).stdout)["items"]
-            if any(item.get("summary") == "Signing continuity acceptance question" for item in items):
+            if any(item.get("summary") == QUESTION for item in items):
                 return items
             time.sleep(0.2)
-        raise AssertionError(f"sealed question was not retained: {items}")
+        reported = seed_output.read_text(errors="replace") if seed and seed_output.is_file() else "(no seed output)"
+        raise AssertionError(f"sealed question was not retained: {items}\nseed report: {reported}")
     finally:
         run([binary, "host", "stop"], env, timeout=120)
 
