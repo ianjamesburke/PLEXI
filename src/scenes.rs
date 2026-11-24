@@ -290,7 +290,7 @@ fn live_focused_pane_id(panes: &serde_json::Value) -> Result<PaneId, SceneError>
 fn live_builtin_cwd(open: &OpenSpec) -> Option<PathBuf> {
     match open {
         OpenSpec::Builtin { cwd, .. } => cwd.as_deref().map(resolve),
-        OpenSpec::Process { .. } | OpenSpec::Wasm { .. } => None,
+        OpenSpec::Process { .. } | OpenSpec::Wasm { .. } | OpenSpec::Bundled { .. } => None,
     }
 }
 
@@ -604,6 +604,14 @@ pub struct NotificationSeedSpec {
 #[derive(Deserialize, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OpenSpec {
+    /// Open the embedded copy of a plugin by its installed id.
+    Bundled {
+        id: String,
+        #[serde(rename = "as")]
+        handle: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
     /// Launch a real PGAP process from a plugin directory.
     Process {
         path: String,
@@ -639,7 +647,8 @@ pub enum OpenSpec {
 impl OpenSpec {
     fn handle(&self) -> &str {
         match self {
-            Self::Process { handle, .. }
+            Self::Bundled { handle, .. }
+            | Self::Process { handle, .. }
             | Self::Wasm { handle, .. }
             | Self::Builtin { handle, .. } => handle,
         }
@@ -647,6 +656,7 @@ impl OpenSpec {
 
     fn target_kind(&self) -> &'static str {
         match self {
+            Self::Bundled { .. } => "bundled",
             Self::Process { .. } => "process",
             Self::Wasm { .. } => "wasm",
             Self::Builtin { .. } => "builtin",
@@ -1952,13 +1962,16 @@ impl LiveBackend {
                     OpenSpec::Process { path, .. } | OpenSpec::Wasm { path, .. } => {
                         resolve(path).display().to_string()
                     }
-                    OpenSpec::Builtin { id, .. } => id.clone(),
+                    OpenSpec::Builtin { id, .. } | OpenSpec::Bundled { id, .. } => id.clone(),
                 };
                 // Live opens use the ordinary admission route. The scene runner
                 // never preapproves capabilities or changes the host's grants.
                 let mut args = vec!["view".to_string(), "open".to_string(), target];
                 match open {
-                    OpenSpec::Process {
+                    OpenSpec::Bundled {
+                        args: launch_args, ..
+                    }
+                    | OpenSpec::Process {
                         args: launch_args, ..
                     }
                     | OpenSpec::Wasm {
@@ -3030,6 +3043,12 @@ impl HeadlessBackend {
                 let handle = open.handle();
                 self.handles.ensure_available(handle)?;
                 let pane_id = match open {
+                    OpenSpec::Bundled { id, args, .. } => {
+                        let workspace = self.h.workspace_root().to_path_buf();
+                        self.h.with_app_mut(|app| {
+                            crate::testing::open_bundled_view(app, id, args, workspace)
+                        })
+                    }
                     OpenSpec::Process {
                         path, args, grants, ..
                     } => {

@@ -101,6 +101,31 @@ impl HostSnapshot {
     }
 }
 
+/// Install an embedded plugin in the isolated profile and open it by id.
+pub(crate) fn open_bundled_view(
+    app: &mut PlexiApp,
+    id: &str,
+    args: &[String],
+    workspace: std::path::PathBuf,
+) -> Result<PaneId, String> {
+    if !crate::cli::install_host::is_bundled_plugin_id(id) {
+        return Err(format!("unknown bundled plugin '{id}'"));
+    }
+    let plugins = crate::config::config_dir().join("plugins");
+    if !plugins.join(id).is_dir() {
+        crate::cli::install_host::test_support::extract_bundled(id, &plugins);
+        app.registries = crate::app::registry_views::RegistryViews::new_with_global(&plugins);
+    }
+    let before = HostSnapshot::from_plugin(app).open_panes;
+    let focused = app.launch_view_by_id_with_layout(id, None, args, Some(workspace))?;
+    HostSnapshot::from_plugin(app)
+        .open_panes
+        .into_iter()
+        .find(|pane| !before.contains(pane))
+        .or(focused)
+        .ok_or_else(|| format!("no pane appeared after opening bundled '{id}'"))
+}
+
 // ─── HostHarness ─────────────────────────────────────────────────────────────
 
 /// Process-wide pane-id block allocator for test hosts.
@@ -843,30 +868,11 @@ impl HostHarness {
         crate::host::plugin_admission::PluginAdmission::current().trust_folder_for_test(folder);
     }
 
-    /// Launch the real process plugin at `<repo>/<rel_dir>` with launch `args`,
-    /// rooted in the harness's scratch workspace (so any `PersistState` lands
-    /// in a tempdir, never the checkout), and wait for its first render.
-    pub fn launch_repo_view(&mut self, rel_dir: &str, args: &[String]) -> PaneId {
-        let plugin_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel_dir);
-        self.trust_plugin_folder(plugin_dir.parent().expect("repo plugin folder"));
-        let workspace = self._workspace_dir.path().to_path_buf();
-        let before = self.state().open_panes;
-        let focused = self
-            .app
-            .launch_view_by_path_with_layout(
-                &plugin_dir.to_string_lossy(),
-                None,
-                Some(workspace),
-                args,
-            )
-            .unwrap_or_else(|e| panic!("launch {rel_dir}: {e}"));
-        let pane_id = self
-            .state()
-            .open_panes
-            .into_iter()
-            .find(|id| !before.contains(id))
-            .or(focused)
-            .unwrap_or_else(|| panic!("a pane appears after launching {rel_dir}"));
+    /// Open a bundled tool provider in the scratch workspace and wait for it to be ready.
+    pub fn launch_bundled_view(&mut self, id: &str, args: &[String]) -> PaneId {
+        let workspace = self.workspace_root();
+        let pane_id = open_bundled_view(&mut self.app, id, args, workspace)
+            .unwrap_or_else(|e| panic!("launch {id}: {e}"));
         self.wait_for_first_render(pane_id);
         self.wait_for_exposed_tools(pane_id);
         pane_id
@@ -874,7 +880,7 @@ impl HostHarness {
 
     /// Poll until `pane_id` has tools in the process-global registry.
     ///
-    /// `launch_repo_view` is the chess launch path. Chess declares tools from
+    /// `launch_bundled_view` is the chess launch path. Chess declares tools from
     /// `init`, but under a parallel `cargo test` that declaration can arrive
     /// after the first rendered tree. A call in that gap is `tool_not_found`.
     pub fn wait_for_exposed_tools(&mut self, pane_id: PaneId) {
