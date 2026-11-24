@@ -597,13 +597,24 @@ mod tests {
         ReplyRegistry::register_aged(&token, host_side, old);
         ReplyRegistry::register_aged(&dead, dead_host, old);
         drop(dead_client);
-        register_client_stream(token.clone(), client_side);
         // Any later reply-bearing request prunes the registry.
         let (other, _other_client) = std::os::unix::net::UnixStream::pair().unwrap();
         ReplyRegistry::register(format!("other-{}", uuid::Uuid::new_v4()), other);
         assert_eq!(ReplyRegistry::connected(&dead), None, "a dead waiter is pruned");
+        assert_eq!(
+            ReplyRegistry::connected(&token),
+            Some(true),
+            "a live waiter was pruned by age"
+        );
         assert!(write_response(&token, b"talk"), "the late answer had no stream");
-        assert_eq!(poll_string(&token, Some(Duration::from_secs(2))).unwrap(), "talk");
+        // The client reads its own connection; no file can stand in.
+        let mut client_side = client_side;
+        let mut answer = String::new();
+        // macOS refuses a timeout (EINVAL) once the host half has closed;
+        // the read then ends at once.
+        let _ = client_side.set_read_timeout(Some(Duration::from_secs(2)));
+        std::io::Read::read_to_string(&mut client_side, &mut answer).unwrap();
+        assert_eq!(answer, "talk");
         assert!(!std::path::Path::new(&token).exists());
     }
 
