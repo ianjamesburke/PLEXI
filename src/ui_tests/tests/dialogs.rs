@@ -306,6 +306,7 @@ fn close_pane_takes_only_a_fresh_real_enter() {
         h.with_app(|app| app.pending_close && app.windows[app.active_window].panes.len() == 2)
     };
     assert!(open(&mut h), "the dialog is open");
+    arm_destructive(&mut h);
     h.harness().key_down(egui::Key::Enter);
     h.run_steps(3);
     assert!(open(&mut h), "a held Enter closed the pane");
@@ -343,6 +344,7 @@ fn context_close_destructive_actions_take_only_a_fresh_real_press() {
     seed_context_close_confirm(&mut h, true);
     let open = |h: &mut PlexiUiHarness| h.with_app(|app| app.pending_context_close.is_some());
     assert!(open(&mut h));
+    arm_destructive(&mut h);
     h.harness().key_down(egui::Key::Enter);
     h.run_steps(3);
     assert!(open(&mut h), "a held Enter ran Close all");
@@ -376,6 +378,7 @@ fn context_close_destructive_actions_take_only_a_fresh_real_press() {
 fn unsaved_changes_discard_takes_only_a_fresh_real_d() {
     let (mut h, _dir) = open_unsaved_prompt();
     let open = |h: &mut PlexiUiHarness| h.harness().query_by_label("Unsaved changes").is_some();
+    arm_destructive(&mut h);
     injected(&mut h, key_tap(egui::Key::D));
     assert!(open(&mut h), "an injected D discarded");
     let discard = h.harness().get_by_label("Discard").rect();
@@ -421,6 +424,7 @@ fn focused_discard_row_takes_only_a_fresh_real_enter() {
         h.harness().key_down(egui::Key::Enter);
         h.run_steps(1);
     });
+    arm_destructive(&mut h);
     for _ in 0..3 {
         tab(&mut h, false);
     }
@@ -444,6 +448,7 @@ fn focused_close_row_takes_only_a_fresh_real_enter() {
         h.harness().key_down(egui::Key::Enter);
         h.run_steps(1);
     });
+    arm_destructive(&mut h);
     tab(&mut h, false);
     tab(&mut h, false);
     assert_eq!(
@@ -469,6 +474,7 @@ fn context_close_fresh_real_enter_closes_all() {
     let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
     seed_context_close_confirm(&mut h, true);
     assert!(h.with_app(|app| app.pending_context_close.is_some()));
+    arm_destructive(&mut h);
     h.harness().key_press(egui::Key::Enter);
     h.run_steps(3);
     assert!(
@@ -501,41 +507,178 @@ fn quit_save_failure_dialog_takes_a_fresh_real_q() {
         }
         let _ = ctx.run_ui(input, |_| {
             let response = crate::overlays::confirmations::quit_save_failure_modal(&actions)
-                .destructive_input(false)
+                .destructive_input(false, "quit_save_failure")
                 .show(&ctx, &colors, |_| {});
+            crate::ui::dialog::arm_destructive_dialogs_for_test(&ctx);
             selected = selected.or(response.selected);
         });
     }
     assert_eq!(selected, Some("quit_without_saving"));
 }
 
-/// Stint 1513 critic, documenting today's behaviour (owner question,
-/// ledger row 109; not changed here): an Enter that arrives on the frame
-/// the Close pane dialog first draws is a fresh real press, so it closes.
+/// Whether the action named `label` is drawn disabled on the last frame.
+fn action_inactive(h: &PlexiUiHarness, label: &str) -> bool {
+    h.with_app(|app| {
+        crate::ui::layout_report::snapshot(&app.ctx)
+            .iter()
+            .flat_map(|report| report.actions.iter())
+            .find(|action| action.name == label)
+            .unwrap_or_else(|| panic!("no action named {label}"))
+            .inactive
+    })
+}
+
+/// Stint 1513, ruling 109: Close is greyed when the dialog first draws, and
+/// an Enter typed ahead into it does nothing. Cancel is available at once.
 #[test]
-fn close_pane_enter_on_the_dialogs_first_frame_closes_today() {
-    let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
-    let a = add_focused_pane(&mut h);
-    let b = add_focused_pane(&mut h);
-    h.with_app_mut(|app| {
-        app.sidebar_visible = false;
-        let context_id = app.windows[app.active_window].context_id;
-        app.set_context_columns(context_id, vec![vec![a], vec![b]]);
-    });
-    h.run_steps(3);
-    h.focus_pane(a).unwrap();
-    h.run_steps(1);
-    h.with_app_mut(|app| {
-        app.config.confirm_close = Some(true);
-        let ctx = app.ctx.clone();
-        app.dispatch_host_action(crate::host::keys::Action::ClosePane, &ctx);
-    });
+fn close_pane_is_disabled_during_the_arm_delay() {
+    let (mut h, a, _b) = open_close_dialog();
+    assert!(action_inactive(&h, "Close"), "Close is greyed at first");
+    assert!(!action_inactive(&h, "Cancel"), "Cancel is never delayed");
+    h.save_screenshot(&evidence_png!()).unwrap();
     h.harness().key_press(egui::Key::Enter);
     h.run_steps(3);
-    let closed = h.with_app(|app| !app.windows[app.active_window].panes.contains_key(&a));
     assert!(
-        closed,
-        "today an Enter on the first drawn frame closes the pane"
+        h.with_app(|app| app.pending_close
+            && app.windows[app.active_window].panes.contains_key(&a)),
+        "an Enter during the delay closed the pane"
+    );
+}
+
+/// Stint 1513, ruling 109: Close all and Dissolve wait out the delay.
+#[test]
+fn context_close_is_disabled_during_the_arm_delay() {
+    let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
+    add_focused_pane(&mut h);
+    h.step();
+    seed_context_close_confirm(&mut h, true);
+    h.run_steps(2);
+    assert!(action_inactive(&h, "Close all"));
+    assert!(action_inactive(&h, "Dissolve"));
+    assert!(!action_inactive(&h, "Cancel"), "Cancel is never delayed");
+    h.save_screenshot(&evidence_png!()).unwrap();
+    for key in [egui::Key::Enter, egui::Key::D] {
+        h.harness().key_press(key);
+        h.run_steps(3);
+        assert!(
+            h.with_app(|app| app.pending_context_close.is_some()),
+            "{key:?} during the delay decided the dialog"
+        );
+    }
+}
+
+/// Stint 1513, ruling 109: Discard is greyed at first; Save and Cancel are not.
+#[test]
+fn unsaved_changes_discard_is_disabled_during_the_arm_delay() {
+    let (mut h, _dir) = open_unsaved_prompt();
+    assert!(action_inactive(&h, "Discard"));
+    assert!(!action_inactive(&h, "Save"), "Save is never delayed");
+    assert!(!action_inactive(&h, "Cancel"), "Cancel is never delayed");
+    h.save_screenshot(&evidence_png!()).unwrap();
+    h.harness().key_press(egui::Key::D);
+    h.run_steps(3);
+    assert!(
+        h.harness().query_by_label("Unsaved changes").is_some(),
+        "a D during the delay discarded"
+    );
+}
+
+/// One frame of a dialog on a bare context, with one key tapped when `tap`.
+fn dialog_frame<T>(
+    ctx: &egui::Context,
+    tap: Option<(egui::Key, egui::Modifiers)>,
+    show: impl FnOnce(&egui::Context, &crate::ui::theme::Colors) -> T,
+) -> T {
+    let colors = crate::ui::theme::Colors::from_config(
+        &crate::ui::theme::preset_colors("plexi-dusk").unwrap(),
+    );
+    let mut input = egui::RawInput::default();
+    if let Some((key, modifiers)) = tap {
+        input.modifiers = modifiers;
+        input.events = [true, false]
+            .map(|pressed| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers,
+            })
+            .into();
+    }
+    let mut show = Some(show);
+    let mut out = None;
+    let _ = ctx.run_ui(input, |_| {
+        if let Some(show) = show.take() {
+            out = Some(show(ctx, &colors));
+        }
+    });
+    out.unwrap()
+}
+
+/// Stint 1513, ruling 109: Discard, Reload and Overwrite each ignore a real
+/// press during the delay. Save stays instant on the plain dialog.
+#[test]
+fn unsaved_changes_variants_ignore_a_press_during_the_arm_delay() {
+    use egui::{Key, Modifiers};
+    for (conflicted, reload, key, modifiers) in [
+        (false, false, Key::D, Modifiers::NONE),
+        (false, false, Key::D, Modifiers::COMMAND),
+        (false, true, Key::R, Modifiers::NONE),
+        (true, false, Key::Enter, Modifiers::NONE),
+        (true, false, Key::S, Modifiers::COMMAND),
+    ] {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let dialog = crate::ui::dialog::UnsavedChangesDialog {
+            path: "/tmp/draft.txt".to_string(),
+            conflicted,
+            reload,
+            error: None,
+        };
+        dialog_frame(&ctx, None, |ctx, colors| dialog.show(ctx, colors, false));
+        assert_eq!(
+            dialog_frame(&ctx, Some((key, modifiers)), |ctx, colors| dialog
+                .show(ctx, colors, false)),
+            None,
+            "{key:?} {modifiers:?} conflicted={conflicted} reload={reload}"
+        );
+    }
+    let ctx = egui::Context::default();
+    crate::ui::theme::setup_fonts(&ctx);
+    let dialog = crate::ui::dialog::UnsavedChangesDialog {
+        path: "/tmp/draft.txt".to_string(),
+        conflicted: false,
+        reload: false,
+        error: None,
+    };
+    dialog_frame(&ctx, None, |ctx, colors| dialog.show(ctx, colors, false));
+    assert_eq!(
+        dialog_frame(&ctx, Some((Key::S, Modifiers::COMMAND)), |ctx, colors| {
+            dialog.show(ctx, colors, false)
+        }),
+        Some(crate::ui::dialog::UnsavedChangesChoice::Save),
+        "Save is never delayed"
+    );
+}
+
+/// Stint 1513, ruling 109: Quit without saving ignores a Q during the delay.
+/// Checked on the dialog itself: in the harness the quit would end the test.
+#[test]
+fn quit_without_saving_ignores_a_press_during_the_arm_delay() {
+    let ctx = egui::Context::default();
+    crate::ui::theme::setup_fonts(&ctx);
+    let actions = crate::overlays::confirmations::quit_save_failure_actions();
+    let show = |ctx: &egui::Context, colors: &crate::ui::theme::Colors| {
+        crate::overlays::confirmations::quit_save_failure_modal(&actions)
+            .destructive_input(false, "quit_save_failure")
+            .show(ctx, colors, |_| {})
+            .selected
+    };
+    dialog_frame(&ctx, None, show);
+    assert_eq!(
+        dialog_frame(&ctx, Some((egui::Key::Q, egui::Modifiers::NONE)), show),
+        None,
+        "a Q during the delay quit without saving"
     );
 }
 
@@ -546,6 +689,7 @@ fn close_pane_enter_on_the_dialogs_first_frame_closes_today() {
 fn unsaved_changes_tab_wraps_both_ways_in_trap_order() {
     let labels = ["Save", "Cancel", "Discard"];
     let (mut h, _dir) = open_unsaved_prompt();
+    arm_destructive(&mut h);
     let mut seen = Vec::new();
     for _ in 0..4 {
         tab(&mut h, false);
@@ -574,6 +718,7 @@ fn context_close_with_dissolve_tabs_in_trap_order() {
     let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
     seed_context_close_confirm(&mut h, true);
     h.harness().get_by_label("Dissolve");
+    arm_destructive(&mut h);
     let mut seen = Vec::new();
     for _ in 0..4 {
         tab(&mut h, false);
@@ -664,6 +809,7 @@ fn open_unsaved_prompt_after(
 fn unsaved_changes_tab_order_is_save_cancel_then_discard() {
     let labels = ["Save", "Cancel", "Discard"];
     let (mut h, _dir) = open_unsaved_prompt();
+    arm_destructive(&mut h);
     h.save_screenshot(&evidence_png!()).unwrap();
     let mut seen = Vec::new();
     for _ in 0..3 {
@@ -681,6 +827,7 @@ fn unsaved_changes_tab_order_is_save_cancel_then_discard() {
     );
 
     let (mut h, _dir) = open_unsaved_prompt();
+    arm_destructive(&mut h);
     tab(&mut h, true);
     assert_eq!(
         focused_label(&mut h, &labels).as_deref(),
@@ -695,6 +842,7 @@ fn unsaved_changes_tab_order_is_save_cancel_then_discard() {
 #[test]
 fn tab_in_close_dialog_cycles_its_actions_and_enter_activates_cancel() {
     let (mut h, a, b) = open_close_dialog();
+    arm_destructive(&mut h);
     let labels = ["Close", "Cancel", "UI"];
     let mut seen = Vec::new();
     for _ in 0..4 {
@@ -794,6 +942,7 @@ fn close_dialog_cancel_keeps_focus_across_row_and_stack_reflow() {
 #[test]
 fn enter_on_tab_focused_close_closes_and_esc_still_cancels() {
     let (mut h, a, b) = open_close_dialog();
+    arm_destructive(&mut h);
     tab(&mut h, false);
     tab(&mut h, false);
     assert_eq!(

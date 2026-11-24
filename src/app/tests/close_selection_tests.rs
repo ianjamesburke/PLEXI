@@ -204,6 +204,7 @@ fn close_selected_cancel_on_unsaved_editor_stops_and_keeps_the_rest_selected() {
 #[test]
 fn close_selected_discard_on_unsaved_editor_continues_the_batch() {
     let (_dir, path, mut h, _, keep) = editor_batch();
+    h.app.arm_destructive_dialogs_for_test();
     h.press_key(egui::Key::D, egui::Modifiers::NONE);
     h.run_frames(2);
     assert_eq!(open(&h), vec![keep]);
@@ -232,6 +233,7 @@ fn close_selected_asks_confirm_close_once_per_pane() {
     close_shortcut(&mut h);
     assert!(h.app.pending_close, "first pane asks");
     assert_eq!(open(&h), vec![a, b, c, d]);
+    h.app.arm_destructive_dialogs_for_test();
     h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
     h.run_frames(2);
     assert!(!open(&h).contains(&a));

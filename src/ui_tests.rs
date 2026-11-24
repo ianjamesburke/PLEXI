@@ -1146,6 +1146,13 @@ mod tests {
             .map(|label| label.to_string())
     }
 
+    /// The destructive dialog on screen has waited out its arm delay (stint
+    /// 1513), so the next press tests the fresh, real press guard alone.
+    fn arm_destructive(h: &mut PlexiUiHarness) {
+        h.with_app(|app| app.arm_destructive_dialogs_for_test());
+        h.run_steps(1);
+    }
+
     fn tab(h: &mut PlexiUiHarness, shift: bool) {
         let modifiers = if shift {
             egui::Modifiers::SHIFT

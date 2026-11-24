@@ -84,8 +84,8 @@ pub(crate) struct DialogAction<'a> {
     /// default, keyboard focus enters at the first refusal (stint 1505).
     refuses: bool,
     /// Loses work (discard, quit without saving, close, overwrite): under
-    /// [`ActionModal::destructive_input`] it takes only a fresh, real press
-    /// with exact modifiers (stint 1513).
+    /// [`ActionModal::destructive_input`] it is greyed through the arm delay,
+    /// then takes only a fresh, real press with exact modifiers (stint 1513).
     destructive: bool,
 }
 
@@ -207,9 +207,9 @@ pub(crate) struct ActionModal<'a> {
     focus_surface: Option<crate::ui::focus::SurfaceKey>,
     /// Set for a consent dialog (stint 1498); see [`Self::consent_input`].
     consent_input: Option<crate::broker::consent::ConsentInput>,
-    /// Set for a dialog with destructive actions (stint 1513); see
-    /// [`Self::destructive_input`].
-    destructive_input: Option<crate::broker::consent::ConsentInput>,
+    /// `(synthetic frame, request key)` for a dialog with destructive actions
+    /// (stint 1513); see [`Self::destructive_input`].
+    destructive_request: Option<(bool, u64)>,
     /// See [`Self::banner`].
     banner: bool,
 }
@@ -218,6 +218,27 @@ pub(crate) struct ActionModal<'a> {
 /// this frame can tell which action holds keyboard focus before it draws.
 fn action_ids_slot(modal: &str) -> egui::Id {
     egui::Id::new(("plexi_action_modal_ids", modal))
+}
+
+/// The arm-delay guard of each modal's destructive actions, by modal id.
+type DestructiveGuards = std::collections::HashMap<String, crate::broker::consent::ConsentGuard>;
+
+fn destructive_guards_slot() -> egui::Id {
+    egui::Id::new("plexi_action_modal_destructive_guards")
+}
+
+/// Test hook: every destructive dialog on screen has waited out the arm
+/// delay, so the next real press is a deliberate one.
+#[cfg(test)]
+pub(crate) fn arm_destructive_dialogs_for_test(ctx: &egui::Context) {
+    ctx.data_mut(|d| {
+        for guard in d
+            .get_temp_mut_or_default::<DestructiveGuards>(destructive_guards_slot())
+            .values_mut()
+        {
+            guard.backdate(crate::broker::consent::ARM_DELAY * 2);
+        }
+    });
 }
 
 impl<'a> ActionModal<'a> {
@@ -230,7 +251,7 @@ impl<'a> ActionModal<'a> {
             default_action: None,
             focus_surface: None,
             consent_input: None,
-            destructive_input: None,
+            destructive_request: None,
             banner: false,
         }
     }
@@ -269,13 +290,40 @@ impl<'a> ActionModal<'a> {
     }
 
     /// Guard this dialog's destructive actions (stint 1513) with the consent
-    /// input check in its no-arm-delay mode: a fresh, real press with exact
-    /// modifiers; never a key repeat, an injected key or an injected click.
-    /// Other actions (save, cancel) stay as they are.
-    pub(crate) fn destructive_input(mut self, synthetic_frame: bool) -> Self {
-        self.destructive_input =
-            Some(crate::broker::consent::ConsentInput::without_arm_delay(synthetic_frame));
+    /// guard: greyed for the arm delay after `request` first draws, then a
+    /// fresh, real press with exact modifiers; never a key repeat, an injected
+    /// key or an injected click. A different `request` is a replaced dialog
+    /// and arms anew. Other actions (save, cancel) stay as they are.
+    pub(crate) fn destructive_input(
+        mut self,
+        synthetic_frame: bool,
+        request: impl std::hash::Hash,
+    ) -> Self {
+        self.destructive_request = Some((synthetic_frame, egui::Id::new(request).value()));
         self
+    }
+
+    /// This frame's destructive input, from the guard kept for this modal.
+    fn present_destructive(
+        &self,
+        ctx: &egui::Context,
+    ) -> Option<crate::broker::consent::ConsentInput> {
+        let (synthetic, request) = self.destructive_request?;
+        let now = std::time::Instant::now();
+        let pass = ctx.cumulative_pass_nr();
+        let (input, remaining) = ctx.data_mut(|d| {
+            let guard = d
+                .get_temp_mut_or_default::<DestructiveGuards>(destructive_guards_slot())
+                .entry(self.id.to_string())
+                .or_default();
+            guard.present(request, pass, now);
+            (guard.input(now, synthetic), guard.remaining(now))
+        });
+        if !input.armed {
+            let frame = std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt));
+            ctx.request_repaint_after(remaining + frame);
+        }
+        Some(input)
     }
 
     pub(crate) fn default_action(mut self, id: &'a str) -> Self {
@@ -321,8 +369,9 @@ impl<'a> ActionModal<'a> {
         let trap_key = self
             .focus_surface
             .or(field.as_ref().map(|field| field.surface));
+        let destructive_input = self.present_destructive(ctx);
         let guarded_destructive =
-            |action: &DialogAction<'_>| action.destructive && self.destructive_input.is_some();
+            |action: &DialogAction<'_>| action.destructive && destructive_input.is_some();
         let press = |action: &DialogAction<'_>, shortcut: &DialogShortcut<'_>| {
             // A consent dialog matches modifiers exactly: Shift+Enter
             // ("Always allow") must never be taken by Enter ("Grant once"),
@@ -440,10 +489,11 @@ impl<'a> ActionModal<'a> {
                 // take egui's Space/Enter click, which no guard sees (stints
                 // 1498, 1513).
                 focusable: trap_key.is_some()
-                    || (self.consent_input.is_none() && self.destructive_input.is_none()),
+                    || (self.consent_input.is_none() && destructive_input.is_none()),
                 // A consent dialog draws its approving actions disabled until
                 // it arms (stint 1498).
                 consent: self.consent_input,
+                destructive: destructive_input,
                 surface: None,
             };
             if let Some(id) = row.show(ui, &mut action_ids).selected {
@@ -451,6 +501,12 @@ impl<'a> ActionModal<'a> {
             }
         });
         if let Some(key) = trap_key {
+            // A greyed action takes no focus, so Tab skips it until it arms.
+            let waiting = |name: &str| {
+                destructive_input.is_some_and(|input| !input.armed)
+                    && self.actions.iter().any(|a| a.id == name && a.destructive)
+            };
+            action_ids.retain(|(name, _)| !waiting(name));
             let mut ids: Vec<egui::Id> = action_ids.iter().map(|(_, id)| *id).collect();
             if let Some(field_id) = field_id {
                 // A field dialog enters at its field, then the actions as given.
@@ -502,14 +558,20 @@ impl<'a> ActionModal<'a> {
                 dismissed = false;
             }
         }
-        // An injected key or click never runs a destructive action (stint 1513).
-        if let Some(input) = self.destructive_input {
+        // An injected key or click, or a press during the arm delay, never
+        // runs a destructive action (stint 1513).
+        if let Some(input) = destructive_input {
             let destructive = |id: &str| self.actions.iter().any(|a| a.id == id && a.destructive);
             if selected.is_some_and(|id| destructive(id) && !input.admits(false)) {
                 log::info!(
-                    "destructive_guard: modal {} ignored {:?} (synthetic input)",
+                    "destructive_guard: modal {} ignored {:?} ({})",
                     self.id,
-                    selected
+                    selected,
+                    if input.synthetic {
+                        "synthetic input"
+                    } else {
+                        "not armed"
+                    }
                 );
                 selected = None;
             }
@@ -581,6 +643,8 @@ struct ButtonRow<'a, 'c> {
     colors: &'c Colors,
     focusable: bool,
     consent: Option<crate::broker::consent::ConsentInput>,
+    /// Destructive actions are drawn disabled until this arms (stint 1513).
+    destructive: Option<crate::broker::consent::ConsentInput>,
     /// The fill the row sits on, when it is not the modal shell's.
     surface: Option<egui::Color32>,
 }
@@ -608,6 +672,7 @@ pub(crate) fn action_row<'a>(
         colors,
         focusable: true,
         consent: None,
+        destructive: None,
         surface: Some(surface),
     }
     .show(ui, &mut Vec::new());
@@ -622,6 +687,7 @@ impl<'a> ButtonRow<'a, '_> {
             colors,
             focusable,
             consent,
+            destructive,
             surface,
         } = self;
         let hints: Vec<String> = actions
@@ -645,7 +711,8 @@ impl<'a> ButtonRow<'a, '_> {
         let mut reports = Vec::new();
         let start = ui.cursor().min;
         let mut add = |ui: &mut egui::Ui, action: &'a DialogAction<'a>, hint: &str| {
-            let enabled = consent.is_none_or(|input| action.refuses || input.armed);
+            let enabled = consent.is_none_or(|input| action.refuses || input.armed)
+                && (!action.destructive || destructive.is_none_or(|input| input.armed));
             let mut button = confirm_button(action, hint, colors, surface).focusable(focusable);
             if stacked {
                 button = button.min_width(ui.available_width());
@@ -783,7 +850,7 @@ impl UnsavedChangesDialog {
             ))
             .width(style::MODAL_WIDTH_SM)
             .default_action("save")
-            .destructive_input(synthetic_frame)
+            .destructive_input(synthetic_frame, (&self.path, self.conflicted, self.reload))
             .show(ctx, colors, |ui| {
                 super::typography::modal_body(ui, &question, colors);
                 let path = super::text::elide(
@@ -912,6 +979,7 @@ mod adoption_tests {
             for _ in 0..2 {
                 frame(&ctx, &dialog, false, true, vec![]);
             }
+            arm_destructive_dialogs_for_test(&ctx);
             let tap = |mods| vec![key(k, mods, true), key(k, mods, false)];
             assert_eq!(
                 frame(&ctx, &dialog, true, true, tap(mods)),
@@ -932,6 +1000,8 @@ mod adoption_tests {
                 "held {what}"
             );
             frame(&ctx, &dialog, false, true, vec![key(k, mods, false)]);
+            // Leaving the screen for the held-key frame armed it anew.
+            arm_destructive_dialogs_for_test(&ctx);
             assert_eq!(
                 frame(&ctx, &dialog, false, true, tap(mods)),
                 Some(expect),

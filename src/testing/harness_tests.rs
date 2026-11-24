@@ -9677,6 +9677,7 @@ fn unsaved_plain_file_close_owns_keyboard_and_discard_preserves_disk() {
         h.app.focus_stack.top().as_ref().map(|kind| kind.name()),
         Some("UnsavedChanges")
     );
+    h.app.arm_destructive_dialogs_for_test();
     h.press_key(egui::Key::D, egui::Modifiers::NONE);
     h.run_frames(2);
     assert!(!h.app.windows[0].panes.contains_key(&pane));
@@ -9716,6 +9717,7 @@ fn unsaved_dialog_save_default_and_discard_alias() {
         h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
         h.app.close_focused_view();
         h.run_frames(2);
+        h.app.arm_destructive_dialogs_for_test();
         h.press_key(key, modifiers);
         h.run_frames(2);
         assert!(!h.app.windows[0].panes.contains_key(&pane));
@@ -9853,6 +9855,7 @@ fn unsaved_dialog_switch_cancel_discard_and_save() {
             Some("UnsavedChanges")
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes\n");
+        h.app.arm_destructive_dialogs_for_test();
         h.press_key(key, modifiers);
         h.run_frames(2);
         let buffer = h.text_editor_mut(pane).open_buffer();
@@ -10136,6 +10139,7 @@ fn unsaved_dialog_failed_save_keeps_pending_close_and_buffer() {
     );
     assert_eq!(h.text_editor_mut(pane).open_buffer().text, "unsaved edits");
     assert!(h.text_editor_mut(pane).open_buffer().dirty);
+    h.app.arm_destructive_dialogs_for_test();
     h.press_key(egui::Key::D, egui::Modifiers::NONE);
     h.run_frames(2);
     assert!(!h.app.windows[0].panes.contains_key(&pane));
@@ -10151,6 +10155,7 @@ fn unsaved_dialog_conflicted_close_requires_explicit_overwrite() {
     h.app.close_focused_view();
     h.run_frames(2);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "external edits");
+    h.app.arm_destructive_dialogs_for_test();
     h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
     h.run_frames(2);
     assert!(!h.app.windows[0].panes.contains_key(&pane));
@@ -10196,6 +10201,7 @@ fn editor_gate_keyboard_quit_vetoes_unsaved_conflict_then_retries() {
     h.frame(input);
     assert!(!h.app.quitting);
     assert_eq!(h.app.quit_press_count, 0);
+    h.app.arm_destructive_dialogs_for_test();
     h.press_key(egui::Key::D, egui::Modifiers::NONE);
     h.run_frames(2);
     assert!(!h.app.windows[0].panes.contains_key(&pane));
@@ -19984,6 +19990,7 @@ fn working_agent_window_close_and_keyboard_quit_share_confirmation() {
         assert!(h.app.pending_quit);
         assert!(!h.app.quitting);
         h.run_frames(2);
+        h.app.arm_destructive_dialogs_for_test();
         h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
         assert!(h.app.quitting);
         assert!(!h.app.pending_quit);

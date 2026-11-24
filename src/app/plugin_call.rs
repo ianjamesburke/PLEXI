@@ -1074,6 +1074,7 @@ impl PlexiApp {
                     now,
                     synthetic: self.synthetic_input_frame,
                 })
+                .map_err(|refusal| refusal.to_string())
                 .and_then(|evidence| {
                     self.approve_from_desktop(evidence, &item.id, "keychain recovery")
                 })
