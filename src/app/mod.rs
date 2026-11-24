@@ -13,6 +13,7 @@ pub(crate) mod card_gallery;
 mod cli_actions;
 pub mod cli_operation;
 mod conjoined;
+pub(crate) mod context_scope;
 pub(crate) mod core_only;
 pub(crate) mod debounce;
 mod directed_pipes;

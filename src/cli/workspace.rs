@@ -93,6 +93,22 @@ pub fn workspace_clean_cli(dry_run: bool, mode: OutputMode) -> i32 {
 thread_local! {
     static TEST_PANE_CONTEXT_ROOT: std::cell::RefCell<Option<std::path::PathBuf>> =
         const { std::cell::RefCell::new(None) };
+    static TEST_SCOPE_REPLY: std::cell::RefCell<Option<Value>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+struct TestScopeReplyGuard(Option<Value>);
+
+#[cfg(test)]
+impl Drop for TestScopeReplyGuard {
+    fn drop(&mut self) {
+        TEST_SCOPE_REPLY.set(self.0.take());
+    }
+}
+
+#[cfg(test)]
+fn set_test_scope_reply(reply: Value) -> TestScopeReplyGuard {
+    TestScopeReplyGuard(TEST_SCOPE_REPLY.replace(Some(reply)))
 }
 
 #[cfg(test)]
@@ -187,44 +203,33 @@ pub(crate) fn enforce_pane_context_scope(
     let Some(ctx_root) = active_pane_context_root() else {
         return Ok(());
     };
-    check_pane_context_scope(ctx_root, target_dir, Some(op))
-}
-
-/// A host preflight supplies the verified root without performing CLI denial logging.
-pub(crate) fn check_pane_context_scope(
-    ctx_root: PathBuf,
-    target_dir: &Path,
-    cli_op: Option<&str>,
-) -> Result<(), String> {
-    let target_canon = crate::platform::path::canonical_or_self(target_dir);
-    let denied = if !target_canon.starts_with(&ctx_root) {
-        true
-    } else if target_canon != ctx_root {
-        let nested_ws = secret_workspace_root(&target_canon, Some(&ctx_root))
-            .is_some_and(|ws| crate::platform::path::canonical_or_self(&ws) != ctx_root);
-        let nested_agent_ws =
-            crate::app::registry::resolve_agent_lookup_workspace_root(&target_canon)
-                .map(|ws| crate::platform::path::canonical_or_self(&ws))
-                .is_some_and(|ws| ws.starts_with(&ctx_root) && ws != ctx_root);
-        let nested_folder_secret = crate::workspace::secrets::list_folder_secrets(
-            crate::workspace::secrets::folder_store(),
+    log::info!(
+        "secrets: {op} checking pane context scope for {}",
+        target_dir.display()
+    );
+    let socket = super::resolve_secret_socket();
+    let unconfirmed = |error: &str| {
+        log::warn!("secrets: {op} caller context at {socket:?}: {error}");
+        format!(
+            "permission_denied: host could not confirm this pane's context scope for {}",
+            target_dir.display()
         )
-        .iter()
-        .any(|meta| {
-            let f = crate::platform::path::canonical_or_self(&meta.folder);
-            f != ctx_root && f.starts_with(&ctx_root) && target_canon.starts_with(&f)
-        });
-        nested_ws || nested_agent_ws || nested_folder_secret
-    } else {
-        false
     };
-    if denied {
-        let reason = format!(
-            "permission_denied: pane has no authority over context '{}' (authority is scoped to '{}')",
-            target_canon.display(),
-            ctx_root.display()
-        );
-        let Some(op) = cli_op else { return Err(reason) };
+    #[cfg(not(test))]
+    let reply = request_workspace_scope(&socket, target_dir).map_err(|e| unconfirmed(&e))?;
+    #[cfg(test)]
+    let reply = TEST_SCOPE_REPLY
+        .with_borrow(Clone::clone)
+        .unwrap_or_else(|| {
+            let error =
+                crate::app::context_scope::check_context_scope(ctx_root.clone(), target_dir).err();
+            serde_json::json!({"ok":true, "workspace_error":error})
+        });
+    if !confirmed_workspace_scope(&reply) {
+        return Err(unconfirmed("missing or invalid scope confirmation"));
+    }
+    if let Some(reason) = reply["workspace_error"].as_str() {
+        let target_canon = crate::platform::path::canonical_or_self(target_dir);
         let actor = std::env::var("PLEXI_PANE_ID")
             .ok()
             .filter(|id| !id.is_empty())
@@ -238,7 +243,7 @@ pub(crate) fn check_pane_context_scope(
             target_canon.display(),
             ctx_root.display()
         );
-        return Err(reason);
+        return Err(reason.to_owned());
     }
     Ok(())
 }
@@ -246,7 +251,7 @@ pub(crate) fn check_pane_context_scope(
 /// Keep secret lookup inside the pane's context while reusing the registry's
 /// channel and home-directory exclusions. Never reinterpret a parent profile
 /// as this pane's workspace (the H8 request walked from ~/temp into $HOME).
-fn secret_workspace_root(
+pub(crate) fn secret_workspace_root(
     cwd: &std::path::Path,
     context: Option<&std::path::Path>,
 ) -> Option<std::path::PathBuf> {
@@ -271,17 +276,31 @@ fn secret_not_set(name: &str) -> String {
     format!("{name} not set; run `{binary} secret set {name}`")
 }
 
+fn request_workspace_scope(socket: &Path, cwd: &Path) -> Result<Value, String> {
+    // Relative paths belong to the caller's cwd. The host may have a different one.
+    let cwd = std::path::absolute(cwd).map_err(|e| e.to_string())?;
+    let cwd = cwd.to_str().ok_or("workspace path is not UTF-8")?;
+    let request = serde_json::json!({"type":"caller_context", "workspace_cwd":cwd});
+    crate::rpc::request_json(socket, request, Duration::from_secs(3)).map_err(|e| e.to_string())
+}
+
+fn confirmed_workspace_scope(reply: &Value) -> bool {
+    super::reply::acknowledged(reply)
+        && matches!(
+            reply.get("workspace_error"),
+            Some(Value::Null | Value::String(_))
+        )
+}
+
 /// The host checks the cwd against its verified pane (including nested folder
 /// secrets). Only workspace metadata is read in the CLI.
 fn workspace_caller_context(cwd: &Path, op: &str) -> Result<Value, i32> {
     let socket = super::resolve_secret_socket();
-    let request = serde_json::json!({"type":"caller_context", "workspace_cwd":cwd});
-    let reply =
-        crate::rpc::request_json(&socket, request, Duration::from_secs(3)).map_err(|error| {
-            log::warn!("secret {op}: caller context at {socket:?}: {error}");
-            no_secret_reply(&format!("secret {op}"))
-        })?;
-    if !super::reply::acknowledged(&reply) || reply.get("workspace_error").is_none() {
+    let reply = request_workspace_scope(&socket, cwd).map_err(|error| {
+        log::warn!("secret {op}: caller context at {socket:?}: {error}");
+        no_secret_reply(&format!("secret {op}"))
+    })?;
+    if !confirmed_workspace_scope(&reply) {
         eprintln!("error: secret {op}: host could not confirm the caller's workspace scope");
         return Err(1);
     }
@@ -372,7 +391,7 @@ fn receive_secret<T>(
     payload: Value,
     decode: impl FnOnce(Result<String, crate::rpc::PollError>) -> T,
 ) -> Result<T, i32> {
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     if let Some(reply) = secret_set_tests::BUNDLE_RESPONSE.take() {
         return Ok(decode(Ok(reply(&payload))));
     }
@@ -393,6 +412,52 @@ fn receive_secret<T>(
         body
     });
     Ok(decode(reply))
+}
+
+pub(crate) enum GlobalSecret {
+    Value(zeroize::Zeroizing<String>),
+    NotSet,
+    Unavailable(String),
+}
+
+pub(crate) fn global_secret_lookup(name: &str) -> GlobalSecret {
+    use super::reply::HostReply;
+    use zeroize::Zeroizing;
+
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "status", rename_all = "snake_case")]
+    enum Payload {
+        Value { value: String },
+        NotFound,
+    }
+
+    let reply = secret_request("get", name, true)
+        .and_then(|payload| receive_secret("secret get", payload, HostReply::decode));
+    let outcome = match reply {
+        Ok(HostReply::Payload(body)) => match serde_json::from_str(&Zeroizing::new(body)) {
+            Ok(Payload::Value { value }) => GlobalSecret::Value(Zeroizing::new(value)),
+            Ok(Payload::NotFound) => GlobalSecret::NotSet,
+            Err(_) => GlobalSecret::Unavailable("invalid secret reply".into()),
+        },
+        Ok(HostReply::Refused(refusal)) if refusal.fields["status"] == "denied" => {
+            let reason = match refusal.fields["reason"].as_str() {
+                Some("expired") => "expired",
+                Some("revoked") => "revoked",
+                _ => "denied",
+            };
+            GlobalSecret::Unavailable(reason.into())
+        }
+        Ok(HostReply::Refused(refusal)) => GlobalSecret::Unavailable(refusal.coded_reason()),
+        Ok(HostReply::Transport(error)) => GlobalSecret::Unavailable(error.to_string()),
+        Err(_) => GlobalSecret::Unavailable("host unavailable".into()),
+    };
+    let kind = match &outcome {
+        GlobalSecret::Value(_) => "value",
+        GlobalSecret::NotSet => "not_found",
+        GlobalSecret::Unavailable(_) => "unavailable",
+    };
+    log::info!("secret_get:cli: name={name} global=true outcome={kind}");
+    outcome
 }
 
 fn send_secret(op: &str, name: &str, payload: Value) -> Result<Value, i32> {
@@ -497,22 +562,6 @@ pub fn workspace_secret_set(
         }
     }
     0
-}
-
-/// Reconcile the secrets index against a real keychain scan before a CLI
-/// command reads it (`src/workspace/AGENTS.md`: never list secrets from the
-/// index without reconciling first). A failed scan degrades to the index as it
-/// stands, with a warning, rather than failing the command.
-pub(crate) fn reconcile_secrets_before_read(command: &str) {
-    match crate::workspace::secrets::reconcile_index_with_keychain() {
-        Ok(report) => log::info!(
-            "{command}: reconciled secrets index ({} adopted, {} stale, {} renamed)",
-            report.adopted.len(),
-            report.stale.len(),
-            report.renamed.len()
-        ),
-        Err(e) => log::warn!("{command}: keychain scan failed, using index as-is: {e}"),
-    }
 }
 
 /// `plexi secret list` — list friendly names. Inside a workspace, includes
@@ -975,17 +1024,71 @@ pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
 // ── plexi plugin subcommands ─────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod secret_set_tests {
+pub(super) mod secret_set_tests {
     use super::folder_secret_grant;
     use std::fs;
     use tempfile::TempDir;
 
-    #[cfg(unix)]
     type BundleResponse = Box<dyn FnOnce(&serde_json::Value) -> String>;
-    #[cfg(unix)]
     thread_local! {
-        pub(super) static BUNDLE_RESPONSE: std::cell::Cell<Option<BundleResponse>> =
+        pub(crate) static BUNDLE_RESPONSE: std::cell::Cell<Option<BundleResponse>> =
             const { std::cell::Cell::new(None) };
+    }
+
+    pub(crate) fn with_stored_openrouter_key(check: impl FnOnce()) {
+        with_stored_account("OPENROUTER_API_KEY", check);
+    }
+
+    pub(crate) fn with_stored_account(name: &str, check: impl FnOnce()) {
+        use crate::workspace::secrets::{keychain_user_name, system_store};
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _lock = LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let account = keychain_user_name(name);
+        system_store().set(&account, "fixture").unwrap();
+        check();
+        system_store().delete(&account).unwrap();
+    }
+
+    #[test]
+    fn global_lookup_uses_one_host_reply_and_no_store_calls() {
+        use super::{global_secret_lookup, GlobalSecret};
+        use crate::workspace::secrets::take_test_store_calls;
+        use serde_json::json;
+
+        for (body, expected) in [
+            (
+                r#"{"status":"value","value":"fixture"}"#,
+                Ok(Some("fixture")),
+            ),
+            (r#"{"status":"not_found"}"#, Ok(None)),
+            (r#"{"status":"denied"}"#, Err("denied")),
+            (r#"{"status":"denied","reason":"expired"}"#, Err("expired")),
+            (r#"{"status":"denied","reason":"revoked"}"#, Err("revoked")),
+            (
+                r#"{"ok":false,"error_code":"auth_failed"}"#,
+                Err("auth_failed"),
+            ),
+            (r#"{"status":"value"}"#, Err("invalid secret reply")),
+            ("", Err("could not read response file: empty host reply")),
+        ] {
+            BUNDLE_RESPONSE.set(Some(Box::new(move |wire| {
+                assert_eq!(
+                    wire,
+                    &json!({"type":"secret_get","name":"KEY","global":true,"workspace_root":null})
+                );
+                body.into()
+            })));
+            take_test_store_calls();
+            let lookup = global_secret_lookup("KEY");
+            assert!(BUNDLE_RESPONSE.take().is_none());
+            assert_eq!(take_test_store_calls(), 0);
+            let actual = match &lookup {
+                GlobalSecret::Value(value) => Ok(Some(value.as_str())),
+                GlobalSecret::NotSet => Ok(None),
+                GlobalSecret::Unavailable(reason) => Err(reason.as_str()),
+            };
+            assert_eq!(actual, expected);
+        }
     }
 
     #[cfg(unix)]
@@ -1387,6 +1490,55 @@ mod secret_list_tests {
 #[cfg(test)]
 mod secret_root_tests {
     use super::*;
+
+    #[test]
+    fn pane_scope_obeys_the_host_without_opening_the_store() {
+        use crate::workspace::secrets::{
+            folder_store, remove_folder_secret, set_folder_secret, take_test_store_calls,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let pane = set_test_pane_context_root(root.path());
+        let target = root.path().join("nested");
+        std::fs::create_dir(&target).unwrap();
+        set_folder_secret(folder_store(), "NESTED", &target, "fixture").unwrap();
+        let denied = "permission_denied: nested folder";
+        let unconfirmed = format!(
+            "permission_denied: host could not confirm this pane's context scope for {}",
+            target.display()
+        );
+        for (reply, expected) in [
+            (
+                serde_json::json!({"ok":true, "workspace_error":null}),
+                Ok(()),
+            ),
+            (
+                serde_json::json!({"ok":true, "workspace_error":denied}),
+                Err(denied.to_owned()),
+            ),
+            (serde_json::json!({"ok":true}), Err(unconfirmed.clone())),
+            (
+                serde_json::json!({"ok":false, "workspace_error":null}),
+                Err(unconfirmed.clone()),
+            ),
+            (
+                serde_json::json!({"ok":true, "workspace_error":false}),
+                Err(unconfirmed),
+            ),
+        ] {
+            let _reply = set_test_scope_reply(reply);
+            take_test_store_calls();
+            let outcome = enforce_pane_context_scope(&target, "secret.list");
+            assert_eq!(take_test_store_calls(), 0);
+            assert_eq!(outcome, expected);
+        }
+        remove_folder_secret(folder_store(), "NESTED", &target).unwrap();
+        drop(pane);
+        let _reply = set_test_scope_reply(serde_json::json!({"ok":false}));
+        take_test_store_calls();
+        assert_eq!(enforce_pane_context_scope(&target, "secret.list"), Ok(()));
+        assert_eq!(take_test_store_calls(), 0);
+    }
+
     #[test]
     fn secret_workspace_walk_cannot_escape_pane_context() {
         let dir = tempfile::tempdir().unwrap();

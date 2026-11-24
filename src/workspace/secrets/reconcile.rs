@@ -38,6 +38,14 @@ pub(super) fn canonical_friendly(friendly: &str) -> Option<&'static str> {
         .map(|(_, canonical)| *canonical)
 }
 
+/// Legacy spellings that still name the secret `canonical`.
+pub(super) fn legacy_friendly_names(canonical: &str) -> impl Iterator<Item = &str> {
+    FRIENDLY_NAME_ALIASES
+        .iter()
+        .filter(move |(_, c)| *c == canonical)
+        .map(|(legacy, _)| *legacy)
+}
+
 /// The canonical account for `account`, or `None` when it is already canonical
 /// (or not a namespaced Plexi account).
 fn canonical_account(account: &str) -> Option<String> {

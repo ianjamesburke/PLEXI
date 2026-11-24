@@ -59,7 +59,7 @@ pub(crate) use store::parse_keychain_path;
 pub(crate) use store::SecretError;
 
 #[cfg(test)]
-pub use store::{take_test_store_calls, DeleteOnlyStore, InMemoryKeychain};
+pub use store::{take_test_store_calls, take_test_value_reads, DeleteOnlyStore, InMemoryKeychain};
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 pub use reconcile::reconcile_index_with_keychain;

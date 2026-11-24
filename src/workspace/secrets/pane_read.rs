@@ -124,7 +124,11 @@ pub fn read_pane_secret_with(
             vec![account, super::keychain_user_name(name)]
         }
         SecretScope::Folder { path } => vec![super::folder::account_name(path, name)],
-        SecretScope::Global => vec![super::keychain_user_name(name)],
+        // One admitted read resolves the canonical spelling, then any legacy one.
+        SecretScope::Global => std::iter::once(name)
+            .chain(super::reconcile::legacy_friendly_names(name))
+            .map(super::keychain_user_name)
+            .collect(),
     };
     let label = scope.label();
     let tool = scope.read_tool();
@@ -202,6 +206,47 @@ mod tests {
         .unwrap();
         assert!(
             matches!(read.result, ReadResult::Value(ref value) if value.as_str() == "global-canary-0788")
+        );
+    }
+
+    #[test]
+    fn a_global_read_resolves_the_legacy_spelling_in_one_admission() {
+        let store = InMemoryKeychain::new();
+        store.set("plexi:user:openrouter-api-key", "legacy-canary").unwrap();
+        let monitor = PermissionMonitor::ephemeral();
+        let actor = SecretActor {
+            kind: crate::broker::ActorType::Agent,
+            id: "pane:3".to_string(),
+        };
+        let root = tempfile::tempdir().unwrap();
+        let mut admissions = 0;
+        let read = read_pane_secret_with(
+            &monitor,
+            &store,
+            &actor,
+            ReadTarget {
+                name: "OPENROUTER_API_KEY",
+                scope: &SecretScope::Global,
+                global_root: root.path(),
+            },
+            None,
+            |req| {
+                admissions += 1;
+                let UseDecision::Required { pending_request_id } = monitor.admit_for_use(req, None)
+                else {
+                    panic!("expected a pending approval")
+                };
+                monitor
+                    .approve_pending(&pending_request_id, ApprovalChoice::Once)
+                    .unwrap();
+                Some(monitor.admit_for_use_if(req, None, Some(&|| true)))
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(admissions, 1);
+        assert!(
+            matches!(read.result, ReadResult::Value(ref value) if value.as_str() == "legacy-canary")
         );
     }
 
