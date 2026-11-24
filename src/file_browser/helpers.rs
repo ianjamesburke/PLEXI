@@ -5,6 +5,52 @@ use std::time::SystemTime;
 
 const TEXT_PREVIEW_MAX_BYTES: u64 = 32 * 1024;
 
+/// Longest edge a decoded preview image keeps; larger images are
+/// downscaled before upload. Shared by the Explorer and the palette.
+pub(crate) const IMAGE_PREVIEW_MAX_EDGE: u32 = 2048;
+
+/// Whether a lowercase extension names an image the previews decode.
+pub(crate) fn is_image_extension(ext: &str) -> bool {
+    matches!(
+        ext,
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" | "webp"
+    )
+}
+
+/// Decode `path` for a preview, downscaled to `IMAGE_PREVIEW_MAX_EDGE`.
+/// Slow for large files: callers off the UI thread only, or the Explorer's
+/// existing synchronous path.
+pub(crate) fn decode_image_preview(path: &Path) -> Result<image::RgbaImage, String> {
+    let decoded = image::open(path).map_err(|e| format!("Unable to decode image: {e}"))?;
+    let decoded = if decoded.width().max(decoded.height()) > IMAGE_PREVIEW_MAX_EDGE {
+        decoded.resize(
+            IMAGE_PREVIEW_MAX_EDGE,
+            IMAGE_PREVIEW_MAX_EDGE,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        decoded
+    };
+    Ok(decoded.to_rgba8())
+}
+
+/// Why a text preview has no body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TextPreviewError {
+    /// A NUL byte in the previewed bytes.
+    Binary,
+    Io(String),
+}
+
+impl std::fmt::Display for TextPreviewError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TextPreviewError::Binary => f.write_str("File looks binary"),
+            TextPreviewError::Io(error) => f.write_str(error),
+        }
+    }
+}
+
 /// Routing classification for a file the user wants to open. Drives the
 /// GUI↔terminal media bridge (#79): video/audio files spawn the in-plugin
 /// player examples; everything else falls through to the system default
@@ -442,19 +488,20 @@ pub(crate) fn is_text_preview_candidate(path: &Path) -> bool {
     )
 }
 
-pub(crate) fn read_text_preview(path: &Path) -> Result<TextPreview, String> {
-    let mut file = std::fs::File::open(path).map_err(|e| format!("Unable to open text: {e}"))?;
+pub(crate) fn read_text_preview(path: &Path) -> Result<TextPreview, TextPreviewError> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| TextPreviewError::Io(format!("Unable to open text: {e}")))?;
     let mut bytes = Vec::new();
     file.by_ref()
         .take(TEXT_PREVIEW_MAX_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(|e| format!("Unable to read text: {e}"))?;
+        .map_err(|e| TextPreviewError::Io(format!("Unable to read text: {e}")))?;
     let truncated = bytes.len() > TEXT_PREVIEW_MAX_BYTES as usize;
     if truncated {
         bytes.truncate(TEXT_PREVIEW_MAX_BYTES as usize);
     }
     if bytes.contains(&0) {
-        return Err("File looks binary".to_string());
+        return Err(TextPreviewError::Binary);
     }
     Ok(TextPreview {
         body: String::from_utf8_lossy(&bytes).to_string(),

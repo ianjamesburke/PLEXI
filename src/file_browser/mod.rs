@@ -1,4 +1,4 @@
-mod helpers;
+pub(crate) mod helpers;
 mod icons;
 pub mod intent;
 
@@ -19,7 +19,6 @@ use crate::ui::style;
 use crate::ui::text_field::TextField;
 use crate::ui::theme::Colors;
 use egui::{Color32, Stroke, StrokeKind};
-use image::imageops::FilterType;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -853,15 +852,7 @@ impl FileBrowserView {
                                 }
                             })
                             .unwrap_or("?");
-                        let is_image = ext
-                            .as_deref()
-                            .map(|e| {
-                                matches!(
-                                    e,
-                                    "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" | "webp"
-                                )
-                            })
-                            .unwrap_or(false);
+                        let is_image = ext.as_deref().is_some_and(helpers::is_image_extension);
                         Some(Entry {
                             name,
                             path,
@@ -1092,10 +1083,7 @@ impl FileBrowserView {
             .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase());
-        let is_image = ext
-            .as_deref()
-            .map(|e| matches!(e, "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" | "webp"))
-            .unwrap_or(false);
+        let is_image = ext.as_deref().is_some_and(helpers::is_image_extension);
         Entry {
             name: hit.file_name.clone(),
             path: hit.path.clone(),
@@ -1540,19 +1528,13 @@ impl FileBrowserView {
         self.preview_size = None;
         self.preview_error = None;
 
-        let decoded = match image::open(path) {
-            Ok(img) => img,
-            Err(e) => {
-                self.preview_error = Some(format!("Unable to decode image: {e}"));
+        let rgba = match helpers::decode_image_preview(path) {
+            Ok(rgba) => rgba,
+            Err(error) => {
+                self.preview_error = Some(error);
                 return;
             }
         };
-        let decoded = if decoded.width().max(decoded.height()) > 2048 {
-            decoded.resize(2048, 2048, FilterType::Triangle)
-        } else {
-            decoded
-        };
-        let rgba = decoded.to_rgba8();
         let size = [rgba.width() as usize, rgba.height() as usize];
         let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
         let texture = ctx.load_texture(
@@ -1613,7 +1595,7 @@ impl FileBrowserView {
                     "file_browser: text preview failed for '{}': {err}",
                     path.display()
                 );
-                self.text_preview_error = Some(err);
+                self.text_preview_error = Some(err.to_string());
             }
         }
     }

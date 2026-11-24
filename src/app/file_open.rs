@@ -308,6 +308,101 @@ pub(crate) fn classify_open_target(
 /// The argument a string-argument handler receives for `target`. A path that
 /// is not valid UTF-8 has no lossless string form, so it is refused rather
 /// than sent as a lossy spelling that could name a different file.
+/// An open the host has resolved without touching the disk: the target,
+/// the associations of the requesting pane's context and the directory a
+/// launched handler starts in.
+pub(crate) struct OpenRequest {
+    pub(crate) target: std::path::PathBuf,
+    pub(crate) associations: OpenAssociations,
+    pub(crate) cwd: std::path::PathBuf,
+    /// A text editor already holds the target: opening focuses it, so its
+    /// body is not read.
+    pub(crate) editor_open: bool,
+}
+
+/// Everything opening a target reads from disk, gathered by
+/// [`prepare_open`] so a caller can run it off the UI thread.
+pub(crate) struct PreparedOpen {
+    pub(crate) target: std::path::PathBuf,
+    pub(crate) cwd: std::path::PathBuf,
+    pub(crate) classified: Result<Classified, FileOpenError>,
+    /// The classification without the manifest handler, for when that
+    /// handler fails to launch. `None` when no manifest handler applied.
+    pub(crate) fallback: Option<Result<Classified, FileOpenError>>,
+    /// The text editor's read, when either classification picked it and no
+    /// editor already held the target.
+    pub(crate) text: Option<crate::pane_ops::create::TextEditorRead>,
+}
+
+/// Do the disk half of opening `request.target`: stat, content sample, and
+/// the text editor's read. Never touches host state.
+pub(crate) fn prepare_open(request: OpenRequest) -> PreparedOpen {
+    let OpenRequest {
+        target,
+        mut associations,
+        cwd,
+        editor_open,
+    } = request;
+    let classified = classify_open_target(&target, &associations);
+    // The cascade without the manifest handler, read now so a failed
+    // manifest launch needs no second trip to the disk.
+    let fallback = associations
+        .manifest_handler
+        .take()
+        .map(|_| classify_open_target(&target, &associations));
+    let edits = |result: &Result<Classified, FileOpenError>| {
+        matches!(
+            result,
+            Ok(Classified {
+                handler: OpenHandler::TextEditor,
+                ..
+            })
+        )
+    };
+    let text = (!editor_open && (edits(&classified) || fallback.as_ref().is_some_and(edits)))
+        .then(|| crate::pane_ops::create::TextEditorRead::read(&target, &cwd));
+    #[cfg(test)]
+    prepared_on::record(&target);
+    PreparedOpen {
+        target,
+        cwd,
+        classified,
+        fallback,
+        text,
+    }
+}
+
+/// Which thread prepared each open, for tests that keep disk reads off the
+/// UI thread. Keyed by target so parallel tests do not see each other.
+#[cfg(test)]
+pub(crate) mod prepared_on {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::thread::ThreadId;
+
+    static PREPARED: Mutex<Vec<(PathBuf, ThreadId)>> = Mutex::new(Vec::new());
+
+    pub(super) fn record(target: &Path) {
+        if let Ok(mut prepared) = PREPARED.lock() {
+            prepared.push((target.to_path_buf(), std::thread::current().id()));
+        }
+    }
+
+    /// The threads that prepared an open of `target`.
+    pub(crate) fn threads(target: &Path) -> Vec<ThreadId> {
+        PREPARED.lock().map_or_else(
+            |_| Vec::new(),
+            |prepared| {
+                prepared
+                    .iter()
+                    .filter(|(path, _)| path == target)
+                    .map(|(_, thread)| *thread)
+                    .collect()
+            },
+        )
+    }
+}
+
 pub(crate) fn handler_arg(target: &Path, handler: &str) -> Result<String, FileOpenError> {
     target
         .to_str()

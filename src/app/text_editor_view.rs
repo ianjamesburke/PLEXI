@@ -240,12 +240,8 @@ fn pick_change_set(
 impl TextEditorView {
     #[cfg(test)]
     pub fn new(path: PathBuf) -> Self {
-        Self::new_with_workspace(path, None)
-    }
-
-    pub fn new_with_workspace(path: PathBuf, workspace_root: Option<PathBuf>) -> Self {
         let read = std::fs::read_to_string(&path);
-        Self::from_read(path, workspace_root, read)
+        Self::from_read(path, None, read)
     }
 
     /// Build the editor from one read of `path`. Whether the document loaded

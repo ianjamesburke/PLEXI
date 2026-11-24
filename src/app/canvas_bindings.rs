@@ -394,12 +394,25 @@ impl PlexiApp {
     /// device, socket) is refused. `sender_pane_id` is the pane that requested
     /// the open (the explorer, or the terminal behind it); the text-editor
     /// lands as a split to its right.
-    fn open_file_in_view(&mut self, sender_pane_id: PaneId, target: &std::path::Path) {
-        use super::file_open::{
-            classify_open_target, handler_arg, FileOpenError, MatchedBy, OpenHandler,
-        };
+    pub(crate) fn open_file_in_view(&mut self, sender_pane_id: PaneId, target: &std::path::Path) {
+        if let Some(request) = self.open_request(sender_pane_id, target) {
+            let prepared = super::file_open::prepare_open(request);
+            self.finish_open(sender_pane_id, prepared);
+        }
+    }
+
+    /// The host-state half of opening `target` for `sender_pane_id`: its
+    /// context's associations and launch directory. Reads no disk, so a
+    /// caller may hand the result to `file_open::prepare_open` on a worker
+    /// and finish with [`Self::finish_open`]. `None` when file viewers are
+    /// blocked.
+    pub(crate) fn open_request(
+        &mut self,
+        sender_pane_id: PaneId,
+        target: &std::path::Path,
+    ) -> Option<super::file_open::OpenRequest> {
         if self.plugin_blocked("file viewer / text-editor") {
-            return;
+            return None;
         }
         // Resolve the registry view against the REQUESTING pane's own
         // context, not whichever context is currently active (stint 0724
@@ -410,10 +423,34 @@ impl PlexiApp {
             .find_pane_in_any_window(sender_pane_id)
             .map(|(window_index, _)| self.windows[window_index].context_id)
             .unwrap_or_else(|| self.windows[self.active_window].context_id);
-        let mut associations = self.open_associations(context_id, target);
+        Some(super::file_open::OpenRequest {
+            target: target.to_path_buf(),
+            associations: self.open_associations(context_id, target),
+            cwd: self.launch_cwd(context_id, None),
+            editor_open: self.find_open_text_editor_pane_any_window(target).is_some(),
+        })
+    }
+
+    /// Open a prepared target with the handler its classification picked.
+    /// Reads no disk: `prepared` carries every read.
+    pub(crate) fn finish_open(
+        &mut self,
+        sender_pane_id: PaneId,
+        prepared: super::file_open::PreparedOpen,
+    ) {
+        use super::file_open::{handler_arg, FileOpenError, MatchedBy, OpenHandler};
+        let super::file_open::PreparedOpen {
+            target,
+            cwd,
+            classified,
+            mut fallback,
+            mut text,
+        } = prepared;
+        let target = target.as_path();
+        let mut classified = classified;
         loop {
-            let classified = match classify_open_target(target, &associations) {
-                Ok(classified) => classified,
+            let chosen = match classified {
+                Ok(chosen) => chosen,
                 Err(error @ FileOpenError::SpecialFile { .. }) => {
                     log::warn!("open: {target:?} refused ({error})");
                     return;
@@ -424,7 +461,7 @@ impl PlexiApp {
                     return;
                 }
             };
-            let matched_by = classified.matched_by.as_str();
+            let matched_by = chosen.matched_by.as_str();
             // String-argument handlers need a lossless string form of the path.
             let arg = |handler: &str| match handler_arg(target, handler) {
                 Ok(arg) => Some(arg),
@@ -433,7 +470,7 @@ impl PlexiApp {
                     None
                 }
             };
-            match classified.handler {
+            match chosen.handler {
                 OpenHandler::System => {
                     log::info!("open: {target:?} → OS default ({matched_by})");
                     let _logged = shell_open(target, false);
@@ -446,20 +483,26 @@ impl PlexiApp {
                     log::info!(
                         "open: '{path}' → builtin text-editor ({matched_by}, split right of pane {sender_pane_id})"
                     );
-                    self.open_text_file_in_split(sender_pane_id, &path);
+                    self.open_text_file_in_split(sender_pane_id, &path, text.take(), cwd);
                 }
                 OpenHandler::View(id) => {
                     let Some(path) = arg(&id) else {
                         return;
                     };
-                    if self.launch_view_with_path(&id, &path) {
+                    if self.at_anchor(sender_pane_id, |app| app.launch_view_with_path(&id, &path)) {
                         log::info!("open: '{path}' → plugin '{id}' ({matched_by})");
-                    } else if classified.matched_by == MatchedBy::Manifest {
+                    } else if chosen.matched_by == MatchedBy::Manifest {
+                        if let Some(next) = fallback.take() {
+                            log::warn!(
+                                "open: manifest handler '{id}' failed — continuing resolution for '{path}'"
+                            );
+                            classified = next;
+                            continue;
+                        }
                         log::warn!(
-                            "open: manifest handler '{id}' failed — continuing resolution for '{path}'"
+                            "open: manifest handler '{id}' failed — OS fallback for '{path}'"
                         );
-                        associations.manifest_handler = None;
-                        continue;
+                        let _logged = shell_open(target, false);
                     } else {
                         log::warn!("open: handler '{id}' unavailable — OS fallback for '{path}'");
                         let _logged = shell_open(target, false);
@@ -477,8 +520,14 @@ impl PlexiApp {
     /// read), retargets the launch to that window/tile, then restores the
     /// original active window. The `context_id` follows implicitly from
     /// anchoring on the pane's own window, so the split stays in the caller's
-    /// context.
-    fn open_text_file_in_split(&mut self, anchor_pane_id: PaneId, path: &str) {
+    /// context. The editor is built from `read`, made before this call.
+    fn open_text_file_in_split(
+        &mut self,
+        anchor_pane_id: PaneId,
+        path: &str,
+        read: Option<crate::pane_ops::create::TextEditorRead>,
+        cwd: std::path::PathBuf,
+    ) {
         if let Some(existing_pane_id) =
             self.find_open_text_editor_pane_any_window(std::path::Path::new(path))
         {
@@ -488,6 +537,29 @@ impl PlexiApp {
             self.pane_navigate(existing_pane_id);
             return;
         }
+        let read = read.unwrap_or_else(|| {
+            // The editor that held it when the open was prepared has closed
+            // since; read now rather than open an empty document.
+            log::info!("open: '{path}' lost its editor while opening; reading it now");
+            crate::pane_ops::create::TextEditorRead::read(std::path::Path::new(path), &cwd)
+        });
+        // Built directly, so no `on_launch` dedup can swap in an editor on
+        // another file: opening a specific file must always load THAT file.
+        let app = crate::pane_ops::create::text_editor_from_read(path.into(), read);
+        let placed = self.at_anchor(anchor_pane_id, |host| {
+            host.open_built_text_editor(host.active_window, Some("split_h".to_string()), app, cwd)
+        });
+        if let Err(e) = placed {
+            log::warn!("open: text-editor launch for '{path}' failed — {e}; OS fallback");
+            let _logged = shell_open(std::path::Path::new(path), false);
+        }
+    }
+
+    /// Run a launch from `anchor_pane_id`: its window becomes the launch
+    /// target and its tile the split point, whatever is focused now; the
+    /// active window is restored afterwards. A missing anchor launches in
+    /// the active window.
+    fn at_anchor<R>(&mut self, anchor_pane_id: PaneId, launch: impl FnOnce(&mut Self) -> R) -> R {
         let original_active_window = self.active_window;
         match self.find_pane_in_any_window(anchor_pane_id) {
             Some((win_idx, tile)) => {
@@ -495,27 +567,12 @@ impl PlexiApp {
                 self.set_window_focused_pane(win_idx, tile);
             }
             None => {
-                log::warn!(
-                    "open: text-editor anchor pane {anchor_pane_id} not found — using active window"
-                );
+                log::warn!("open: anchor pane {anchor_pane_id} not found — using active window")
             }
         }
-        // Forced (bypass the plugin's `on_launch` dedup): opening a specific file
-        // must always load THAT file. A `focus_existing` policy would otherwise
-        // resolve to an already-open editor and drop the path, so the explorer
-        // would appear to do nothing for a different file.
-        if let Err(e) = self.launch_view_by_id_with_layout_forced(
-            "text-editor",
-            Some("split_h".to_string()),
-            &[path.to_string()],
-            None,
-        ) {
-            log::warn!("open: text-editor launch for '{path}' failed — {e}; OS fallback");
-            self.active_window = original_active_window;
-            let _logged = shell_open(std::path::Path::new(path), false);
-            return;
-        }
+        let launched = launch(self);
         self.active_window = original_active_window;
+        launched
     }
 
     /// Launch plugin `id` with `path` as its sole arg, using the plugin's natural

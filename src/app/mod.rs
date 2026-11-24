@@ -19,7 +19,7 @@ mod directed_pipes;
 mod dispatch;
 mod event_stream;
 pub mod file_handlers;
-mod file_open;
+pub(crate) mod file_open;
 mod fleet;
 mod focus;
 pub(crate) mod focus_journal;
@@ -377,6 +377,8 @@ pub struct PlexiApp {
     /// The Commands source's current answer: row pips and owned targets,
     /// installed with its rows on every logic refresh.
     pub(crate) palette_answer: Option<crate::overlays::command_palette::PaletteAnswer>,
+    /// The palette's background sources: Files index, previews, usage.
+    pub(crate) palette_sources: crate::overlays::command_palette::PaletteSources,
     /// The palette's input owner: its ordered field, last presented hit
     /// geometry and the input its session claimed.
     pub(crate) palette_input: crate::ui::picker::PickerInput,
@@ -1900,6 +1902,7 @@ impl PlexiApp {
                     palette_notes: Vec::new(),
                     palette_commands: Vec::new(),
                     palette_answer: None,
+                    palette_sources: Default::default(),
                     palette_input: Default::default(),
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
@@ -2198,6 +2201,7 @@ impl PlexiApp {
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
             palette_answer: None,
+            palette_sources: Default::default(),
             palette_input: Default::default(),
             context_visit_history: Vec::new(),
             renaming_pane: None,
@@ -3155,6 +3159,7 @@ impl PlexiApp {
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
             palette_answer: None,
+            palette_sources: Default::default(),
             palette_input: Default::default(),
             context_visit_history: Vec::new(),
             renaming_pane: None,

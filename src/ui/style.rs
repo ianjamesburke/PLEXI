@@ -244,6 +244,7 @@ pub const TOAST_MAX_WIDTH: f32 = 480.0;
 pub const PANE_HEADER_TITLE_MIN: f32 = 72.0;
 pub const MODAL_WIDTH_PALETTE: f32 = 576.0; // Command palette — a launcher, not a document.
 pub const MODAL_WIDTH_NOTES_PICKER: f32 = 1040.0; // Notes picker — list left, wrapped preview right.
+pub const MODAL_WIDTH_PALETTE_PREVIEW: f32 = 1040.0; // Palette stop with a preview — results left, preview right.
 pub const NOTES_PICKER_LIST_FRACTION: f32 = 0.5; // Share of the notes picker given to the list half.
 /// The Notes picker uses most of a host canvas without becoming a full-screen
 /// workspace. Its list and preview fill the remainder after search, status,

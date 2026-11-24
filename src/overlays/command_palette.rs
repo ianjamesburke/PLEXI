@@ -2,8 +2,11 @@ use super::user_command_run::{spawn_shell_step, HostStepOutcome, UserCommandRun}
 use crate::app::PlexiApp;
 use crate::host::model::{HostAction, HostEffect};
 use crate::host::picker::{
-    PickerCommand, PickerEffect, PickerId, PickerRow, RowAction, RowKey, COMMANDS_SOURCE,
-    PALETTE_STOPS,
+    files::{FileHit, FileIndex},
+    preview::PreviewLoader,
+    usage::PaletteUsage,
+    PickerCommand, PickerEffect, PickerId, PickerRow, PreviewStatus, RowAction, RowKey,
+    COMMANDS_SOURCE, FILES_SOURCE, PALETTE_STOPS,
 };
 use crate::ui::{
     hints::{HintBar, HintGroup},
@@ -169,14 +172,94 @@ fn native_path_key(path: &std::path::Path) -> String {
     key
 }
 
-/// One answer of the Commands source: its rows' pane pips and the owned
+/// What a palette row runs: a Commands row, or a file of the Files stop.
+#[derive(Clone, Debug, PartialEq)]
+enum PaletteTarget {
+    Command(CommandRowId),
+    File(std::path::PathBuf),
+}
+
+const OPEN_FILE: RowAction = RowAction {
+    id: "open",
+    label: "open",
+};
+
+impl PaletteTarget {
+    fn action(&self) -> RowAction {
+        match self {
+            PaletteTarget::Command(id) => id.action(),
+            PaletteTarget::File(_) => OPEN_FILE,
+        }
+    }
+}
+
+fn command_targets(
+    targets: std::collections::HashMap<RowKey, CommandRowId>,
+) -> std::collections::HashMap<RowKey, PaletteTarget> {
+    targets
+        .into_iter()
+        .map(|(key, id)| (key, PaletteTarget::Command(id)))
+        .collect()
+}
+
+/// One answer of the open stop's source: its rows' pane pips and the owned
 /// target behind every row key, installed together with the rows of
 /// `generation`. Activation takes its target from here before close cleanup
 /// drops the answer.
 pub(crate) struct PaletteAnswer {
     generation: u64,
     pips: std::collections::HashMap<RowKey, ListRowPips>,
-    targets: std::collections::HashMap<RowKey, CommandRowId>,
+    targets: std::collections::HashMap<RowKey, PaletteTarget>,
+}
+
+/// The palette's background sources: the Files index, the preview loader
+/// and the usage history. Started on first use and kept across sessions, so
+/// the next open answers from the cached index while a fresh walk runs.
+#[derive(Default)]
+pub(crate) struct PaletteSources {
+    files: Option<FileIndex>,
+    /// The context root this session's Files stop lists, fixed at its first
+    /// Files query.
+    root: Option<std::path::PathBuf>,
+    /// The generation last asked of the Files source.
+    asked: Option<u64>,
+    preview: Option<PreviewLoader>,
+    /// The uploaded image of the selected row's preview.
+    texture: Option<(RowKey, egui::TextureHandle)>,
+    usage: PaletteUsage,
+    /// Files activated this pass, with the pane focused at activation:
+    /// opened from `App::logic`, never from the pass that activated them.
+    queued_opens: Vec<(std::path::PathBuf, crate::spatial::tiling::PaneId)>,
+    /// Opens whose disk reads run on a worker, with their anchor pane.
+    preparing: Vec<(
+        crate::spatial::tiling::PaneId,
+        std::sync::mpsc::Receiver<crate::app::file_open::PreparedOpen>,
+    )>,
+}
+
+/// A Files answer's hit as a picker row.
+fn file_row(hit: FileHit) -> PickerRow {
+    let parent = hit
+        .rel_path
+        .strip_suffix(hit.file_name.as_str())
+        .unwrap_or("")
+        .trim_end_matches('/')
+        .to_owned();
+    PickerRow {
+        key: hit.key,
+        title: hit.file_name,
+        secondary: parent,
+        chips: Vec::new(),
+        group: "",
+        group_rank: 0,
+        score: hit.score,
+        pinned: false,
+        unavailable: None,
+        actions: vec![OPEN_FILE],
+        usage: hit.usage,
+        modified: hit.modified,
+        preview: Some(hit.preview),
+    }
 }
 
 fn user_command_scope_id(scope: crate::cli::UserCommandScope) -> &'static str {
@@ -341,6 +424,9 @@ impl PaletteEntry {
             pinned: matches!(id, CommandRowId::UpdateReady(_)),
             unavailable,
             actions: vec![id.action()],
+            usage: None,
+            modified: None,
+            preview: None,
         };
         (row, pips)
     }
@@ -1458,6 +1544,10 @@ impl PlexiApp {
     /// the open-time caches (`palette_workspace_root`, notes, user commands)
     /// first.
     pub(crate) fn open_command_palette(&mut self, query: &str) {
+        // Usage history loads in the background on the first open.
+        self.palette_sources
+            .usage
+            .start(crate::host::picker::usage::usage_path());
         self.palette_input.reset(query);
         self.apply_palette_command(PickerCommand::Open {
             stop: PALETTE_STOPS[0].id,
@@ -1496,6 +1586,7 @@ impl PlexiApp {
                     text.chars().count()
                 ),
                 PickerEffect::Activate { stamp, row, action } => {
+                    self.palette_sources.usage.record(row.as_str());
                     // Owned before `Closed` drops the answer it came from.
                     let target = self
                         .palette_answer
@@ -1511,15 +1602,188 @@ impl PlexiApp {
                         None => log::warn!("palette: no target for an activated row"),
                     }
                 }
+                PickerEffect::LoadPreview { row, kind } => self.load_palette_preview(row, kind),
                 PickerEffect::Closed => {
                     self.palette_input.reset("");
                     self.palette_answer = None;
+                    let sources = &mut self.palette_sources;
+                    sources.root = None;
+                    sources.asked = None;
+                    sources.texture = None;
                 }
             }
         }
         self.sync_command_palette_focus();
         if let Some(target) = activation {
-            self.run_palette_selection(target);
+            self.run_palette_target(target);
+        }
+    }
+
+    /// Open the files the palette activated: resolve each against host state
+    /// here, read it on a worker, and finish the open once the read is in.
+    fn drain_palette_opens(&mut self) {
+        for (path, anchor) in std::mem::take(&mut self.palette_sources.queued_opens) {
+            let Some(request) = self.open_request(anchor, &path) else {
+                continue;
+            };
+            let (done, prepared) = std::sync::mpsc::channel();
+            let wake = std::sync::Arc::clone(&self.ui_wake);
+            let spawned = std::thread::Builder::new()
+                .name("plexi-palette-open".to_owned())
+                .spawn(move || {
+                    // The receiver is gone only when the host shut down.
+                    let _closed = done.send(crate::app::file_open::prepare_open(request));
+                    wake.wake("palette_open");
+                });
+            match spawned {
+                Ok(_) => self.palette_sources.preparing.push((anchor, prepared)),
+                Err(error) => log::warn!("palette: could not start opening a file: {error}"),
+            }
+        }
+        for (anchor, prepared) in std::mem::take(&mut self.palette_sources.preparing) {
+            match prepared.try_recv() {
+                Ok(prepared) => self.finish_open(anchor, prepared),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.palette_sources.preparing.push((anchor, prepared));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    log::warn!("palette: a file open's reader exited without an answer");
+                }
+            }
+        }
+    }
+
+    /// Ask the preview worker for `row`'s preview. Its path comes from the
+    /// answer the row belongs to.
+    fn load_palette_preview(&mut self, row: RowKey, kind: crate::host::picker::PreviewRef) {
+        let path = self
+            .palette_answer
+            .as_ref()
+            .and_then(|answer| answer.targets.get(&row))
+            .and_then(|target| match target {
+                PaletteTarget::File(path) => Some(path.clone()),
+                PaletteTarget::Command(_) => None,
+            });
+        let Some(path) = path else {
+            log::warn!("palette: a preview was asked for a row with no file");
+            return;
+        };
+        if self.palette_sources.preview.is_none() {
+            match PreviewLoader::spawn(std::sync::Arc::clone(&self.ui_wake)) {
+                Ok(loader) => self.palette_sources.preview = Some(loader),
+                Err(error) => {
+                    log::warn!("palette: {error}");
+                    self.apply_palette_command(PickerCommand::Preview {
+                        row,
+                        body: crate::host::picker::PreviewBody::Note(format!(
+                            "Could not read: {error}"
+                        )),
+                    });
+                    return;
+                }
+            }
+        }
+        if let Some(loader) = self.palette_sources.preview.as_mut() {
+            loader.load(row, path, kind);
+        }
+        // Nothing else wakes the host when a read never answers.
+        self.ctx
+            .request_repaint_after(crate::host::picker::preview::PREVIEW_TIMEOUT);
+    }
+
+    /// Install finished previews, uploading an image's texture here, in
+    /// `App::logic`. A preview for a row no longer loading is the reducer's
+    /// to drop; its pixels are never uploaded.
+    fn drain_palette_previews(&mut self) {
+        let Some(loader) = self.palette_sources.preview.as_mut() else {
+            return;
+        };
+        for done in loader.poll(std::time::Instant::now()) {
+            let wanted = self.host.picker(PickerId::Palette).is_some_and(|picker| {
+                picker.selected() == Some(&done.row)
+                    && matches!(picker.preview(), Some(PreviewStatus::Loading))
+            });
+            if wanted {
+                if let Some(pixels) = &done.pixels {
+                    let size = [pixels.width() as usize, pixels.height() as usize];
+                    let image = egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_raw());
+                    let texture = self.ctx.load_texture(
+                        "palette-preview",
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    );
+                    self.palette_sources.texture = Some((done.row.clone(), texture));
+                }
+            }
+            self.apply_palette_command(PickerCommand::Preview {
+                row: done.row,
+                body: done.body,
+            });
+        }
+    }
+
+    /// Answer the Files stop: ask the index worker once per generation and
+    /// install whatever it answered since. The first Files query of a
+    /// session fixes the context root and refreshes its index.
+    fn answer_palette_files(&mut self, generation: u64, query: &str) {
+        let sources = &mut self.palette_sources;
+        if sources.files.is_none() {
+            match FileIndex::spawn(
+                std::sync::Arc::new(crate::host::picker::files::walk_root),
+                std::sync::Arc::clone(&self.ui_wake),
+            ) {
+                Ok(index) => sources.files = Some(index),
+                Err(error) => {
+                    log::warn!("palette: {error}");
+                    return;
+                }
+            }
+        }
+        let Some(index) = sources.files.as_ref() else {
+            return;
+        };
+        let root = match &sources.root {
+            Some(root) => root.clone(),
+            None => {
+                let root = self.router.active().root.clone();
+                log::info!("palette: Files stop lists the active context root");
+                index.refresh(root.clone());
+                sources.root = Some(root.clone());
+                root
+            }
+        };
+        if sources.asked != Some(generation) {
+            index.query(
+                root,
+                query.to_owned(),
+                generation,
+                sources.usage.book().clone(),
+            );
+            sources.asked = Some(generation);
+        }
+        for answer in index.answers() {
+            if answer.generation != generation {
+                continue;
+            }
+            let mut targets = std::collections::HashMap::new();
+            let rows: Vec<PickerRow> = answer
+                .hits
+                .into_iter()
+                .map(|hit| {
+                    targets.insert(hit.key.clone(), PaletteTarget::File(hit.path.clone()));
+                    file_row(hit)
+                })
+                .collect();
+            self.palette_answer = Some(PaletteAnswer {
+                generation,
+                pips: std::collections::HashMap::new(),
+                targets,
+            });
+            self.apply_palette_command(PickerCommand::Rows {
+                generation,
+                rows,
+                done: answer.done,
+            });
         }
     }
 
@@ -1527,6 +1791,9 @@ impl PlexiApp {
     /// every later pass so live rows (pane state, context pips, update ready)
     /// stay current. Serviced from `App::logic`, never from drawing.
     pub(crate) fn refresh_command_palette(&mut self) {
+        self.drain_palette_opens();
+        self.palette_sources.usage.poll();
+        self.drain_palette_previews();
         let Some((source, query, generation)) = self
             .host
             .picker(PickerId::Palette)
@@ -1558,9 +1825,13 @@ impl PlexiApp {
                 self.palette_answer = Some(PaletteAnswer {
                     generation,
                     pips,
-                    targets,
+                    targets: command_targets(targets),
                 });
                 rows
+            }
+            FILES_SOURCE => {
+                self.answer_palette_files(generation, &query);
+                return;
             }
             other => {
                 log::warn!("palette: no source '{other}'");
@@ -1603,13 +1874,16 @@ impl PlexiApp {
                 pinned: false,
                 unavailable: None,
                 actions: vec![CommandRowId::View(id.clone()).action()],
+                usage: None,
+                modified: None,
+                preview: None,
             })
             .collect();
         if generation == current {
             self.palette_answer = Some(PaletteAnswer {
                 generation,
                 pips: std::collections::HashMap::new(),
-                targets,
+                targets: command_targets(targets),
             });
         }
         self.apply_palette_command(PickerCommand::Rows {
@@ -2256,6 +2530,22 @@ impl PlexiApp {
                 .and_then(|answer| answer.pips.get(key))
                 .cloned()
         };
+        // A stop with a preview widens to hold it; below the compact modal
+        // width the preview half is dropped, as the notes picker does.
+        let stop = picker.active_stop();
+        let width = if stop.preview {
+            style::MODAL_WIDTH_PALETTE_PREVIEW
+                .min((ctx.content_rect().width() - style::SPACE_XL * 2.0).max(0.0))
+        } else {
+            style::MODAL_WIDTH_PALETTE
+        };
+        let show_preview = stop.preview && width >= style::MODAL_WIDTH_MD;
+        let image = self
+            .palette_sources
+            .texture
+            .as_ref()
+            .filter(|(key, _)| picker.selected() == Some(key))
+            .map(|(_, texture)| texture);
         let draft = &mut self.palette_input.draft;
         let mut rows = crate::ui::picker::RowsResponse::default();
         #[cfg(test)]
@@ -2264,7 +2554,7 @@ impl PlexiApp {
         // scrim's click-away.
         let dismissed = ModalShell::centered("command_palette")
             .own_scroll()
-            .width(style::MODAL_WIDTH_PALETTE)
+            .width(width)
             .show(ctx, &colors, |ui| {
                 crate::ui::picker::field(
                     ui,
@@ -2279,14 +2569,34 @@ impl PlexiApp {
                     &colors,
                 );
                 ui.add_space(style::SPACE_SM);
-                rows = crate::ui::picker::results(
-                    ui,
-                    picker,
-                    max_list_h,
-                    "No matching contexts or plugins",
-                    &pips,
-                    &colors,
-                );
+                if show_preview {
+                    let list_width = ((ui.available_width() - style::SPACE_MD)
+                        * style::NOTES_PICKER_LIST_FRACTION)
+                        .floor();
+                    let preview_width = ui.available_width() - list_width - style::SPACE_MD;
+                    let halves = egui::UiBuilder::new()
+                        .id_salt("palette_halves")
+                        .layout(egui::Layout::left_to_right(egui::Align::Min));
+                    ui.scope_builder(halves, |ui| {
+                        ui.spacing_mut().item_spacing.x = style::SPACE_MD;
+                        let column = |salt: &str| {
+                            egui::UiBuilder::new()
+                                .id_salt(salt)
+                                .layout(egui::Layout::top_down(egui::Align::Min))
+                        };
+                        ui.scope_builder(column("palette_results_half"), |ui| {
+                            ui.set_width(list_width);
+                            rows =
+                                crate::ui::picker::results(ui, picker, max_list_h, &pips, &colors);
+                        });
+                        ui.scope_builder(column("palette_preview_half"), |ui| {
+                            ui.set_width(preview_width);
+                            crate::ui::picker::preview(ui, picker, image, max_list_h, &colors);
+                        });
+                    });
+                } else {
+                    rows = crate::ui::picker::results(ui, picker, max_list_h, &pips, &colors);
+                }
                 ui.add_space(style::SPACE_SM);
                 let mut hints = vec![
                     HintGroup::alternatives(&[&["\u{2318}", "j"], &["\u{2318}", "k"]], "navigate"),
@@ -2312,6 +2622,26 @@ impl PlexiApp {
             self.palette_input.drawn = Some((rows.rects.clone(), modal_rect));
         }
         self.finish_palette_draw(ctx, rows, dismissed);
+    }
+
+    /// Run an activated row: a Commands row, or open a file through the
+    /// host's one open resolver, anchored on the pane the palette serves.
+    fn run_palette_target(&mut self, target: PaletteTarget) {
+        match target {
+            PaletteTarget::Command(id) => self.run_palette_selection(id),
+            PaletteTarget::File(path) => {
+                #[cfg(test)]
+                if let Some(key) = crate::host::picker::files::file_key(&path) {
+                    palette_test_log::activated(key);
+                }
+                // Only queued here: the open reads the disk, so it is
+                // resolved in `App::logic` and read on a worker.
+                let anchor = self.focused_pane_id().unwrap_or_default();
+                log::info!("palette: queued a file result to open beside pane {anchor}");
+                self.palette_sources.queued_opens.push((path, anchor));
+                self.ctx.request_repaint();
+            }
+        }
     }
 
     /// Execute a Commands-stop row.
@@ -4718,7 +5048,7 @@ mod tests {
         assert!(rows.iter().all(|row| answer.targets.contains_key(&row.key)));
         assert_eq!(
             answer.targets.get(&CommandRowId::Note(note.clone()).key()),
-            Some(&CommandRowId::Note(note))
+            Some(&PaletteTarget::Command(CommandRowId::Note(note)))
         );
     }
 
