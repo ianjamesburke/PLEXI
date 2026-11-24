@@ -2,8 +2,13 @@ use std::path::PathBuf;
 
 pub(crate) use plexi_distribution::host_presence::account_home as login_home_dir;
 
-pub(super) fn honors_home() -> bool {
-    cfg!(plexi_test_channel) && super::is_test_channel(super::build_channel().as_deref())
+/// Only a binary that cannot ship honors `HOME` for the profile: a build
+/// compiled for the matching numbered PR channel, or a debug-assertions build,
+/// which is what `cargo test` compiles for the binaries integration tests
+/// spawn. Release channel builds never do.
+pub(crate) fn honors_home() -> bool {
+    cfg!(debug_assertions)
+        || (cfg!(plexi_test_channel) && super::is_test_channel(super::build_channel().as_deref()))
 }
 
 /// The parent of Plexi's profile directories is fixed for the invocation.
@@ -60,4 +65,17 @@ fn profile_home_release_ignores_a_changed_home() {
     assert!(message.starts_with(&format!("error: {error}")));
     assert!(message.contains("home directory in the account database"));
     assert_eq!(profile_home_from(true, env.clone(), None).ok(), env);
+}
+
+#[cfg(test)]
+#[test]
+fn debug_assertions_builds_honor_home_for_spawned_test_binaries() {
+    // `cargo test` compiles the binary integration tests spawn with debug
+    // assertions, so their temporary HOME holds the profile. A release build
+    // has neither this nor the matching PR channel and ignores HOME.
+    assert!(honors_home());
+    assert!(
+        profile_home_from(true, Some("/tmp/h".into()), Some("/account".into()))
+            .is_ok_and(|home| home == PathBuf::from("/tmp/h"))
+    );
 }

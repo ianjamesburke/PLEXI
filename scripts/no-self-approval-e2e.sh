@@ -22,6 +22,7 @@ source "$ROOT/e2e/human.sh"
 EVID="${EVID:-/tmp/plexi-w2-evidence}"
 CHANNEL="${CHANNEL:-alpha}"
 BIN="${BIN:-$HOME/.local/bin/plexi-$CHANNEL}"
+BIN="$(python3 "$ROOT/require_test_hook_binary.py" --installed -- "$BIN")" || exit $?
 PROFILE="${PROFILE:-$HOME/.plexi-$CHANNEL}"
 WS="${WS:-/tmp/plexi-w2-ws}"
 MOCK_PORT="${MOCK_PORT:-8765}"

@@ -16,6 +16,8 @@ import time
 import tarfile
 import zipfile
 
+from disposable_account import account_home, check_disposable
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -113,9 +115,8 @@ fn main() {
 
 def main(args):
     # Release-channel installs record their tag in the account profile, which
-    # HOME no longer redirects. Only a disposable account may run this.
-    if os.environ.get('GITHUB_ACTIONS') != 'true' and os.environ.get('PLEXI_PACKAGE_TEST_DISPOSABLE_ACCOUNT') != '1':
-        raise SystemExit('test-distribution.py writes installed_tag under the account profile; run it only on a disposable account (PLEXI_PACKAGE_TEST_DISPOSABLE_ACCOUNT=1).')
+    # HOME no longer redirects. Prove the account is disposable before installing.
+    check_disposable(account_home(), os.environ)
     with tempfile.TemporaryDirectory(prefix='plexi distribution tests ') as directory, ExitStack() as cleanup:
         root = Path(directory)
         home = root / 'home with spaces'

@@ -3215,7 +3215,7 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
             let _channel = crate::config::set_test_channel(&channel);
             crate::config::set_profile(crate::config::ProfileSelection::parse("review").unwrap());
             let home = dirs::home_dir().unwrap();
-            let (target, expected_home) = if crate::config::is_test_channel(Some(&channel)) {
+            let (target, expected_home) = if crate::config::profile_home::honors_home() {
                 (host_target().unwrap(), home)
             } else {
                 let account = crate::config::profile_home::login_home_dir().unwrap();
