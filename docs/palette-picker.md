@@ -137,11 +137,11 @@ Chords checked in `KeyBindings::default`.
 | Cmd+Enter | list the selected row's actions | none |
 | Esc | close | back to results, query and selection kept |
 
-`/` and `>` are ordinary characters; no prefix switches a stop. Cmd+Enter is `zoom_in` among host bindings; the modal wins because `poll_actions` skips `Normal` bindings while an overlay is open.
+`/` and `>` are ordinary characters; no prefix switches a stop. Cmd+Enter is the global `zoom_in` host binding. While the palette owns input, its handler claims that chord before host dispatch.
 
 ## Deleted
 
-Stint 1391: `PaletteEntry::Agent`, `PaletteAction`, `action_for_palette_entry`, `sort_palette_entries`, `reconcile_palette_selection`, the key block in `draw_command_palette`, `command_palette_handle_key`, and the `palette_query`, `palette_selected`, `palette_selected_key` and `palette_scroll_reset` fields. The Agents view stint: the `[agents] palette_agent_results` key, from `src/config/mod.rs`, `scripts/default-config.toml` and `docs/CONFIG.md`. Stint 1151: `PaletteCommand`, `PaletteCommandEntry`, `PALETTE_COMMANDS`, `run_palette_selection`, `run_palette_command`.
+Stint 1391: `PaletteEntry::Agent`, `PaletteAction`, `action_for_palette_entry`, `sort_palette_entries`, `reconcile_palette_selection`, the key block in `draw_command_palette`, `command_palette_handle_key`, and the `palette_query`, `palette_selected`, `palette_selected_key` and `palette_scroll_reset` fields. Stint 1151: `PaletteCommand`, `PaletteCommandEntry`, `PALETTE_COMMANDS`, `run_palette_selection`, `run_palette_command`.
 
 ## Build order
 

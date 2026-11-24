@@ -255,6 +255,30 @@ impl PlexiApp {
 
         let router = crate::app::input_router::PlexiInput::take_from(ctx);
         let (keyboard_events, modifiers) = router.into_events_and_modifiers();
+        if !self.synthetic_input_frame
+            && keyboard_events.iter().any(|event| match event {
+                egui::Event::Text(text)
+                | egui::Event::Paste(text)
+                | egui::Event::Ime(egui::ImeEvent::Commit(text)) => !text.is_empty(),
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
+                    matches!(
+                        key,
+                        egui::Key::Enter
+                            | egui::Key::Backspace
+                            | egui::Key::Delete
+                            | egui::Key::Tab
+                    ) && !modifiers.command
+                }
+                _ => false,
+            })
+        {
+            self.record_agent_interaction(pane_id, "input");
+        }
 
         // Feature instrumentation (stint 0387): confirm the structural handoff
         // delivered Cmd+A (egui's built-in select-all, the bug's signature) to

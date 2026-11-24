@@ -17962,6 +17962,7 @@ mod agent_state_restoration_tests {
                                 fleet_dismissed: false,
                                 fleet_done_unseen: false,
                                 fleet_since: 0,
+                                last_interaction_at: 0,
                                 harness: "claude".to_string(),
                                 config_name: Some("lead".to_string()),
                                 permission_posture: None,
@@ -18036,6 +18037,7 @@ mod agent_state_restoration_tests {
                             fleet_dismissed: false,
                             fleet_done_unseen: false,
                             fleet_since: 0,
+                            last_interaction_at: 0,
                             harness: "codex".to_string(),
                             config_name: Some("worker".to_string()),
                             permission_posture: None,
@@ -18083,6 +18085,7 @@ mod agent_state_restoration_tests {
                             fleet_dismissed: false,
                             fleet_done_unseen: false,
                             fleet_since: 0,
+                            last_interaction_at: 0,
                             harness: "pi".to_string(),
                             config_name: Some("scout".to_string()),
                             permission_posture: None,
@@ -18275,6 +18278,7 @@ mod agent_state_restoration_tests {
             fleet_done_unseen: false,
             fleet_dismissed: false,
             fleet_since: 0,
+            last_interaction_at: 0,
             harness: "codex".to_string(),
             config_name: Some("worker".to_string()),
             permission_posture: None,
@@ -18334,6 +18338,7 @@ mod agent_state_restoration_tests {
             fleet_done_unseen: false,
             fleet_dismissed: false,
             fleet_since: 0,
+            last_interaction_at: 0,
             harness: "claude".to_string(),
             config_name: None,
             permission_posture: None,
@@ -18569,6 +18574,7 @@ mod agent_state_restoration_tests {
                                 fleet_dismissed: false,
                                 fleet_done_unseen: false,
                                 fleet_since: 0,
+                                last_interaction_at: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
                                 permission_posture: None,
@@ -18603,6 +18609,7 @@ mod agent_state_restoration_tests {
                                 fleet_dismissed: false,
                                 fleet_done_unseen: false,
                                 fleet_since: 0,
+                                last_interaction_at: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
                                 permission_posture: None,
@@ -18637,6 +18644,7 @@ mod agent_state_restoration_tests {
                                 fleet_dismissed: false,
                                 fleet_done_unseen: false,
                                 fleet_since: 0,
+                                last_interaction_at: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
                                 permission_posture: None,
@@ -18683,6 +18691,7 @@ mod agent_state_restoration_tests {
                                 fleet_dismissed: false,
                                 fleet_done_unseen: false,
                                 fleet_since: 0,
+                                last_interaction_at: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
                                 permission_posture: None,
@@ -18717,6 +18726,7 @@ mod agent_state_restoration_tests {
                                 fleet_dismissed: false,
                                 fleet_done_unseen: false,
                                 fleet_since: 0,
+                                last_interaction_at: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
                                 permission_posture: None,
@@ -21312,6 +21322,7 @@ ask = ["pane.send"]
                         fleet_dismissed: false,
                         fleet_done_unseen: false,
                         fleet_since: 0,
+                        last_interaction_at: 0,
                         harness: "claude".to_string(),
                         config_name: Some("lead".to_string()),
                         permission_posture: None,
@@ -22104,6 +22115,7 @@ mod restore_followups_0983b {
                         fleet_dismissed: false,
                         fleet_done_unseen: false,
                         fleet_since: 0,
+                        last_interaction_at: 0,
                         harness: "script".to_string(),
                         config_name: None,
                         permission_posture: None,
@@ -25342,6 +25354,7 @@ fn named_agent_focuses_standby_pane_without_waking_it() {
         fleet_done_unseen: false,
         fleet_dismissed: false,
         fleet_since: 0,
+        last_interaction_at: 0,
         harness: "pi".to_string(),
         config_name: Some("researcher".to_string()),
         permission_posture: None,
@@ -26414,4 +26427,181 @@ fn palette_open_lands_beside_the_activating_pane(name: &str, contents: &[u8]) {
         (egui_tiles::LinearDir::Horizontal, Some(right_tile)),
         "the editor lands right of the pane focused at activation"
     );
+}
+
+fn palette_agent_fixture(
+    h: &mut HostHarness,
+    role: &str,
+    interaction: u64,
+    state_change: u64,
+) -> u64 {
+    let id = h.app.host.alloc_pane_id();
+    let mut terminal = crate::host::pane::TerminalPane::fixture(
+        id,
+        h.app.ctx.clone(),
+        h.app.pty_event_tx.clone(),
+        egui_term::BackendSettings {
+            shell: "/bin/sh".into(),
+            ..Default::default()
+        },
+        14.0,
+    )
+    .expect("agent terminal fixture");
+    terminal.agent_harness = Some("codex".into());
+    terminal.agent_role = Some(role.into());
+    terminal.last_interaction_at = interaction;
+    terminal.fleet_since = state_change;
+    let win = &mut h.app.windows[0];
+    win.panes
+        .insert(id, crate::host::pane::Pane::Terminal(Box::new(terminal)))
+        .unwrap();
+    let tile = win.tree.tiles.insert_pane(id);
+    if let Some(root) = win.tree.root {
+        win.tree.root = Some(win.tree.tiles.insert_horizontal_tile(vec![root, tile]));
+    } else {
+        win.tree.root = Some(tile);
+    }
+    id
+}
+
+fn open_agents_stop(h: &mut HostHarness) {
+    use crate::host::picker::PickerCommand;
+    h.app.open_command_palette("");
+    h.app.apply_palette_command(PickerCommand::NextStop);
+    h.app.apply_palette_command(PickerCommand::NextStop);
+    h.app.refresh_command_palette();
+}
+
+#[test]
+fn agents_sort_by_last_interaction_not_state_change() {
+    let mut h = HostHarness::new();
+    let recent = palette_agent_fixture(&mut h, "reviewer", 200, 10);
+    palette_agent_fixture(&mut h, "builder", 100, 300);
+    open_agents_stop(&mut h);
+    assert_eq!(
+        h.app.palette_selected_key(),
+        Some(format!("agents:pane/{recent}"))
+    );
+}
+
+#[test]
+fn answer_opens_the_decision_overlay_and_never_resolves_in_the_palette() {
+    use crate::broker::gate::{NeedsYouFile, NeedsYouKind, PermissionMonitor};
+    use crate::host::picker::PickerCommand;
+    let mut h = HostHarness::new();
+    let pane = palette_agent_fixture(&mut h, "reviewer", 200, 10);
+    let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+    let ask = monitor
+        .file_needs_you(NeedsYouFile {
+            kind: NeedsYouKind::PermissionRequest,
+            actor: format!("pane:{pane}"),
+            resource: format!("pane:{pane}"),
+            summary: "Approve the review?".into(),
+            expires_at: None,
+            run_tag: None,
+        })
+        .unwrap();
+    open_agents_stop(&mut h);
+    wait_for_palette_agents_load(&mut h);
+    h.app.apply_palette_command(PickerCommand::Accept(None));
+    h.app.refresh_command_palette();
+    assert!(!h.app.command_palette_open());
+    assert!(h.app.attention_queue.decision_overlay.is_some());
+    assert!(monitor.get_needs_you(&ask).unwrap().resolution.is_none());
+}
+
+#[test]
+fn agents_snapshot_loads_off_thread_and_arrives_through_logic() {
+    let mut h = HostHarness::new();
+    let pane = palette_agent_fixture(&mut h, "reviewer", 200, 10);
+    let definition = h.profile_dir().join("agents").join("snapshot-builder");
+    std::fs::create_dir_all(&definition).unwrap();
+    std::fs::write(definition.join("AGENT.md"), "Build the fixture.\n").unwrap();
+    std::fs::write(
+        definition.join("settings.toml"),
+        "[agent]\nid = \"snapshot-builder\"\ndisplay_name = \"Snapshot Builder\"\n\n[harness]\ncli = \"pi\"\n",
+    )
+    .unwrap();
+    open_agents_stop(&mut h);
+    let expected_key = Some(format!("agents:pane/{pane}"));
+    assert_eq!(h.app.palette_selected_key(), expected_key);
+    let loads_before_drain = h.app.palette_agents_load_count();
+    let has_definition = |h: &HostHarness| {
+        h.app
+            .host
+            .picker(crate::host::picker::PickerId::Palette)
+            .unwrap()
+            .rows()
+            .iter()
+            .any(|row| row.key.as_str() == "agents:definition/snapshot-builder")
+    };
+    let definition_before_drain = has_definition(&h);
+
+    wait_for_palette_agents_load(&mut h);
+
+    assert_ne!(
+        h.app.palette_agents_load_thread().expect("loader thread"),
+        std::thread::current().id(),
+        "Agents disk load must run off the calling thread"
+    );
+    assert_eq!(
+        loads_before_drain, 0,
+        "the first refresh only starts the worker"
+    );
+    assert!(!definition_before_drain);
+    assert!(
+        has_definition(&h),
+        "the worker's definition reached the picker"
+    );
+    assert_eq!(h.app.palette_selected_key(), expected_key);
+}
+
+fn wait_for_palette_agents_load(h: &mut HostHarness) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while h.app.palette_agents_load_count() == 0 && std::time::Instant::now() < deadline {
+        h.run_hidden_frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(
+        h.app.palette_agents_load_count(),
+        1,
+        "snapshot drained through logic"
+    );
+}
+
+#[test]
+fn agents_source_does_not_read_disk_per_query() {
+    use crate::host::picker::PickerCommand;
+    let mut h = HostHarness::new();
+    let pane = palette_agent_fixture(&mut h, "reviewer", 200, 10);
+    open_agents_stop(&mut h);
+    wait_for_palette_agents_load(&mut h);
+    for query in ["rev", "review", "", "missing"] {
+        h.app
+            .apply_palette_command(PickerCommand::QueryEdited(query.into()));
+        h.app.refresh_command_palette();
+        assert_eq!(h.app.palette_agents_load_count(), 1);
+    }
+    use crate::broker::gate::{NeedsYouFile, NeedsYouKind, PermissionMonitor};
+    let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+    monitor
+        .file_needs_you(NeedsYouFile {
+            kind: NeedsYouKind::PermissionRequest,
+            actor: format!("pane:{pane}"),
+            resource: format!("pane:{pane}"),
+            summary: "New approval".into(),
+            expires_at: None,
+            run_tag: None,
+        })
+        .unwrap();
+    h.app
+        .apply_palette_command(PickerCommand::QueryEdited("reviewer".into()));
+    h.app.refresh_command_palette();
+    assert_eq!(h.app.palette_agents_load_count(), 1);
+    let picker = h
+        .app
+        .host
+        .picker(crate::host::picker::PickerId::Palette)
+        .unwrap();
+    assert_eq!(picker.selected_row().unwrap().actions[0].id, "answer");
 }

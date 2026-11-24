@@ -112,15 +112,16 @@ pub(crate) fn picker_key(event: &egui::Event, composing: bool) -> Option<PickerC
         )
     };
     match key {
-        Key::Escape if is(Modifiers::NONE) => Some(PickerCommand::Close),
+        Key::Escape if is(Modifiers::NONE) => Some(PickerCommand::Back),
         Key::Tab if is(Modifiers::SHIFT) => Some(PickerCommand::PrevStop),
         Key::Tab if is(Modifiers::NONE) => Some(PickerCommand::NextStop),
         Key::ArrowDown if is(Modifiers::NONE) => Some(PickerCommand::Move(Step::Down)),
         Key::ArrowUp if is(Modifiers::NONE) => Some(PickerCommand::Move(Step::Up)),
         Key::J if is(Modifiers::COMMAND) => Some(PickerCommand::Move(Step::Down)),
         Key::K if is(Modifiers::COMMAND) => Some(PickerCommand::Move(Step::Up)),
+        Key::Enter if is(Modifiers::COMMAND) && !composing => Some(PickerCommand::ShowActions),
         // Enter during composition confirms it and belongs to the IME.
-        Key::Enter if is(Modifiers::NONE) && !composing => Some(PickerCommand::Accept),
+        Key::Enter if is(Modifiers::NONE) && !composing => Some(PickerCommand::Accept(None)),
         _ => None,
     }
 }
@@ -140,7 +141,7 @@ pub(crate) fn is_field_input(event: &egui::Event) -> bool {
 }
 
 /// The query field, the owner's default text surface: egui's own single-line
-/// text edit over `draft`.
+/// text edit over `draft` in either picker step.
 pub(crate) fn field(
     ui: &mut egui::Ui,
     state: &PickerState,
@@ -157,7 +158,12 @@ pub(crate) fn field(
                 id.with("paint_layer"),
             )),
             |ui| {
-                TextField::singleline(id, state.active_stop().placeholder)
+                let placeholder = if state.showing_actions() {
+                    "Search actions..."
+                } else {
+                    state.active_stop().placeholder
+                };
+                TextField::singleline(id, placeholder)
                     .surface(surface)
                     .log_name("command_palette")
                     .show(ui, draft, colors)
@@ -179,6 +185,8 @@ pub(crate) struct RowsResponse {
     /// The row under the pointer; it selects only if the pointer moved in
     /// this delivery.
     pub hovered: Option<Hit>,
+    pub action: Option<(Hit, u64, &'static str)>,
+    pub stop: Option<&'static str>,
     /// Every actionable row's clipped rect, for tests.
     #[cfg(test)]
     pub rects: Vec<(egui::Rect, RowKey)>,
@@ -197,6 +205,9 @@ pub(crate) fn results(
     colors: &Colors,
 ) -> RowsResponse {
     let mut out = RowsResponse::default();
+    if state.showing_actions() {
+        return actions(ui, state, max_height, colors);
+    }
     if state.rows().is_empty() {
         if state.is_loading() {
             // The first answer arrives on the next logic pass: hold the
@@ -238,8 +249,18 @@ pub(crate) fn results(
                 }
                 let is_selected = state.selected() == Some(&row.key);
                 let secondary = row.unavailable.unwrap_or(row.secondary.as_str());
+                let age = row
+                    .attention
+                    .filter(|rank| rank.last_interaction_at != 0)
+                    .map(|rank| {
+                        crate::agent::fleet::format_age(
+                            crate::platform::clock::now_secs(),
+                            rank.last_interaction_at / 1000,
+                        )
+                    });
+                let chips: Vec<_> = row.chips.iter().copied().chain(age.as_deref()).collect();
                 let mut list_row = ListRow::new(&row.title)
-                    .metadata_chips(&row.chips)
+                    .metadata_chips(&chips)
                     .secondary(secondary)
                     .selected(is_selected);
                 if let Some(row_pips) = pips(&row.key) {
@@ -356,6 +377,126 @@ pub(crate) fn preview(
                 }
             }
         });
+}
+
+pub(crate) fn stops(
+    ui: &mut egui::Ui,
+    state: &PickerState,
+    colors: &Colors,
+) -> Option<&'static str> {
+    use crate::ui::bounded::{self, Slot};
+    use crate::ui::button::{ButtonKind, ButtonSize, KitButton};
+    if state.showing_actions() {
+        if let Some(row) = state.selected_row() {
+            crate::ui::typography::caption(ui, &row.title, colors);
+        }
+        return None;
+    }
+    let buttons: Vec<_> = state
+        .stops()
+        .iter()
+        .map(|stop| {
+            let button = KitButton::new(stop.label, colors)
+                .kind(ButtonKind::Ghost)
+                .size(ButtonSize::Sm)
+                .selected(stop.id == state.active_stop().id)
+                .focusable(false);
+            (stop.id, button)
+        })
+        .collect();
+    let gap = style::SPACE_XS;
+    let slots: Vec<_> = buttons
+        .iter()
+        .rev()
+        .map(|(id, button)| Slot {
+            id,
+            width: button.natural_width(ui),
+            compact: None,
+            required: true,
+        })
+        .collect();
+    let width = slots.iter().map(|slot| slot.width + gap).sum::<f32>();
+    let bounds = egui::Rect::from_min_size(
+        ui.cursor().min,
+        egui::vec2(width.min(ui.available_width()), ButtonSize::Sm.height()),
+    );
+    let mut clicked = None;
+    if let Ok(row) = bounded::allocate(bounds, 0.0, gap, &slots) {
+        ui.advance_cursor_after_rect(bounds);
+        for ((id, button), slot) in buttons.into_iter().zip(row.slots.into_iter().rev()) {
+            let mut chip = ui.new_child(egui::UiBuilder::new().id_salt(id).max_rect(slot.rect));
+            if chip.add(button).clicked() {
+                clicked = Some(id);
+            }
+        }
+    } else {
+        static STACKED: std::sync::Once = std::sync::Once::new();
+        STACKED.call_once(|| log::info!("picker: stacking stop chips to fit the available width"));
+        for (id, button) in buttons {
+            if ui.push_id(id, |ui| ui.add(button)).inner.clicked() {
+                clicked = Some(id);
+            }
+        }
+    }
+    clicked
+}
+
+fn actions(
+    ui: &mut egui::Ui,
+    state: &PickerState,
+    max_height: f32,
+    colors: &Colors,
+) -> RowsResponse {
+    let mut out = RowsResponse::default();
+    let (Some(key), Some(opening)) = (state.selected(), state.actions_opening()) else {
+        return out;
+    };
+    let stamp = state.rows_stamp();
+    let reveal_id = ui.id().with("picker_action_reveal");
+    let reveal = ui.ctx().data(|d| d.get_temp::<u64>(reveal_id)) != Some(state.reveal_epoch());
+    egui::ScrollArea::vertical()
+        .animated(false)
+        .id_salt("picker_actions")
+        .max_height(max_height)
+        .min_scrolled_height(max_height)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let actions = state.visible_actions();
+            if actions.is_empty() {
+                crate::ui::typography::caption(ui, "No matching actions", colors);
+            }
+            let selected = state.selected_action();
+            for action in actions {
+                let selected = selected == Some(action);
+                let response = ui
+                    .push_id((key, stamp, opening, action.id), |ui| {
+                        ListRow::new(action.label)
+                            .secondary(action.chord.unwrap_or_default())
+                            .selected(selected)
+                            .show(ui, colors)
+                    })
+                    .inner;
+                if selected && reveal {
+                    response.scroll_into_view(ui, true);
+                    if !ui.ctx().will_discard() {
+                        ui.ctx()
+                            .data_mut(|d| d.insert_temp(reveal_id, state.reveal_epoch()));
+                    }
+                }
+                if response.row_clicked() {
+                    out.action = Some((
+                        Hit {
+                            stamp,
+                            key: key.clone(),
+                        },
+                        opening,
+                        action.id,
+                    ));
+                }
+            }
+        });
+    out
 }
 
 #[cfg(test)]
