@@ -10,8 +10,11 @@ use crate::broker::gate::{
 use crate::broker::permit::{mint_pane, Coverage, Permit, SecretRelease};
 use crate::broker::principal::Principal;
 use crate::host::plugin_timeline::AdmittedScope;
-use crate::workspace::secrets::{ReadResult, SecretActor, SecretScope};
+use crate::workspace::secrets::{
+    NonDestructiveStore, ReadResult, SecretActor, SecretError, SecretScope,
+};
 use std::sync::Arc;
+use zeroize::Zeroizing;
 
 #[path = "secret_mutation.rs"]
 mod mutation;
@@ -435,6 +438,51 @@ struct SecretRequest {
     reply_path: PathBuf,
 }
 
+struct LiveStore<'a> {
+    inner: &'a dyn NonDestructiveStore,
+    token: &'a str,
+}
+
+impl LiveStore<'_> {
+    fn check_client(&self) -> Result<(), SecretError> {
+        if crate::rpc::ReplyRegistry::connected(self.token) != Some(true) {
+            log::info!("secret_get: client gone before the store read");
+            return Err(SecretError::Backend(
+                "client disconnected before the store read".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl NonDestructiveStore for LiveStore<'_> {
+    fn get(&self, account: &str) -> Option<Zeroizing<String>> {
+        self.check_client().ok()?;
+        self.inner.get(account)
+    }
+
+    fn get_interactive(&self, account: &str) -> Result<Option<Zeroizing<String>>, SecretError> {
+        self.check_client()?;
+        self.inner.get_interactive(account)
+    }
+
+    fn add_new(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        self.inner.add_new(account, value)
+    }
+
+    fn delete_if_value(&self, account: &str, expected: &str) -> Result<(), SecretError> {
+        self.inner.delete_if_value(account, expected)
+    }
+
+    fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
+        self.inner.list_with_prefix(prefix)
+    }
+
+    fn scan_accounts(&self) -> Result<Vec<String>, SecretError> {
+        self.inner.scan_accounts()
+    }
+}
+
 impl SecretRequest {
     fn admit(&self, monitor: &PermissionMonitor, req: AdmitRequest<'_>) -> Option<UseDecision> {
         let tool = req.tool;
@@ -486,6 +534,10 @@ impl SecretRequest {
             let stop = std::cell::Cell::new(None);
             let current = || {
                 stop.set(stopped(true));
+                #[cfg(test)]
+                if stop.get().is_none() {
+                    worker_test::after_claim_check(&token);
+                }
                 stop.get().is_none()
             };
             let claim = monitor.admit_for_use_if(req, posture, Some(&current));
@@ -518,7 +570,7 @@ impl SecretRequest {
     fn read_and_release(
         &self,
         monitor: &std::sync::Arc<crate::broker::gate::PermissionMonitor>,
-        store: &dyn crate::workspace::secrets::NonDestructiveStore,
+        store: &dyn NonDestructiveStore,
     ) {
         let principal = self.subject.principal();
         let actor = SecretActor {
@@ -527,7 +579,10 @@ impl SecretRequest {
         };
         let Some(result) = crate::workspace::secrets::read_pane_secret_with(
             monitor,
-            store,
+            &LiveStore {
+                inner: store,
+                token: &self.reply_path.to_string_lossy(),
+            },
             &actor,
             crate::workspace::secrets::ReadTarget {
                 name: &self.name,
@@ -621,7 +676,7 @@ mod worker_test {
     use std::{cell::RefCell, path::PathBuf, thread::JoinHandle};
 
     use std::sync::{Arc, Mutex};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     type Evidence = (usize, Vec<String>);
     #[derive(Default)]
@@ -630,6 +685,7 @@ mod worker_test {
         Normal,
         Deadline(Arc<Mutex<Instant>>),
         ExpireAtClaim,
+        DropClientAfterClaimCheck(Option<crate::platform::ipc::IpcStream>),
         PauseAfterAsk(std::sync::mpsc::Receiver<()>),
         ObserveStoreBeforeClick(std::sync::mpsc::Sender<usize>),
         DropReply,
@@ -637,6 +693,27 @@ mod worker_test {
     thread_local! {
         pub(super) static TIMING: RefCell<Timing> = const { RefCell::new(Timing::Normal) };
         static WORKERS: RefCell<Vec<JoinHandle<Evidence>>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn after_claim_check(token: &str) {
+        TIMING.with_borrow_mut(|mode| {
+            if let Timing::DropClientAfterClaimCheck(client) = mode {
+                drop(client.take());
+                wait_for_disconnect(token);
+                *mode = Timing::Normal;
+            }
+        });
+    }
+
+    pub(super) fn wait_for_disconnect(token: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while crate::rpc::ReplyRegistry::connected(token) != Some(false) {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the reply registry to observe the client disconnect"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     pub(super) fn deadline(real: Instant, claim: bool) -> Instant {
@@ -1851,11 +1928,38 @@ mod release_tests {
             });
             decide(&store, 1, ApprovalChoice::Once);
             drop(client);
+            // A concurrently forked child keeps its inherited descriptor open until exec.
+            worker_test::wait_for_disconnect(&token);
             resume.send(()).unwrap();
             worker.join().unwrap();
         });
         assert_eq!(store.gets.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(store.monitor.store().records().is_empty());
+    }
+
+    #[test]
+    fn a_disconnect_after_the_claim_check_prevents_the_store_read() {
+        let store = fixture(DuringRead::Nothing);
+        let token = crate::rpc::response_file_in(store.profile.path(), "gone-after-check", "json");
+        let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        crate::rpc::ReplyRegistry::register(token.clone(), server);
+        std::thread::scope(|s| {
+            let worker = s.spawn(|| {
+                worker_test::TIMING
+                    .replace(worker_test::Timing::DropClientAfterClaimCheck(Some(client)));
+                request(&store, &token).read_and_release(&store.monitor, &store);
+            });
+            decide(&store, 1, ApprovalChoice::Once);
+            worker.join().unwrap();
+        });
+        assert_eq!(store.gets.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(store
+            .monitor
+            .audit_records()
+            .iter()
+            .any(|row| row.kind == "outcome" && row.decision == "backend_error"));
+        assert_eq!(crate::rpc::ReplyRegistry::connected(&token), None);
+        assert!(!Path::new(&token).exists());
     }
 
     #[test]
