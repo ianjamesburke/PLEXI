@@ -1859,7 +1859,7 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
         mon.list_needs_you()
     );
 
-    // 2. Human pane in context A cannot read context B's or nested context B's secrets via PaneSecretGet.
+    // 2. Human pane in context A cannot read context B's or nested context B's secrets via SecretGet.
     for (target_ws, secret_name, canary) in [
         (&root_b, "SECRET_B", "canary-b-0888"),
         (&nested_b, "SECRET_NESTED", "canary-nested-0888"),
@@ -1868,7 +1868,7 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
             &format!("secret-get-0888-{}", uuid::Uuid::new_v4()),
             "json",
         ));
-        let req = HostRequest::PaneSecretGet {
+        let req = HostRequest::SecretGet {
             name: secret_name.to_string(),
             global: false,
             workspace_root: Some(target_ws.clone()),

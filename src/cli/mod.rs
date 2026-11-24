@@ -1650,7 +1650,7 @@ const IDENTITY_ACK_VERBS: &[&str] = &[
     "agent_reopen", "agent_spawn", "agent_wait", "agents_api", "call_plugin_tool",
     "caller_context", "create_context", "create_sub_context", "dismiss_notification",
     "file_open", "focus_context", "list_plugin_tools", "needs_you_api", "notify",
-    "pane_message_send", "pane_secret_get", "pane_secret_list", "permissions", "resource_lease",
+    "pane_message_send", "secret_get", "secret_set", "secret_delete", "pane_secret_list", "permissions", "resource_lease",
     "send_to_pane", "set_agent_state", "spawn_pane",
 ];
 

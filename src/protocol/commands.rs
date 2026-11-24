@@ -201,6 +201,23 @@ pub fn removed_field_reply(field: &str) -> serde_json::Value {
     })
 }
 
+/// Secret bytes cross the command socket but never appear in request traces.
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct SecretInput(pub String);
+
+impl Drop for SecretInput {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for SecretInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+
 /// App-to-host requests — go to `route_command`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -309,7 +326,7 @@ pub enum HostRequest {
         capability: String,
     },
     /// Request a workspace-scoped secret. Scoped to Init.workspace_root automatically.
-    SecretGet { key: String },
+    PluginSecretGet { key: String },
     /// Read a file through the native WASM plugin runtime host. Requires `fs.read` and
     /// the resolved path must stay inside the plugin's workspace root.
     FileRead { path: String },
@@ -1220,17 +1237,32 @@ pub enum HostRequest {
         context: String,
         response_file: String,
     },
-    /// `plexi secret get` from a terminal pane. The host admits `secret.get`
-    /// for the caller's pane and answers `status` `value`,
-    /// `permission_required` (with `pending_request_id`), `denied`, or
-    /// `not_found`. Without a grant no value is read; the desktop Allow once
-    /// click is what grants. A caller that resolves to no pane is denied.
-    PaneSecretGet {
+    /// Read a workspace or global secret for the host-classified socket caller.
+    SecretGet {
         name: String,
         #[serde(default)]
         global: bool,
-        /// Workspace `plexi secret get` resolved from the caller's cwd.
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_root: Option<std::path::PathBuf>,
+        response_file: String,
+    },
+    /// Store a secret after admission for its exact name and scope.
+    SecretSet {
+        name: String,
+        #[serde(default)]
+        global: bool,
+        workspace_root: Option<std::path::PathBuf>,
+        value: SecretInput,
+        /// Canonical environment name when the entry name was selected with --alias.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        route_name: Option<String>,
+        response_file: String,
+    },
+    /// Delete a secret after admission for its exact name and scope.
+    SecretDelete {
+        name: String,
+        #[serde(default)]
+        global: bool,
         workspace_root: Option<std::path::PathBuf>,
         response_file: String,
     },
@@ -4192,4 +4224,14 @@ mod pip_status_tests {
             other => panic!("expected SetPipStatus, got {other:?}"),
         }
     }
+}
+
+#[test]
+fn secret_set_value_never_reaches_logs_or_debug() {
+    let request: HostRequest = serde_json::from_value(serde_json::json!({
+        "type": "secret_set", "global": true, "name": "DEBUG_1280",
+        "value": "canary-1280-debug", "response_file": "reply"
+    }))
+    .unwrap();
+    assert!(!format!("{request:?}").contains("canary-1280-debug"));
 }

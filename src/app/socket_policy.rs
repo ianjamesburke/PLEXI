@@ -330,7 +330,9 @@ pub(crate) fn socket_policy(request: &HostRequest) -> Result<VerbPolicy, Refusal
         | HostRequest::PushPaneToSubcontext { .. } => Operator,
 
         HostRequest::PaneSecretList { .. }
-        | HostRequest::PaneSecretGet { .. }
+        | HostRequest::SecretGet { .. }
+        | HostRequest::SecretSet { .. }
+        | HostRequest::SecretDelete { .. }
         | HostRequest::CallPluginTool { .. }
         | HostRequest::ListPluginTools { .. }
         | HostRequest::SetContextRoot { .. }
@@ -387,7 +389,7 @@ pub(crate) fn socket_policy(request: &HostRequest) -> Result<VerbPolicy, Refusal
         | HostRequest::AgentAsk { .. } => OwnPane,
 
         HostRequest::CapabilityRequest { .. }
-        | HostRequest::SecretGet { .. }
+        | HostRequest::PluginSecretGet { .. }
         | HostRequest::FileRead { .. }
         | HostRequest::FileList { .. }
         | HostRequest::SavePluginState { .. }
@@ -440,6 +442,26 @@ pub(crate) fn socket_policy(request: &HostRequest) -> Result<VerbPolicy, Refusal
 }
 
 /// Whether `caller` may reach a handler of class `policy`.
+pub(crate) fn admit_request(
+    caller: &SocketCaller,
+    request: &HostRequest,
+    policy: VerbPolicy,
+) -> Result<(), Refusal> {
+    // A secret handler brokers detached callers as External and requires a
+    // fresh one-use grant. Other protected handlers require an identified peer.
+    if matches!(caller, SocketCaller::Unidentified(_))
+        && matches!(
+            request,
+            HostRequest::SecretGet { .. }
+                | HostRequest::SecretSet { .. }
+                | HostRequest::SecretDelete { .. }
+        )
+    {
+        return Ok(());
+    }
+    admit(caller, policy)
+}
+
 pub(crate) fn admit(caller: &SocketCaller, policy: VerbPolicy) -> Result<(), Refusal> {
     let unidentified = |reason: String| Refusal {
         code: "permission_denied",

@@ -1,15 +1,18 @@
-//! Host side of `plexi secret get` from a terminal pane.
-//!
-//! The caller is the pane named by the socket peer's ancestry, never a claim
-//! in the request. The read goes through the permission monitor, so without
-//! a grant the desktop banner shows the ask and the reply carries only its
-//! pending id. Contract: `src/cli/AGENTS.md`.
+//! Host-side admission and release of command-socket secrets.
 
 use std::path::{Path, PathBuf};
 
 use super::PlexiApp;
+use crate::broker::caller::{RequestOrigin, SocketCaller};
+use crate::broker::gate::PermissionMonitor;
 use crate::broker::permit::{mint_pane, Coverage, Permit, SecretRelease};
+use crate::broker::principal::Principal;
+use crate::host::plugin_timeline::AdmittedScope;
 use crate::workspace::secrets::{ReadResult, SecretActor, SecretScope};
+use std::sync::Arc;
+
+#[path = "secret_mutation.rs"]
+mod mutation;
 
 impl PlexiApp {
     pub(crate) fn serve_secret_list(
@@ -79,7 +82,10 @@ impl PlexiApp {
                 origin.class()
             ));
         };
-        log::info!("secret_list: explicit context={} pane={pane}", ctx.context_id);
+        log::info!(
+            "secret_list: explicit context={} pane={pane}",
+            ctx.context_id
+        );
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir())
             .map_err(|error| error.to_string())?;
         let actor = format!("pane:{pane}");
@@ -113,75 +119,94 @@ impl PlexiApp {
         origin: &crate::broker::caller::RequestOrigin,
         response_file: &str,
     ) {
+        self.run_secret_request(
+            "secret.get",
+            name,
+            global,
+            workspace_root,
+            origin,
+            response_file,
+            |request, monitor| {
+                request.read_and_release(&monitor, crate::workspace::secrets::system_store());
+            },
+        );
+    }
+
+    fn run_secret_request(
+        &self,
+        tool: &'static str,
+        name: &str,
+        global: bool,
+        workspace_root: Option<&Path>,
+        origin: &RequestOrigin,
+        response_file: &str,
+        work: impl FnOnce(SecretRequest, Arc<PermissionMonitor>) + Send + 'static,
+    ) {
         let reply_path = PathBuf::from(response_file);
-        let rpc_dir = crate::config::config_dir().join("rpc");
-        if reply_path.parent() != Some(rpc_dir.as_path()) {
-            log::warn!(
-                "secret_get: refused reply path outside {}",
-                rpc_dir.display()
-            );
+        let profile = crate::config::config_dir();
+        if reply_path.parent() != Some(profile.join("rpc").as_path()) {
+            log::warn!("{tool}: refused reply outside the profile rpc directory");
             return;
         }
-        let monitor =
-            match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-            {
-                Ok(monitor) => monitor,
-                Err(error) => {
-                    log::error!("secret_get: denied name={name}: {error}");
-                    write_reply(&reply_path, serde_json::json!({"status": "denied"}));
-                    return;
-                }
-            };
-        let Some((pane_id, admitted)) = origin
-            .socket_caller()
-            .and_then(crate::broker::caller::SocketCaller::pane)
-            .map(|pane| {
-                (
-                    pane.terminal_pane,
-                    crate::host::plugin_timeline::AdmittedScope::of(&pane.authority),
-                )
-            })
-        else {
-            monitor.note_denial("session:unscoped", "secret-get", name, "", "identity");
-            log::info!(
-                "secret_get: denied name={name} caller={} is no pane",
-                origin.class()
-            );
-            write_reply(&reply_path, serde_json::json!({"status": "denied"}));
-            return;
+        log::info!(
+            "{tool}: caller={} name={name} global={global} workspace={workspace_root:?}",
+            origin.class()
+        );
+        let monitor = match PermissionMonitor::for_profile(&profile) {
+            Ok(monitor) => monitor,
+            Err(error) => {
+                log::error!("{tool}: cannot open host monitor: {error}");
+                write_reply(&reply_path, serde_json::json!({"status":"denied"}));
+                return;
+            }
         };
-        if !global {
-            if let Some(root) = workspace_root {
-                let root_canon = crate::platform::path::canonical_or_self(root);
-                let pane_root = self.pane_context_authority_root(pane_id);
-                if pane_root.as_ref() != Some(&root_canon)
-                    || !self.pane_may_access_context_root(pane_id, root)
-                {
-                    let actor_id = format!("pane:{pane_id}");
-                    let resource = format!("{name}@{}", root_canon.display());
-                    monitor.note_denial(
-                        &actor_id,
-                        "secret-get",
-                        &resource,
-                        "",
-                        "context_scope_violation",
-                    );
-                    log::info!(
-                        "secret_get: denied pane={pane_id} name={name} target={} outside pane context root {pane_root:?}",
-                        root_canon.display()
-                    );
-                    write_reply(
-                        &reply_path,
-                        serde_json::json!({"status": "denied", "error_code": "permission_denied"}),
-                    );
-                    return;
+        let (subject, posture) = match origin.socket_caller() {
+            Some(SocketCaller::Pane(pane)) => {
+                let id = pane.terminal_pane;
+                let scope = AdmittedScope::of(&pane.authority);
+                if let Some(root) = workspace_root.filter(|_| !global) {
+                    let root = crate::platform::path::canonical_or_self(root);
+                    if self.pane_context_authority_root(id).as_ref() != Some(&root)
+                        || !self.pane_may_access_context_root(id, &root)
+                    {
+                        monitor.note_denial(
+                            &format!("pane:{id}"),
+                            tool,
+                            &format!("{name}@{}", root.display()),
+                            "",
+                            "context_scope_violation",
+                        );
+                        write_reply(
+                            &reply_path,
+                            serde_json::json!({"status":"denied","error_code":"permission_denied"}),
+                        );
+                        return;
+                    }
+                }
+                match self.pane_ceiling(id) {
+                    Ok(posture) => (Subject::Pane(scope), posture),
+                    Err(error) => {
+                        write_reply(
+                            &reply_path,
+                            serde_json::json!({"status":"error","error":error}),
+                        );
+                        return;
+                    }
                 }
             }
-        }
+            Some(SocketCaller::External(_)) => (Subject::Outside("a terminal outside Plexi"), None),
+            Some(SocketCaller::Unidentified(_)) => {
+                (Subject::Outside("a detached caller (unidentified)"), None)
+            }
+            None => {
+                write_reply(&reply_path, serde_json::json!({"status":"denied"}));
+                return;
+            }
+        };
         let scope = match scope_for(global, workspace_root) {
             Ok(scope) => scope,
             Err(error) => {
-                log::warn!("secret_get: workspace config unreadable: {error}");
+                log::warn!("{tool}: workspace config unreadable: {error}");
                 write_reply(
                     &reply_path,
                     serde_json::json!({"status": "error", "error": error}),
@@ -189,72 +214,76 @@ impl PlexiApp {
                 return;
             }
         };
-        let actor = SecretActor {
-            kind: crate::broker::ActorType::Agent,
-            id: format!("pane:{pane_id}"),
-        };
-        log::info!(
-            "secret_get: pane={pane_id} name={name} scope={}",
-            match &scope {
-                SecretScope::Workspace { root, .. } => root.display().to_string(),
-                SecretScope::Global => "global".to_string(),
-            }
-        );
-        if let Err(error) = admitted.current() {
-            log::info!("secret_get: pane={pane_id} withheld: {error}");
-            write_reply(&reply_path, serde_json::json!({"status": "denied"}));
+        if tool != "secret.get" && !global && matches!(scope, SecretScope::Global) {
+            write_reply(
+                &reply_path,
+                serde_json::json!({"status":"error","error":"No workspace found. Run plexi workspace init or use --global."}),
+            );
             return;
         }
-        // Keychain authentication can wait for a human. Keep servicing the
-        // host while the exact admitted request finishes; no re-admission loop.
-        let posture = match self.pane_ceiling(pane_id) {
-            Ok(posture) => posture,
-            Err(error) => {
-                log::info!("secret_get: pane={pane_id} refused: {error}");
-                write_reply(
-                    &reply_path,
-                    serde_json::json!({"status": "error", "error": error}),
-                );
-                return;
-            }
-        };
-        let request = ReadRequest {
-            admitted,
-            actor,
-            name: name.to_string(),
+        let request = SecretRequest {
+            subject,
+            name: name.into(),
             scope,
-            profile: crate::config::config_dir(),
+            profile,
             posture,
             reply_path: reply_path.clone(),
         };
         let repaint = self.ctx.clone();
-        let read = move || {
-            request.read_and_release(&monitor, crate::workspace::secrets::system_store());
-            // Admission ran off-thread: wake an idle host to display a newly
-            // pending banner (or remove a consumed one) without another input.
+        let run = move || {
+            match request.subject.current() {
+                Ok(()) => work(request, monitor),
+                Err(error) => {
+                    log::info!("{tool}: withheld before admission: {error}");
+                    write_reply(&request.reply_path, serde_json::json!({"status":"denied"}));
+                }
+            }
             repaint.request_repaint();
         };
         #[cfg(not(test))]
-        if let Err(error) = std::thread::Builder::new()
-            .name("secret-get".into())
-            .spawn(read)
-        {
-            log::error!("secret_get: could not start read worker: {error}");
+        if let Err(error) = std::thread::Builder::new().name(tool.into()).spawn(run) {
+            log::error!("{tool}: worker failed: {error}");
             write_reply(
                 &reply_path,
-                serde_json::json!({"status": "error", "error": "could not start secret read"}),
+                serde_json::json!({"status":"error","error":"Could not start the secret worker."}),
             );
         }
         #[cfg(test)]
-        read();
+        run();
     }
 }
 
-/// One admitted pane secret read, carried to the worker thread.
-struct ReadRequest {
-    /// The asking pane incarnation at the revision it was admitted under.
-    admitted: crate::host::plugin_timeline::AdmittedScope,
-    actor: SecretActor,
+enum Subject {
+    Pane(AdmittedScope),
+    Outside(&'static str),
+}
+
+impl Subject {
+    fn principal(&self) -> Principal {
+        match self {
+            Self::Pane(scope) => Principal::agent(format!("pane:{}", scope.authority.pane_id())),
+            Self::Outside(_) => Principal::External,
+        }
+    }
+
+    fn current(&self) -> Result<(), String> {
+        match self {
+            Self::Pane(scope) => scope.current().map(|_| ()),
+            Self::Outside(_) => Ok(()),
+        }
+    }
+
+    fn outside(&self) -> Option<&'static str> {
+        match self {
+            Self::Pane(_) => None,
+            Self::Outside(label) => Some(label),
+        }
+    }
+}
+
+/// Host-classified request carried into the secret worker.
+struct SecretRequest {
+    subject: Subject,
     name: String,
     scope: SecretScope,
     profile: PathBuf,
@@ -262,7 +291,7 @@ struct ReadRequest {
     reply_path: PathBuf,
 }
 
-impl ReadRequest {
+impl SecretRequest {
     /// Read under the broker gate and reply. A value leaves only through
     /// [`release_secret`], under the permit minted from the broker's approval
     /// of this read.
@@ -271,31 +300,41 @@ impl ReadRequest {
         monitor: &std::sync::Arc<crate::broker::gate::PermissionMonitor>,
         store: &dyn crate::workspace::secrets::NonDestructiveStore,
     ) {
-        if let Err(error) = self.admitted.current() {
-            log::info!(
-                "secret_get: {} withheld before read: {error}",
-                self.actor.id
-            );
-            write_reply(&self.reply_path, serde_json::json!({"status": "denied"}));
-            return;
-        }
+        let principal = self.subject.principal();
+        let actor = SecretActor {
+            kind: principal.actor_type(),
+            id: principal.actor_id().into(),
+        };
         let result = crate::workspace::secrets::read_pane_secret_with_posture(
             monitor,
             store,
-            &self.actor,
+            &actor,
             &self.name,
             &self.scope,
             &self.profile,
             self.posture.as_ref(),
+            self.subject.outside(),
         );
         let body = match result.map(|read| (read.result, read.approved)) {
             Ok((ReadResult::Value(value), Some(approved))) => {
                 let target = SecretRelease::target(&self.name, &self.scope);
-                let coverage = Coverage::new(monitor.clone(), vec![(target.clone(), approved)]);
-                match mint_pane::<SecretRelease>(self.admitted.clone(), target.clone(), coverage) {
+                let permit = match &self.subject {
+                    Subject::Pane(scope) => {
+                        let coverage =
+                            Coverage::new(monitor.clone(), vec![(target.clone(), approved)]);
+                        mint_pane::<SecretRelease>(scope.clone(), target.clone(), coverage)
+                    }
+                    Subject::Outside(class) => crate::broker::permit::mint_external_secret(
+                        class,
+                        target.clone(),
+                        monitor.clone(),
+                        approved,
+                    ),
+                };
+                match permit {
                     Ok(permit) => return release_secret(permit, &target, &self.reply_path, &value),
                     Err(error) => {
-                        log::info!("secret_get: {} withheld after read: {error}", self.actor.id);
+                        log::info!("secret_get: {} withheld after read: {error}", actor.id);
                         serde_json::json!({"status": "denied"})
                     }
                 }
@@ -313,12 +352,9 @@ impl ReadRequest {
     }
 }
 
-/// The one place a secret value leaves the host to a pane. The reply is
-/// staged first; then the permit commits it: the broker must still allow the
-/// approved read and the pane must still be at its admitted incarnation and
-/// revision. The waiting stream is taken under that commit, so a revoke or
-/// reset either lands before (and the pane gets `denied`) or after the
-/// hand-over. The blocking write runs outside the lock. The permit is spent.
+/// Commit the approved read before staging a value on the waiting stream.
+/// Pane releases also check the admitted incarnation and scope revision.
+/// The blocking write runs after the commit guard has been dropped.
 fn release_secret(permit: Permit<SecretRelease>, target: &str, reply_path: &Path, value: &str) {
     let token = reply_path.to_string_lossy();
     let staged = match permit.commit(target, target) {
@@ -370,11 +406,7 @@ mod list_tests {
     use crate::testing::HostHarness;
     use crate::workspace::secrets;
 
-    fn request(
-        h: &mut HostHarness,
-        context: &str,
-        peer: &[u32],
-    ) -> serde_json::Value {
+    fn request(h: &mut HostHarness, context: &str, peer: &[u32]) -> serde_json::Value {
         let response_file = crate::rpc::response_file("secret-list-test", "json");
         let request = crate::protocol::HostRequest::PaneSecretList {
             context: context.into(),
@@ -412,7 +444,10 @@ mod list_tests {
             let refused = request(&mut h, target, &[pid]);
             assert!(refused.get("entries").is_none(), "{refused}");
             let error = refused["error"].as_str().unwrap();
-            assert!(error.contains("secret.list") && error.contains("Needs you"), "{error}");
+            assert!(
+                error.contains("secret.list") && error.contains("Needs you"),
+                "{error}"
+            );
         }
         // The listener overwrites forged ancestry before dispatch, including while hidden.
         assert_eq!(
@@ -474,7 +509,7 @@ mod list_tests {
 
     fn secret_get_request(h: &mut HostHarness, name: &str, peer: &[u32]) -> serde_json::Value {
         let response_file = crate::rpc::response_file("secret-get", "json");
-        let request = crate::protocol::HostRequest::PaneSecretGet {
+        let request = crate::protocol::HostRequest::SecretGet {
             name: name.into(),
             global: false,
             workspace_root: Some(h.workspace_root()),
@@ -849,7 +884,9 @@ mod list_tests {
         let human_pane = h.add_focused_terminal();
         let human_pid = h.terminal_backend(human_pane).child_pid();
         assert!(
-            h.app.terminal_incarnation(human_pane).is_some_and(|t| t.is_desktop_granted()),
+            h.app
+                .terminal_incarnation(human_pane)
+                .is_some_and(|t| t.is_desktop_granted()),
             "fixture must be a human-owned terminal pane"
         );
         assert!(
@@ -1105,12 +1142,8 @@ mod release_tests {
         let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
         crate::rpc::register_client_stream(reply.clone(), client);
         crate::rpc::ReplyRegistry::register(reply.clone(), server.try_clone().unwrap());
-        ReadRequest {
-            admitted: crate::host::plugin_timeline::AdmittedScope::of(&store.pane),
-            actor: SecretActor {
-                kind: crate::broker::ActorType::Agent,
-                id: "pane:7".into(),
-            },
+        SecretRequest {
+            subject: Subject::Pane(AdmittedScope::of(&store.pane)),
             name: "TOKEN_1716".into(),
             scope,
             profile: store.profile.path().to_path_buf(),
@@ -1195,5 +1228,155 @@ mod release_tests {
             "permission_required",
             "the claim was spent"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod cli_tests {
+    use crate::testing::HostHarness;
+    use crate::workspace::secrets;
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    // Each invocation has its own CLI environment and process-local mock store.
+    #[test]
+    fn secret_cli_child() {
+        let Ok(op) = std::env::var("SECRET_TEST_OP") else {
+            return;
+        };
+        let _profile = crate::config::set_test_profile_dir(
+            std::env::var_os("SECRET_TEST_PROFILE").unwrap().into(),
+        );
+        if let Some(socket) = std::env::var_os("SECRET_TEST_SOCKET") {
+            crate::cli::set_command_socket_override(socket.into());
+        }
+        let name = "SOCKET_1280";
+        secrets::take_test_store_calls();
+        let code = match op.as_str() {
+            "get" => crate::cli::workspace::workspace_secret_get(name, true),
+            "set" => crate::cli::workspace::workspace_secret_set(name, true, true, None),
+            "delete" => crate::cli::workspace::workspace_secret_delete(name, true),
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            secrets::take_test_store_calls(),
+            0,
+            "the CLI opened its store"
+        );
+        std::process::exit(code);
+    }
+
+    fn cli(op: &str, profile: &std::path::Path) -> Command {
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "app::secret_get::cli_tests::secret_cli_child",
+            "--exact",
+            "--nocapture",
+            "--test-threads=2",
+        ])
+        .env_clear()
+        .env("SECRET_TEST_PROFILE", profile)
+        .env("HOME", profile)
+        .env("SECRET_TEST_OP", op)
+        .env("SOCKET_1280", "fixture-value")
+        .current_dir(profile)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+        cmd
+    }
+
+    #[test]
+    fn workspace_secret_cli_fails_closed_without_a_host() {
+        let profile = tempfile::tempdir().unwrap();
+        for op in ["get", "set", "delete"] {
+            let output = cli(op, profile.path()).output().unwrap();
+            assert_eq!(output.status.code(), Some(1));
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout).trim(),
+                "running 1 test"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("Plexi host did not answer") && stderr.contains("start Plexi"),
+                "{stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn outside_cli_secret_get_over_host_socket() {
+        let mut h = HostHarness::new();
+        let profile = crate::config::config_dir();
+        let socket_dir = tempfile::tempdir_in("/tmp").unwrap();
+        let socket = socket_dir.path().join("host.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let store = secrets::system_store();
+        let account = secrets::keychain_user_name("SOCKET_1280");
+        store.set(&account, "fixture-value").unwrap();
+        for expected in [2, 0, 2] {
+            let mut child = cli("get", &profile)
+                .env("SECRET_TEST_SOCKET", &socket)
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(child.try_wait().unwrap().is_none() && Instant::now() < deadline);
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("accept: {e}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let peer = crate::broker::caller::PeerWitness::capture(
+                super::super::resolve_socket_peer_pid(&stream).unwrap(),
+            );
+            assert!(matches!(
+                h.app.classify_socket_peer(Some(&peer)),
+                crate::broker::caller::SocketCaller::External(_)
+            ));
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            crate::app::handle_socket_line_in(
+                &profile,
+                line.trim(),
+                &h.ipc_tx,
+                Some(&peer),
+                &mut stream,
+            );
+            drop(stream);
+            h.hidden_frame();
+            let output = child.wait_with_output().unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(expected),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            if expected == 2 {
+                assert!(
+                    stdout.contains("permission_required") && !stdout.contains("fixture-value")
+                );
+                let id = stdout
+                    .lines()
+                    .find_map(|line| line.strip_prefix("pending_request_id="))
+                    .unwrap();
+                crate::broker::gate::PermissionMonitor::for_profile(&profile)
+                    .unwrap()
+                    .approve_pending(id, crate::broker::gate::ApprovalChoice::Once)
+                    .unwrap();
+            } else {
+                assert!(stdout.lines().any(|line| line == "fixture-value"));
+            }
+        }
+        store.delete(&account).unwrap();
     }
 }

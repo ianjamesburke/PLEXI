@@ -149,6 +149,10 @@ impl GrantDuration {
     }
 }
 
+pub(crate) fn workspace_secret_tool(tool: &str) -> bool {
+    matches!(tool, "secret.get" | "secret.set" | "secret.delete")
+}
+
 impl GrantRecord {
     /// A row that says the person decided it can only be written with the
     /// evidence of that decision (stint 1285).
@@ -167,6 +171,13 @@ impl GrantRecord {
     /// Whether this row may exist for its actor at all: an outside-process
     /// row only for once or session (stint 1285).
     pub fn duration_admissible(&self) -> bool {
+        if self.actor_type == ActorType::External
+            && self.target_type == TargetType::Secret
+            && self.decision == Decision::Allow
+            && workspace_secret_tool(&self.target_id)
+        {
+            return self.duration == GrantDuration::Once;
+        }
         self.actor_type != ActorType::External || self.duration.allowed_for_external()
     }
 }
@@ -1145,7 +1156,7 @@ impl GrantStore {
     fn insert_record(&mut self, record: GrantRecord) {
         if !record.duration_admissible() {
             log::error!(
-                "grant_store: refused {:?} grant for {} on {}: an outside-process grant lasts once or for the session",
+                "grant_store: refused {:?} grant for {} on {}: duration is not admissible for this outside-process grant",
                 record.duration,
                 record.actor_id,
                 record.target_id
@@ -1358,7 +1369,7 @@ impl GrantStore {
                 let admissible = r.duration_admissible();
                 if !admissible {
                     log::info!(
-                        "broker: ignored {:?} row {} for outside process (once and session only)",
+                        "broker: ignored {:?} row {} for outside process (inadmissible duration)",
                         r.duration,
                         r.grant_id
                     );

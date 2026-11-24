@@ -34,7 +34,12 @@ impl SecretTarget {
     }
 
     fn account(&self, name: &str) -> Result<String, String> {
-        if !super::folder::valid_env_name(name) {
+        let friendly_workspace_name = matches!(self, Self::Workspace { .. })
+            && !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
+        if !friendly_workspace_name && !super::folder::valid_env_name(name) {
             return Err(
                 "Use an environment variable name (letters, digits and underscores).".into(),
             );
@@ -265,6 +270,7 @@ fn inventory_for_scope(
 
 pub enum Mutation<'a> {
     Set(&'a str),
+    SetRouted { canonical: &'a str, value: &'a str },
     Delete,
 }
 
@@ -278,19 +284,30 @@ pub fn mutate_secret(
     name: &str,
     mutation: Mutation<'_>,
 ) -> Result<(), String> {
+    let (canonical, value) = match mutation {
+        Mutation::Set(value) => (name, Some(value)),
+        Mutation::SetRouted { canonical, value } => {
+            if !matches!(target, SecretTarget::Workspace { .. })
+                || !super::folder::valid_env_name(canonical)
+            {
+                return Err(
+                    "A workspace alias needs a canonical environment variable name.".into(),
+                );
+            }
+            (canonical, Some(value))
+        }
+        Mutation::Delete => (name, None),
+    };
     let account = target.account(name)?;
-    if matches!(mutation, Mutation::Set(value) if value.is_empty()) {
+    if value == Some("") {
         return Err("Value cannot be empty.".into());
     }
-    let operation = match mutation {
-        Mutation::Set(_) => "set",
-        Mutation::Delete => "delete",
-    };
+    let operation = if value.is_some() { "set" } else { "delete" };
     let resource = target.resource(name);
     let call_id = format!("secret-mutation-{}", uuid::Uuid::new_v4());
     monitor.note_secret_mutation(&call_id, &resource, operation, "requested")?;
-    let result = match mutation {
-        Mutation::Set(value) => match target {
+    let result = match value {
+        Some(value) => match target {
             SecretTarget::Folder(folder) => {
                 super::set_folder_secret(store, name, folder, value).map(|_| ())
             }
@@ -298,7 +315,7 @@ pub fn mutate_secret(
                 .set(&account, value)
                 .map_err(|_| "Secret store write failed; value was not saved.".to_string()),
         },
-        Mutation::Delete => match target {
+        None => match target {
             SecretTarget::Folder(folder) => super::remove_folder_secret(store, name, folder),
             _ => match store.delete(&account) {
                 Ok(super::DeleteOutcome::Deleted) => Ok(()),
@@ -324,8 +341,8 @@ pub fn mutate_secret(
                 .to_string()
         })?;
     result?;
-    if let (SecretTarget::Workspace { root, .. }, Mutation::Set(_)) = (target, mutation) {
-        super::write_default_route(root, name, name).map_err(|error| {
+    if let (SecretTarget::Workspace { root, .. }, Some(_)) = (target, value) {
+        super::write_default_route(root, canonical, name).map_err(|error| {
             log::warn!("secrets_manager: saved {name}, default route failed: {error}");
             "Secret saved, but its workspace route could not be saved. Refresh before retrying."
                 .to_string()

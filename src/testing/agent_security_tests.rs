@@ -36,7 +36,7 @@ fn write_workspace(root: &Path, workspace_id: &str, inject: &[&str]) {
 /// listener stamps a real peer.
 fn secret_get(h: &mut HostHarness, name: &str, root: &Path, ancestry: &[u32]) -> serde_json::Value {
     let reply = PathBuf::from(crate::rpc::response_file("secret-get-test", "json"));
-    let request = HostRequest::PaneSecretGet {
+    let request = HostRequest::SecretGet {
         name: name.to_string(),
         global: false,
         workspace_root: Some(root.to_path_buf()),
@@ -98,7 +98,7 @@ fn secret_get_from_a_pane_files_a_click_approval_not_a_value() {
 }
 
 #[test]
-fn secret_get_without_a_host_stamped_pane_is_refused() {
+fn secret_get_without_pane_ancestry_asks_as_external() {
     let mut h = HostHarness::new();
     let root = h.workspace_root();
     write_workspace(&root, "ws-0788-nopane", &[]);
@@ -109,12 +109,12 @@ fn secret_get_without_a_host_stamped_pane_is_refused() {
     let before = monitor().list_pending().len();
 
     let reply = secret_get(&mut h, "API_KEY_0788", &root, &[]);
-    assert_eq!(reply["status"], "denied", "{reply}");
+    assert_eq!(reply["status"], "permission_required", "{reply}");
     assert!(!reply.to_string().contains(canary));
     assert_eq!(
         monitor().list_pending().len(),
-        before,
-        "no pending without an identity"
+        before + 1,
+        "detached caller must ask"
     );
 }
 
@@ -180,26 +180,32 @@ fn agent_pane_env_carries_no_workspace_or_folder_secrets() {
 }
 
 #[test]
-fn cli_secret_set_does_not_enable_terminal_injection() {
+fn workspace_secret_set_preserves_alias_and_terminal_injection() {
     let dir = tempfile::tempdir().unwrap();
     let _profile = crate::config::set_test_profile_dir(dir.path().join("profile"));
     let root = dir.path().join("ws");
     write_workspace(&root, "ws-0788-set", &["ALREADY_0788"]);
     let store = crate::workspace::secrets::InMemoryKeychain::new();
 
-    let injected = crate::cli::workspace::store_workspace_secret(
+    use crate::workspace::secrets::manager::{mutate_secret, Mutation, SecretTarget};
+    mutate_secret(
         &store,
-        &root,
-        "ws-0788-set",
-        "NEW_0788",
-        "NEW_0788",
-        "set-canary-0788",
+        &monitor(),
+        &SecretTarget::Workspace {
+            id: "ws-0788-set".into(),
+            root: root.clone(),
+        },
+        "friendly-0788",
+        Mutation::SetRouted {
+            canonical: "NEW_0788",
+            value: "set-canary-0788",
+        },
     )
     .unwrap();
 
     assert_eq!(
         store
-            .get("plexi:ws-0788-set:NEW_0788")
+            .get("plexi:ws-0788-set:friendly-0788")
             .as_deref()
             .map(String::as_str),
         Some("set-canary-0788")
@@ -207,12 +213,8 @@ fn cli_secret_set_does_not_enable_terminal_injection() {
     let router = crate::workspace::secrets::WorkspaceSecrets::load(&root)
         .unwrap()
         .unwrap();
+    assert_eq!(router.default["NEW_0788"], "friendly-0788");
     assert_eq!(router.terminal.env.inject, vec!["ALREADY_0788".to_string()]);
-    assert_eq!(
-        injected,
-        vec!["ALREADY_0788".to_string()],
-        "existing injected names are surfaced"
-    );
 }
 
 fn spawn_second_terminal(h: &mut HostHarness, beside: u64) -> u64 {

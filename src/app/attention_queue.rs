@@ -696,7 +696,9 @@ impl PlexiApp {
                 crate::host::plugin_admission::LOAD_INSTALLED_TOOL
                     | crate::host::plugin_admission::TRUST_FOLDER_TOOL
             );
-            let cmd_text = if is_cli_operation || is_plugin_admission {
+            let is_secret = crate::broker::workspace_secret_tool(&pending.tool)
+                && pending.actor_id == crate::broker::principal::EXTERNAL_ID;
+            let cmd_text = if is_cli_operation || is_plugin_admission || is_secret {
                 // The summary is already a full sentence naming plugin, workspace,
                 // program and ambient authority; a tool-name prefix adds nothing.
                 pending.input_summary.clone()
@@ -722,6 +724,8 @@ impl PlexiApp {
                         self.approval_actor_label(&pending.actor_id),
                         pending.tool.replace("__", " / ")
                     )
+                } else if is_secret {
+                    pending.input_summary.clone()
                 } else if is_cli_operation {
                     format!(
                         "{} wants to run a program on this computer",
@@ -742,7 +746,12 @@ impl PlexiApp {
                     )
                 },
                 command_text: cmd_text,
-                options: if pending.tool == "pane.send" {
+                options: if is_secret {
+                    default_ask_options()
+                        .into_iter()
+                        .filter(|o| o.key != "allow_always")
+                        .collect()
+                } else if pending.tool == "pane.send" {
                     pane_send_ask_options()
                 } else if is_cli_operation {
                     cli_operation_ask_options()

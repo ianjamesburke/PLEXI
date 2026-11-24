@@ -665,6 +665,16 @@ pub(crate) struct Approved {
     posture: Option<crate::broker::PermissionPosture>,
 }
 
+impl Approved {
+    pub(super) fn is_external_secret_read(&self) -> bool {
+        self.request.actor_type == ActorType::External
+            && self.request.actor_id == super::principal::EXTERNAL_ID
+            && self.request.target_type == TargetType::Secret
+            && self.request.target_id == "secret.get"
+            && !self.request.operation_id.is_empty()
+    }
+}
+
 /// The broker's answer to one use ([`PermissionMonitor::admit_for_use`]).
 pub(crate) enum UseDecision {
     /// Allowed; a once grant it rested on is already claimed for this use.
@@ -1199,7 +1209,27 @@ impl PermissionMonitor {
                     grant_id,
                 };
             }
-            match self.admit_inner(req, posture, None) {
+            let disclosure = (req.target_type == TargetType::Secret
+                && req.principal.actor_type() == ActorType::External
+                && super::workspace_secret_tool(req.tool))
+            .then(|| {
+                let input: serde_json::Value =
+                    serde_json::from_str(req.input_json).unwrap_or_default();
+                let caller = input["caller"].as_str().unwrap_or(req.principal.actor_id());
+                let resource = request.resource_id.as_deref().unwrap_or(req.tool);
+                let duration = if req.principal.actor_type() == ActorType::External {
+                    " once"
+                } else {
+                    ""
+                };
+                let mut summary =
+                    format!("Allow {caller} to use {}{duration} on {resource}", req.tool);
+                if let Some(route) = input["route_name"].as_str() {
+                    summary.push_str(&format!(" for environment variable {route}"));
+                }
+                summary
+            });
+            match self.admit_inner(req, posture, disclosure.as_deref()) {
                 Admission::Required { pending_request_id } => {
                     return UseDecision::Required { pending_request_id }
                 }
@@ -1638,6 +1668,13 @@ impl PermissionMonitor {
             && pending.binding.target_type != TargetType::PluginConnector
         {
             return Err("tool allowance is only available for plugin tools".to_string());
+        }
+        if pending.binding.actor_type == ActorType::External
+            && pending.binding.target_type == TargetType::Secret
+            && super::workspace_secret_tool(&pending.tool)
+            && choice == ApprovalChoice::Session
+        {
+            return Err("An outside terminal needs a one-use approval for this secret.".into());
         }
         if pending.binding.actor_type == ActorType::External
             && matches!(
@@ -2893,7 +2930,14 @@ impl PermissionMonitor {
             kind: NeedsYouKind::ApprovalClick,
             actor: pending.binding.actor_id.clone(),
             resource: resource.clone(),
-            summary: format!("Allow {}", pending.tool),
+            summary: if pending.binding.target_type == TargetType::Secret
+                && pending.binding.actor_type == ActorType::External
+                && super::workspace_secret_tool(&pending.tool)
+            {
+                pending.input_summary.clone()
+            } else {
+                format!("Allow {}", pending.tool)
+            },
             created_at: now,
             expires_at: None,
             run_tag: Some(pending.binding.call_id.clone()),
@@ -5839,7 +5883,7 @@ pub(crate) fn resource_of(tool: &str, input_json: &str) -> (ResourceScope, Optio
     }
     let place_key = match tool {
         "secret.read" => Some("folder"),
-        "secret.get" => Some("scope"),
+        tool if super::workspace_secret_tool(tool) => Some("scope"),
         _ => None,
     };
     if let Some(place_key) = place_key {

@@ -1131,7 +1131,7 @@ impl PlexiApp {
                 let policy = socket_policy::socket_policy(&request);
                 let admitted = policy
                     .clone()
-                    .and_then(|policy| socket_policy::admit(&caller, policy));
+                    .and_then(|policy| socket_policy::admit_request(&caller, &request, policy));
                 match admitted {
                     Ok(()) => self.handle_pane_ipc_request(RequestOrigin::Socket(caller), request),
                     Err(refusal) => {
@@ -1438,7 +1438,7 @@ impl PlexiApp {
             } => {
                 self.serve_secret_list(context, &origin, response_file);
             }
-            crate::protocol::HostRequest::PaneSecretGet {
+            crate::protocol::HostRequest::SecretGet {
                 name,
                 global,
                 workspace_root,
@@ -1450,6 +1450,38 @@ impl PlexiApp {
                     workspace_root.as_deref(),
                     &origin,
                     response_file,
+                );
+            }
+            crate::protocol::HostRequest::SecretSet {
+                name,
+                global,
+                workspace_root,
+                value,
+                route_name,
+                response_file,
+            } => {
+                self.serve_secret_mutation(
+                    name,
+                    *global,
+                    workspace_root.as_deref(),
+                    &origin,
+                    response_file,
+                    Some((value.clone(), route_name.clone())),
+                );
+            }
+            crate::protocol::HostRequest::SecretDelete {
+                name,
+                global,
+                workspace_root,
+                response_file,
+            } => {
+                self.serve_secret_mutation(
+                    name,
+                    *global,
+                    workspace_root.as_deref(),
+                    &origin,
+                    response_file,
+                    None,
                 );
             }
             crate::protocol::HostRequest::AgentsApi {

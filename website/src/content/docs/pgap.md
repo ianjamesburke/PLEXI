@@ -203,7 +203,7 @@ Request a runtime capability prompt. Host shows modal; responds with CapabilityD
 | `capability` | `string` | yes |
 | `request_id` | `string` | yes |
 
-### `secret_get`
+### `plugin_secret_get`
 
 Request a workspace-scoped secret. Scoped to Init.workspace_root automatically.
 
@@ -967,9 +967,33 @@ Names-only explicit-context inventory, admitted for the host-stamped peer.
 | `context` | `string` | yes |
 | `response_file` | `string` | yes |
 
-### `pane_secret_get`
+### `secret_get`
 
-`plexi secret get` from a terminal pane. The host admits `secret.get` for the caller's pane and answers `status` `val...
+Read a workspace or global secret for the host-classified socket caller.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `global` | `boolean` | no |
+| `name` | `string` | yes |
+| `response_file` | `string` | yes |
+| `workspace_root` | `string?` | no |
+
+### `secret_set`
+
+Store a secret after admission for its exact name and scope.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `global` | `boolean` | no |
+| `name` | `string` | yes |
+| `response_file` | `string` | yes |
+| `route_name` | `string?` | no |
+| `value` | `SecretInput` | yes |
+| `workspace_root` | `string?` | no |
+
+### `secret_delete`
+
+Delete a secret after admission for its exact name and scope.
 
 | Field | Type | Required |
 |-------|------|----------|

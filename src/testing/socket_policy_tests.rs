@@ -619,7 +619,9 @@ const SOCKET_OPERATIONS: &[(Op, VerbPolicy)] = {
         (Request("zoom_out_of_context"), Operator),
         (Request("push_pane_to_subcontext"), Operator),
         (Request("pane_secret_list"), Protected),
-        (Request("pane_secret_get"), Protected),
+        (Request("secret_get"), Protected),
+        (Request("secret_set"), Protected),
+        (Request("secret_delete"), Protected),
         (Request("call_plugin_tool"), Protected),
         (Request("list_plugin_tools"), Protected),
         (Request("set_context_root"), Protected),
@@ -678,7 +680,7 @@ const SOCKET_OPERATIONS: &[(Op, VerbPolicy)] = {
         (Request("agent_ask"), OwnPane),
         (Request("send_to_pane"), Protected),
         (Request("capability_request"), NotOnSocket),
-        (Request("secret_get"), NotOnSocket),
+        (Request("plugin_secret_get"), NotOnSocket),
         (Request("file_read"), NotOnSocket),
         (Request("file_list"), NotOnSocket),
         (Request("save_plugin_state"), NotOnSocket),
@@ -1039,7 +1041,7 @@ fn entry_outcome(
 ) -> Option<String> {
     let caller = h.app.classify_socket_peer(peer.as_ref());
     let policy = crate::app::socket_policy::socket_policy(&request).unwrap();
-    if crate::app::socket_policy::admit(&caller, policy).is_ok() && !dispatch {
+    if crate::app::socket_policy::admit_request(&caller, &request, policy).is_ok() && !dispatch {
         return None;
     }
     let token = serde_json::to_value(&request)
@@ -1081,7 +1083,15 @@ fn socket_operations_admit_by_caller_class() {
                 Caller::External => Some(outside()),
                 Caller::Unidentified => None,
             };
-            let expected = expected_admission(*policy, caller);
+            let expected = if matches!(caller, Caller::Unidentified)
+                && matches!(
+                    op,
+                    Op::Request("secret_get" | "secret_set" | "secret_delete")
+                ) {
+                None
+            } else {
+                expected_admission(*policy, caller)
+            };
             let actual = match *op {
                 Op::Frame(name) => {
                     let classified = h.app.classify_socket_peer(peer.as_ref());
@@ -1118,49 +1128,206 @@ fn socket_operations_admit_by_caller_class() {
     assert!(!foreign_terminal.agent_completed && foreign_terminal.agent.is_none());
 }
 
-/// Ruling (ledger row 169): an outside process is refused `plexi secret get`
-/// even after an approval, because every outside process shares one
-/// identity and the CLI reruns as a new process. An approved outside row
-/// for the tool does not open it.
-#[test]
-fn an_outside_secret_get_is_refused_even_after_an_approval() {
-    use crate::broker::gate::{Admission, AdmitRequest, ApprovalChoice, PermissionMonitor};
-    let mut h = HostHarness::new();
-    let root = crate::platform::path::canonical_or_self(&h.workspace_root());
-    let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
-    let admit = || {
-        monitor.admit(AdmitRequest {
-            call_id: &format!("outside-secret-{}", uuid::Uuid::new_v4()),
-            tool: "secret.get",
-            input_json: &serde_json::json!({"name": "API_KEY"}).to_string(),
-            principal: &crate::broker::principal::Principal::External,
-            actor_scope: crate::broker::ActorScope::User,
-            trust_origin: "plexi-cli",
-            workspace_root: &root,
-            context_id: 0,
-            package_id: "",
-            instance_id: 0,
-            target_type: crate::broker::TargetType::Secret,
-        })
-    };
-    let Admission::Required { pending_request_id } = admit() else {
-        panic!("an outside secret request with no row must ask");
-    };
+// Exercise the real decoder, classification and dispatch for metadata replies.
+// cfg(test) writes those to the profile when the writer has no socket stream.
+fn secret_metadata(
+    h: &mut HostHarness,
+    mut request: serde_json::Value,
+    peer: &PeerWitness,
+) -> serde_json::Value {
+    let token = crate::rpc::response_file("secret-metadata", "json");
+    request["response_file"] = token.as_str().into();
+    crate::app::handle_socket_line_in(
+        &crate::config::config_dir(),
+        &request.to_string(),
+        &h.ipc_tx,
+        Some(peer),
+        &mut Vec::new(),
+    );
+    h.hidden_frame();
+    serde_json::from_slice(&std::fs::read(token).expect("metadata reply")).unwrap()
+}
+
+fn secret_ask(
+    h: &mut HostHarness,
+    request: &serde_json::Value,
+    peer: &PeerWitness,
+) -> crate::broker::gate::PendingView {
+    let reply = secret_metadata(h, request.clone(), peer);
+    assert_eq!(reply["status"], "permission_required", "{reply}");
+    assert!(reply.get("value").is_none());
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
     monitor
-        .approve_pending(&pending_request_id, ApprovalChoice::Session)
+        .show_pending(reply["pending_request_id"].as_str().unwrap())
+        .unwrap()
+}
+
+#[test]
+fn external_secret_get_asks_and_returns_no_value() {
+    use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
+    let mut h = HostHarness::new();
+    let root = workspace_secret(&h, "ws-1280-get", "READ_1280", "test-read-value");
+    let get = serde_json::json!({"type":"secret_get","name":"READ_1280","workspace_root":root});
+    let peer = witness(std::process::id(), AncestryEnd::ReachedRoot);
+    let ask = secret_ask(&mut h, &get, &peer);
+    assert_eq!(ask.actor_id, crate::broker::principal::EXTERNAL_ID);
+    assert!(ask.input_summary.contains("terminal outside Plexi"));
+    PermissionMonitor::for_profile(&crate::config::config_dir())
+        .unwrap()
+        .approve_pending(&ask.pending_request_id, ApprovalChoice::Once)
         .unwrap();
+    assert_eq!(
+        send(&mut h, get.clone(), Some(peer.clone()))["value"],
+        "test-read-value"
+    );
+    secret_ask(&mut h, &get, &peer);
+}
+
+#[test]
+fn detached_secret_get_asks() {
+    let mut h = HostHarness::new();
+    let peer = witness(std::process::id(), AncestryEnd::LookupFailed);
+    let get = serde_json::json!({"type":"secret_get","name":"DETACHED_1280","global":true});
+    let ask = secret_ask(&mut h, &get, &peer);
+    assert_eq!(ask.actor_id, crate::broker::principal::EXTERNAL_ID);
+    h.app.sync_attention_queue();
+    let card = h
+        .app
+        .attention_queue
+        .items
+        .iter()
+        .find(|card| card.id == ask.pending_request_id)
+        .unwrap();
+    assert!(card.summary.contains("detached"));
+    assert_eq!(
+        card.options
+            .iter()
+            .map(|o| o.key.as_str())
+            .collect::<Vec<_>>(),
+        ["allow_once", "deny"]
+    );
+    assert!(ask.input_summary.contains("detached"));
+}
+
+#[test]
+fn external_caller_is_not_admitted_by_a_session_grant() {
+    use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
+    let mut h = HostHarness::new();
+    let peer = witness(std::process::id(), AncestryEnd::ReachedRoot);
+    let get = serde_json::json!({"type":"secret_get","name":"SESSION_1280","global":true});
+    let ask = secret_ask(&mut h, &get, &peer);
+    let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    assert!(monitor
+        .approve_pending(&ask.pending_request_id, ApprovalChoice::Session)
+        .is_err());
+    // Simulate a valid session row inherited from an earlier host. Rejection
+    // at the click alone cannot prove that admission ignores standing rows.
+    monitor
+        .approve_pending(&ask.pending_request_id, ApprovalChoice::Once)
+        .unwrap();
+    {
+        let mut store = monitor.store();
+        let row = store
+            .records_mut()
+            .iter_mut()
+            .find(|row| row.target_id == "secret.get")
+            .unwrap();
+        row.duration = crate::broker::GrantDuration::Session;
+        row.session_id = Some(monitor.session_id().into());
+    }
+    secret_ask(&mut h, &get, &peer);
+}
+
+#[test]
+fn external_secret_set_and_delete_ask_then_apply_once() {
+    use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
+    use crate::workspace::secrets::{keychain_user_name, system_store};
+    let mut h = HostHarness::new();
+    let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    let name = format!("MUTATE_{}", uuid::Uuid::new_v4().simple());
+    let logs = crate::testing::test_log::capture_with_debug();
+    let account = keychain_user_name(&name);
+    let peer = witness(std::process::id(), AncestryEnd::ReachedRoot);
+    for op in ["set", "delete"] {
+        let mut request =
+            serde_json::json!({"type":format!("secret_{op}"), "name":name, "global":true});
+        if op == "set" {
+            request["value"] = "mutation-canary-before-click".into();
+        }
+        let ask = secret_ask(&mut h, &request, &peer);
+        assert_eq!(ask.tool, format!("secret.{op}"));
+        assert_eq!(ask.resource_id.unwrap(), format!("{name}@global"));
+        assert!(!ask.input_summary.contains("mutation-canary"));
+        assert_eq!(system_store().get(&account).is_some(), op == "delete");
+        monitor
+            .approve_pending(&ask.pending_request_id, ApprovalChoice::Once)
+            .unwrap();
+        if op == "set" {
+            // Only the name and scope are approved. The retry supplies the value.
+            request["value"] = "mutation-canary".into();
+        }
+        assert_eq!(
+            secret_metadata(&mut h, request.clone(), &peer)["status"],
+            "ok"
+        );
+        assert_eq!(
+            system_store().get(&account).as_deref().map(String::as_str),
+            (op == "set").then_some("mutation-canary")
+        );
+        secret_ask(&mut h, &request, &peer);
+        assert!(monitor
+            .audit_records()
+            .iter()
+            .any(|r| r.kind == "secret_mutation" && r.operation_id == op && r.decision == "ok"));
+    }
+    assert!(logs.lines().iter().any(|line| line.contains("secret.set")));
+    assert!(!logs
+        .lines()
+        .iter()
+        .any(|line| line.contains("mutation-canary")));
     assert!(
-        matches!(admit(), Admission::Proceed { .. }),
-        "the approved outside row must exist for this test to mean anything"
+        !std::fs::read_to_string(crate::config::config_dir().join("permission-audit.jsonl"))
+            .unwrap()
+            .contains("mutation-canary")
     );
-    let reply = send(
-        &mut h,
-        serde_json::json!({"type": "pane_secret_get", "name": "API_KEY",
-            "workspace_root": root}),
-        Some(outside()),
-    );
-    assert_eq!(reply["status"], "denied", "{reply}");
-    assert!(reply.get("value").is_none(), "{reply}");
+}
+
+#[test]
+fn pane_secret_mutations_ask_as_the_pane_within_its_root() {
+    let mut h = HostHarness::new();
+    let root = workspace_secret(&h, "ws-1280-pane", "PANE_1280", "initial");
+    let pane = h.add_focused_terminal();
+    let peer = pane_witness(&h, pane);
+    let other = tempfile::tempdir().unwrap();
+    for op in ["set", "delete"] {
+        let mut req = serde_json::json!({"type":format!("secret_{op}"), "name":"PANE_1280","workspace_root":root});
+        if op == "set" {
+            req["value"] = "fixture".into();
+        }
+        let ask = secret_ask(&mut h, &req, &peer);
+        assert_eq!(ask.actor_id, format!("pane:{pane}"));
+        let mut foreign = req.clone();
+        foreign["workspace_root"] = serde_json::json!(other.path());
+        assert_eq!(
+            secret_metadata(&mut h, foreign, &peer)["error_code"],
+            "permission_denied"
+        );
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
+            .unwrap()
+            .approve_pending(
+                &ask.pending_request_id,
+                crate::broker::gate::ApprovalChoice::Once,
+            )
+            .unwrap();
+        let reply = secret_metadata(&mut h, req, &peer);
+        assert_eq!(reply["target"]["Workspace"]["id"], "ws-1280-pane");
+        let value = crate::workspace::secrets::system_store().get("plexi:ws-1280-pane:PANE_1280");
+        assert_eq!(
+            value.as_deref().map(String::as_str),
+            (op == "set").then_some("fixture")
+        );
+    }
 }
 
 /// Old CLI -> new host: each frame shape the pre-1285 CLI sent with an
@@ -1294,7 +1461,7 @@ fn a_covered_worker_secret_get_is_satisfied_by_its_exact_approval() {
     let (worker, peer) = covered_worker(&mut h, "");
     let canary = "covered-ask-canary-1673";
     let root = workspace_secret(&h, "ws-1673-ask", "KEY_1673", canary);
-    let get = serde_json::json!({"type": "pane_secret_get", "name": "KEY_1673",
+    let get = serde_json::json!({"type": "secret_get", "name": "KEY_1673",
         "workspace_root": root});
     let first = send(&mut h, get.clone(), Some(peer.clone()));
     assert_eq!(first["status"], "permission_required", "{first}");
@@ -1342,6 +1509,7 @@ fn a_covered_worker_deny_beats_an_exact_stored_allow() {
             &scope,
             &crate::config::config_dir(),
             None,
+            None,
         )
         .unwrap()
         .result
@@ -1358,7 +1526,7 @@ fn a_covered_worker_deny_beats_an_exact_stored_allow() {
     );
     let reply = send(
         &mut h,
-        serde_json::json!({"type": "pane_secret_get", "name": "KEY_1673",
+        serde_json::json!({"type": "secret_get", "name": "KEY_1673",
             "workspace_root": root}),
         Some(peer),
     );

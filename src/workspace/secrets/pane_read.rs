@@ -24,8 +24,18 @@ pub enum SecretScope {
 }
 
 impl SecretScope {
+    /// Preserve the pane's existing exact binding. Outside approvals also bind
+    /// the human-readable class stamped by the socket entry.
+    pub(crate) fn input(&self, name: &str, outside: Option<&str>) -> serde_json::Value {
+        let mut input = serde_json::json!({"name": name, "scope": self.label()});
+        if let Some(caller) = outside {
+            input["caller"] = caller.into();
+        }
+        input
+    }
+
     /// The resource label in the grant binding: the workspace root, or `global`.
-    fn label(&self) -> String {
+    pub(crate) fn label(&self) -> String {
         match self {
             Self::Workspace { root, .. } => root.to_string_lossy().into_owned(),
             Self::Global => "global".to_string(),
@@ -44,7 +54,7 @@ pub fn read_pane_secret(
     scope: &SecretScope,
     global_root: &Path,
 ) -> Result<super::folder::ReadResult, String> {
-    read_pane_secret_with_posture(monitor, store, actor, name, scope, global_root, None)
+    read_pane_secret_with_posture(monitor, store, actor, name, scope, global_root, None, None)
         .map(|read| read.result)
 }
 
@@ -58,6 +68,7 @@ pub fn read_pane_secret_with_posture(
     scope: &SecretScope,
     global_root: &Path,
     posture: Option<&PermissionPosture>,
+    outside: Option<&str>,
 ) -> Result<super::folder::GrantedRead, String> {
     let accounts = match scope {
         SecretScope::Workspace { id, .. } => {
@@ -70,7 +81,7 @@ pub fn read_pane_secret_with_posture(
         SecretScope::Global => vec![super::keychain_user_name(name)],
     };
     let label = scope.label();
-    let input = serde_json::json!({"name": name, "scope": label}).to_string();
+    let input = scope.input(name, outside);
     let workspace_root = match scope {
         SecretScope::Workspace { root, .. } => root.as_path(),
         SecretScope::Global => global_root,
@@ -79,7 +90,7 @@ pub fn read_pane_secret_with_posture(
         monitor,
         actor,
         SECRET_GET_TOOL,
-        &input,
+        &input.to_string(),
         workspace_root,
         &format!("name={name} scope={label}"),
         posture,
