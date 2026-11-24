@@ -1493,6 +1493,22 @@ impl PlexiApp {
                     None,
                 );
             }
+            crate::protocol::HostRequest::FolderSecretExec { cwd, response_file } => {
+                self.serve_secret_bundle(cwd, None, &origin, response_file);
+            }
+            crate::protocol::HostRequest::RunSecrets {
+                command,
+                cwd,
+                workspace_root,
+                response_file,
+            } => {
+                self.serve_secret_bundle(
+                    cwd,
+                    Some((command.clone(), workspace_root.clone())),
+                    &origin,
+                    response_file,
+                );
+            }
             crate::protocol::HostRequest::FolderSecretRead {
                 name,
                 folder,

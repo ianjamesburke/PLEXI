@@ -367,11 +367,17 @@ fn no_secret_reply(label: &str) -> i32 {
     1
 }
 
-fn send_secret(op: &str, name: &str, payload: Value) -> Result<Value, i32> {
-    use super::reply::HostReply;
-    let label = format!("secret {op}");
-    let (token, stream) = super::send_request_connected(payload, "secret-response", &label)
-        .map_err(|_| no_secret_reply(&label))?;
+fn receive_secret<T>(
+    label: &str,
+    payload: Value,
+    decode: impl FnOnce(Result<String, crate::rpc::PollError>) -> T,
+) -> Result<T, i32> {
+    #[cfg(all(test, unix))]
+    if let Some(reply) = secret_set_tests::BUNDLE_RESPONSE.take() {
+        return Ok(decode(Ok(reply(&payload))));
+    }
+    let (token, stream) = super::send_request_connected(payload, "secret-response", label)
+        .map_err(|_| no_secret_reply(label))?;
     let timeout = crate::workspace::secrets::APPROVAL_TIMEOUT + Duration::from_secs(10);
     let reply = std::thread::scope(|scope| {
         let (done, timer) = std::sync::mpsc::channel::<()>();
@@ -384,8 +390,15 @@ fn send_secret(op: &str, name: &str, payload: Value) -> Result<Value, i32> {
         });
         let body = crate::rpc::read_secret_reply(&token, stream, timeout);
         drop(done);
-        HostReply::decode(body)
+        body
     });
+    Ok(decode(reply))
+}
+
+fn send_secret(op: &str, name: &str, payload: Value) -> Result<Value, i32> {
+    use super::reply::HostReply;
+    let label = format!("secret {op}");
+    let reply = receive_secret(&label, payload, HostReply::decode)?;
     let unconfirmed = || {
         if matches!(op, "get" | "read") {
             eprintln!("No value was received from Plexi");
@@ -871,11 +884,47 @@ pub fn folder_secret_read(name: &str, folder: Option<&Path>) -> i32 {
     }
 }
 
-/// Run `command` with the environment [`crate::host::shell::build_env`] builds
-/// for a new terminal pane whose cwd is `cwd`.
-///
-/// Refused when this process is a pane agent. The command is not started, so
-/// a pane in folder A cannot print folder B's secrets with `--cwd`.
+pub(super) fn request_bundle(
+    label: &str,
+    request: Value,
+) -> Result<crate::protocol::ApprovedBundle, i32> {
+    use crate::protocol::SecretBundleReply as Reply;
+    let body = receive_secret(label, request, |reply| reply.map(zeroize::Zeroizing::new))?
+        .map_err(|_| {
+            eprintln!(
+                "No environment was received from Plexi for {label}. Check the host connection."
+            );
+            1
+        })?;
+    match serde_json::from_str(&body) {
+        Ok(Reply::Values(bundle)) => Ok(bundle),
+        Ok(Reply::Missing { names }) => {
+            for name in names {
+                eprintln!("Missing required secret '{name}'. Set it with plexi secret set {name}.");
+            }
+            Err(1)
+        }
+        Ok(Reply::Denied { reason }) => {
+            eprintln!(
+                "{label}: request denied ({}). Review the request in Plexi.",
+                reason.as_deref().unwrap_or("permission denied")
+            );
+            Err(1)
+        }
+        Ok(Reply::Error { error }) => {
+            eprintln!("{label}: {error}");
+            Err(1)
+        }
+        Err(_) => {
+            eprintln!(
+                "No environment was received from Plexi for {label}. Check the host connection."
+            );
+            Err(1)
+        }
+    }
+}
+
+/// Run the program with the environment released on this invocation's connection.
 pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
     if !folder_feature_available() {
         return 1;
@@ -884,22 +933,24 @@ pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
         eprintln!("error: secret exec needs a command");
         return 1;
     }
-    if super::pane_caller::caller_is_pane_agent() {
-        let resource = format!("exec@{}", cwd.display());
-        let call_id = format!("secret-exec-{}", uuid::Uuid::new_v4());
-        let actor = std::env::var("PLEXI_PANE_ID")
-            .ok()
-            .filter(|id| !id.is_empty())
-            .map(|id| format!("pane:{id}"))
-            .unwrap_or_else(|| "pane:ancestor".to_string());
-        audit_folder_denial(&actor, &resource, &call_id);
-        println!("permission_denied");
-        return 1;
-    }
-    let pane_env = crate::host::shell::build_env(Some(cwd));
+    let cwd = match secret_folder_path(cwd) {
+        Ok(folder) => std::path::PathBuf::from(folder),
+        Err(code) => return code,
+    };
+    let bundle = match request_bundle(
+        "secret exec",
+        serde_json::json!({"type":"folder_secret_exec","cwd":cwd}),
+    ) {
+        Ok(bundle) => bundle,
+        Err(code) => return code,
+    };
+    let pane_env = crate::host::shell::build_env_with_secrets(
+        Some(&bundle.cwd),
+        crate::host::shell::SecretPolicy::NONE,
+    );
     log::info!(
         "folder_secrets: exec cwd={} program={}",
-        cwd.display(),
+        bundle.cwd.display(),
         command[0]
     );
     #[expect(
@@ -907,9 +958,10 @@ pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
         reason = "foreground: the command owns the terminal and its exit code is passed through"
     )]
     let mut child = std::process::Command::new(&command[0]);
-    child.args(&command[1..]).current_dir(cwd);
-    for (key, value) in &pane_env {
-        child.env(key, value);
+    child.args(&command[1..]).current_dir(&bundle.cwd);
+    child.envs(pane_env);
+    for entry in &bundle.values {
+        child.env(&entry.name, &entry.value.0);
     }
     match child.status() {
         Ok(status) => status.code().unwrap_or(1),
@@ -927,6 +979,81 @@ mod secret_set_tests {
     use super::folder_secret_grant;
     use std::fs;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    type BundleResponse = Box<dyn FnOnce(&serde_json::Value) -> String>;
+    #[cfg(unix)]
+    thread_local! {
+        pub(super) static BUNDLE_RESPONSE: std::cell::Cell<Option<BundleResponse>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bundle_child_uses_canonical_reply_cwd() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(dir.path().join("profile"));
+        let _enabled =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        let approved = dir.path().canonicalize().unwrap().join("approved");
+        let other = dir.path().join("other");
+        fs::create_dir(&approved).unwrap();
+        fs::create_dir(&other).unwrap();
+        let commands = crate::cli::ensure_commands_file(Some(&approved));
+        fs::write(
+            commands,
+            "[commands]\nbuild = { run = 'pwd', secrets = ['TEST'] }",
+        )
+        .unwrap();
+        let snippet = "pwd -P > \"$1\"";
+        for kind in ["folder_secret_exec", "run_secrets"] {
+            let output = dir.path().join(format!("{kind}.cwd"));
+            let args = [output.to_str().unwrap().to_owned()];
+            let link = dir.path().join(kind);
+            symlink(&approved, &link).unwrap();
+            let other = other.clone();
+            BUNDLE_RESPONSE.set(Some(Box::new(move |wire| {
+                assert_eq!(wire["type"], kind);
+                let cwd = std::path::Path::new(wire["cwd"].as_str().unwrap());
+                let canonical = cwd.canonicalize().unwrap();
+                fs::remove_file(cwd).unwrap();
+                symlink(other, cwd).unwrap();
+                serde_json::json!({
+                    "status": "values", "cwd": canonical, "values": [],
+                    "run": snippet, "steps": [], "on_load": []
+                })
+                .to_string()
+            })));
+            let code = if kind == "folder_secret_exec" {
+                let command = [
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    snippet.into(),
+                    "--".into(),
+                    args[0].clone(),
+                ];
+                super::folder_secret_exec(&link, &command)
+            } else {
+                crate::cli::run::run_command_for_root(
+                    Some(&approved),
+                    &link,
+                    "build",
+                    &args,
+                    super::OutputMode::Text,
+                )
+                .exit_code
+            };
+            assert_eq!(code, 0, "{kind}");
+            let observed = fs::read_to_string(&output).unwrap();
+            assert_eq!(
+                std::path::Path::new(observed.trim_end()),
+                approved,
+                "{kind}"
+            );
+        }
+    }
 
     #[test]
     fn secret_commands_require_a_final_reply() {

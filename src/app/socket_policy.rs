@@ -333,6 +333,8 @@ pub(crate) fn socket_policy(request: &HostRequest) -> Result<VerbPolicy, Refusal
         | HostRequest::SecretGet { .. }
         | HostRequest::SecretSet { .. }
         | HostRequest::SecretDelete { .. }
+        | HostRequest::FolderSecretExec { .. }
+        | HostRequest::RunSecrets { .. }
         | HostRequest::FolderSecretRead { .. }
         | HostRequest::FolderSecretSet { .. }
         | HostRequest::FolderSecretRm { .. }
@@ -458,6 +460,8 @@ pub(crate) fn admit_request(
             HostRequest::SecretGet { .. }
                 | HostRequest::SecretSet { .. }
                 | HostRequest::SecretDelete { .. }
+                | HostRequest::FolderSecretExec { .. }
+                | HostRequest::RunSecrets { .. }
                 | HostRequest::FolderSecretRead { .. }
                 | HostRequest::FolderSecretSet { .. }
                 | HostRequest::FolderSecretRm { .. }

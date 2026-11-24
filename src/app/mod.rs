@@ -956,6 +956,8 @@ pub(crate) fn handle_socket_line_in(
                 crate::protocol::HostRequest::SecretGet { response_file, .. }
                 | crate::protocol::HostRequest::SecretSet { response_file, .. }
                 | crate::protocol::HostRequest::SecretDelete { response_file, .. }
+                | crate::protocol::HostRequest::FolderSecretExec { response_file, .. }
+                | crate::protocol::HostRequest::RunSecrets { response_file, .. }
                 | crate::protocol::HostRequest::FolderSecretRead { response_file, .. }
                 | crate::protocol::HostRequest::FolderSecretSet { response_file, .. }
                 | crate::protocol::HostRequest::FolderSecretRm { response_file, .. } => {

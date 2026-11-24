@@ -64,9 +64,9 @@ pub use store::{take_test_store_calls, DeleteOnlyStore, InMemoryKeychain};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 pub use reconcile::reconcile_index_with_keychain;
 
+pub(crate) use folder::{account_name as folder_account_name, folders_for_cwd};
 pub use folder::{
-    canonical_folder, deliver_folder_secret_choice, env_for_cwd, folder_secret_sheet_pending,
-    list_folder_secrets, read_folder_secret, take_folder_secret_sheet, ReadResult, SecretActor,
+    canonical_folder, env_for_cwd, list_folder_secrets, read_folder_secret, ReadResult, SecretActor,
     SECRET_READ_TOOL,
 };
 #[cfg(test)]
@@ -77,8 +77,9 @@ pub use pane_read::read_pane_secret;
 #[cfg(test)]
 pub use pane_read::SECRET_GET_TOOL;
 pub use pane_read::{read_pane_secret_with, ReadTarget, SecretScope};
+pub(crate) use resolver::resolve_interactive;
 pub use resolver::{
-    resolve, resolve_terminal_env, resolve_with_source, ResolveOutcome, ResolveWithSourceOutcome,
+    resolve_terminal_env, resolve_with_source, ResolveOutcome, ResolveWithSourceOutcome,
     WorkspaceConfig, WorkspaceSecrets,
 };
 

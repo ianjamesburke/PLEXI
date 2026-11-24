@@ -45,7 +45,10 @@ impl SecretRequest {
         tool: &str,
         set: Option<&(SecretInput, Option<String>)>,
     ) -> Result<Option<serde_json::Value>, String> {
-        let (target, root) = match &self.scope {
+        let super::SecretTarget::One { name, scope } = &self.target else {
+            return Err("Expected one secret for mutation".into());
+        };
+        let (target, root) = match scope {
             SecretScope::Workspace { id, root } => (
                 SecretTarget::Workspace {
                     id: id.clone(),
@@ -56,12 +59,12 @@ impl SecretRequest {
             SecretScope::Folder { path } => (SecretTarget::Folder(path.clone()), path),
             SecretScope::Global => (SecretTarget::Global, &self.profile),
         };
-        if matches!(self.scope, SecretScope::Folder { .. })
+        if matches!(scope, SecretScope::Folder { .. })
             && set.is_some_and(|(value, _)| value.0.is_empty())
         {
             return Err("empty value, nothing stored".into());
         }
-        let mut input = self.scope.input(tool, &self.name, self.subject.outside());
+        let mut input = scope.input(tool, name, self.subject.outside());
         let mutation = match set {
             Some((value, Some(canonical))) => {
                 input["route_name"] = canonical.as_str().into();
@@ -116,7 +119,7 @@ impl SecretRequest {
             let _commit = monitor.commit(&approved)?;
             self.subject.current()?;
         }
-        let result = mutate_secret(self.scope.store(), monitor, &target, &self.name, mutation);
+        let result = mutate_secret(scope.store(), monitor, &target, name, mutation);
         monitor
             .note_outcome(
                 principal.actor_id(),
