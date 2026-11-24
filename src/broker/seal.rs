@@ -1365,17 +1365,28 @@ mod tests {
         let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
         let dir = tempfile::tempdir().unwrap();
         let audit = dir.path().join("permission-audit.jsonl");
-        write_sealed(TEST_HOST, &dir.path().join("grants.toml"), b"records = []\n").unwrap();
+        write_sealed(
+            TEST_HOST,
+            &dir.path().join("grants.toml"),
+            b"records = []\n",
+        )
+        .unwrap();
         append_audit(TEST_HOST, &audit, &serde_json::json!({"kind": "seed"})).unwrap();
         std::fs::remove_file(&audit).unwrap();
         std::fs::remove_file(seal_state_path(dir.path())).unwrap();
 
         let error = crate::broker::needs_you_store::save(TEST_HOST, dir.path(), &[]).unwrap_err();
         assert!(error.contains("seal-state.json is missing"), "{error}");
-        assert!(!seal_state_path(dir.path()).exists(), "the fault was erased");
+        assert!(
+            !seal_state_path(dir.path()).exists(),
+            "the fault was erased"
+        );
         assert!(needs_you_tip_lookup(TEST_HOST, dir.path()).is_err());
         assert!(append_audit(TEST_HOST, &audit, &serde_json::json!({"kind": "x"})).is_err());
-        assert!(!audit.exists(), "a deleted audit log must not restart quietly");
+        assert!(
+            !audit.exists(),
+            "a deleted audit log must not restart quietly"
+        );
     }
 
     #[test]
