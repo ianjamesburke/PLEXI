@@ -3276,15 +3276,37 @@ impl PermissionMonitor {
     }
 
     pub fn get_continuation(&self, id_or_needs_you: &str) -> Option<ContinuationRecord> {
+        self.find_continuation(id_or_needs_you, None)
+    }
+
+    /// As [`Self::get_continuation`], resolving the id only among records bound
+    /// to terminal incarnation `pane_incarnation`: a pane never resolves an
+    /// operation id to another incarnation's record (stint 1743).
+    pub fn get_continuation_in(
+        &self,
+        id_or_needs_you: &str,
+        pane_incarnation: &str,
+    ) -> Option<ContinuationRecord> {
+        self.find_continuation(id_or_needs_you, Some(pane_incarnation))
+    }
+
+    fn find_continuation(
+        &self,
+        id_or_needs_you: &str,
+        pane_incarnation: Option<&str>,
+    ) -> Option<ContinuationRecord> {
         let map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(found) = map.get(id_or_needs_you) {
-            return Some(found.clone());
-        }
-        map.values()
-            .find(|row| {
-                row.needs_you_id.as_deref() == Some(id_or_needs_you)
-                    || row.operation_id.as_deref() == Some(id_or_needs_you)
-                    || row.correlation_id.as_deref() == Some(id_or_needs_you)
+        let bound = |row: &&ContinuationRecord| {
+            pane_incarnation.is_none_or(|key| row.pane_incarnation.as_deref() == Some(key))
+        };
+        map.get(id_or_needs_you)
+            .filter(bound)
+            .or_else(|| {
+                map.values().filter(bound).find(|row| {
+                    row.needs_you_id.as_deref() == Some(id_or_needs_you)
+                        || row.operation_id.as_deref() == Some(id_or_needs_you)
+                        || row.correlation_id.as_deref() == Some(id_or_needs_you)
+                })
             })
             .cloned()
     }

@@ -2427,6 +2427,17 @@ impl PlexiApp {
     /// or not. Every identity and authority question about a pane (its
     /// socket peer, ceiling, role, provenance) is asked of this, so covering
     /// a terminal never changes how its process is authorized (stint 1632).
+    /// The host-issued key of pane `pane_id`'s terminal incarnation, which
+    /// Needs-you records bind to; a pane number is not an identity.
+    pub(crate) fn pane_incarnation_key(
+        &self,
+        pane_id: crate::spatial::tiling::PaneId,
+    ) -> Option<String> {
+        self.terminal_incarnation(pane_id)
+            .and_then(|terminal| terminal.authority())
+            .map(|authority| authority.durable_key().to_string())
+    }
+
     pub(crate) fn terminal_incarnation(
         &self,
         pane_id: crate::spatial::tiling::PaneId,

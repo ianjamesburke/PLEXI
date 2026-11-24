@@ -1416,10 +1416,7 @@ impl PlexiApp {
         pane_id: u64,
         session_id: Option<&str>,
     ) {
-        let pane_incarnation = self
-            .terminal_incarnation(pane_id)
-            .and_then(|terminal| terminal.authority())
-            .map(|authority| authority.durable_key().to_string());
+        let pane_incarnation = self.pane_incarnation_key(pane_id);
         let withdrawn =
             match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
             {

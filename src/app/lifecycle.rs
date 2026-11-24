@@ -413,10 +413,7 @@ impl PlexiApp {
         summary: String,
         session_id: Option<String>,
     ) -> Result<String, String> {
-        let pane_incarnation = self
-            .terminal_incarnation(pane_id)
-            .and_then(|terminal| terminal.authority())
-            .map(|authority| authority.durable_key().to_string());
+        let pane_incarnation = self.pane_incarnation_key(pane_id);
         let filed =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .map_err(|error| error.to_string())
@@ -968,6 +965,7 @@ impl PlexiApp {
                     let resource = result_md_path
                         .clone()
                         .unwrap_or_else(|| format!("pane:{pane_id}"));
+                    let pane_incarnation = self.pane_incarnation_key(*pane_id);
                     if let Err(e) =
                         crate::broker::gate::PermissionMonitor::for_profile(&profile_dir)
                             .map_err(|error| error.to_string())
@@ -985,6 +983,7 @@ impl PlexiApp {
                                     },
                                     Some(crate::broker::gate::NeedsYouDetails {
                                         pane_id: Some(*pane_id),
+                                        pane_incarnation: pane_incarnation.clone(),
                                         session_id: session_id.clone(),
                                         preview_refs: result_md_path.clone().into_iter().collect(),
                                         ..Default::default()

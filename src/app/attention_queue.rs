@@ -5535,8 +5535,9 @@ mod tests {
         assert_eq!(call(&mut h, pane, "show", &by_id)["ok"], false);
         let completion = call(&mut h, pane, "complete", &by_id);
         assert_eq!(completion["ok"], false, "{completion}");
-        assert_eq!(
-            completion["error_code"], "permission_denied",
+        // Another incarnation's record does not resolve at all.
+        assert!(
+            completion["error"].as_str().unwrap().contains("unknown continuation"),
             "{completion}"
         );
     }
@@ -5581,6 +5582,49 @@ mod tests {
         let open = |id: &str| monitor.get_needs_you(id).is_some_and(|i| i.resolution.is_none());
         assert!(open(&first_id), "the earlier pane's question stays open");
         assert!(!open(later_id), "the later pane's own question is withdrawn");
+    }
+
+    /// Two incarnations reusing one pane number and one operation id each show
+    /// and complete their own record (stint 1743).
+    #[test]
+    fn reused_pane_number_completes_its_own_operation_id() {
+        use serde_json::{json, Value};
+
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let call = |h: &mut HostHarness, op: &str, payload: &Value| -> Value {
+            let origin = h.origin_from_pane(pane);
+            let response = crate::rpc::response_file_in(h.profile_dir(), op, "json");
+            h.app.handle_needs_you_api(op, payload, &origin, &response);
+            serde_json::from_slice(&std::fs::read(response).unwrap()).unwrap()
+        };
+        let ask = json!({"summary": "Proceed?", "run_tag": "op-1"});
+        let op = json!({"id": "op-1", "state": "completed", "receipt": "done"});
+        let first = call(&mut h, "ask", &ask)["id"].as_str().unwrap().to_string();
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane)
+            .unwrap()
+            .terminal_incarnation_mut()
+            .unwrap();
+        let grant = terminal.authority().unwrap().grant().clone();
+        terminal.replace_grant_for_test(grant);
+        let second = call(&mut h, "ask", &ask)["id"].as_str().unwrap().to_string();
+        assert_ne!(first, second);
+
+        let shown = call(&mut h, "show", &op);
+        assert_eq!(shown["continuation"]["needs_you_id"], second.as_str(), "{shown}");
+        let done = call(&mut h, "complete", &op);
+        assert_eq!(done["ok"], true, "{done}");
+        assert_eq!(done["continuation"]["needs_you_id"], second.as_str(), "{done}");
+
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let earlier = monitor.get_continuation(&first).unwrap();
+        assert_ne!(
+            earlier.state,
+            crate::broker::gate::ContinuationState::Completed,
+            "the earlier incarnation's record is untouched"
+        );
     }
 
     /// An `agent ask` whose question was not filed for the person answers

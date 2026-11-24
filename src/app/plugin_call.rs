@@ -451,6 +451,11 @@ impl PlexiApp {
         // What a socket caller may read back (`socket_caller_reads`).
         // Payload filters only narrow that (stint 1285). Host surfaces and
         // plugins read as before.
+        // A continuation id resolves within a pane caller's own incarnation.
+        let continuation_of = |id: &str| match caller_pane {
+            Some(pane) => monitor.get_continuation_in(id, pane.authority.durable_key()),
+            None => monitor.get_continuation(id),
+        };
         let readable = |actor: &str, incarnation: Option<&str>| match origin {
             RequestOrigin::Socket(caller) => socket_caller_reads(caller, actor, incarnation),
             _ => true,
@@ -580,8 +585,7 @@ impl PlexiApp {
                 let item = monitor
                     .get_needs_you(id)
                     .filter(|item| readable(&item.actor, pane_incarnation(item)));
-                let continuation = monitor
-                    .get_continuation(id)
+                let continuation = continuation_of(id)
                     .filter(|row| readable(&row.actor, row.pane_incarnation.as_deref()));
                 if item.is_none() && continuation.is_none() {
                     serde_json::json!({
@@ -688,7 +692,7 @@ impl PlexiApp {
                     .get("receipt")
                     .and_then(|v| v.as_str())
                     .map(ToString::to_string);
-                let record = monitor.get_continuation(id);
+                let record = continuation_of(id);
                 let foreign = match (origin, &record) {
                     (RequestOrigin::Socket(caller), Some(record)) => !socket_caller_reads(
                         caller,
@@ -707,7 +711,10 @@ impl PlexiApp {
                         "error_code": "permission_denied",
                         "error": "only the caller that asked can complete this operation",
                     })
-                } else if record.is_some_and(|record| record.request_fingerprint.is_some()) {
+                } else if record
+                    .as_ref()
+                    .is_some_and(|record| record.request_fingerprint.is_some())
+                {
                     log::info!(
                         "needs_you: refused external completion of host-owned operation {id}"
                     );
@@ -717,7 +724,12 @@ impl PlexiApp {
                         "error": "pane send outcomes are recorded by the host",
                     })
                 } else {
-                    match monitor.complete_continuation(id, state, receipt) {
+                    // Complete the exact record resolved for this caller, never
+                    // the id's other resolution (stint 1743).
+                    match record.map_or_else(
+                        || Err(format!("unknown continuation {id}")),
+                        |record| monitor.complete_continuation(&record.run_id, state, receipt),
+                    ) {
                         Ok(continuation) => serde_json::json!({
                             "ok": true,
                             "continuation": continuation,
