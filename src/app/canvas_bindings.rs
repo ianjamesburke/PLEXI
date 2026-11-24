@@ -394,7 +394,7 @@ impl PlexiApp {
     /// device, socket) is refused. `sender_pane_id` is the pane that requested
     /// the open (the explorer, or the terminal behind it); the text-editor
     /// lands as a split to its right.
-    fn open_file_in_view(&mut self, sender_pane_id: PaneId, target: &std::path::Path) {
+    pub(crate) fn open_file_in_view(&mut self, sender_pane_id: PaneId, target: &std::path::Path) {
         use super::file_open::{
             classify_open_target, handler_arg, FileOpenError, MatchedBy, OpenHandler,
         };

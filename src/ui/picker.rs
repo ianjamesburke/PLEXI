@@ -7,7 +7,9 @@
 //! see only the edits that precede the delivery's first picker command, and
 //! applies that command after the field has drawn (stint 1391).
 
-use crate::host::picker::{Hit, PickerCommand, PickerState, RowKey, Step};
+use crate::host::picker::{
+    Hit, PickerCommand, PickerState, PreviewBody, PreviewStatus, RowKey, Step,
+};
 use crate::ui::{
     list::{ListRow, ListRowPips},
     style,
@@ -138,8 +140,7 @@ pub(crate) fn is_field_input(event: &egui::Event) -> bool {
 }
 
 /// The query field, the owner's default text surface: egui's own single-line
-/// text edit over `draft`. Stop chips join here when a second stop exists
-/// (stint 1392).
+/// text edit over `draft`.
 pub(crate) fn field(
     ui: &mut egui::Ui,
     state: &PickerState,
@@ -192,11 +193,17 @@ pub(crate) fn results(
     ui: &mut egui::Ui,
     state: &PickerState,
     max_height: f32,
-    empty_text: &str,
     pips: &dyn Fn(&RowKey) -> Option<ListRowPips>,
     colors: &Colors,
 ) -> RowsResponse {
     let mut out = RowsResponse::default();
+    if let Some(failure) = state.failure() {
+        ui.scope(|ui| {
+            ui.set_max_width(ui.available_width());
+            crate::ui::labels::description_label(ui, &failure.to_string(), colors);
+        });
+        return out;
+    }
     if state.rows().is_empty() {
         if state.is_loading() {
             // The first answer arrives on the next logic pass: hold the
@@ -205,7 +212,7 @@ pub(crate) fn results(
         } else {
             ui.scope(|ui| {
                 ui.set_max_width(ui.available_width());
-                crate::ui::labels::description_label(ui, empty_text, colors);
+                crate::ui::labels::description_label(ui, state.active_stop().empty_text, colors);
             });
         }
         return out;
@@ -279,7 +286,83 @@ pub(crate) fn results(
                 }
             }
         });
+    if state.is_partial() {
+        // These rows came from the cache; the source is still walking.
+        crate::ui::typography::caption(ui, "Walking\u{2026}", colors);
+    }
     out
+}
+
+/// The selected row's preview, filling the half it is given. `image` is the
+/// uploaded texture of the selected row, when it has one.
+pub(crate) fn preview(
+    ui: &mut egui::Ui,
+    state: &PickerState,
+    image: Option<&egui::TextureHandle>,
+    height: f32,
+    colors: &Colors,
+) {
+    let Some(status) = state.preview() else {
+        return;
+    };
+    let title = state
+        .selected()
+        .and_then(|key| state.rows().iter().find(|row| row.key == *key))
+        .map_or("", |row| row.title.as_str());
+    egui::Frame::new()
+        .fill(colors.bg_active)
+        .stroke(style::hairline_border(colors.border))
+        .corner_radius(style::RADIUS_MD)
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let inner_height = (height - style::SPACE_XL).max(style::LIST_ROW_H);
+            ui.set_min_height(inner_height);
+            match status {
+                PreviewStatus::Loading => {
+                    crate::ui::typography::body_strong(ui, title, colors);
+                    crate::ui::typography::caption(ui, "Loading", colors);
+                }
+                PreviewStatus::Ready(PreviewBody::Note(note)) => {
+                    crate::ui::typography::caption(ui, note.as_str(), colors);
+                }
+                PreviewStatus::Ready(PreviewBody::Text { text, truncated }) => {
+                    egui::ScrollArea::vertical()
+                        .id_salt("picker_preview")
+                        .max_height(inner_height)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(text)
+                                        .font(egui::FontId::monospace(style::TEXT_HINT))
+                                        .color(colors.text_primary),
+                                )
+                                .wrap(),
+                            );
+                            if *truncated {
+                                crate::ui::typography::caption(ui, "truncated", colors);
+                            }
+                        });
+                }
+                PreviewStatus::Ready(PreviewBody::Image { width, height }) => {
+                    let Some(texture) = image else {
+                        crate::ui::typography::caption(ui, "Loading", colors);
+                        return;
+                    };
+                    let size = egui::vec2(*width as f32, *height as f32);
+                    ui.add(
+                        egui::Image::from_texture(egui::load::SizedTexture::new(
+                            texture.id(),
+                            size,
+                        ))
+                        .max_size(egui::vec2(ui.available_width(), inner_height))
+                        .maintain_aspect_ratio(true),
+                    );
+                }
+            }
+        });
 }
 
 #[cfg(test)]

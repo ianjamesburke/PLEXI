@@ -72,7 +72,7 @@ pub const MAX_CONTENT_FILE_BYTES: u64 = 1_048_576;
 const BINARY_SNIFF_BYTES: usize = 8_192;
 
 /// Maximum number of search hits retained per session snapshot.
-const MAX_SEARCH_HITS: usize = 250;
+pub(crate) const MAX_SEARCH_HITS: usize = 250;
 
 /// Maximum length (in chars) of a content match line preview.
 const MAX_PREVIEW_CHARS: usize = 120;

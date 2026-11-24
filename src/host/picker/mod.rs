@@ -19,6 +19,8 @@
 //!   commands before it left. An Enter waiting on its query's answer is
 //!   frozen once and runs at most once.
 //! - Actions never run here.
+//! - A preview answer for a row that is no longer selected is dropped.
+//! - A source answer over `MAX_SEARCH_HITS` rows is refused, visibly.
 
 /// Which picker a command addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -45,6 +47,25 @@ pub(crate) enum RankingPreset {
     /// direct match in a later group is never buried under an incidental
     /// match in an earlier one.
     Grouped,
+    /// Match score, then usage (picks, then latest pick), then newest
+    /// modified. An empty query scores nothing, so usage leads.
+    Usage,
+}
+
+/// The order `RankingPreset::Usage` sorts by, as a key: lower sorts first.
+/// A source that must cut its answer to `MAX_SEARCH_HITS` cuts by this same
+/// key, so the reducer and the source never disagree on the top rows.
+pub(crate) fn usage_rank_key(
+    score: Option<i64>,
+    usage: Option<usage::UsageEntry>,
+    modified: Option<u64>,
+) -> impl Ord {
+    use std::cmp::Reverse;
+    (
+        Reverse(score),
+        Reverse(usage.map(|u| (u.count, u.last_pick))),
+        Reverse(modified),
+    )
 }
 
 /// One stop of a picker: data defined in code.
@@ -58,19 +79,42 @@ pub(crate) struct Stop {
     pub ranking: RankingPreset,
     /// Text field placeholder.
     pub placeholder: &'static str,
+    /// Shown when an answer has no rows.
+    pub empty_text: &'static str,
+    /// The stop shows the selected row's preview beside the results.
+    pub preview: bool,
 }
 
 /// Source id of the palette's Commands stop.
 pub(crate) const COMMANDS_SOURCE: &str = "commands";
 
-/// The palette's stops, in Tab order. Files and Agents add themselves here.
-pub(crate) const PALETTE_STOPS: &[Stop] = &[Stop {
-    id: "commands",
-    label: "Commands",
-    source: COMMANDS_SOURCE,
-    ranking: RankingPreset::Grouped,
-    placeholder: "Jump to context or launch plugin...",
-}];
+/// Source id of the palette's Files stop.
+pub(crate) const FILES_SOURCE: &str = "files";
+
+/// The palette's stops, in Tab order. Agents adds itself here.
+pub(crate) const PALETTE_STOPS: &[Stop] = &[
+    Stop {
+        id: "commands",
+        label: "Commands",
+        source: COMMANDS_SOURCE,
+        ranking: RankingPreset::Grouped,
+        placeholder: "Jump to context or launch plugin...",
+        empty_text: "No matching contexts or plugins",
+        preview: false,
+    },
+    Stop {
+        id: "files",
+        label: "Files",
+        source: FILES_SOURCE,
+        ranking: RankingPreset::Usage,
+        placeholder: "Find a file in this context...",
+        empty_text: "No matching files",
+        preview: true,
+    },
+];
+
+/// A source answer larger than this is refused (`SourceFailure::TooManyRows`).
+pub(crate) const MAX_SOURCE_ROWS: usize = crate::search::MAX_SEARCH_HITS;
 
 /// A row's identity: `<source id>:<stable id>`, split on the first `:`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -81,7 +125,6 @@ impl RowKey {
         Self(format!("{source}:{stable_id}"))
     }
 
-    #[cfg(test)]
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
@@ -123,6 +166,67 @@ pub(crate) struct PickerRow {
     /// When set the row stays listed, shows the reason and refuses Enter.
     pub unavailable: Option<&'static str>,
     pub actions: Vec<RowAction>,
+    /// How often and how lately this row was picked (`RankingPreset::Usage`).
+    pub usage: Option<usage::UsageEntry>,
+    /// Last modification, unix seconds (`RankingPreset::Usage`).
+    pub modified: Option<u64>,
+    /// What the preview half shows for this row, on a stop with a preview.
+    pub preview: Option<PreviewRef>,
+}
+
+/// A row's preview reference: the kind its source loads. The painter draws
+/// by kind and never guesses from a name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreviewRef {
+    Text,
+    Image,
+    /// No preview, with the one dim line that says why.
+    Unsupported(&'static str),
+}
+
+/// A loaded preview. An image's pixels stay with the host that uploaded
+/// them; the reducer keeps only what it needs to lay them out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PreviewBody {
+    Text {
+        text: String,
+        truncated: bool,
+    },
+    Image {
+        width: u32,
+        height: u32,
+    },
+    /// One dim line in place of a body: binary, too large, timed out, or a
+    /// failed read.
+    Note(String),
+}
+
+/// The preview of one row: loading, or what loaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PreviewStatus {
+    Loading,
+    Ready(PreviewBody),
+}
+
+/// Why a source's answer was not shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SourceFailure {
+    TooManyRows {
+        source: &'static str,
+        count: usize,
+        max: usize,
+    },
+}
+
+impl std::fmt::Display for SourceFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SourceFailure::TooManyRows { source, count, max } => write!(
+                f,
+                "The {source} source answered {count} rows; at most {max} are shown. Narrow the search."
+            ),
+        }
+    }
 }
 
 /// The snapshot a presented row belongs to. `generation` names the open
@@ -181,6 +285,11 @@ pub(crate) enum PickerCommand {
         rows: Vec<PickerRow>,
         done: bool,
     },
+    /// A source's answer to `PickerEffect::LoadPreview`.
+    Preview {
+        row: RowKey,
+        body: PreviewBody,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +307,11 @@ pub(crate) enum PickerEffect {
         stamp: Stamp,
         row: RowKey,
         action: &'static str,
+    },
+    /// Load the preview of `row`, selected on a stop with a preview.
+    LoadPreview {
+        row: RowKey,
+        kind: PreviewRef,
     },
     Closed,
 }
@@ -243,6 +357,10 @@ pub(crate) struct PickerState {
     /// Bumped when the keyboard moves the selection, so the results painter
     /// scrolls the selected row into view exactly once.
     reveal: u64,
+    /// The preview of the last row selected on a preview stop. It is kept
+    /// while a new query loads, so reselecting that row loads nothing.
+    preview: Option<(RowKey, PreviewStatus)>,
+    failure: Option<SourceFailure>,
 }
 
 impl PickerState {
@@ -265,6 +383,8 @@ impl PickerState {
             loading: false,
             pending: None,
             reveal: 0,
+            preview: None,
+            failure: None,
         }
     }
 
@@ -301,8 +421,28 @@ impl PickerState {
         self.loading
     }
 
+    /// The presented rows are the current query's, and more may follow.
+    pub(crate) fn is_partial(&self) -> bool {
+        self.answered && self.loading
+    }
+
     pub(crate) fn reveal_epoch(&self) -> u64 {
         self.reveal
+    }
+
+    /// The selected row's preview. `None` when the stop has no preview or
+    /// nothing is selected.
+    pub(crate) fn preview(&self) -> Option<&PreviewStatus> {
+        let selected = self.selected()?;
+        self.preview
+            .as_ref()
+            .filter(|(key, _)| key == selected)
+            .map(|(_, status)| status)
+    }
+
+    /// Why the current query shows no answer, if a source failed it.
+    pub(crate) fn failure(&self) -> Option<&SourceFailure> {
+        self.failure.as_ref()
     }
 
     pub(crate) fn selected(&self) -> Option<&RowKey> {
@@ -313,6 +453,53 @@ impl PickerState {
     }
 
     pub(crate) fn apply(&mut self, command: PickerCommand) -> Vec<PickerEffect> {
+        let mut effects = self.apply_command(command);
+        // Before `Activate` and `Closed` would be wrong: a closing picker
+        // loads nothing, and `sync_preview` sees it closed.
+        if let Some(load) = self.sync_preview() {
+            effects.push(load);
+        }
+        effects
+    }
+
+    /// Follow the selection with the preview: a newly selected row on a
+    /// preview stop asks its source for its preview, once.
+    fn sync_preview(&mut self) -> Option<PickerEffect> {
+        if !self.open || !self.active_stop().preview {
+            self.preview = None;
+            return None;
+        }
+        let key = self.selected()?.clone();
+        if self
+            .preview
+            .as_ref()
+            .is_some_and(|(shown, _)| *shown == key)
+        {
+            return None;
+        }
+        let row = self.rows.iter().find(|row| row.key == key)?;
+        let (status, load) = match row.preview {
+            Some(kind @ (PreviewRef::Text | PreviewRef::Image)) => (
+                PreviewStatus::Loading,
+                Some(PickerEffect::LoadPreview {
+                    row: key.clone(),
+                    kind,
+                }),
+            ),
+            Some(PreviewRef::Unsupported(reason)) => (
+                PreviewStatus::Ready(PreviewBody::Note(reason.to_owned())),
+                None,
+            ),
+            None => (
+                PreviewStatus::Ready(PreviewBody::Note("No preview".to_owned())),
+                None,
+            ),
+        };
+        self.preview = Some((key, status));
+        load
+    }
+
+    fn apply_command(&mut self, command: PickerCommand) -> Vec<PickerEffect> {
         match command {
             PickerCommand::Open { stop, query } => {
                 let Some(index) = self.stops.iter().position(|s| s.id == stop) else {
@@ -375,6 +562,15 @@ impl PickerState {
                 rows,
                 done,
             } => self.answer(generation, rows, done),
+            PickerCommand::Preview { row, body } => {
+                match &mut self.preview {
+                    Some((key, status @ PreviewStatus::Loading)) if *key == row => {
+                        *status = PreviewStatus::Ready(body);
+                    }
+                    _ => log::debug!("picker: dropped a preview for a row no longer selected"),
+                }
+                Vec::new()
+            }
         }
     }
 
@@ -389,6 +585,8 @@ impl PickerState {
         self.loading = false;
         self.answered = false;
         self.pending = None;
+        self.preview = None;
+        self.failure = None;
         // Answers and hits still in flight for this session are stale.
         self.generation += 1;
         log::info!("picker: closed");
@@ -413,6 +611,7 @@ impl PickerState {
         self.generation += 1;
         self.loading = true;
         self.answered = false;
+        self.failure = None;
         if self.pending.take().is_some() {
             log::info!("picker: pending Enter cancelled by a new query");
         }
@@ -447,6 +646,22 @@ impl PickerState {
                 "picker: dropped rows of generation {generation} (current {})",
                 self.generation
             );
+            return Vec::new();
+        }
+        if rows.len() > MAX_SOURCE_ROWS {
+            let failure = SourceFailure::TooManyRows {
+                source: self.active_stop().source,
+                count: rows.len(),
+                max: MAX_SOURCE_ROWS,
+            };
+            log::warn!("picker: refused an answer: {failure}");
+            self.failure = Some(failure);
+            self.rows.clear();
+            self.answered = false;
+            self.loading = false;
+            if self.pending.take().is_some() {
+                log::info!("picker: pending Enter cancelled by a refused answer");
+            }
             return Vec::new();
         }
         let ranked = rank(self.active_stop().ranking, &self.query, rows);
@@ -649,6 +864,10 @@ fn rank(preset: RankingPreset, query: &str, mut rows: Vec<PickerRow>) -> Vec<Pic
             });
             rows
         }
+        RankingPreset::Usage => {
+            rows.sort_by_cached_key(|row| usage_rank_key(row.score, row.usage, row.modified));
+            rows
+        }
     }
 }
 
@@ -670,6 +889,10 @@ impl Pickers {
             .apply(command)
     }
 }
+
+pub(crate) mod files;
+pub(crate) mod preview;
+pub(crate) mod usage;
 
 #[cfg(test)]
 mod tests;

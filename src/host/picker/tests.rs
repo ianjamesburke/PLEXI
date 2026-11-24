@@ -7,6 +7,8 @@ const THREE_STOPS: &[Stop] = &[
         source: "commands",
         ranking: RankingPreset::Grouped,
         placeholder: "",
+        empty_text: "",
+        preview: false,
     },
     Stop {
         id: "files",
@@ -14,6 +16,8 @@ const THREE_STOPS: &[Stop] = &[
         source: "files",
         ranking: RankingPreset::Grouped,
         placeholder: "",
+        empty_text: "",
+        preview: false,
     },
     Stop {
         id: "agents",
@@ -21,6 +25,8 @@ const THREE_STOPS: &[Stop] = &[
         source: "agents",
         ranking: RankingPreset::Grouped,
         placeholder: "",
+        empty_text: "",
+        preview: false,
     },
 ];
 
@@ -39,6 +45,9 @@ fn row(source: &str, id: &str, group_rank: u32, score: Option<i64>) -> PickerRow
             id: "run",
             label: "Run",
         }],
+        usage: None,
+        modified: None,
+        preview: None,
     }
 }
 
@@ -127,7 +136,7 @@ fn tab_cycles_stops_and_shift_tab_goes_back() {
 
 #[test]
 fn one_stop_tab_is_a_no_op() {
-    let (mut state, _) = opened(PALETTE_STOPS);
+    let (mut state, _) = opened(FILES_STOP);
     let generation = state.generation();
     assert!(state.apply(PickerCommand::NextStop).is_empty());
     assert!(state.apply(PickerCommand::PrevStop).is_empty());
@@ -580,4 +589,200 @@ fn identical_refresh_keeps_the_revision_and_reorder_advances_it() {
     deliver(&mut state, &["b", "a"], true);
     assert_ne!(state.rows_stamp(), stamp);
     assert!(state.apply(PickerCommand::Click(b)).is_empty());
+}
+
+// ── Files stop: usage ranking, preview, refused answers (stint 1392) ──
+
+const FILES_STOP: &[Stop] = &[Stop {
+    id: "files",
+    label: "Files",
+    source: "files",
+    ranking: RankingPreset::Usage,
+    placeholder: "",
+    empty_text: "",
+    preview: true,
+}];
+
+fn file(id: &str, score: Option<i64>, picks: Option<(u32, u64)>, modified: u64) -> PickerRow {
+    PickerRow {
+        usage: picks.map(|(count, last_pick)| usage::UsageEntry { count, last_pick }),
+        modified: Some(modified),
+        preview: Some(PreviewRef::Text),
+        ..row("files", id, 0, score)
+    }
+}
+
+fn order(state: &PickerState) -> Vec<&str> {
+    state.rows().iter().map(|row| row.key.stable_id()).collect()
+}
+
+#[test]
+fn empty_query_orders_files_by_usage() {
+    let (mut state, _) = opened(FILES_STOP);
+    answer(
+        &mut state,
+        vec![
+            file("new-unused", None, None, 900),
+            file("old-unused", None, None, 100),
+            file("picked-once", None, Some((1, 50)), 10),
+            file("picked-often", None, Some((5, 20)), 5),
+            file("picked-once-later", None, Some((1, 60)), 1),
+        ],
+    );
+    assert_eq!(
+        order(&state),
+        [
+            "picked-often",
+            "picked-once-later",
+            "picked-once",
+            "new-unused",
+            "old-unused"
+        ],
+        "usage first (picks, then latest pick), then newest modified"
+    );
+}
+
+#[test]
+fn usage_breaks_ties_after_score() {
+    let (mut state, _) = opened(FILES_STOP);
+    state.apply(PickerCommand::QueryEdited("main".into()));
+    answer(
+        &mut state,
+        vec![
+            file("weak-but-used", Some(10), Some((9, 9)), 9),
+            file("strong", Some(50), None, 1),
+            file("tied-unused", Some(30), None, 5),
+            file("tied-used", Some(30), Some((1, 1)), 1),
+        ],
+    );
+    assert_eq!(
+        order(&state),
+        ["strong", "tied-used", "tied-unused", "weak-but-used"],
+        "score leads; usage only breaks ties"
+    );
+}
+
+#[test]
+fn preview_for_a_moved_selection_is_dropped() {
+    let (mut state, _) = opened(FILES_STOP);
+    let generation = state.generation();
+    let effects = state.apply(PickerCommand::Rows {
+        generation,
+        rows: vec![file("a", None, None, 2), file("b", None, None, 1)],
+        done: true,
+    });
+    let a = RowKey::new("files", "a");
+    let b = RowKey::new("files", "b");
+    assert_eq!(
+        effects,
+        [PickerEffect::LoadPreview {
+            row: a.clone(),
+            kind: PreviewRef::Text
+        }],
+        "the first selected row asks for its preview"
+    );
+    let moved = state.apply(PickerCommand::Move(Step::Down));
+    assert_eq!(
+        moved,
+        [PickerEffect::LoadPreview {
+            row: b.clone(),
+            kind: PreviewRef::Text
+        }]
+    );
+    // a's read finishes after the selection moved on: dropped.
+    state.apply(PickerCommand::Preview {
+        row: a,
+        body: PreviewBody::Note("late".into()),
+    });
+    assert_eq!(state.preview(), Some(&PreviewStatus::Loading));
+    let body = PreviewBody::Text {
+        text: "b".into(),
+        truncated: false,
+    };
+    state.apply(PickerCommand::Preview {
+        row: b,
+        body: body.clone(),
+    });
+    assert_eq!(state.preview(), Some(&PreviewStatus::Ready(body)));
+}
+
+#[test]
+fn reselecting_a_previewed_row_loads_nothing() {
+    let (mut state, _) = opened(FILES_STOP);
+    answer(&mut state, vec![file("a", None, None, 1)]);
+    // A new query re-ranks the same row first: its preview stays.
+    state.apply(PickerCommand::QueryEdited("a".into()));
+    let generation = state.generation();
+    let effects = state.apply(PickerCommand::Rows {
+        generation,
+        rows: vec![file("a", Some(1), None, 1)],
+        done: true,
+    });
+    assert!(effects.is_empty(), "{effects:?}");
+}
+
+#[test]
+fn unsupported_rows_say_why_without_loading() {
+    let (mut state, _) = opened(FILES_STOP);
+    let generation = state.generation();
+    let effects = state.apply(PickerCommand::Rows {
+        generation,
+        rows: vec![PickerRow {
+            preview: Some(PreviewRef::Unsupported("Too large to preview")),
+            ..file("big.png", None, None, 1)
+        }],
+        done: true,
+    });
+    assert!(effects.is_empty(), "{effects:?}");
+    assert_eq!(
+        state.preview(),
+        Some(&PreviewStatus::Ready(PreviewBody::Note(
+            "Too large to preview".into()
+        )))
+    );
+}
+
+#[test]
+fn oversized_source_answer_is_refused() {
+    let (mut state, _) = opened(FILES_STOP);
+    let rows: Vec<PickerRow> = (0..=MAX_SOURCE_ROWS)
+        .map(|i| file(&format!("f{i}"), None, None, 1))
+        .collect();
+    state.apply(PickerCommand::Accept);
+    let generation = state.generation();
+    let effects = state.apply(PickerCommand::Rows {
+        generation,
+        rows,
+        done: true,
+    });
+    assert!(
+        effects.is_empty(),
+        "a pending Enter never runs on a refused answer"
+    );
+    assert!(state.rows().is_empty());
+    assert!(!state.is_loading());
+    assert_eq!(
+        state.failure(),
+        Some(&SourceFailure::TooManyRows {
+            source: "files",
+            count: MAX_SOURCE_ROWS + 1,
+            max: MAX_SOURCE_ROWS
+        })
+    );
+    // A new query clears the notice.
+    state.apply(PickerCommand::QueryEdited("f1".into()));
+    assert_eq!(state.failure(), None);
+}
+
+#[test]
+fn stops_without_a_preview_never_load_one() {
+    let (mut state, _) = opened(THREE_STOPS);
+    let generation = state.generation();
+    let effects = state.apply(PickerCommand::Rows {
+        generation,
+        rows: vec![row("commands", "a", 0, None)],
+        done: true,
+    });
+    assert!(effects.is_empty());
+    assert_eq!(state.preview(), None);
 }

@@ -1327,12 +1327,16 @@ fn palette_commands_stop() {
     );
     h.save_screenshot(&evidence_png!("_query"))
         .expect("render failed");
-    for modifiers in [egui::Modifiers::NONE, egui::Modifiers::SHIFT] {
+    for (modifiers, expected) in [
+        (egui::Modifiers::NONE, "files"),
+        (egui::Modifiers::SHIFT, "commands"),
+    ] {
         h.harness().key_press_modifiers(modifiers, egui::Key::Tab);
         h.step();
         let (query, stop, _) = palette_picker(&h);
-        assert_eq!((query.as_str(), stop), ("keyboard", "commands"));
+        assert_eq!((query.as_str(), stop), ("keyboard", expected));
     }
+    h.run_steps(2);
     h.harness().key_press(egui::Key::Enter);
     h.run_steps(2);
     assert!(!h.with_app(|app| app.command_palette_open()));
