@@ -851,9 +851,10 @@ mod list_tests {
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .unwrap();
         let pending = monitor
-            .host_records().entries()
+            .host_records()
+            .entries()
             .into_iter()
-            .find(|row| row.tool == "secret.list")
+            .find(|row| row.tool == "secret.list" && error.contains(&row.id))
             .unwrap();
         monitor
             .approve_pending(&pending.id, crate::broker::gate::ApprovalChoice::Once)
