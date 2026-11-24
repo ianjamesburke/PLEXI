@@ -36,6 +36,15 @@ impl SecretTarget {
         format!("{name}@{scope}")
     }
 
+    /// The key reads are granted and audited under. A folder read keeps the
+    /// bare path (the key saved decisions already use); set and delete prefix it.
+    fn read_resource(&self, name: &str) -> String {
+        match self {
+            Self::Folder(folder) => format!("{name}@{}", folder.display()),
+            _ => self.resource(name),
+        }
+    }
+
     fn account(&self, name: &str) -> Result<String, String> {
         match self {
             Self::Global => Ok(super::keychain_user_name(name)),
@@ -189,7 +198,7 @@ fn inventory_for_scope(
             }
         };
     let mut add = |name: String, target: SecretTarget| {
-        let resource = target.resource(&name);
+        let resource = target.read_resource(&name);
         let grant = permissions
             .iter()
             .filter(|row| {
@@ -597,6 +606,61 @@ mod tests {
 #[cfg(test)]
 mod inventory_tests {
     use super::*;
+
+    #[test]
+    fn folder_inventory_shows_read_grants_and_last_use() {
+        use crate::broker::gate::ApprovalChoice;
+        use crate::workspace::secrets::{read_folder_secret, ReadResult, SecretActor};
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().into());
+        let _experiment =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+        let root = tempfile::tempdir().unwrap();
+        let path = crate::platform::path::canonical_or_self(root.path());
+        let name = format!("FOLDER_INV_{}", uuid::Uuid::new_v4().simple());
+        let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
+        let store = super::super::folder_store();
+        mutate_secret(
+            store,
+            &monitor,
+            &SecretTarget::Folder(path.clone()),
+            &name,
+            Mutation::Set("folder-inventory-canary"),
+        )
+        .unwrap();
+        let actor = SecretActor::agent("folder-reader");
+        monitor.set_now_for_test(1_800_000_000);
+        let ReadResult::PermissionRequired { pending_id } =
+            read_folder_secret(&monitor, store, &actor, &name, &path).unwrap()
+        else {
+            panic!("read must ask")
+        };
+        monitor
+            .approve_pending(&pending_id, ApprovalChoice::Session)
+            .unwrap();
+        assert!(matches!(
+            read_folder_secret(&monitor, store, &actor, &name, &path).unwrap(),
+            ReadResult::Value(_)
+        ));
+        let entries = secret_inventory(&path, false).unwrap();
+        let entry = entries
+            .iter()
+            .find(|e| e.name == name && matches!(e.target, SecretTarget::Folder(_)))
+            .unwrap();
+        assert_eq!(entry.last_used, Some(1_800_000_000));
+        assert!(entry
+            .grant
+            .iter()
+            .any(|grant| grant.contains("folder-reader") && grant.contains("allow")));
+        mutate_secret(
+            store,
+            &monitor,
+            &SecretTarget::Folder(path),
+            &name,
+            Mutation::Delete,
+        )
+        .unwrap();
+    }
 
     #[test]
     fn scopes_json_usage_and_grants_share_the_inventory() {
