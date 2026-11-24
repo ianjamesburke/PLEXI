@@ -1304,7 +1304,6 @@ pub struct AgentsConfig {
     pub stalled_after_secs: Option<u64>,
     /// Age threshold in hours after which failed runs collapse into the older fleet group (default 12).
     pub stale_failure_hours: Option<u64>,
-    /// Show agent jump rows in the command palette (default false).
     /// Fast/cheap tasks. Default: claude haiku with --dangerously-skip-permissions.
     pub low: Option<String>,
     /// Standard work. Default: claude sonnet with --dangerously-skip-permissions.
