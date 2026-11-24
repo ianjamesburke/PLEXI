@@ -39,7 +39,7 @@ pub(super) fn canonical_friendly(friendly: &str) -> Option<&'static str> {
 }
 
 /// Legacy spellings that still name the secret `canonical`.
-pub(super) fn legacy_friendly_names<'a>(canonical: &'a str) -> impl Iterator<Item = &'a str> {
+pub(super) fn legacy_friendly_names(canonical: &str) -> impl Iterator<Item = &str> {
     FRIENDLY_NAME_ALIASES
         .iter()
         .filter(move |(_, c)| *c == canonical)
