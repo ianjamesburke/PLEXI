@@ -1536,6 +1536,12 @@ impl PermissionMonitor {
                     summary
                 });
                 let disclosure = disclosure.or(outside_secret.as_deref());
+                // A decision takes this lock first, so nobody can decide the
+                // request before its `ask` row is in the audit chain. Secret
+                // tools already hold it from `_filing`.
+                let _publishing = _filing.is_none().then(|| {
+                    self.decision_lock.lock().unwrap_or_else(|e| e.into_inner())
+                });
                 let id = self.persist_pending(&binding, req.tool, req.input_json, disclosure);
                 trace("ask", mechanism, &format!("pending={id}"));
                 let _ = self.audit_with(
@@ -6637,6 +6643,59 @@ mod tests {
             .into_iter()
             .filter(|row| row.kind == NeedsYouKind::PermissionChange)
             .collect()
+    }
+
+    /// A person can decide a request the moment it is listed. The `ask` row
+    /// must already be in the audit chain by then, so the chain never shows a
+    /// decision before the question (stint 1758).
+    #[test]
+    fn a_decision_never_precedes_its_ask_in_the_audit_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let rounds = 30;
+        let done = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let decider = scope.spawn(|| {
+                let mut decided = 0;
+                while decided < rounds {
+                    if let Some(row) = monitor.list_pending().first() {
+                        if monitor
+                            .approve_pending(&row.pending_request_id, ApprovalChoice::Once)
+                            .is_ok()
+                        {
+                            decided += 1;
+                        }
+                    }
+                    if done.load(std::sync::atomic::Ordering::Acquire) {
+                        break;
+                    }
+                }
+            });
+            for round in 0..rounds {
+                let args = format!(r#"{{"game_id":"game-{round}"}}"#);
+                let Admission::Required { .. } = admit_of(&monitor, &binding("ignored"), &args)
+                else {
+                    panic!("round {round} asks");
+                };
+                while !monitor.list_pending().is_empty() {
+                    std::thread::yield_now();
+                }
+            }
+            done.store(true, std::sync::atomic::Ordering::Release);
+            decider.join().unwrap();
+        });
+        let log = std::fs::read_to_string(dir.path().join("permission-audit.jsonl")).unwrap();
+        let kinds: Vec<String> = log
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter_map(|env| serde_json::from_str::<serde_json::Value>(env["fact"].as_str()?).ok())
+            .filter_map(|fact| fact["kind"].as_str().map(str::to_owned))
+            .filter(|kind| matches!(kind.as_str(), "ask" | "grant" | "deny"))
+            .collect();
+        assert_eq!(kinds.len(), rounds * 2, "{kinds:?}");
+        for pair in kinds.chunks(2) {
+            assert_eq!(pair[0], "ask", "decision before its ask: {kinds:?}");
+        }
     }
 
     /// File an agent's "allow" widen for a fresh pending ask. Returns the
