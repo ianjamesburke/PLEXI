@@ -38,10 +38,7 @@ fn screenshot_command_palette_update_ready_row() {
     h.step();
     h.with_app_mut(|app| {
         set_update_ready(app, "0.5.1");
-        app.show_command_palette = true;
-        app.palette_selected = 0;
-        app.palette_selected_key = None;
-        app.sync_command_palette_focus();
+        app.open_command_palette("");
     });
     h.run_steps(3);
     let row = h.harness().get_by_label("Update ready: v0.5.1").rect();
@@ -51,8 +48,8 @@ fn screenshot_command_palette_update_ready_row() {
         "the update row sits above every other result"
     );
     assert_eq!(
-        h.with_app(|app| app.palette_selected_key.clone()),
-        Some("update-ready:0.5.1".to_string()),
+        h.with_app(|app| app.palette_selected_key()),
+        Some("commands:update/0.5.1".to_string()),
         "Enter on a fresh palette lands on the update row"
     );
     h.save_screenshot(&evidence_png!()).expect("render failed");
@@ -60,8 +57,7 @@ fn screenshot_command_palette_update_ready_row() {
 
     h.with_app_mut(|app| {
         app.update_status = crate::host::update_status::UpdateStatus::default();
-        app.show_command_palette = true;
-        app.palette_selected_key = None;
+        app.open_command_palette("");
     });
     h.run_steps(2);
     assert!(

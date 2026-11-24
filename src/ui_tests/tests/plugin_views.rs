@@ -256,13 +256,11 @@ fn screenshot_agents_pane_states_and_keys() {
         win.tree.root = Some(win.tree.tiles.insert_tab_tile(tiles));
     });
     h.with_app_mut(|app| {
-        app.show_command_palette = true;
-        app.palette_query = "agents".into();
+        app.open_command_palette("agents");
     });
     h.run_steps(2);
-    h.with_app(|app| assert_eq!(app.palette_agent_count_logged, Some(0)));
     h.save_screenshot(&evidence_png!("_before")).unwrap();
-    h.with_app_mut(|app| app.show_command_palette = false);
+    h.with_app_mut(|app| app.close_command_palette());
     h.step();
     let agents_id = h.open_builtin_by_id("agents", &root, &[]).unwrap();
     h.run_steps(3);

@@ -107,6 +107,9 @@ impl PlexiApp {
             Some(version) => {
                 log::info!("update: restart to v{version} requested from {source}");
                 self.update_quit_pending = true;
+                // `App::logic` takes the restart; make sure a pass follows
+                // even when nothing else is animating.
+                self.ctx.request_repaint();
             }
             None => log::warn!("update: restart requested from {source} with no build ready"),
         }

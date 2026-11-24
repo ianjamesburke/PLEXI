@@ -1174,6 +1174,7 @@ impl PlexiApp {
                     overlay.pane_id
                 );
                 self.attention_queue.decision_overlay = None;
+                self.sync_attention_queue_layer();
                 self.attention_queue.transient_hint =
                     Some(("No longer needed (pane closed)".to_string(), Instant::now()));
             }
@@ -1272,10 +1273,35 @@ impl PlexiApp {
         self.attention_queue.seen_notice_ids.extend(ids);
     }
 
+    /// Keep the queue's focus-stack opening in step with its visibility, at
+    /// every write of `open` or `decision_overlay`: the queue opens on top of
+    /// whatever owned input, and leaves the stack when neither shows.
+    pub(crate) fn sync_attention_queue_layer(&mut self) {
+        let shown = self.attention_queue.open || self.attention_queue.decision_overlay.is_some();
+        let kind = crate::app::FocusKind::AttentionQueue;
+        if shown && !self.focus_stack.contains(&kind) {
+            self.focus_stack.open(kind, None);
+            log::info!("focus: AttentionQueue opened on top");
+        } else if !shown && self.focus_stack.dismiss(kind).is_some() {
+            log::info!("focus: AttentionQueue left the stack");
+        }
+    }
+
     /// Toggle the pulled-up attention queue bar list (`Cmd+I`).
     pub fn toggle_attention_queue_list(&mut self) {
         self.sync_attention_queue();
+        // Covered by another surface: the toggle hands input back to the
+        // queue rather than closing it.
+        if self.attention_queue.open
+            && self.focus_stack.top() != Some(crate::app::FocusKind::AttentionQueue)
+        {
+            self.focus_stack
+                .promote(crate::app::FocusKind::AttentionQueue);
+            log::info!("attention_queue: list brought back to the top");
+            return;
+        }
         self.attention_queue.open = !self.attention_queue.open;
+        self.sync_attention_queue_layer();
         if self.attention_queue.open {
             self.mark_notices_seen();
             self.attention_queue.selected_idx = 0;
@@ -1307,6 +1333,7 @@ impl PlexiApp {
         };
         if bar.category == QueueCategory::Ask && bar.options.is_empty() {
             self.attention_queue.decision_overlay = None;
+            self.sync_attention_queue_layer();
             self.activate_attention_bar(&bar);
             return true;
         }
@@ -1323,6 +1350,9 @@ impl PlexiApp {
         );
         self.attention_queue.decision_overlay = Some(DecisionOverlayState::from_bar(&bar));
         self.attention_queue.open = false;
+        // A decision opens on top of whatever owned input.
+        self.focus_stack
+            .open(crate::app::FocusKind::AttentionQueue, Some(bar.id.clone()));
         self.sync_attention_queue();
         log::info!(
             "decision_overlay: opened ask_id={} pane_id={}",
@@ -1538,6 +1568,7 @@ impl PlexiApp {
             }
             AttentionDestination::LiveParent(parent_id) => {
                 self.attention_queue.open = false;
+                self.sync_attention_queue_layer();
                 self.jump_to_pane_at_columns(*parent_id);
                 log::info!(
                     "attention_queue: navigated result bar_id={} to live parent pane_id={}",
@@ -1559,6 +1590,7 @@ impl PlexiApp {
                     return dest;
                 }
                 self.attention_queue.open = false;
+                self.sync_attention_queue_layer();
                 let navigated = self.jump_to_pane_at_columns(*source_id);
                 if navigated
                     && bar.category == QueueCategory::Failed
@@ -1578,6 +1610,7 @@ impl PlexiApp {
             }
             AttentionDestination::ResultArtifact(path) => {
                 self.attention_queue.open = false;
+                self.sync_attention_queue_layer();
                 if bar.context_id != 0 && self.router.active().context_id != bar.context_id {
                     self.switch_to_context_restoring_last_pane(bar.context_id);
                 }
@@ -1700,6 +1733,7 @@ impl PlexiApp {
             .insert(overlay.ask_id.clone())
         {
             self.attention_queue.decision_overlay = None;
+            self.sync_attention_queue_layer();
             return false;
         }
 
@@ -1923,6 +1957,7 @@ impl PlexiApp {
         );
         self.attention_queue.verdicts.push(verdict);
         self.attention_queue.decision_overlay = None;
+        self.sync_attention_queue_layer();
         self.sync_attention_queue();
         true
     }
@@ -1949,6 +1984,7 @@ impl PlexiApp {
         {
             log::info!("decision_overlay: closed via Esc (ask remains queued)");
             self.attention_queue.decision_overlay = None;
+            self.sync_attention_queue_layer();
             self.sync_attention_queue();
             input.clear();
             return KeyDisposition::Consumed;
@@ -2085,6 +2121,7 @@ impl PlexiApp {
             || input.consume_key(egui::Modifiers::CTRL, Key::I)
         {
             self.attention_queue.open = false;
+            self.sync_attention_queue_layer();
             self.sync_attention_queue();
             log::info!("attention_queue: closed list");
             input.clear();
@@ -2127,6 +2164,7 @@ impl PlexiApp {
                 self.activate_attention_bar(&bar);
             } else {
                 self.attention_queue.open = false;
+                self.sync_attention_queue_layer();
             }
             input.clear();
             return KeyDisposition::Consumed;
@@ -2221,7 +2259,17 @@ impl PlexiApp {
     /// Draw the pulled-up Attention Queue list (`Cmd+I`) and/or the Decision Overlay.
     pub(crate) fn draw_attention_queue_and_decision_overlay(&mut self, ctx: &egui::Context) {
         self.sync_attention_queue();
-
+        // Only the top surface draws and takes hits: a queue covered by the
+        // palette or an approval waits beneath it (stint 1391).
+        if self.focus_stack.top() != Some(crate::app::FocusKind::AttentionQueue) {
+            return;
+        }
+        if !ctx.will_discard() {
+            self.focus_stack.note_drawn(
+                crate::app::FocusKind::AttentionQueue,
+                ctx.cumulative_pass_nr(),
+            );
+        }
         if self.attention_queue.open {
             self.draw_attention_queue_list_panel(ctx);
         }
@@ -3697,6 +3745,7 @@ mod tests {
         let mut prior = bar.clone();
         prior.options = default_ask_options();
         h.app.attention_queue.decision_overlay = Some(DecisionOverlayState::from_bar(&prior));
+        h.app.sync_attention_queue_layer();
         assert!(h.app.open_decision_overlay_for_ask(&bar.id));
         assert!(
             h.app.attention_queue.decision_overlay.is_none(),

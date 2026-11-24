@@ -628,9 +628,6 @@ impl PlexiApp {
         if self.zoom.level != ZoomLevel::Columns {
             return false;
         }
-        if self.attention_queue.decision_overlay.is_some() || self.attention_queue.open {
-            return false;
-        }
         if self.overlay_surface().is_some() {
             return false;
         }
@@ -760,14 +757,21 @@ impl PlexiApp {
     /// 2. Moves to the immediate parent context. At root, stays in panes.
     /// 3. With the atlas experiment enabled, root opens the overview directly.
     pub fn zoom_out_or_close_surface(&mut self) -> bool {
-        if self.attention_queue.decision_overlay.is_some() {
-            self.attention_queue.decision_overlay = None;
-            log::info!("zoom: Cmd+Esc closed DecisionOverlay");
-            return true;
-        }
-        if self.attention_queue.open {
-            self.attention_queue.open = false;
-            log::info!("zoom: Cmd+Esc closed AttentionQueue list");
+        let queue = crate::app::FocusKind::AttentionQueue;
+        if self.focus_stack.contains(&queue) {
+            // The focus stack decides: a queue under another surface is not
+            // this chord's to close, and nothing beneath it moves either.
+            if self.focus_stack.top() != Some(queue) {
+                log::info!("zoom: Cmd+Esc left the covered AttentionQueue open");
+                return false;
+            }
+            if self.attention_queue.decision_overlay.take().is_some() {
+                log::info!("zoom: Cmd+Esc closed DecisionOverlay");
+            } else {
+                self.attention_queue.open = false;
+                log::info!("zoom: Cmd+Esc closed AttentionQueue list");
+            }
+            self.sync_attention_queue_layer();
             return true;
         }
         if self.zoom.level == ZoomLevel::TreeAtlas && self.zoom.atlas_peek_open {

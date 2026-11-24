@@ -1200,6 +1200,8 @@ mod tests {
     mod layout;
     mod notes;
     mod palette;
+    mod palette_boundary;
+    mod palette_widgets;
     mod pane_chrome;
     mod pane_selection;
     mod plugin_views;

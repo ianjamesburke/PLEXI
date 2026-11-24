@@ -3605,12 +3605,12 @@ fn palette_close_surrenders_focus_before_pane_close() {
 
     // Open the palette — sync_command_palette_focus pushes the focus layer
     // and the per-frame code requests focus on palette_search.
-    h.app.show_command_palette = true;
+    h.app.open_command_palette("");
     h.run_frames(3);
 
     // Dismiss the palette — sync_command_palette_focus must pop the layer
     // AND surrender palette_search focus so AccessKit has no stale node.
-    h.app.show_command_palette = false;
+    h.app.close_command_palette();
     h.run_frames(2);
 
     // Close a pane — triggers the AccessKit consistency check that panicked
@@ -3712,10 +3712,9 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
     );
 
     // Push CommandPalette on top — now ConfirmClose is buried.
-    h.app.show_command_palette = true;
-    h.app.sync_command_palette_focus();
+    h.app.open_command_palette("");
     assert_eq!(
-        h.app.focus_stack.last(),
+        h.app.focus_stack.top().as_ref(),
         Some(&FocusKind::CommandPalette),
         "CommandPalette must be at the top after its source state becomes true"
     );
@@ -3964,8 +3963,7 @@ fn steal_focus(h: &HostHarness) -> egui::Id {
 #[test]
 fn command_palette_text_field_registry_wins_after_central_panel_steal() {
     let mut h = HostHarness::new();
-    h.app.show_command_palette = true;
-    h.app.sync_command_palette_focus();
+    h.app.open_command_palette("");
 
     h.run_frames(1);
     steal_focus(&h);
@@ -4942,6 +4940,7 @@ fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
 
     // Held behind an overlay, then released.
     h.app.attention_queue.open = true;
+    h.app.sync_attention_queue_layer();
     queue_pipe_command(&mut h, requester, spawn("held", Some(context_b)));
     h.run_hidden_frames(1);
     assert!(
@@ -4950,6 +4949,7 @@ fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
     );
     focus_bystander(&mut h);
     h.app.attention_queue.open = false;
+    h.app.sync_attention_queue_layer();
     h.run_hidden_frames(1);
     assert!(matches!(
         replies_to(&received, "held").as_slice(),
@@ -4967,6 +4967,7 @@ fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
     // its request is held. The reply belongs to the emitting instance, which
     // is gone, so the replacement in the same slot hears nothing.
     h.app.attention_queue.open = true;
+    h.app.sync_attention_queue_layer();
     queue_pipe_command(&mut h, requester, spawn("replaced", Some(context_b)));
     h.run_hidden_frames(1);
     let (replacement, replacement_heard) = pipe_test_view(requester);
@@ -4978,6 +4979,7 @@ fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
         .insert(requester, replacement)
         .unwrap();
     h.app.attention_queue.open = false;
+    h.app.sync_attention_queue_layer();
     h.run_hidden_frames(1);
     assert!(
         replies_to(&replacement_heard, "replaced").is_empty(),
@@ -5538,6 +5540,7 @@ fn sdk_held_request_is_retired_by_a_guest_reload() {
         .unwrap()
         .incarnation;
     h.app.attention_queue.open = true;
+    h.app.sync_attention_queue_layer();
     h.app
         .overlay_held_cmds
         .push(crate::app::view_trait::ViewCommand::SpawnPane {
@@ -5573,6 +5576,7 @@ fn sdk_held_request_is_retired_by_a_guest_reload() {
     );
     let panes = h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>();
     h.app.attention_queue.open = false;
+    h.app.sync_attention_queue_layer();
     h.run_hidden_frames(2);
     assert_eq!(
         h.app.windows.iter().map(|w| w.panes.len()).sum::<usize>(),
@@ -8359,7 +8363,7 @@ fn context_1041_rename_switch_cancel_commit_and_remove() {
     h.app.open_context_rename(1);
     h.run_frames(2);
     assert_eq!(
-        h.app.focus_stack.last(),
+        h.app.focus_stack.top().as_ref(),
         Some(&crate::app::FocusKind::ContextRename)
     );
     h.app.switch_workspace(1);
@@ -8613,8 +8617,7 @@ fn command_palette_owns_focus_over_focused_assistant_pane() {
     h.focus_pane(pane_b);
     h.run_frames(2);
 
-    h.app.show_command_palette = true;
-    h.app.sync_command_palette_focus();
+    h.app.open_command_palette("");
     h.run_frames(2);
 
     assert_eq!(
@@ -9645,7 +9648,7 @@ fn unsaved_plain_file_close_owns_keyboard_and_discard_preserves_disk() {
     h.app.close_focused_view();
     h.run_frames(2);
     assert_eq!(
-        h.app.focus_stack.last().map(|kind| kind.name()),
+        h.app.focus_stack.top().as_ref().map(|kind| kind.name()),
         Some("UnsavedChanges")
     );
     h.press_key(egui::Key::D, egui::Modifiers::NONE);
@@ -9724,7 +9727,7 @@ fn unsaved_dialog_cancel_and_unrecognized_input_never_edit_buffer() {
     h.press_key(egui::Key::X, egui::Modifiers::NONE);
     h.run_frames(2);
     assert_eq!(h.text_editor_mut(pane).open_buffer().text, "unsaved edits");
-    assert_eq!(h.app.focus_stack.last(), Some(&FocusKind::UnsavedChanges));
+    assert_eq!(h.app.focus_stack.top().as_ref(), Some(&FocusKind::UnsavedChanges));
     h.frame(egui::RawInput {
         events: vec![
             egui::Event::Key {
@@ -9766,7 +9769,7 @@ fn unsaved_dialog_cancel_preserves_caret_selection_and_scroll() {
     h.app.close_focused_view();
     h.run_frames(2);
     assert_eq!(
-        h.app.focus_stack.last().map(|kind| kind.name()),
+        h.app.focus_stack.top().as_ref().map(|kind| kind.name()),
         Some("UnsavedChanges")
     );
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
@@ -9820,7 +9823,7 @@ fn unsaved_dialog_switch_cancel_discard_and_save() {
             .restore_state(&serde_json::json!({"path": next}));
         h.run_frames(2);
         assert_eq!(
-            h.app.focus_stack.last().map(|k| k.name()),
+            h.app.focus_stack.top().as_ref().map(|k| k.name()),
             Some("UnsavedChanges")
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes\n");
@@ -9863,7 +9866,7 @@ fn update_restart_asks_about_an_unsaved_buffer() {
         "update restart started the quit without asking"
     );
     h.run_frames(1);
-    let asked = h.app.focus_stack.last().map(|k| k.name()) == Some("UnsavedChanges");
+    let asked = h.app.focus_stack.top().as_ref().map(|k| k.name()) == Some("UnsavedChanges");
     let quitting = h.app.quit_coordinator.is_active();
     h.render_png(crate::ui_tests::evidence_png!())
         .expect("render the prompt");
@@ -10078,7 +10081,7 @@ fn unsaved_dialog_desktop_quit_targets_dirty_pane() {
     h.run_frames(2);
     assert_eq!(h.app.focused_pane_id(), Some(pane));
     assert_eq!(
-        h.app.focus_stack.last().map(|k| k.name()),
+        h.app.focus_stack.top().as_ref().map(|k| k.name()),
         Some("UnsavedChanges")
     );
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
@@ -10102,7 +10105,7 @@ fn unsaved_dialog_failed_save_keeps_pending_close_and_buffer() {
     h.run_frames(2);
     assert!(h.app.windows[0].panes.contains_key(&pane));
     assert_eq!(
-        h.app.focus_stack.last().map(|k| k.name()),
+        h.app.focus_stack.top().as_ref().map(|k| k.name()),
         Some("UnsavedChanges")
     );
     assert_eq!(h.text_editor_mut(pane).open_buffer().text, "unsaved edits");
@@ -10208,7 +10211,7 @@ fn editor_gate_prose_after_conflict_prompt_preserves_both_versions() {
     h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
     h.run_frames(2);
     assert_eq!(
-        h.app.focus_stack.last().map(|kind| kind.name()),
+        h.app.focus_stack.top().as_ref().map(|kind| kind.name()),
         Some("UnsavedChanges")
     );
     assert_eq!(
@@ -19805,9 +19808,9 @@ fn pane_close_chord_dismisses_modal_without_closing_pane() {
     let pane = h.add_test_pane();
     h.focus_pane(pane).run_frames(2);
     h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
-    assert!(h.app.show_command_palette);
+    assert!(h.app.command_palette_open());
     h.press_key(egui::Key::W, egui::Modifiers::COMMAND);
-    assert!(!h.app.show_command_palette);
+    assert!(!h.app.command_palette_open());
     assert!(h.app.windows[0].panes.contains_key(&pane));
     assert!(!h.app.pending_close);
 }
@@ -22822,8 +22825,8 @@ fn notes_picker_invocation_shortcut_toggles_and_preserves_notes() {
         assert_eq!(
             h.app
                 .focus_stack
-                .iter()
-                .filter(|&&k| k == FocusKind::NotesPicker)
+                .kinds()
+                .filter(|k| *k == FocusKind::NotesPicker)
                 .count(),
             1
         );
@@ -23733,7 +23736,7 @@ fn changelog_toolbar_and_click_away_close_focus_layer() {
     h.run_frames(2);
     assert!(h.app.show_changelog);
     assert_eq!(
-        h.app.focus_stack.last(),
+        h.app.focus_stack.top().as_ref(),
         Some(&crate::app::FocusKind::Changelog)
     );
     click(&mut h, egui::pos2(10.0, 300.0));

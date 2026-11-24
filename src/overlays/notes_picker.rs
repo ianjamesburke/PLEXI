@@ -2241,10 +2241,14 @@ mod tests {
     fn notes_picker_copy_restores_the_layer_under_it() {
         let (mut app, ctx, paths) = picker_with_notes("copy-focus", &["copy me"]);
         // Stands in for the surface that owned focus before the picker opened.
-        app.focus_stack.insert(0, FocusKind::CommandPalette);
+        let picker_open = app.focus_stack.dismiss(FocusKind::NotesPicker).is_some();
+        app.focus_stack.open(FocusKind::CommandPalette, None);
+        if picker_open {
+            app.focus_stack.open(FocusKind::NotesPicker, None);
+        }
         press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
         assert_eq!(
-            app.focus_stack.last(),
+            app.focus_stack.top().as_ref(),
             Some(&FocusKind::CommandPalette),
             "the layer under the picker must be restored"
         );

@@ -136,6 +136,9 @@ impl PlexiApp {
             return;
         }
         self.drain_update_events();
+        crate::platform::logging::time_drain("refresh_command_palette", || {
+            self.refresh_command_palette()
+        });
         if self.update_quit_pending {
             crate::app::quit::trace("update_restart_received");
             self.update_quit_pending = false;
@@ -271,6 +274,8 @@ impl PlexiApp {
         focused_terminal_input: Option<crate::render::terminal_pane::TerminalInput>,
     ) {
         let ctx = ui.ctx().clone();
+        let pointer_admitted = self.focus_stack.press_owner().is_none();
+        let widgets_admitted = self.press_owner_was_drawn(&ctx);
         // Taken exactly once by whichever production path renders the focused
         // terminal this frame: the tiling behavior or the zoom overlay.
         let mut focused_terminal_input = focused_terminal_input;
@@ -796,6 +801,8 @@ impl PlexiApp {
                     workspace_root,
                     context_root: active_context_root,
                     synthetic_input_frame: self.synthetic_input_frame,
+                    pointer_admitted,
+                    widgets_admitted,
                     unfocused_opacity,
                     portal_info,
                     owner_pane,
@@ -1102,6 +1109,8 @@ impl PlexiApp {
                     }
                 }
 
+                // A press a surface above owned never commits a tab action.
+                let tab_action = tab_action.filter(|_| pointer_admitted);
                 if let Some((container_tile, action)) = tab_action {
                     match action {
                         crate::spatial::tiling::TabBarAction::Switch(idx) => {

@@ -104,7 +104,7 @@ fn kittest_step_opens_the_palette_from_hook_delivered_input() {
     });
     let queued =
         |h: &super::PlexiUiHarness| h.with_app(|app| app.pending_pane_inputs.contains_key(&pane));
-    let palette = |h: &super::PlexiUiHarness| h.with_app(|app| app.show_command_palette);
+    let palette = |h: &super::PlexiUiHarness| h.with_app(|app| app.command_palette_open());
 
     let ctx = h.harness().ctx.clone();
     h.with_app_mut(|app| {

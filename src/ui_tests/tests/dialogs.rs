@@ -1150,7 +1150,7 @@ fn screenshot_rename_pane_overlay() {
     h.with_app_mut(|app| {
         app.rename_buffer = "notes-scratch".to_string();
         app.renaming_pane = Some(pane_id);
-        app.focus_stack.push(FocusKind::RenamePane);
+        app.focus_stack.open(FocusKind::RenamePane, None);
     });
     h.step();
     // The shared single-line rename field is up and holds the buffer.

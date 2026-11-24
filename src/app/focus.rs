@@ -87,6 +87,10 @@ pub(crate) enum FocusKind {
     /// Keyboard shortcuts sheet (Cmd+/). A focus layer so Esc reaches it
     /// before the focused pane can consume the key (stint 1261).
     Shortcuts,
+    /// The Attention Queue list or its Decision Overlay. Not a modal owner:
+    /// its keys are routed after host chords, by the queue's own handlers,
+    /// while it is the top (stint 1391).
+    AttentionQueue,
 }
 
 impl FocusKind {
@@ -109,14 +113,16 @@ impl FocusKind {
             Self::NotesPicker => "NotesPicker",
             Self::Changelog => "Changelog",
             Self::Shortcuts => "Shortcuts",
+            Self::AttentionQueue => "AttentionQueue",
         }
     }
 
-    /// Map this identity to its stateless [`FocusOwner`] token. The token
+    /// Map this identity to its stateless modal [`FocusOwner`] token, or
+    /// `None` for the Attention Queue, which is no modal owner. The token
     /// carries no data — it only names which `PlexiApp` overlay methods this
     /// frame's keyboard/render dispatch should call.
-    pub(crate) fn owner(self) -> &'static dyn FocusOwner {
-        match self {
+    pub(crate) fn owner(self) -> Option<&'static dyn FocusOwner> {
+        Some(match self {
             Self::ApprovalBanner => &ApprovalBannerOwner,
             Self::ConfirmClose => &ConfirmCloseOwner,
             Self::UnsavedChanges => &UnsavedChangesOwner,
@@ -133,7 +139,8 @@ impl FocusKind {
             Self::NotesPicker => &NotesPickerOwner,
             Self::Changelog => &ChangelogOwner,
             Self::Shortcuts => &ShortcutsOwner,
-        }
+            Self::AttentionQueue => return None,
+        })
     }
 }
 
@@ -209,7 +216,6 @@ focus_owner_tokens! {
     Shortcuts => ShortcutsOwner { key: shortcuts_handle_key, draw: draw_shortcuts_overlay },
     ApprovalBanner => ApprovalBannerOwner { key: approval_handle_key, draw: approval_focus_draw },
     ConfirmClose => ConfirmCloseOwner { key: confirm_close_handle_key, draw: draw_confirm_close },
-    CommandPalette => CommandPaletteOwner { key: command_palette_handle_key, draw: draw_command_palette },
     RenamePane => RenamePaneOwner { key: rename_pane_handle_key, draw: draw_rename_pane_overlay },
     ContextRename => ContextRenameOwner { key: context_rename_handle_key, draw: draw_rename_context_overlay },
     ContextDescription => ContextDescriptionOwner { key: context_description_handle_key, draw: draw_edit_description_overlay },
@@ -219,6 +225,29 @@ focus_owner_tokens! {
     CapabilityModal => CapabilityModalOwner { key: capability_modal_handle_key, draw: draw_capability_modal },
     EventConsent => EventConsentOwner { key: event_consent_handle_key, draw: draw_event_consent_modal },
     RawWasmReview => RawWasmReviewOwner { key: raw_wasm_review_handle_key, draw: draw_raw_wasm_review_modal },
+}
+
+/// Command palette: `PlexiApp::route_palette_input` routed its share of the
+/// delivery in arrival order at the start of the pass (stint 1391), so
+/// `input` is always empty here and nothing goes back.
+pub(crate) struct CommandPaletteOwner;
+impl FocusOwner for CommandPaletteOwner {
+    fn handle_key(
+        &self,
+        _app: &mut PlexiApp,
+        _ctx: &egui::Context,
+        _input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
+    }
+    fn draw(
+        &self,
+        app: &mut PlexiApp,
+        ctx: &egui::Context,
+    ) -> Vec<crate::app::view_trait::ViewCommand> {
+        app.draw_command_palette(ctx);
+        Vec::new()
+    }
 }
 
 /// Notes picker — its handler drives selection but never claims the key, so the
@@ -660,16 +689,16 @@ impl PlexiApp {
     /// Non-critical modals (`NotificationModal`, `CommandPalette`) can be safely
     /// dismissed so QuickNote can open on top.
     pub(crate) fn is_quick_note_preemptable(&self) -> bool {
-        matches!(self.focus_stack.last(), Some(FocusKind::CommandPalette))
+        self.focus_stack.top() == Some(FocusKind::CommandPalette)
     }
 
     /// Dismiss the current non-critical modal so QuickNote can open on top.
     /// Only call after `is_quick_note_preemptable()` returns `true`.
     pub(crate) fn dismiss_preemptable_modal(&mut self) {
-        if let Some(FocusKind::CommandPalette) = self.focus_stack.last().cloned() {
+        if self.focus_stack.top() == Some(FocusKind::CommandPalette) {
             log::info!("quick_note: dismissing CommandPalette to open QuickNote");
-            self.show_command_palette = false;
-            self.focus_stack.retain(|l| *l != FocusKind::CommandPalette);
+            self.close_command_palette();
+            self.focus_stack.dismiss(FocusKind::CommandPalette);
         }
     }
 
@@ -681,19 +710,17 @@ impl PlexiApp {
         self.overlay_surface().is_some()
     }
 
-    /// Push a focus layer. Idempotent — if the same layer is already on top,
-    /// it's a no-op. Callers should pair with `pop_focus_layer`.
+    /// Open a focus layer on top. Idempotent — if the same layer is already
+    /// on top, its opening stands. Callers should pair with `pop_focus_layer`.
     pub(crate) fn push_focus_layer(&mut self, layer: FocusKind) {
-        if self.focus_stack.last() != Some(&layer) {
-            self.focus_stack.push(layer);
-        }
+        self.focus_stack.open(layer, None);
     }
 
     /// Pop the given layer if it's currently on top. No-op otherwise; this
     /// prevents out-of-order pops from corrupting the stack.
     pub(crate) fn pop_focus_layer(&mut self, layer: &FocusKind) {
-        if self.focus_stack.last() == Some(layer) {
-            self.focus_stack.pop();
+        if self.focus_stack.top() == Some(*layer) {
+            self.focus_stack.dismiss(*layer);
         }
     }
 
@@ -708,8 +735,8 @@ impl PlexiApp {
         if should_own && !has_layer {
             self.push_focus_layer(layer);
         } else if !should_own && has_layer {
-            log::info!("focus: {} layer removed by sync (retain)", layer.name());
-            self.focus_stack.retain(|l| *l != layer);
+            log::info!("focus: {} layer removed by sync", layer.name());
+            self.focus_stack.dismiss(layer);
         }
     }
 
@@ -719,14 +746,15 @@ impl PlexiApp {
     /// top of it while it was buried, not just toggle membership.
     fn reconcile_promoted_focus_layer(&mut self, layer: FocusKind, should_own: bool) {
         let has_layer = self.focus_stack.contains(&layer);
-        let is_top = self.focus_stack.last() == Some(&layer);
+        let is_top = self.focus_stack.top() == Some(layer);
         if should_own && !is_top {
-            self.focus_stack.retain(|l| *l != layer);
             log::info!("focus: {} promoted to top", layer.name());
-            self.push_focus_layer(layer);
+            if !self.focus_stack.promote(layer) {
+                self.push_focus_layer(layer);
+            }
         } else if !should_own && has_layer {
             log::info!("focus: {} layer released", layer.name());
-            self.focus_stack.retain(|l| *l != layer);
+            self.focus_stack.dismiss(layer);
         }
     }
 
@@ -1330,11 +1358,11 @@ impl PlexiApp {
         }
     }
 
-    /// Reconcile the command-palette focus layer with `show_command_palette`.
-    /// Same pattern as the notification modal: boolean visibility flag is the
-    /// source of truth, focus stack follows it deterministically each frame.
+    /// Reconcile the command-palette focus layer with the palette picker's
+    /// open state, the source of truth; the focus stack follows it.
     pub(crate) fn sync_command_palette_focus(&mut self) {
-        self.reconcile_focus_layer(FocusKind::CommandPalette, self.show_command_palette);
+        let open = self.command_palette_open();
+        self.reconcile_focus_layer(FocusKind::CommandPalette, open);
     }
 
     /// Every note currently open in an editor pane, across all windows, newest
@@ -1378,6 +1406,28 @@ impl PlexiApp {
             .into_iter()
             .filter_map(|(_, path)| crate::notes::NotePickerEntry::load(&path))
             .collect()
+    }
+
+    /// The pane whose live editor holds the note at `path`, in any window,
+    /// matched by note identity on the native path (never a serialized,
+    /// display-lossy spelling).
+    pub(crate) fn find_open_note_pane(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<crate::spatial::tiling::PaneId> {
+        let identity = crate::app::text_editor_view::note_path_identity(path);
+        self.windows.iter().find_map(|win| {
+            let mut panes: Vec<_> = win.panes.iter().collect();
+            panes.sort_by_key(|(id, _)| *id);
+            panes.into_iter().find_map(|(id, pane)| {
+                let crate::host::pane::ViewRuntime::Builtin(builtin) = &pane.as_view()?.runtime
+                else {
+                    return None;
+                };
+                let open = builtin.open_note_path()?;
+                (crate::app::text_editor_view::note_path_identity(open) == identity).then_some(*id)
+            })
+        })
     }
 
     /// Navigate to a pane by id, updating both `focused_pane` on its window and

@@ -203,6 +203,14 @@ struct WasmViewInstanceSpec<'a> {
     wasm_path: PathBuf,
 }
 
+/// The text editor on `path`, its workspace resolved from `cwd`. Shared by
+/// the string-argument factory and typed launches that own a native path.
+fn text_editor_view(path: PathBuf, cwd: &Path) -> Box<dyn View> {
+    let ws_root =
+        crate::cli::resolve_commands_workspace_root(cwd).or_else(|| Some(cwd.to_path_buf()));
+    Box::new(crate::app::text_editor_view::TextEditorView::new_with_workspace(path, ws_root))
+}
+
 /// Instantiate a builtin `App` by id, checked before the process registry.
 ///
 /// Builtins are compiled-in and never require disk access. Add one line here
@@ -239,11 +247,7 @@ pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<B
                 .first()
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(new_scratch_note_path);
-            let ws_root = crate::cli::resolve_commands_workspace_root(cwd)
-                .or_else(|| Some(cwd.to_path_buf()));
-            Some(Box::new(
-                crate::app::text_editor_view::TextEditorView::new_with_workspace(path, ws_root),
-            ))
+            Some(text_editor_view(path, cwd))
         }
         "mcp-renderer" => Some(Box::new(
             crate::render::mcp_renderer_view::McpRendererView::new(args, cwd.to_path_buf()),
@@ -2909,6 +2913,56 @@ impl PlexiApp {
         }
     }
 
+    /// The working directory a launch in `context_id` uses.
+    fn launch_cwd(&self, context_id: u64, cwd_override: Option<PathBuf>) -> PathBuf {
+        cwd_override
+            .or_else(|| self.context_root_for(context_id))
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+    }
+
+    /// Place a constructed builtin the way every builtin launch does.
+    fn open_launched_builtin(
+        &mut self,
+        target_win: usize,
+        layout: Option<String>,
+        app: Box<dyn View>,
+        cwd: PathBuf,
+        group: Option<String>,
+    ) -> Result<PaneId, String> {
+        let hint = layout.unwrap_or_else(|| "overlay".to_string());
+        self.open_builtin_view_pane_at(
+            BuiltinPlacement {
+                window: target_win,
+                hint: Some(&hint),
+                share: None,
+            },
+            app,
+            crate::app::permissions::PluginPermissions::builtin(),
+            cwd,
+            group,
+        )
+    }
+
+    /// Open the text editor on a native `path` in the active window, through
+    /// the builtin launch gate, placement and workspace resolution. The path
+    /// is never spelled as a string, so a non-UTF-8 note keeps its bytes.
+    pub(crate) fn open_text_editor_at_path(&mut self, path: PathBuf) -> Result<(), String> {
+        const ID: &str = "text-editor";
+        self.require_plugin(ID)?;
+        let target_win = self.active_window;
+        let context_id = self.windows[target_win].context_id;
+        let layout = self
+            .registries
+            .view_for_context(context_id, &self.router)
+            .placement_for(ID);
+        let cwd = self.launch_cwd(context_id, None);
+        log::info!("open_text_editor_at_path: typed note launch context_id={context_id}");
+        let app = text_editor_view(path, &cwd);
+        let group = builtin_default_group(app.type_id());
+        self.open_launched_builtin(target_win, layout, app, cwd, group)?;
+        Ok(())
+    }
+
     pub(crate) fn launch_view_by_id_with_layout_at(
         &mut self,
         options: IdViewLaunchOptions,
@@ -3014,9 +3068,7 @@ impl PlexiApp {
         }
 
         let cwd_explicit = cwd_override.is_some();
-        let cwd = cwd_override
-            .or_else(|| self.context_root_for(context_id))
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        let cwd = self.launch_cwd(context_id, cwd_override);
         log::info!(
             "open_view_by_id_with_layout: id={id} cwd={cwd:?} cwd_source={} context_root={:?}",
             if cwd_explicit { "explicit" } else { "resolved" },
@@ -3035,21 +3087,9 @@ impl PlexiApp {
             } else {
                 builtin_default_group(app.type_id())
             };
-            let hint = layout.unwrap_or_else(|| "overlay".to_string());
-            let perms = crate::app::permissions::PluginPermissions::builtin();
             // A placement failure is the caller's error, never a silent
             // `Ok(None)` the caller reads as "opened" (stint 1673).
-            self.open_builtin_view_pane_at(
-                BuiltinPlacement {
-                    window: target_win,
-                    hint: Some(&hint),
-                    share: None,
-                },
-                app,
-                perms,
-                cwd,
-                group,
-            )?;
+            self.open_launched_builtin(target_win, layout, app, cwd, group)?;
             return Ok(None);
         }
 

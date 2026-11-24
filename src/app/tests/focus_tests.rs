@@ -415,7 +415,7 @@ fn rename_pane_focus_layer_syncs_immediately() {
     h.app.sync_rename_pane_focus();
 
     assert_eq!(
-        h.app.focus_stack.last(),
+        h.app.focus_stack.top().as_ref(),
         Some(&FocusKind::RenamePane),
         "FocusKind::RenamePane must be on the stack after sync"
     );

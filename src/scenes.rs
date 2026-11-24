@@ -3353,6 +3353,7 @@ impl HeadlessBackend {
                     }
                     app.sync_attention_queue();
                     app.attention_queue.open = true;
+                    app.sync_attention_queue_layer();
                     id
                 });
                 self.h.run_steps(2);
@@ -3456,6 +3457,7 @@ impl HeadlessBackend {
                     }
                     app.sync_attention_queue();
                     app.attention_queue.open = true;
+                    app.sync_attention_queue_layer();
                     app.attention_queue
                         .items
                         .iter()
@@ -3516,6 +3518,7 @@ impl HeadlessBackend {
                 self.h.with_app_mut(|app| {
                     app.sync_attention_queue();
                     app.attention_queue.open = true;
+                    app.sync_attention_queue_layer();
                 });
                 self.h.run_steps(2);
                 Ok(Some(StepDetail::Message {
@@ -3575,6 +3578,7 @@ impl HeadlessBackend {
                 self.h.with_app_mut(|app| {
                     app.sync_attention_queue();
                     app.attention_queue.open = true;
+                    app.sync_attention_queue_layer();
                 });
                 self.h.run_steps(2);
                 Ok(Some(StepDetail::Message {

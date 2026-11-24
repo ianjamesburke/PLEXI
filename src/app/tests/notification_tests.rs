@@ -709,7 +709,7 @@ fn quicknote_preempts_command_palette() {
     h.app.open_quick_note_modal();
 
     assert_eq!(
-        h.app.focus_stack.last(),
+        h.app.focus_stack.top().as_ref(),
         Some(&FocusKind::QuickNote),
         "QuickNote must be on top after preempting CommandPalette"
     );
