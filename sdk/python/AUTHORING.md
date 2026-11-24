@@ -183,6 +183,9 @@ fields is in `sdk.md` (Effects section). The common ones:
 `CloseSelf`, `RequestCapability`
 <!-- /drift-check:effects -->
 
+`SetTimer` and `CancelTimer` need the `timer` capability in the manifest; a
+plugin without it stops ticking, with only an info log.
+
 `RequestCapability` never asks the user. It reports whether the capability was
 granted at launch, as `CapabilityGranted` or `CapabilityDenied`.
 
@@ -301,9 +304,9 @@ replaces the pane's previous tool set, so send every current tool when it
 changes.
 
 Set `read_only=True` only for tools that never mutate plugin or workspace state.
-For Assistant calls specifically, read-only tools run without a write-grant
-prompt while every call is still recorded. Mutating Assistant calls prompt for
-an allow-once or persisted narrow grant before they run.
+`read_only` is a label the Assistant shows; it grants nothing. Every plugin tool
+call goes through the permission monitor, and Plan posture withholds all plugin
+tools.
 
 ## Cross-plugin events
 
@@ -674,8 +677,8 @@ Test-first. Define done by the test, not the code.
   before touching plugin code, then run `plexi plugin test .`.
 - Exercise behavior through actions and keys, not only by reading code:
   `plexi pane action <pane-id> <handler-id>` and `plexi pane key <pane-id> <key>`.
-- Hot reload is part of the loop and always on; the manifest `watch` key has
-  no effect. After `plexi view open .`, edit source and confirm the same pane id updates without
+- Hot reload is part of the loop and always on; the manifest `watch` key is
+  rejected, and a plugin that sets it will not load. After `plexi view open .`, edit source and confirm the same pane id updates without
   reopening (check `plexi pane state <pane-id>` and the host log's `hot_reload`
   lines).
 - Final gate: `plexi plugin check .` renders the size matrix and validates the SDK

@@ -141,7 +141,8 @@ do not rely on Alt chords against an older host.
 ## Open files and native surfaces
 
 You run inside a pane, so prefer a Plexi surface over an OS plugin or an external
-editor. Built-in pane types open any file:
+editor. To open a file for the human: `plexi open <path>` (prints the pane
+id; `--json` for the receipt). Never shell out to the OS `open`. Built-in pane types open any file:
 
 ```bash
 plexi view open text-editor <path>     # text, markdown, code (.md gets live preview)

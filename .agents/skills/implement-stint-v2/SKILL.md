@@ -132,6 +132,7 @@ Before marking ready, run every applicable gate in the foreground from your work
    EOF
    )"
    ```
+   If this PR delivers only part of a stint, write `Stint-partial: <id>` instead of `Stint: <id>`, and first add a `## Remaining` section to the stint listing what is still open. Merge then releases the claim instead of closing the stint, and refuses if `## Remaining` is missing.
 3. After the PR exists, publish each applicable inspected image with the
    `python3 scripts/publish-pr-image.py --pr <PR_NUMBER> --head <full-pr-head-sha>
    --image <inspected.png> --source <headless|live-host> --context "<capture details>"

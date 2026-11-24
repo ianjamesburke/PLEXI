@@ -151,7 +151,7 @@ Read every generated PNG with the Read tool and confirm it shows the intended st
 
 Render realistic seeded content, not an empty state — an empty overlay or a
 zero-turn assistant pane cannot show the bug you fixed. `screenshot_assistant_conversation_bubbles`
-in `src/ui_tests.rs` is the pattern: build real model state, open through the
+in `src/ui_tests/tests/assistant.rs` is the pattern: build real model state, open through the
 real pane path (`open_assistant_built` / equivalent), screenshot, inspect.
 
 After inspection, follow [TESTING.md — Pre-Push Evidence](../../../src/testing/TESTING.md#pre-push-evidence) to publish required images after opening the PR. Keep local PNGs until publication succeeds; never treat their temporary paths as durable evidence.
