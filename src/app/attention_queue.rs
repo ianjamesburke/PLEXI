@@ -3246,7 +3246,7 @@ mod tests {
             root: &std::path::Path,
             claim: bool,
         ) -> ReadResult {
-            use crate::broker::gate::{AdmitRequest, UseDecision};
+            use crate::broker::gate::AdmitRequest;
             crate::workspace::secrets::read_pane_secret_with(
                 monitor,
                 store,
