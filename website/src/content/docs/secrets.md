@@ -43,7 +43,8 @@ From a terminal:
 plexi secret set MY_API_KEY
 ```
 
-Plexi prompts you to type the value (hidden). To read the value from an existing environment variable instead:
+Plexi prompts once for the value and hides it as you type. To read the value
+from an existing environment variable, use `--from-env`.
 
 ```sh
 plexi secret set MY_API_KEY --from-env
@@ -68,10 +69,13 @@ plexi secret get MY_API_KEY
 
 Looks up the secret for the current project first, then falls back to the global store.
 
-Inside a Plexi pane, any process could be an agent, so the host asks you first.
-The Plexi window shows an approval, and the command prints `permission_required`
-until you click **Allow once**. Run it again after the click. Allow once covers
-one read.
+## Approve a terminal command
+
+When a workspace or global `secret get`, `secret set`, or `secret delete`
+needs approval, the command waits for up to two minutes. Open **Needs you** in
+the Plexi window and choose **Allow once** to let that one command finish.
+Choosing **Deny**, closing the terminal, or letting the request expire ends
+the waiting command without reading or changing the secret.
 
 ## List Secrets
 

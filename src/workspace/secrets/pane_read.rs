@@ -23,13 +23,11 @@ pub enum SecretScope {
 }
 
 impl SecretScope {
-    /// Preserve the pane's existing exact binding. Outside approvals also bind
-    /// the caller class and a host-generated nonce for this live invocation.
+    /// Arguments covered by a standing grant. The broker binds Once to the call ID.
     pub(crate) fn input(&self, name: &str, outside: Option<&str>) -> serde_json::Value {
         let mut input = serde_json::json!({"name": name, "scope": self.label()});
         if let Some(caller) = outside {
             input["caller"] = caller.into();
-            input["invocation"] = uuid::Uuid::new_v4().to_string().into();
         }
         input
     }
@@ -148,15 +146,32 @@ mod tests {
             id: "ws-0788".to_string(),
             root: root.path().to_path_buf(),
         };
-        let first = read_pane_secret(&monitor, &store, &actor, "SHARED_0788", &scope, root.path())
-            .unwrap();
-        let ReadResult::PermissionRequired { pending_id } = first else {
-            panic!("expected a pending approval, got {first:?}");
-        };
-        monitor.approve_pending(&pending_id, ApprovalChoice::Once).unwrap();
-        let read = read_pane_secret(&monitor, &store, &actor, "SHARED_0788", &scope, root.path())
-            .unwrap();
-        assert!(matches!(read, ReadResult::Value(ref value) if value.as_str() == "global-canary-0788"));
+        let read = read_pane_secret_with(
+            &monitor,
+            &store,
+            &actor,
+            ReadTarget {
+                name: "SHARED_0788",
+                scope: &scope,
+                global_root: root.path(),
+            },
+            None,
+            |req| {
+                let UseDecision::Required { pending_request_id } = monitor.admit_for_use(req, None)
+                else {
+                    panic!("expected a pending approval")
+                };
+                monitor
+                    .approve_pending(&pending_request_id, ApprovalChoice::Once)
+                    .unwrap();
+                Some(monitor.admit_for_use_if(req, None, Some(&|| true)))
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            matches!(read.result, ReadResult::Value(ref value) if value.as_str() == "global-canary-0788")
+        );
     }
 
     #[test]

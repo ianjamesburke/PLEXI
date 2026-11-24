@@ -153,7 +153,19 @@ pub(crate) fn workspace_secret_tool(tool: &str) -> bool {
     matches!(tool, "secret.get" | "secret.set" | "secret.delete")
 }
 
+impl TargetType {
+    fn is_workspace_secret(self, tool: &str) -> bool {
+        self == Self::Secret && workspace_secret_tool(tool)
+    }
+}
+
 impl GrantRecord {
+    fn is_secret_once(&self) -> bool {
+        self.duration == GrantDuration::Once
+            && self.decision == Decision::Allow
+            && self.target_type.is_workspace_secret(&self.target_id)
+    }
+
     /// A row that says the person decided it can only be written with the
     /// evidence of that decision (stint 1285).
     pub fn needs_decision_evidence(&self) -> bool {
@@ -165,7 +177,7 @@ impl GrantRecord {
     pub fn bound_run(&self) -> Option<&str> {
         self.bound_operation_id
             .as_deref()
-            .filter(|bound| !self.consumed && !bound.starts_with("pane:"))
+            .filter(|bound| !self.consumed && !self.is_secret_once() && !bound.starts_with("pane:"))
     }
 
     /// Whether this row may exist for its actor at all: an outside-process
@@ -295,7 +307,8 @@ pub struct GrantRecord {
     /// A consumed one-shot no longer authorizes a new commit.
     #[serde(default)]
     pub consumed: bool,
-    /// Operation id that consumed a one-shot, for receipt recovery only.
+    /// A live secret Once reserves its host call ID until claimed.
+    /// Claiming a Once replaces the binding with the use ID for commit.
     #[serde(default)]
     pub bound_operation_id: Option<String>,
     /// The pane whose refused request a run-bound approval answered: only
@@ -531,6 +544,16 @@ impl GrantRecord {
                 && (self.instance_id != req.instance_id || self.context_id != req.context_id))
         {
             return false;
+        }
+        if self.is_secret_once() {
+            let owner = if self.consumed {
+                &req.operation_id
+            } else {
+                &req.call_id
+            };
+            if owner.is_empty() || self.bound_operation_id.as_ref() != Some(owner) {
+                return false;
+            }
         }
         if self.tool_scoped {
             return true;
@@ -1163,10 +1186,13 @@ impl GrantStore {
             );
             return;
         }
-        // A claimed once grant belongs to the use that claimed it: a new
-        // equivalent row never replaces it (stint 1716).
+        // Each live secret Once has its own owner even before the claim.
+        // It coexists with sibling grants and with standing decisions.
+        let secret_once = record.is_secret_once();
         self.file.data.records.retain(|r| {
-            (r.duration == GrantDuration::Once && r.consumed)
+            secret_once
+                || r.is_secret_once()
+                || (r.duration == GrantDuration::Once && r.consumed)
                 || !(r.actor_type == record.actor_type
                 && r.actor_id == record.actor_id
                 && r.actor_scope == record.actor_scope

@@ -322,8 +322,8 @@ impl SecretRequest {
         let tool = req.tool;
         let deadline = std::time::Instant::now() + crate::workspace::secrets::APPROVAL_TIMEOUT;
         let posture = self.posture.as_ref();
-        // Filing or finding an approval does not spend Once. Every grant,
-        // including one already present on arrival, is claimed below.
+        // Keep the same host call ID from filing through claim. The click
+        // reserves its Once until this worker checks the connection and deadline.
         let pending = match monitor.admit_with_posture(req, posture) {
             Admission::Denied { .. } => return Some(UseDecision::Denied),
             Admission::Proceed { .. } => None,
@@ -529,6 +529,7 @@ mod worker_test {
         Normal,
         Deadline(Arc<Mutex<Instant>>),
         ExpireAtClaim,
+        PauseAfterAsk(std::sync::mpsc::Receiver<()>),
         DropReply,
     }
     thread_local! {
@@ -537,7 +538,14 @@ mod worker_test {
     }
 
     pub(super) fn deadline(real: Instant, claim: bool) -> Instant {
-        TIMING.with_borrow(|mode| match mode {
+        TIMING.with_borrow_mut(|mode| match mode {
+            Timing::PauseAfterAsk(resume) if !claim => {
+                resume
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+                *mode = Timing::Normal;
+                real
+            }
             Timing::Deadline(time) => real.min(*time.lock().unwrap()),
             Timing::ExpireAtClaim if claim => Instant::now(),
             _ => real,
@@ -1043,6 +1051,142 @@ mod list_tests {
         assert!(monitor.open_needs_you().is_empty());
     }
 
+    fn pane_set(
+        h: &mut HostHarness,
+        peer: &PeerWitness,
+        name: &str,
+        value: &str,
+    ) -> (std::os::unix::net::UnixStream, String) {
+        let frame =
+            serde_json::json!({"type":"secret_set","global":true,"name":name,"value":value});
+        let (client, ask) = live_secret(h, frame, peer);
+        assert!(ask.actor_id.starts_with("pane:"));
+        (client, ask.pending_request_id)
+    }
+
+    #[test]
+    fn concurrent_pane_sets_write_only_the_clicked_value() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let peer = PeerWitness::for_live_pids(&[h.shell_pid(pane)]);
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let name = "PANE_CONCURRENT_1280";
+        let account = secrets::keychain_user_name(name);
+        let stored = || secrets::system_store().get(&account).unwrap();
+        let (a, first) = pane_set(&mut h, &peer, name, "first-pane-canary");
+        let (b, second) = pane_set(&mut h, &peer, name, "second-pane-canary");
+        assert_ne!(first, second);
+        assert_eq!(monitor.open_needs_you().len(), 2);
+        monitor
+            .approve_pending(&second, ApprovalChoice::Once)
+            .unwrap();
+        assert_eq!(read_client(b, name)["status"], "ok");
+        assert_eq!(super::worker_test::join().0, 1);
+        assert_eq!(stored().as_str(), "second-pane-canary");
+        let open = monitor.open_needs_you();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, first);
+        monitor
+            .approve_pending(&first, ApprovalChoice::Deny)
+            .unwrap();
+        assert_eq!(read_client(a, name)["reason"], "denied");
+        assert_eq!(super::worker_test::join().0, 0);
+        assert_eq!(stored().as_str(), "second-pane-canary");
+        assert!(monitor.open_needs_you().is_empty());
+        assert!(monitor
+            .store()
+            .records()
+            .iter()
+            .filter(|r| r.target_id == "secret.set")
+            .all(|r| r.consumed));
+    }
+
+    #[test]
+    fn cancelling_a_pane_client_leaves_the_other_clients_card_live() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let peer = PeerWitness::for_live_pids(&[h.shell_pid(pane)]);
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let name = "PANE_CANCEL_1280";
+        let (survivor, card) = pane_set(&mut h, &peer, name, "surviving-canary");
+        // Wait for both asks even if they were merged onto one card.
+        let frame = serde_json::json!({"type":"secret_set","global":true,"name":name,
+            "value":"cancelled-canary","response_file":crate::rpc::response_file("gone", "json")});
+        let (mut server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        crate::app::handle_socket_line_in(
+            h.profile_dir(),
+            &frame.to_string(),
+            &h.ipc_tx,
+            Some(&peer),
+            &mut server,
+        );
+        drop(server);
+        h.hidden_frame();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while monitor
+            .audit_records()
+            .iter()
+            .filter(|row| row.kind == "ask")
+            .count()
+            < 2
+        {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        drop(client);
+        assert_eq!(super::worker_test::join().0, 0);
+        let open = monitor.open_needs_you();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, card);
+        monitor
+            .approve_pending(&card, ApprovalChoice::Once)
+            .unwrap();
+        assert_eq!(read_client(survivor, name)["status"], "ok");
+        assert_eq!(super::worker_test::join().0, 1);
+        assert_eq!(
+            secrets::system_store()
+                .get(&secrets::keychain_user_name(name))
+                .unwrap()
+                .as_str(),
+            "surviving-canary"
+        );
+    }
+
+    #[test]
+    fn later_pane_set_needs_its_own_click_while_the_first_click_is_unclaimed() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let peer = PeerWitness::for_live_pids(&[h.shell_pid(pane)]);
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let name = "PANE_LATER_1280";
+        let account = secrets::keychain_user_name(name);
+        let (resume, paused) = std::sync::mpsc::channel();
+        super::worker_test::TIMING.replace(super::worker_test::Timing::PauseAfterAsk(paused));
+        let (a, first) = pane_set(&mut h, &peer, name, "original-canary");
+        monitor
+            .approve_pending(&first, ApprovalChoice::Once)
+            .unwrap();
+        let (b, second) = pane_set(&mut h, &peer, name, "later-canary");
+        assert_ne!(first, second);
+        assert!(secrets::system_store().get(&account).is_none());
+        resume.send(()).unwrap();
+        assert_eq!(read_client(a, name)["status"], "ok");
+        assert_eq!(
+            secrets::system_store().get(&account).unwrap().as_str(),
+            "original-canary"
+        );
+        monitor
+            .approve_pending(&second, ApprovalChoice::Once)
+            .unwrap();
+        assert_eq!(read_client(b, name)["status"], "ok");
+        assert_eq!(
+            secrets::system_store().get(&account).unwrap().as_str(),
+            "later-canary"
+        );
+        assert_eq!(super::worker_test::join().0, 1);
+        assert_eq!(super::worker_test::join().0, 1);
+    }
+
     #[test]
     fn closing_a_parked_pane_withdraws_its_card() {
         let mut h = HostHarness::new();
@@ -1092,12 +1236,14 @@ mod list_tests {
                 .count()
         };
         assert_eq!(asks(), 1);
-        assert_eq!(
-            pane_get(&mut h, "SESSION_PANE_1280", pid, None)["status"],
-            "not_found"
-        );
-        assert_eq!(asks(), 1);
-        assert!(monitor.open_needs_you().is_empty());
+        for _ in 0..3 {
+            assert_eq!(
+                pane_get(&mut h, "SESSION_PANE_1280", pid, None)["status"],
+                "not_found"
+            );
+            assert_eq!(asks(), 1);
+            assert!(monitor.open_needs_you().is_empty());
+        }
     }
 
     #[test]
@@ -1452,36 +1598,22 @@ mod release_tests {
     #[test]
     fn a_disconnected_pane_cannot_claim_an_already_approved_read() {
         let store = fixture(DuringRead::Nothing);
-        let actor = SecretActor {
-            kind: crate::broker::ActorType::Agent,
-            id: "pane:7".into(),
-        };
-        let ReadResult::PermissionRequired { pending_id } =
-            crate::workspace::secrets::read_pane_secret(
-                &store.monitor,
-                &store,
-                &actor,
-                "TOKEN_1716",
-                &SecretScope::Global,
-                store.profile.path(),
-            )
-            .unwrap()
-        else {
-            panic!("expected a card")
-        };
-        store
-            .monitor
-            .approve_pending(&pending_id, ApprovalChoice::Once)
-            .unwrap();
         let token = crate::rpc::response_file_in(store.profile.path(), "gone", "json");
-        request(&store, &token).read_and_release(&store.monitor, &store);
+        let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        crate::rpc::ReplyRegistry::register(token.clone(), server);
+        let (resume, paused) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            let worker = s.spawn(|| {
+                worker_test::TIMING.replace(worker_test::Timing::PauseAfterAsk(paused));
+                request(&store, &token).read_and_release(&store.monitor, &store);
+            });
+            decide(&store, 1, ApprovalChoice::Once);
+            drop(client);
+            resume.send(()).unwrap();
+            worker.join().unwrap();
+        });
         assert_eq!(store.gets.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert!(store
-            .monitor
-            .store()
-            .records()
-            .iter()
-            .all(|row| !row.consumed));
+        assert!(store.monitor.store().records().is_empty());
     }
 
     #[test]
@@ -1507,14 +1639,11 @@ mod release_tests {
         let store = fixture(DuringRead::Nothing);
         std::thread::scope(|s| {
             let first = s.spawn(|| read(&store));
-            let second = s.spawn(|| read(&store));
-            decide(&store, 2, ApprovalChoice::Once);
-            let replies = [first.join().unwrap(), second.join().unwrap()];
-            assert!(replies.contains(&serde_json::json!({"status":"value","value":"canary-1716"})));
-            assert!(replies.contains(&serde_json::json!({"status":"denied","reason":"denied"})));
+            decide(&store, 1, ApprovalChoice::Once);
+            assert_eq!(first.join().unwrap()["value"], "canary-1716");
 
             let next = s.spawn(|| read(&store));
-            decide(&store, 3, ApprovalChoice::Deny);
+            decide(&store, 2, ApprovalChoice::Deny);
             assert_eq!(next.join().unwrap()["reason"], "denied");
         });
         assert_eq!(store.gets.load(std::sync::atomic::Ordering::SeqCst), 1);

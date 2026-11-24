@@ -1358,7 +1358,7 @@ mod approval_retry_tests {
         let first = admitted_read(
             &monitor,
             &actor,
-            "secret.get",
+            SECRET_READ_TOOL,
             INPUT,
             root.path(),
             "FOO",
@@ -1380,7 +1380,7 @@ mod approval_retry_tests {
                 admitted_read(
                     target.0,
                     target.1,
-                    "secret.get",
+                    SECRET_READ_TOOL,
                     INPUT,
                     target.2,
                     "FOO",
@@ -1397,7 +1397,7 @@ mod approval_retry_tests {
             let second = admitted_read(
                 &monitor,
                 &actor,
-                "secret.get",
+                SECRET_READ_TOOL,
                 INPUT,
                 root.path(),
                 "FOO",
@@ -1423,7 +1423,7 @@ mod approval_retry_tests {
                 admitted_read(
                     &monitor,
                     &actor,
-                    "secret.get",
+                    SECRET_READ_TOOL,
                     r#"{"name":"FOO","scope":"global"}"#,
                     root.path(),
                     "FOO",
