@@ -256,6 +256,24 @@ pub(super) fn admitted_read(
         None,
         fetch,
     )
+    .map(|read| read.result)
+}
+
+/// A read and the broker grant that admitted it, when one did. A permit to
+/// release the value binds that grant (stint 1716).
+#[derive(Debug)]
+pub struct GrantedRead {
+    pub result: ReadResult,
+    pub grant_id: Option<String>,
+}
+
+impl From<ReadResult> for GrantedRead {
+    fn from(result: ReadResult) -> Self {
+        Self {
+            result,
+            grant_id: None,
+        }
+    }
 }
 
 /// As [`admitted_read`], using a posture snapshotted at agent spawn.
@@ -269,7 +287,7 @@ pub(super) fn admitted_read_with_posture(
     label: &str,
     posture: Option<&crate::broker::PermissionPosture>,
     fetch: impl FnOnce() -> Result<Option<Zeroizing<String>>, super::store::SecretError>,
-) -> Result<ReadResult, String> {
+) -> Result<GrantedRead, String> {
     static ADMISSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let admission_guard = ADMISSION.lock().unwrap_or_else(|error| error.into_inner());
     let Some(principal) =
@@ -279,7 +297,7 @@ pub(super) fn admitted_read_with_posture(
             "secrets: {tool} denied {label} actor={}: not a requesting principal",
             actor.id
         );
-        return Ok(ReadResult::Denied);
+        return Ok(ReadResult::Denied.into());
     };
     let call_id = format!("secret-read-{}", uuid::Uuid::new_v4());
     let admission = monitor.admit_with_posture(
@@ -299,7 +317,7 @@ pub(super) fn admitted_read_with_posture(
         posture,
     );
     Ok(match admission {
-        Admission::Required { pending_request_id } => {
+        Admission::Required { pending_request_id } => GrantedRead::from({
             log::info!(
                 "secrets: {tool} permission_required {label} actor={} pending={pending_request_id}",
                 actor.id
@@ -307,14 +325,14 @@ pub(super) fn admitted_read_with_posture(
             ReadResult::PermissionRequired {
                 pending_id: pending_request_id,
             }
-        }
-        Admission::Denied { code } => {
+        }),
+        Admission::Denied { code } => GrantedRead::from({
             log::info!(
                 "secrets: {tool} denied {label} actor={} code={code}",
                 actor.id
             );
             ReadResult::Denied
-        }
+        }),
         Admission::Proceed {
             grant_id,
             fingerprint,
@@ -330,7 +348,7 @@ pub(super) fn admitted_read_with_posture(
                     "secrets: {tool} blocked before fetch {label} actor={}",
                     actor.id
                 );
-                return Ok(ReadResult::Denied);
+                return Ok(ReadResult::Denied.into());
             }
             // Claim the one-shot grant before a blocking authentication read.
             // Otherwise two workers can both pass admission with the same
@@ -358,18 +376,22 @@ pub(super) fn admitted_read_with_posture(
                 .is_err()
             {
                 log::info!("secrets: {tool} audit failed after fetch; withholding {label}");
-                return Ok(ReadResult::Denied);
+                return Ok(ReadResult::Denied.into());
             }
             log::info!(
                 "secrets: {tool} allowed {label} actor={} grant={grant_id} outcome={outcome}",
                 actor.id
             );
-            match value {
+            let result = match value {
                 Ok(Some(value)) => ReadResult::Value(value),
                 Ok(None) => ReadResult::NotFound,
                 // A failed approved read is terminal. Never re-admit it or
                 // mint a second pending request in an authentication retry.
                 Err(error) => return Err(error.to_string()),
+            };
+            GrantedRead {
+                result,
+                grant_id: Some(grant_id),
             }
         }
     })

@@ -1345,7 +1345,7 @@ impl AgentHost {
                     // is simply the context that reload last observed.
                     subscriber_context_id: self.context_id,
                     created_at: crate::host::event_log::now_timestamp(),
-                    permit: crate::broker::permit::mint_unbound(
+                    permit: crate::broker::permit::mint_host(
                         "agent-runtime",
                         crate::broker::permit::DeliverEvents::target(
                             ActorType::Agent,
@@ -2392,7 +2392,7 @@ default_tier = "low"
                     payload: None,
                     state_ref: None,
                     created_at: "2026-01-01T00:00:00Z".to_string(),
-                    permit: crate::broker::permit::mint_unbound(
+                    permit: crate::broker::permit::mint_host(
                         "test",
                         crate::broker::permit::DeliverEvents::target(
                             ActorType::Agent,

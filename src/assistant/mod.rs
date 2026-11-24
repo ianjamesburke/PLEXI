@@ -1158,7 +1158,7 @@ impl AssistantView {
             TriggerMode::Conversation,
             None,
             GrantDuration::Session,
-            crate::broker::permit::mint_unbound(
+            crate::broker::permit::mint_host(
                 "assistant",
                 crate::broker::permit::DeliverEvents::target(
                     ActorType::Agent,

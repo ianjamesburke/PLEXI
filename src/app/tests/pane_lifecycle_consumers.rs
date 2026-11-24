@@ -68,11 +68,9 @@ impl Connection {
         loop {
             h.hidden_frame();
             while let Some(consent) = h.app.pending_event_consents.pop_front() {
-                h.app.host_subscriptions.resolve_consent(
-                    consent,
-                    ConsentChoice::AllowOnce,
-                    &crate::config::config_dir(),
-                );
+                h.app
+                    .host_subscriptions
+                    .resolve_consent(consent, ConsentChoice::AllowOnce);
             }
             if let Ok(line) = self.lines.try_recv() {
                 return serde_json::from_str(&line).unwrap();
@@ -323,11 +321,9 @@ fn pane_consumer_denied_subscription_returns_no_record() {
     let connection = Connection::open(&mut h, wait_request(pane, pane, "idle", 2.0));
     pump_until(&mut h, |h| !h.app.pending_event_consents.is_empty());
     let consent = h.app.pending_event_consents.pop_front().unwrap();
-    h.app.host_subscriptions.resolve_consent(
-        consent,
-        ConsentChoice::Deny,
-        &crate::config::config_dir(),
-    );
+    h.app
+        .host_subscriptions
+        .resolve_consent(consent, ConsentChoice::Deny);
     assert_eq!(connection.next(&mut h)["type"], "error");
     assert_eq!(subscriptions(pane), 0);
 }
@@ -356,11 +352,9 @@ fn pane_consumer_follow_preserves_terminal_event_provenance() {
 
 fn approve(h: &mut HostHarness) {
     while let Some(consent) = h.app.pending_event_consents.pop_front() {
-        h.app.host_subscriptions.resolve_consent(
-            consent,
-            ConsentChoice::AllowOnce,
-            &crate::config::config_dir(),
-        );
+        h.app
+            .host_subscriptions
+            .resolve_consent(consent, ConsentChoice::AllowOnce);
     }
 }
 

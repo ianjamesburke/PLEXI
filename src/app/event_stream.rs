@@ -501,7 +501,7 @@ mod tests {
                 duration: crate::broker::GrantDuration::Session,
                 subscriber_context_id: CONTEXT,
                 created_at: "test".into(),
-                permit: crate::broker::permit::mint_unbound(
+                permit: crate::broker::permit::mint_host(
                     "test",
                     crate::broker::permit::DeliverEvents::target(
                         ActorType::External,

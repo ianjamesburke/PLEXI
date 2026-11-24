@@ -1332,6 +1332,19 @@ impl GrantStore {
         self.evaluate_at(req, posture, now)
     }
 
+    /// The admissible `Allow` rows that match `req` now: the grants an
+    /// `Allow` decision rests on, which a permit binds (stint 1716).
+    pub(crate) fn supporting_allows(&self, req: &PermissionRequest) -> Vec<String> {
+        let now = crate::platform::clock::now_secs() as i64;
+        self.file
+            .data
+            .records
+            .iter()
+            .filter(|r| r.decision == Decision::Allow && r.duration_admissible() && r.matches(req, now))
+            .map(|r| r.grant_id.clone())
+            .collect()
+    }
+
     pub fn evaluate_at(
         &self,
         req: &PermissionRequest,

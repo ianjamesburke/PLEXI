@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use super::PlexiApp;
-use crate::broker::permit::{Permit, SecretRelease};
+use crate::broker::permit::{Grants, Permit, SecretRelease};
 use crate::workspace::secrets::{ReadResult, SecretActor, SecretScope};
 
 impl PlexiApp {
@@ -205,6 +205,7 @@ impl PlexiApp {
         let permit = match crate::broker::permit::mint_pane::<SecretRelease>(
             admitted,
             SecretRelease::target(name, &scope),
+            Grants::none(),
         ) {
             Ok(permit) => permit,
             Err(error) => {
@@ -269,15 +270,17 @@ struct ReadRequest {
 
 impl ReadRequest {
     /// Read under the broker gate and reply. A value is written only through
-    /// [`release_secret`], which re-checks the permit at the write.
+    /// [`release_secret`], which binds the admitting grant and re-checks the
+    /// whole permit at the write.
     fn read_and_release(
         &self,
-        monitor: &crate::broker::gate::PermissionMonitor,
+        monitor: &std::sync::Arc<crate::broker::gate::PermissionMonitor>,
         store: &dyn crate::workspace::secrets::NonDestructiveStore,
         permit: &Permit<SecretRelease>,
     ) {
         let target = SecretRelease::target(&self.name, &self.scope);
-        if let Err(error) = permit.check(&target) {
+        // The grant is admitted inside the read; check the pane before it.
+        if let Err(error) = permit.check_subject(&target) {
             log::info!(
                 "secret_get: {} withheld before read: {error}",
                 self.actor.id
@@ -294,15 +297,16 @@ impl ReadRequest {
             &self.profile,
             self.posture.as_ref(),
         );
-        let body = match result {
-            Ok(ReadResult::Value(value)) => {
-                return release_secret(permit, &target, &self.reply_path, &value)
+        let body = match result.map(|read| (read.result, read.grant_id)) {
+            Ok((ReadResult::Value(value), grant_id)) => {
+                let granted = Grants::live(monitor.clone(), grant_id.into_iter().collect());
+                return release_secret(permit, granted, &target, &self.reply_path, &value);
             }
-            Ok(ReadResult::PermissionRequired { pending_id }) => {
+            Ok((ReadResult::PermissionRequired { pending_id }, _)) => {
                 serde_json::json!({"status": "permission_required", "pending_request_id": pending_id})
             }
-            Ok(ReadResult::Denied) => serde_json::json!({"status": "denied"}),
-            Ok(ReadResult::NotFound) => serde_json::json!({"status": "not_found"}),
+            Ok((ReadResult::Denied, _)) => serde_json::json!({"status": "denied"}),
+            Ok((ReadResult::NotFound, _)) => serde_json::json!({"status": "not_found"}),
             Err(error) => serde_json::json!({"status": "error", "error": error}),
         };
         write_reply(&self.reply_path, body);
@@ -310,10 +314,21 @@ impl ReadRequest {
 }
 
 /// The one place a secret value leaves the host to a pane: only under a
-/// permit whose pane incarnation and revision still hold at the write. A pane
-/// closed, replaced or re-scoped during the read gets `denied`.
-fn release_secret(permit: &Permit<SecretRelease>, target: &str, reply_path: &Path, value: &str) {
-    if let Err(error) = permit.check(target) {
+/// permit whose pane incarnation and revision, and the grant that admitted
+/// the read, all still hold at the write. A pane closed, replaced or
+/// re-scoped, or a grant revoked, during the read gets `denied`.
+fn release_secret(
+    permit: &Permit<SecretRelease>,
+    granted: Grants,
+    target: &str,
+    reply_path: &Path,
+    value: &str,
+) {
+    let checked = permit
+        .clone()
+        .bind(granted)
+        .and_then(|bound| bound.check(target));
+    if let Err(error) = checked {
         log::info!("secret_get: release withheld: {error}");
         write_reply(reply_path, serde_json::json!({"status": "denied"}));
         return;
@@ -558,10 +573,25 @@ mod list_tests {
         let permit = crate::broker::permit::mint_pane::<super::SecretRelease>(
             crate::host::plugin_timeline::AdmittedScope::of(&live),
             "unbacked".into(),
+            super::Grants::none(),
         )
         .unwrap();
+        // A standing grant, so only the missing stream withholds the value.
+        let standing = crate::broker::GrantRecord::event_stream_allow(
+            crate::broker::ActorType::Agent,
+            &format!("pane:{pane}"),
+            crate::broker::ActorScope::User,
+            "unbacked::release",
+            &ws,
+            crate::broker::GrantDuration::Always,
+            crate::broker::GrantSource::Workspace,
+            None,
+        );
+        let standing_id = standing.grant_id.clone();
+        monitor.store().record(standing);
         super::release_secret(
             &permit,
+            super::Grants::live(monitor.clone(), vec![standing_id]),
             "unbacked",
             std::path::Path::new(&unbacked),
             secret_val,
@@ -980,10 +1010,12 @@ mod list_tests {
 }
 
 /// Stint 1716: the value is released only under a permit whose pane
-/// incarnation and revision still hold at the write.
+/// incarnation and revision, and the grant that admitted the read, still
+/// hold at the write.
 #[cfg(test)]
 mod release_tests {
     use super::*;
+    use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
     use crate::broker::pane_authority::{Ceiling, LivePaneAuthority, PaneAuthority};
     use crate::workspace::secrets::{
         InMemoryKeychain, NonDestructiveStore, SecretError, SecretStore,
@@ -991,19 +1023,45 @@ mod release_tests {
     use std::sync::Arc;
     use zeroize::Zeroizing;
 
-    /// A store that changes the asking pane while the read is in progress.
-    struct ChangesPaneDuringRead {
-        inner: InMemoryKeychain,
-        pane: Arc<LivePaneAuthority>,
-        revoke: bool,
+    /// What happens while the store read is in progress.
+    #[derive(Clone, Copy, Debug)]
+    enum DuringRead {
+        Nothing,
+        ClosePane,
+        RescopePane,
+        RevokeGrant,
     }
 
-    impl NonDestructiveStore for ChangesPaneDuringRead {
+    /// A store that acts on the asking pane or its grant mid-read.
+    struct ActsDuringRead {
+        inner: InMemoryKeychain,
+        pane: Arc<LivePaneAuthority>,
+        monitor: Arc<PermissionMonitor>,
+        during: DuringRead,
+    }
+
+    impl NonDestructiveStore for ActsDuringRead {
         fn get(&self, account: &str) -> Option<Zeroizing<String>> {
-            if self.revoke {
-                self.pane.revoke();
-            } else {
-                self.pane.publish_scope(PathBuf::from("/tmp/elsewhere"));
+            match self.during {
+                DuringRead::Nothing => {}
+                DuringRead::ClosePane => self.pane.revoke(),
+                DuringRead::RescopePane => {
+                    self.pane.publish_scope(PathBuf::from("/tmp/elsewhere"));
+                }
+                DuringRead::RevokeGrant => {
+                    let ids: Vec<String> = self
+                        .monitor
+                        .store()
+                        .records()
+                        .iter()
+                        .filter(|record| record.actor_id == "pane:7")
+                        .map(|record| record.grant_id.clone())
+                        .collect();
+                    assert!(!ids.is_empty(), "the read was admitted by a grant");
+                    for id in ids {
+                        assert!(self.monitor.revoke_grant_id(&id).unwrap());
+                    }
+                }
             }
             self.inner.get(account)
         }
@@ -1021,15 +1079,12 @@ mod release_tests {
         }
     }
 
-    fn read(
-        store: &ChangesPaneDuringRead,
-        monitor: &crate::broker::gate::PermissionMonitor,
-        profile: &Path,
-    ) -> serde_json::Value {
+    fn read(store: &ActsDuringRead, profile: &Path) -> serde_json::Value {
         let scope = SecretScope::Global;
         let permit = crate::broker::permit::mint_pane::<SecretRelease>(
             crate::host::plugin_timeline::AdmittedScope::of(&store.pane),
             SecretRelease::target("TOKEN_1716", &scope),
+            Grants::none(),
         )
         .expect("the pane is current when the read is admitted");
         let reply = crate::rpc::response_file("secret-release-1716", "json");
@@ -1049,49 +1104,61 @@ mod release_tests {
             posture: None,
             reply_path: PathBuf::from(&reply),
         }
-        .read_and_release(monitor, store, &permit);
+        .read_and_release(&store.monitor, store, &permit);
         drop(server);
         let body =
             crate::rpc::poll_string(&reply, Some(std::time::Duration::from_secs(2))).unwrap();
         serde_json::from_str(&body).unwrap()
     }
 
+    /// Approve the read with `choice`, then read once while `during` happens.
+    fn read_while(during: DuringRead, choice: ApprovalChoice) -> serde_json::Value {
+        let pane = LivePaneAuthority::admitted(PaneAuthority::for_test(
+            7,
+            Ceiling::Baseline,
+            1,
+            PathBuf::from("/tmp/ws"),
+        ));
+        pane.mark_live();
+        let store = ActsDuringRead {
+            inner: InMemoryKeychain::new(),
+            pane,
+            monitor: PermissionMonitor::ephemeral(),
+            during,
+        };
+        store
+            .inner
+            .set(
+                &crate::workspace::secrets::keychain_user_name("TOKEN_1716"),
+                "canary-1716",
+            )
+            .unwrap();
+        let profile = tempfile::tempdir().unwrap();
+        // Admission comes before the store is touched: this read only asks.
+        let ask = read(&store, profile.path());
+        assert_eq!(ask["status"], "permission_required", "{ask}");
+        store
+            .monitor
+            .approve_pending(ask["pending_request_id"].as_str().unwrap(), choice)
+            .unwrap();
+        read(&store, profile.path())
+    }
+
     #[test]
-    fn a_pane_closed_or_rescoped_during_the_read_gets_no_value() {
-        for revoke in [false, true] {
-            let pane = LivePaneAuthority::admitted(PaneAuthority::for_test(
-                7,
-                Ceiling::Baseline,
-                1,
-                PathBuf::from("/tmp/ws"),
-            ));
-            pane.mark_live();
-            let store = ChangesPaneDuringRead {
-                inner: InMemoryKeychain::new(),
-                pane: pane.clone(),
-                revoke,
-            };
-            store
-                .inner
-                .set(
-                    &crate::workspace::secrets::keychain_user_name("TOKEN_1716"),
-                    "canary-1716",
-                )
-                .unwrap();
-            let monitor = crate::broker::gate::PermissionMonitor::ephemeral();
-            let profile = tempfile::tempdir().unwrap();
-            // Admission comes before the store is touched: this read only asks.
-            let ask = read(&store, &monitor, profile.path());
-            assert_eq!(ask["status"], "permission_required", "{ask}");
-            monitor
-                .approve_pending(
-                    ask["pending_request_id"].as_str().unwrap(),
-                    crate::broker::gate::ApprovalChoice::Once,
-                )
-                .unwrap();
-            let reply = read(&store, &monitor, profile.path());
-            assert_eq!(reply["status"], "denied", "revoke={revoke}: {reply}");
-            assert!(!reply.to_string().contains("canary-1716"));
+    fn the_value_is_released_only_while_pane_and_grant_still_hold() {
+        for choice in [ApprovalChoice::Once, ApprovalChoice::Always] {
+            let released = read_while(DuringRead::Nothing, choice);
+            assert_eq!(released["status"], "value", "{choice:?}: {released}");
+            assert_eq!(released["value"], "canary-1716");
+            for during in [
+                DuringRead::ClosePane,
+                DuringRead::RescopePane,
+                DuringRead::RevokeGrant,
+            ] {
+                let reply = read_while(during, choice);
+                assert_eq!(reply["status"], "denied", "{during:?} {choice:?}: {reply}");
+                assert!(!reply.to_string().contains("canary-1716"));
+            }
         }
     }
 }

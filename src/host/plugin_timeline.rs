@@ -1214,7 +1214,7 @@ mod tests {
     /// A fixture's permit, minted for its subscriber and publisher as they
     /// stand when it is added.
     fn permitted(mut sub: SubscriptionRecord) -> SubscriptionRecord {
-        sub.permit = crate::broker::permit::mint_unbound(
+        sub.permit = crate::broker::permit::mint_host(
             "test",
             crate::broker::permit::DeliverEvents::target(
                 sub.subscriber_type,
@@ -1238,7 +1238,7 @@ mod tests {
             duration: GrantDuration::Session,
             subscriber_context_id: CTX,
             created_at: "2026-06-11T00:00:00Z".to_string(),
-            permit: crate::broker::permit::mint_unbound(
+            permit: crate::broker::permit::mint_host(
                 "test",
                 crate::broker::permit::DeliverEvents::target(
                     ActorType::Agent,

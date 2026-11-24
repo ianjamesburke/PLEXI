@@ -4014,6 +4014,24 @@ impl PermissionMonitor {
         }
     }
 
+    /// Whether `grant_id` still allows: present, `Allow`, and unexpired. A
+    /// once grant this use already claimed still stands for it; a revoked one
+    /// is gone. Read under the store lock that revocation takes, so a check
+    /// after a revoke observes it (stint 1716).
+    pub(crate) fn grant_stands(&self, grant_id: &str) -> bool {
+        let now = self.now_secs();
+        self.store().records().iter().any(|record| {
+            record.grant_id == grant_id
+                && record.decision == Decision::Allow
+                && record.expires_at.is_none_or(|expires| now < expires)
+        })
+    }
+
+    /// Save the store's durable rows: the one writer of the profile's grants.
+    pub(crate) fn save_grants(&self) -> Result<(), String> {
+        self.save_durable()
+    }
+
     /// Revoke under the admission lock so a commit that has not entered yet
     /// observes the removal. `revoke` and `reset` on the permissions monitor
     /// call this. It does not grant.

@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::folder::{ReadResult, SecretActor};
+use super::folder::SecretActor;
 use super::store::NonDestructiveStore;
 use crate::broker::{gate::PermissionMonitor, PermissionPosture};
 
@@ -43,12 +43,13 @@ pub fn read_pane_secret(
     name: &str,
     scope: &SecretScope,
     global_root: &Path,
-) -> Result<ReadResult, String> {
+) -> Result<super::folder::ReadResult, String> {
     read_pane_secret_with_posture(monitor, store, actor, name, scope, global_root, None)
+        .map(|read| read.result)
 }
 
 /// As [`read_pane_secret`], evaluating the immutable posture carried by the
-/// requesting worker pane.
+/// requesting worker pane, and returning the grant that admitted the read.
 pub fn read_pane_secret_with_posture(
     monitor: &PermissionMonitor,
     store: &dyn NonDestructiveStore,
@@ -57,7 +58,7 @@ pub fn read_pane_secret_with_posture(
     scope: &SecretScope,
     global_root: &Path,
     posture: Option<&PermissionPosture>,
-) -> Result<ReadResult, String> {
+) -> Result<super::folder::GrantedRead, String> {
     let accounts = match scope {
         SecretScope::Workspace { id, .. } => {
             let account = super::keychain_workspace_name(id, name);
@@ -97,7 +98,7 @@ pub fn read_pane_secret_with_posture(
 mod tests {
     use super::*;
     use crate::broker::gate::ApprovalChoice;
-    use crate::workspace::secrets::{InMemoryKeychain, SecretStore};
+    use crate::workspace::secrets::{InMemoryKeychain, ReadResult, SecretStore};
 
     #[test]
     fn global_fallback_needs_the_same_click() {
