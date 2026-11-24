@@ -153,6 +153,7 @@ fn turn_lifecycle_event_preemption_clears_parked_approval() {
     let ws = tempfile::tempdir().unwrap();
     let timeline = chess_timeline();
     let mut app = test_plugin_with_timeline(ws.path(), timeline.clone());
+    record_stream_allow(&app, "chess::move.played");
     app.subscribe_stream("chess", "move.played");
     app.model.streaming.in_flight = true;
     register_echo_provider(1578004, &["cancel.preempt"], 1);

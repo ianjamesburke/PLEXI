@@ -973,6 +973,10 @@ impl GrantStore {
     /// an integrity fault.
     ///
     /// Host only: a process that never ran host start gets [`custody::NotHostProcess`].
+    ///
+    /// Test-only: the host's one store is the permission monitor's; nothing
+    /// in the host loads a private copy of `grants.toml` (stint 1716).
+    #[cfg(test)]
     pub fn load_or_default(config_dir: &Path) -> Result<Self, custody::NotHostProcess> {
         let host = custody::host_process()?;
         Ok(Self::load_sealed(&host, config_dir))

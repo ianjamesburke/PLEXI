@@ -38,7 +38,7 @@ pub mod runs;
 pub(crate) mod team;
 
 use crate::broker::{
-    ActorScope, ActorType, Decision, GrantDuration, GrantStore, PermissionPosture,
+    ActorScope, ActorType, Decision, GrantDuration, PermissionPosture,
     PermissionRequest, TargetType,
 };
 use crate::host::plugin_timeline::{EventDelivery, PluginTimeline};
@@ -1175,11 +1175,10 @@ fn transcript_info_log_message(agent_id: &str, role: &str, text: &str) -> String
 // ── AgentHost ────────────────────────────────────────────────────────────────
 
 /// Host-level registry of attached agents. Owned by `PlexiApp`, ticked once
-/// per frame. Holds its own broker grant store (same `grants.toml` as the
-/// panes) and the shared plugin timeline.
+/// per frame. Evaluates against the profile's one live grant store (the
+/// permission monitor's) and holds the shared plugin timeline.
 pub struct AgentHost {
     pub agents: Vec<AgentRuntime>,
-    pub grant_store: GrantStore,
     pub monitor: std::sync::Arc<crate::broker::gate::PermissionMonitor>,
     timeline: Arc<Mutex<PluginTimeline>>,
     ai_broker: Arc<dyn AiBroker>,
@@ -1198,10 +1197,8 @@ pub struct AgentHost {
     /// agents specifically; fixing it is out of scope for Phase C and is
     /// flagged for a future stint.
     context_id: u64,
-    /// Where to re-read `grants.toml` from on workspace reload (`Some` in
-    /// production). Until the Phase D grant sheet lands, grants are edited on
-    /// disk, so a reload must pick them up. `None` (tests) keeps the
-    /// in-memory store.
+    /// The profile whose monitor a workspace reload re-attaches to (`Some`
+    /// in production). `None` (tests) keeps the in-memory monitor.
     grants_dir: Option<PathBuf>,
     outcome_tx: Sender<TurnOutcome>,
     outcome_rx: Receiver<TurnOutcome>,
@@ -1211,7 +1208,6 @@ impl AgentHost {
     /// Production constructor: grants from the channel config dir, the global
     /// shared timeline, and the live AI broker.
     pub fn new(
-        grant_store: GrantStore,
         timeline: Arc<Mutex<PluginTimeline>>,
         ai_broker: Arc<dyn AiBroker>,
         workspace_root: PathBuf,
@@ -1219,7 +1215,6 @@ impl AgentHost {
         let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
         Self {
             agents: Vec::new(),
-            grant_store,
             monitor: crate::broker::gate::PermissionMonitor::ephemeral(),
             timeline,
             ai_broker,
@@ -1254,20 +1249,14 @@ impl AgentHost {
         }
         self.agents.clear();
         if let Some(dir) = &self.grants_dir {
-            // The profile monitor is the live grant store (`runs` records
-            // scope allows here). Replacing it from disk drops an allow whose
-            // seal save has not landed, and the next `agents.list` comes back
-            // as `permission_required` with no `agents` field. Keep that
-            // monitor. The subscription copy is still the file on disk.
-            match (
-                GrantStore::load_or_default(dir),
-                crate::broker::gate::PermissionMonitor::for_profile(dir),
-            ) {
-                (Ok(store), Ok(monitor)) => {
-                    self.grant_store = store;
-                    self.monitor = monitor;
-                }
-                (Err(error), _) | (_, Err(error)) => {
+            // The profile monitor is the one live grant store (`runs`
+            // records scope allows here, subscriptions are admitted here).
+            // Replacing it from disk drops an allow whose seal save has not
+            // landed, and the next `agents.list` comes back as
+            // `permission_required` with no `agents` field. Keep that monitor.
+            match crate::broker::gate::PermissionMonitor::for_profile(dir) {
+                Ok(monitor) => self.monitor = monitor,
+                Err(error) => {
                     log::error!("agent: workspace reload kept its grants unchanged: {error}");
                 }
             }
@@ -1301,6 +1290,9 @@ impl AgentHost {
         let mut subscription_ids = Vec::new();
         for sub in &def.subscriptions {
             let mut granted = true;
+            // The rows each allow rests on; the delivery permit binds them,
+            // so revoking one stops this agent's deliveries (stint 1716).
+            let mut supporting = Vec::new();
             for event in &sub.events {
                 let target = format!("{}::{}", sub.app, event);
                 let req = PermissionRequest::exact(&crate::broker::ExactBinding::event_stream(
@@ -1314,7 +1306,10 @@ impl AgentHost {
                 // Subscriptions deliberately evaluate WITHOUT the agent's own
                 // posture: an agent must not self-grant event access from its
                 // settings file. Only user/workspace/managed grants count.
-                let decision = self.grant_store.evaluate(&req, None);
+                let store = self.monitor.store();
+                let decision = store.evaluate(&req, None);
+                supporting.extend(store.supporting_allows(&req));
+                drop(store);
                 if decision != Decision::Allow {
                     log::info!(
                         "agent[{}]: subscription to '{target}' not granted ({}) — skipping",
@@ -1327,6 +1322,17 @@ impl AgentHost {
             if !granted {
                 continue;
             }
+            let permit = match crate::broker::permit::mint_unbound(
+                "agent-runtime",
+                crate::broker::permit::DeliverEvents::target(ActorType::Agent, &def.id, &sub.app),
+                crate::broker::permit::Grants::live(Arc::clone(&self.monitor), supporting),
+            ) {
+                Ok(permit) => permit,
+                Err(error) => {
+                    log::info!("agent[{}]: subscription to '{}' refused: {error}", def.id, sub.app);
+                    continue;
+                }
+            };
             let subscription_id = format!("agent-sub-{}", uuid::Uuid::new_v4());
             self.timeline.lock().unwrap().add_subscription(
                 crate::host::plugin_timeline::SubscriptionRecord {
@@ -1345,14 +1351,7 @@ impl AgentHost {
                     // is simply the context that reload last observed.
                     subscriber_context_id: self.context_id,
                     created_at: crate::host::event_log::now_timestamp(),
-                    permit: crate::broker::permit::mint_host(
-                        "agent-runtime",
-                        crate::broker::permit::DeliverEvents::target(
-                            ActorType::Agent,
-                            &def.id,
-                            &sub.app,
-                        ),
-                    ),
+                    permit,
                 },
             );
             subscription_ids.push(subscription_id);
@@ -1504,7 +1503,7 @@ impl AgentHost {
                     &tool.name,
                     Some(&self.workspace_root),
                 );
-                let decision = self.grant_store.evaluate(&req, Some(&agent.def.posture));
+                let decision = self.monitor.store().evaluate(&req, Some(&agent.def.posture));
                 if decision == Decision::Deny {
                     log::info!(
                         "agent[{}]: tool '{}' withheld from turn (deny)",
@@ -1621,14 +1620,9 @@ impl AgentHost {
         let config_dir = crate::config::config_dir();
         // Host only (stint 1291). Outside the host this agent host starts with
         // no grants and a diskless monitor, so every call asks or is refused.
-        let grant_store = GrantStore::load_or_default(&config_dir).unwrap_or_else(|error| {
-            log::error!("agent: production host has no grant store: {error}");
-            GrantStore::default()
-        });
         // The config dir is an inert root that matches no pane's workspace —
         // replaced by the first `reload_workspace` with an active workspace.
         let mut host = Self::new(
-            grant_store,
             crate::host::plugin_timeline::global(),
             Arc::new(crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
                 ai_config,
@@ -1649,7 +1643,6 @@ impl AgentHost {
     #[cfg(test)]
     pub fn inert() -> Self {
         Self::new(
-            GrantStore::default(),
             Arc::new(Mutex::new(PluginTimeline::default())),
             Arc::new(InertAiBroker),
             std::env::temp_dir(),
@@ -1663,7 +1656,7 @@ impl AgentHost {
         ai_broker: Arc<dyn AiBroker>,
         workspace_root: PathBuf,
     ) -> Self {
-        Self::new(GrantStore::default(), timeline, ai_broker, workspace_root)
+        Self::new(timeline, ai_broker, workspace_root)
     }
 }
 
@@ -1689,6 +1682,7 @@ impl AiBroker for InertAiBroker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::broker::GrantStore;
 
     const SETTINGS: &str = r#"
 [agent]
@@ -2263,7 +2257,7 @@ default_tier = "low"
             "move.undone",
             "game.ended",
         ] {
-            host.grant_store.record(GrantRecord::event_stream_allow(
+            host.monitor.store().record(GrantRecord::event_stream_allow(
                 ActorType::Agent,
                 "chess-opponent",
                 ActorScope::User,
@@ -2291,6 +2285,113 @@ default_tier = "low"
         host.reload_workspace(None, 1);
         assert!(host.agents.is_empty());
         assert!(timeline.lock().unwrap().subscriptions().is_empty());
+    }
+
+    /// Stint 1716: a workspace agent's subscription rests on the grants that
+    /// allowed it. Revoking one through the profile monitor withholds the
+    /// delivery already queued for the agent.
+    #[test]
+    fn revoking_an_agent_stream_grant_withholds_its_queued_delivery() {
+        use crate::broker::{ActorScope, ActorType, GrantDuration, GrantRecord, GrantSource};
+        use crate::host::plugin_timeline::EmittedEvent;
+        use crate::protocol::{EventStreamDecl, PluginEventActor};
+
+        let ws = tempfile::tempdir().unwrap();
+        let agent_dir = ws
+            .path()
+            .join(crate::config::workspace_channel_dir())
+            .join("agents")
+            .join("chess-opponent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("AGENT.md"), "You are a chess opponent.").unwrap();
+        std::fs::write(agent_dir.join("settings.toml"), SETTINGS).unwrap();
+        let events = [
+            "game.started",
+            "turn.ready",
+            "move.played",
+            "move.undone",
+            "game.ended",
+        ];
+        let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
+        timeline
+            .lock()
+            .unwrap()
+            .declare_streams(
+                1,
+                "chess",
+                events
+                    .iter()
+                    .map(|name| EventStreamDecl {
+                        name: name.to_string(),
+                        schema: serde_json::json!({"type": "object"}),
+                        description: None,
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        let mut host = AgentHost::new_for_test(
+            timeline.clone(),
+            Arc::new(InertAiBroker),
+            std::env::temp_dir(),
+        );
+        let mut played = None;
+        for event in events {
+            let grant = GrantRecord::event_stream_allow(
+                ActorType::Agent,
+                "chess-opponent",
+                ActorScope::User,
+                &format!("chess::{event}"),
+                ws.path(),
+                GrantDuration::Always,
+                GrantSource::User,
+                None,
+            );
+            if event == "move.played" {
+                played = Some(grant.grant_id.clone());
+            }
+            host.monitor.store().record(grant);
+        }
+        host.reload_workspace(Some(ws.path().to_path_buf()), 1);
+        assert_eq!(host.agents[0].subscription_ids.len(), 1);
+        let emit = || {
+            timeline
+                .lock()
+                .unwrap()
+                .record_event(
+                    1,
+                    "chess",
+                    7,
+                    EmittedEvent {
+                        event: "move.played".into(),
+                        actor: PluginEventActor::User,
+                        actor_id: None,
+                        caused_by: None,
+                        summary: "e4".into(),
+                        resource_id: "game-1".into(),
+                        resource_scope: None,
+                        revision_after: "1".into(),
+                        payload: None,
+                        state_ref: None,
+                        revision_before: None,
+                        rollback_token: None,
+                        changed_resources: vec![],
+                        suggested_trigger: None,
+                    },
+                )
+                .unwrap();
+        };
+        let drain = || {
+            timeline
+                .lock()
+                .unwrap()
+                .take_deliveries_for(ActorType::Agent, "chess-opponent")
+                .len()
+        };
+        emit();
+        assert_eq!(drain(), 1, "positive control");
+        emit();
+        assert!(host.monitor.revoke_grant_id(&played.unwrap()).unwrap());
+        assert_eq!(drain(), 0, "the queued delivery is withheld");
     }
 
     /// A scope allow that has not reached disk must survive a workspace

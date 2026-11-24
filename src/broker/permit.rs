@@ -185,8 +185,9 @@ pub(crate) fn mint_unbound<Op: UnboundOperation>(
     Ok(minted(PermitSubject::Unbound { class }, target, grants))
 }
 
-/// Mint for host code acting for itself (the assistant, the agent runtime):
-/// no pane incarnation and no grant row behind it.
+/// A fixture subscriber's permit: no pane incarnation and no grant row.
+/// Every host subscriber binds the grants that allowed it instead.
+#[cfg(test)]
 pub(crate) fn mint_host<Op: UnboundOperation>(class: &'static str, target: String) -> Permit<Op> {
     minted(PermitSubject::Unbound { class }, target, Grants::none())
 }

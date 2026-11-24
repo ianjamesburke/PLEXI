@@ -136,6 +136,9 @@ fn publish_targets(plugin_id: &str, event_names: &[String]) -> Vec<String> {
 /// Run the broker over every target a subscription touches and return the
 /// strictest decision (`Deny` > `Ask` > `Allow`). Records nothing — callers
 /// decide what to do with the verdict (record on `Allow`, prompt on `Ask`).
+/// Test seam; host callers use [`evaluate_subscription_supported`] so the
+/// permit can bind the grants an allow rests on.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate_subscription(
     grant_store: &GrantStore,
@@ -163,7 +166,7 @@ pub fn evaluate_subscription(
 /// [`evaluate_subscription`] with the grant rows an `Allow` rests on, which
 /// the delivery permit binds so revoking any of them stops delivery.
 #[allow(clippy::too_many_arguments)]
-fn evaluate_subscription_supported(
+pub(crate) fn evaluate_subscription_supported(
     grant_store: &GrantStore,
     posture: Option<&PermissionPosture>,
     workspace_root: Option<&Path>,

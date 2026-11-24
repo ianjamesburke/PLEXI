@@ -1138,14 +1138,31 @@ impl AssistantView {
         );
     }
 
-    /// Add a live timeline subscription for one exact `<plugin>::<event>`.
-    /// Caller must have established the grant.
+    /// Add a live timeline subscription for one exact `<plugin>::<event>`,
+    /// only while a grant allows it. The delivery permit binds the grant rows
+    /// the allow rests on, so revoking one stops delivery (stint 1716).
     fn subscribe_stream(&mut self, app: &str, event: &str) {
         let target = format!("{app}::{event}");
         if self.live_subs.iter().any(|(t, _)| *t == target) {
             log::info!("assistant: already subscribed to '{target}'");
             return;
         }
+        let (decision, supporting) = self.event_stream_support(app, event);
+        if decision != Decision::Allow {
+            log::info!("assistant: subscription to '{target}' not allowed ({})", decision.as_str());
+            return;
+        }
+        let permit = match crate::broker::permit::mint_unbound(
+            "assistant",
+            crate::broker::permit::DeliverEvents::target(ActorType::Agent, ASSISTANT_ACTOR_ID, app),
+            crate::broker::permit::Grants::live(Arc::clone(&self.monitor), supporting),
+        ) {
+            Ok(permit) => permit,
+            Err(error) => {
+                log::info!("assistant: subscription to '{target}' refused: {error}");
+                return;
+            }
+        };
         let event_names = vec![event.to_string()];
         let subscription_id = crate::host::event_subscriptions::record_subscription(
             &self.timeline,
@@ -1158,14 +1175,7 @@ impl AssistantView {
             TriggerMode::Conversation,
             None,
             GrantDuration::Session,
-            crate::broker::permit::mint_host(
-                "assistant",
-                crate::broker::permit::DeliverEvents::target(
-                    ActorType::Agent,
-                    ASSISTANT_ACTOR_ID,
-                    app,
-                ),
-            ),
+            permit,
         );
         log::info!("assistant: subscribed to '{target}' ({subscription_id})");
         self.live_subs.push((target, subscription_id));
@@ -1382,9 +1392,14 @@ impl AssistantView {
     }
 
     fn event_stream_decision(&self, app: &str, event: &str) -> Decision {
+        self.event_stream_support(app, event).0
+    }
+
+    /// The decision for one exact stream and the grant rows an allow rests on.
+    fn event_stream_support(&self, app: &str, event: &str) -> (Decision, Vec<String>) {
         let event_names = vec![event.to_string()];
         let posture = self.active_posture();
-        crate::host::event_subscriptions::evaluate_subscription(
+        crate::host::event_subscriptions::evaluate_subscription_supported(
             &self.grants(),
             Some(&posture),
             Some(&self.workspace_root),
@@ -3215,7 +3230,8 @@ impl AssistantView {
     /// Seal the records added after `before`. A failed write drops those rows
     /// so memory matches disk.
     fn save_durable_grants(&mut self, before: &[String]) -> Result<(), String> {
-        let saved = self.grants().try_save();
+        // The monitor is the one writer of the profile's grants.
+        let saved = self.monitor.save_grants();
         match saved {
             Ok(()) => Ok(()),
             Err(error) => {
@@ -7022,19 +7038,8 @@ enabled = ["allowed.tool"]
         // pane closes without unsubscribing (the leak this guards against).
         {
             let mut first = test_plugin_with_timeline(ws.path(), timeline.clone());
+            record_stream_allow(&first, "chess::move.played");
             first.subscribe_stream("chess", "move.played");
-            let workspace = first.workspace_root.clone();
-            first.grants().record(GrantRecord::event_stream_allow(
-                ActorType::Agent,
-                ASSISTANT_ACTOR_ID,
-                ActorScope::User,
-                "chess::move.played",
-                &workspace,
-                GrantDuration::Always,
-                GrantSource::User,
-                None,
-            ));
-            first.grants().save();
         }
         assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
         // An event lands while no pane is open: queued against the leaked sub.
@@ -7066,6 +7071,7 @@ enabled = ["allowed.tool"]
         let ws = tempfile::tempdir().unwrap();
         let timeline = chess_timeline();
         let mut app = test_plugin_with_timeline(ws.path(), timeline.clone());
+        record_stream_allow(&app, "chess::move.played");
         app.subscribe_stream("chess", "move.played");
 
         let guard = timeline.lock().unwrap();
@@ -7138,7 +7144,38 @@ enabled = ["allowed.tool"]
             GrantSource::User,
             None,
         ));
-        app.grants().save();
+        app.monitor.save_grants().unwrap();
+    }
+
+    /// Stint 1716: the Assistant's subscription rests on the grant that
+    /// allowed it. Revoking it through the profile monitor withholds the
+    /// delivery already queued for the Assistant.
+    #[test]
+    fn revoking_the_assistant_stream_grant_withholds_its_queued_delivery() {
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        let mut app = test_plugin_with_timeline(ws.path(), timeline.clone());
+        record_stream_allow(&app, "chess::move.played");
+        app.subscribe_stream("chess", "move.played");
+        let grant = app
+            .grants()
+            .records()
+            .iter()
+            .find(|record| record.actor_id == ASSISTANT_ACTOR_ID)
+            .map(|record| record.grant_id.clone())
+            .unwrap();
+        let drain = || {
+            timeline
+                .lock()
+                .unwrap()
+                .take_deliveries_for(ActorType::Agent, ASSISTANT_ACTOR_ID)
+                .len()
+        };
+        emit_move(&timeline, PluginEventActor::User, None, None);
+        assert_eq!(drain(), 1, "positive control");
+        emit_move(&timeline, PluginEventActor::User, None, None);
+        assert!(app.monitor.revoke_grant_id(&grant).unwrap());
+        assert_eq!(drain(), 0, "the queued delivery is withheld");
     }
 
     #[test]
@@ -7185,6 +7222,7 @@ enabled = ["allowed.tool"]
         let ws = tempfile::tempdir().unwrap();
         let timeline = chess_timeline();
         let mut app = test_plugin_with_timeline(ws.path(), timeline.clone());
+        record_stream_allow(&app, "chess::move.played");
         app.subscribe_stream("chess", "move.played");
 
         // The assistant as the event actor: row, no turn.
@@ -7222,6 +7260,7 @@ enabled = ["allowed.tool"]
         let ws = tempfile::tempdir().unwrap();
         let timeline = chess_timeline();
         let mut app = test_plugin_with_timeline(ws.path(), timeline.clone());
+        record_stream_allow(&app, "chess::move.played");
         app.subscribe_stream("chess", "move.played");
 
         // Simulate an in-flight turn; the event must queue, not dispatch.
@@ -7559,6 +7598,7 @@ enabled = ["allowed.tool"]
         let ws = tempfile::tempdir().unwrap();
         let timeline = chess_timeline();
         let mut app = test_plugin_with_timeline(ws.path(), timeline.clone());
+        record_stream_allow(&app, "chess::move.played");
         app.subscribe_stream("chess", "move.played");
 
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
