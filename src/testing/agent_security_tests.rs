@@ -353,19 +353,21 @@ fn permissions_caller_is_derived_from_the_peer_not_the_wire() {
 
 #[test]
 fn caller_context_is_answered_from_the_verified_peer() {
+    use crate::workspace::secrets::{folder_store, remove_folder_secret, set_folder_secret};
+
     let mut h = HostHarness::new();
     let pane = h.add_focused_terminal();
     let pid = h.terminal_backend(pane).child_pid();
     let root = h.workspace_root();
-    let ask = |h: &mut HostHarness, ancestry: &[u32], name: &str| {
+    let ask = |h: &mut HostHarness, ancestry: &[u32], cwd: &Path, name: &str| {
         let token = root.join(name);
         let req = HostRequest::CallerContext {
-            workspace_cwd: root.parent().map(Path::to_owned),
+            workspace_cwd: Some(cwd.to_owned()),
             response_file: token.to_string_lossy().into_owned(),
         };
         socket_request(h, &req, ancestry, &token)
     };
-    let inside = ask(&mut h, &[pid], "ctx-in.json");
+    let inside = ask(&mut h, &[pid], root.parent().unwrap(), "ctx-in.json");
     assert_eq!(inside["ok"], true, "{inside}");
     assert_eq!(inside["pane_id"], pane, "{inside}");
     assert!(inside["workspace_error"]
@@ -376,7 +378,22 @@ fn caller_context_is_answered_from_the_verified_peer() {
         inside["context_root"].is_string(),
         "pane has a live context root: {inside}"
     );
-    let outside = ask(&mut h, &[999_999], "ctx-out.json");
+    let nested = root.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let before = ask(&mut h, &[pid], &nested, "ctx-before.json");
+    assert_eq!(
+        before.get("workspace_error"),
+        Some(&serde_json::Value::Null)
+    );
+    set_folder_secret(folder_store(), "NESTED", &nested, "fixture").unwrap();
+    let bound = ask(&mut h, &[pid], &nested, "ctx-bound.json");
+    assert!(bound["workspace_error"]
+        .as_str()
+        .unwrap()
+        .starts_with("permission_denied:"));
+    remove_folder_secret(folder_store(), "NESTED", &nested).unwrap();
+
+    let outside = ask(&mut h, &[999_999], root.parent().unwrap(), "ctx-out.json");
     assert!(outside["workspace_error"].is_null());
     assert_eq!(outside["ok"], true, "{outside}");
     assert!(

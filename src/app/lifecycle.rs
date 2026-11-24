@@ -1430,7 +1430,6 @@ impl PlexiApp {
                 workspace_cwd,
                 response_file,
             } => {
-                use crate::cli::workspace::check_pane_context_scope;
                 let pane = origin
                     .socket_caller()
                     .and_then(crate::broker::caller::SocketCaller::pane)
@@ -1438,7 +1437,7 @@ impl PlexiApp {
                 let root = pane.and_then(|pane| self.pane_context_authority_root(pane));
                 let workspace_error = match (&root, workspace_cwd) {
                     (Some(root), Some(cwd)) => {
-                        check_pane_context_scope(root.clone(), cwd, None).err()
+                        super::context_scope::check_context_scope(root.clone(), cwd).err()
                     }
                     _ => None,
                 };
