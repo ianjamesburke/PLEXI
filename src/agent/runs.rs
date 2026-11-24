@@ -108,21 +108,44 @@ pub fn authenticate_run_token(token: &str) -> Option<RunAuth> {
     })
 }
 
-/// The principal that started `run_id`, from the sealed grant store: it
-/// survives a host restart, and the workspace journal holds no bearer for
-/// it (stint 1285). `None` for a run host code started, or one started
-/// before ownership was recorded.
-fn run_started_by(run_id: &str) -> Option<String> {
-    let gate = monitor().ok()?;
-    let store = gate.store();
-    store.run_owner(run_id).map(str::to_string)
+/// The principal that started each agent run, while this host lives
+/// (stint 1285). Kept in memory only: durable, permit-backed ownership is
+/// stint 1716. A run with no live record (a restarted host, or a run that
+/// predates this build) follows alpha's rules, which had no owner.
+/// The owner recorded for a run host code started. No principal's actor id
+/// takes this form.
+const HOST_RUN_OWNER: &str = "host";
+
+fn run_owners() -> &'static Mutex<HashMap<String, String>> {
+    static OWNERS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    OWNERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The run's token for `owner` (`None` is host code). A fresh run binds its
-/// owner in the sealed store first. A retry is answered only for the
-/// principal bound to the run, or for host code, which is the trusted
-/// recovery path for a run with no recorded owner. A token lost with a
-/// restarted host is minted again for that same caller.
+/// Whether `caller` may act on `run_id` by ownership: host code always; a
+/// socket principal when it is the live owner, or when the run has no live
+/// owner record (alpha's rule, logged; stint 1716 replaces it).
+fn owner_admits(run_id: &str, caller: Option<&str>) -> bool {
+    let Some(caller) = caller else {
+        return true;
+    };
+    match run_owners()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(run_id)
+    {
+        Some(owner) => owner == caller,
+        None => {
+            log::info!(
+                "agents_api: run={run_id} has no live owner record; caller={caller} admitted by alpha's rule (stint 1716)"
+            );
+            true
+        }
+    }
+}
+
+/// The run's token for `owner` (`None` is host code). A fresh run records
+/// its owner in memory; a retry is answered for that owner, or under
+/// alpha's rule when the run has no live owner record.
 fn remember_token(
     workspace: &Path,
     run_id: &str,
@@ -131,19 +154,15 @@ fn remember_token(
     fresh: bool,
 ) -> Result<String, Value> {
     if fresh {
-        if let Some(owner) = owner {
-            let gate = monitor()?;
-            let mut store = gate.store();
-            store.bind_run_owner(run_id, owner);
-            if let Err(error) = store.try_save() {
-                store.release_run_owner(run_id);
-                log::error!("agents_api: run {run_id} owner not sealed: {error}");
-                return Err(json!({"ok": false, "error_code": "io_error",
-                    "error": format!("the owner of run {run_id} could not be recorded: {error}")}));
-            }
-            log::info!("agents_api: run={run_id} owner={owner} sealed");
-        }
-    } else if owner.is_some() && run_started_by(run_id).as_deref() != owner {
+        // Host code owns the runs it starts (teams, the dashboard): no
+        // socket principal acts on them while this host lives.
+        let recorded = owner.unwrap_or(HOST_RUN_OWNER);
+        run_owners()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(run_id.to_string(), recorded.to_string());
+        log::info!("agents_api: run={run_id} owner={recorded}");
+    } else if !owner_admits(run_id, owner) {
         return Err(not_run_owner(run_id, owner));
     }
     let mut by_run = token_by_run().lock().unwrap_or_else(|e| e.into_inner());
@@ -176,24 +195,35 @@ fn not_run_owner(run_id: &str, caller: Option<&str>) -> Value {
     })
 }
 
-/// Only the principal bound to `run_id`, or host code, acts on it.
+/// Only the run's live owner, host code, or (with no live owner record)
+/// anyone alpha admitted acts on `run_id`.
 fn require_run_owner(run_id: &str, caller: &AgentsCaller) -> Result<(), Value> {
-    let AgentsCaller::Principal { principal, .. } = caller else {
-        return Ok(());
+    let caller = match caller {
+        AgentsCaller::Principal { principal, .. } => Some(principal.actor_id()),
+        AgentsCaller::Host { .. } => None,
     };
-    let owner = principal.actor_id();
-    if run_started_by(run_id).as_deref() == Some(owner) {
+    if owner_admits(run_id, caller) {
         Ok(())
     } else {
-        Err(not_run_owner(run_id, Some(owner)))
+        Err(not_run_owner(run_id, caller))
     }
 }
 
-/// Test only: the host's in-memory run tokens are gone, as after a restart.
+/// Test only: this one run's in-memory owner and token are gone, as after
+/// a host restart. Other runs keep theirs.
 #[cfg(test)]
-fn forget_run_tokens_for_test() {
-    tokens().lock().unwrap_or_else(|e| e.into_inner()).clear();
-    token_by_run().lock().unwrap_or_else(|e| e.into_inner()).clear();
+fn forget_run_for_test(run_id: &str) {
+    run_owners()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(run_id);
+    if let Some(token) = token_by_run()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(run_id)
+    {
+        tokens().lock().unwrap_or_else(|e| e.into_inner()).remove(&token);
+    }
 }
 
 fn actor_of(agent_id: &str) -> String {
@@ -1476,14 +1506,7 @@ fn finish_run(workspace: &Path, id: &str) -> Value {
         }
         finished
     };
-    let gate = host_gate!();
-    gate.revoke_run_grants(id);
-    {
-        let mut store = gate.store();
-        if store.release_run_owner(id) {
-            store.save();
-        }
-    }
+    host_gate!().revoke_run_grants(id);
     log::info!("agents_api: finished run {id}");
     json!({"ok": true, "run": finished})
 }
@@ -2887,56 +2910,62 @@ mod tests {
         assert_eq!(own["ok"], true, "{own}");
     }
 
-    /// Design 1285 section 4, condition 1: a run's owner is sealed with the
-    /// grants, so after a host restart the pane that started it can retry and
-    /// finish it and a stranger still cannot. A run with no recorded owner
-    /// (started by host code, or before ownership was recorded) is recovered
-    /// only by host code: the desktop dashboard's cancel or a team.
+    /// Codex 3290 r3 ruling A: a run's owner is kept in memory while the
+    /// host lives and nothing is written to the grant store on start or
+    /// finish. A stranger is refused a live owned run; the owner's replayed
+    /// finish answers as alpha's did. After a restart (the run's record is
+    /// gone) alpha's rules apply: no owner check. Durable ownership is stint
+    /// 1716.
     #[test]
-    fn run_ownership_survives_a_host_restart() {
+    fn run_ownership_lives_with_the_host_and_ownerless_runs_follow_alpha() {
         let fix = Fixture::new();
         create(&fix, "worker", &["agents.ping=ask"]);
+        let grants = crate::config::config_dir().join("grants.toml");
+        let snapshot = || fs::read(&grants).ok();
+        let before = snapshot();
         let owner = pane_caller(42, None);
         let stranger = pane_caller(43, None);
-        let start = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-restart"});
+        let start = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-owned-live"});
         let started = handle_request("spawn_run", &start, &owner);
         assert_eq!(started["ok"], true, "{started}");
         let run_id = started["run"]["id"].as_str().unwrap().to_string();
+        let finish = json!({"workspace": fix.ws(), "id": run_id});
 
-        forget_run_tokens_for_test();
-        PermissionMonitor::reload_for_test(&crate::config::config_dir());
-
+        // Live host: the stranger is refused, the owner retries.
         let foreign_retry = handle_request("spawn_run", &start, &stranger);
         assert_eq!(foreign_retry["error_code"], "permission_denied", "{foreign_retry}");
-        assert!(foreign_retry.get("run_token").is_none());
-        let finish = json!({"workspace": fix.ws(), "id": run_id});
         let foreign_finish = handle_request("finish_run", &finish, &stranger);
         assert_eq!(foreign_finish["error_code"], "permission_denied", "{foreign_finish}");
         assert!(find_run(fix.ws(), &run_id).unwrap().active);
-
         let retry = handle_request("spawn_run", &start, &owner);
-        assert_eq!(retry["ok"], true, "{retry}");
-        assert_eq!(retry["run"]["id"], run_id.as_str());
-        assert!(retry["run_token"].is_string(), "the owner gets a token again: {retry}");
+        assert_eq!(retry["run_token"], started["run_token"], "{retry}");
+
+        // The owner's finish, then its replay: both answer as alpha's did.
         let finished = handle_request("finish_run", &finish, &owner);
         assert_eq!(finished["ok"], true, "{finished}");
-        assert!(!find_run(fix.ws(), &run_id).unwrap().active);
+        let replayed = handle_request("finish_run", &finish, &owner);
+        assert_eq!(replayed["ok"], true, "a replayed finish answers as alpha: {replayed}");
+        assert_eq!(snapshot(), before, "run start and finish wrote the grant store");
 
-        // A run with no recorded owner: no socket caller recovers it; host
-        // code does.
-        let legacy = handle_request(
-            "spawn_run",
-            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-legacy"}),
-            &test_host(),
+        // After a restart the run has no live owner record. The owner retries
+        // and finishes; alpha's rule admits any caller for such a run, and
+        // that is asserted here until stint 1716 makes ownership durable.
+        let restarted = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-restart"});
+        let second = handle_request("spawn_run", &restarted, &owner);
+        let second_id = second["run"]["id"].as_str().unwrap().to_string();
+        forget_run_for_test(&second_id);
+        let retry = handle_request("spawn_run", &restarted, &owner);
+        assert_eq!(retry["ok"], true, "{retry}");
+        assert!(retry["run_token"].is_string(), "{retry}");
+        let stranger_retry = handle_request("spawn_run", &restarted, &stranger);
+        assert_eq!(stranger_retry["ok"], true, "alpha's rule (stint 1716): {stranger_retry}");
+        let finished = handle_request(
+            "finish_run",
+            &json!({"workspace": fix.ws(), "id": second_id}),
+            &owner,
         );
-        let legacy_id = legacy["run"]["id"].as_str().unwrap().to_string();
-        forget_run_tokens_for_test();
-        PermissionMonitor::reload_for_test(&crate::config::config_dir());
-        let legacy_finish = json!({"workspace": fix.ws(), "id": legacy_id});
-        let refused = handle_request("finish_run", &legacy_finish, &owner);
-        assert_eq!(refused["error_code"], "permission_denied", "{refused}");
-        let recovered = handle_request("finish_run", &legacy_finish, &test_host());
-        assert_eq!(recovered["ok"], true, "{recovered}");
+        assert_eq!(finished["ok"], true, "{finished}");
+        assert_eq!(snapshot(), before, "no grant-store write");
     }
 
     /// Design 1285 section 4, condition 3: the dashboard projection of one

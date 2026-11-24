@@ -8925,10 +8925,7 @@ mod tests {
     }
 
     fn write_legacy_grants(dir: &Path, records: Vec<GrantRecord>, extra: &str) {
-        let mut body = toml::to_string_pretty(&super::super::GrantStoreData {
-            records,
-            run_owners: Default::default(),
-        }).unwrap();
+        let mut body = toml::to_string_pretty(&super::super::GrantStoreData { records }).unwrap();
         if !extra.is_empty() {
             body.push('\n');
             body.push_str(extra);
