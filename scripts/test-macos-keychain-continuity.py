@@ -5,6 +5,7 @@ import ctypes
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -58,34 +59,53 @@ def wait_ready(binary, env):
 QUESTION = "Signing continuity acceptance question"
 
 
-def seed_command(binary, root):
-    """A pane command that asks the question as that pane, then keeps the pane open.
+def pane_command(binary, root):
+    """A pane command that asks the question as that pane, then keeps listing
+    Needs-you as that pane.
 
-    The host places a socket caller by process ancestry, so only a process
-    inside the pane may report for it."""
-    script, output = root / "seed-question.sh", root / "seed-question.out"
+    The host places a socket caller by process ancestry: only a process inside
+    the pane may report for it, and a pane reads back only what its own
+    terminal incarnation filed, never what an earlier pane with its number
+    filed."""
+    script, reported, listed = root / "pane.sh", root / "seed-question.out", root / "needs-you.json"
     report = [binary, "agent", "report", "--state", "blocked", "--agent", "signing-continuity", "--event", "AskQuestion", "--detail", QUESTION]
-    script.write_text(f"#!/bin/sh\n{shlex.join(map(str, report))} >{shlex.quote(str(output))} 2>&1\necho \"exit=$?\" >>{shlex.quote(str(output))}\nexec /bin/sleep 600\n")
+    staging = shlex.quote(str(listed) + ".tmp")
+    script.write_text("\n".join([
+        "#!/bin/sh",
+        f"{shlex.join(map(str, report))} >{shlex.quote(str(reported))} 2>&1",
+        f"echo \"exit=$?\" >>{shlex.quote(str(reported))}",
+        f"while :; do {shlex.quote(str(binary))} needs-you list --json >{staging} 2>&1; /bin/mv {staging} {shlex.quote(str(listed))}; /bin/sleep 0.2; done",
+    ]) + "\n")
     script.chmod(0o755)
-    return script, output
+    listed.unlink(missing_ok=True)
+    return script, reported, listed
 
 
-def start_and_stop(binary, env, seed=False):
-    pane = f"cwd={env['HOME']}"
-    if seed:
-        script, seed_output = seed_command(binary, Path(env["HOME"]).parent)
-        pane += f",cmd={script}"
-    run([binary, "host", "start", "--ephemeral", "--pane", pane, "--timeout-secs", "90"], env, timeout=120)
+def asked(listed):
+    """The question in the pane's own latest listing, once it is there."""
+    try:
+        items = json.loads(listed.read_text(errors="replace"))["items"]
+    except (OSError, ValueError, KeyError):
+        return None
+    return next((item for item in items if item.get("summary") == QUESTION), None)
+
+
+def run_host(binary, env, until):
+    """Start an ephemeral host whose one pane asks the question, and return
+    `until(listed)` once it is truthy."""
+    script, reported, listed = pane_command(binary, Path(env["HOME"]).parent)
+    run([binary, "host", "start", "--ephemeral", "--pane", f"cwd={env['HOME']},cmd={script}", "--timeout-secs", "90"], env, timeout=120)
     try:
         wait_ready(binary, env)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            items = json.loads(run([binary, "needs-you", "list", "--json"], env).stdout)["items"]
-            if any(item.get("summary") == QUESTION for item in items):
-                return items
+            found = until(listed)
+            if found:
+                return found
             time.sleep(0.2)
-        reported = seed_output.read_text(errors="replace") if seed and seed_output.is_file() else "(no seed output)"
-        raise AssertionError(f"sealed question was not retained: {items}\nseed report: {reported}")
+        listing = listed.read_text(errors="replace") if listed.is_file() else "(the pane never listed)"
+        seed = reported.read_text(errors="replace") if reported.is_file() else "(no seed output)"
+        raise AssertionError(f"the sealed question was not found; the pane listed: {listing}\nseed report: {seed}")
     finally:
         run([binary, "host", "stop"], env, timeout=120)
 
@@ -124,7 +144,7 @@ def main(args):
         )
         Path(env["HOME"]).mkdir()
         installed_a = install(args.package_a.resolve(), root, env)
-        original = start_and_stop(installed_a, env, seed=True)
+        original = run_host(installed_a, env, asked)
         profile = Path(env["HOME"]) / ".plexi-alpha"
         first_log = profile / "plexi.log"
         if not first_log.is_file() or "created host permission mac key" not in first_log.read_text(errors="replace"):
@@ -133,9 +153,11 @@ def main(args):
         installed_b = install(args.package_b.resolve(), root, env)
         if installed_a == installed_b:
             raise AssertionError("installer did not activate a different generation")
-        restored = start_and_stop(installed_b, env)
-        if original != restored:
-            raise AssertionError(f"sealed Needs-you question changed across upgrade: {original} -> {restored}")
+        # B's pane is a new incarnation and may not read A's question. It asks
+        # the identical question instead: the host reuses A's open record,
+        # by id, only if that record survived the upgrade under its seal.
+        filed = re.compile(rf"needs_you: pane \d+ filed question as {re.escape(original['id'])}$", re.M)
+        run_host(installed_b, env, lambda _listed: filed.search(first_log.read_text(errors="replace")[before:]))
         second_log = first_log.read_text(errors="replace")[before:]
         forbidden = ("key unreadable", "rotated unreadable permission mac key", "unverified grants", "created host permission mac key")
         if any(marker in second_log for marker in forbidden):

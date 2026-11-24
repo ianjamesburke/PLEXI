@@ -678,6 +678,10 @@ pub(crate) enum Lifecycle {
 #[derive(Debug)]
 pub(crate) struct LivePaneAuthority {
     incarnation: u64,
+    /// This incarnation's identity in records that outlive the host: random,
+    /// so a later pane that reuses the number (after a restart, say) never
+    /// matches it.
+    durable_key: String,
     grant: PaneAuthority,
     scope: RwLock<LiveScope>,
     state: AtomicU8,
@@ -696,6 +700,7 @@ impl LivePaneAuthority {
         );
         Arc::new(Self {
             incarnation,
+            durable_key: uuid::Uuid::new_v4().to_string(),
             grant,
             scope: RwLock::new(scope),
             state: AtomicU8::new(Lifecycle::Constructing as u8),
@@ -714,6 +719,12 @@ impl LivePaneAuthority {
 
     pub(crate) fn incarnation(&self) -> u64 {
         self.incarnation
+    }
+
+    /// The key a persisted record binds to when it belongs to this
+    /// incarnation alone.
+    pub(crate) fn durable_key(&self) -> &str {
+        &self.durable_key
     }
 
     pub(crate) fn grant(&self) -> &PaneAuthority {

@@ -1644,37 +1644,7 @@ fn live_socket_peer_resolves_through_real_descendant_process() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sock_path = dir.path().join("live-notify.sock");
     let listener = std::os::unix::net::UnixListener::bind(&sock_path).expect("bind");
-
-    let mailbox = h.ipc_tx.clone();
-    let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
-        egui::Context::default(),
-    ));
-    let (subscribe_mailbox, _sub_rx) = crate::app::ui_mailbox::UiMailbox::<
-        crate::host::event_subscriptions::HostSubscribeRequest,
-    >::channel(wake.clone(), "event_subscribe");
-    let (publish_mailbox, _pub_rx) = crate::app::ui_mailbox::UiMailbox::<
-        crate::host::event_subscriptions::HostPublishRequest,
-    >::channel(wake, "event_publish");
-
-    let trace_profile = crate::config::config_dir();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(stream) = stream else { continue };
-            // Mirror `spawn_socket_listener`'s production accept loop:
-            // resolve the peer identity synchronously, right here, before
-            // any further work — never inside a spawned connection thread.
-            let peer = resolve_socket_peer_pid(&stream)
-                .map(crate::broker::caller::PeerWitness::capture);
-            handle_socket_connection(
-                &trace_profile,
-                stream,
-                mailbox.clone(),
-                subscribe_mailbox.clone(),
-                publish_mailbox.clone(),
-                peer,
-            );
-        }
-    });
+    crate::app::serve_test_socket(listener, h.ipc_tx.clone());
 
     // JSON payload forging `source_pane_id`/`source_context_id` as the
     // OTHER (forged) pane. Sent by a real `nc` process spawned INSIDE the

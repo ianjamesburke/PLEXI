@@ -5352,4 +5352,153 @@ mod tests {
             "ask-test"
         );
     }
+
+    /// Release run 45334300550: an unparented agent asks a question from its
+    /// own pane (`plexi agent report --state blocked --event AskQuestion`,
+    /// run as the pane's command over the real socket). The host files it,
+    /// and the asking pane reads it back from `needs-you list`; a process
+    /// outside every pane sees only what it filed (stint 1285).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pane_reads_back_the_question_its_agent_report_filed() {
+        const QUESTION: &str = "Signing continuity acceptance question";
+        let mut h = HostHarness::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("ask.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind");
+        crate::app::serve_test_socket(listener, h.ipc_tx.clone());
+        // The frame `agent_report_cli` sends, with the pane id the host gave
+        // this pane's environment.
+        let script = dir.path().join("ask.sh");
+        let frame = format!(
+            r#"{{"type":"set_agent_state","pane_id":%s,"state":"blocked","agent":"signing-continuity","detail":"{QUESTION}","event":"AskQuestion"}}"#
+        );
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '{frame}\\n' \"$PLEXI_PANE_ID\" | /usr/bin/nc -U '{}'\nexec /bin/sleep 60\n",
+                sock.display()
+            ),
+        )
+        .expect("write script");
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .expect("chmod");
+        let context = h.app.router.active().context_id;
+        let before = h.app.windows.len();
+        let launch = h
+            .app
+            .test_terminal_launch(context, None, Some(&script.to_string_lossy()));
+        h.app.create_page_at(91, 91, context, launch);
+        assert_eq!(h.app.windows.len(), before + 1, "the pane's PTY spawned");
+        let pane = *h.app.windows.last().unwrap().panes.keys().next().unwrap();
+
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !monitor
+            .list_needs_you()
+            .iter()
+            .any(|item| item.summary == QUESTION)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the pane's own report filed no question"
+            );
+            h.run_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        let list =
+            |h: &mut HostHarness, origin: crate::broker::caller::RequestOrigin, name: &str| {
+                let path = dir.path().join(name);
+                h.app
+                    .observe_needs_you(&origin, "list", None, None, path.to_str().unwrap());
+                let body: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+                body["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|item| item["summary"] == QUESTION)
+                    .count()
+            };
+        let own = h.origin_from_pane(pane);
+        assert_eq!(
+            list(&mut h, own, "pane.json"),
+            1,
+            "the asking pane sees its question"
+        );
+        let outside = h.app.socket_origin_for_pids(&[std::process::id()]);
+        assert_eq!(
+            list(&mut h, outside, "outside.json"),
+            0,
+            "an outside process sees only what it filed"
+        );
+
+        // A later incarnation under the same pane number, as after a
+        // restart, reads nothing: not by list, not by id.
+        let id = monitor
+            .list_needs_you()
+            .into_iter()
+            .find(|item| item.summary == QUESTION)
+            .unwrap()
+            .id;
+        let show =
+            |h: &mut HostHarness, origin: crate::broker::caller::RequestOrigin, name: &str| {
+                let path = dir.path().join(name);
+                let payload = serde_json::json!({ "id": id });
+                h.app
+                    .handle_needs_you_api("show", &payload, &origin, path.to_str().unwrap());
+                let body: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+                body["ok"] == true
+            };
+        let own = h.origin_from_pane(pane);
+        assert!(
+            show(&mut h, own, "show-own.json"),
+            "the asking pane shows its question"
+        );
+        let terminal = h
+            .app
+            .windows
+            .iter_mut()
+            .find_map(|window| window.panes.get_mut(&pane))
+            .and_then(crate::host::pane::Pane::terminal_incarnation_mut)
+            .unwrap();
+        let grant = terminal.authority().unwrap().grant().clone();
+        terminal.replace_grant_for_test(grant);
+        let later = h.origin_from_pane(pane);
+        assert_eq!(
+            list(&mut h, later.clone(), "later.json"),
+            0,
+            "a reused number lists nothing"
+        );
+        assert!(
+            !show(&mut h, later, "show-later.json"),
+            "a reused number shows nothing"
+        );
+    }
+
+    /// An `agent ask` whose question was not filed for the person answers
+    /// `ok: false`, not success (Codex 3312).
+    #[test]
+    fn agent_ask_reports_a_question_that_was_not_filed() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let response = dir.path().join("ask.json");
+        // An empty question is refused by the Needs-you store.
+        h.inject_ipc(crate::protocol::HostRequest::AgentAsk {
+            pane_id,
+            question: String::new(),
+            response_file: response.to_string_lossy().into_owned(),
+        });
+        h.hidden_frame();
+        let body: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&response).unwrap()).unwrap();
+        assert_eq!(body["ok"], false, "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("not filed"),
+            "{body}"
+        );
+    }
 }
