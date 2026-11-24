@@ -130,10 +130,12 @@ impl PlexiApp {
             self.resolve_quit_confirmation(confirmed);
         } else if confirmed {
             self.pending_close = false;
+            // Taken first: a batch installs the next pane's target, which
+            // must survive to name that dialog and key its own arm delay.
+            let asked = self.close_confirm_target.take();
             if !self.confirm_close_batch_pane() {
-                self.confirm_single_close();
+                self.confirm_single_close(asked);
             }
-            self.close_confirm_target = None;
         } else if cancelled {
             self.pending_close = false;
             self.close_confirm_target = None;

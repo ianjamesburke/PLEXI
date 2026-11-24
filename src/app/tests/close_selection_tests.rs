@@ -223,29 +223,70 @@ fn close_selected_save_on_unsaved_editor_writes_and_continues() {
     assert!(h.app.host.pane_close_batch().is_none());
 }
 
-/// With `confirm_close` on, each selected pane asks its own "Close pane?".
+/// A real Enter: pressed, then released, so the next one is fresh too.
+fn tap_enter(h: &mut HostHarness) {
+    h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+    h.frame(egui::RawInput {
+        events: vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        ..Default::default()
+    });
+    h.run_frames(2);
+}
+
+/// With `confirm_close` on, each selected pane asks its own "Close pane?",
+/// and each waits out its own arm delay (stint 1513): a quick second Enter
+/// after confirming one pane never closes the next.
 #[test]
 fn close_selected_asks_confirm_close_once_per_pane() {
     let mut h = HostHarness::new();
     let [a, b, c, d] = grid(&mut h);
     h.app.config.confirm_close = Some(true);
-    select(&mut h, &[a, b]);
+    select(&mut h, &[a, b, d]);
+    assert_eq!(
+        selection(&h).map(|s| s.len()),
+        Some(3),
+        "three panes selected"
+    );
     close_shortcut(&mut h);
     assert!(h.app.pending_close, "first pane asks");
     assert_eq!(open(&h), vec![a, b, c, d]);
-    h.app.arm_destructive_dialogs_for_test();
-    h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
-    h.run_frames(2);
-    assert!(!open(&h).contains(&a));
-    assert!(h.app.pending_close, "second pane asks");
+    for which in ["second", "third"] {
+        let before = open(&h).len();
+        h.app.arm_destructive_dialogs_for_test();
+        tap_enter(&mut h);
+        assert_eq!(
+            open(&h).len(),
+            before - 1,
+            "the armed Enter closes one pane"
+        );
+        assert!(h.app.pending_close, "{which} pane asks");
+    }
+    let before = open(&h);
+    tap_enter(&mut h);
+    assert_eq!(
+        open(&h),
+        before,
+        "a quick Enter closed the third pane before its own delay"
+    );
+    assert!(h.app.pending_close, "the third pane still asks");
+    let third = h
+        .app
+        .close_confirm_target
+        .clone()
+        .expect("the third dialog names its pane");
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
     h.run_frames(2);
-    assert_eq!(open(&h), vec![b, c, d], "Cancel keeps b");
-    let window = h.app.windows[0].window_id;
-    assert_eq!(
-        h.app.host.pane_selection(window).map(|s| s.panes.clone()),
-        Some(vec![b])
+    assert!(
+        open(&h).contains(&third.pane),
+        "Cancel keeps the third pane"
     );
+    assert_eq!(selection(&h), Some(vec![third.pane]));
 }
 
 // ── Critic blockers on PR #3136 ─────────────────────────────────────────────

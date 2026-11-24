@@ -2072,8 +2072,8 @@ impl PlexiApp {
     /// about, and only while that pane is still the focused one. Focus that
     /// moved (CLI `pane focus`, an agent, a plugin) or a pane closed another
     /// way cancels instead of closing a different pane, and says so.
-    pub(crate) fn confirm_single_close(&mut self) {
-        let Some(target) = self.close_confirm_target.clone() else {
+    pub(crate) fn confirm_single_close(&mut self, asked: Option<crate::app::CloseConfirmTarget>) {
+        let Some(target) = asked else {
             log::warn!("close_confirm: confirm with no recorded pane; nothing closed");
             return;
         };
