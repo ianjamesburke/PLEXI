@@ -197,7 +197,7 @@ completes.
 | Host logic (HostRequest dispatch) | `HostHarness` (`src/testing/mod.rs`) | `src/*/tests/` | `cargo test --bin plexi` |
 | Observable behavior — host UI, host apps, portals, real PGAP apps | **TOML scenes** (`tests/scenes/*.toml`) | `tests/scenes/` | targeted `just scene`; `scene_suite` for broad/final coverage |
 
-`PlexiUiHarness` (`src/ui_tests.rs`) is the engine under scenes: PlexiApp inside egui_kittest with fully headless wgpu Metal rendering (no display needed). Direct PlexiUiHarness tests in `src/ui_tests.rs` are for egui-input edge cases scenes can't express (e.g. rename-commit-on-Enter inside a draw pass).
+`PlexiUiHarness` (`src/ui_tests.rs`) is the engine under scenes: PlexiApp inside egui_kittest with fully headless wgpu Metal rendering (no display needed). Direct PlexiUiHarness tests in `src/ui_tests/tests/` are for egui-input edge cases scenes can't express (e.g. rename-commit-on-Enter inside a draw pass).
 
 ## Scenes
 
@@ -350,7 +350,7 @@ Before calling a UI fix complete:
 
 1. Write or reuse a `PlexiUiHarness::save_screenshot` test that renders the
    actual changed surface with realistic seeded content (not an empty state) —
-   `screenshot_assistant_conversation_bubbles` in `src/ui_tests.rs` is the
+   `screenshot_assistant_conversation_bubbles` in `src/ui_tests/tests/assistant.rs` is the
    pattern: build real model state, open through the real pane path, screenshot.
    Name the output with `evidence_png!()`, never a hand-typed path: it derives
    `/tmp/plexi_<test fn>.png` from the enclosing function, so a renamed test
