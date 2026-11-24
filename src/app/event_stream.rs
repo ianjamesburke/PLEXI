@@ -501,7 +501,14 @@ mod tests {
                 duration: crate::broker::GrantDuration::Session,
                 subscriber_context_id: CONTEXT,
                 created_at: "test".into(),
-                admitted: None,
+                permit: crate::broker::permit::mint_unbound(
+                    "test",
+                    crate::broker::permit::DeliverEvents::target(
+                        ActorType::External,
+                        &key,
+                        "probe-1285",
+                    ),
+                ),
             });
             timeline
                 .record_event(

@@ -195,7 +195,14 @@ mod tests {
                 trigger_mode: TriggerMode::Conversation,
                 duration: GrantDuration::Session,
                 created_at: "test".into(),
-                admitted: None,
+                permit: crate::broker::permit::mint_unbound(
+                    "test",
+                    crate::broker::permit::DeliverEvents::target(
+                        ActorType::Agent,
+                        name,
+                        PUBLISHER,
+                    ),
+                ),
             });
         }
         let outcome = timeline

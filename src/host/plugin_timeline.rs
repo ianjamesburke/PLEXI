@@ -197,7 +197,7 @@ pub enum RollbackVerdict {
 /// Created only through [`PluginTimeline::add_subscription`], which callers must
 /// gate behind a `TargetType::PluginEventStream` broker decision (see
 /// `WASM plugin runtime::subscribe_event_stream`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SubscriptionRecord {
     pub subscription_id: String,
     pub subscriber_type: ActorType,
@@ -221,11 +221,15 @@ pub struct SubscriptionRecord {
     pub subscriber_context_id: u64,
     /// RFC 3339.
     pub created_at: String,
-    /// The pane scope the subscription was admitted under, for a pane
-    /// subscriber. Deliveries stop once it no longer holds.
+    /// The broker's permit to deliver to this subscriber. Routing and every
+    /// drain check it, so deliveries stop once a pane subscriber's admitted
+    /// incarnation or scope revision no longer holds (stint 1716).
     #[serde(skip)]
-    pub admitted: Option<AdmittedScope>,
+    pub permit: DeliveryPermit,
 }
+
+/// The permit a subscription and each of its queued deliveries carry.
+pub type DeliveryPermit = crate::broker::permit::Permit<crate::broker::permit::DeliverEvents>;
 
 /// A pane incarnation and the scope revision something was admitted under.
 #[derive(Debug, Clone)]
@@ -287,7 +291,12 @@ impl SubscriptionRecord {
         if !self.event_names.contains(&record.event) {
             return false;
         }
-        if let Some(stale) = self.admitted.as_ref().and_then(|a| a.current().err()) {
+        let target = crate::broker::permit::DeliverEvents::target(
+            self.subscriber_type,
+            &self.subscriber_id,
+            &self.plugin_id,
+        );
+        if let Err(stale) = self.permit.check(&target) {
             log::info!(
                 "plugin_timeline: subscription {} delivers nothing: {stale}",
                 self.subscription_id
@@ -304,7 +313,7 @@ impl SubscriptionRecord {
 /// One routed event awaiting consumption by the agent runtime (Phase C).
 /// The payload is already shaped per the subscription's `payload_mode`, so
 /// the runtime never sees more than the grant allows.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct EventDelivery {
     pub delivery_id: u64,
     pub subscription_id: String,
@@ -328,6 +337,10 @@ pub struct EventDelivery {
     pub state_ref: Option<String>,
     /// RFC 3339.
     pub created_at: String,
+    /// The subscription's permit, carried with the queued item so the drain
+    /// re-validates it at hand-over.
+    #[serde(skip)]
+    pub permit: DeliveryPermit,
 }
 
 /// How many recent events [`PluginTimeline`] keeps in memory. A host left open for
@@ -774,6 +787,7 @@ impl PluginTimeline {
                 payload,
                 state_ref,
                 created_at: record.created_at.clone(),
+                permit: sub.permit.clone(),
             });
             queued += 1;
         }
@@ -1088,6 +1102,10 @@ impl PluginTimeline {
     /// Phase C agent runtime consumes the same queue — `trigger_mode` tells
     /// it whether to inject and trigger a turn (`conversation`), run a
     /// bounded workflow (`ambient`), or prompt the user first (`ask`).
+    ///
+    /// Every production drain comes through here. Each delivery's permit is
+    /// checked at hand-over; one whose admitted pane incarnation or scope
+    /// revision no longer holds is dropped, not delivered (stint 1716).
     pub fn take_deliveries_for(
         &mut self,
         subscriber_type: ActorType,
@@ -1096,10 +1114,24 @@ impl PluginTimeline {
         let mut taken = Vec::new();
         let mut kept = VecDeque::with_capacity(self.deliveries.len());
         for d in self.deliveries.drain(..) {
-            if d.subscriber_type == subscriber_type && d.subscriber_id == subscriber_id {
-                taken.push(d);
-            } else {
+            if d.subscriber_type != subscriber_type || d.subscriber_id != subscriber_id {
                 kept.push_back(d);
+                continue;
+            }
+            let target = crate::broker::permit::DeliverEvents::target(
+                d.subscriber_type,
+                &d.subscriber_id,
+                &d.plugin_id,
+            );
+            match d.permit.check(&target) {
+                Ok(()) => taken.push(d),
+                Err(stale) => log::info!(
+                    "plugin_timeline: withheld delivery {} of '{}' to {:?} '{}': {stale}",
+                    d.delivery_id,
+                    d.event,
+                    d.subscriber_type,
+                    d.subscriber_id
+                ),
             }
         }
         self.deliveries = kept;
@@ -1179,6 +1211,20 @@ mod tests {
         t
     }
 
+    /// A fixture's permit, minted for its subscriber and publisher as they
+    /// stand when it is added.
+    fn permitted(mut sub: SubscriptionRecord) -> SubscriptionRecord {
+        sub.permit = crate::broker::permit::mint_unbound(
+            "test",
+            crate::broker::permit::DeliverEvents::target(
+                sub.subscriber_type,
+                &sub.subscriber_id,
+                &sub.plugin_id,
+            ),
+        );
+        sub
+    }
+
     fn subscription(payload_mode: PayloadMode, trigger_mode: TriggerMode) -> SubscriptionRecord {
         SubscriptionRecord {
             subscription_id: "sub-1".to_string(),
@@ -1192,7 +1238,14 @@ mod tests {
             duration: GrantDuration::Session,
             subscriber_context_id: CTX,
             created_at: "2026-06-11T00:00:00Z".to_string(),
-            admitted: None,
+            permit: crate::broker::permit::mint_unbound(
+                "test",
+                crate::broker::permit::DeliverEvents::target(
+                    ActorType::Agent,
+                    "chess-opponent",
+                    "chess",
+                ),
+            ),
         }
     }
 
@@ -1207,7 +1260,7 @@ mod tests {
         sub.plugin_id = PUBLISHER.into();
         sub.event_names = vec![STREAM.into()];
         sub.resource_id = Some("7".into());
-        timeline.add_subscription(sub);
+        timeline.add_subscription(permitted(sub));
         let provenance = Provenance {
             source: Source::HostObservation,
             agent_label: "test".into(),
@@ -1605,7 +1658,7 @@ mod tests {
         wasm_subscriber.subscriber_id = "app-pane:41".to_string();
         wasm_subscriber.plugin_id = "python-notes".to_string();
         wasm_subscriber.event_names = vec!["note.saved".to_string()];
-        timeline.add_subscription(wasm_subscriber);
+        timeline.add_subscription(permitted(wasm_subscriber));
 
         let mut python_subscriber = subscription(PayloadMode::Full, TriggerMode::Conversation);
         python_subscriber.subscription_id = "python-sub".to_string();
@@ -1613,7 +1666,7 @@ mod tests {
         python_subscriber.subscriber_id = "app-pane:42".to_string();
         python_subscriber.plugin_id = "wasm-counter".to_string();
         python_subscriber.event_names = vec!["count.changed".to_string()];
-        timeline.add_subscription(python_subscriber);
+        timeline.add_subscription(permitted(python_subscriber));
 
         let mut python_event = emitted("note.saved");
         python_event.resource_id = "note-1".to_string();

@@ -1158,6 +1158,14 @@ impl AssistantView {
             TriggerMode::Conversation,
             None,
             GrantDuration::Session,
+            crate::broker::permit::mint_unbound(
+                "assistant",
+                crate::broker::permit::DeliverEvents::target(
+                    ActorType::Agent,
+                    ASSISTANT_ACTOR_ID,
+                    app,
+                ),
+            ),
         );
         log::info!("assistant: subscribed to '{target}' ({subscription_id})");
         self.live_subs.push((target, subscription_id));

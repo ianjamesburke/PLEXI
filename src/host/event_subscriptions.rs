@@ -92,6 +92,14 @@ pub fn evaluate_and_record_subscription(
         trigger_mode,
         resource_id,
         duration,
+        crate::broker::permit::mint_unbound(
+            "test",
+            crate::broker::permit::DeliverEvents::target(
+                subscriber_type,
+                subscriber_id,
+                publisher_plugin_id,
+            ),
+        ),
     ))
 }
 
@@ -240,9 +248,10 @@ fn evaluate_targets(
     strictest
 }
 
-/// Add a subscription to `timeline` and return its id. Performs no broker check
-/// — the caller has already established consent (a unanimous `Allow` grant or an
-/// interactive user approval).
+/// Add a subscription to `timeline` and return its id. Performs no broker
+/// check: the caller has already established consent (a unanimous `Allow`
+/// grant or an interactive user approval) and holds the broker's delivery
+/// permit for this subscriber and publisher.
 #[allow(clippy::too_many_arguments)]
 pub fn record_subscription(
     timeline: &Arc<Mutex<PluginTimeline>>,
@@ -255,52 +264,13 @@ pub fn record_subscription(
     trigger_mode: TriggerMode,
     resource_id: Option<String>,
     duration: GrantDuration,
-) -> String {
-    let subscription_id = format!("sub-{}", uuid::Uuid::new_v4());
-    let record = SubscriptionRecord {
-        subscription_id: subscription_id.clone(),
-        subscriber_type,
-        subscriber_id: subscriber_id.to_string(),
-        plugin_id: publisher_plugin_id.to_string(),
-        event_names,
-        payload_mode,
-        trigger_mode,
-        resource_id,
-        duration,
-        subscriber_context_id,
-        created_at: event_log::now_timestamp(),
-        admitted: None,
-    };
-    log::info!(
-        "event_subscriptions: recorded subscription {subscription_id} for {subscriber_type:?} \
-         '{subscriber_id}' (context={subscriber_context_id}) -> '{publisher_plugin_id}' \
-         (payload={payload_mode:?}, trigger={trigger_mode:?})"
-    );
-    timeline.lock().unwrap().add_subscription(record);
-    subscription_id
-}
-
-/// [`record_subscription`] for an admitted request: a pane subscriber's
-/// deliveries stop when its incarnation is revoked or its scope moves.
-#[allow(clippy::too_many_arguments)]
-fn record_admitted_subscription(
-    timeline: &Arc<Mutex<PluginTimeline>>,
-    publisher_plugin_id: &str,
-    subscriber_type: ActorType,
-    subscriber_id: &str,
-    subscriber_context_id: u64,
-    event_names: Vec<String>,
-    payload_mode: PayloadMode,
-    trigger_mode: TriggerMode,
-    resource_id: Option<String>,
-    admitted: Option<crate::host::plugin_timeline::AdmittedScope>,
+    permit: crate::host::plugin_timeline::DeliveryPermit,
 ) -> String {
     let subscription_id = format!("sub-{}", uuid::Uuid::new_v4());
     log::info!(
         "event_subscriptions: recorded subscription {subscription_id} for {subscriber_type:?} \
          '{subscriber_id}' (context={subscriber_context_id}) -> '{publisher_plugin_id}' \
-         {event_names:?} admitted_scope={:?}",
-        admitted.as_ref().map(|a| a.revision)
+         {event_names:?} (payload={payload_mode:?}, trigger={trigger_mode:?}) {permit:?}"
     );
     timeline
         .lock()
@@ -314,12 +284,33 @@ fn record_admitted_subscription(
             payload_mode,
             trigger_mode,
             resource_id,
-            duration: GrantDuration::Session,
+            duration,
             subscriber_context_id,
             created_at: event_log::now_timestamp(),
-            admitted,
+            permit,
         });
     subscription_id
+}
+
+/// Mint the delivery permit for an admitted subscriber. A pane subscriber
+/// must still be at the incarnation and revision it was admitted under.
+pub(crate) fn mint_delivery_permit(
+    authority: &SubscriberAuthority,
+    subscriber_type: ActorType,
+    subscriber_id: &str,
+    publisher_plugin_id: &str,
+) -> Result<crate::host::plugin_timeline::DeliveryPermit, String> {
+    use crate::broker::permit::{mint_pane, mint_unbound, DeliverEvents};
+    let target = DeliverEvents::target(subscriber_type, subscriber_id, publisher_plugin_id);
+    match authority {
+        SubscriberAuthority::Pane(admitted) => mint_pane(admitted.clone(), target),
+        SubscriberAuthority::Plugin => Ok(mint_unbound("plugin", target)),
+        SubscriberAuthority::Run => Ok(mint_unbound("run", target)),
+        SubscriberAuthority::External => Ok(mint_unbound("external", target)),
+        SubscriberAuthority::Sealed => {
+            Err("a sealed pane authority holds no delivery permit".into())
+        }
+    }
 }
 
 /// An in-memory subscribe request handed from a transport's connection thread
@@ -485,6 +476,9 @@ enum ConsentAction {
         payload_mode: PayloadMode,
         trigger_mode: TriggerMode,
         resource_id: Option<String>,
+        /// Who asked, as classified; the delivery permit is minted from it
+        /// once the person allows.
+        authority: SubscriberAuthority,
         cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
         reply: SyncSender<HostSubscribeReply>,
     },
@@ -821,7 +815,20 @@ impl HostSubscriptionService {
         };
         match decision {
             Decision::Allow => {
-                let subscription_id = record_admitted_subscription(
+                let permit = match mint_delivery_permit(
+                    &req.subscriber_authority,
+                    subscriber_type,
+                    &subscriber_id,
+                    &req.publisher_plugin_id,
+                ) {
+                    Ok(permit) => permit,
+                    Err(message) => {
+                        log::info!("event_subscriptions: refused {subscriber_id}: {message}");
+                        let _ = req.reply.send(HostSubscribeReply::Err { message });
+                        return None;
+                    }
+                };
+                let subscription_id = record_subscription(
                     &self.timeline,
                     &req.publisher_plugin_id,
                     subscriber_type,
@@ -831,7 +838,8 @@ impl HostSubscriptionService {
                     req.payload_mode,
                     req.trigger_mode,
                     req.resource_id,
-                    req.subscriber_authority.admitted(),
+                    GrantDuration::Session,
+                    permit,
                 );
                 if req
                     .reply
@@ -878,6 +886,7 @@ impl HostSubscriptionService {
                         payload_mode: req.payload_mode,
                         trigger_mode: req.trigger_mode,
                         resource_id: req.resource_id,
+                        authority: req.subscriber_authority,
                         cancelled: req.cancelled,
                         reply: req.reply,
                     },
@@ -1006,6 +1015,7 @@ impl HostSubscriptionService {
                 payload_mode,
                 trigger_mode,
                 resource_id,
+                authority,
                 cancelled: _,
                 reply,
             } => {
@@ -1019,7 +1029,22 @@ impl HostSubscriptionService {
                     });
                     return;
                 }
-                let subscription_id = record_admitted_subscription(
+                let permit = match mint_delivery_permit(
+                    &authority,
+                    subscriber_type,
+                    &subscriber_id,
+                    &plugin_id,
+                ) {
+                    Ok(permit) => permit,
+                    Err(message) => {
+                        log::info!(
+                            "event_subscriptions: consent for '{subscriber_id}' refused: {message}"
+                        );
+                        let _ = reply.send(HostSubscribeReply::Err { message });
+                        return;
+                    }
+                };
+                let subscription_id = record_subscription(
                     &self.timeline,
                     &plugin_id,
                     subscriber_type,
@@ -1029,7 +1054,8 @@ impl HostSubscriptionService {
                     payload_mode,
                     trigger_mode,
                     resource_id,
-                    admitted,
+                    GrantDuration::Session,
+                    permit,
                 );
                 if reply
                     .send(HostSubscribeReply::Ok {
@@ -2073,6 +2099,43 @@ mod tests {
             .into_iter()
             .map(|d| d.event)
             .collect()
+    }
+
+    /// Stint 1716: an event queued while the pane's scope held is not handed
+    /// over once the scope moves or the pane closes. The drain itself checks
+    /// the delivery permit, not only routing.
+    #[test]
+    fn queued_deliveries_are_withheld_after_scope_change_or_revoke() {
+        for revoke in [false, true] {
+            let timeline = timeline_with_stream();
+            let mut store = GrantStore::default();
+            store.record(allow_grant("pane:7", "event-probe::probe.tick"));
+            let service = HostSubscriptionService::new_for_test(store, Arc::clone(&timeline));
+            let admitted = pane_scope(7, &[]);
+            let (mut req, rx) =
+                subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+            req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
+            assert!(service.classify_subscribe_request(req).is_none());
+            assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+            emit(&timeline, "probe.tick");
+            assert_eq!(
+                timeline.lock().unwrap().pending_delivery_count(),
+                1,
+                "queued"
+            );
+            if revoke {
+                admitted.authority.revoke();
+            } else {
+                admitted
+                    .authority
+                    .publish_scope(PathBuf::from("/tmp/elsewhere"));
+            }
+            assert_eq!(
+                delivered(&timeline),
+                Vec::<String>::new(),
+                "old-scope data is not delivered (revoke={revoke})"
+            );
+        }
     }
 
     /// Round 3 item 4, round 4 aggregate: "all streams" from a pane is
