@@ -1867,7 +1867,10 @@ mod tests {
         let svc2 = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
         let (mut req, _rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
         req.subscriber_authority = SubscriberAuthority::Pane(admitted);
-        assert!(svc2.classify_subscribe_request(req).is_some(), "asks after restart");
+        assert!(
+            svc2.classify_subscribe_request(req).is_some(),
+            "asks after restart"
+        );
     }
 
     /// End-to-end: subscribe (full payload) → emit → the delivery carries the
