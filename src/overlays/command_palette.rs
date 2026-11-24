@@ -2307,11 +2307,9 @@ impl PlexiApp {
             })
             .dismissed;
         // A discarded sizing pass was never seen.
+        #[cfg(test)]
         if !ctx.will_discard() {
-            #[cfg(test)]
-            {
-                self.palette_input.drawn = Some((rows.rects.clone(), modal_rect));
-            }
+            self.palette_input.drawn = Some((rows.rects.clone(), modal_rect));
         }
         self.finish_palette_draw(ctx, rows, dismissed);
     }

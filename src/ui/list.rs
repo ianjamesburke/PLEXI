@@ -696,6 +696,7 @@ impl ListRowResponse {
         self.row.clone()
     }
 
+    #[cfg(test)]
     pub(crate) fn rect(&self) -> egui::Rect {
         self.row.rect
     }

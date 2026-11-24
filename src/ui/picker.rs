@@ -179,6 +179,7 @@ pub(crate) struct RowsResponse {
     /// this delivery.
     pub hovered: Option<Hit>,
     /// Every actionable row's clipped rect, for tests.
+    #[cfg(test)]
     pub rects: Vec<(egui::Rect, RowKey)>,
 }
 
@@ -269,9 +270,12 @@ pub(crate) fn results(
                 if response.row_hovered() {
                     out.hovered = Some(hit());
                 }
-                let clipped = response.rect().intersect(ui.clip_rect());
-                if clipped.is_positive() {
-                    out.rects.push((clipped, row.key.clone()));
+                #[cfg(test)]
+                {
+                    let clipped = response.rect().intersect(ui.clip_rect());
+                    if clipped.is_positive() {
+                        out.rects.push((clipped, row.key.clone()));
+                    }
                 }
             }
         });

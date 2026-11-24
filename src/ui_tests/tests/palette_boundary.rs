@@ -213,6 +213,38 @@ fn queue_then_palette_escapes_back_through_the_queue() {
     assert_eq!(focused(&h), Some(right), "back at the invoking pane");
 }
 
+/// Round 7: Cmd+Esc closes the queue only when the queue is the top surface.
+/// Covered by the palette, the queue and the palette both stay.
+#[test]
+fn cmd_escape_never_dismisses_a_covered_queue() {
+    let (mut h, _, _) = two_views();
+    chord(&mut h, Modifiers::COMMAND, Key::I);
+    h.run_steps(3);
+    chord(&mut h, Modifiers::COMMAND, Key::P);
+    h.run_steps(3);
+    assert_eq!(
+        surfaces(&h),
+        [FocusKind::AttentionQueue, FocusKind::CommandPalette]
+    );
+    chord(&mut h, Modifiers::COMMAND, Key::Escape);
+    h.run_steps(3);
+    assert_eq!(
+        surfaces(&h),
+        [FocusKind::AttentionQueue, FocusKind::CommandPalette],
+        "Cmd+Esc left the covered queue and the palette open"
+    );
+    assert!(queue_open(&h));
+
+    // Control: uncovered, the same chord closes the queue.
+    chord(&mut h, Modifiers::NONE, Key::Escape);
+    h.run_steps(3);
+    assert_eq!(surfaces(&h), [FocusKind::AttentionQueue]);
+    chord(&mut h, Modifiers::COMMAND, Key::Escape);
+    h.run_steps(3);
+    assert!(!queue_open(&h), "Cmd+Esc closes the queue on top");
+    assert!(surfaces(&h).is_empty());
+}
+
 /// V3 D row 1: with no actionable request, Focus Approval leaves the
 /// palette owning input.
 #[test]
@@ -835,27 +867,22 @@ fn a_scroll_begun_on_the_palette_never_scrolls_the_revealed_terminal() {
     );
 }
 
-/// A terminal mouse-down, then the palette opens, then mouse-up: the press
-/// was the terminal's, so its release is too. The program hears press then
-/// release once, the palette never sees either, and nothing stays pressed.
+/// A press a terminal took before the palette opened, as on alpha: released
+/// over the terminal after the palette closed, the program hears it; released
+/// under the open palette, it does not. Either way a fresh click reports both
+/// edges, and the palette never acts on the gesture.
 #[test]
 #[ignore = "requires-pty"]
-fn a_terminal_drag_keeps_its_release_when_the_palette_opens() {
+fn a_terminal_press_across_the_palette_matches_alpha() {
     let (mut h, _left, right) = two_terminals(MOUSE);
     let at = center(&mut h, right);
-    let below = at + egui::vec2(0.0, 40.0);
+    let cmd = Modifiers::COMMAND;
 
-    // Control: press, move and release report press then release.
-    frame(
-        &mut h,
-        Modifiers::NONE,
-        vec![Event::PointerMoved(at), button(at, true)],
-    );
-    frame(&mut h, Modifiers::NONE, vec![Event::PointerMoved(below)]);
-    frame(&mut h, Modifiers::NONE, vec![button(below, false)]);
-    h.run_steps(2);
+    // Control: press and release report both edges.
+    click(&mut h, at);
     assert_eq!(mouse_reports(&tap(&mut h, right)), [true, false], "control");
 
+    // Released over the pane after the palette closed.
     frame(
         &mut h,
         Modifiers::NONE,
@@ -863,20 +890,38 @@ fn a_terminal_drag_keeps_its_release_when_the_palette_opens() {
     );
     h.run_steps(1);
     assert_eq!(mouse_reports(&tap(&mut h, right)), [true]);
-    let cmd = Modifiers::COMMAND;
     frame(&mut h, cmd, vec![key(Key::P, cmd, true, false)]);
     frame(&mut h, cmd, vec![key(Key::P, cmd, false, false)]);
-    frame(&mut h, Modifiers::NONE, vec![Event::PointerMoved(below)]);
     h.run_steps(2);
     assert!(palette_open(&h));
-    frame(&mut h, Modifiers::NONE, vec![button(below, false)]);
+    chord(&mut h, Modifiers::NONE, Key::Escape);
+    h.run_steps(3);
+    assert!(!palette_open(&h));
+    assert!(tap(&mut h, right).is_empty(), "nothing while it was open");
+    frame(&mut h, Modifiers::NONE, vec![button(at, false)]);
     h.run_steps(2);
     assert_eq!(
         mouse_reports(&tap(&mut h, right)),
         [false],
-        "the terminal heard its own release once"
+        "the release over the pane reached its program"
     );
+    assert!(!pointer_down(&mut h));
+
+    // Released under the open palette: off the pane, so unheard.
+    frame(
+        &mut h,
+        Modifiers::NONE,
+        vec![Event::PointerMoved(at), button(at, true)],
+    );
+    h.run_steps(1);
+    assert_eq!(mouse_reports(&tap(&mut h, right)), [true]);
+    frame(&mut h, cmd, vec![key(Key::P, cmd, true, false)]);
+    frame(&mut h, cmd, vec![key(Key::P, cmd, false, false)]);
+    h.run_steps(2);
+    frame(&mut h, Modifiers::NONE, vec![button(at, false)]);
+    h.run_steps(2);
     assert!(palette_open(&h), "the release did not touch the palette");
+    assert!(tap(&mut h, right).is_empty(), "unheard under the palette");
     assert!(!pointer_down(&mut h));
 
     chord(&mut h, Modifiers::NONE, Key::Escape);
@@ -995,45 +1040,6 @@ fn a_reported_press_ends_at_its_release_when_mouse_mode_changes_mid_press() {
         mouse_reports(&tap(&mut h, right)),
         [true, false],
         "control: B reported its own click"
-    );
-}
-
-/// Starts without mouse reports; on a line from its input asks for them
-/// (printing ON).
-const MOUSE_LATER: &str =
-    "printf 'READY\\n'; read a; printf '\\033[?1000hON\\n'; exec cat >/dev/null";
-
-/// V3 C.3, the inverse transition: a selection begun before the program
-/// asked for mouse reports ends at its release without a report the
-/// program never had a press for. The next click reports both edges.
-#[test]
-#[ignore = "requires-pty"]
-fn a_selection_ends_cleanly_when_mouse_reporting_starts_mid_press() {
-    let (mut h, left, _right) = two_terminals(MOUSE_LATER);
-    let a = center(&mut h, left);
-    frame(
-        &mut h,
-        Modifiers::NONE,
-        vec![Event::PointerMoved(a), button(a, true)],
-    );
-    h.run_steps(1);
-    assert!(
-        tap(&mut h, left).is_empty(),
-        "a selection press reports nothing"
-    );
-    answer_and_wait(&mut h, left, "ON");
-    frame(&mut h, Modifiers::NONE, vec![button(a, false)]);
-    h.run_steps(2);
-    assert!(
-        tap(&mut h, left).is_empty(),
-        "the selection's release sent no report"
-    );
-
-    click(&mut h, a);
-    assert_eq!(
-        mouse_reports(&tap(&mut h, left)),
-        [true, false],
-        "control: a fresh click reports press and release"
     );
 }
 

@@ -90,9 +90,6 @@ impl SearchModeState {
 #[derive(Clone)]
 pub struct TerminalViewState {
     is_dragged: bool,
-    /// A left press was reported to a mouse-reporting program and not yet
-    /// released: the program must hear the release wherever it happens.
-    report_held: bool,
     scroll_pixels: f32,
     current_mouse_position_on_grid: TerminalGridPoint,
     last_cursor_toggle: Instant,
@@ -110,7 +107,6 @@ impl Default for TerminalViewState {
     fn default() -> Self {
         Self {
             is_dragged: false,
-            report_held: false,
             scroll_pixels: 0.0,
             current_mouse_position_on_grid: TerminalGridPoint::default(),
             last_cursor_toggle: Instant::now(),
@@ -312,10 +308,7 @@ impl<'a> TerminalView<'a> {
 
         // Process mouse wheel for any pane the cursor is over, regardless of focus.
         // All other input (keyboard, pointer clicks/moves) still requires focus.
-        // A press this terminal took keeps its moves and release, even under
-        // a modal that opened mid-gesture.
-        let gesture_held = state.is_dragged || state.report_held;
-        if !has_focus && !has_pointer && !gesture_held {
+        if !has_focus && !has_pointer {
             return self;
         }
 
@@ -606,11 +599,9 @@ impl<'a> TerminalView<'a> {
                     modifiers,
                     pos,
                     ..
-                } if has_pointer
-                    || (!pressed && (state.is_dragged || state.report_held)) =>
-                {
+                } if has_pointer || (!pressed && state.is_dragged) => {
                     // Allow button release to reach the pane even when the
-                    // pointer is outside, so the held gesture ends.
+                    // pointer is outside, so is_dragged gets cleared.
                     input_actions.push(process_button_click(
                         state,
                         layout,
@@ -1899,36 +1890,17 @@ fn process_left_button(
     pressed: bool,
 ) -> InputAction {
     let terminal_mode = backend.last_content().terminal_mode;
-    let reporting = terminal_mode.intersects(TermMode::MOUSE_MODE);
-    let report = |pressed| {
+    if terminal_mode.intersects(TermMode::MOUSE_MODE) {
         InputAction::BackendCall(BackendCommand::MouseReport(
             MouseButton::LeftButton,
             *modifiers,
             state.current_mouse_position_on_grid,
             pressed,
         ))
-    };
-    if pressed {
-        // The press decides what the gesture is: a report to the program,
-        // or a selection of the terminal's own.
-        if reporting {
-            state.report_held = true;
-            return report(true);
-        }
-        return process_left_button_pressed(state, layout, padding, position);
-    }
-    // The release ends the gesture its press began, whatever the mode is
-    // now: the program may have turned reporting on or off in between.
-    if std::mem::take(&mut state.report_held) {
-        state.is_dragged = false;
-        return if reporting {
-            report(false)
-        } else {
-            InputAction::Ignore
-        };
-    }
-    if state.is_dragged || !reporting {
-        return process_left_button_released(
+    } else if pressed {
+        process_left_button_pressed(state, layout, padding, position)
+    } else {
+        process_left_button_released(
             state,
             layout,
             backend,
@@ -1936,10 +1908,8 @@ fn process_left_button(
             padding,
             position,
             modifiers,
-        );
+        )
     }
-    // A release of a press this terminal never took.
-    InputAction::Ignore
 }
 
 fn process_left_button_pressed(
