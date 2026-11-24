@@ -1022,7 +1022,7 @@ impl TextDialog {
                         buffer: buffer.to_string(),
                         session: crate::ui::text_field::OpenSession::new(),
                     },
-                    crate::app::OverlayTarget::ContextRoot(0),
+                    crate::app::OverlayTarget::ContextRoot(app.router.active().context_id),
                 ));
             }
         });

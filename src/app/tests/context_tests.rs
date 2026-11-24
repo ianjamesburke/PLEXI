@@ -2869,13 +2869,16 @@ fn set_context_root_ipc_targets_caller_context() {
     });
     let req: crate::protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
-    h.inject_ipc(req);
+    h.inject_from_pane(pane_id, req.clone());
+    h.app.drain_pane_cmd_channel();
+    super::root_permit_tests::approve_root(&format!("pane:{pane_id}"), other_id);
+    h.inject_from_pane(pane_id, req);
     h.app.drain_pane_cmd_channel();
 
     let other_idx = h.app.router.position(|c| c.context_id == other_id).unwrap();
     assert_eq!(
-        Some(h.app.router.get(other_idx).root.as_path()),
-        Some(tmp.path()),
+        h.app.router.get(other_idx).root,
+        tmp.path().canonicalize().unwrap(),
         "root must land on the caller's context"
     );
     let active_idx = h

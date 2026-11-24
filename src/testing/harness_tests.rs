@@ -4073,7 +4073,7 @@ fn text_input_overlay_focus_wins_after_central_panel_steal() {
             buffer: String::new(),
             session: crate::ui::text_field::OpenSession::new(),
         },
-        OverlayTarget::ContextRoot(0),
+        OverlayTarget::ContextRoot(h.app.router.active().context_id),
     ));
     h.app.push_focus_layer(FocusKind::TextInput);
     h.run_frames(1);

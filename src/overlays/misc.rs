@@ -1,4 +1,32 @@
 use super::*;
+use crate::broker::permit::ContextRootProof;
+
+/// Shown in the root editor's title when socket input shared a frame with Enter.
+const SYNTHETIC_NOTE: &str = ": not applied, press Enter again";
+
+pub(crate) struct WindowChosenRoot(());
+
+/// The proof for a root a person chose in the Plexi window: typed or picked in
+/// the root editor, or taken from the focused view by their own keypress or
+/// click. The caller must have checked that the frame carried no synthetic
+/// input; this proves which UI handled the value, not that a human did
+/// (human-input evidence is stint 1283).
+pub(crate) fn window_chosen_root() -> ContextRootProof {
+    ContextRootProof::HostUi(WindowChosenRoot(()))
+}
+
+#[cfg(test)]
+impl PlexiApp {
+    /// Set up a fixture through the same boundary as a window-chosen root.
+    pub(crate) fn set_context_root(&mut self, root: std::path::PathBuf, id: Option<u64>) {
+        self.commit_context_root(
+            root,
+            id.unwrap_or(self.router.active().context_id),
+            window_chosen_root(),
+        )
+        .unwrap();
+    }
+}
 
 pub(super) fn section_label(ui: &mut egui::Ui, title: &str, colors: &Colors) {
     ui.label(
@@ -567,6 +595,20 @@ impl PlexiApp {
             return;
         }
 
+        // Socket-injected input in this frame cannot commit a root. Refuse
+        // before taking the draft, so a person's typed path survives it.
+        if commit && self.synthetic_input_frame {
+            if let Some((overlay, OverlayTarget::ContextRoot(id))) = self.text_overlay.as_mut() {
+                log::info!(
+                    "TextInputOverlay: root change for context {id} refused: synthetic input"
+                );
+                if !overlay.label.ends_with(SYNTHETIC_NOTE) {
+                    overlay.label.push_str(SYNTHETIC_NOTE);
+                }
+                return;
+            }
+        }
+
         if commit {
             // Take overlay state for dispatch.
             let (overlay, target) = match self.text_overlay.take() {
@@ -577,15 +619,15 @@ impl PlexiApp {
             let raw = overlay.buffer.trim().to_string();
 
             match target {
-                OverlayTarget::ContextRoot(idx) => {
-                    if idx >= self.router.len() {
-                        log::warn!("TextInputOverlay: context idx={idx} no longer exists");
+                OverlayTarget::ContextRoot(id) => {
+                    let Some(current) = self.context_root_for(id) else {
+                        log::info!("TextInputOverlay: context {id} no longer exists");
                         return;
-                    }
+                    };
                     if raw.is_empty() {
                         // A context is always anchored — an empty commit leaves
                         // the root unchanged rather than un-rooting the context.
-                        log::info!("TextInputOverlay: empty root input idx={idx} — root unchanged");
+                        log::info!("TextInputOverlay: empty root input for context {id}");
                     } else {
                         // Tilde expansion.
                         let expanded = if let Some(rest) = raw.strip_prefix("~/") {
@@ -604,19 +646,21 @@ impl PlexiApp {
                         // Skip resolution if the raw input started with ~ (failed
                         // tilde expansion should not be treated as relative).
                         let resolved = if expanded.is_relative() && !raw.starts_with('~') {
-                            self.router.get(idx).root.join(&expanded)
+                            current.join(&expanded)
                         } else {
                             expanded
                         };
 
                         log::info!(
-                            "TextInputOverlay: set context root idx={idx} path={}",
+                            "TextInputOverlay: set context root id={id} path={}",
                             resolved.display()
                         );
-                        let ctx_id = self.router.get(idx).context_id;
-                        self.set_context_root(resolved, Some(ctx_id));
+                        if let Err(error) =
+                            self.commit_context_root(resolved, id, window_chosen_root())
+                        {
+                            log::info!("TextInputOverlay: root change refused: {error}");
+                        }
                     }
-                    self.mark_workspace_dirty();
                 }
             }
         }

@@ -94,6 +94,14 @@ impl<'de> Deserialize<'de> for ContextName {
     }
 }
 
+/// The root a focused pane or view offers, captured when the action is
+/// taken. `scope` is the supplying terminal's incarnation; a view has none.
+pub(crate) struct PaneCwd {
+    pub(crate) target_context_id: u64,
+    pub(crate) scope: Option<crate::host::plugin_timeline::AdmittedScope>,
+    pub(crate) cwd: PathBuf,
+}
+
 pub(crate) enum WindowMenuAction {
     Rename,
     EditDescription,
@@ -102,9 +110,9 @@ pub(crate) enum WindowMenuAction {
     MoveDown,
     MoveToBottom,
     Delete,
-    SetRoot(PathBuf),
+    SetRoot(PaneCwd),
     /// Open the text-input overlay to set the root interactively.
-    OpenRootOverlay,
+    OpenRootOverlay(u64),
     Park,
 }
 
@@ -646,13 +654,35 @@ impl Window {
         }
     }
 
-    pub(crate) fn get_focused_pane_cwd(&self, tile_id: TileId) -> Option<PathBuf> {
+    fn visible_pane_in(&self, tile_id: TileId) -> Option<&Pane> {
         let pane_tile = self.find_first_pane_in(tile_id)?;
         let pane_id = match self.tree.tiles.get(pane_tile)? {
             Tile::Pane(id) => *id,
             _ => return None,
         };
-        let pane = self.panes.get(&pane_id)?;
+        self.panes.get(&pane_id)
+    }
+
+    pub(crate) fn focused_root_source(&self, target_context_id: u64) -> Option<PaneCwd> {
+        let pane = self.visible_pane_in(self.focused_pane?)?;
+        let (scope, cwd) = match pane.as_terminal() {
+            Some(terminal) => (
+                terminal
+                    .authority()
+                    .map(crate::host::plugin_timeline::AdmittedScope::of),
+                shell::get_pid_cwd_fresh(terminal.backend.child_pid())?,
+            ),
+            None => (None, pane.as_view()?.workspace_root.clone()),
+        };
+        Some(PaneCwd {
+            target_context_id,
+            scope,
+            cwd,
+        })
+    }
+
+    pub(crate) fn get_focused_pane_cwd(&self, tile_id: TileId) -> Option<PathBuf> {
+        let pane = self.visible_pane_in(tile_id)?;
         if let Some(terminal) = pane.as_terminal() {
             shell::get_pid_cwd(terminal.backend.child_pid())
         } else {

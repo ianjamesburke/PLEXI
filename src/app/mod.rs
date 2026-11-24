@@ -138,8 +138,8 @@ pub(crate) struct QuickNoteCtx {
 /// What a `TextInputOverlay` commit should do.
 #[derive(Clone, Debug)]
 pub(crate) enum OverlayTarget {
-    /// Set (or clear) the root directory on the context at `idx`.
-    ContextRoot(usize),
+    /// Set the root directory of the context with this stable ID.
+    ContextRoot(u64),
 }
 
 /// Shared text-input overlay state. One instance per open modal.
@@ -4959,14 +4959,11 @@ impl PlexiApp {
                 self.push_pane_to_subcontext(None, None);
             }
             Action::SetContextRootFromCwd => {
-                let active = self.active_window;
-                if let Some(tile_id) = self.windows[active].focused_pane {
-                    if let Some(cwd) = self.windows[active].get_focused_pane_cwd(tile_id) {
-                        log::info!("SetContextRootFromCwd: setting root to {}", cwd.display());
-                        self.set_context_root(cwd, None);
-                    } else {
-                        log::warn!("SetContextRootFromCwd: no CWD available for focused pane");
-                    }
+                let window = &self.windows[self.active_window];
+                if let Some(source) = window.focused_root_source(window.context_id) {
+                    self.set_root_from_pane(source);
+                } else {
+                    log::info!("SetContextRootFromCwd: no authorized terminal cwd");
                 }
             }
             Action::ParkContext => {

@@ -30,6 +30,41 @@ pub(crate) trait Operation {
 /// An operation a principal with no pane incarnation may also hold.
 pub(crate) trait UnboundOperation: Operation {}
 
+pub(crate) enum SetContextRoot {}
+
+impl Operation for SetContextRoot {
+    const NAME: &'static str = "context.set_root";
+}
+
+impl UnboundOperation for SetContextRoot {}
+
+impl SetContextRoot {
+    pub(crate) fn target(
+        id: u64,
+        root: &std::path::Path,
+    ) -> Result<(std::path::PathBuf, String), String> {
+        let root = root
+            .canonicalize()
+            .map_err(|e| format!("context root {}: {e}", root.display()))?;
+        if !root.is_dir() {
+            return Err(format!(
+                "context root {} is not a directory",
+                root.display()
+            ));
+        }
+        let path = root.to_str().ok_or("context root is not UTF-8")?;
+        let target = format!("{id}:{path}");
+        Ok((root, target))
+    }
+}
+
+pub(crate) enum ContextRootProof {
+    Permitted(Permit<SetContextRoot>),
+    /// The value was chosen in the window's root editor or browse picker.
+    /// Evidence distinguishing human from synthetic input belongs to stint 1283.
+    HostUi(crate::overlays::misc::WindowChosenRoot),
+}
+
 /// Write a secret value into a caller's reply.
 pub(crate) enum SecretRelease {}
 
@@ -114,7 +149,7 @@ pub(crate) struct Permit<Op> {
     _op: PhantomData<fn() -> Op>,
 }
 
-impl<Op> Clone for Permit<Op> {
+impl Clone for Permit<DeliverEvents> {
     fn clone(&self) -> Self {
         Self {
             subject: self.subject.clone(),

@@ -5,6 +5,7 @@ mod navigation_tests;
 mod notification_tests;
 mod pane_invariant_tests;
 mod pane_lifecycle_consumers;
+mod root_permit_tests;
 mod shortcut_tests;
 
 mod cli_parity_tests;

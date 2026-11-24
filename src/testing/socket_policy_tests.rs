@@ -1490,7 +1490,7 @@ fn needs_you_show_and_reconcile_are_scoped_to_the_asker() {
 /// another context, an outside process names none, and nothing moves before
 /// an approval.
 #[test]
-fn set_context_root_is_the_callers_own_context_and_admitted() {
+fn a_once_set_root_is_spent_by_one_change() {
     let mut h = HostHarness::new();
     let pane = h.add_focused_terminal();
     let peer = pane_witness(&h, pane);
@@ -1525,11 +1525,23 @@ fn set_context_root_is_the_callers_own_context_and_admitted() {
     monitor
         .approve_pending(&pending, crate::broker::gate::ApprovalChoice::Once)
         .unwrap();
-    let applied = send(&mut h, set(None), Some(peer));
+    let applied = send(&mut h, set(None), Some(peer.clone()));
     assert_eq!(applied["context_id"], context, "{applied}");
     assert_eq!(
         h.app.context_root_for(context).map(|p| crate::platform::path::canonical_or_self(&p)),
         Some(crate::platform::path::canonical_or_self(target.path()))
+    );
+    h.app.set_context_root(before.unwrap(), Some(context));
+    let replay = send(&mut h, set(None), Some(peer));
+    assert!(
+        replay["error"].as_str().unwrap().contains("needs approval"),
+        "{replay}"
+    );
+    assert!(
+        monitor.store().records().iter().any(|row| {
+            row.target_id == "context.set_root" && row.consumed && row.bound_operation_id.is_some()
+        }),
+        "one broker-claimed use"
     );
 }
 

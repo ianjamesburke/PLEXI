@@ -2,6 +2,7 @@
 //! and on-disk workspace save.
 
 use crate::app::PlexiApp;
+use crate::broker::permit::{ContextRootProof, SetContextRoot};
 use crate::host::context::{ContextName, Window};
 use crate::host::pane::TerminalPane;
 use crate::host::shell;
@@ -1936,27 +1937,39 @@ impl PlexiApp {
         Ok(id)
     }
 
-    /// Set the `root` of a context. `context_id` targets a specific context
-    /// (the caller's PLEXI_CONTEXT_ID over IPC); `None` means the active one.
+    /// Set the root of the context `context_id`, once `proof` holds. A broker
+    /// permit is committed under the admission lock before anything changes.
     ///
     /// This is the single invariant boundary for explicit root changes: every
     /// caller (Cmd+Shift+I, sidebar Set Root, the context-root text overlay,
     /// the `SetContextRoot` IPC command) routes through here, so an `Auto`
     /// name is reconciled to the new root's basename exactly once, in one
     /// place, rather than in each caller.
-    pub(crate) fn set_context_root(&mut self, root: PathBuf, context_id: Option<u64>) {
-        let idx = match self.resolve_context_idx(context_id, "set_context_root") {
-            Ok(idx) => idx,
-            Err(_) => return,
-        };
-        auto_init_workspace(&root);
-        let context_id = self.router.get(idx).context_id;
+    pub(crate) fn commit_context_root(
+        &mut self,
+        root: PathBuf,
+        context_id: u64,
+        proof: ContextRootProof,
+    ) -> Result<(), String> {
+        let idx = self.resolve_context_idx(Some(context_id), "set_context_root")?;
         let old_root = self.router.get(idx).root.clone();
         // One host-authorized scope change, published through each live
         // terminal's handle: both of its credentials observe the new root at
         // the same revision, and anything admitted under the old one is
         // rechecked before it takes effect (stint 1632).
-        let scoped_root = crate::platform::path::canonical_or_self(&root);
+        let (root, scoped_root, guard) = match &proof {
+            ContextRootProof::Permitted(permit) => {
+                let (canonical, target) = SetContextRoot::target(context_id, &root)?;
+                let guard = permit.commit(&target, &target).inspect_err(|error| {
+                    log::info!("set_context_root: refused context {context_id}: {error}");
+                })?;
+                (canonical.clone(), canonical, Some(guard))
+            }
+            ContextRootProof::HostUi(_) => {
+                let canonical = crate::platform::path::canonical_or_self(&root);
+                (root, canonical, None)
+            }
+        };
         let revision = self.context_scope_revisions.entry(context_id).or_default();
         *revision += 1;
         log::info!("set_context_root: context {context_id} scope revision {revision}");
@@ -1972,6 +1985,8 @@ impl PlexiApp {
             }
         }
         self.router.get_mut(idx).root = root.clone();
+        drop(guard);
+        auto_init_workspace(&root);
 
         let is_auto = matches!(self.router.get(idx).name, ContextName::Auto(_));
         let name_changed = if is_auto {
@@ -1999,6 +2014,7 @@ impl PlexiApp {
         if idx == self.router.active_idx() {
             self.apply_context_transition_effects();
         }
+        Ok(())
     }
 
     /// Single choke point for all context-transition side effects.
