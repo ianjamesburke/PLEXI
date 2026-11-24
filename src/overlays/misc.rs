@@ -1,6 +1,9 @@
 use super::*;
 use crate::broker::permit::ContextRootProof;
 
+/// Shown in the root editor's title when socket input shared a frame with Enter.
+const SYNTHETIC_NOTE: &str = ": not applied, press Enter again";
+
 pub(crate) struct WindowChosenRoot(());
 
 /// The proof for a root a person chose in the Plexi window: typed or picked in
@@ -592,6 +595,20 @@ impl PlexiApp {
             return;
         }
 
+        // Socket-injected input in this frame cannot commit a root. Refuse
+        // before taking the draft, so a person's typed path survives it.
+        if commit && self.synthetic_input_frame {
+            if let Some((overlay, OverlayTarget::ContextRoot(id))) = self.text_overlay.as_mut() {
+                log::info!(
+                    "TextInputOverlay: root change for context {id} refused: synthetic input"
+                );
+                if !overlay.label.ends_with(SYNTHETIC_NOTE) {
+                    overlay.label.push_str(SYNTHETIC_NOTE);
+                }
+                return;
+            }
+        }
+
         if commit {
             // Take overlay state for dispatch.
             let (overlay, target) = match self.text_overlay.take() {
@@ -638,11 +655,7 @@ impl PlexiApp {
                             "TextInputOverlay: set context root id={id} path={}",
                             resolved.display()
                         );
-                        if self.synthetic_input_frame {
-                            log::info!(
-                                "TextInputOverlay: root change for context {id} refused: synthetic input"
-                            );
-                        } else if let Err(error) =
+                        if let Err(error) =
                             self.commit_context_root(resolved, id, window_chosen_root())
                         {
                             log::info!("TextInputOverlay: root change refused: {error}");

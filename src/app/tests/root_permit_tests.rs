@@ -174,7 +174,14 @@ fn synthetic_input_cannot_commit_the_root_editor() {
     open(&mut h);
     enter(&mut h, Some(pane));
     assert_eq!(h.app.router.active().root, old.path());
-    open(&mut h);
+    let (overlay, _) = h.app.text_overlay.as_ref().expect("the editor stays open");
+    assert_eq!(overlay.buffer, target.path().display().to_string());
+    assert!(
+        overlay.label.ends_with("press Enter again"),
+        "{}",
+        overlay.label
+    );
+    // The person's own Enter commits the original draft, without retyping.
     enter(&mut h, None);
     assert_eq!(h.app.router.active().root, target.path());
 }
