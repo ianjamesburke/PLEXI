@@ -4,7 +4,7 @@ suite = false
 size = [1280.0, 800.0]
 
 [[steps]]
-open = { kind = "process", path = "plugins/chess", as = "chess" }
+open = { kind = "bundled", id = "chess", as = "chess" }
 
 [[steps]]
 open = { kind = "builtin", id = "assistant", as = "assistant" }
@@ -34,14 +34,9 @@ shot = "agents-chess-approval-pending.png"
 [[steps]]
 chess_approval = { phase = "arm", chess = "chess", assistant = "assistant" }
 
+# Right wraps from the default Deny choice to Allow once.
 [[steps]]
-key = { target = "assistant", value = "left" }
-
-[[steps]]
-key = { target = "assistant", value = "left" }
-
-[[steps]]
-key = { target = "assistant", value = "left" }
+key = { target = "assistant", value = "right" }
 
 [[steps]]
 key = { target = "assistant", value = "enter" }
@@ -65,14 +60,9 @@ chess_approval = { phase = "human", chess = "chess", assistant = "assistant", mo
 [[steps]]
 chess_approval = { phase = "arm", chess = "chess", assistant = "assistant" }
 
+# Right wraps from the default Deny choice to Allow once.
 [[steps]]
-key = { target = "assistant", value = "left" }
-
-[[steps]]
-key = { target = "assistant", value = "left" }
-
-[[steps]]
-key = { target = "assistant", value = "left" }
+key = { target = "assistant", value = "right" }
 
 [[steps]]
 key = { target = "assistant", value = "enter" }

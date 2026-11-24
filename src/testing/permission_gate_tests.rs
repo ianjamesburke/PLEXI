@@ -1,6 +1,6 @@
 //! AT-P1 acceptance coverage for the single permission monitor.
 //!
-//! Chess cases load `plugins/chess` and drive the production assistant turn,
+//! Chess cases open bundled chess by id and drive the production assistant turn,
 //! host MCP parser, and socket identity handler. They do not call
 //! `chess_domain.play` directly.
 
@@ -129,13 +129,14 @@ fn socket_call(
     ancestry: &[u32],
     input: serde_json::Value,
 ) -> serde_json::Value {
-    socket_call_pane(h, credential, ancestry, None, input)
+    socket_call_provider(h, credential, ancestry, "chess", None, input)
 }
 
-fn socket_call_pane(
+fn socket_call_provider(
     h: &mut HostHarness,
     credential: Option<&str>,
     ancestry: &[u32],
+    plugin_id: &str,
     target_pane: Option<u64>,
     input: serde_json::Value,
 ) -> serde_json::Value {
@@ -144,7 +145,7 @@ fn socket_call_pane(
         .join(format!("socket-{}.json", uuid::Uuid::new_v4()));
     let request = HostRequest::CallPluginTool {
         wait_approved: false,
-        plugin_id: "chess".to_string(),
+        plugin_id: plugin_id.to_string(),
         tool: "chess.play".to_string(),
         input_json: input.to_string(),
         call_credential: credential.map(str::to_string),
@@ -279,7 +280,7 @@ fn permission_gate_real_chess_all_ingresses() {
 fn run_ingress(ingress: Ingress) {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_view("plugins/chess", &[]);
+    let pane = h.launch_bundled_view("chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     let workspace = h.workspace_root();
     let assistant = h.add_assistant_pane();
@@ -943,7 +944,7 @@ fn all_dispatchers_require_monitor() {
 fn plugin_call_rejects_forged_or_missing_identity() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let _chess = h.launch_repo_view("plugins/chess", &[]);
+    let _chess = h.launch_bundled_view("chess", &[]);
     let start = event_len();
     let input = play(0, "forged-op", "e2e4", "game-1");
 
@@ -995,7 +996,7 @@ fn plugin_call_rejects_forged_or_missing_identity() {
 fn chess_receipt_survives_lost_reply() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let _chess = h.launch_repo_view("plugins/chess", &[]);
+    let _chess = h.launch_bundled_view("chess", &[]);
     let mon = monitor();
     let (_caller, credential, caller_pid) = terminal_caller(&mut h);
     let start = event_len();
@@ -1053,7 +1054,7 @@ fn chess_receipt_survives_lost_reply() {
 fn plugin_call_and_mcp_are_gated_and_audited() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let _chess = h.launch_repo_view("plugins/chess", &[]);
+    let _chess = h.launch_bundled_view("chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     let workspace = h.workspace_root();
     let mon = monitor();
@@ -1100,8 +1101,8 @@ fn plugin_call_and_mcp_are_gated_and_audited() {
 fn second_chess_pane_routes_by_instance() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let first = h.launch_repo_view("plugins/chess", &[]);
-    let again = h.launch_repo_view("plugins/chess", &[]);
+    let first = h.launch_bundled_view("chess", &[]);
+    let again = h.launch_bundled_view("chess", &[]);
     assert_eq!(again, first, "view open chess focuses the open board");
     assert_eq!(chess_panes(&h).len(), 1, "one chess pane per context");
 
@@ -1114,13 +1115,6 @@ fn second_chess_pane_routes_by_instance() {
         .expect("pane id");
     h.wait_for_first_render(second);
     h.wait_for_exposed_tools(second);
-    pump_until(&mut h, |harness| {
-        chess_play_names(harness)
-            .iter()
-            .filter(|name| name.contains(':'))
-            .count()
-            >= 2
-    });
     let panes = chess_panes(&h);
     assert_eq!(
         panes.len(),
@@ -1132,57 +1126,53 @@ fn second_chess_pane_routes_by_instance() {
     let mon = monitor();
     let (caller, credential, caller_pid) = terminal_caller(&mut h);
     let start = event_len();
-    let input = play(0, "route-e4", "e2e4", "game-1");
-    let ambiguous = socket_call(&mut h, Some(&credential), &[caller_pid], input.clone());
-    assert!(
-        ambiguous.to_string().contains("ambiguous_instance"),
-        "bare chess.play must not guess a pane: {ambiguous}"
-    );
-    assert!(
-        !ambiguous.to_string().contains("tool_not_found"),
-        "{ambiguous}"
-    );
-    assert_eq!(commits_for(start, "route-e4"), 0);
-    assert!(gate_log_contains("ambiguous"), "ambiguous route is logged");
-
-    let asked = socket_call_pane(
-        &mut h,
-        Some(&credential),
-        &[caller_pid],
-        Some(first),
-        input.clone(),
-
-    );
-    assert_eq!(asked["error_code"], "permission_required", "{asked}");
-    assert!(!asked.to_string().contains("holds no seat"), "{asked}");
-    mon.approve_pending(
-        asked["pending_request_id"].as_str().unwrap(),
-        ApprovalChoice::Once,
-    )
-    .unwrap();
-    let committed = socket_call_pane(
-        &mut h,
-        Some(&credential),
-        &[caller_pid],
-        Some(first),
-        input,
-
-    );
-    assert_eq!(committed["output"]["revision_after"], 1, "{committed}");
-    assert_eq!(committed["output"]["actor"], format!("pane:{caller}"));
-    expect_commits(&mut h, start, "route-e4", 1);
+    let dev = format!("dev:chess:{second}");
+    // The bare bundled name selects the first board. The dev board is reachable
+    // through its own pane-qualified identity, including while both are open.
+    for (provider, target, expected_pane, op) in [
+        ("chess", None, first, "route-bundled-e4"),
+        (dev.as_str(), Some(second), second, "route-dev-e4"),
+    ] {
+        let input = play(0, op, "e2e4", "game-1");
+        let call = |h: &mut HostHarness| {
+            socket_call_provider(
+                h,
+                Some(&credential),
+                &[caller_pid],
+                provider,
+                target,
+                input.clone(),
+            )
+        };
+        let asked = call(&mut h);
+        assert_eq!(asked["error_code"], "permission_required", "{asked}");
+        let pending = asked["pending_request_id"].as_str().unwrap();
+        assert_eq!(
+            mon.show_pending(pending).unwrap().instance_id,
+            Some(expected_pane)
+        );
+        assert_eq!(commits_for(start, op), 0);
+        mon.approve_pending(pending, ApprovalChoice::Once).unwrap();
+        let reply = call(&mut h);
+        if expected_pane == second {
+            // The dev board is served (never tool_not_found or ambiguous) but
+            // chess refuses it: the host stamps the dev package, not "chess".
+            // Which refusal fires first depends on the board's loaded game, so
+            // assert the property: an error answer and no committed move.
+            assert_eq!(reply["ok"], false, "{reply}");
+            let error = reply["error"].as_str().unwrap();
+            assert!(
+                !error.contains("tool_not_found") && !error.contains("ambiguous"),
+                "{reply}"
+            );
+            expect_commits(&mut h, start, op, 0);
+        } else {
+            assert_eq!(reply["output"]["revision_after"], 1, "{reply}");
+            assert_eq!(reply["output"]["actor"], format!("pane:{caller}"));
+            expect_commits(&mut h, start, op, 1);
+        }
+    }
     log::info!("permission_gate: second chess pane addressed by instance");
-}
-
-fn chess_play_names(h: &HostHarness) -> Vec<String> {
-    let ctx = h.app.windows[h.app.active_window].context_id;
-    let scope = DispatchScope::new(0, "probe", h.workspace_root(), ctx);
-    ToolDispatcher::namespaced_for(scope, monitor())
-        .all_tools()
-        .into_iter()
-        .map(|tool| tool.name)
-        .filter(|name| name.contains("chess.play"))
-        .collect()
 }
 
 fn chess_panes(h: &HostHarness) -> Vec<u64> {
@@ -1202,7 +1192,7 @@ fn chess_panes(h: &HostHarness) -> Vec<u64> {
 fn gate_denial_reaches_the_host_log() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_view("plugins/chess", &[]);
+    let pane = h.launch_bundled_view("chess", &[]);
     let start = event_len();
     // A process outside every pane holds no pane identity to call with.
     let denied = socket_call(
@@ -1353,7 +1343,7 @@ fn agents_chess_approval_scene() {
 fn list_plugin_tools_snapshots_live_registry_for_context() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_view("plugins/chess", &[]);
+    let pane = h.launch_bundled_view("chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     pump_until(&mut h, |_| {
         crate::plexi_ai::tool_dispatch::pane_has_registered_tools(pane)
@@ -2155,21 +2145,8 @@ fn synthetic_permissions_view_clicks_only_file_needs_you_and_cannot_approve_it()
     let pending = admit_probe(&mon, &workspace, "call-pending", "probe.pending");
     mon.set_now_for_test(now);
 
-    let root = tempfile::tempdir().unwrap();
-    let dir = crate::cli::install_host::test_support::extract_bundled("permissions", root.path());
-    h.app.trust_plugin_path_for_test(&dir.to_string_lossy());
-    let before = h.state().open_panes;
-    let focused = h
-        .app
-        .launch_view_by_path_with_layout(&dir.to_string_lossy(), None, Some(workspace.clone()), &[])
+    let pane = super::open_bundled_view(&mut h.app, "permissions", &[], workspace.clone())
         .expect("launch bundled Permissions");
-    let pane = h
-        .state()
-        .open_panes
-        .into_iter()
-        .find(|id| !before.contains(id))
-        .or(focused)
-        .expect("Permissions pane");
     h.wait_for_first_render(pane);
 
     // Launching the app legitimately auto-grants its declared timer capability.
@@ -2620,7 +2597,7 @@ fn a_retired_permission_change_id_cannot_settle_a_repeated_ask() {
 fn launch_plan_credential_of_a_closed_pane_cannot_call_a_plugin() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let _chess = h.launch_repo_view("plugins/chess", &[]);
+    let _chess = h.launch_bundled_view("chess", &[]);
     let (closed, credential, closed_pid) = terminal_caller(&mut h);
     let op = format!("gate-{}-closed", uuid::Uuid::new_v4());
     let live = socket_call(
