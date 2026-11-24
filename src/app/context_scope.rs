@@ -46,7 +46,9 @@ pub(crate) fn caller_scope_error(
     match root {
         Some(root) => check_context_scope(root.to_path_buf(), cwd).err(),
         None if is_pane => {
-            log::warn!("caller_context: pane caller has no resolvable context root; refusing scope");
+            log::warn!(
+                "caller_context: pane caller has no resolvable context root; refusing scope"
+            );
             Some(format!(
                 "permission_denied: host could not resolve this pane's context root for {}",
                 cwd.display()
