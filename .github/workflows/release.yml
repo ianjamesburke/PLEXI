@@ -28,7 +28,10 @@ on:
         default: false
 concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  # A started release always finishes; later pushes wait, and only the newest
+  # waiting run is kept. Cancelling on push starved alpha releases during
+  # merge bursts (four of nine runs on 2026-11-23).
+  cancel-in-progress: false
 jobs:
   next-tag:
     if: ${{ github.event_name == 'push' }}
