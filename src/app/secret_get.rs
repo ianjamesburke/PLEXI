@@ -444,26 +444,25 @@ struct LiveStore<'a> {
 }
 
 impl LiveStore<'_> {
-    fn check_client(&self) -> Result<(), SecretError> {
-        if crate::rpc::ReplyRegistry::connected(self.token) != Some(true) {
+    fn check_client(&self) -> bool {
+        let live = crate::rpc::ReplyRegistry::connected(self.token) == Some(true);
+        if !live {
             log::info!("secret_get: client gone before the store read");
-            return Err(SecretError::Backend(
-                "client disconnected before the store read".into(),
-            ));
         }
-        Ok(())
+        live
     }
 }
 
 impl NonDestructiveStore for LiveStore<'_> {
     fn get(&self, account: &str) -> Option<Zeroizing<String>> {
-        self.check_client().ok()?;
+        if !self.check_client() {
+            return None;
+        }
         self.inner.get(account)
     }
 
     fn get_interactive(&self, account: &str) -> Result<Option<Zeroizing<String>>, SecretError> {
-        self.check_client()?;
-        self.inner.get_interactive(account)
+        self.inner.get_interactive_while(account, &|| self.check_client())
     }
 
     fn add_new(&self, account: &str, value: &str) -> Result<(), SecretError> {

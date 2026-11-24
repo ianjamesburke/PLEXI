@@ -27,6 +27,17 @@ pub trait NonDestructiveStore: Send + Sync {
     fn get_interactive(&self, account: &str) -> Result<Option<Zeroizing<String>>, SecretError> {
         Ok(self.get(account))
     }
+    /// Check the requesting client's liveness immediately before the read.
+    fn get_interactive_while(
+        &self,
+        account: &str,
+        live: &dyn Fn() -> bool,
+    ) -> Result<Option<Zeroizing<String>>, SecretError> {
+        if !live() {
+            return Err(client_gone());
+        }
+        self.get_interactive(account)
+    }
     /// Create-only write: stores `value` **only** if `account` does not
     /// already exist, and returns [`SecretError::AlreadyExists`] if it does.
     /// Never updates — the backend itself refuses the duplicate, so the check
@@ -106,6 +117,10 @@ impl SecretError {
         }
         "backend_error"
     }
+}
+
+pub(crate) fn client_gone() -> SecretError {
+    SecretError::Backend("client disconnected before the store read".into())
 }
 
 /// The step of a macOS Keychain operation that returned a status.
@@ -237,6 +252,19 @@ pub(crate) fn keychain_call_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[cfg(any(test, target_os = "macos"))]
+fn read_while_live<G, T>(
+    acquire: impl FnOnce() -> G,
+    live: &dyn Fn() -> bool,
+    read: impl FnOnce() -> Result<T, SecretError>,
+) -> Result<T, SecretError> {
+    let _guard = acquire();
+    if !live() {
+        return Err(client_gone());
+    }
+    read()
+}
+
+#[cfg(any(test, target_os = "macos"))]
 fn human_secret_label(account: &str) -> String {
     if let Some(rest) = account.strip_prefix("plexi:user:") {
         format!("Plexi Secret — {rest} (global user scope)")
@@ -278,6 +306,16 @@ impl NonDestructiveStore for MacKeychain {
         // SecAccessControl(userPresence). A changed code signature can require
         // an ACL dialog; this admitted read allows it for its duration.
         super::mac_keychain::read(&super::mac_keychain::SecurityFramework, account, true)
+    }
+
+    fn get_interactive_while(
+        &self,
+        account: &str,
+        live: &dyn Fn() -> bool,
+    ) -> Result<Option<Zeroizing<String>>, SecretError> {
+        read_while_live(keychain_call_lock, live, || {
+            super::mac_keychain::read(&super::mac_keychain::SecurityFramework, account, true)
+        })
     }
 
     fn get(&self, account: &str) -> Option<Zeroizing<String>> {
@@ -850,6 +888,43 @@ impl SecretStore for DeleteOnlyStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_rechecks_liveness_after_acquiring_the_lock() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{mpsc, Mutex};
+
+        for stays_live in [false, true] {
+            let lock = Mutex::new(());
+            let guard = lock.lock().unwrap();
+            let live = AtomicBool::new(true);
+            let reads = AtomicUsize::new(0);
+            let (started, waiting) = mpsc::channel();
+
+            let result = std::thread::scope(|scope| {
+                let worker = scope.spawn(|| {
+                    read_while_live(
+                        || {
+                            started.send(()).unwrap();
+                            lock.lock().unwrap()
+                        },
+                        &|| live.load(Ordering::SeqCst),
+                        || {
+                            reads.fetch_add(1, Ordering::SeqCst);
+                            Ok(())
+                        },
+                    )
+                });
+                waiting.recv().unwrap();
+                live.store(stays_live, Ordering::SeqCst);
+                drop(guard);
+                worker.join().unwrap()
+            });
+
+            assert_eq!(result.is_ok(), stays_live, "{result:?}");
+            assert_eq!(reads.load(Ordering::SeqCst), usize::from(stays_live));
+        }
+    }
 
     #[test]
     fn human_secret_label_formats_user_and_workspace_scopes() {
