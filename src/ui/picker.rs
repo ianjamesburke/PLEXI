@@ -409,7 +409,7 @@ pub(crate) fn stops(
         .iter()
         .rev()
         .map(|(id, button)| Slot {
-            id: *id,
+            id,
             width: button.natural_width(ui),
             compact: None,
             required: true,
