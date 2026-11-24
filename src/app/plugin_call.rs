@@ -114,18 +114,19 @@ pub(crate) fn caller_identity(caller_pane_id: Option<u64>, session_actor: Option
     }
 }
 
-/// Whether socket `caller` may read a Needs-you record (stint 1285): one its
-/// own principal filed, or one bound to its own terminal incarnation. A pane
-/// number alone never grants it: a later pane reuses the number.
+/// Whether socket `caller` may read a Needs-you record (stint 1285, 1743): a
+/// pane reads only records bound to its own terminal incarnation, never by
+/// pane number, since a later pane reuses the number. An external caller
+/// reads what its principal filed; an unidentified one reads nothing.
 fn socket_caller_reads(
     caller: &crate::broker::caller::SocketCaller,
     actor: &str,
     pane_incarnation: Option<&str>,
 ) -> bool {
-    caller.principal().is_some_and(|p| p.actor_id() == actor)
-        || caller
-            .pane()
-            .is_some_and(|pane| pane_incarnation == Some(pane.authority.durable_key()))
+    match caller.pane() {
+        Some(pane) => pane_incarnation == Some(pane.authority.durable_key()),
+        None => caller.principal().is_some_and(|p| p.actor_id() == actor),
+    }
 }
 
 /// The terminal incarnation a Needs-you record is bound to, if any.
@@ -689,9 +690,11 @@ impl PlexiApp {
                     .map(ToString::to_string);
                 let record = monitor.get_continuation(id);
                 let foreign = match (origin, &record) {
-                    (RequestOrigin::Socket(_), Some(record)) => {
-                        caller_actor.as_deref() != Some(record.actor.as_str())
-                    }
+                    (RequestOrigin::Socket(caller), Some(record)) => !socket_caller_reads(
+                        caller,
+                        &record.actor,
+                        record.pane_incarnation.as_deref(),
+                    ),
                     _ => false,
                 };
                 if foreign {

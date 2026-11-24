@@ -5478,6 +5478,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reused_pane_number_cannot_read_an_earlier_panes_ask() {
+        use serde_json::{json, Value};
+
+        let mut h = HostHarness::new();
+        PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let pane = h.add_focused_terminal();
+        let other = h.add_focused_terminal();
+        let call = |h: &mut HostHarness, pane, op: &str, payload: &Value| -> Value {
+            let origin = h.origin_from_pane(pane);
+            assert_eq!(origin.class(), "pane", "{origin:?}");
+            let response = crate::rpc::response_file_in(h.profile_dir(), op, "json");
+            if op == "list" {
+                h.app.observe_needs_you(&origin, op, None, None, &response);
+            } else {
+                h.app.handle_needs_you_api(op, payload, &origin, &response);
+            }
+            serde_json::from_slice(&std::fs::read(response).unwrap()).unwrap()
+        };
+
+        let ask = call(
+            &mut h,
+            pane,
+            "ask",
+            &json!({"summary": "Proceed?", "choices": ["yes", "no"]}),
+        );
+        assert_eq!(ask["ok"], true, "{ask}");
+        let id = ask["id"].as_str().unwrap();
+        let by_id = json!({"id": id});
+        let listed = call(&mut h, pane, "list", &json!({}));
+        assert_eq!(listed["items"][0]["id"], id, "{listed}");
+        let shown = call(&mut h, pane, "show", &by_id);
+        assert_eq!(shown["item"]["id"], id, "{shown}");
+        assert_eq!(shown["continuation"]["needs_you_id"], id, "{shown}");
+        assert_eq!(call(&mut h, other, "list", &json!({}))["items"], json!([]));
+        assert_eq!(call(&mut h, other, "show", &by_id)["ok"], false);
+
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane)
+            .unwrap()
+            .terminal_incarnation_mut()
+            .unwrap();
+        let grant = terminal.authority().unwrap().grant().clone();
+        terminal.replace_grant_for_test(grant);
+
+        assert_eq!(call(&mut h, pane, "list", &json!({}))["items"], json!([]));
+        assert_eq!(call(&mut h, pane, "show", &by_id)["ok"], false);
+        let completion = call(&mut h, pane, "complete", &by_id);
+        assert_eq!(completion["ok"], false, "{completion}");
+        assert_eq!(
+            completion["error_code"], "permission_denied",
+            "{completion}"
+        );
+    }
+
     /// An `agent ask` whose question was not filed for the person answers
     /// `ok: false`, not success (Codex 3312).
     #[test]
