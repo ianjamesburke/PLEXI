@@ -1751,20 +1751,24 @@ fn an_explicit_notify_scope_the_host_cannot_resolve_is_refused_not_widened() {
 #[test]
 fn a_pane_shell_without_a_recorded_start_is_still_its_pane() {
     let mut h = HostHarness::new();
-    let pane = h.add_focused_terminal();
-    let shell = h.shell_pid(pane);
-    h.app
-        .windows
-        .iter_mut()
-        .find_map(|w| w.panes.get_mut(&pane))
-        .and_then(|p| p.as_terminal_mut())
-        .unwrap()
-        .forget_shell_start_for_test();
-    let caller = h.app.classify_socket_peer(Some(&PeerWitness::for_live_pids(&[shell])));
-    assert!(
-        matches!(caller, SocketCaller::Pane(ref found) if found.terminal_pane == pane),
-        "{caller:?}"
-    );
+    for late_read_fails in [false, true] {
+        let pane = h.add_focused_terminal();
+        let shell = h.shell_pid(pane);
+        h.app
+            .windows
+            .iter_mut()
+            .find_map(|w| w.panes.get_mut(&pane))
+            .and_then(|p| p.as_terminal_mut())
+            .unwrap()
+            .forget_shell_start_for_test(late_read_fails);
+        // With the late read failing too, the live shell matches by pid, as
+        // on alpha; with it succeeding, by pid and start.
+        let caller = h.app.classify_socket_peer(Some(&PeerWitness::for_live_pids(&[shell])));
+        assert!(
+            matches!(caller, SocketCaller::Pane(ref found) if found.terminal_pane == pane),
+            "late_read_fails={late_read_fails}: {caller:?}"
+        );
+    }
 
     let incomplete = Some(witness(std::process::id(), AncestryEnd::LookupFailed));
     let listed = send(&mut h, serde_json::json!({"type": "list_panes"}), incomplete.clone());

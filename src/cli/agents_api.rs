@@ -32,9 +32,15 @@ pub fn command_view_cancel_cli(run: &str) -> i32 {
         Ok(root) => root,
         Err(code) => return code,
     };
+    command_view_cancel_in(&workspace, run)
+}
+
+/// `plexi agents-dashboard cancel` for `workspace`: the whole entry past
+/// finding the workspace.
+fn command_view_cancel_in(workspace: &std::path::Path, run: &str) -> i32 {
     log::info!("command_view:cli: cancel run={run}");
     send_dashboard(
-        dashboard_frame(&workspace, "cancel", Some(run)),
+        dashboard_frame(workspace, "cancel", Some(run)),
         "agents-dashboard cancel",
     )
 }
@@ -217,8 +223,16 @@ mod tests {
     fn dashboard_cli_frames_are_the_hosts_dashboard_request() {
         let workspace = tempfile::tempdir().unwrap();
         for (op, run) in [("cancel", Some("run_x")), ("list", None)] {
-            let frame = super::dashboard_frame(workspace.path(), op, run);
-            let run_cli = move || super::send_dashboard(frame, "agents-dashboard");
+            let path = workspace.path().to_path_buf();
+            // Cancel goes through its own entry, so a wrong operation built
+            // there fails here (Codex 3290 r4).
+            let run_cli = move || match run {
+                Some(run) => super::command_view_cancel_in(&path, run),
+                None => super::send_dashboard(
+                    super::dashboard_frame(&path, "list", None),
+                    "agents-dashboard",
+                ),
+            };
             let env = socket_env_guard();
             let dir = tempfile::tempdir().unwrap();
             let socket_path = dir.path().join("notify.sock");

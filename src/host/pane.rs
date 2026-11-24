@@ -876,6 +876,9 @@ pub struct TerminalPane {
     /// peer is this pane's process when its ancestor matches the pid and
     /// this start time (stint 1285).
     shell_start: std::sync::OnceLock<crate::platform::process::ProcStart>,
+    /// Test only: the late read of the shell's start time fails too.
+    #[cfg(test)]
+    shell_start_unreadable_for_test: bool,
     /// Latest blocked reason reported by hook or `plexi agent ask`.
     pub last_blocked_reason: Option<crate::protocol::AgentBlockedReason>,
     /// Cached tail preview preserved across Standby / Interrupted restore.
@@ -1143,6 +1146,8 @@ impl TerminalPane {
         Ok(Self {
             _process_group: process_group,
             shell_start: shell_start_cell,
+            #[cfg(test)]
+            shell_start_unreadable_for_test: false,
             id,
             backend,
             exited: false,
@@ -1228,6 +1233,10 @@ impl TerminalPane {
             if self.exited {
                 return None;
             }
+            #[cfg(test)]
+            if self.shell_start_unreadable_for_test {
+                return None;
+            }
             let start = crate::platform::process::process_info(pid)?.start;
             log::info!("terminal_pane: pane_id={} shell start recorded late", self.id);
             Some(*self.shell_start.get_or_init(|| start))
@@ -1249,8 +1258,9 @@ impl TerminalPane {
 
     /// Test only: the start-time read at spawn failed.
     #[cfg(test)]
-    pub(crate) fn forget_shell_start_for_test(&mut self) {
+    pub(crate) fn forget_shell_start_for_test(&mut self, late_read_fails: bool) {
         self.shell_start = std::sync::OnceLock::new();
+        self.shell_start_unreadable_for_test = late_read_fails;
     }
 
     /// Why this pane's authority could not be established, when it could
