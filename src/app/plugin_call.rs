@@ -114,6 +114,25 @@ pub(crate) fn caller_identity(caller_pane_id: Option<u64>, session_actor: Option
     }
 }
 
+/// Whether socket `caller` may read a Needs-you record (stint 1285): one its
+/// own principal filed, or one bound to its own terminal incarnation. A pane
+/// number alone never grants it: a later pane reuses the number.
+fn socket_caller_reads(
+    caller: &crate::broker::caller::SocketCaller,
+    actor: &str,
+    pane_incarnation: Option<&str>,
+) -> bool {
+    caller.principal().is_some_and(|p| p.actor_id() == actor)
+        || caller
+            .pane()
+            .is_some_and(|pane| pane_incarnation == Some(pane.authority.durable_key()))
+}
+
+/// The terminal incarnation a Needs-you record is bound to, if any.
+fn pane_incarnation(item: &crate::broker::gate::NeedsYouRecord) -> Option<&str> {
+    item.details.as_ref()?.pane_incarnation.as_deref()
+}
+
 impl PlexiApp {
     pub(crate) fn observe_permissions(
         &mut self,
@@ -351,22 +370,13 @@ impl PlexiApp {
             "list" => {
                 // A socket caller sees the items it filed; host surfaces see
                 // them all (stint 1285).
-                let own = origin.socket_caller().map(|caller| {
-                    (
-                        caller.principal().map(|p| p.actor_id().to_string()),
-                        caller.pane().map(|pane| pane.terminal_pane),
-                    )
-                });
                 let items: Vec<_> = monitor
                     .list_needs_you()
                     .into_iter()
-                    .filter(|item| match &own {
-                        None => true,
-                        Some((actor, pane)) => {
-                            actor.as_deref() == Some(item.actor.as_str())
-                                || (pane.is_some()
-                                    && item.details.as_ref().and_then(|d| d.pane_id) == *pane)
-                        }
+                    .filter(|item| {
+                        origin.socket_caller().is_none_or(|caller| {
+                            socket_caller_reads(caller, &item.actor, pane_incarnation(item))
+                        })
                     })
                     .collect();
                 log::info!("needs_you: host list count={}", items.len());
@@ -437,15 +447,12 @@ impl PlexiApp {
             RequestOrigin::PluginGuest(plugin) => Some(plugin.plugin_id.clone()),
             RequestOrigin::HostUi | RequestOrigin::HostSystem | RequestOrigin::SpawnQueue => None,
         };
-        // What a socket caller may read back: what its own principal filed,
-        // or what was filed for its own pane. Payload filters only narrow
-        // that (stint 1285). Host surfaces and plugins read as before.
-        let own_pane = caller_pane.map(|pane| pane.terminal_pane);
-        let socket = matches!(origin, RequestOrigin::Socket(_));
-        let readable = |actor: &str, pane: Option<u64>| {
-            !socket
-                || caller_actor.as_deref() == Some(actor)
-                || (own_pane.is_some() && pane == own_pane)
+        // What a socket caller may read back (`socket_caller_reads`).
+        // Payload filters only narrow that (stint 1285). Host surfaces and
+        // plugins read as before.
+        let readable = |actor: &str, incarnation: Option<&str>| match origin {
+            RequestOrigin::Socket(caller) => socket_caller_reads(caller, actor, incarnation),
+            _ => true,
         };
         let body = match op {
             "ask" if ask_recommend_error(payload).is_some() => {
@@ -534,6 +541,8 @@ impl PlexiApp {
                     session_id,
                     context_id: Some(resolved_context),
                     pane_id: resolved_pane,
+                    pane_incarnation: caller_pane
+                        .map(|pane| pane.authority.durable_key().to_string()),
                     expected_revision,
                     ..Default::default()
                 };
@@ -567,12 +576,12 @@ impl PlexiApp {
             }
             "show" => {
                 let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let item = monitor.get_needs_you(id).filter(|item| {
-                    readable(&item.actor, item.details.as_ref().and_then(|d| d.pane_id))
-                });
+                let item = monitor
+                    .get_needs_you(id)
+                    .filter(|item| readable(&item.actor, pane_incarnation(item)));
                 let continuation = monitor
                     .get_continuation(id)
-                    .filter(|row| readable(&row.actor, row.pane_id));
+                    .filter(|row| readable(&row.actor, row.pane_incarnation.as_deref()));
                 if item.is_none() && continuation.is_none() {
                     serde_json::json!({
                         "ok": false,
@@ -614,7 +623,7 @@ impl PlexiApp {
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.trim().is_empty());
                 let mut continuations = monitor.list_continuations(session_id, pane_id, context_id);
-                continuations.retain(|row| readable(&row.actor, row.pane_id));
+                continuations.retain(|row| readable(&row.actor, row.pane_incarnation.as_deref()));
                 if let Some(id) = id_filter {
                     continuations.retain(|c| {
                         c.run_id == id
@@ -626,7 +635,7 @@ impl PlexiApp {
                 let mut items = monitor.all_needs_you();
                 items.retain(|item| {
                     let details = item.details.as_ref();
-                    if !readable(&item.actor, details.and_then(|d| d.pane_id)) {
+                    if !readable(&item.actor, pane_incarnation(item)) {
                         return false;
                     }
                     let match_id = id_filter.is_none_or(|id| {

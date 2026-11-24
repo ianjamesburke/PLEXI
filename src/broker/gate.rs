@@ -204,6 +204,11 @@ pub struct NeedsYouDetails {
     pub context_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<u64>,
+    /// The durable key of the terminal incarnation `pane_id` names
+    /// (`LivePaneAuthority::durable_key`). A socket caller reads a
+    /// pane-bound item only from that incarnation, never by number alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_incarnation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -295,6 +300,9 @@ pub struct ContinuationRecord {
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<u64>,
+    /// As [`NeedsYouDetails::pane_incarnation`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_incarnation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_id: Option<u64>,
     pub actor: String,
@@ -2023,6 +2031,7 @@ impl PermissionMonitor {
                 correlation_id: det.correlation_id,
                 session_id: det.session_id,
                 pane_id: det.pane_id,
+                pane_incarnation: det.pane_incarnation,
                 context_id: det.context_id,
                 actor: record.actor.clone(),
                 target_resource: record.resource.clone(),
@@ -2923,6 +2932,7 @@ impl PermissionMonitor {
                 correlation_id: details.correlation_id,
                 session_id: details.session_id,
                 pane_id: details.pane_id,
+                pane_incarnation: details.pane_incarnation,
                 context_id: details.context_id,
                 actor: pending.binding.actor_id.clone(),
                 target_resource: resource,
@@ -3208,8 +3218,10 @@ impl PermissionMonitor {
                 if record.session_id.is_some() {
                     existing.session_id = record.session_id;
                 }
+                // A pane and its incarnation bind together.
                 if record.pane_id.is_some() {
                     existing.pane_id = record.pane_id;
+                    existing.pane_incarnation = record.pane_incarnation;
                 }
                 if record.context_id.is_some() {
                     existing.context_id = record.context_id;
@@ -3313,6 +3325,7 @@ impl PermissionMonitor {
             correlation_id: Some(operation_id.to_string()),
             session_id: Some(self.session_id.clone()),
             pane_id: Some(pane_id),
+            pane_incarnation: None,
             context_id: Some(context_id),
             actor: actor.to_string(),
             target_resource: "pane.send".to_string(),
